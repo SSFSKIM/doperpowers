@@ -516,9 +516,10 @@ assert_contains "$PROMPT" "Use doperpowers:qa-loops" "prompt names the Review Wo
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/qa-loops/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/implement-worker-protocol.md" "prompt carries the canonical implement-contract path (the dispatcher-pinned protocol file)"
-assert_contains "$PROMPT" "scripts/review-engine.sh" "prompt binds the engine script path"
-assert_contains "$PROMPT" '`CODEX_REVIEW_MODEL`:' "prompt binds the engine model"
-assert_contains "$PROMPT" '`CODEX_REVIEW_EFFORT`:' "prompt binds the engine effort"
+assert_contains "$PROMPT" '`REVIEW_LEVEL`: medium' "prompt binds the review level floor (default medium)"
+assert_contains "$PROMPT" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "prompt pins review-code's skill dir (the panel workflow's home)"
+assert_not_contains "$PROMPT" "review-engine.sh" "no codex engine script rides the prompt"
+assert_not_contains "$PROMPT" "CODEX_REVIEW" "no codex engine env rides the prompt"
 # The bindings a reviewer cannot function without, pinned on the VALUE side:
 # an existing `NAME`: assertion passes just as well against a rendered blank.
 assert_bound "$PROMPT" BIND_READY_FILE pr
@@ -1715,7 +1716,7 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-41" "WORKER_ENGINE=codex 
 assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
-assert_contains "$prompt" "review-engine.sh" "prompt binds the engine script path"
+assert_contains "$prompt" '`REVIEW_LEVEL`: medium' "prompt binds the review level floor"
 assert_contains "$prompt" '`BASE_REF`: main' "prompt binds the base ref the engine call uses"
 assert_not_contains "$prompt" "--criteria" "criteria concept is gone from the rendered prompt"
 assert_not_contains "$prompt" "developer_instructions" "no developer instructions ride the rendered prompt"
@@ -1727,13 +1728,27 @@ gh_pr 42 OPEN 0 "engine:claude"
 WORKER_ENGINE=codex run_dispatch 42
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-42" "engine:claude label overrides env"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "claude route spawns without the gateway settings, at effort high"
-if grep -E ' opus$' "$SPAWN_LOG" > /dev/null; then
+if grep -E -- '--model opus( |$)' "$SPAWN_LOG" > /dev/null; then
     pass "claude route pins the QAgent model to opus"
 else
     fail "claude route pins the QAgent model to opus"
 fi
 prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "scripts/review-engine.sh" "claude route binds the same single engine (no per-route fork)"
+assert_contains "$prompt42" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "claude route binds the same single engine (no per-route fork)"
+
+# REVIEW_LEVEL is the operator's level floor: validated before any spawn, and
+# rendered into the prompt when it is one of review-code's levels.
+reset_state
+gh_pr 44 OPEN 0 ""
+if REVIEW_LEVEL=bogus run_dispatch 44 > "$TEST_ROOT/level.out" 2>&1; then
+    fail "an invalid REVIEW_LEVEL refuses to dispatch"
+else
+    pass "an invalid REVIEW_LEVEL refuses to dispatch"
+fi
+assert_contains "$(cat "$TEST_ROOT/level.out")" "REVIEW_LEVEL must be one of" "...and names the accepted levels"
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-44" "...before any spawn"
+REVIEW_LEVEL=high run_dispatch 44
+assert_contains "$(cat "$PROMPT_DIR/review-pr-44.prompt")" '`REVIEW_LEVEL`: high' "a valid REVIEW_LEVEL rides the prompt as the level floor"
 
 reset_state
 gh_pr 43 OPEN 0 "engine:claude"
@@ -1754,7 +1769,7 @@ gh_pr 44 OPEN 0 ""
 env -u WORKER_ENGINE "$DISPATCH" 44
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "built-in default route is plain Claude (no gateway settings) at effort high"
-if grep -E ' opus$' "$SPAWN_LOG" > /dev/null; then
+if grep -E -- '--model opus( |$)' "$SPAWN_LOG" > /dev/null; then
     pass "built-in default pins the QAgent model to opus"
 else
     fail "built-in default pins the QAgent model to opus"

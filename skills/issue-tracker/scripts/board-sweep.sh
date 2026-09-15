@@ -45,6 +45,15 @@
 #            (authorAssociation OWNER/MEMBER/COLLABORATOR): they are
 #            comment-CONTROLLED board writes, and on a public repo anyone
 #            can comment.
+#   STALL    waiting tickets whose dependency has stopped moving — a leaf in
+#            a lane queue, unbound, whose blocker is unfinished, unworked and
+#            untouched past SWEEP_STALL_DEPENDENCY_MINUTES, or which sits on a
+#            ring of blocked-by edges with no member in flight → park
+#            needs-human with a [dependency-stall] / [dependency-cycle] note
+#            naming the blocker, the chain behind it, and the repairs. The gh
+#            half of the binding-neutral contract the API board's reconciler
+#            owns (arkho #56); its dedupe is the pass's own marker, so a
+#            report never repeats until the situation it named changes.
 #   DISPATCH execute-dispatch.sh --sweep (cap-bounded).
 #   REVIEW   review-dispatch.sh --sweep (its own dedupe + failure caps).
 #   RELAY    needs-human tickets with a bound idle session whose newest
@@ -67,6 +76,9 @@
 #   LOCAL_REPO BOARD_REPO           as the lane dispatchers take them
 #   WORKTREE_GC DOCKER_GC GC_PR_CHECKS   the GC pass (opt-in, see board-gc.sh)
 #   SWEEP_STALL_MINUTES             silence threshold for a live worker (45)
+#   SWEEP_STALL_DEPENDENCY_MINUTES  silence threshold for a BLOCKER before the
+#                                   ticket waiting on it is parked (2880 = 48h,
+#                                   the API board's DEPENDENCY_STALL_MS default)
 #   SWEEP_RECOVERY_CAP              lifetime sweep resumes per daemon (3)
 #   IMPLEMENT_MAX_CONCURRENT WORKER_ENGINE CLODEX_* AUTO_MERGE_ENABLED
 #                                   exported through to the lanes
@@ -689,6 +701,488 @@ except OSError as e:
 PY
 }
 
+# STALL — a dependency wait is BOUNDED. The board already refuses to draw a
+# ticket whose blocker is unfinished (B.eligible), and that refusal is the
+# whole of what it does about the wait: nothing ages it, nothing asks whether
+# the blocker is still moving, nothing tells a human when it is not. A ticket
+# whose blocker never lands — parked and unanswered, shelved `deferred`,
+# closed `wontfix` (which gh's own eligibility never accepts as landed),
+# reclaimed and never resumed, or caught in a ring — sits in its queue
+# forever, owned by nobody and reported to nobody. The dependency yield
+# (dp#146) lets a worker put its own ticket there without a human ever
+# having looked at it.
+#
+# The contract is binding-neutral doctrine — arkho #56, whose reconciler pass
+# owns it on the API board (`docs/specs/2026-09-14-dependency-stall-design.md`,
+# Design 1-3). This is its gh half. The API board has a ledger, an owner_run
+# column and a server; gh has none of the three, so each predicate is
+# translated to a signal the sweep ALREADY reads:
+#
+#   activity(B)   the newest `updatedAt` over B's SUBTREE. GitHub bumps it on
+#                 every comment, label, body edit and state change, which is
+#                 what the ledger is for on the other binding — and the IMPACT
+#                 pass above already trusts it as a per-child scan cursor. The
+#                 subtree clause is for an epic blocker: a decomposed epic's
+#                 own row goes quiet while its children do the work.
+#   being worked  a binding on B or anything under it that is still somebody's
+#                 responsibility — gh's owner_run, read out of the daemon
+#                 registry here rather than through B.live_bound_tickets(),
+#                 because two qualifiers that reader does not make are
+#                 load-bearing for this pass. The registry is MACHINE-GLOBAL
+#                 and a board is not, so a meta counts only once its own board
+#                 identity matches ours: ticket numbers collide across repos as
+#                 a matter of course, and a neighbouring checkout's worker on
+#                 ITS #42 must not silence this board's report about OUR #42.
+#                 And the recovery LADDER is read, not just the status — the
+#                 RECOVER pass backgrounds `sminos resume` and returns within
+#                 this same tick, so a binding it is still recovering reads
+#                 `idle`/`error` here and must count as worked. The exhausted
+#                 ladder is the exclusion that matters in the other direction:
+#                 when RECOVER gives up it parks the blocker `needs-human`
+#                 itself, and a blocker nobody will ever resume is precisely
+#                 the stall root this pass exists to report. A dead binding
+#                 must never suppress a report forever.
+#   chain link    a blocker whose wait is somebody else's report: a waiting
+#                 leaf (a candidate in its own right, whose own blocker gets
+#                 its own turn) or a ticket this pass already parked. The
+#                 second is read from the park NOTE, which the snapshot
+#                 carries for free and which board-show puts in front of a
+#                 human anyway. Only the link NEAREST the stuck root fires, so
+#                 a five-deep chain is one park, not five.
+#   reported      the pass's own marker comment, and it records the blocker
+#                 ACTIVITY it reported (`marker: stall #42@<iso>`) rather than
+#                 leaning on the comment clock. "Not again until the situation
+#                 changes" is then a string comparison — and it is the only
+#                 dedupe available for a ring, which has no timestamp at all.
+#
+# Two signals, because they have different false-positive profiles. The CYCLE
+# is structural and needs no clock: a ring of blocked-by edges among
+# unfinished tickets can never resolve itself. It fires only once NO member is
+# in flight — an in-flight member can still be finished by its worker or
+# resumed. The STALL is temporal and judges the BLOCKER's silence, not the
+# waiter's age: a four-day build with a live worker is a normal wait however
+# long it lasts. The waiting ticket's own wait must reach the threshold too,
+# so a ticket that yields TODAY onto a blocker silent for a week is reported
+# one threshold from now, not within minutes of the worker putting it down.
+#
+# ONE unfinished-blocker predicate, and it is gh's, not the spec's: B.eligible
+# draws a ticket only when every blocker is `done`, so a `wontfix` blocker —
+# and a blocker that is not on this board at all — strands its waiter exactly
+# as a live one does. Reading TERMINAL here (the API board's rule) would make
+# the most permanent gh stall the one case this pass cannot see.
+#
+# Mechanical, no model calls, idempotent per tick. Comment reads happen only
+# for a candidate that is otherwise DUE, so a board with nothing stranded
+# costs this pass zero gh calls beyond the snapshot every pass shares.
+pass_stall() {
+  PYTHONPATH="$BOARD_SCRIPTS" \
+  T_STALL_DEP_MIN="${SWEEP_STALL_DEPENDENCY_MINUTES:-2880}" \
+  T_RECOVERY_CAP="$RECOVERY_CAP" \
+  python3 - <<'PY' | tee -a "$SWEEP_LOG"
+import datetime
+import glob
+import json
+import os
+import re
+import _board as B
+import _board_api as BA
+
+# Minutes. 2880 = 48h, the same number DEPENDENCY_STALL_MS defaults to on the
+# API board: one doctrine, one threshold. A non-numeric or non-positive value
+# falls back rather than firing instantly — a misconfigured threshold must not
+# park a whole board's worth of normal waits.
+try:
+    THRESHOLD = int(os.environ.get("T_STALL_DEP_MIN") or 0)
+except ValueError:
+    THRESHOLD = 0
+if THRESHOLD <= 0:
+    THRESHOLD = 2880
+
+# The RECOVER ladder's own cap, passed in from the shell so the two passes
+# cannot disagree about when a recovery has given up. Parsed defensively like
+# the threshold, except that 0 is honoured: a deployment that sets the cap to
+# zero has disabled auto-recovery, and every idle binding on it really is
+# nobody's. Only a garbled value falls back.
+try:
+    RECOVERY_CAP = int(os.environ.get("T_RECOVERY_CAP", ""))
+except ValueError:
+    RECOVERY_CAP = 3
+if RECOVERY_CAP < 0:
+    RECOVERY_CAP = 3
+
+# This board's identity in the machine-global registry. gh mode's `board` key
+# is the whole identity — there is no repo dimension to add (meta_is_mine).
+BOARD = "gh:" + (os.environ.get("BOARD_REPO") or "")
+
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
+# The park note's opening marker, which is also how a chain link is
+# recognised; and the machine tail the dedupe reads back.
+NOTE_RE = re.compile(r"\[dependency-(stall|cycle)\]")
+MARKER_RE = re.compile(r"marker: (stall|cycle) ([^\n]*)")
+
+def worked_tickets():
+    """Ticket numbers this BOARD still counts as somebody's responsibility.
+
+    Deliberately not B.live_bound_tickets(): that reader is board-blind (it
+    returns numbers from every repository on the machine) and it counts only
+    `working`/`blocked`, which reads a recovery still in flight as an
+    abandoned binding. Both directions matter here — the first would suppress
+    a real report because of a stranger's worker, the second would file one
+    against a blocker that is being resumed right now. Unreadable and
+    malformed metas are skipped; a meta with no board stamp is legacy and
+    reads as ours, which is meta_is_mine's documented safe direction.
+    """
+    home = (os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
+            or os.path.expanduser("~/.claude/sminos"))
+    out = set()
+    for path in glob.glob(os.path.join(home, "*.json")):
+        if path.endswith(".reply.json"):
+            continue
+        try:
+            with open(path) as f:
+                m = json.load(f)
+        except (ValueError, OSError):
+            continue
+        if not BA.meta_is_mine(m, BOARD):
+            continue
+        status = str(m.get("status") or "")
+        if status not in ("working", "blocked"):
+            # `idle`/`error` is where a binding sits between RECOVER's
+            # backgrounded resume and the resumed process actually launching,
+            # so it counts as worked for as long as the ladder has a rung
+            # left. Once the ladder is exhausted RECOVER parks the blocker
+            # itself and stops trying — nothing is coming, and the binding
+            # must stop suppressing this pass. Anything else (`retired`, and
+            # any status the registry grows later) is nobody's.
+            if status not in ("idle", "error"):
+                continue
+            try:
+                recoveries = int(m.get("sweep_recoveries") or 0)
+            except (TypeError, ValueError):
+                recoveries = 0
+            if recoveries >= RECOVERY_CAP:
+                continue
+        t = str(m.get("ticket") or "").lstrip("#")
+        if t:
+            out.add(t)
+    return out
+
+
+tickets = B.snapshot()
+live = worked_tickets()
+UTC = datetime.timezone.utc
+cutoff = (datetime.datetime.now(UTC)
+          - datetime.timedelta(minutes=THRESHOLD)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+kids = {}
+for _t, _n in tickets.items():
+    if _n.get("parent"):
+        kids.setdefault(_n["parent"], []).append(_t)
+
+
+def iso(s):
+    """A GitHub timestamp normalized to one comparable width. Every value in
+    play is `YYYY-MM-DDTHH:MM:SSZ`, so ordering is lexicographic and no
+    parsing is needed — which also makes the string itself the dedupe key."""
+    s = str(s or "")
+    return (s[:19] + "Z") if len(s) >= 19 else ""
+
+
+def subtree(t):
+    """t and everything under it. Cycle-safe, and tolerant of an id that is
+    not on this board — a blocked-by can point at a transferred, deleted, or
+    another repository's issue."""
+    out, stack = set(), [t]
+    while stack:
+        x = stack.pop()
+        if x in out:
+            continue
+        out.add(x)
+        stack.extend(kids.get(x, ()))
+    return out
+
+
+def activity(t):
+    """Newest issue activity over t's subtree, as a timestamp string; "" when
+    nothing on the board says (an off-board blocker). "" sorts below every
+    real timestamp, which is the right reading: an issue this board cannot
+    see can never be observed to move.
+
+    One deliberate reading: a park THIS pass writes onto a ticket that happens
+    to sit inside the blocker's subtree bumps that ticket's `updatedAt`, and
+    that is bookkeeping, not progress on the blocker — so the snapshot is not
+    re-read to pick it up within a tick. The honest cost is that a LATER tick
+    does see the timestamp and reads the subtree as active, buying the wait
+    one more threshold of patience before it is reported again."""
+    best = ""
+    for x in subtree(t):
+        n = tickets.get(x)
+        if n:
+            u = iso(n.get("updated_at"))
+            if u > best:
+                best = u
+    return best
+
+
+def being_worked(t):
+    return any(x in live for x in subtree(t))
+
+
+def unfinished(b):
+    return tickets.get(b, {}).get("state") != "done"
+
+
+def waiting(t):
+    """A candidate: a leaf in a lane queue, nobody bound to it, with at least
+    one unfinished blocker. Exactly the set B.eligible refuses to draw.
+    Leaves only — an epic in a queue waits on its CHILDREN, and the epic
+    passes judge that."""
+    n = tickets.get(t)
+    return bool(n) and n["state"] in B.DISPATCHABLE and t not in live \
+        and not kids.get(t) \
+        and any(unfinished(b) for b in n["blocked_by"])
+
+
+def chain_link(b):
+    # A waiting EPIC is NOT a link: this pass never visits epics, so nobody
+    # else would report its wait. It is a root, judged by its own subtree.
+    n = tickets.get(b)
+    if not n:
+        return False
+    if waiting(b):
+        return True
+    return n["state"] == "needs-human" \
+        and NOTE_RE.match((n.get("note") or "").strip()) is not None
+
+
+def dispatch_pending(b):
+    """The blocker sits in a lane queue with nothing holding it back — the
+    DISPATCH pass owns its liveness, not this one.
+
+    This clause has no counterpart in the API board's pass, and it is the
+    difference between the two queues. There, claimNext draws an eligible
+    ticket within seconds. Here a lane is cap-bounded and a ticket can sit in
+    `ready-for-implementer` for days purely because the slots are full — the
+    ordinary "do A before B" edge with A still queued. Without this clause,
+    every ticket behind a lane backlog is parked once the backlog is two days
+    old: a report about dispatch capacity dressed up as a dependency failure.
+    With it, this and chain_link read as one rule — a blocker sitting in a
+    lane QUEUE is never a stall root, because it waits either on its own
+    blocker (somebody else's report) or on a dispatch slot (somebody else's
+    pass)."""
+    return b in tickets and B.eligible(tickets, b)
+
+
+def stalled(b):
+    return unfinished(b) and not being_worked(b) and not chain_link(b) \
+        and not dispatch_pending(b) and activity(b) < cutoff
+
+
+_reports = {}
+
+
+def reports(t):
+    """This pass's own markers on a ticket — [(kind, payload)]. Read from the
+    COMMENT trail, not the note: a human who re-queues the ticket by hand
+    overwrites the note, and losing the dedupe there would re-park the ticket
+    the moment they put it back."""
+    if t not in _reports:
+        found = []
+        for c in B.comments(t):
+            if (c.get("authorAssociation") or "") not in TRUSTED:
+                continue
+            m = MARKER_RE.search(c.get("body") or "")
+            if m:
+                found.append((m.group(1), m.group(2).strip()))
+        _reports[t] = found
+    return _reports[t]
+
+
+def hours_since(a):
+    """Whole hours from timestamp string `a` to now; "?" when a is unknown."""
+    try:
+        then = datetime.datetime.strptime(a[:19], "%Y-%m-%dT%H:%M:%S")
+    except (ValueError, TypeError):
+        return "?"
+    d = datetime.datetime.now(UTC) - then.replace(tzinfo=UTC)
+    return str(int(d.total_seconds() // 3600))
+
+
+# blocked-by over UNFINISHED, on-board tickets, both directions. An edge into
+# a landed ticket is not a wait, and a ring through one is not a deadlock.
+fwd, rev = {}, {}
+for _t, _n in tickets.items():
+    if not unfinished(_t):
+        continue
+    for _b in _n["blocked_by"]:
+        if _b in tickets and unfinished(_b):
+            fwd.setdefault(_t, []).append(_b)
+            rev.setdefault(_b, []).append(_t)
+
+
+def reach(start, graph, through=None):
+    out, stack = set(), list(graph.get(start, ()))
+    while stack:
+        x = stack.pop()
+        if x in out or (through is not None and not through(x)):
+            continue
+        out.add(x)
+        stack.extend(graph.get(x, ()))
+    return out
+
+
+def ring_walk(t, members):
+    """One closed walk t -> ... -> t through the members, for the note.
+
+    DEPTH-FIRST, WITH BACKTRACKING. A greedy forward walk strands itself on
+    any component that branches: it takes one exit, dead-ends at a member
+    whose every successor is already visited, and the only way to finish is
+    to append the start — naming a blocked-by link that does not exist. The
+    note is read by a human deciding which edge to cut, so a fabricated edge
+    is worse than no walk at all. Every step returned here is a real edge,
+    the closing one included. Successors in ascending numeric order, so a
+    given ring reads the same on every tick. The ring is already known to
+    exist when this is called; if the search somehow exhausts anyway it
+    returns the degenerate [t] rather than inventing the link back."""
+    seen = {t}
+
+    def step(path):
+        for b in sorted(fwd.get(path[-1], ()), key=int):
+            if b == t and len(path) > 1:
+                return path + [t]
+            if b in members and b not in seen:
+                seen.add(b)
+                got = step(path + [b])
+                if got:
+                    return got
+                seen.discard(b)
+        return None
+
+    return step([t]) or [t]
+
+
+def park(tid, kind, note):
+    # No pre-park: the ticket is UNBOUND, so there is no session to resume and
+    # no in-flight state to return it to. Its lane queue is where it belongs
+    # once the blocker lands, and board-answer refuses an unbound park anyway
+    # — the note names the by-hand path instead.
+    ln = B.apply_state(tickets, tid, "needs-human", note,
+                       extra_meta={"pre-park": None})
+    print("[sweep] STALL: %s (%s)" % (ln, kind))
+
+
+acted = 0
+for tid in sorted([t for t in tickets if waiting(t)], key=int):
+    if not waiting(tid):        # a park earlier in this loop moved it
+        continue
+    n = tickets[tid]
+    lane = n["state"]
+
+    # ---- 1. the cycle: structural, no clock, outranks the stall ----------
+    # This block either PARKS a ring or FALLS THROUGH. It never skips the
+    # ticket: every reason a ring declines to park — a member still in flight,
+    # this ticket not being the ring's representative, the ring already
+    # reported — says nothing about whether THIS ticket's own wait has gone
+    # stale, and arkho #56 is explicit that a ring member which is in flight,
+    # unowned and silent past the threshold is a stalled root the STALL rule
+    # below must catch. That is how a never-resumed member is found at all.
+    # Nothing doubles up, because the chain-link rule already absorbs the
+    # redundant shapes: a ring member sitting in a lane QUEUE is a waiting
+    # leaf, and a parked representative is `needs-human` carrying a
+    # [dependency- note, so neither can be a stall root. Only a genuinely
+    # stuck non-queue member — an old unbound `in-progress`, say — becomes
+    # one, which is exactly the case the spec wants reported.
+    members = set()
+    if tid in reach(tid, fwd):
+        members = {tid} | (reach(tid, fwd) & reach(tid, rev))
+    if members:
+        ordered = sorted(members, key=int)
+        # A ring with an in-flight member is not yet a deadlock: that member
+        # can still be finished by its worker (a close applies no blocker
+        # check) or resumed. Otherwise one park per ring, on a deterministic
+        # member — the lowest-numbered one this pass is able to write. The
+        # parked representative stays a member (it is non-terminal), so
+        # without the ring-wide dedupe below, the next candidate in this same
+        # loop would be parked next, and the next. The dedupe's comment read
+        # is deliberately the last thing tried, so a ring that is not a park
+        # candidate at all costs nothing.
+        reps = [m for m in ordered if waiting(m)]
+        if not any(tickets[m]["state"] in B.ACTIVE for m in ordered) \
+           and reps and reps[0] == tid:
+            edges = ["%s>%s" % (a, b) for a in ordered
+                     for b in fwd.get(a, ()) if b in members]
+            payload = " ".join(
+                sorted(edges, key=lambda e: [int(x) for x in e.split(">")]))
+            if not any(("cycle", payload) in reports(m) for m in ordered):
+                note = ("[dependency-cycle] %s: every member waits on another, "
+                        "none is in flight, so none can be claimed and a run "
+                        "cannot cut an edge. Members: %s. Repairs: cut one "
+                        "edge (board-edge.sh <x> --unblock <y>) or close a "
+                        "member; re-queueing #%s alone leaves the ring "
+                        "standing. marker: cycle %s"
+                        % (" -> ".join("#" + x
+                                       for x in ring_walk(tid, members)),
+                           ", ".join("#%s (%s)" % (m, tickets[m]["state"])
+                                     for m in ordered),
+                           tid, payload))
+                park(tid, "dependency-cycle", note)
+                _reports.setdefault(tid, []).append(("cycle", payload))
+                acted += 1
+                continue
+
+    # ---- 2. the stall: temporal, on the BLOCKER's silence ----------------
+    # The waiting ticket's own wait has to reach the threshold too. Its
+    # `updatedAt` is where that wait starts: the yield's label write, body
+    # write and note comment all bump it, and so does a human re-queueing the
+    # ticket by hand after reading a previous report.
+    if iso(n.get("updated_at")) >= cutoff:
+        continue
+    due = []
+    for b in sorted(set(n["blocked_by"]), key=int):
+        if not stalled(b):
+            continue
+        act = activity(b)
+        key = "#%s@%s" % (b, act or "-")
+        if any(k == "stall" and key in p for k, p in reports(tid)):
+            continue        # reported, and the blocker has not moved since
+        due.append((b, act, key))
+    if not due:
+        continue
+    # The chain BEHIND this ticket. Only the link nearest the stuck root
+    # fires, so these never get a report of their own — they are named here
+    # instead.
+    behind = sorted(reach(tid, rev, through=waiting), key=int)
+    clauses = []
+    for b, act, _k in due:
+        bn = tickets.get(b)
+        if bn is None:
+            clauses.append("#%s, which is not on this board (transferred, "
+                           "deleted, or another repository's) — no `done` can "
+                           "ever land on it" % b)
+        else:
+            clauses.append("#%s, which is %s, unworked, and untouched since "
+                           "%s (%sh)" % (b, bn["state"], act, hours_since(act)))
+    blockers = " / ".join("#" + b for b, _a, _k in due)
+    note = ("[dependency-stall] #%s has waited in %s since %s on %s "
+            "(threshold %sh). %sRepairs: cut the edge (board-edge.sh %s "
+            "--unblock %s), move %s along, or comment the answer and re-queue "
+            "by hand (board-transition.sh %s %s \"<why>\") — this report does "
+            "not repeat until %s moves. marker: stall %s"
+            % (tid, lane, iso(n.get("updated_at")), "; ".join(clauses),
+               THRESHOLD // 60,
+               ("Also waiting behind #%s: %s. "
+                % (tid, ", ".join("#" + x for x in behind))) if behind else "",
+               tid, due[0][0], blockers, tid, lane, blockers,
+               " ".join(k for _b, _a, k in due)))
+    park(tid, "dependency-stall", note)
+    _reports.setdefault(tid, []).append(
+        ("stall", " ".join(k for _b, _a, k in due)))
+    acted += 1
+
+print("[sweep] STALL: %d acted" % acted)
+PY
+}
+
 pass_relay() {
   local acted=0 state tk uuid status current recov fin tx turn_end verdict cid
   while IFS='|' read -r state tk uuid status current _ recov is_epic; do
@@ -937,6 +1431,7 @@ pass_recover  || log "[sweep] RECOVER pass errored (continuing)"
 pass_cancel   || log "[sweep] CANCEL pass errored (continuing)"
 pass_finalize || log "[sweep] FINALIZE pass errored (continuing)"
 pass_impact   || log "[sweep] IMPACT pass errored (continuing)"
+pass_stall    || log "[sweep] STALL pass errored (continuing)"
 pass_surface  || log "[sweep] SURFACE pass errored (continuing)"
 "$IMPLEMENT_DISPATCH_CMD" --sweep 2>&1 | tee -a "$SWEEP_LOG" \
   || log "[sweep] DISPATCH pass errored (continuing)"

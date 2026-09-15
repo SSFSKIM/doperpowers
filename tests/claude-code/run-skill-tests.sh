@@ -99,6 +99,7 @@ tests=(
     "board-api/test-dispatch-claim.sh"
     "board-api/test-review-dispatch-claim.sh"
     "board-api/test-sweep-renew-relay.sh"
+    "board-api/test-sweep-stall.sh"
     "board-api/test-sweep-resume.sh"
     "board-api/test-run-self-location.sh"
     "board-api/test-store-scope.sh"

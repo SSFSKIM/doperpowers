@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Hermetic tests for review-engine.sh — the single native-review invocation.
+# Hermetic tests for review-engine.sh — the bench's codex review engine (the
+# qa-loops loop's engine until it moved onto doperpowers:review-code's lane).
 #
 # The suite pins the seam the engine OWNS: the `node <companion>/with-effort.mjs`
 # command line it composes (verb routing, defaults, the lens contract), the env
@@ -17,8 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ENGINE="$REPO_ROOT/skills/qa-loops/scripts/review-engine.sh"
+ENGINE="$SCRIPT_DIR/review-engine.sh"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
