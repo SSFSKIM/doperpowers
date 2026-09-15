@@ -1,4 +1,0 @@
-{
-  "description": "The to-human transcript view: assistant messages drawn as their <to-human>/<essential>/<need-input> spans, tool rows folded, with per-message and session-wide unfold buttons",
-  "modules": ["./register.tsx"]
-}

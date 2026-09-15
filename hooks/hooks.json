@@ -1,5 +1,6 @@
 {
-  "description": "kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. experimental-context: keyed <revisit> entries re-injected after compaction — on with EXPERIMENTAL_CONTEXT=1 or /experimental-context; /experimental-context off ends it",
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the to-human view of the transcript and the kairos button in the prompt footer. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. experimental-context: keyed <revisit> entries re-injected after compaction — on with EXPERIMENTAL_CONTEXT=1 or /experimental-context; /experimental-context off ends it",
+  "modules": ["./mods/register.tsx"],
   "hooks": {
     "SessionStart": [
       {

@@ -68,7 +68,7 @@ function hidden($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve
  * tool rows fold away, until a message is unfolded by its button or the
  * whole transcript by the band above the prompt.
  */
-export function register(on: On) {
+export function registerToHuman(on: On) {
   let hasSeenMark = false
   let isFullTranscript = false
   const unfolded = new Set<string>()
