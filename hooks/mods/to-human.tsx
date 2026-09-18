@@ -355,7 +355,9 @@ export function registerToHuman(on: On) {
     // A span's body is markdown as the model wrote it (a table, a list, a
     // code fence), so it is drawn by the engine: the block is handed back
     // beneath this hook with the span's text in place of the whole, and no
-    // bullet, since the label above carries it.
+    // bullet, since the label above carries it. The bullet is the engine's
+    // two-column gutter, so the body is padded by as much to sit where the
+    // transcript's text does.
     const bodies = await Promise.all(
       parsed.spans.map((span) => next({ ...e, props: { ...e.props, text: span.text, isFirstOfReply: false } })),
     )
@@ -371,7 +373,7 @@ export function registerToHuman(on: On) {
                 {style.label}
                 {span.isOpen ? ' …' : ''}
               </Text>
-              {bodies[i]}
+              <Box paddingLeft={2}>{bodies[i]}</Box>
             </Box>
           )
         })}
