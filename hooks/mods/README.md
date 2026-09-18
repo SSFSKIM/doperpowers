@@ -20,8 +20,14 @@ a mark, so a session without the output style is left alone. From then on:
   label: `to human` in cyan, `essential` in yellow, `need input` in magenta. A
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
-  unfolds the engine's own drawing of the whole block (markdown intact); a
-  message with no marks at all is one dim row with that button.
+  unfolds the engine's own drawing of the whole block (markdown intact).
+- Messages with no marks at all are working record, and a run of them draws
+  one `[ working record ]` button rather than one button each: the run breaks
+  at a prompt or at a message that carries marks, so what stands between two
+  things the human reads opens and closes as a unit. The button is drawn by
+  the message the run starts at and the rest of the run draw nothing; unfolded,
+  `[ fold to report ]` sits at the top of the run, where it stays as the run
+  grows.
 - Tool rows (`ToolUse`, `ToolResult`, the folded `ToolGroup` count line) draw
   nothing.
 - The band above the prompt shows `to-human view · [ full transcript ]`, which

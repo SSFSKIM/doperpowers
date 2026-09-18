@@ -1,6 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import { parse } from '../../hooks/mods/to-human'
+import type { RowKind } from '../../hooks/mods/to-human'
+import { parse, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -79,5 +80,37 @@ describe('register', () => {
 
     expect(parsed.spans).toEqual([])
     expect(parsed.hasRecord).toBe(true)
+  })
+})
+
+describe('runStart', () => {
+  const rows = (...pairs: [string, RowKind][]) => ({
+    order: pairs.map(([id]) => id),
+    rowOf: new Map<string, RowKind>(pairs),
+  })
+
+  test('every message of a run of working record names the run it starts at', async () => {
+    const { order, rowOf } = rows(['r1', 'record'], ['r2', 'record'], ['r3', 'record'])
+
+    expect(order.map((id) => runStart(order, rowOf, id))).toEqual(['r1', 'r1', 'r1'])
+  })
+
+  test('a prompt breaks the run', async () => {
+    const { order, rowOf } = rows(['r1', 'record'], ['p', 'user'], ['r2', 'record'], ['r3', 'record'])
+
+    expect(runStart(order, rowOf, 'r3')).toBe('r2')
+  })
+
+  test('a message carrying marks breaks the run', async () => {
+    const { order, rowOf } = rows(['r1', 'record'], ['m', 'marked'], ['r2', 'record'])
+
+    expect(runStart(order, rowOf, 'r2')).toBe('r2')
+    expect(runStart(order, rowOf, 'r1')).toBe('r1')
+  })
+
+  test('a message the transcript has not drawn yet stands alone', async () => {
+    const { order, rowOf } = rows(['r1', 'record'])
+
+    expect(runStart(order, rowOf, 'unseen')).toBe('unseen')
   })
 })
