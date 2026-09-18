@@ -18,9 +18,12 @@ a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under a colored
   label: `to human` in cyan, `essential` in yellow, `need input` in magenta. A
+  span's body is the engine's own markdown drawing of the span's text (the
+  block is handed back beneath the hook with that text in place of the
+  whole), so a table or a list inside a mark draws as it would unmarked. A
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
-  unfolds the engine's own drawing of the whole block (markdown intact).
+  unfolds the engine's drawing of the whole block.
 - Messages with no marks at all are working record, and a run of them draws
   one `[ working record ]` button rather than one button each: the run breaks
   at a prompt or at a message that carries marks, so what stands between two
@@ -40,20 +43,23 @@ cannot restyle text as it arrives. The shell hook beside this folder,
 `../to-human-stream.sh` on `MessageDisplay`, covers that stretch — it is
 handed each batch of newly completed lines and returns what to draw in its
 place, so a mark becomes the same colored label and the working record dims
-as the message arrives. Its labels are what this module then reads: once the
-hook has run, the block's text carries those headers instead of the tags, and
-`parse` takes either form (the tags when the hook is not installed, the
-headers when it is). The two views line up, so the message settles into the
-fold without changing shape.
+as the message arrives. The engine runs up to three of a message's flushes
+at once and dispatches the last one the moment the message ends, so each
+flush records its index when it is done and the next waits for that record
+before reading which marks are open; without the wait, a short message's
+tail was drawn before the flush that closed its mark had finished, and came
+through undimmed. The hook's labels are what this module then reads: once
+the hook has run, the block's text carries those headers instead of the
+tags, and `parse` takes either form (the tags when the hook is not
+installed, the headers when it is). The two views line up, so the message
+settles into the fold without changing shape.
 
 The stored messages are untouched by both: the transcript on disk carries the
 tags as written, and the model reads what it wrote. The `ctrl+o` detailed
 transcript is drawn through the same hooks, so it folds too.
 
-Known limits: a marked span's body draws as plain text (bold, bullets and
-code fences show their markdown source; the unfolded view is the engine's
-markdown drawing); a literal mention of a tag in prose parses as a span;
-unfold state lives in the module and resets on reload or a new session.
+Known limits: a literal mention of a tag in prose parses as a span; unfold
+state lives in the module and resets on reload or a new session.
 
 ## kairos (`kairos.tsx`)
 
