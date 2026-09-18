@@ -265,6 +265,8 @@ type State = {
   shown?: Shown
   poll?: Timer
   tick?: Timer
+  /** True while a period's reads are still running: the next period skips. */
+  isPolling: boolean
   signature: string
 }
 
@@ -292,7 +294,12 @@ const running = (state: State) => [...state.seen.values()].filter((row) => isRun
  * when an agent appeared or changed status.
  */
 async function refresh($: EngineInterface, state: State) {
-  const listed = await $.agent.list()
+  let listed
+  try {
+    listed = await $.agent.list()
+  } catch {
+    return
+  }
   const now = Date.now()
   const present = new Set<string>()
   for (const agent of listed) {
@@ -401,7 +408,13 @@ async function load($: EngineInterface, state: State, id: string): Promise<boole
     state.shown = { ...empty, size, tooLarge: true }
     return true
   }
-  const { entries, skipped } = summarize(await $.fs.read(path), CAP)
+  let text: string
+  try {
+    text = await $.fs.read(path)
+  } catch {
+    return false // gone or refused between the stat and the read: next period
+  }
+  const { entries, skipped } = summarize(text, CAP)
   state.shown = { ...empty, size, entries, skipped }
   return true
 }
@@ -415,10 +428,20 @@ function follow($: EngineInterface, state: State) {
 function startPolling($: EngineInterface, state: State) {
   stopPolling(state)
   state.poll = $.clock.every(POLL_MS, async () => {
-    await refresh($, state)
-    if (state.selected !== undefined && (await load($, state, state.selected))) {
-      $.ui.invalidate('ui.render')
-      follow($, state)
+    if (state.isPolling) {
+      return
+    }
+    state.isPolling = true
+    try {
+      await refresh($, state)
+      if (state.selected !== undefined && (await load($, state, state.selected))) {
+        $.ui.invalidate('ui.render')
+        follow($, state)
+      }
+    } catch {
+      // A period that failed is a period skipped; the next one reads again.
+    } finally {
+      state.isPolling = false
     }
   })
   state.tick = $.clock.every(TICK_MS, () => {
@@ -433,6 +456,7 @@ function stopPolling(state: State) {
   state.tick?.cancel()
   state.poll = undefined
   state.tick = undefined
+  state.isPolling = false
 }
 
 function timeOf(row: AgentRow): string {
@@ -556,6 +580,7 @@ export function registerAgents(on: On) {
     disk: new Map(),
     isOpen: false,
     isFocused: false,
+    isPolling: false,
     signature: '',
   }
 
@@ -636,13 +661,17 @@ export function registerAgents(on: On) {
   on('ui.press', { element: BUTTON }, async ($, e, next) => {
     const result = await next(e)
     if (state.isOpen) {
+      // Cleared here and not only at `ui.close`: a pane the engine dropped
+      // (its drawing threw) closes without running its opener's hooks.
+      state.isOpen = false
+      stopPolling(state)
       await $.ui.close({ id: PANE })
       return result
     }
-    state.isOpen = true
     await seed($, state)
     await refresh($, state)
     await $.ui.open({ id: PANE, title: 'subagents' })
+    state.isOpen = true
     startPolling($, state)
     $.ui.invalidate('ui.render')
     return result

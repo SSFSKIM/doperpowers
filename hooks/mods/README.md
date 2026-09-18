@@ -106,9 +106,11 @@ mode slot is right-aligned by the engine.
   beside each transcript, parent included) are in the tree too.
 
 Known limits: the pane is read-only (`$.agent` has no kill or message); an
-agent read from disk alone shows as completed with the file times as its
-span; a teammate's transcript is not under `subagents/`, so its row reads
-`no transcript on disk`.
+agent read from disk alone shows as completed with no elapsed time (the
+engine rewrites its meta file as it ends, so the file times say nothing of
+its span) and no model unless the meta file names one; a teammate's
+transcript is not under `subagents/`, so its row reads `no transcript on
+disk`; a shown transcript is re-read whole each time its file grew.
 
 ## kairos (`kairos.tsx`)
 
