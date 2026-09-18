@@ -170,6 +170,34 @@ export function parse(text: string): Parsed {
   return parseRendered(text)
 }
 
+/**
+ * What one row of the transcript is: the person's prompt, an assistant
+ * message carrying marks, or one that is all working record.
+ */
+export type RowKind = 'user' | 'marked' | 'record'
+
+/**
+ * The first message of the run of working record `id` belongs to: walking
+ * back over the rows that are working record too and stopping at a prompt or
+ * at a message that carries marks. A run of unmarked messages draws as one
+ * button rather than one button each, so the report reads as a report; this
+ * names the message that draws it, and the rest of the run draw nothing.
+ */
+export function runStart(
+  order: readonly string[],
+  rowOf: ReadonlyMap<string, RowKind>,
+  id: string,
+): string {
+  let at = order.indexOf(id)
+  if (at < 0) {
+    return id
+  }
+  while (at > 0 && rowOf.get(order[at - 1] as string) === 'record') {
+    at -= 1
+  }
+  return order[at] as string
+}
+
 const STYLE: Record<Kind, { label: string; color: string }> = {
   'to-human': { label: 'to human', color: 'cyan' },
   essential: { label: 'essential', color: 'yellow' },
@@ -197,9 +225,22 @@ function hidden($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve
 export function registerToHuman(on: On) {
   let hasSeenMark = false
   let isFullTranscript = false
+  // A message unfolded by its own button, and a run of working record
+  // unfolded by the one button that stands for it, keyed by the message the
+  // run starts at.
   const unfolded = new Set<string>()
+  // The order the transcript's rows first drew in, and what each one is.
+  const order: string[] = []
+  const rowOf = new Map<string, RowKind>()
 
   const isFolding = () => hasSeenMark && !isFullTranscript
+
+  const see = (requestId: string, kind: RowKind) => {
+    if (!rowOf.has(requestId)) {
+      order.push(requestId)
+    }
+    rowOf.set(requestId, kind)
+  }
 
   const toggleMessage = (requestId: string) => {
     if (unfolded.has(requestId)) {
@@ -209,8 +250,16 @@ export function registerToHuman(on: On) {
     }
   }
 
+  // The prompt breaks a run: the record before it and the record after it are
+  // two, as the person reads them.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    see(e.requestId, 'user')
+    return next(e)
+  })
+
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const parsed = parse(e.props.text)
+    see(e.requestId, parsed.spans.length > 0 ? 'marked' : 'record')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
       // Rows drawn before the first mark (the tool rows of this turn, the
@@ -228,6 +277,38 @@ export function registerToHuman(on: On) {
     const toggle = () => toggleMessage(requestId)
     const bullet = e.props.isFirstOfReply ? '● ' : '  '
 
+    if (parsed.spans.length === 0) {
+      // Working record. One button stands for the whole run of it, drawn by
+      // the message the run starts at; the rest of the run draw nothing.
+      const start = runStart(order, rowOf, requestId)
+      const isStart = start === requestId
+      const toggleRun = () => toggleMessage(start)
+
+      if (!unfolded.has(start)) {
+        return isStart ? (
+          <Box>
+            <Text dimColor>{bullet}</Text>
+            <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
+          </Box>
+        ) : (
+          <Box />
+        )
+      }
+
+      // Unfolded, the control sits at the top of the run, where it stays as
+      // the run grows.
+      return (
+        <Box flexDirection="column">
+          {isStart ? (
+            <Box paddingLeft={2}>
+              <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleRun} />
+            </Box>
+          ) : null}
+          {await next(e)}
+        </Box>
+      )
+    }
+
     if (unfolded.has(requestId)) {
       return (
         <Box flexDirection="column">
@@ -235,15 +316,6 @@ export function registerToHuman(on: On) {
           <Box paddingLeft={2}>
             <Button key={TOGGLE} label="fold to report" dimColor onPress={toggle} />
           </Box>
-        </Box>
-      )
-    }
-
-    if (parsed.spans.length === 0) {
-      return (
-        <Box>
-          <Text dimColor>{bullet}</Text>
-          <Button key={TOGGLE} label="working record" dimColor onPress={toggle} />
         </Box>
       )
     }
