@@ -23,12 +23,11 @@ export type Parsed = {
 const TAG = /<(\/?)(to-human|essential|need-input)>/g
 
 /**
- * Splits one assistant text block into its marked spans and notes whether a
- * working record surrounds them. Marks may nest (an `<essential>` inside a
- * `<to-human>`): each contiguous run of text under one mark is a span of its
- * own, in the order written. An unclosed mark runs to the end of the text.
+ * Splits text still carrying its marks. Marks may nest (an `<essential>`
+ * inside a `<to-human>`): each contiguous run of text under one mark is a
+ * span of its own, in the order written. An unclosed mark runs to the end.
  */
-export function parse(text: string): Parsed {
+function parseMarked(text: string): Parsed {
   const spans: Span[] = []
   // One entry per open mark, innermost last; `span` is the entry's current
   // run of text, or null once an inner mark has interrupted it.
@@ -90,6 +89,85 @@ export function parse(text: string): Parsed {
     spans: spans.filter((span) => span.text !== '' || span.isOpen),
     hasRecord: outside.trim() !== '',
   }
+}
+
+/**
+ * What `to-human-stream.sh` leaves behind. That hook draws the marks while
+ * the message streams, so by the time the message is whole its text carries
+ * the hook's headers and dimmed record instead of the tags: a header is the
+ * mark's label in its own bold color, a dimmed run is working record.
+ *
+ * The first group is the header's color, the second a dimmed run's text.
+ */
+const RENDERED = /\u001b\[1;(3[356])m(?:to human|essential|need input)\u001b\[0m|\u001b\[2m([\s\S]*?)\u001b\[0m/g
+
+const HEADER = /\u001b\[1;3[356]m(?:to human|essential|need input)\u001b\[0m/
+
+const KIND_OF_COLOR: Record<string, Kind> = {
+  '36': 'to-human',
+  '33': 'essential',
+  '35': 'need-input',
+}
+
+/**
+ * Splits text the streaming hook already drew. A header opens a span that
+ * runs to the next header; a dimmed run is record and ends the span it
+ * follows, which is how a mark's close survives a form that has no closing
+ * marker.
+ */
+function parseRendered(text: string): Parsed {
+  const spans: Span[] = []
+  let outside = ''
+  let current: Span | null = null
+  let last = 0
+
+  const take = (piece: string) => {
+    if (piece === '') {
+      return
+    }
+    if (current) {
+      current.text += piece
+    } else {
+      outside += piece
+    }
+  }
+
+  for (const match of text.matchAll(RENDERED)) {
+    const [whole, color, dimmed] = match
+    const at = match.index ?? 0
+    take(text.slice(last, at))
+    last = at + whole.length
+
+    if (color !== undefined) {
+      current = { kind: KIND_OF_COLOR[color] as Kind, text: '', isOpen: false }
+      spans.push(current)
+    } else {
+      current = null
+      outside += dimmed ?? ''
+    }
+  }
+
+  take(text.slice(last))
+
+  for (const span of spans) {
+    span.text = span.text.trim()
+  }
+
+  return { spans: spans.filter((span) => span.text !== ''), hasRecord: outside.trim() !== '' }
+}
+
+/**
+ * Splits one assistant text block into its marked spans and notes whether a
+ * working record surrounds them, in whichever of the two forms the block
+ * reaches the transcript in: its own marks, or the headers the streaming
+ * hook drew over them.
+ */
+export function parse(text: string): Parsed {
+  const marked = parseMarked(text)
+  if (marked.spans.length > 0 || !HEADER.test(text)) {
+    return marked
+  }
+  return parseRendered(text)
 }
 
 const STYLE: Record<Kind, { label: string; color: string }> = {

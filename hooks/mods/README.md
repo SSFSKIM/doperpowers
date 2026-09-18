@@ -28,9 +28,21 @@ a mark, so a session without the output style is left alone. From then on:
   switches the whole transcript to the engine's drawing; the same button then
   reads `[ report only ]`.
 
-The stored messages are untouched: the transcript on disk carries the tags as
-written, and the model reads what it wrote. The `ctrl+o` detailed transcript
-is drawn through the same hooks, so it folds too.
+While a message streams, none of this is drawn yet: the engine mounts an
+`AssistantMessage` only once the block is whole, so a hook of that component
+cannot restyle text as it arrives. The shell hook beside this folder,
+`../to-human-stream.sh` on `MessageDisplay`, covers that stretch — it is
+handed each batch of newly completed lines and returns what to draw in its
+place, so a mark becomes the same colored label and the working record dims
+as the message arrives. Its labels are what this module then reads: once the
+hook has run, the block's text carries those headers instead of the tags, and
+`parse` takes either form (the tags when the hook is not installed, the
+headers when it is). The two views line up, so the message settles into the
+fold without changing shape.
+
+The stored messages are untouched by both: the transcript on disk carries the
+tags as written, and the model reads what it wrote. The `ctrl+o` detailed
+transcript is drawn through the same hooks, so it folds too.
 
 Known limits: a marked span's body draws as plain text (bold, bullets and
 code fences show their markdown source; the unfolded view is the engine's
@@ -62,9 +74,10 @@ so the button reads `off` there, as the shell hooks do.
 ## Developing
 
 ```
-claude --plugin-dir . --debug            # the repo as the plugin, hot reload on save
-claude plugin validate .                 # what the module hooks and calls
-claude plugin test tests/mods            # the mods' tests
+claude --plugin-dir . --debug                        # the repo as the plugin, hot reload on save
+claude plugin validate .claude-plugin/plugin.json    # what the module hooks and calls
+tests/mods/run-mods-tests.sh                         # the mods' tests
+tests/claude-code/test-to-human-stream-hook.sh       # the streaming hook's tests
 npx -p typescript@5 tsc -p hooks/mods/tsconfig.json
 ```
 
