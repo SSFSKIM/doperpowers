@@ -8,39 +8,55 @@
 # as it arrives instead of only when the message ends and the `to-human` mod
 # folds it.
 #
-# A message with no mark in it returns nothing and displays as it was, which
-# is every session that does not use the output style.
+# The engine runs this once per flush, at most ten times a second per message,
+# and stops scheduling flushes while three are in flight — so a slow answer
+# costs coarser batches, never a backlog. It still runs in every session,
+# including the ones that never mark anything, so the path that has nothing to
+# do returns without spawning a process: the marks carry no character JSON
+# escaping, so the raw payload answers it, and the state directory exists only
+# while some message has a mark open.
 set -uo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dir="${TMPDIR:-/tmp}/doperpowers-to-human"
 
-input=$(cat) || exit 0
+# `read` rather than `$(cat)`: a builtin and no subshell, so the path that has
+# nothing to do runs in this process alone. The payload is one line of JSON,
+# which holds no NUL, so the delimiter never matches and this reads to the end.
+IFS= read -r -d '' input
+[[ -n $input ]] || exit 0
 
-meta=$(printf '%s' "$input" | jq -r '[.message_id, (.final | tostring)] | @tsv') || exit 0
-message_id=${meta%%$'\t'*}
-final=${meta##*$'\t'}
-[[ -n $message_id ]] || exit 0
+case $input in
+  *'<to-human>'* | *'<essential>'* | *'<need-input>'*) ;;
+  *)
+    shopt -s nullglob
+    pending=("$dir"/*)
+    ((${#pending[@]})) || exit 0
+    ;;
+esac
 
-state="$dir/$message_id"
-
-# The cheap path: no mark opened in an earlier flush of this message, and none
-# in this one. The tags carry no character JSON escapes, so the raw payload
-# answers it without a parse.
-if [[ ! -f $state ]]; then
-  case $input in
-    *'<to-human>'* | *'<essential>'* | *'<need-input>'*) ;;
-    *) exit 0 ;;
-  esac
-  mkdir -p "$dir" || exit 0
-fi
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The sentinel keeps the trailing newlines a command substitution would strip.
-delta=$(
-  printf '%s' "$input" | jq -j '.delta'
+payload=$(
+  printf '%s' "$input" | jq -j '.message_id, "\n", (.final | tostring), "\n", .delta'
   printf 'X'
 ) || exit 0
-delta=${delta%X}
+payload=${payload%X}
+message_id=${payload%%$'\n'*}
+payload=${payload#*$'\n'}
+final=${payload%%$'\n'*}
+delta=${payload#*$'\n'}
+[[ -n $message_id ]] || exit 0
+
+# Past the pre-filter, this may still be a message of another session that has
+# nothing marked: it opens no mark here and none is open from an earlier flush.
+state="$dir/$message_id"
+if [[ ! -f $state ]]; then
+  case $delta in
+    *'<to-human>'* | *'<essential>'* | *'<need-input>'*) mkdir -p "$dir" || exit 0 ;;
+    *) exit 0 ;;
+  esac
+fi
 
 out=$(
   printf '%s' "$delta" | awk -v statefile="$state" -f "$here/to-human-stream.awk"
@@ -50,8 +66,10 @@ out=${out%X}
 
 if [[ $final == true ]]; then
   rm -f "$state"
-  # Flushes of a message the engine abandoned leave their state behind.
-  find "$dir" -type f -mmin +720 -delete 2>/dev/null
+  # Empty once the last message streaming is done, which is what the next
+  # session's pre-filter reads. Flushes of a message the engine abandoned are
+  # what keeps it from emptying, so prune those when it does not.
+  rmdir "$dir" 2>/dev/null || find "$dir" -type f -mmin +720 -delete 2>/dev/null
 fi
 
 printf '%s' "$out" | jq -Rs '{ hookSpecificOutput: { hookEventName: "MessageDisplay", displayContent: . } }'
