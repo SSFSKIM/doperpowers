@@ -24,15 +24,18 @@ a mark, so a session without the output style is left alone. From then on:
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
   unfolds the engine's drawing of the whole block.
-- Messages with no marks at all are working record, and a run of them draws
-  one `[ working record ]` button rather than one button each: the run breaks
-  at a prompt or at a message that carries marks, so what stands between two
-  things the human reads opens and closes as a unit. The button is drawn by
-  the message the run starts at and the rest of the run draw nothing; unfolded,
-  `[ fold to report ]` sits at the top of the run, where it stays as the run
-  grows.
-- Tool rows (`ToolUse`, `ToolResult`, the folded `ToolGroup` count line) draw
-  nothing.
+- Messages with no marks at all, and tool calls with their results, are
+  working record, and a run of it draws one `[ working record ]` button
+  rather than one button per row: the run breaks at a prompt, at a message
+  that carries marks, or at a question the human answered, so what stands
+  between two things they read opens and closes as a unit. The button is
+  drawn by the row the run starts at and the rest of the run draw nothing;
+  unfolded, the run shows the engine's own rows (a group of reads the engine
+  would fold into a count line shows each call) under `[ fold to report ]` at
+  the top of the run, where it stays as the run grows.
+- A question answered through `AskUserQuestion` draws as the engine draws it
+  (the question and the answer given) in the report itself: the answer is the
+  human's own words, and they read it as they read a mark.
 - The band above the prompt shows `to-human view · [ full transcript ]`, which
   switches the whole transcript to the engine's drawing; the same button then
   reads `[ report only ]`.
@@ -59,7 +62,10 @@ tags as written, and the model reads what it wrote. The `ctrl+o` detailed
 transcript is drawn through the same hooks, so it folds too.
 
 Known limits: a literal mention of a tag in prose parses as a span; unfold
-state lives in the module and resets on reload or a new session.
+state lives in the module and resets on reload or a new session; a run's
+rows are known by the order they first drew in, so a resumed session that
+redraws history out of order can put a button on the wrong row until the
+next redraw.
 
 ## kairos (`kairos.tsx`)
 
