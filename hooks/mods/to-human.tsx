@@ -1,4 +1,4 @@
-import type { EngineInterface, On, RenderElement } from 'claude-code'
+import type { EngineInterface, On, RenderElement, RenderInput } from 'claude-code'
 
 /**
  * The three marks the `to-human` output style asks the model to write:
@@ -171,8 +171,9 @@ export function parse(text: string): Parsed {
 }
 
 /**
- * What one row of the transcript is: the person's prompt, an assistant
- * message carrying marks, or one that is all working record.
+ * What one row of the transcript is: the person's prompt, a row they read
+ * (an assistant message carrying marks, a question they answered), or
+ * working record (an unmarked message, a tool call and its result).
  */
 export type RowKind = 'user' | 'marked' | 'record'
 
@@ -208,30 +209,94 @@ const TOGGLE = 'to-human-toggle'
 const MODE = 'to-human-mode'
 
 /**
- * An empty tree in a row's place: what a folded tool row draws.
+ * The question dialog's tool: its row in the transcript is the person's own
+ * answer, which they read as they read a mark.
  */
-function hidden($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): RenderElement {
+const isAnswered = (tool: string) => tool === 'AskUserQuestion'
+
+/**
+ * What the view keeps between draws: the rows unfolded by a button (a marked
+ * message by its own, a run of working record by the one button that stands
+ * for it, keyed by the row the run starts at), and the order the transcript's
+ * rows first drew in with what each one is.
+ */
+type View = {
+  unfolded: Set<string>
+  order: string[]
+  rowOf: Map<string, RowKind>
+}
+
+function toggle(unfolded: Set<string>, id: string) {
+  if (unfolded.has(id)) {
+    unfolded.delete(id)
+  } else {
+    unfolded.add(id)
+  }
+}
+
+/**
+ * An empty tree in a row's place: what a folded row draws.
+ */
+function hidden($: EngineInterface, e: RenderInput): RenderElement {
   const { Box } = $.ui.resolve(e)
   return <Box />
+}
+
+/**
+ * A row of working record, drawn as its run is: folded, the row the run
+ * starts at draws the one `[ working record ]` button and the rest draw
+ * nothing; unfolded, the engine's own drawing of each row, under a
+ * `[ fold to report ]` at the top of the run, where it stays as the run grows.
+ */
+async function recordRow<E extends RenderInput>(
+  $: EngineInterface,
+  e: E,
+  next: (e: E) => Promise<RenderElement>,
+  view: View,
+  bullet: string,
+  id: string = e.requestId,
+): Promise<RenderElement> {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const start = runStart(view.order, view.rowOf, id)
+  const isStart = start === id
+  const toggleRun = () => toggle(view.unfolded, start)
+
+  if (!view.unfolded.has(start)) {
+    return isStart ? (
+      <Box>
+        <Text dimColor>{bullet}</Text>
+        <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
+      </Box>
+    ) : (
+      <Box />
+    )
+  }
+
+  return (
+    <Box flexDirection="column">
+      {isStart ? (
+        <Box paddingLeft={2}>
+          <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleRun} />
+        </Box>
+      ) : null}
+      {await next(e)}
+    </Box>
+  )
 }
 
 /**
  * Registers the view. Nothing changes until the first marked assistant
  * message of the session, so a session without the output style draws as
  * the engine does; from then on, assistant messages fold to their marks and
- * tool rows fold away, until a message is unfolded by its button or the
- * whole transcript by the band above the prompt.
+ * the working record (unmarked messages, tool calls and their results) folds
+ * behind buttons, until a row is unfolded by its button or the whole
+ * transcript by the band above the prompt.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
   let isFullTranscript = false
-  // A message unfolded by its own button, and a run of working record
-  // unfolded by the one button that stands for it, keyed by the message the
-  // run starts at.
-  const unfolded = new Set<string>()
-  // The order the transcript's rows first drew in, and what each one is.
-  const order: string[] = []
-  const rowOf = new Map<string, RowKind>()
+  const view: View = { unfolded: new Set(), order: [], rowOf: new Map() }
+  const { unfolded, order, rowOf } = view
 
   const isFolding = () => hasSeenMark && !isFullTranscript
 
@@ -240,14 +305,6 @@ export function registerToHuman(on: On) {
       order.push(requestId)
     }
     rowOf.set(requestId, kind)
-  }
-
-  const toggleMessage = (requestId: string) => {
-    if (unfolded.has(requestId)) {
-      unfolded.delete(requestId)
-    } else {
-      unfolded.add(requestId)
-    }
   }
 
   // The prompt breaks a run: the record before it and the record after it are
@@ -272,49 +329,22 @@ export function registerToHuman(on: On) {
       return next(e)
     }
 
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const requestId = e.requestId
-    const toggle = () => toggleMessage(requestId)
     const bullet = e.props.isFirstOfReply ? '● ' : '  '
 
     if (parsed.spans.length === 0) {
-      // Working record. One button stands for the whole run of it, drawn by
-      // the message the run starts at; the rest of the run draw nothing.
-      const start = runStart(order, rowOf, requestId)
-      const isStart = start === requestId
-      const toggleRun = () => toggleMessage(start)
-
-      if (!unfolded.has(start)) {
-        return isStart ? (
-          <Box>
-            <Text dimColor>{bullet}</Text>
-            <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
-          </Box>
-        ) : (
-          <Box />
-        )
-      }
-
-      // Unfolded, the control sits at the top of the run, where it stays as
-      // the run grows.
-      return (
-        <Box flexDirection="column">
-          {isStart ? (
-            <Box paddingLeft={2}>
-              <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleRun} />
-            </Box>
-          ) : null}
-          {await next(e)}
-        </Box>
-      )
+      return recordRow($, e, next, view, bullet)
     }
+
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const requestId = e.requestId
+    const toggleThis = () => toggle(unfolded, requestId)
 
     if (unfolded.has(requestId)) {
       return (
         <Box flexDirection="column">
           {await next(e)}
           <Box paddingLeft={2}>
-            <Button key={TOGGLE} label="fold to report" dimColor onPress={toggle} />
+            <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleThis} />
           </Box>
         </Box>
       )
@@ -347,16 +377,50 @@ export function registerToHuman(on: On) {
         })}
         {parsed.hasRecord ? (
           <Box paddingLeft={2}>
-            <Button key={TOGGLE} label="working record" dimColor onPress={toggle} />
+            <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
           </Box>
         ) : null}
       </Box>
     )
   })
 
-  on('ui.render', { component: 'ToolUse' }, ($, e, next) => (isFolding() ? hidden($, e) : next(e)))
-  on('ui.render', { component: 'ToolGroup' }, ($, e, next) => (isFolding() ? hidden($, e) : next(e)))
-  on('ui.render', { component: 'ToolResult' }, ($, e, next) => (isFolding() ? hidden($, e) : next(e)))
+  // A tool call is working record too, and stands in the run it falls in,
+  // except the question dialog's: the answer the person gave is theirs to
+  // read, and it breaks the run as a marked message does.
+  on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
+    const answered = isAnswered(e.props.tool)
+    see(e.requestId, answered ? 'marked' : 'record')
+    return isFolding() && !answered ? recordRow($, e, next, view, '  ') : next(e)
+  })
+
+  // A group's own id changes while it forms, so the row is known by its
+  // first call's, which does not, and its calls are seen in its order right
+  // after it, so the rows it unfolds into find their run and draw no control
+  // of their own. Unfolded, the record shows the calls, not the count line.
+  on('ui.render', { component: 'ToolGroup' }, ($, e, next) => {
+    const id = `group:${e.props.calls[0]?.tool_use_id ?? e.requestId}`
+    see(id, 'record')
+    for (const call of e.props.calls) {
+      if (call.tool_use_id) {
+        see(call.tool_use_id, 'record')
+      }
+    }
+    if (!isFolding()) {
+      return next(e)
+    }
+    return recordRow($, { ...e, props: { ...e.props, isExpanded: true } }, next, view, '  ', id)
+  })
+
+  // The result row shares its call's id, so the call's row has drawn the
+  // run's button: this one draws only once the run is open.
+  on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
+    const answered = isAnswered(e.props.tool)
+    see(e.requestId, answered ? 'marked' : 'record')
+    if (!isFolding() || answered || unfolded.has(runStart(order, rowOf, e.requestId))) {
+      return next(e)
+    }
+    return hidden($, e)
+  })
 
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     if (!hasSeenMark || e.props.hasSurvey) {
