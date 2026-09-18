@@ -67,6 +67,51 @@ rows are known by the order they first drew in, so a resumed session that
 redraws history out of order can put a button on the wrong row until the
 next redraw.
 
+## agents (`agents.tsx`)
+
+A map of the session's subagents and a window onto any of them. From the
+session's first subagent on, the footer's mode slot (the right end of the
+status line, beside the kairos switch) carries a button,
+`[ 3 subagents · 1 running ]`, that opens and closes the `agents` pane
+(docked beside the transcript in the fullscreen layout from 110 columns,
+else seated above the prompt). The hint line under the prompt is the
+engine's own row of pills, so a tree there cannot reach its right edge; the
+mode slot is right-aligned by the engine.
+
+- The pane draws every agent the session has had as the tree it spawned in:
+  each under the agent whose loop started it (`$.agent.list()` names that
+  as `parentId`), siblings in spawn order, done ones dim. The engine drops a
+  finished agent from its list thirty seconds after it ends; the tree keeps
+  every agent it once listed. A row reads
+  `● description  type · model  elapsed`: `●` running, `✓` completed, `✗`
+  failed, `○` killed. The agent whose transcript the engine's own tasks list
+  has on screen is marked `◀ in view`.
+- A press on a row draws that agent's transcript beneath the tree, read from
+  the file the engine writes for it (`<session transcript>/subagents/agent-<id>.jsonl`):
+  the task it was given (three lines), what it said in full, each tool call
+  in one line (`Bash(ls -la)`, `Read(path)`, `Agent(description)`), the first
+  line of each result, and the notes the engine slips it. Thinking and
+  attachments are left out; past 300 entries the oldest are counted, not
+  drawn; a file over 4 MiB is reported, not read. Pressing the row again
+  folds the transcript.
+- While the pane is open a one-second timer re-reads the list and, when the
+  shown transcript grew, the file, and redraws only on a change; the elapsed
+  times refresh every thirty seconds while anything runs. Closing the pane
+  stops the timers. While the pane does not hold the keyboard the transcript
+  follows its tail; focus it (a click, ctrl+x tab) to scroll, Esc to let it
+  follow again.
+- The `subagents/` directory is taken from the classic `SessionStart` and
+  `SubagentStart` payloads' `transcript_path`, never guessed, so a resumed
+  session's earlier agents (read from the `.meta.json` the engine leaves
+  beside each transcript, parent included) are in the tree too.
+
+Known limits: the pane is read-only (`$.agent` has no kill or message); an
+agent read from disk alone shows as completed with no elapsed time (the
+engine rewrites its meta file as it ends, so the file times say nothing of
+its span) and no model unless the meta file names one; a teammate's
+transcript is not under `subagents/`, so its row reads `no transcript on
+disk`; a shown transcript is re-read whole each time its file grew.
+
 ## kairos (`kairos.tsx`)
 
 A switch for the `kairos` proactive mode in the prompt footer, where the
