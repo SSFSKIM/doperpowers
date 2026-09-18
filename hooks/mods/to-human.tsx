@@ -322,6 +322,14 @@ export function registerToHuman(on: On) {
 
     const last = parsed.spans.length - 1
 
+    // A span's body is markdown as the model wrote it (a table, a list, a
+    // code fence), so it is drawn by the engine: the block is handed back
+    // beneath this hook with the span's text in place of the whole, and no
+    // bullet, since the label above carries it.
+    const bodies = await Promise.all(
+      parsed.spans.map((span) => next({ ...e, props: { ...e.props, text: span.text, isFirstOfReply: false } })),
+    )
+
     return (
       <Box flexDirection="column">
         {parsed.spans.map((span, i) => {
@@ -333,9 +341,7 @@ export function registerToHuman(on: On) {
                 {style.label}
                 {span.isOpen ? ' …' : ''}
               </Text>
-              <Box paddingLeft={2}>
-                <Text wrap="wrap">{span.text}</Text>
-              </Box>
+              {bodies[i]}
             </Box>
           )
         })}

@@ -2,9 +2,11 @@
 # output style: each mark becomes a header line and the working record
 # between marks dims, so the report reads as it arrives.
 #
-# Reads the flush on stdin, writes the replacement on stdout. `statefile`
+# Reads the flush on stdin, writes the replacement on stdout. `seen` says
+# whether the message has marked anything before this flush and `stack`
 # carries the marks left open by the previous flush, innermost last, as a
-# comma-separated list; this flush rewrites it.
+# comma-separated list; at the end this flush records its index (`flush`) and both
+# in `statefile`, unless that is empty (the message's last flush).
 #
 # Nothing is dimmed until the message's first mark: a message that never
 # marks anything (every session that does not use the output style) passes
@@ -19,14 +21,9 @@ BEGIN {
   LABEL["need-input"] = "need input"; COLOR["need-input"] = ESC "[1;35m"
 
   depth = 0
-  seen = 0
-  if ((getline line < statefile) > 0) {
-    seen = 1
-    if (line != "") {
-      depth = split(line, open, ",")
-    }
+  if (stack != "") {
+    depth = split(stack, open, ",")
   }
-  close(statefile)
 }
 
 function header(kind) {
@@ -73,10 +70,11 @@ function body(text) {
 }
 
 END {
+  if (statefile == "") exit
   line = ""
   for (i = 1; i <= depth; i++) {
     line = (i == 1 ? open[i] : line "," open[i])
   }
-  print line > statefile
+  print flush "\n" seen "\n" line > statefile
   close(statefile)
 }
