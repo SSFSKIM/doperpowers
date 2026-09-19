@@ -51,7 +51,14 @@ a mark, so a session without the output style is left alone. From then on:
 - The band above the prompt repeats the newest question still open, its
   choices on digit hotkeys that press from an empty prompt, with `[ reply… ]`
   and `[ dismiss ]`; it stays until answered or dismissed, then shows the
-  next. Under it, `to-human view · [ full transcript ]` switches the whole
+  next. Its line ends in `[ N open ]`, the count of questions still open,
+  which opens and closes the `need input` pane: every open question in the
+  order asked, each with its choices and the same `reply…` and `dismiss`,
+  so any of them is answered from there. A question whose label does not
+  show all of it has its head as a button that shows the question as
+  written under it (the engine scrolls no transcript for a plugin, so the
+  context comes to the pane rather than the pane leading to the row). Under
+  the band, `to-human view · [ full transcript ]` switches the whole
   transcript to the engine's drawing; the same button then reads
   `[ report only ]`.
 
