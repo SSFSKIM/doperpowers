@@ -103,6 +103,49 @@ case $out in
   *) pass "the enclosing mark's rest is not record" ;;
 esac
 
+echo "a question with choices:"
+MAGENTA="${ESC}[1;35m"
+out=$(flush m4 0 false "<need-input>
+Which backend?
+<choice>SQLite</choice>
+<choice recommended>Postgres</choice>
+</need-input>
+")
+case $out in
+  *"${MAGENTA}need input${OFF}"*) pass "the question opens as a header" ;;
+  *) fail "no header: $(printf '%q' "$out")" ;;
+esac
+case $out in
+  *"◇ SQLite"*) pass "a choice draws as a line under its marker" ;;
+  *) fail "no choice marker: $(printf '%q' "$out")" ;;
+esac
+case $out in
+  *"◆ Postgres"*) pass "the recommended choice draws under the filled marker" ;;
+  *) fail "no recommended marker: $(printf '%q' "$out")" ;;
+esac
+case $out in
+  *"</choice>"* | *"<choice"*) fail "a choice tag was left in the drawing: $(printf '%q' "$out")" ;;
+  *) pass "the choice tags are gone" ;;
+esac
+case $out in
+  *"${DIM}Which backend?"* | *"${DIM}◇"*) fail "the question or a choice was dimmed as record" ;;
+  *) pass "the question and its choices are not record" ;;
+esac
+out=$(flush m6 0 true "<need-input>Which? <choice>A</choice> <choice recommended>B</choice></need-input>
+")
+case $out in
+  *"Which? "$'\n'"◇ A"*$'\n'"◆ B"*) pass "choices written on one line each get a line of their own" ;;
+  *) fail "inline choices not broken into lines: $(printf '%q' "$out")" ;;
+esac
+out=$(flush m5 0 true "<to-human>
+<choice>A</choice>
+</to-human>
+")
+case $out in
+  *"<choice>A</choice>"*) pass "a choice outside a need-input mark is text" ;;
+  *) fail "a choice outside need-input was drawn as one: $(printf '%q' "$out")" ;;
+esac
+
 echo "state:"
 if [ "$(cat "$state_dir/m2")" = "$(printf '0\n1\nto-human\n')" ]; then pass "a message still streaming records its index, that it has marked, and the marks open"
 else fail "state after a marked flush: $(cat "$state_dir/m2" 2>&1)"; fi

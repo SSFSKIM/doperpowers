@@ -7,11 +7,22 @@ import type { EngineInterface, On, RenderElement, RenderInput } from 'claude-cod
  */
 export type Kind = 'to-human' | 'essential' | 'need-input'
 
+/**
+ * One option a `need-input` mark offers, as a `<choice>` line under the
+ * question; `recommended` when the model marked it the one it would pick.
+ */
+export type Choice = {
+  text: string
+  recommended: boolean
+}
+
 export type Span = {
   kind: Kind
   text: string
   /** True while the closing tag has not arrived: the span is still streaming. */
   isOpen: boolean
+  /** The options of a `need-input` span, lifted out of its text; absent when it offers none. */
+  choices?: Choice[]
 }
 
 export type Parsed = {
@@ -21,6 +32,39 @@ export type Parsed = {
 }
 
 const TAG = /<(\/?)(to-human|essential|need-input)>/g
+
+/** A choice as the model writes it, inside a `need-input` mark. */
+const CHOICE = /<choice( recommended)?>([\s\S]*?)<\/choice>\n?/g
+
+/**
+ * A choice as the streaming hook drew it: text under `◇`, or `◆` for the
+ * recommended one, running to the next marker or the end of its line (the
+ * hook breaks the line before a marker, but a model may write two choices
+ * on one line, and this reads the text the hook was given either way).
+ */
+const MARKER = /([◇◆]) ([^\n]*?)(?=\s*[◇◆] |\n|$)/g
+
+/**
+ * Lifts the choices out of a `need-input` span's text, in the form
+ * `pattern` gives them, leaving the question. A span of another kind keeps
+ * its text as it is.
+ */
+function liftChoices(span: Span, pattern: RegExp, isRecommended: (mark: string | undefined) => boolean) {
+  if (span.kind !== 'need-input') {
+    return
+  }
+  const choices: Choice[] = []
+  span.text = span.text.replace(pattern, (_, mark: string | undefined, text: string) => {
+    const trimmed = text.trim()
+    if (trimmed !== '') {
+      choices.push({ text: trimmed, recommended: isRecommended(mark) })
+    }
+    return ''
+  })
+  if (choices.length > 0) {
+    span.choices = choices
+  }
+}
 
 /**
  * Splits text still carrying its marks. Marks may nest (an `<essential>`
@@ -82,6 +126,7 @@ function parseMarked(text: string): Parsed {
   take(text.slice(last))
 
   for (const span of spans) {
+    liftChoices(span, CHOICE, (mark) => mark !== undefined)
     span.text = span.text.trim()
   }
 
@@ -99,9 +144,9 @@ function parseMarked(text: string): Parsed {
  *
  * The first group is the header's color, the second a dimmed run's text.
  */
-const RENDERED = /\u001b\[1;(3[356])m(?:to human|essential|need input)\u001b\[0m|\u001b\[2m([\s\S]*?)\u001b\[0m/g
+const RENDERED = /\[1;(3[356])m(?:to human|essential|need input)\[0m|\[2m([\s\S]*?)\[0m/g
 
-const HEADER = /\u001b\[1;3[356]m(?:to human|essential|need input)\u001b\[0m/
+const HEADER = /\[1;3[356]m(?:to human|essential|need input)\[0m/
 
 const KIND_OF_COLOR: Record<string, Kind> = {
   '36': 'to-human',
@@ -150,6 +195,7 @@ function parseRendered(text: string): Parsed {
   take(text.slice(last))
 
   for (const span of spans) {
+    liftChoices(span, MARKER, (mark) => mark === '◆')
     span.text = span.text.trim()
   }
 
@@ -199,6 +245,74 @@ export function runStart(
   return order[at] as string
 }
 
+/**
+ * A question the model asked through a `need-input` mark: `id` names the
+ * span (its message and its place in it), `head` is the line an answer
+ * quotes, `choices` what it offered.
+ */
+export type Question = {
+  id: string
+  requestId: string
+  head: string
+  choices: Choice[]
+}
+
+const HEAD_MAX = 120
+
+/**
+ * The line an answer quotes to name its question: the question's first
+ * non-blank line, with double quotes replaced before it is cut so the answer
+ * form has one unambiguous closing quote.
+ */
+export function questionHead(text: string): string {
+  const line = (text.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? '').replace(/"/g, "'")
+  return line.length > HEAD_MAX ? `${line.slice(0, HEAD_MAX - 1)}…` : line
+}
+
+/**
+ * The prompt an answer is: the question's head, then the answer, so the
+ * model reads which question it settles without a table to look it up in,
+ * and a reader of the transcript sees the same. `answerOf` reads it back,
+ * from a prompt a click submitted or one the person typed after `reply`
+ * put the head in their box.
+ */
+export function answerText(head: string, answer: string): string {
+  return `Answering "${head}": ${answer}`
+}
+
+/**
+ * The answer's line, wherever it stands in the prompt; what the person
+ * wrote after it on further lines is theirs and not echoed. A head carries
+ * no double quote, so the first `":` closes it and the answer may hold anything.
+ */
+const ANSWER = /^Answering "([^"\n]*)": ?(.*)$/m
+
+export function answerOf(text: string): { head: string; answer: string } | undefined {
+  const match = ANSWER.exec(text)
+  if (!match) {
+    return undefined
+  }
+  return { head: match[1] as string, answer: (match[2] as string).trim() }
+}
+
+/**
+ * The question the band above the prompt shows: the newest the person has
+ * neither answered nor dismissed, `questions` in the order they drew.
+ */
+export function pending(
+  questions: readonly Question[],
+  answered: ReadonlyMap<string, string>,
+  dismissed: ReadonlySet<string>,
+): Question | undefined {
+  for (let i = questions.length - 1; i >= 0; i -= 1) {
+    const question = questions[i] as Question
+    if (!answered.has(question.head) && !dismissed.has(question.head)) {
+      return question
+    }
+  }
+  return undefined
+}
+
 const STYLE: Record<Kind, { label: string; color: string }> = {
   'to-human': { label: 'to human', color: 'cyan' },
   essential: { label: 'essential', color: 'yellow' },
@@ -207,6 +321,17 @@ const STYLE: Record<Kind, { label: string; color: string }> = {
 
 const TOGGLE = 'to-human-toggle'
 const MODE = 'to-human-mode'
+const ASK = 'need-input:'
+
+/**
+ * What a press on one of a question's buttons does: submits a choice as the
+ * answer, puts the answer's opening in the person's box for them to finish,
+ * or takes the question off the band.
+ */
+type Press =
+  | { kind: 'answer'; question: Question; answer: string }
+  | { kind: 'reply'; question: Question }
+  | { kind: 'dismiss'; question: Question }
 
 /**
  * The question dialog's tool: its row in the transcript is the person's own
@@ -233,6 +358,8 @@ function toggle(unfolded: Set<string>, id: string) {
     unfolded.add(id)
   }
 }
+
+const noop = () => {}
 
 /**
  * An empty tree in a row's place: what a folded row draws.
@@ -285,18 +412,42 @@ async function recordRow<E extends RenderInput>(
 }
 
 /**
+ * Reads the answers the transcript holds into `answered`: every prompt of
+ * the person's that names its question, the latest per question.
+ */
+async function readAnswers($: EngineInterface, answered: Map<string, string>) {
+  for (const message of await $.session.messages()) {
+    const found = message.role === 'user' ? answerOf(message.text) : undefined
+    if (found) {
+      answered.set(found.head, found.answer)
+    }
+  }
+}
+
+/**
  * Registers the view. Nothing changes until the first marked assistant
  * message of the session, so a session without the output style draws as
  * the engine does; from then on, assistant messages fold to their marks and
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
- * transcript by the band above the prompt.
+ * transcript by the band above the prompt. A `need-input` span draws its
+ * choices as buttons, and the newest question still open is repeated in the
+ * band, where a digit answers it from an empty prompt.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
   let isFullTranscript = false
   const view: View = { unfolded: new Set(), order: [], rowOf: new Map() }
   const { unfolded, order, rowOf } = view
+
+  // The questions asked so far, in the order they drew; the answers the
+  // transcript holds, by the question's head; the questions taken off the
+  // band; and what each question button does, by its key.
+  const questions = new Map<string, Question>()
+  const answered = new Map<string, string>()
+  const dismissed = new Set<string>()
+  const presses = new Map<string, Press>()
+  let hasReadTranscript = false
 
   const isFolding = () => hasSeenMark && !isFullTranscript
 
@@ -305,6 +456,12 @@ export function registerToHuman(on: On) {
       order.push(requestId)
     }
     rowOf.set(requestId, kind)
+  }
+
+  const keyOf = (question: Question, press: Press) => {
+    const key = `${ASK}${question.id}:${press.kind === 'answer' ? question.choices.findIndex((c) => c.text === press.answer) : press.kind}`
+    presses.set(key, press)
+    return key
   }
 
   // The prompt breaks a run: the record before it and the record after it are
@@ -323,6 +480,28 @@ export function registerToHuman(on: On) {
       // band) are cached; ask for them again now that the view folds.
       hasSeenMark = true
       $.ui.invalidate('ui.render')
+    }
+
+    // Questions are known whatever the view shows; a new one changes what
+    // the band shows, which was drawn before it.
+    const asked = parsed.spans.map((span, i): Question | undefined => {
+      if (span.kind !== 'need-input' || span.isOpen) {
+        return undefined
+      }
+      const id = `${e.requestId}:${i}`
+      const question = { id, requestId: e.requestId, head: questionHead(span.text), choices: span.choices ?? [] }
+      const isNew = !questions.has(id)
+      questions.set(id, question)
+      if (isNew) {
+        $.ui.invalidate('ui.render')
+      }
+      return question
+    })
+    if (!hasReadTranscript && asked.some((question) => question !== undefined)) {
+      // A resumed session's answers are in its transcript: read them once,
+      // the first time a question draws.
+      hasReadTranscript = true
+      await readAnswers($, answered)
     }
 
     if (!isFolding()) {
@@ -366,14 +545,35 @@ export function registerToHuman(on: On) {
       <Box flexDirection="column">
         {parsed.spans.map((span, i) => {
           const style = STYLE[span.kind]
+          const question = asked[i]
+          const answer = question ? answered.get(question.head) : undefined
           return (
             <Box flexDirection="column" marginBottom={i < last ? 1 : 0}>
-              <Text color={style.color} bold>
-                {i === 0 ? bullet : '  '}
-                {style.label}
-                {span.isOpen ? ' …' : ''}
-              </Text>
+              <Box>
+                <Text color={style.color} bold>
+                  {i === 0 ? bullet : '  '}
+                  {style.label}
+                  {span.isOpen ? ' …' : ''}
+                </Text>
+                {answer !== undefined ? <Text dimColor> · answered: {answer}</Text> : null}
+              </Box>
               <Box paddingLeft={2}>{bodies[i]}</Box>
+              {question && answer === undefined ? (
+                <Box flexDirection="column" paddingLeft={2}>
+                  {question.choices.map((choice, n) => (
+                    <Box>
+                      <Button
+                        key={keyOf(question, { kind: 'answer', question, answer: choice.text })}
+                        label={`${n + 1}: ${choice.text}${choice.recommended ? ' ★' : ''}`}
+                        onPress={noop}
+                      />
+                    </Box>
+                  ))}
+                  <Box>
+                    <Button key={keyOf(question, { kind: 'reply', question })} label="reply…" dimColor onPress={noop} />
+                  </Box>
+                </Box>
+              ) : null}
             </Box>
           )
         })}
@@ -424,24 +624,58 @@ export function registerToHuman(on: On) {
     return hidden($, e)
   })
 
+  // The band repeats the newest open question above the prompt, its choices
+  // on digit hotkeys, so it is answered from an empty prompt without a scroll
+  // back to the row; it stays until answered or dismissed.
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
+    const question = pending([...questions.values()], answered, dismissed)
 
     return (
-      <Box>
-        <Text dimColor>to-human view · </Text>
-        <Button
-          key={MODE}
-          label={isFullTranscript ? 'report only' : 'full transcript'}
-          dimColor
-          onPress={() => {
-            isFullTranscript = !isFullTranscript
-          }}
-        />
+      <Box flexDirection="column">
+        {question ? (
+          <Box flexDirection="column">
+            <Box>
+              <Text color="magenta" bold>
+                need input
+              </Text>
+              <Text dimColor> · </Text>
+              <Text wrap="truncate">{question.head}</Text>
+            </Box>
+            <Box>
+              {question.choices.map((choice, n) => (
+                <Box marginRight={2}>
+                  <Button
+                    key={keyOf(question, { kind: 'answer', question, answer: choice.text })}
+                    label={`${choice.text}${choice.recommended ? ' ★' : ''}`}
+                    plain
+                    {...(n < 9 ? { hotkey: String(n + 1) } : {})}
+                    onPress={noop}
+                  />
+                </Box>
+              ))}
+              <Box marginRight={2}>
+                <Button key={keyOf(question, { kind: 'reply', question })} label="reply…" dimColor onPress={noop} />
+              </Box>
+              <Button key={keyOf(question, { kind: 'dismiss', question })} label="dismiss" dimColor onPress={noop} />
+            </Box>
+          </Box>
+        ) : null}
+        <Box>
+          <Text dimColor>to-human view · </Text>
+          <Button
+            key={MODE}
+            label={isFullTranscript ? 'report only' : 'full transcript'}
+            dimColor
+            onPress={() => {
+              isFullTranscript = !isFullTranscript
+            }}
+          />
+        </Box>
       </Box>
     )
   })
@@ -457,6 +691,49 @@ export function registerToHuman(on: On) {
   on('ui.press', { element: MODE }, async ($, e, next) => {
     const result = await next(e)
     $.ui.invalidate('ui.render')
+    return result
+  })
+
+  // A question's buttons need the engine, which their closures cannot reach:
+  // the press is answered here, by what the key was drawn to do. A choice
+  // and `reply` both write the person's box, the choice as the whole answer
+  // and `reply` as its opening; Enter sends it as the person's own prompt.
+  // (A prompt a plugin submits enters under the plugin's name, framed as
+  // the plugin's message to the model and labelled so in the transcript, by
+  // an origin no hook may change; so nothing here submits.)
+  on('ui.press', async ($, e, next) => {
+    const press = e.element.startsWith(ASK) ? presses.get(e.element) : undefined
+    if (!press) {
+      return next(e)
+    }
+    const result = await next(e)
+    const { question } = press
+    if (press.kind === 'dismiss') {
+      dismissed.add(question.head)
+      $.ui.invalidate('ui.render')
+    } else {
+      const text = answerText(question.head, press.kind === 'answer' ? press.answer : '')
+      const { isFilled } = await $.prompt.fill({ text })
+      if (!isFilled) {
+        $.ui.toast('The answer could not be put in the prompt')
+      }
+    }
+    return result
+  })
+
+  // An answer is a prompt that names its question, as a choice or `reply`
+  // wrote it in the box, or as the person typed it; the question is settled
+  // once the prompt enters.
+  on('prompt.submit', async ($, e, next) => {
+    const found = answerOf(e.text)
+    if (!found) {
+      return next(e)
+    }
+    const result = await next(e)
+    if (result.drop === undefined) {
+      answered.set(found.head, found.answer)
+      $.ui.invalidate('ui.render')
+    }
     return result
   })
 }

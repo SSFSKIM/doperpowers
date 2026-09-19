@@ -19,6 +19,8 @@ BEGIN {
   LABEL["to-human"] = "to human";    COLOR["to-human"] = ESC "[1;36m"
   LABEL["essential"] = "essential";  COLOR["essential"] = ESC "[1;33m"
   LABEL["need-input"] = "need input"; COLOR["need-input"] = ESC "[1;35m"
+  CHOICE = "\342\227\207 "       # ◇ U+25C7, the marker of a choice
+  RECOMMENDED = "\342\227\206 "  # ◆ U+25C6, the marker of the recommended one
 
   depth = 0
   if (stack != "") {
@@ -42,10 +44,25 @@ function body(text) {
   rest = $0
   out = ""
 
-  while (match(rest, /<\/?(to-human|essential|need-input)>/)) {
+  while (match(rest, /<\/?(to-human|essential|need-input|choice( recommended)?)>/)) {
     out = out body(substr(rest, 1, RSTART - 1))
     tag = substr(rest, RSTART, RLENGTH)
     rest = substr(rest, RSTART + RLENGTH)
+
+    if (tag ~ /^<\/?choice/) {
+      # A choice under a need-input mark draws as a line under its marker,
+      # the recommended one under the filled marker; anywhere else the tag
+      # is text, as the module reads it.
+      if (depth > 0 && open[depth] == "need-input") {
+        # Each choice on a line of its own, wherever the model put the tag.
+        if (tag != "</choice>" && out != "") out = out "\n"
+        if (tag == "<choice>") out = out CHOICE
+        else if (tag == "<choice recommended>") out = out RECOMMENDED
+      } else {
+        out = out body(tag)
+      }
+      continue
+    }
 
     if (substr(tag, 2, 1) == "/") {
       kind = substr(tag, 3, length(tag) - 3)
