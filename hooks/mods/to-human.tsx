@@ -16,6 +16,10 @@ export type Choice = {
   recommended: boolean
 }
 
+function sameChoices(a: readonly Choice[], b: readonly Choice[]): boolean {
+  return a.length === b.length && a.every((choice, i) => choice.text === b[i]?.text && choice.recommended === b[i]?.recommended)
+}
+
 export type Span = {
   kind: Kind
   text: string
@@ -261,6 +265,11 @@ export type Question = {
 
 const HEAD_MAX = 120
 
+function cut(text: string, max: number): string {
+  const points = Array.from(text)
+  return points.length >= max ? `${points.slice(0, max - 1).join('')}…` : text
+}
+
 /**
  * The line an answer quotes to name its question: the question's first
  * non-blank line, with double quotes replaced before it is cut so the answer
@@ -268,7 +277,7 @@ const HEAD_MAX = 120
  */
 export function questionHead(text: string): string {
   const line = (text.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? '').replace(/"/g, "'")
-  return line.length > HEAD_MAX ? `${line.slice(0, HEAD_MAX - 1)}…` : line
+  return cut(line, HEAD_MAX)
 }
 
 /**
@@ -337,7 +346,7 @@ const QUEUE = 'need-input:queue'
 const LABEL_MAX = 60
 
 function label(head: string): string {
-  return head.length > LABEL_MAX ? `${head.slice(0, LABEL_MAX - 1)}…` : head
+  return cut(head, LABEL_MAX)
 }
 
 /**
@@ -591,10 +600,10 @@ export function registerToHuman(on: On) {
         choices: span.choices ?? [],
       }
       // The band and the queue drew before this question, or before its
-      // text was whole: ask for them again when it is new or has grown.
+      // text and choices were whole: ask again when it is new or either changes.
       const known = questions.get(id)
       questions.set(id, question)
-      if (!known || known.body !== question.body || known.choices.length !== question.choices.length) {
+      if (!known || known.body !== question.body || !sameChoices(known.choices, question.choices)) {
         $.ui.invalidate('ui.render')
       }
       return question

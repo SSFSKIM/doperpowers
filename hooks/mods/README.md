@@ -90,9 +90,10 @@ reads as a choice marker once the streaming hook has drawn it; unfold state,
 and the questions dismissed from the band, live in the module and
 reset on reload or a new session (answers do not: they are read from the
 transcript); a question is known by its first line, so two questions that
-open alike are answered together; a run's rows are known by the order they
-first drew in, so a resumed session that redraws history out of order can
-put a button on the wrong row until the next redraw.
+open alike are answered together; a run's rows, and the queue's questions,
+are known by the order they first drew in, so a resumed session that redraws
+history out of order can put a button on the wrong row and list questions out
+of the order asked until the next redraw.
 
 ## agents (`agents.tsx`)
 

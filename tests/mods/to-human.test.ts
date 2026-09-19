@@ -165,6 +165,7 @@ describe('answers', () => {
     expect(questionHead('\nWhich backend?\nMore detail.')).toBe('Which backend?')
     expect(questionHead('Which "mode"?')).toBe("Which 'mode'?")
     expect(questionHead('x'.repeat(200))).toBe('x'.repeat(119) + '\u2026')
+    expect(questionHead('x'.repeat(118) + '\ud83d\ude00y')).toBe('x'.repeat(118) + '\ud83d\ude00\u2026')
   })
 
   test('answerText names the question and the choice, and answerOf reads it back', async () => {
