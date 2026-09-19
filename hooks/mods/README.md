@@ -77,8 +77,10 @@ The stored messages are untouched by both: the transcript on disk carries the
 tags as written, and the model reads what it wrote. The `ctrl+o` detailed
 transcript is drawn through the same hooks, so it folds too.
 
-Known limits: a literal mention of a tag in prose parses as a span; unfold
-state, and the questions dismissed from the band, live in the module and
+Known limits: a literal mention of a tag in prose parses as a span, and a
+literal ◇ or ◆ followed by a space inside a need-input question or choice
+reads as a choice marker once the streaming hook has drawn it; unfold state,
+and the questions dismissed from the band, live in the module and
 reset on reload or a new session (answers do not: they are read from the
 transcript); a question is known by its first line, so two questions that
 open alike are answered together; a run's rows are known by the order they

@@ -163,6 +163,7 @@ describe('choices', () => {
 describe('answers', () => {
   test('questionHead is the first line of the question, bounded', async () => {
     expect(questionHead('\nWhich backend?\nMore detail.')).toBe('Which backend?')
+    expect(questionHead('Which "mode"?')).toBe("Which 'mode'?")
     expect(questionHead('x'.repeat(200))).toBe('x'.repeat(119) + '\u2026')
   })
 
@@ -172,6 +173,7 @@ describe('answers', () => {
     expect(text).toBe('Answering "Which backend?": Postgres')
     expect(answerOf(text)).toEqual({ head: 'Which backend?', answer: 'Postgres' })
     expect(answerOf('Answering "Which backend?": ')).toEqual({ head: 'Which backend?', answer: '' })
+    expect(answerOf(answerText('Which format?', 'Use "fast": mode'))).toEqual({ head: 'Which format?', answer: 'Use "fast": mode' })
     expect(answerOf('Just a prompt.')).toBeUndefined()
     // The engine frames a prompt a plugin submitted; the transcript keeps the frame.
     expect(

@@ -261,10 +261,11 @@ const HEAD_MAX = 120
 
 /**
  * The line an answer quotes to name its question: the question's first
- * non-blank line, cut to fit one line of a prompt.
+ * non-blank line, with double quotes replaced before it is cut so the answer
+ * form has one unambiguous closing quote.
  */
 export function questionHead(text: string): string {
-  const line = text.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? ''
+  const line = (text.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? '').replace(/"/g, "'")
   return line.length > HEAD_MAX ? `${line.slice(0, HEAD_MAX - 1)}…` : line
 }
 
@@ -281,9 +282,10 @@ export function answerText(head: string, answer: string): string {
 
 /**
  * The answer's line, wherever it stands in the prompt; what the person
- * wrote after it on further lines is theirs and not echoed.
+ * wrote after it on further lines is theirs and not echoed. A head carries
+ * no double quote, so the first `":` closes it and the answer may hold anything.
  */
-const ANSWER = /^Answering "(.*)": ?(.*)$/m
+const ANSWER = /^Answering "([^"\n]*)": ?(.*)$/m
 
 export function answerOf(text: string): { head: string; answer: string } | undefined {
   const match = ANSWER.exec(text)
@@ -480,6 +482,28 @@ export function registerToHuman(on: On) {
       $.ui.invalidate('ui.render')
     }
 
+    // Questions are known whatever the view shows; a new one changes what
+    // the band shows, which was drawn before it.
+    const asked = parsed.spans.map((span, i): Question | undefined => {
+      if (span.kind !== 'need-input' || span.isOpen) {
+        return undefined
+      }
+      const id = `${e.requestId}:${i}`
+      const question = { id, requestId: e.requestId, head: questionHead(span.text), choices: span.choices ?? [] }
+      const isNew = !questions.has(id)
+      questions.set(id, question)
+      if (isNew) {
+        $.ui.invalidate('ui.render')
+      }
+      return question
+    })
+    if (!hasReadTranscript && asked.some((question) => question !== undefined)) {
+      // A resumed session's answers are in its transcript: read them once,
+      // the first time a question draws.
+      hasReadTranscript = true
+      await readAnswers($, answered)
+    }
+
     if (!isFolding()) {
       return next(e)
     }
@@ -503,28 +527,6 @@ export function registerToHuman(on: On) {
           </Box>
         </Box>
       )
-    }
-
-    // A question is known by its span; a new one changes what the band
-    // shows, which was drawn before it.
-    const asked = parsed.spans.map((span, i): Question | undefined => {
-      if (span.kind !== 'need-input' || span.isOpen) {
-        return undefined
-      }
-      const id = `${requestId}:${i}`
-      const question = { id, requestId, head: questionHead(span.text), choices: span.choices ?? [] }
-      const isNew = !questions.has(id)
-      questions.set(id, question)
-      if (isNew) {
-        $.ui.invalidate('ui.render')
-      }
-      return question
-    })
-    if (!hasReadTranscript && asked.some((question) => question !== undefined)) {
-      // A resumed session's answers are in its transcript: read them once,
-      // the first time a question draws.
-      hasReadTranscript = true
-      await readAnswers($, answered)
     }
 
     const last = parsed.spans.length - 1
