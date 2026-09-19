@@ -36,24 +36,40 @@ a mark, so a session without the output style is left alone. From then on:
 - A question answered through `AskUserQuestion` draws as the engine draws it
   (the question and the answer given) in the report itself: the answer is the
   human's own words, and they read it as they read a mark.
-- The band above the prompt shows `to-human view · [ full transcript ]`, which
-  switches the whole transcript to the engine's drawing; the same button then
-  reads `[ report only ]`.
+- A `need-input` span is a question the human answers from the terminal. The
+  options the model wrote as `<choice>…</choice>` lines (one of them
+  `<choice recommended>`) draw as buttons under the question, `★` on the
+  recommended one, with `[ reply… ]` last; a question with no options has
+  `[ reply… ]` alone. A press writes the person's box: a choice as the whole
+  answer, `reply` as its opening, both in the form `Answering "<the
+  question's first line>": <answer>`, and Enter sends it as the person's own
+  prompt. (Nothing here submits: a prompt a plugin submits enters under the
+  plugin's name, framed as the plugin's message to the model and labelled so
+  in the transcript, by an origin no hook may change.) Once a prompt in that
+  form enters, the span reads `need input · answered: <answer>` and its
+  buttons go; a resumed session reads its answers back from the transcript.
+- The band above the prompt repeats the newest question still open, its
+  choices on digit hotkeys that press from an empty prompt, with `[ reply… ]`
+  and `[ dismiss ]`; it stays until answered or dismissed, then shows the
+  next. Under it, `to-human view · [ full transcript ]` switches the whole
+  transcript to the engine's drawing; the same button then reads
+  `[ report only ]`.
 
 While a message streams, none of this is drawn yet: the engine mounts an
 `AssistantMessage` only once the block is whole, so a hook of that component
 cannot restyle text as it arrives. The shell hook beside this folder,
 `../to-human-stream.sh` on `MessageDisplay`, covers that stretch — it is
 handed each batch of newly completed lines and returns what to draw in its
-place, so a mark becomes the same colored label and the working record dims
-as the message arrives. The engine runs up to three of a message's flushes
+place, so a mark becomes the same colored label, a choice a line under `◇`
+(`◆` for the recommended one), and the working record dims as the message
+arrives. The engine runs up to three of a message's flushes
 at once and dispatches the last one the moment the message ends, so each
 flush records its index when it is done and the next waits for that record
 before reading which marks are open; without the wait, a short message's
 tail was drawn before the flush that closed its mark had finished, and came
 through undimmed. The hook's labels are what this module then reads: once
-the hook has run, the block's text carries those headers instead of the
-tags, and `parse` takes either form (the tags when the hook is not
+the hook has run, the block's text carries those headers and markers instead
+of the tags, and `parse` takes either form (the tags when the hook is not
 installed, the headers when it is). The two views line up, so the message
 settles into the fold without changing shape.
 
@@ -62,10 +78,12 @@ tags as written, and the model reads what it wrote. The `ctrl+o` detailed
 transcript is drawn through the same hooks, so it folds too.
 
 Known limits: a literal mention of a tag in prose parses as a span; unfold
-state lives in the module and resets on reload or a new session; a run's
-rows are known by the order they first drew in, so a resumed session that
-redraws history out of order can put a button on the wrong row until the
-next redraw.
+state, and the questions dismissed from the band, live in the module and
+reset on reload or a new session (answers do not: they are read from the
+transcript); a question is known by its first line, so two questions that
+open alike are answered together; a run's rows are known by the order they
+first drew in, so a resumed session that redraws history out of order can
+put a button on the wrong row until the next redraw.
 
 ## agents (`agents.tsx`)
 
