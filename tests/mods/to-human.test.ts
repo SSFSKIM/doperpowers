@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import type { RowKind } from '../../hooks/mods/to-human'
-import { parse, runStart } from '../../hooks/mods/to-human'
+import type { Question, RowKind } from '../../hooks/mods/to-human'
+import { answerOf, answerText, parse, pending, questionHead, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -112,5 +112,81 @@ describe('runStart', () => {
     const { order, rowOf } = rows(['r1', 'record'])
 
     expect(runStart(order, rowOf, 'unseen')).toBe('unseen')
+  })
+})
+
+describe('choices', () => {
+  const choices = [
+    { text: 'SQLite: one file, no daemon', recommended: false },
+    { text: 'Postgres: already running for the board', recommended: true },
+  ]
+
+  test('parse lifts the choices out of a need-input span', async () => {
+    const parsed = parse(
+      '<need-input>\nWhich backend?\n<choice>SQLite: one file, no daemon</choice>\n' +
+        '<choice recommended>Postgres: already running for the board</choice>\n</need-input>',
+    )
+
+    expect(parsed.spans).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices }])
+  })
+
+  test('parse reads the choice markers the streaming hook drew', async () => {
+    const parsed = parse(
+      '\u001b[1;35mneed input\u001b[0m\n\nWhich backend?\n' +
+        '\u25c7 SQLite: one file, no daemon\n\u25c6 Postgres: already running for the board\n',
+    )
+
+    expect(parsed.spans).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices }])
+  })
+
+  test('parse reads choices written on one line, in either form', async () => {
+    const inline = [
+      { text: 'SQLite', recommended: false },
+      { text: 'Postgres', recommended: true },
+    ]
+
+    expect(
+      parse('<need-input>Which backend? <choice>SQLite</choice> <choice recommended>Postgres</choice></need-input>').spans,
+    ).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices: inline }])
+    expect(parse('[1;35mneed input[0m\n\nWhich backend? ◇ SQLite ◆ Postgres\n').spans).toEqual([
+      { kind: 'need-input', text: 'Which backend?', isOpen: false, choices: inline },
+    ])
+  })
+
+  test('a choice outside a need-input span is text', async () => {
+    const parsed = parse('<to-human>\nPick.\n<choice>A</choice>\n</to-human>')
+
+    expect(parsed.spans).toEqual([{ kind: 'to-human', text: 'Pick.\n<choice>A</choice>', isOpen: false }])
+  })
+})
+
+describe('answers', () => {
+  test('questionHead is the first line of the question, bounded', async () => {
+    expect(questionHead('\nWhich backend?\nMore detail.')).toBe('Which backend?')
+    expect(questionHead('x'.repeat(200))).toBe('x'.repeat(119) + '\u2026')
+  })
+
+  test('answerText names the question and the choice, and answerOf reads it back', async () => {
+    const text = answerText('Which backend?', 'Postgres')
+
+    expect(text).toBe('Answering "Which backend?": Postgres')
+    expect(answerOf(text)).toEqual({ head: 'Which backend?', answer: 'Postgres' })
+    expect(answerOf('Answering "Which backend?": ')).toEqual({ head: 'Which backend?', answer: '' })
+    expect(answerOf('Just a prompt.')).toBeUndefined()
+    // The engine frames a prompt a plugin submitted; the transcript keeps the frame.
+    expect(
+      answerOf('The doperpowers plugin sent a message:\nAnswering "Which backend?": Postgres\n\nThis is how Claude Code surfaces a prompt.'),
+    ).toEqual({ head: 'Which backend?', answer: 'Postgres' })
+  })
+
+  const ask = (id: string, head: string): Question => ({ id, requestId: id, head, choices: [] })
+
+  test('pending is the newest question neither answered nor dismissed', async () => {
+    const questions = [ask('q1', 'First?'), ask('q2', 'Second?'), ask('q3', 'Third?')]
+
+    expect(pending(questions, new Map(), new Set())?.id).toBe('q3')
+    expect(pending(questions, new Map([['Third?', 'x']]), new Set())?.id).toBe('q2')
+    expect(pending(questions, new Map([['Third?', 'x']]), new Set(['Second?']))?.id).toBe('q1')
+    expect(pending(questions, new Map([['Third?', 'x'], ['First?', 'y']]), new Set(['Second?']))).toBeUndefined()
   })
 })
