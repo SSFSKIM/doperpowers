@@ -182,13 +182,18 @@ export function summarize(jsonl: string, cap: number): { entries: Entry[]; skipp
 }
 
 /**
- * The footer button's label: how many subagents the session has had and
- * how many still run. "subagents", since the engine's own hint line counts
- * the other sessions on the machine as agents.
+ * The footer button's label: how many subagents still run and how many are
+ * done, never a total that drowns the running count in a long session's
+ * accumulated finished agents.
  */
-export function buttonLabel(total: number, running: number): string {
-  const agents = `${total} ${total === 1 ? 'subagent' : 'subagents'}`
-  return running > 0 ? `${agents} · ${running} running` : agents
+export function buttonLabel(running: number, done: number): string {
+  if (done === 0) {
+    return `${running} running`
+  }
+  if (running === 0) {
+    return `${done} done`
+  }
+  return `${running} running · ${done} done`
 }
 
 /**
@@ -288,6 +293,7 @@ function rows(state: State): AgentRow[] {
 }
 
 const running = (state: State) => [...state.seen.values()].filter((row) => isRunning(row.status)).length
+const done = (state: State) => [...state.seen.values()].filter((row) => isDone(row.status)).length
 
 /**
  * Re-reads the engine's list, stamps what it learns, and asks for a redraw
@@ -641,8 +647,7 @@ export function registerAgents(on: On) {
   // there (the kairos switch): this hook is registered ahead of theirs.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const inner = await next(e)
-    const total = rows(state).length
-    if (total === 0) {
+    if (rows(state).length === 0) {
       return inner
     }
     const active = running(state)
@@ -651,7 +656,7 @@ export function registerAgents(on: On) {
       <Box>
         {inner}
         <Text> </Text>
-        <Button key={BUTTON} label={buttonLabel(total, active)} dimColor={active === 0} onPress={() => {}} />
+        <Button key={BUTTON} label={buttonLabel(active, done(state))} dimColor={active === 0} onPress={() => {}} />
       </Box>
     )
   })

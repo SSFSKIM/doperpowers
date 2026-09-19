@@ -72,7 +72,7 @@ next redraw.
 A map of the session's subagents and a window onto any of them. From the
 session's first subagent on, the footer's mode slot (the right end of the
 status line, beside the kairos switch) carries a button,
-`[ 3 subagents · 1 running ]`, that opens and closes the `agents` pane
+`[ 1 running · 2 done ]`, that opens and closes the `agents` pane
 (docked beside the transcript in the fullscreen layout from 110 columns,
 else seated above the prompt). The hint line under the prompt is the
 engine's own row of pills, so a tree there cannot reach its right edge; the

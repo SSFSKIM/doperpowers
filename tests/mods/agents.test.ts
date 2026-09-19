@@ -124,10 +124,10 @@ describe('toolLine', () => {
 })
 
 describe('labels', () => {
-  test('the button counts agents and how many still run', async () => {
-    expect(buttonLabel(1, 0)).toBe('1 subagent')
-    expect(buttonLabel(3, 0)).toBe('3 subagents')
-    expect(buttonLabel(3, 2)).toBe('3 subagents · 2 running')
+  test('the button reads how many still run and how many are done', async () => {
+    expect(buttonLabel(2, 0)).toBe('2 running')
+    expect(buttonLabel(0, 3)).toBe('3 done')
+    expect(buttonLabel(2, 3)).toBe('2 running · 3 done')
   })
 
   test('elapsed time reads at the grain a person glances at', async () => {
