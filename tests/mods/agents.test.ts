@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
 import type { AgentRow } from '../../hooks/mods/agents'
-import { buildTree, buttonLabel, elapsed, summarize, toolLine } from '../../hooks/mods/agents'
+import { buildTree, buttonLabel, elapsed, startTimeOf, summarize, toolLine } from '../../hooks/mods/agents'
 
 tier('user')
 
@@ -120,6 +120,27 @@ describe('toolLine', () => {
     expect(toolLine('mcp__ptc__exec', { code: 'print(1)', session: 'x' })).toBe('mcp__ptc__exec(print(1))')
     expect(toolLine('TaskOutput', { timeout: 30 })).toBe('TaskOutput')
     expect(toolLine('Skill', null)).toBe('Skill')
+  })
+})
+
+describe('startTimeOf', () => {
+  const line = (o: unknown) => JSON.stringify(o)
+
+  test("reads the transcript's first timestamp over the meta file's own", async () => {
+    const head = [line({ type: 'user', timestamp: '2026-09-18T10:00:36.214Z', message: {} }), line({ type: 'attachment' })].join(
+      '\n',
+    )
+    const metaMtimeMs = Date.parse('2026-09-18T10:01:10.106Z') // when the agent ended, not started
+
+    expect(startTimeOf(head, metaMtimeMs)).toBe(Date.parse('2026-09-18T10:00:36.214Z'))
+  })
+
+  test("falls back to the meta file's time when there is no transcript, or its first line has none", async () => {
+    const metaMtimeMs = 12345
+
+    expect(startTimeOf('', metaMtimeMs)).toBe(metaMtimeMs)
+    expect(startTimeOf(line({ type: 'user', message: {} }), metaMtimeMs)).toBe(metaMtimeMs)
+    expect(startTimeOf('not json', metaMtimeMs)).toBe(metaMtimeMs)
   })
 })
 
