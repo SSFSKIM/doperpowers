@@ -220,6 +220,32 @@ export function subagentsDir(transcriptPath: string): string {
   return `${transcriptPath.replace(/\.jsonl$/, '')}/subagents`
 }
 
+/**
+ * A disk-seeded agent's start time: its transcript's first line, which is
+ * timestamped when the agent starts, so siblings order by when they were
+ * spawned. `metaMtimeMs` (the meta file's own time) is the fallback for a
+ * transcript that is missing or does not parse — the meta file is rewritten
+ * as the agent ends, so on its own it would order siblings by when they
+ * finished instead.
+ */
+export function startTimeOf(transcriptHead: string, metaMtimeMs: number): number {
+  const first = transcriptHead.split('\n', 1)[0]
+  if (first !== undefined && first.trim() !== '') {
+    try {
+      const row = JSON.parse(first) as { timestamp?: unknown }
+      if (typeof row.timestamp === 'string') {
+        const t = Date.parse(row.timestamp)
+        if (!Number.isNaN(t)) {
+          return t
+        }
+      }
+    } catch {
+      // not JSON: fall through to the meta file's time
+    }
+  }
+  return metaMtimeMs
+}
+
 const PANE = 'agents'
 const BUTTON = 'agents-button'
 const ROW = /^agent:/
@@ -369,9 +395,14 @@ async function seed($: EngineInterface, state: State) {
     try {
       const path = `${state.dir}/${entry.name}`
       const meta = JSON.parse(await $.fs.read(path)) as Record<string, unknown>
-      // The file's time orders the rows; the engine rewrites it as the agent
-      // ends, so it says nothing of how long the agent ran.
-      const startedAt = (await $.fs.stat(path)).mtimeMs
+      const metaMtimeMs = (await $.fs.stat(path)).mtimeMs
+      let transcriptHead = ''
+      try {
+        transcriptHead = await $.fs.read(`${state.dir}/agent-${id}.jsonl`)
+      } catch {
+        // no transcript on disk: the meta file's own time is what's left
+      }
+      const startedAt = startTimeOf(transcriptHead, metaMtimeMs)
       const type = typeof meta.agentType === 'string' ? meta.agentType : 'agent'
       state.disk.set(id, {
         id,
