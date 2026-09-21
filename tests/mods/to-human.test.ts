@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
 import type { Question, RowKind } from '../../hooks/mods/to-human'
-import { answerOf, answerText, openQuestions, parse, pending, questionHead, runStart } from '../../hooks/mods/to-human'
+import { answerOf, answerText, openQuestions, parse, pending, questionHead, runEnd, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -112,6 +112,33 @@ describe('runStart', () => {
     const { order, rowOf } = rows(['r1', 'record'])
 
     expect(runStart(order, rowOf, 'unseen')).toBe('unseen')
+  })
+})
+
+describe('runEnd', () => {
+  const rows = (...pairs: [string, RowKind][]) => ({
+    order: pairs.map(([id]) => id),
+    rowOf: new Map<string, RowKind>(pairs),
+  })
+
+  test('every message of a run of working record names the row it ends at', async () => {
+    const { order, rowOf } = rows(['r1', 'record'], ['r2', 'record'], ['r3', 'record'])
+
+    expect(order.map((id) => runEnd(order, rowOf, id))).toEqual(['r3', 'r3', 'r3'])
+  })
+
+  test('a prompt, and a message carrying marks, end the run before them', async () => {
+    const { order, rowOf } = rows(['r1', 'record'], ['p', 'user'], ['r2', 'record'], ['m', 'marked'], ['r3', 'record'])
+
+    expect(runEnd(order, rowOf, 'r1')).toBe('r1')
+    expect(runEnd(order, rowOf, 'r2')).toBe('r2')
+    expect(runEnd(order, rowOf, 'r3')).toBe('r3')
+  })
+
+  test('a message the transcript has not drawn yet stands alone', async () => {
+    const { order, rowOf } = rows(['r1', 'record'])
+
+    expect(runEnd(order, rowOf, 'unseen')).toBe('unseen')
   })
 })
 
