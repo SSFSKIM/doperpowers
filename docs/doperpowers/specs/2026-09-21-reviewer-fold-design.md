@@ -303,11 +303,16 @@ the floor or flipped the switch is visible on the PR.
 
 The agent returns one line first, then at most ten:
 
-- `DONE` — merged and `done` written; nothing remains local. The only return
-  after which the dispatcher removes the agent's worktree.
+- `DONE` — nothing remains local, and: the merge landed and `done` was
+  written; or auto-merge is armed on the reviewed head after a bounded wait
+  for running checks, and the board's finalize pass writes `done`; or, in
+  scale mode, the review was clean and `done` was written on the epic; or a
+  ticketless PR was merged. The only return after which the dispatcher
+  removes the agent's worktree.
 - `PARKED <question>` — every `needs-human` the agent writes: a human-grade
-  fork, observation mode, or a cap reached with unaccepted fixes still local.
-  The park binds the dispatcher's run, so the answer relay resumes the
+  fork, observation mode, or a cap reached with unaccepted fixes still local;
+  and ticketless observation mode, whose park record is the PR comment. A
+  board park binds the dispatcher's run, so the answer relay resumes the
   dispatcher; the agent's worktree, scratch directory, and ledger stay in
   place for the resumed agent.
 - `NEEDS_PANEL level=<xhigh|max> base=<ref> baseCommit=<sha> headCommit=<sha> round=<n>`.
@@ -674,9 +679,13 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   seat at the moment that matters).
   Date/Author: 2026-09-21.
 - Decision: Scale review folds too: the recomposing Architect dispatches the
-  agent in scale mode; a corrective child returns to it.
+  agent in scale mode; a clean review is `DONE` after the epic's `done`
+  write (no merge exists), and a defect returns `ESCALATE kind=design-gap`
+  with the corrective child the agent recommends, which the dispatcher
+  registers — the Architect per its protocol, a stand-in as today's scale
+  verdict did.
   Rationale: the same payoff — the composition's author receives the defect.
-  Date/Author: 2026-09-21.
+  Date/Author: 2026-09-21; return shapes from the execution pre-flight.
 - Decision: Both bindings fold; the board service changes so the owner's run
   survives review and may close its ticket, and a park returns to the state
   it interrupted. The server's `review-required` guarantee moves to the
@@ -939,3 +948,4 @@ Pending — written at finish.
   with a full plugin staging and the API drill isolated under a scratch repo
   name.
 - 2026-09-21: execution pre-flight — the agent never writes `ready-for-architect`; the dispatcher does (the plan's Task 1 line contradicted Task 7).
+- 2026-09-21: Task 1 review — the return contract covers an armed auto-merge, ticketless observation mode, and both scale outcomes.
