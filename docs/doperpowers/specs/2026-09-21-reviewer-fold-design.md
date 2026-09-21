@@ -25,13 +25,24 @@ the engine rounds, the compliance audit, triage, fix waves, grading, the push
 chain, the merge, the trail — in its own fresh context. Three things, and only
 three, come back to the owner: a finding that conflicts with the spec or plan
 text, a finding that is a design gap too big to wave, and a request to dismiss
-a non-blocking finding as contradicting design intent. The owner answers from
-the context that holds the reasoning, and `done` is what ends its scope.
+a non-blocking finding as contradicting design intent. `done` is what ends
+the owner's scope.
+
+The first benefit is the lifecycle: one seat per ticket from design to `done`,
+one protocol body for the loop, no second seat re-orienting at review, and no
+lane hop for a fix that needs the plan's author. The second is expected rather
+than measured: a fresh Architect re-cuts from the spec, the pin, the PR, the
+trail, and the impasse note, and what the owner holds beyond those is the
+orientation already paid and the reasoning that never reached the Decision
+Log. The fold makes that available; whether it changes outcomes is something
+the smokes and the trail will show.
 
 The independence the loop was built on is kept where it lives: the engine
-reviews stateless in fresh worktrees, a non-author triages and grades, and the
+reviews stateless in fresh worktrees, a non-author triages and grades, the
 author never merges its own PR by its own hand or clears a blocker by its own
-word. What changes is who receives the escalation.
+word, the contract the audit reads is a board-recorded pin the author can
+only replace through the board, and every loop the author can drive is
+convergence-bounded. What changes is who receives the escalation.
 
 The same change flips the execution tier to sol and retires the `engine:codex`
 model route. Every request already goes through one gateway, so a model name is
@@ -64,7 +75,11 @@ Observable behavior. Commands run from the repository root unless stated.
    the return contract (`DONE`, `PARKED`, `NEEDS_PANEL`, `ESCALATE`,
    `ENGINE-UNAVAILABLE`), the caps (4 waves, 5 rounds, one closing wave, 45
    minutes), and the dismissal rule (non-blockers only, pointer into the
-   pinned spec, recorded verbatim, spec not edited). It asserts the words
+   pinned spec read and judged, recorded as `dismissed` in the trail, spec
+   not edited, escalate only when the spec plausibly speaks to the
+   finding), the spec-conflict rule (which-governs or one re-pin), and the
+   design-gap convergence rule (a second on the same ticket is the human's).
+   It asserts the words
    `Workflow(` and `{{` do not appear in the body: the agent has no Workflow
    tool and no placeholders.
 3. **Engine step, single rungs.** The body instructs: at `low`, `medium`,
@@ -87,11 +102,12 @@ Observable behavior. Commands run from the repository root unless stated.
    `Workflow({ scriptPath: "<review-code>/workflows/code-review.js", args: {…} })`
    in the background, write the result to a file under the report directory,
    resume the agent with the path; on `ESCALATE` answer per the rule for its
-   kind; on `PARKED` end the turn with the agent's worktree and scratch in
-   place, and relay the answers to the agent when resumed; on `DONE` remove
-   the agent's worktree and end. The words "never review your own pull
-   request" are replaced by "never grade, triage, or merge your own pull
-   request's review — the QA agent does; you answer its escalations".
+   kind — a spec conflict by which-governs or one re-pin through
+   `board-transition.sh <n> in-review "re-pin: …" --plan <path>@<sha>`, a
+   design gap by repair-and-rebuild after a fast-forward to origin, a
+   follow-up, or a park, and a second design gap on the same ticket by a
+   `needs-human` park with both positions; on `PARKED` end the turn with the
+   agent's worktree and scratch in
    `implement-worker-protocol.md`'s Closing Artifact section carries the same
    dispatch, with a design-gap escalation answered by `ready-for-architect`
    (the mid-build return, convergence-counted) and no dismissal channel.
@@ -172,10 +188,17 @@ Observable behavior. Commands run from the repository root unless stated.
    `from !== 'in-review'`; (d) `board.decision_park` gains `from_state text`
    written at park time, and the answer relay returns a bound park to
    `from_state` when it is in-flight, falling back to `LANE_INFLIGHT[run.lane]`
-   for rows without one. `API.md` records all four. `npm test` in
-   `board-service` passes with cases for each. The change is merged to arkho
-   `main` and the Render service reports the new revision before acceptance
-   11's second ticket runs.
+   for rows without one; (e) `in-review → in-progress` is convergence-counted
+   and its second traversal transmutes to `needs-human`; (f) `in-review →
+   in-review` is legal for the owning run with a note and a `plan` pin; (g)
+   `in-review → done` from a run is refused unless a `review-trail` event by
+   that run exists after its `in-review` entry. gh twins in `_board.py`:
+   `(in-review, in-progress)` in `EDGE_NOTE_REQUIRED`, the `in-review`
+   self-edge in `LEGAL`, `review-trail` among `board-comment.sh --kind`'s
+   kinds. `API.md` records all seven. `npm test` in `board-service` passes
+   with cases for each; `tests/issue-tracker/test-board-scripts.sh` covers
+   the gh twins. The change is merged to arkho `main` and the Render service
+   reports the new revision before acceptance 11's second ticket runs.
 10. **Records.** Revision Notes are added to
     `2026-07-08-pr-review-loop-design.md`, `2026-07-30-implement-lane-split-design.md`,
     `2026-09-12-one-spec-sized-by-the-gate-design.md`,
@@ -198,6 +221,16 @@ Observable behavior. Commands run from the repository root unless stated.
     `tests/sminos/run-sminos-tests.sh`, `tests/codex/test-native-agents.py`,
     and `scripts/lint-shell.sh` pass. A failure that reproduces on `main`
     before this change is recorded, not owned.
+13. **Lane caps.** `execute-dispatch.sh` and `_sweep_api.sh` count a seat
+    against `ARCHITECT_MAX_CONCURRENT` or `IMPLEMENT_MAX_CONCURRENT` only
+    while its ticket is in the lane's ready or in-flight design and build
+    states; a hermetic case with one architect seat bound to an `in-review`
+    ticket and the cap at 1 asserts a second architect ticket dispatches.
+14. **Trail contents.** The agent's trail comment states the review level
+    and the auto-merge value it used, the hash of any panel findings file
+    the dispatcher handed it, every `dismissed` line with its pointer and
+    reasoning, and every re-pin with the delta; the structural test of
+    acceptance 2 asserts the body requires each.
 
 ## Design
 
@@ -251,7 +284,9 @@ bindings the worker bootstrap now carries for the IMPLEMENT and ARCHITECT
 roles, validated by `execute-dispatch.sh` the way the review dispatcher
 validated them — a spawned seat cannot inherit them from the dispatcher's
 environment. The rest an owner derives from its bindings and `gh pr view`;
-the stand-in from its bootstrap.
+the stand-in from its bootstrap. The values relayed through the brief are
+the ones the trail states — level and auto-merge — so a relay that lowered
+the floor or flipped the switch is visible on the PR.
 
 The agent returns one line first, then at most ten:
 
@@ -304,26 +339,45 @@ a ticket), LOG (a stated-reason non-blocker: the tech-debt issue), INVALID
 (only by a fixer's evidenced refutation). Three cases leave the agent:
 
 - **spec-conflict** — a finding that conflicts with the pinned spec's or
-  plan's own text. The owner repairs the document on the branch and commits,
-  or answers which governs; the agent re-bins on the answer.
+  plan's own text. The audit's contract is the `plan:` pin at an immutable
+  revision; an edit on the branch is divergence evidence, never the
+  contract. The owner's answer therefore has two shapes only: *which
+  governs* — recorded in the trail, the finding re-bins — or a *re-pin*: the
+  owner commits the repaired document on the branch, then mints a new pin
+  through the board with a same-state transition,
+  `board-transition.sh <n> in-review "re-pin: <delta>" --plan <path>@<newsha>`,
+  and the agent re-anchors on the newest pin-minting comment, which the
+  audit already treats as the pin in force. One re-pin per review; a second
+  is the human's. An Executor owner adjudicates no spec conflict: on a
+  pinned plan it writes `ready-for-architect`, on a body-only ticket it
+  parks `needs-human`.
 - **design-gap** — a TOO BIG whose cause is a design flaw, or the
   seam-clustered impasse at the round cap. An Architect owner answers with
-  one of: repair and rebuild (`in-review → in-progress`, a plan-executor run
-  on the repaired plan, then a fresh `qa-loop` dispatch on the new head;
-  the current agent ends), a corrective follow-up ticket the agent then
-  LOGs against, or a `needs-human` park. An Executor owner writes
-  `ready-for-architect` with the impasse note, as its mid-build return does
-  today, and both end. A stand-in writes `ready-for-architect` itself.
-- **dismissal** — a P2 or P3 finding the agent cannot refute but that seems
-  to contradict the spec's design intent, on a ticket whose `plan:` pin
-  names a spec. The owner's reply carries a pointer into the pinned spec —
-  a section heading or a Decision Log entry — and its reasoning. The agent
-  checks the pointer resolves in the pinned file; a reply without one is
-  refused and the finding waves. An accepted reply becomes LOG with the
-  reply verbatim in the trail (`[trail] dismissal <finding> — <pointer>:
-  <reasoning>`) and in the tech-debt comment. The spec is not edited. A P0
-  or P1 the owner believes wrong is a `needs-human` park with both
-  positions. No spec pin, no channel: the finding waves or LOGs as today.
+  one of: repair and rebuild — fast-forward the local branch to origin
+  first (the agent pushed fixer commits), then `in-review → in-progress`
+  with the repaired plan's pin, a plan-executor run, and a fresh `qa-loop`
+  dispatch on the new head, the current agent ending; a corrective
+  follow-up ticket the agent then LOGs against; or a `needs-human` park. A
+  second design-gap on the same ticket is the human's: park with both
+  positions. The rebuild edge is convergence-counted in both bindings, so
+  the board transmutes a second traversal to `needs-human` by itself. An
+  Executor owner writes `ready-for-architect` with the impasse note, as its
+  mid-build return does today, and both end. A stand-in writes
+  `ready-for-architect` itself.
+- **dismissal** — a P2 or P3 finding the agent cannot refute but that the
+  spec plausibly speaks to, on a ticket whose `plan:` pin names a spec. The
+  agent escalates only when both hold; under-asking costs nothing (the
+  finding waves), over-asking hands the author more to wave off. The
+  owner's reply carries a pointer into the pinned spec — a section heading
+  or a Decision Log entry — and its reasoning. The agent reads the pointed
+  section and refuses a pointer that does not speak to the finding's
+  subject (a pointer to `## Purpose` dismisses nothing); an accepted reply
+  is recorded in the trail as `[trail] dismissed <finding> — <pointer>:
+  <reasoning>`, verbatim, and not in the tech-debt sink, whose entries are
+  valid deferred work that gardening promotes to tickets. The spec is not
+  edited. A P0 or P1 the owner believes wrong is a `needs-human` park with
+  both positions. No spec pin, no channel: the finding waves or LOGs as
+  today.
 
 ### Fix waves and control state
 
@@ -342,23 +396,38 @@ bound.
 registering the executor's residue and writing `in-review --pr --branch`,
 dispatch one `doperpowers:qa-loop` and end the turn. Returns arrive as
 notifications. `NEEDS_PANEL`: fast-forward the checkout to the requested
-head, run the workflow call in the background, save the result, resume the
-agent. `ESCALATE`: answer per the rule above. `PARKED`: end the turn with the
+head, run the workflow call in the background, save the result object to
+the findings file without acting on its contents — the agent reads it, and
+records the file's hash in the trail — and resume the agent with the path.
+`ESCALATE`: answer per the rule above. `PARKED`: end the turn with the
 agent's worktree and scratch in place; `board-answer.sh` returns the ticket
 to `in-review` (the `pre-park:` meta already maps it) and resumes this
-session, which forwards the answers to the agent. `ENGINE-UNAVAILABLE`: end
-the turn with the ticket in `in-review`; the sweep's recover pass nudges this
-session to re-dispatch. `DONE`: remove the agent's worktree, end. A turn that
-ends abnormally anywhere between the `in-review` write and the agent's
-return leaves the ticket bound to an idle seat with no verdict in its trail;
-the same recover pass nudges it, and parks it after three nudges without a
-new trail comment. The seat's scope now ends at `done`; the sweep's cancel
-pass retires it as an ordinary seat. Authority: "never grade, triage, or
-merge your own pull request's review".
+session, which forwards the answers to the agent. The answers are ticket
+content the agent can read itself; the relay is a convenience, so a lost
+relay is not a lost answer. `ENGINE-UNAVAILABLE`: end the turn with the
+ticket in `in-review`; the sweep's recover pass nudges this session to
+re-dispatch. `DONE`: remove the agent's worktree, end. A turn that ends
+abnormally anywhere between the `in-review` write and the agent's return
+leaves the ticket bound to an idle seat with no verdict in its trail; the
+same recover pass nudges it once its activity is older than the stall
+threshold, and parks it after three nudges without a new trail comment.
+The seat's scope now ends at `done`; the sweep's cancel pass retires it as
+an ordinary seat. Authority: "never grade, triage, or merge your own pull
+request's review".
 
 **Executor** (`implement-worker-protocol.md`, Closing Artifact): identical
 after the PR opens, minus design authority: a design-gap escalation is
-answered by `ready-for-architect`, and there is no dismissal channel.
+answered by `ready-for-architect`, a spec-conflict by `ready-for-architect`
+on a pinned plan or `needs-human` on a body-only ticket, and there is no
+dismissal channel.
+
+**Lane caps.** A seat counts against its lane's concurrency cap
+(`ARCHITECT_MAX_CONCURRENT`, `IMPLEMENT_MAX_CONCURRENT`) only while its
+ticket is in the lane's ready or in-flight design and build states; an
+owner in `in-review` holds context, not a slot, so the next architect
+ticket dispatches while a review runs, as it did when the review was a
+separate seat. `execute-dispatch.sh` and `_sweep_api.sh` count by ticket
+state, not by open run.
 
 **plan-executor's brief** still says the review loop owns the whole-branch
 review; the loop is now the owner's QA agent, and the deferred Minor findings
@@ -394,7 +463,8 @@ brief says `ticket: none`, as the Reviewer worker did.
 
 ### The board service (arkho)
 
-Four changes in `~/Developer/GitHub/arkho/board-service`, one plan task:
+Seven changes in `~/Developer/GitHub/arkho/board-service`, one plan task,
+with their gh-binding twins in `_board.py` where named:
 
 1. `in-design → in-progress` becomes legal for an architect-lane run: the
    build edge the board's legal-transition table never carried, recorded as
@@ -413,25 +483,42 @@ Four changes in `~/Developer/GitHub/arkho/board-service`, one plan task:
 3. Terminal-edge authority. A run's write into `in-review` whose `pr` is
    numeric — an epic's closure package — stamps `run.package_event_id`, as a
    qagent claim does today. `in-review → done` is then one rule for every
-   lane: the run owns the ticket (`run.id === tk.owner_run`) and either the
+   lane: the run owns the ticket (`run.id === tk.owner_run`), either the
    leaf's `pr_url` is a URL or the epic's `pr_url` equals the run's stamped
-   package. A stamped package that differs from the current `pr_url` — a
-   reparent mid-review — is refused, so the package match is kept rather
-   than subsumed by ownership. `review-required` refuses an implementer run's
-   `done` only from states other than `in-review`. The server-side guarantee
-   that an implementer never closes its own ticket becomes the protocol's:
-   the close is written by the QA agent after an engine round, and the trail
-   and the merge pin carry the evidence.
+   package, and — change 7 — a review artifact exists. A stamped package
+   that differs from the current `pr_url` — a reparent mid-review — is
+   refused, so the package match is kept rather than subsumed by ownership.
+   `review-required` refuses an implementer run's `done` only from states
+   other than `in-review`.
 4. `board.decision_park.from_state` (new, `alter table … add column if not
    exists`) is written by the transition into `needs-human`; the answer
    relay returns a bound park to it when it is in-flight, and to
    `LANE_INFLIGHT[run.lane]` otherwise. Without this an Architect's park from
    `in-review` or `in-progress` would resume into `in-design`.
+5. `in-review → in-progress` joins the convergence-counted edges — the
+   Architect's repair-and-rebuild — with the same transmute of a second
+   traversal to `needs-human`. gh twin: the edge joins `EDGE_NOTE_REQUIRED`
+   and so `CONVERGENCE_EDGES` in `_board.py`. Under the old design this path
+   was the counted `in-review → ready-for-architect`; the fold must not turn
+   a counted edge into an uncounted self-loop for the seat with the most
+   authorship stake.
+6. `in-review → in-review` becomes a legal same-state edge for the owning
+   run, note required, carrying `--plan` — the re-pin. gh twin: the self-edge
+   joins `LEGAL` in `_board.py`, and `board-transition.sh` accepts `--plan`
+   on it and posts the pin-minting comment the audit anchors on.
+7. Evidence-gated close. `in-review → done` from a run requires a typed
+   `review-trail` event on the ticket, written by that run after its
+   `in-review` entry; `board-comment.sh --kind review-trail` is the new
+   kind, and the agent posts its trail through it. The server cannot tell
+   the QA agent's `done` from the owner's own, but it can refuse a close
+   with no review artifact in the log — the same shape as the epic's
+   closure-package requirement. Under the gh binding the trail comment is
+   posted the same way and no server enforces it.
 
 `API.md` is updated in the lane table, the pick-order note, the terminal
-authority paragraph, and the answer route. The task ends with the change on
-arkho `main`; the deploy is the human partner's confirmation before the API
-smoke.
+authority paragraph, the convergence list, and the answer route. The task
+ends with the change on arkho `main`; the deploy is the human partner's
+confirmation before the API smoke.
 
 ### Retirement and moves
 
@@ -565,8 +652,10 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   the Agent tool takes no output schema, so the rubric's text is what the
   agent reads, and it triages by reading anyway.
   Rejected: re-implement the panel inside the agent (duplicates the script,
-  loses the verifier); the QA agent as a peer seat with Workflow (today's
-  Reviewer worker with a return address — no fold).
+  loses the verifier); the QA agent as a peer seat with Workflow and a return
+  address (a listener seat holds no run on the ticket and cannot act on a
+  design gap without re-claiming it, so the owner would still be a fresh
+  seat at the moment that matters).
   Date/Author: 2026-09-21.
 - Decision: Scale review folds too: the recomposing Architect dispatches the
   agent in scale mode; a corrective child returns to it.
@@ -663,6 +752,70 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   file; the template executed the deleted path.
   Date/Author: 2026-09-21, from the adversarial spec review.
 
+- Decision: The Architect's repair-and-rebuild loop is convergence-bounded:
+  `in-review → in-progress` is counted in both bindings and the protocol
+  parks a second design gap on the same ticket for the human.
+  Rationale: under the old design this path was the counted
+  `in-review → ready-for-architect`; the fold must not turn it into an
+  uncounted self-loop for the seat with the most authorship stake (the
+  2026-07-30 v1.1 rule: two models honestly disagreeing must not produce an
+  unbounded relay with no human surface).
+  Date/Author: 2026-09-21, from the critique debate.
+- Decision: A spec-conflict answer is which-governs or one re-pin through
+  the board; a branch edit never changes the audit's contract.
+  Rationale: the audit anchors on the immutable `plan:` pin, and the
+  2026-07-31 v1.3 decision rejected loosening the head-ref ban because it
+  lets the PR self-certify. A same-state `in-review` edge carrying `--plan`
+  keeps the contract a board-recorded revision the author can replace only
+  visibly, once. The Executor adjudicates no spec conflict.
+  Rejected: the first draft's "repairs the document on the branch" (either
+  a dead channel or a silent loosening).
+  Date/Author: 2026-09-21, from the critique debate.
+- Decision: The close is evidence-gated on the API board: `in-review → done`
+  from a run requires a `review-trail` event by that run after its
+  `in-review` entry.
+  Rationale: `review-required` guaranteed the closing actor was a different
+  run from the building actor, which the fold removes; this middle — one
+  typed kind, one predicate — turns "protocol says a review happened" into
+  "the log carries a review artifact or the close is refused". Not proof of
+  independence; cheaper than the child-run route the human partner declined.
+  Date/Author: 2026-09-21, adopted from the critique's recommendation.
+- Decision: Lane caps count by ticket state; an owner in `in-review` holds
+  no slot.
+  Rationale: `ARCHITECT_MAX_CONCURRENT` defaults to 1, and an owner's run
+  now survives review; counting it would serialize every architect ticket
+  behind five rounds and four waves of a review sol is running. The seat
+  cost the 2026-09-10 and 2026-09-13 decisions weighed is paid in context
+  held, not in lane throughput.
+  Rejected: raise the default (spends Fable on parallel design to hide a
+  counting error).
+  Date/Author: 2026-09-21, from the critique debate.
+- Decision: At panel levels the owner saves the result without acting on it
+  and the agent records its hash in the trail; the floor and the auto-merge
+  value the agent used are stated in the trail.
+  Rationale: the author is in the data path only where the panel runs and
+  where the brief relays dispatcher-owned values; both are made visible on
+  the PR rather than prevented. Reading the values from the owner's
+  environment instead was rejected: a spawned seat does not inherit the
+  dispatcher's environment (`_board_api.py`'s recorded note), so the
+  bootstrap binding is the only reliable carrier.
+  Date/Author: 2026-09-21, from the critique debate.
+- Decision: Dismissals are recorded as `dismissed` in the trail, not in the
+  tech-debt sink; the agent reads the pointed section and refuses a pointer
+  that does not speak to the finding; it escalates only when the spec
+  plausibly speaks to the finding.
+  Rationale: LOG means valid and deferred, which gardening promotes to
+  tickets; a dismissal means not a defect per intent. A pointer that merely
+  resolves is a mechanical check a pointer to `## Purpose` would pass.
+  Date/Author: 2026-09-21, from the critique debate.
+- Decision: The purpose is framed as a lifecycle simplification first, and
+  the escalation-reaches-the-reasoning benefit as expected rather than
+  measured.
+  Rationale: no instance of a fresh re-cut going badly is on record; the
+  fold's costs are concrete and its second benefit is a hypothesis the
+  smokes and the trail will test.
+  Date/Author: 2026-09-21, from the critique debate.
+
 ## Surprises & Discoveries
 
 - Observation: A subagent has no Workflow tool but can dispatch a child with
@@ -705,3 +858,10 @@ Pending — written at finish.
   of `in-review` on both ticks; the `QAGENT` exemption from owner-first dedupe
   and the stand-in's outage echo; the ticket body file in the brief; the
   Action's command path.
+- 2026-09-21: critique debate (`doperpowers:critique`, round one) applied:
+  convergence bound on repair-and-rebuild; spec-conflict as which-governs or
+  one board re-pin; the evidence-gated close; lane caps by ticket state;
+  panel result handling and trail-stated floor; dismissal tightenings and
+  the `dismissed` trail record; the purpose reframed; the peer-seat
+  rejection's real rationale; fast-forward before rebuild; park answers as
+  ticket content.
