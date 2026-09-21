@@ -250,6 +250,27 @@ export function runStart(
 }
 
 /**
+ * The last message of the run of working record `id` belongs to: walking
+ * forward over the rows that are working record too. This is the row that
+ * draws the run's `[ fold to report ]`, under itself, where the person is
+ * when they finish reading; as the run grows, the button moves down with it.
+ */
+export function runEnd(
+  order: readonly string[],
+  rowOf: ReadonlyMap<string, RowKind>,
+  id: string,
+): string {
+  let at = order.indexOf(id)
+  if (at < 0) {
+    return id
+  }
+  while (at < order.length - 1 && rowOf.get(order[at + 1] as string) === 'record') {
+    at += 1
+  }
+  return order[at] as string
+}
+
+/**
  * A question the model asked through a `need-input` mark: `id` names the
  * span (its message and its place in it), `head` is the line an answer
  * quotes, `choices` what it offered.
@@ -386,6 +407,31 @@ type View = {
   unfolded: Set<string>
   order: string[]
   rowOf: Map<string, RowKind>
+  /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
+  isFolding: () => boolean
+}
+
+/**
+ * Notes a row as it draws: its place in the order rows first drew, and what
+ * it is. The row an open run ends at draws its `[ fold to report ]`; a row
+ * that joins the run, or that turns from record into one closing it, moves
+ * that end, and the row that drew the button (or should now) is cached as
+ * it was: the rows are asked for again.
+ */
+function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
+  const { order, rowOf, unfolded } = view
+  const known = rowOf.get(requestId)
+  if (known === kind) {
+    return
+  }
+  if (known === undefined) {
+    order.push(requestId)
+  }
+  rowOf.set(requestId, kind)
+  const before = order[order.indexOf(requestId) - 1]
+  if (view.isFolding() && before !== undefined && rowOf.get(before) === 'record' && unfolded.has(runStart(order, rowOf, before))) {
+    $.ui.invalidate('ui.render')
+  }
 }
 
 function toggle(unfolded: Set<string>, id: string) {
@@ -399,34 +445,36 @@ function toggle(unfolded: Set<string>, id: string) {
 const noop = () => {}
 
 /**
- * An empty tree in a row's place: what a folded row draws.
- */
-function hidden($: EngineInterface, e: RenderInput): RenderElement {
-  const { Box } = $.ui.resolve(e)
-  return <Box />
-}
-
-/**
- * A row of working record, drawn as its run is: folded, the row the run
+ * A row of working record, drawn as its run is. Folded, the row the run
  * starts at draws the one `[ working record ]` button and the rest draw
- * nothing; unfolded, the engine's own drawing of each row, under a
- * `[ fold to report ]` at the top of the run, where it stays as the run grows.
+ * nothing. Unfolded, each row is the engine's own drawing, as the transcript
+ * draws it, and the row the run ends at draws `[ fold to report ]` under it,
+ * where the person is when they finish reading.
+ *
+ * `id` names the row when it is not the request's (a group is known by its
+ * first call's). A call's row and its result's share an id: `opens` is false
+ * for the one that never carries the run's button (the result's, whose call
+ * drew it), `closes` for the one that is not the last of its row (the
+ * call's, once its result is there to draw beneath it).
  */
 async function recordRow<E extends RenderInput>(
   $: EngineInterface,
   e: E,
   next: (e: E) => Promise<RenderElement>,
   view: View,
-  bullet: string,
-  id: string = e.requestId,
+  {
+    bullet = '  ',
+    id = e.requestId,
+    opens = true,
+    closes = true,
+  }: { bullet?: string; id?: string; opens?: boolean; closes?: boolean } = {},
 ): Promise<RenderElement> {
   const { Box, Text, Button } = $.ui.resolve(e)
   const start = runStart(view.order, view.rowOf, id)
-  const isStart = start === id
   const toggleRun = () => toggle(view.unfolded, start)
 
   if (!view.unfolded.has(start)) {
-    return isStart ? (
+    return opens && start === id ? (
       <Box>
         <Text dimColor>{bullet}</Text>
         <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
@@ -436,14 +484,15 @@ async function recordRow<E extends RenderInput>(
     )
   }
 
+  const isEnd = closes && runEnd(view.order, view.rowOf, id) === id
   return (
     <Box flexDirection="column">
-      {isStart ? (
+      {await next(e)}
+      {isEnd ? (
         <Box paddingLeft={2}>
           <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleRun} />
         </Box>
       ) : null}
-      {await next(e)}
     </Box>
   )
 }
@@ -535,8 +584,8 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
 export function registerToHuman(on: On) {
   let hasSeenMark = false
   let isFullTranscript = false
-  const view: View = { unfolded: new Set(), order: [], rowOf: new Map() }
-  const { unfolded, order, rowOf } = view
+  const view: View = { unfolded: new Set(), order: [], rowOf: new Map(), isFolding: () => hasSeenMark && !isFullTranscript }
+  const { unfolded, isFolding } = view
 
   // The questions asked so far, in the order they drew; the answers the
   // transcript holds, by the question's head; the questions taken off the
@@ -552,14 +601,12 @@ export function registerToHuman(on: On) {
 
   const open = () => openQuestions([...questions.values()], answered, dismissed)
 
-  const isFolding = () => hasSeenMark && !isFullTranscript
-
-  const see = (requestId: string, kind: RowKind) => {
-    if (!rowOf.has(requestId)) {
-      order.push(requestId)
-    }
-    rowOf.set(requestId, kind)
-  }
+  // Where the engine expands a group itself (`--verbose`, the ctrl+o
+  // transcript) each call is a row of its own: which group's run a call's
+  // row stands in, and which call is a group's last, whose row draws the
+  // run's end in the group's place.
+  const groupOf = new Map<string, string>()
+  const lastOf = new Map<string, string>()
 
   const keyOf = (question: Question, press: Press) => {
     const key = `${ASK}${question.id}:${press.kind === 'answer' ? question.choices.findIndex((c) => c.text === press.answer) : press.kind}`
@@ -570,13 +617,13 @@ export function registerToHuman(on: On) {
   // The prompt breaks a run: the record before it and the record after it are
   // two, as the person reads them.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
-    see(e.requestId, 'user')
+    see($, view, e.requestId, 'user')
     return next(e)
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const parsed = parse(e.props.text)
-    see(e.requestId, parsed.spans.length > 0 ? 'marked' : 'record')
+    see($, view, e.requestId, parsed.spans.length > 0 ? 'marked' : 'record')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
       // Rows drawn before the first mark (the tool rows of this turn, the
@@ -622,7 +669,7 @@ export function registerToHuman(on: On) {
     const bullet = e.props.isFirstOfReply ? '● ' : '  '
 
     if (parsed.spans.length === 0) {
-      return recordRow($, e, next, view, bullet)
+      return recordRow($, e, next, view, { bullet })
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
@@ -699,40 +746,65 @@ export function registerToHuman(on: On) {
 
   // A tool call is working record too, and stands in the run it falls in,
   // except the question dialog's: the answer the person gave is theirs to
-  // read, and it breaks the run as a marked message does.
+  // read, and it breaks the run as a marked message does. A standalone
+  // call's result is a row of its own beneath it once the call resolves, so
+  // until then (no output, and no abort, which leaves one) the call's row
+  // is the last of the two. A row of a group the engine expanded draws its
+  // output inline and is whole: it stands in the group's run, and the
+  // group's last call draws the run's end where the group would.
   on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
     const answered = isAnswered(e.props.tool)
-    see(e.requestId, answered ? 'marked' : 'record')
-    return isFolding() && !answered ? recordRow($, e, next, view, '  ') : next(e)
+    const group = groupOf.get(e.requestId)
+    if (group === undefined) {
+      see($, view, e.requestId, answered ? 'marked' : 'record')
+    }
+    if (!isFolding() || answered) {
+      return next(e)
+    }
+    if (group !== undefined) {
+      return recordRow($, e, next, view, { id: group, opens: false, closes: lastOf.get(group) === e.requestId })
+    }
+    return recordRow($, e, next, view, { closes: e.props.output === undefined && !e.props.isInterrupted })
   })
 
   // A group's own id changes while it forms, so the row is known by its
-  // first call's, which does not, and its calls are seen in its order right
-  // after it, so the rows it unfolds into find their run and draw no control
-  // of their own. Unfolded, the record shows the calls, not the count line.
+  // first call's, which does not. Unfolded, the group draws as the
+  // transcript does, one count line: each call in its place would be the
+  // ctrl+o form, its whole output inline. Where the engine expands it
+  // itself (`--verbose`, the ctrl+o transcript) each call is a row of its
+  // own that finds the group's run by `groupOf`, never through the order: a
+  // group expands and collapses as the view changes, and a call added to
+  // the order late would land after rows that drew since, or stay in it
+  // with no row to draw once the group collapses again. The last call
+  // draws the run's end in the group's place, and when a call joins the
+  // group the row that drew it is asked for again.
   on('ui.render', { component: 'ToolGroup' }, ($, e, next) => {
     const id = `group:${e.props.calls[0]?.tool_use_id ?? e.requestId}`
-    see(id, 'record')
+    see($, view, id, 'record')
+    let last: string | undefined
     for (const call of e.props.calls) {
       if (call.tool_use_id) {
-        see(call.tool_use_id, 'record')
+        groupOf.set(call.tool_use_id, id)
+        last = call.tool_use_id
       }
     }
-    if (!isFolding()) {
-      return next(e)
+    if (last !== undefined && lastOf.get(id) !== last) {
+      const moved = lastOf.has(id)
+      lastOf.set(id, last)
+      if (moved && e.props.isExpanded && isFolding() && unfolded.has(runStart(view.order, view.rowOf, id))) {
+        $.ui.invalidate('ui.render')
+      }
     }
-    return recordRow($, { ...e, props: { ...e.props, isExpanded: true } }, next, view, '  ', id)
+    return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded }) : next(e)
   })
 
-  // The result row shares its call's id, so the call's row has drawn the
-  // run's button: this one draws only once the run is open.
+  // The result row shares its call's id: folded, the call's row has drawn
+  // the run's button and this one draws nothing; unfolded, it is the last
+  // of the two, and carries the run's end.
   on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
     const answered = isAnswered(e.props.tool)
-    see(e.requestId, answered ? 'marked' : 'record')
-    if (!isFolding() || answered || unfolded.has(runStart(order, rowOf, e.requestId))) {
-      return next(e)
-    }
-    return hidden($, e)
+    see($, view, e.requestId, answered ? 'marked' : 'record')
+    return isFolding() && !answered ? recordRow($, e, next, view, { opens: false }) : next(e)
   })
 
   // The band repeats the newest open question above the prompt, its choices

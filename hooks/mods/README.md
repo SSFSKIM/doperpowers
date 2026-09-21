@@ -30,9 +30,13 @@ a mark, so a session without the output style is left alone. From then on:
   that carries marks, or at a question the human answered, so what stands
   between two things they read opens and closes as a unit. The button is
   drawn by the row the run starts at and the rest of the run draw nothing;
-  unfolded, the run shows the engine's own rows (a group of reads the engine
-  would fold into a count line shows each call) under `[ fold to report ]` at
-  the top of the run, where it stays as the run grows.
+  unfolded, the run shows the engine's own rows as the transcript draws them
+  (a group of reads keeps its count line: each call in its place would be
+  the ctrl+o form, its whole output inline; where the engine expands the
+  group itself, in the ctrl+o transcript and under `--verbose`, each call is
+  a row of its own in the group's run), with `[ fold to report ]` under the
+  row the run ends at, where the person is when they finish reading, so as
+  the run grows the button moves down with it.
 - A question answered through `AskUserQuestion` draws as the engine draws it
   (the question and the answer given) in the report itself: the answer is the
   human's own words, and they read it as they read a mark.

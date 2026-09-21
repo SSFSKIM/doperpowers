@@ -57,6 +57,10 @@ Full details, including how it coexists with other marketplaces: [`docs/INSTALL-
 
 A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local installs. (The external sync to the Codex plugins repository was retired in v7.23.0; the script lives in git history if ever needed again.)
 
+For native subagents, install the [Codex agent definitions](agents/codex/README.md).
+These port the Claude agent contracts to Codex and replace the companion runtime
+inside Codex; Claude's registered agents and companion remain available.
+
 ---
 
 ## The skills
