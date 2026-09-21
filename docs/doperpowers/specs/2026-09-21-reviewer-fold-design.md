@@ -275,8 +275,10 @@ these differences:
   the same; the snapshot the dispatcher used to render is gone.
 - **Board writes.** It inherits the owner's session id, so `board-*.sh`
   resolve the owner's run: it writes the trail, tech-debt comments, TOO BIG
-  tickets, `needs-human` parks, `ready-for-architect` only in stand-in mode,
-  the merge, and `done`, exactly as the Reviewer worker did. Under the API
+  tickets, `needs-human` parks, the merge, and `done`, exactly as the
+  Reviewer worker did — but never `ready-for-architect`: a design gap is
+  returned to the dispatcher, which writes that edge when it is a stand-in
+  or an Executor, and repairs or parks when it is the Architect. Under the API
   binding it writes with the run credentials in its environment.
 
 ### The brief and the return contract
@@ -373,8 +375,8 @@ a ticket), LOG (a stated-reason non-blocker: the tech-debt issue), INVALID
   positions. The rebuild edge is convergence-counted in both bindings, so
   the board transmutes a second traversal to `needs-human` by itself. An
   Executor owner writes `ready-for-architect` with the impasse note, as its
-  mid-build return does today, and both end. A stand-in writes
-  `ready-for-architect` itself.
+  mid-build return does today, and both end. A stand-in seat writes
+  `ready-for-architect` on the agent's return.
 - **dismissal** — a P2 or P3 finding the agent cannot refute but that the
   spec plausibly speaks to, on a ticket whose `plan:` pin names a spec. The
   agent escalates only when both hold; under-asking costs nothing (the
@@ -936,3 +938,4 @@ Pending — written at finish.
   progress-bounded recovery counter; the smokes rewritten as three drills
   with a full plugin staging and the API drill isolated under a scratch repo
   name.
+- 2026-09-21: execution pre-flight — the agent never writes `ready-for-architect`; the dispatcher does (the plan's Task 1 line contradicted Task 7).
