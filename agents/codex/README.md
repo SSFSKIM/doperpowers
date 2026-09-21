@@ -14,9 +14,11 @@ loading the Markdown definitions; its configuration is unchanged.
 | task-reviewer | gpt-5.6-sol | high |
 | plan-executor | gpt-5.6-sol | xhigh |
 | task-executor | gpt-5.6-sol | high |
+| qa-loop | gpt-5.6-sol | high |
 
 The reviewer pins match Claude's GPT routes. The critic uses Astra for design
-judgment; the executors use Sol at the project's execution tiers. Role files
+judgment; the executors and the QA agent that runs the board's review loop use
+Sol at the project's execution tiers. Role files
 pin both model and effort, so changing the parent model does not change them.
 
 ## Install or update

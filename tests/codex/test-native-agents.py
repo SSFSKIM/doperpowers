@@ -19,6 +19,7 @@ MODELS = {
     "critique": ("gpt-6-astra", "high"),
     "plan-executor": ("gpt-5.6-sol", "xhigh"),
     "task-executor": ("gpt-5.6-sol", "high"),
+    "qa-loop": ("gpt-5.6-sol", "high"),
 }
 
 READ_ONLY = {
