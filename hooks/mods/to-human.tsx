@@ -601,9 +601,12 @@ export function registerToHuman(on: On) {
 
   const open = () => openQuestions([...questions.values()], answered, dismissed)
 
-  // The calls a group drew as rows of their own (`--verbose`): each draws
-  // its output inline, so its row is whole, with no result row after it.
-  const grouped = new Set<string>()
+  // Where the engine expands a group itself (`--verbose`, the ctrl+o
+  // transcript) each call is a row of its own: which group's run a call's
+  // row stands in, and which call is a group's last, whose row draws the
+  // run's end in the group's place.
+  const groupOf = new Map<string, string>()
+  const lastOf = new Map<string, string>()
 
   const keyOf = (question: Question, press: Press) => {
     const key = `${ASK}${question.id}:${press.kind === 'answer' ? question.choices.findIndex((c) => c.text === press.answer) : press.kind}`
@@ -746,36 +749,53 @@ export function registerToHuman(on: On) {
   // read, and it breaks the run as a marked message does. A standalone
   // call's result is a row of its own beneath it once the call resolves, so
   // until then (no output, and no abort, which leaves one) the call's row
-  // is the last of the two; a group's row under `--verbose` draws its own
-  // output inline and is whole.
+  // is the last of the two. A row of a group the engine expanded draws its
+  // output inline and is whole: it stands in the group's run, and the
+  // group's last call draws the run's end where the group would.
   on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
     const answered = isAnswered(e.props.tool)
-    see($, view, e.requestId, answered ? 'marked' : 'record')
+    const group = groupOf.get(e.requestId)
+    if (group === undefined) {
+      see($, view, e.requestId, answered ? 'marked' : 'record')
+    }
     if (!isFolding() || answered) {
       return next(e)
     }
-    const closes = grouped.has(e.requestId) || (e.props.output === undefined && !e.props.isInterrupted)
-    return recordRow($, e, next, view, { closes })
+    if (group !== undefined) {
+      return recordRow($, e, next, view, { id: group, opens: false, closes: lastOf.get(group) === e.requestId })
+    }
+    return recordRow($, e, next, view, { closes: e.props.output === undefined && !e.props.isInterrupted })
   })
 
   // A group's own id changes while it forms, so the row is known by its
   // first call's, which does not. Unfolded, the group draws as the
   // transcript does, one count line: each call in its place would be the
-  // ctrl+o form, its whole output inline. Under `--verbose` the engine draws
-  // each call as a row of its own, seen here in its order right after the
-  // group, so those rows find their run and the last of them draws its end.
+  // ctrl+o form, its whole output inline. Where the engine expands it
+  // itself (`--verbose`, the ctrl+o transcript) each call is a row of its
+  // own that finds the group's run by `groupOf`, never through the order: a
+  // group expands and collapses as the view changes, and a call added to
+  // the order late would land after rows that drew since, or stay in it
+  // with no row to draw once the group collapses again. The last call
+  // draws the run's end in the group's place, and when a call joins the
+  // group the row that drew it is asked for again.
   on('ui.render', { component: 'ToolGroup' }, ($, e, next) => {
     const id = `group:${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     see($, view, id, 'record')
-    if (e.props.isExpanded) {
-      for (const call of e.props.calls) {
-        if (call.tool_use_id) {
-          grouped.add(call.tool_use_id)
-          see($, view, call.tool_use_id, 'record')
-        }
+    let last: string | undefined
+    for (const call of e.props.calls) {
+      if (call.tool_use_id) {
+        groupOf.set(call.tool_use_id, id)
+        last = call.tool_use_id
       }
     }
-    return isFolding() ? recordRow($, e, next, view, { id }) : next(e)
+    if (last !== undefined && lastOf.get(id) !== last) {
+      const moved = lastOf.has(id)
+      lastOf.set(id, last)
+      if (moved && e.props.isExpanded && isFolding() && unfolded.has(runStart(view.order, view.rowOf, id))) {
+        $.ui.invalidate('ui.render')
+      }
+    }
+    return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded }) : next(e)
   })
 
   // The result row shares its call's id: folded, the call's row has drawn
