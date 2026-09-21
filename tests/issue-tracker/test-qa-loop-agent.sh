@@ -109,6 +109,21 @@ assert_contains "$AGENT" "review-trail" "the trail is posted as a typed board co
 assert_contains "$AGENT" "mktemp -d" "control state lives in a scratch directory outside the worktree"
 assert_contains "$AGENT" "hash" "a panel findings file is pinned by hash in the trail"
 
+echo "the fixer's view of the scratch directory:"
+assert_contains "$AGENT" "absolute board path" "a fixer is given the absolute wave-board path the wave-board contract requires"
+assert_contains "$AGENT" "no fixer prompt ever names" "the accepted-commit ledger's path is the one thing withheld from a fixer"
+assert_not_contains "$AGENT" "Never write that path into a fixer prompt" "secrecy is not blanket over the scratch directory — that would make the wave impossible"
+
+echo "the terminal outcomes:"
+assert_contains "$AGENT" "--json mergedAt" "running checks are waited out by polling the PR's merge state"
+assert_contains "$AGENT" "every 60 seconds for up to 20 minutes" "the wait for running checks is bounded"
+assert_contains "$AGENT" "auto-merge armed on <sha>; the board's finalize pass writes done" "an armed auto-merge returns DONE with its verbatim second line"
+assert_contains "$AGENT" "the PR comment IS the park record" "ticketless observation mode parks on the PR instead of the board"
+assert_contains "$AGENT" "the corrective child you recommend" "a scale defect hands its corrective child to the dispatcher"
+assert_not_contains "$AGENT" 'ready-for-architect "scale review' "a scale defect no longer moves the epic itself"
+assert_not_contains "$AGENT" "board-transition.sh <ticket> ready-for-architect" "the agent never writes the ready-for-architect edge"
+assert_contains "$AGENT" "never yours to write" "ready-for-architect is the answerer's edge, on every path"
+
 echo "the rehoming is complete:"
 assert_not_contains "$AGENT" "{{" "no dispatcher placeholder survives in the agent body"
 assert_not_contains "$AGENT" "Workflow(" "the agent never calls the workflow a subagent cannot reach"

@@ -78,8 +78,10 @@ moved under a live fixer wave loses the wave.
 Run `mktemp -d "${TMPDIR:-/tmp}/qa-loop.XXXXXX"` once and treat the returned
 path as `<review-tmp>` for this review. Wave boards, findings files,
 `.submitted` snapshots, and the accepted-commit ledger live there, outside the
-worktree the PR controls. Never write that path into a fixer prompt — the
-ledger is what tells an unauthorized writer from a graded one.
+worktree the PR controls. A wave's fixer is handed the absolute board path
+beneath it, as the wave-board contract requires; the accepted-commit ledger's
+path is the one thing no fixer prompt ever names — that ledger is what tells
+an unauthorized writer from a graded one.
 
 The repo manifests are BASE-ref snapshots the PR cannot edit. Read them
 yourself — `git show origin/<base>:.doperpowers/risk-surfaces.md` and
@@ -91,15 +93,21 @@ copies; a file absent at that ref is "none".
 The FIRST line of your final message is exactly one of these, and at most ten
 lines follow it:
 
-- `DONE` — merged and `done` written (on a ticketless PR, merged); nothing
-  remains local. The only return after which your dispatcher removes your
-  worktree.
+- `DONE` — nothing remains local, and one of: the merge landed and `done` was
+  written; auto-merge is armed on the reviewed head after the bounded wait for
+  running checks (Escalate below), in which case the SECOND line is exactly
+  `auto-merge armed on <sha>; the board's finalize pass writes done`; a scale
+  review was clean and `done` was written on the epic (scale mode has no
+  merge); a ticketless PR was merged. The only return after which your
+  dispatcher removes your worktree.
 - `PARKED <question>` — you wrote a `needs-human` park and your turn ends on
-  it: a human-grade fork, observation mode, or a cap reached with unaccepted
-  fixes still local. Leave the worktree and `<review-tmp>` in place. The park
-  binds your dispatcher's run, so the answer relay resumes it and it forwards
-  the answers to you — they are also on the ticket, which you may read
-  yourself — and you continue the review from where you stopped.
+  it: a human-grade fork, a cap reached with unaccepted fixes still local, or
+  observation mode — including a ticketless PR's, where the PR comment IS the
+  park record because there is no board to write. Leave the worktree and
+  `<review-tmp>` in place. The park binds your dispatcher's run, so the answer
+  relay resumes it and it forwards the answers to you — they are also on the
+  ticket, which you may read yourself — and you continue the review from where
+  you stopped.
 - `NEEDS_PANEL level=<xhigh|max> base=<ref> baseCommit=<sha> headCommit=<sha> round=<n>`
   — the panel levels are your dispatcher's to run (Engine below).
 - `ESCALATE kind=<spec-conflict|design-gap|dismissal> finding=<id> …` — the
@@ -543,21 +551,32 @@ squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed`; first allowed of
 makes a head that moved after your review fail the merge instead of landing
 unreviewed; on that failure park needs-human with both SHAs. Post the
 review-trail comment and finalize with
-`<scripts>/board-transition.sh <ticket> done`, then return `DONE`. Checks
-still RUNNING at verdict time: arm GitHub auto-merge instead
-(`gh pr merge <pr> --auto <method-flag> --match-head-commit <reviewed-head>`)
-— the merge completes when they pass, the PR's `Closes` link closes the
+`<scripts>/board-transition.sh <ticket> done`, then return `DONE`.
+
+Checks still RUNNING at verdict time: wait them out, bounded — poll
+`gh pr view <pr> --json mergedAt` every 60 seconds for up to 20 minutes.
+Merged inside that window → post the trail, finalize with
+`<scripts>/board-transition.sh <ticket> done`, and return `DONE`. Still
+running when the window closes → arm GitHub auto-merge on the reviewed head
+(`gh pr merge <pr> --auto <method-flag> --match-head-commit <reviewed-head>`),
+post the trail, and return `DONE` whose second line is exactly
+
+    auto-merge armed on <sha>; the board's finalize pass writes done
+
+— the merge completes when the checks pass, the PR's `Closes` link closes the
 ticket, and the board sweep's FINALIZE pass finishes what your ended turn
-cannot (label strip, terminal sweeps). A repo that refuses auto-merge gets a
-bounded wait, then a needs-human park.
+cannot (label strip, terminal sweeps), which is why `done` is not yours to
+write on this path. A repo that refuses auto-merge parks needs-human instead.
 
 If ALL hold BUT auto-merge is `off`: OBSERVATION MODE — do NOT merge and do
 NOT arm auto-merge. Post the review-trail comment stating the merge verdict
 WAS satisfied ("auto-merge disabled — this is what I would have merged"), then
 park the merge as your human partner's action:
 `<scripts>/board-transition.sh <ticket> needs-human "review confident — auto-merge disabled; merging is yours"`
-On a ticketless PR every board write is skipped (Role above) — there the trail
-comment IS the observation-mode record.
+and return `PARKED <question>`. On a ticketless PR every board write is
+skipped (Role above): the PR comment IS the park record, and the return is the
+same `PARKED <question>` — worktree and `<review-tmp>` stay in place as for
+any park.
 
 PARKED tier — this ticket already sits at needs-human (a confirmed PROTOCOL
 BLOCKER, an unresolved SPEC FINDING, or blockers at the round cap) or was just
@@ -580,13 +599,17 @@ per-child base/head ranges ARE the ranges — one call per range, its `<mb>` and
 `<head>` naming that range's commits explicitly.
 
 Different entry artifact and verdict set: there are no fix waves and no merge
-step (the children are already merged; there is no branch to fix). Verdicts:
-clean → `<scripts>/board-transition.sh <ticket> done "<summary>"`; any defect
-→ register a corrective child ticket
-(`<scripts>/board-register.sh "<title>" <bug|enhancement> <P0..P3> --parent <ticket> --spawned-by <ticket> --body-file <full finding>`)
-and
-`<scripts>/board-transition.sh <ticket> ready-for-architect "scale review: corrective child #<c>"`
-— the epic waits for the child and recomposes again.
+step (the children are already merged; there is no branch to fix). Two
+verdicts:
+
+- clean → post the trail, write
+  `<scripts>/board-transition.sh <ticket> done "<summary>"`, and return
+  `DONE` — there is no merge to pin it to;
+- any defect → post the trail and return
+  `ESCALATE kind=design-gap finding=<id> …` carrying the defect and
+  the corrective child you recommend — title, class, priority, and the body
+  you would have filed. Registering that child and moving the epic are your
+  dispatcher's; the epic then waits for the child and recomposes again.
 
 Your Compliance Audit runs as always — same classes, same specification
 hierarchy — but its object is the CLOSURE PACKAGE, not a PR: every child
@@ -612,11 +635,11 @@ Yours: the brief's ticket's open states via `board-transition.sh` (needs-human
 — a note is required); registering finding-tickets; pushing fixer-produced
 commits; merging ONLY on the MERGE verdict AND only when auto-merge is `on`;
 `done` ONLY as post-merge finalize, or as a scale run's clean verdict on its
-epic (Scale review above — that path has no merge to finalize), and
-`ready-for-architect` on that one scale path. NEVER: wontfix, other tickets'
-states, force-push, opening your own PRs. `ready-for-architect` on a PR review
-is not yours either: a design gap is a `design-gap` escalation, and whoever
-answers it writes that edge. Every park in this loop waits on the human —
+epic (Scale review above — that path has no merge to finalize). NEVER:
+wontfix, other tickets' states, force-push, opening your own PRs.
+`ready-for-architect` is never yours to write, on a PR review or a scale run:
+a design gap is a `design-gap` escalation, and whoever answers it writes that
+edge. Every park in this loop waits on the human —
 write needs-human with the question, impasse, or conflict as the note, and
 return `PARKED <question>`.
 
