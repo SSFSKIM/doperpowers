@@ -190,15 +190,20 @@ Observable behavior. Commands run from the repository root unless stated.
    written at park time, and the answer relay returns a bound park to
    `from_state` when it is in-flight, falling back to `LANE_INFLIGHT[run.lane]`
    for rows without one; (e) `in-review → in-progress` is convergence-counted
-   and its second traversal transmutes to `needs-human`; (f) `in-review →
-   in-review` is legal for the owning run with a note and a `plan` pin; (g)
-   `in-review → done` from a run is refused unless a `review-trail` event by
-   that run exists after the latest event that entered `in-review` (first
-   entry, re-pin, or park return), with a negative test for a trail posted
-   before a re-pin. gh twins in `_board.py`:
+   and its second traversal transmutes to `needs-human` and writes no pin;
+   (f) `in-review → in-review` is legal for the owning run with a note and
+   requires a `plan` pin (`plan-required` without one); (g) `in-review →
+   done` from a run is refused unless a `review-trail` event by that run
+   exists after the latest event that entered `in-review` (first entry,
+   re-pin, or park return), with a negative test for a trail posted before a
+   re-pin; (h) the lane cap counts only open runs whose ticket is in the
+   lane's own states, so an architect run holding an `in-review` or
+   `in-progress` ticket frees the architect slot; (i) `in-design →
+   in-review` is legal for an architect run on an epic (the scale handoff
+   the gh binding already carries), refused for a leaf. gh twins in `_board.py`:
    `(in-review, in-progress)` in `EDGE_NOTE_REQUIRED`, the `in-review`
    self-edge in `LEGAL`, `review-trail` among `board-comment.sh --kind`'s
-   kinds. `API.md` records all seven. `npm test` in `board-service` passes
+   kinds. `API.md` records all nine. `npm test` in `board-service` passes
    with cases for each; `tests/issue-tracker/test-board-scripts.sh` covers
    the gh twins. The change is merged to arkho `main` and the Render service
    reports the new revision before acceptance 11's second ticket runs.
@@ -216,9 +221,12 @@ Observable behavior. Commands run from the repository root unless stated.
     names the QA agent's rounds, a fix wave lands and is re-reviewed at a
     panel level with the owner's checkout positioned at the new head, and a
     `needs-human` park written by the QA agent resumes the Architect and
-    reaches the agent with the answer. (b) On this repo's API board after
-    acceptance 9 deploys: the same, the Architect building through the new
-    edge, and the ticket's timeline shows no `release` event before `done`.
+    reaches the agent with the answer. (b) On the deployed board service under a scratch repo name, after
+    acceptance 9 deploys: the same through the API binding, the Architect
+    building through the new edge, a fix wave, a `review-trail` event before
+    `done`, and no `release` event before `done`. The scratch name isolates
+    the smoke from this repository's live queue; the first real ticket here
+    follows the merge.
     Outcomes, including failures, are recorded under Surprises & Discoveries.
 12. **Suites.** `tests/issue-tracker/run-*.sh`, `tests/claude-code/board-api/*.sh`,
     `tests/sminos/run-sminos-tests.sh`, `tests/codex/test-native-agents.py`,
@@ -822,14 +830,17 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   smokes and the trail will test.
   Date/Author: 2026-09-21, from the critique debate.
 
-- Decision: The lane-cap count and the API tick's review-recovery selector
-  read a seat meta key, `phase: review`, that `board-transition.sh` stamps on
-  the ticket's bound seat on entry to `in-review` and clears on exit; the gh
-  paths read ticket state directly.
+- Decision: The local lane-cap pre-check and the API tick's review-recovery
+  selector read a seat meta key `phase` — `review` while the ticket is in
+  `in-review`, `review-parked` after a park from it, restored to `review` by
+  the answer relay — stamped by `board-transition.sh` and `board-answer.sh`;
+  the gh paths read ticket state directly, and under the API binding the
+  server's cap is the authority and counts by ticket state itself.
   Rationale: the API dispatcher and tick read only the seat registry, and a
   ticket read per seat per tick is the cost the registry exists to avoid;
   the transition script already resolves the bound seat for its live-owner
-  fence. Recorded from planning.
+  fence; the server counts every open run today and would hold the slot
+  regardless of the client. Recorded from planning and the plan review.
   Date/Author: 2026-09-21.
 - Decision: The trail's re-pin record is `[trail] re-pin <path>@<sha> —
   <delta>`, beside `[trail] dismissed …`.
@@ -842,6 +853,26 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   there is no local-checkout install route, and the smoke has to run before
   the version lands on `main`.
   Date/Author: 2026-09-21, from planning.
+
+- Decision: Recovery of an owner in review is bounded by review progress:
+  a per-seat `review_recoveries` counter that resets whenever a new
+  review-trail artifact appears, separate from the build-time
+  `sweep_recoveries`.
+  Rationale: acceptance 7 counts nudges without a new trail comment; the
+  build counter is lifetime-per-seat and would park a moving review.
+  Date/Author: 2026-09-21, from the plan review.
+- Decision: Every pin the owner mints — re-pin or rebuild — follows a push,
+  and the re-pin reuses the recorded PR and branch; the rebuild and re-pin
+  edges are admitted by the plan gates beside the design edges, and a
+  convergence transmute writes no pin.
+  Rationale: the gh pin gate verifies the sha on the remote; the in-review
+  PR gate and the API branch check would otherwise refuse the self-edge.
+  Date/Author: 2026-09-21, from the plan review.
+- Decision: The recomposition path folds like the PR path: the Architect
+  dispatches the agent in scale mode after posting the closure package and
+  registers a corrective child itself on a design-gap return; the board
+  service gains the epic scale handoff edge it lacked.
+  Date/Author: 2026-09-21, from the plan review.
 
 ## Surprises & Discoveries
 
@@ -897,3 +928,11 @@ Pending — written at finish.
 - 2026-09-21: planning (doperpowers:writing-plans) — the stand-in roster gains
   `PROTOCOL_FILE`; the `phase: review` seat meta key, the re-pin trail line,
   and the smoke's plugin-cache bridge recorded as decisions.
+- 2026-09-21: plan review (`doperpowers:adversarial-reviewer`, ten findings)
+  applied: the server-side lane cap by ticket state; `phase` across parks and
+  answers; the pin gates opened for the re-pin and rebuild edges with push
+  and reuse rules; the server requiring a plan on the self-edge; the
+  recomposition path folded; the relocation frontier kept executable; the
+  progress-bounded recovery counter; the smokes rewritten as three drills
+  with a full plugin staging and the API drill isolated under a scratch repo
+  name.
