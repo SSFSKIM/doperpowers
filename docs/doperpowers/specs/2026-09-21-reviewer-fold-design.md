@@ -81,19 +81,28 @@ Observable behavior. Commands run from the repository root unless stated.
 4. **Owner protocols dispatch the agent.**
    `skills/issue-tracker/references/architect-worker-protocol.md`'s Closing
    Artifact section: after `in-review --pr`, dispatch ONE `doperpowers:qa-loop`
-   with the brief this spec names, stay bound; on `NEEDS_PANEL` run
+   with the brief this spec names, stay bound; on `NEEDS_PANEL` fetch the
+   branch, fast-forward the checkout to the requested `headCommit` and verify
+   `git rev-parse HEAD` prints it, run
    `Workflow({ scriptPath: "<review-code>/workflows/code-review.js", args: {…} })`
    in the background, write the result to a file under the report directory,
    resume the agent with the path; on `ESCALATE` answer per the rule for its
-   kind; on `PARKED` end the turn and relay the answers to the agent when
-   resumed; on `DONE` remove the agent's worktree and end. The words "never
-   review your own pull request" are replaced by "never grade, triage, or
-   merge your own pull request's review — the QA agent does; you answer its
-   escalations". `implement-worker-protocol.md`'s Closing Artifact section
-   carries the same dispatch, with a design-gap escalation answered by
-   `ready-for-architect` (the mid-build return, convergence-counted) and no
-   dismissal channel. `tests/issue-tracker/test-protocol-content.sh` asserts
-   both.
+   kind; on `PARKED` end the turn with the agent's worktree and scratch in
+   place, and relay the answers to the agent when resumed; on `DONE` remove
+   the agent's worktree and end. The words "never review your own pull
+   request" are replaced by "never grade, triage, or merge your own pull
+   request's review — the QA agent does; you answer its escalations".
+   `implement-worker-protocol.md`'s Closing Artifact section carries the same
+   dispatch, with a design-gap escalation answered by `ready-for-architect`
+   (the mid-build return, convergence-counted) and no dismissal channel.
+   `worker-bootstrap.md` binds `AUTO_MERGE`, `REVIEW_LEVEL`, and
+   `TECH_DEBT_ISSUE` for the IMPLEMENT and ARCHITECT roles, rendered and
+   validated by `execute-dispatch.sh` on both routes — `REVIEW_LEVEL` refused
+   outside `low|medium|high|xhigh|max` before any spawn, `AUTO_MERGE` from
+   `AUTO_MERGE_ENABLED`, `TECH_DEBT_ISSUE` from the `tech-debt` label search
+   or `none`. `tests/issue-tracker/test-protocol-content.sh` asserts the
+   protocol text; `test-execute-dispatch.sh` asserts a rendered prompt carries
+   the three bindings and that an invalid floor refuses to dispatch.
 5. **The stand-in.** `skills/issue-tracker/scripts/review-dispatch.sh` (moved)
    spawns a seat whose bootstrap
    (`skills/issue-tracker/references/review-standin-bootstrap.md`) binds only:
@@ -104,23 +113,36 @@ Observable behavior. Commands run from the repository root unless stated.
    `INTEGRATION_REF`, `TICKET_BODY_FILE`, `WORKER_NAME`. It binds no
    `BIND_READY_FILE`, `MANIFEST_REF`, `RISK_MANIFEST`, `REPO_FACTS`, or
    `SKILL_FILE`. The stand-in's protocol is: position at the head under
-   review, dispatch `doperpowers:qa-loop`, relay `NEEDS_PANEL` and `PARKED`,
-   and end on `DONE`; it makes no judgment. Names stay `review-pr-<n>`,
-   `review-epic-<n>`, `<ticket>-api-qagent`.
+   review, dispatch `doperpowers:qa-loop`, relay `NEEDS_PANEL` (positioning
+   the checkout at the requested head first) and `PARKED`, end on `DONE`, and
+   end with `ENGINE-UNAVAILABLE` as the last line of its own reply when that
+   is what the agent returned; it makes no judgment. Names stay
+   `review-pr-<n>`, `review-epic-<n>`, `<ticket>-api-qagent`.
+   `pr-review-dispatch.yml` runs the moved path
+   `skills/issue-tracker/scripts/review-dispatch.sh`; a structural test asserts
+   it, and `review-loop.md` carries the migration note for copies installed in
+   adopting repositories.
 6. **Owner-first dedupe.** The dispatcher's triggered mode and sweep mode both
-   skip a PR whose linked ticket is bound in the seat registry to a live
-   seat of any role, printing `#<pr>: owner reviews — skip`, before any
-   other dedupe. A hermetic case in the moved `test-review-dispatch.sh`
-   seeds an `in-review` ticket bound to a live `12-arch-slug` meta and asserts
-   no spawn; a second case with no live owner asserts the stand-in spawn.
-   `pr-review-dispatch.yml` is unchanged.
-7. **Outage relay.** `board-sweep.sh` gains a pass that, for an `in-review`
-   ticket bound to a live idle owner whose latest review-trail comment carries
-   `ENGINE-UNAVAILABLE`, sends the owner `retry the review of #<pr>` through
-   the sminos CLI once per sweep tick; the third consecutive outage comment on
-   one ticket parks it `needs-human` naming the outage. A hermetic case in
-   `tests/issue-tracker/test-board-sweep.sh` covers the nudge and the cap.
-   The dispatcher's registry-keyed outage streak stays for stand-ins.
+   skip a PR whose linked ticket is bound in the seat registry to a live seat
+   whose role is not `QAGENT`, printing `#<pr>: owner reviews — skip`, before
+   any other dedupe; a ticket bound to a `QAGENT` seat is a stand-in's and
+   falls through to the existing registry dedupe, outage streak, and cap.
+   Hermetic cases in the moved `test-review-dispatch.sh`: an `in-review`
+   ticket bound to a live `12-arch-slug` meta — no spawn; no live owner — the
+   stand-in spawns; a finished stand-in whose reply ends `ENGINE-UNAVAILABLE`
+   — the existing streak decision runs, not the skip.
+7. **Owner recovery in review.** The recover pass of both ticks —
+   `board-sweep.sh`'s `pass_recover` and `_sweep_api.sh`'s stall and resume
+   phases — covers `in-review`: a ticket bound to an owner seat that is idle,
+   not parked, and whose review has no terminal trail verdict, whether the
+   latest trail comment carries `ENGINE-UNAVAILABLE` or no trail exists at
+   all, is nudged `resume the review of #<pr>` through the sminos CLI once
+   per tick, and the third nudge without a new trail comment parks it
+   `needs-human` naming the state. Hermetic cases in
+   `tests/issue-tracker/test-board-sweep.sh` and the board-api sweep tests
+   cover the outage case, the crash-before-dispatch case (`in-review` written,
+   no dispatch, no trail), and the cap. The dispatcher's registry-keyed
+   outage streak stays for stand-ins.
 8. **Model flip.** `agents/plan-executor.md` and `agents/task-executor.md`
    read `model: sol`. `execute-dispatch.sh` and `_sweep_api.sh` pin
    `${IMPLEMENT_MODEL:-sol}` on implement and spike and `${ARCHITECT_MODEL:-fable}`
@@ -136,19 +158,24 @@ Observable behavior. Commands run from the repository root unless stated.
    names sol as the executor tier, `model: sonnet` as the cheap override,
    and says no worker runs on fable or astra; its BLOCKED ladder reads
    sonnet → sol → the brief.
-9. **Board service.** In `~/Developer/GitHub/arkho/board-service`:
-   `LANE_CROSS` in `src/transitions.js` contains neither
-   `in-progress→in-review` nor `in-review→in-progress`; `in-review → done`
-   is legal for the run that owns the ticket (`run.id === tk.owner_run`) —
-   a leaf with a URL `pr_url`, an epic with a numeric `pr_url` — and the
-   qagent-lane arms stay for stand-in runs; the `review-required` refusal
-   applies only when `from !== 'in-review'`. `board.decision_park` gains
-   `from_state text` written at park time; the answer relay returns a bound
-   park to `from_state` when it is in-flight and falls back to
-   `LANE_INFLIGHT[run.lane]` for rows without one. `API.md` records all
-   three. `npm test` in `board-service` passes with cases for each. The
-   change is merged to arkho `main` and the Render service reports the new
-   revision before acceptance 11's second ticket runs.
+9. **Board service.** In `~/Developer/GitHub/arkho/board-service`: (a)
+   `in-design → in-progress` is a legal transition for an architect-lane run
+   — the build edge PR #136 left open — and `board-transition.sh` no longer
+   refuses it under the API binding; (b) `LANE_CROSS` in `src/transitions.js`
+   contains neither `in-progress→in-review` nor `in-review→in-progress`; (c) a
+   run's write into `in-review` with a numeric `pr` stamps
+   `run.package_event_id`, and `in-review → done` is legal for the run that
+   owns the ticket (`run.id === tk.owner_run`) in every lane when a leaf's
+   `pr_url` is a URL or an epic's `pr_url` equals the run's stamped package —
+   a stamped package that differs from the current `pr_url` is refused, with a
+   negative test — and the `review-required` refusal applies only when
+   `from !== 'in-review'`; (d) `board.decision_park` gains `from_state text`
+   written at park time, and the answer relay returns a bound park to
+   `from_state` when it is in-flight, falling back to `LANE_INFLIGHT[run.lane]`
+   for rows without one. `API.md` records all four. `npm test` in
+   `board-service` passes with cases for each. The change is merged to arkho
+   `main` and the Render service reports the new revision before acceptance
+   11's second ticket runs.
 10. **Records.** Revision Notes are added to
     `2026-07-08-pr-review-loop-design.md`, `2026-07-30-implement-lane-split-design.md`,
     `2026-09-12-one-spec-sized-by-the-gate-design.md`,
@@ -160,11 +187,13 @@ Observable behavior. Commands run from the repository root unless stated.
 11. **Smoke, twice.** (a) On a gh-bound scratch board: a ticket dispatched to
     an Architect reaches `done` with the Architect's seat bound throughout
     (`sminos list` shows it in `in-review`), the trail comment on its PR
-    names the QA agent's rounds, and a `needs-human` park written by the QA
-    agent resumes the Architect and reaches the agent with the answer. (b)
-    On this repo's API board after acceptance 9 deploys: the same, and the
-    ticket's timeline shows no `release` event before `done`. Outcomes,
-    including failures, are recorded under Surprises & Discoveries.
+    names the QA agent's rounds, a fix wave lands and is re-reviewed at a
+    panel level with the owner's checkout positioned at the new head, and a
+    `needs-human` park written by the QA agent resumes the Architect and
+    reaches the agent with the answer. (b) On this repo's API board after
+    acceptance 9 deploys: the same, the Architect building through the new
+    edge, and the ticket's timeline shows no `release` event before `done`.
+    Outcomes, including failures, are recorded under Surprises & Discoveries.
 12. **Suites.** `tests/issue-tracker/run-*.sh`, `tests/claude-code/board-api/*.sh`,
     `tests/sminos/run-sminos-tests.sh`, `tests/codex/test-native-agents.py`,
     and `scripts/lint-shell.sh` pass. A failure that reproduces on `main`
@@ -209,20 +238,30 @@ these differences:
 ### The brief and the return contract
 
 The dispatch prompt carries, one line each: mode (`pr` or `scale`); ticket
-number and URL, or `none`; PR number and URL, or the closure-package event id
-and integration ref; base ref and head SHA; the review level floor
-(`REVIEW_LEVEL`); the auto-merge flag; the board scripts directory; the
-implement protocol path; the tech-debt and env-tracker issue numbers; a
-report file path under the ticket's report directory; and the sentence "your
-dispatcher answers escalations; return for them". An owner derives every value
-from its own bindings and `gh pr view`; the stand-in from its bootstrap.
+number and URL, or `none`, and the ticket body file when the bootstrap
+delivered one (under the API binding that file is the only route to the
+body; `board-show.sh` does not carry it); PR number and URL, or the
+closure-package event id and integration ref; base ref and head SHA; the
+review level floor (`REVIEW_LEVEL`); the auto-merge flag (`AUTO_MERGE`); the
+board scripts directory; the implement protocol path; the tech-debt and
+env-tracker issue numbers; a report file path under the ticket's report
+directory; and the sentence "your dispatcher answers escalations; return for
+them". `REVIEW_LEVEL`, `AUTO_MERGE`, and `TECH_DEBT_ISSUE` are dispatcher-owned
+bindings the worker bootstrap now carries for the IMPLEMENT and ARCHITECT
+roles, validated by `execute-dispatch.sh` the way the review dispatcher
+validated them — a spawned seat cannot inherit them from the dispatcher's
+environment. The rest an owner derives from its bindings and `gh pr view`;
+the stand-in from its bootstrap.
 
 The agent returns one line first, then at most ten:
 
-- `DONE` — merged and `done` written, or observation-mode park written, or
-  the review ended at a cap with the ticket parked by the agent itself.
-- `PARKED <question>` — `needs-human` written by the agent; the park binds
-  the dispatcher's run, so the answer relay resumes the dispatcher.
+- `DONE` — merged and `done` written; nothing remains local. The only return
+  after which the dispatcher removes the agent's worktree.
+- `PARKED <question>` — every `needs-human` the agent writes: a human-grade
+  fork, observation mode, or a cap reached with unaccepted fixes still local.
+  The park binds the dispatcher's run, so the answer relay resumes the
+  dispatcher; the agent's worktree, scratch directory, and ledger stay in
+  place for the resumed agent.
 - `NEEDS_PANEL level=<xhigh|max> base=<ref> baseCommit=<sha> headCommit=<sha> round=<n>`.
 - `ESCALATE kind=<spec-conflict|design-gap|dismissal> finding=<id> …` with
   the finding, its file and lines, and the agent's position.
@@ -243,7 +282,14 @@ background, writes the compliance audit, and only then reads their returns.
 The result is the rubric's text format; the failure rule reads it: a
 reviewer whose `## Verdict` names nothing it examined, or that says it could
 not inspect the range, is a failed sweep. At `xhigh` and `max` the agent
-returns `NEEDS_PANEL`; the dispatcher runs the workflow call, saves the result
+returns `NEEDS_PANEL`. The dispatcher fetches the branch and fast-forwards
+its own checkout to the requested `headCommit`, verifying `git rev-parse
+HEAD` prints it, because the workflow cuts every reviewer's worktree at the
+caller's HEAD and the SHA alone only scopes the diff command — after a fix
+wave the agent's head is ahead of the dispatcher's checkout, and a panel run
+from the old head would read old files against a new diff. Every head the
+agent asks a panel to review is already pushed: a wave pushes before
+re-review. The dispatcher then runs the workflow call, saves the result
 object to `<report-dir>/findings-r<N>.json`, and resumes the agent with that
 path. The `interrupted` verdict reads as a failed sweep, as today.
 
@@ -295,15 +341,20 @@ bound.
 **Architect** (`architect-worker-protocol.md`, Closing Artifact): after
 registering the executor's residue and writing `in-review --pr --branch`,
 dispatch one `doperpowers:qa-loop` and end the turn. Returns arrive as
-notifications. `NEEDS_PANEL`: run the workflow call in the background, save
-the result, resume the agent. `ESCALATE`: answer per the rule above.
-`PARKED`: end the turn; `board-answer.sh` returns the ticket to `in-review`
-(the `pre-park:` meta already maps it) and resumes this session, which
-forwards the answers to the agent. `ENGINE-UNAVAILABLE`: end the turn with
-the ticket in `in-review`; the sweep's relay pass nudges this session to
-re-dispatch. `DONE`: remove the agent's worktree, end. The seat's scope now
-ends at `done`; the sweep's cancel pass retires it as an ordinary seat.
-Authority: "never grade, triage, or merge your own pull request's review".
+notifications. `NEEDS_PANEL`: fast-forward the checkout to the requested
+head, run the workflow call in the background, save the result, resume the
+agent. `ESCALATE`: answer per the rule above. `PARKED`: end the turn with the
+agent's worktree and scratch in place; `board-answer.sh` returns the ticket
+to `in-review` (the `pre-park:` meta already maps it) and resumes this
+session, which forwards the answers to the agent. `ENGINE-UNAVAILABLE`: end
+the turn with the ticket in `in-review`; the sweep's recover pass nudges this
+session to re-dispatch. `DONE`: remove the agent's worktree, end. A turn that
+ends abnormally anywhere between the `in-review` write and the agent's
+return leaves the ticket bound to an idle seat with no verdict in its trail;
+the same recover pass nudges it, and parks it after three nudges without a
+new trail comment. The seat's scope now ends at `done`; the sweep's cancel
+pass retires it as an ordinary seat. Authority: "never grade, triage, or
+merge your own pull request's review".
 
 **Executor** (`implement-worker-protocol.md`, Closing Artifact): identical
 after the PR opens, minus design authority: a design-gap escalation is
@@ -318,45 +369,64 @@ still reach it through the PR body's `## Unresolved Review Findings`.
 `review-dispatch.sh` moves to `skills/issue-tracker/scripts/` and keeps its
 modes (triggered, `--sweep`, scale, API `qagent` claims). Its first dedupe
 rule is new: resolve the PR's ticket, and if the seat registry binds that
-ticket to a live seat of any role, skip — the owner reviews. Then the
-existing rules for stand-ins. The bootstrap shrinks to the roster in
-acceptance 5; the manifest snapshots, `SKILL_FILE`, the control directory,
-the barrier, and the acknowledgement poll are deleted. `_spawn_reviewer`
-keeps the registry bind, the `QAGENT` role stamp, and the names, so the
-stale-reviewer sweeps, the outage streak, and the review cap keep their
-subject for stand-ins. The stand-in's protocol file,
+ticket to a live seat whose role is not `QAGENT`, skip — the owner reviews. A
+ticket bound to a `QAGENT` seat is a stand-in's and falls through to the
+existing registry dedupe, outage streak, and cap, which read the stand-in's
+reply file — so the stand-in ends its reply with its agent's
+`ENGINE-UNAVAILABLE` line when that is what came back. The bootstrap shrinks
+to the roster in acceptance 5; the manifest snapshots, `SKILL_FILE`, the
+control directory, the barrier, and the acknowledgement poll are deleted.
+`_spawn_reviewer` keeps the registry bind, the `QAGENT` role stamp, and the
+names, so the stale-reviewer sweeps, the outage streak, and the review cap
+keep their subject for stand-ins. The stand-in's protocol file,
 `review-standin-protocol.md`, is short: fetch and check out the head under
 review (a PR head, or the integration ref, or resolve both from the claim
 under the API binding), dispatch the agent with the brief, relay
-`NEEDS_PANEL` through the Workflow tool and `PARKED` through the answer
-relay, and end on `DONE`. `pr-review-dispatch.yml` and `runner-setup.md` move
-beside it unchanged.
+`NEEDS_PANEL` through the Workflow tool from a checkout positioned at the
+requested head and `PARKED` through the answer relay, end on `DONE`, and echo
+`ENGINE-UNAVAILABLE`. `pr-review-dispatch.yml` moves beside it with its one
+command line changed to the dispatcher's new path — a copy installed in an
+adopting repository has to be updated by hand, and `review-loop.md` says so —
+and `runner-setup.md` moves unchanged.
 
 Ticketless PRs are stand-in reviews; the agent skips board writes when the
 brief says `ticket: none`, as the Reviewer worker did.
 
 ### The board service (arkho)
 
-Three changes in `~/Developer/GitHub/arkho/board-service`, one plan task:
+Four changes in `~/Developer/GitHub/arkho/board-service`, one plan task:
 
-1. `LANE_CROSS` loses `in-progress→in-review` and `in-review→in-progress`.
+1. `in-design → in-progress` becomes legal for an architect-lane run: the
+   build edge the board's legal-transition table never carried, recorded as
+   PR #136's follow-up. Without it the Architect hands off on the API board
+   and the one-seat lifecycle this spec promises cannot exist there. The run
+   stays open — `in-progress` is not the architect lane's own in-flight
+   state, but the ticket is owned, so no lane can claim it — and its parks
+   return through change 4. The client's refusal of this edge under the API
+   binding (`board-transition.sh`) is removed; the Architect protocol's
+   hand-off remains the fallback for any other refusal.
+2. `LANE_CROSS` loses `in-progress→in-review` and `in-review→in-progress`.
    The owner's run survives review and its own rebuild. The escalation
    edges stay covered by `SCOPE_END`. An owner that dies is reclaimed by
    lease expiry as today, which clears `owner_run` and lets the `qagent`
    claim's first band pick the ticket up for a stand-in.
-2. Terminal-edge authority: `in-review → done` is legal for the run that
-   owns the ticket — a leaf with a URL `pr_url`, an epic with a numeric
-   `pr_url` — in addition to the existing qagent-lane arms, which stand-in
-   runs still use. `review-required` refuses an implementer run's `done`
-   only from states other than `in-review`. The server-side guarantee that
-   an implementer never closes its own ticket becomes the protocol's: the
-   close is written by the QA agent after an engine round, and the trail
+3. Terminal-edge authority. A run's write into `in-review` whose `pr` is
+   numeric — an epic's closure package — stamps `run.package_event_id`, as a
+   qagent claim does today. `in-review → done` is then one rule for every
+   lane: the run owns the ticket (`run.id === tk.owner_run`) and either the
+   leaf's `pr_url` is a URL or the epic's `pr_url` equals the run's stamped
+   package. A stamped package that differs from the current `pr_url` — a
+   reparent mid-review — is refused, so the package match is kept rather
+   than subsumed by ownership. `review-required` refuses an implementer run's
+   `done` only from states other than `in-review`. The server-side guarantee
+   that an implementer never closes its own ticket becomes the protocol's:
+   the close is written by the QA agent after an engine round, and the trail
    and the merge pin carry the evidence.
-3. `board.decision_park.from_state` (new, `alter table … add column if not
+4. `board.decision_park.from_state` (new, `alter table … add column if not
    exists`) is written by the transition into `needs-human`; the answer
    relay returns a bound park to it when it is in-flight, and to
    `LANE_INFLIGHT[run.lane]` otherwise. Without this an Architect's park from
-   `in-review` would resume into `in-design`.
+   `in-review` or `in-progress` would resume into `in-design`.
 
 `API.md` is updated in the lane table, the pick-order note, the terminal
 authority paragraph, and the answer route. The task ends with the change on
@@ -525,11 +595,16 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   Rejected: luna as the cheap tier (sonnet is served and already documented);
   keep `engine:codex` as an alias switch (nothing left for it to switch).
   Date/Author: 2026-09-21, human partner.
-- Decision: Outage handling under the fold keys on the ticket's trail, not
-  the registry: the sweep nudges an idle owner to retry and parks after three
-  consecutive outage comments.
+- Decision: An owner whose review is unfinished is recovered by the recover
+  pass of both ticks — nudged while idle without a terminal trail verdict,
+  parked after three nudges without progress — whether an outage marker
+  exists or not; stand-ins keep the registry-keyed streak.
   Rationale: a subagent has no registry meta, so the name-keyed streak has
-  no subject for owner reviews; stand-ins keep the registry streak.
+  no subject for owner reviews; a crash between the `in-review` write and
+  the dispatch leaves no marker at all; and the API tick runs none of the gh
+  passes, so a gh-only relay would leave API-owned reviews unrecovered.
+  Rejected: a marker-keyed relay in `board-sweep.sh` only (the first draft;
+  the adversarial spec review found both gaps).
   Date/Author: 2026-09-21.
 - Decision: The qa-loops skill retires; its body is the agent, its references
   live with the other board references under issue-tracker.
@@ -551,6 +626,43 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   the first task.
   Date/Author: 2026-09-21, human partner.
 
+- Decision: The board service gains the architect build edge
+  (`in-design → in-progress`) as part of this change.
+  Rationale: the approved promise — one seat from design to `done` — is
+  impossible on the API board without it, since the Architect hands off
+  there today; PR #136 recorded the edge as its open follow-up; it is the
+  size of the other service changes.
+  Rejected: narrow the API smoke to Executor-owned review (leaves the fold
+  half-applied on this repo's own board).
+  Date/Author: 2026-09-21, from the adversarial spec review.
+- Decision: `DONE` means merged; every `needs-human` the agent writes is
+  `PARKED` and preserves its worktree, scratch, and ledger.
+  Rationale: a cap park keeps unaccepted fixes and the ledger local for the
+  resumed review; removing the worktree would destroy them.
+  Rejected: the first draft's `DONE` covering cap parks.
+  Date/Author: 2026-09-21, from the adversarial spec review.
+- Decision: A handed-up panel runs from a dispatcher checkout fast-forwarded
+  to the requested head.
+  Rationale: the workflow cuts reviewer worktrees at the caller's HEAD; the
+  SHA alone only scopes the diff, so a stale checkout reads old files against
+  a new diff.
+  Date/Author: 2026-09-21, from the adversarial spec review.
+- Decision: `REVIEW_LEVEL`, `AUTO_MERGE`, and `TECH_DEBT_ISSUE` become
+  worker-bootstrap bindings for the IMPLEMENT and ARCHITECT roles.
+  Rationale: a spawned seat cannot inherit the dispatcher's environment, and
+  only the review dispatcher validated these; without them the merge kill
+  switch and the scrutiny floor would rest on the author's inference.
+  Date/Author: 2026-09-21, from the adversarial spec review.
+- Decision: The owner-first dedupe skips only for non-`QAGENT` owners; the
+  close rule stamps the package on a run's `in-review` write and matches it
+  on close in every lane; the ticket body file rides the brief; the Action
+  template's command path moves with the dispatcher.
+  Rationale: each closes a gap the adversarial spec review found — a stand-in
+  is itself a bound seat the streak machinery must reach; ownership alone
+  would subsume the package match; the API body exists only in the claim's
+  file; the template executed the deleted path.
+  Date/Author: 2026-09-21, from the adversarial spec review.
+
 ## Surprises & Discoveries
 
 - Observation: A subagent has no Workflow tool but can dispatch a child with
@@ -570,6 +682,15 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   Evidence: `~/.claude/clodex-settings.json` does not exist; the review
   dispatcher's `P_ENGINE_NAME` exports fill no placeholder.
 
+- Observation: The API board has no `in-design → in-progress` edge; the
+  Architect hands off there today.
+  Evidence: `board-transition.sh` refuses it under the API binding, and
+  arkho's `states.js` has no such row — PR #136's recorded follow-up.
+- Observation: The review workflow isolates each reviewer at the caller's
+  HEAD; `headCommit` only enters the diff command.
+  Evidence: `skills/review-code/workflows/code-review.js` `ISOLATION` and
+  the `DIFF` string.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
@@ -577,3 +698,10 @@ Pending — written at finish.
 ## Revision Notes
 
 - 2026-09-21: initial version from the brainstorming session.
+- 2026-09-21: adversarial spec review (needs-attention, ten findings) applied:
+  the API build edge; `PARKED` preserving the workspace; panel positioning at
+  the requested head; bootstrap bindings for the floor, auto-merge, and the
+  tech-debt issue; per-lane close with package stamping; recover-pass coverage
+  of `in-review` on both ticks; the `QAGENT` exemption from owner-first dedupe
+  and the stand-in's outage echo; the ticket body file in the brief; the
+  Action's command path.
