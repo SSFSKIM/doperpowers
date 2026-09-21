@@ -570,8 +570,9 @@ The compliance audit and its three classes; the audit-before-findings order;
 JOIN; the wave board schema and grading; the caps; the closing wave; the
 merge gate and `--match-head-commit`; observation mode; the scale review's
 verdict set (`done` or a corrective child); the `confident-ready` state;
-`board-answer.sh`; `board-transition.sh`'s legal table; `board-bind.sh`;
-the GitHub Action; the review bench under `tests/review-bench/`.
+`board-answer.sh`; `board-bind.sh`; the GitHub Action's trigger and
+permissions (only its command path changes); the review bench under
+`tests/review-bench/`.
 
 ## Delegated unknowns
 
