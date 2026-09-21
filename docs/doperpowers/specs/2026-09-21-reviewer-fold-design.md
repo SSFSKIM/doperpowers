@@ -192,7 +192,9 @@ Observable behavior. Commands run from the repository root unless stated.
    and its second traversal transmutes to `needs-human`; (f) `in-review →
    in-review` is legal for the owning run with a note and a `plan` pin; (g)
    `in-review → done` from a run is refused unless a `review-trail` event by
-   that run exists after its `in-review` entry. gh twins in `_board.py`:
+   that run exists after the latest event that entered `in-review` (first
+   entry, re-pin, or park return), with a negative test for a trail posted
+   before a re-pin. gh twins in `_board.py`:
    `(in-review, in-progress)` in `EDGE_NOTE_REQUIRED`, the `in-review`
    self-edge in `LEGAL`, `review-trail` among `board-comment.sh --kind`'s
    kinds. `API.md` records all seven. `npm test` in `board-service` passes
@@ -507,8 +509,10 @@ with their gh-binding twins in `_board.py` where named:
    joins `LEGAL` in `_board.py`, and `board-transition.sh` accepts `--plan`
    on it and posts the pin-minting comment the audit anchors on.
 7. Evidence-gated close. `in-review → done` from a run requires a typed
-   `review-trail` event on the ticket, written by that run after its
-   `in-review` entry; `board-comment.sh --kind review-trail` is the new
+   `review-trail` event on the ticket, written by that run after the latest
+   event that entered `in-review` — the first entry from `in-progress`, a
+   re-pin self-edge, or a park return, whichever is newest — so a trail
+   posted before a re-pin or a park cannot close the ticket; `board-comment.sh --kind review-trail` is the new
    kind, and the agent posts its trail through it. The server cannot tell
    the QA agent's `done` from the owner's own, but it can refuse a close
    with no review artifact in the log — the same shape as the epic's
@@ -866,3 +870,5 @@ Pending — written at finish.
   the `dismissed` trail record; the purpose reframed; the peer-seat
   rejection's real rationale; fast-forward before rebuild; park answers as
   ticket content.
+- 2026-09-21: critique debate converged (round two): the evidence-gated
+  close's predicate reads "after the latest event entering `in-review`".
