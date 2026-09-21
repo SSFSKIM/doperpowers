@@ -126,7 +126,8 @@ Observable behavior. Commands run from the repository root unless stated.
    `PR_NUMBER`, `PR_URL`, `BASE_REF`, `HEAD_REF`, `HEAD_SHA`, `REVIEW_MODE`,
    `REVIEW_LEVEL`, `REVIEW_CODE_DIR`, `IMPLEMENT_PROTOCOL_FILE`, `AUTO_MERGE`,
    `TECH_DEBT_ISSUE`, `ENV_TRACKER_ISSUE`, `ISSUE_LIST`, `CLOSURE_PACKAGE`,
-   `INTEGRATION_REF`, `TICKET_BODY_FILE`, `WORKER_NAME`. It binds no
+   `INTEGRATION_REF`, `TICKET_BODY_FILE`, `WORKER_NAME`, and `PROTOCOL_FILE`
+   (the dispatcher-pinned path of the stand-in protocol). It binds no
    `BIND_READY_FILE`, `MANIFEST_REF`, `RISK_MANIFEST`, `REPO_FACTS`, or
    `SKILL_FILE`. The stand-in's protocol is: position at the head under
    review, dispatch `doperpowers:qa-loop`, relay `NEEDS_PANEL` (positioning
@@ -821,6 +822,27 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   smokes and the trail will test.
   Date/Author: 2026-09-21, from the critique debate.
 
+- Decision: The lane-cap count and the API tick's review-recovery selector
+  read a seat meta key, `phase: review`, that `board-transition.sh` stamps on
+  the ticket's bound seat on entry to `in-review` and clears on exit; the gh
+  paths read ticket state directly.
+  Rationale: the API dispatcher and tick read only the seat registry, and a
+  ticket read per seat per tick is the cost the registry exists to avoid;
+  the transition script already resolves the bound seat for its live-owner
+  fence. Recorded from planning.
+  Date/Author: 2026-09-21.
+- Decision: The trail's re-pin record is `[trail] re-pin <path>@<sha> —
+  <delta>`, beside `[trail] dismissed …`.
+  Date/Author: 2026-09-21, from planning.
+- Decision: A pre-merge smoke bridges `agents/qa-loop.md` into the installed
+  plugin cache's `agents/` directory for its duration, because seats load
+  registered agents from the installed plugin, not from the branch worktree;
+  the bridge is removed at teardown and recorded in the report.
+  Rationale: the plugin installs only from the remote marketplace by version;
+  there is no local-checkout install route, and the smoke has to run before
+  the version lands on `main`.
+  Date/Author: 2026-09-21, from planning.
+
 ## Surprises & Discoveries
 
 - Observation: A subagent has no Workflow tool but can dispatch a child with
@@ -872,3 +894,6 @@ Pending — written at finish.
   ticket content.
 - 2026-09-21: critique debate converged (round two): the evidence-gated
   close's predicate reads "after the latest event entering `in-review`".
+- 2026-09-21: planning (doperpowers:writing-plans) — the stand-in roster gains
+  `PROTOCOL_FILE`; the `phase: review` seat meta key, the re-pin trail line,
+  and the smoke's plugin-cache bridge recorded as decisions.
