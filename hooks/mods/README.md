@@ -52,17 +52,7 @@ a mark, so a session without the output style is left alone. From then on:
   in the transcript, by an origin no hook may change.) Once a prompt in that
   form enters, the span reads `need input · answered: <answer>` and its
   buttons go; a resumed session reads its answers back from the transcript.
-- The band above the prompt repeats the newest question still open, its
-  choices on digit hotkeys that press from an empty prompt, with `[ reply… ]`
-  and `[ dismiss ]`; it stays until answered or dismissed, then shows the
-  next. Its line ends in `[ N open ]`, the count of questions still open,
-  which opens and closes the `need input` pane: every open question in the
-  order asked, each with its choices and the same `reply…` and `dismiss`,
-  so any of them is answered from there. A question whose label does not
-  show all of it has its head as a button that shows the question as
-  written under it (the engine scrolls no transcript for a plugin, so the
-  context comes to the pane rather than the pane leading to the row). Under
-  the band, `to-human view · [ full transcript ]` switches the whole
+- Above the prompt, `to-human view · [ full transcript ]` switches the whole
   transcript to the engine's drawing; the same button then reads
   `[ report only ]`.
 
@@ -90,15 +80,12 @@ transcript is drawn through the same hooks, so it folds too.
 
 Known limits: a literal mention of a tag in prose parses as a span, and a
 literal ◇ or ◆ followed by a space inside a need-input question or choice
-reads as a choice marker once the streaming hook has drawn it; unfold state,
-and the questions dismissed from the band, live in the module and
-reset on reload or a new session (answers do not: they are read from the
-transcript); a question is known by its first line, so two questions that
-open alike are answered together; a run's rows, and the queue's questions,
-are known by the order they first drew in, so a resumed session that redraws
-history out of order can put a button on the wrong row until the next redraw,
-and list the queue's questions out of the order asked for the rest of the
-session.
+reads as a choice marker once the streaming hook has drawn it; unfold state
+lives in the module and resets on reload or a new session (answers do not:
+they are read from the transcript); a question is known by its first line, so
+two questions that open alike are answered together; a run's rows are known
+by the order they first drew in, so a resumed session that redraws history
+out of order can put a button on the wrong row until the next redraw.
 
 ## agents (`agents.tsx`)
 

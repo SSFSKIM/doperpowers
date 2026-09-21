@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import type { Question, RowKind } from '../../hooks/mods/to-human'
-import { answerOf, answerText, openQuestions, parse, pending, questionHead, runEnd, runStart } from '../../hooks/mods/to-human'
+import type { RowKind } from '../../hooks/mods/to-human'
+import { answerOf, answerText, parse, questionHead, runEnd, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -209,21 +209,4 @@ describe('answers', () => {
     ).toEqual({ head: 'Which backend?', answer: 'Postgres' })
   })
 
-  const ask = (id: string, head: string): Question => ({ id, requestId: id, head, body: head, choices: [] })
-
-  test('openQuestions lists the questions still open in the order asked', async () => {
-    const questions = [ask('q1', 'First?'), ask('q2', 'Second?'), ask('q3', 'Third?')]
-
-    expect(openQuestions(questions, new Map(), new Set()).map((q) => q.id)).toEqual(['q1', 'q2', 'q3'])
-    expect(openQuestions(questions, new Map([['Second?', 'x']]), new Set(['First?'])).map((q) => q.id)).toEqual(['q3'])
-  })
-
-  test('pending is the newest question neither answered nor dismissed', async () => {
-    const questions = [ask('q1', 'First?'), ask('q2', 'Second?'), ask('q3', 'Third?')]
-
-    expect(pending(questions, new Map(), new Set())?.id).toBe('q3')
-    expect(pending(questions, new Map([['Third?', 'x']]), new Set())?.id).toBe('q2')
-    expect(pending(questions, new Map([['Third?', 'x']]), new Set(['Second?']))?.id).toBe('q1')
-    expect(pending(questions, new Map([['Third?', 'x'], ['First?', 'y']]), new Set(['Second?']))).toBeUndefined()
-  })
 })

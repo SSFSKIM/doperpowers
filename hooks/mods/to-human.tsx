@@ -16,10 +16,6 @@ export type Choice = {
   recommended: boolean
 }
 
-function sameChoices(a: readonly Choice[], b: readonly Choice[]): boolean {
-  return a.length === b.length && a.every((choice, i) => choice.text === b[i]?.text && choice.recommended === b[i]?.recommended)
-}
-
 export type Span = {
   kind: Kind
   text: string
@@ -277,10 +273,7 @@ export function runEnd(
  */
 export type Question = {
   id: string
-  requestId: string
   head: string
-  /** The question as written, its choices lifted out: what the queue shows on request. */
-  body: string
   choices: Choice[]
 }
 
@@ -327,30 +320,6 @@ export function answerOf(text: string): { head: string; answer: string } | undef
   return { head: match[1] as string, answer: (match[2] as string).trim() }
 }
 
-/**
- * The questions still open, in the order they were asked: what the queue
- * pane lists. `questions` is every question in the order it drew.
- */
-export function openQuestions(
-  questions: readonly Question[],
-  answered: ReadonlyMap<string, string>,
-  dismissed: ReadonlySet<string>,
-): Question[] {
-  return questions.filter((question) => !answered.has(question.head) && !dismissed.has(question.head))
-}
-
-/**
- * The question the band above the prompt shows: the newest still open.
- */
-export function pending(
-  questions: readonly Question[],
-  answered: ReadonlyMap<string, string>,
-  dismissed: ReadonlySet<string>,
-): Question | undefined {
-  const open = openQuestions(questions, answered, dismissed)
-  return open[open.length - 1]
-}
-
 const STYLE: Record<Kind, { label: string; color: string }> = {
   'to-human': { label: 'to human', color: 'cyan' },
   essential: { label: 'essential', color: 'yellow' },
@@ -360,36 +329,13 @@ const STYLE: Record<Kind, { label: string; color: string }> = {
 const TOGGLE = 'to-human-toggle'
 const MODE = 'to-human-mode'
 const ASK = 'need-input:'
-/** The queue pane's id, and the band button that opens and closes it. */
-const PANE = 'need-input'
-const QUEUE = 'need-input:queue'
-/** How much of a question's head a button or the band shows: a label does not wrap or cut. */
-const LABEL_MAX = 60
-
-function label(head: string): string {
-  return cut(head, LABEL_MAX)
-}
 
 /**
  * What a press on one of a question's buttons does: writes a choice as the
- * answer in the person's box, writes the answer's opening for them to
- * finish, takes the question off the band, or shows its body in the queue.
+ * answer in the person's box, or writes the answer's opening for them to
+ * finish.
  */
-type Press =
-  | { kind: 'answer'; question: Question; answer: string }
-  | { kind: 'reply'; question: Question }
-  | { kind: 'dismiss'; question: Question }
-  | { kind: 'show'; question: Question }
-
-/**
- * What the queue pane draws from: the questions still open, which of them
- * show their body, and the key each button is drawn under.
- */
-type Queue = {
-  open: Question[]
-  shown: ReadonlySet<string>
-  keyOf: (question: Question, press: Press) => string
-}
+type Press = { kind: 'answer'; question: Question; answer: string } | { kind: 'reply'; question: Question }
 
 /**
  * The question dialog's tool: its row in the transcript is the person's own
@@ -498,67 +444,6 @@ async function recordRow<E extends RenderInput>(
 }
 
 /**
- * The queue pane: every open question in the order asked, each with its
- * choices and the same `reply…` and `dismiss` its row and the band have,
- * so one is answered from here as from there. The head is a button that
- * shows the question as written under it, for the context a cut head lacks;
- * the engine scrolls no transcript for a plugin, so the context comes to
- * the pane instead of the pane leading to it.
- */
-function drawQueue($: EngineInterface, e: RenderInput<'Pane'>, queue: Queue): RenderElement {
-  const { Box, Text, Button } = $.ui.resolve(e)
-
-  if (queue.open.length === 0) {
-    return <Text dimColor>no open questions</Text>
-  }
-
-  return (
-    <Box flexDirection="column">
-      {queue.open.map((question, i) => {
-        // A question its label shows whole has nothing more to show.
-        const hasMore = question.body.trim() !== label(question.head)
-        const isShown = hasMore && queue.shown.has(question.id)
-        return (
-          <Box key={`q:${question.id}`} flexDirection="column" marginTop={i > 0 ? 1 : 0}>
-            <Box>
-              <Text color="magenta" bold>
-                {hasMore ? (isShown ? '▾ ' : '▸ ') : '● '}
-              </Text>
-              {hasMore ? (
-                <Button key={queue.keyOf(question, { kind: 'show', question })} label={label(question.head)} onPress={noop} />
-              ) : (
-                <Text wrap="truncate">{label(question.head)}</Text>
-              )}
-            </Box>
-            {isShown ? (
-              <Box paddingLeft={2}>
-                <Text wrap="wrap">{question.body}</Text>
-              </Box>
-            ) : null}
-            <Box flexDirection="column" paddingLeft={2}>
-              {question.choices.map((choice, n) => (
-                <Box>
-                  <Button
-                    key={queue.keyOf(question, { kind: 'answer', question, answer: choice.text })}
-                    label={`${n + 1}: ${choice.text}${choice.recommended ? ' ★' : ''}`}
-                    onPress={noop}
-                  />
-                </Box>
-              ))}
-              <Box>
-                <Button key={queue.keyOf(question, { kind: 'reply', question })} label="reply…" dimColor onPress={noop} />
-                <Text> </Text>
-                <Button key={queue.keyOf(question, { kind: 'dismiss', question })} label="dismiss" dimColor onPress={noop} />
-              </Box>
-            </Box>
-          </Box>
-        )
-      })}
-    </Box>
-  )
-}
-
-/**
  * Reads the answers the transcript holds into `answered`: every prompt of
  * the person's that names its question, the latest per question.
  */
@@ -578,8 +463,7 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
  * transcript by the band above the prompt. A `need-input` span draws its
- * choices as buttons, and the newest question still open is repeated in the
- * band, where a digit answers it from an empty prompt.
+ * choices as buttons under the question, in the message itself.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
@@ -587,19 +471,11 @@ export function registerToHuman(on: On) {
   const view: View = { unfolded: new Set(), order: [], rowOf: new Map(), isFolding: () => hasSeenMark && !isFullTranscript }
   const { unfolded, isFolding } = view
 
-  // The questions asked so far, in the order they drew; the answers the
-  // transcript holds, by the question's head; the questions taken off the
-  // band; and what each question button does, by its key.
-  const questions = new Map<string, Question>()
+  // The answers the transcript holds, by the question's head, and what
+  // each question button does, by its key.
   const answered = new Map<string, string>()
-  const dismissed = new Set<string>()
   const presses = new Map<string, Press>()
   let hasReadTranscript = false
-  // The queue pane: whether it is open, and the questions showing their body.
-  let isQueueOpen = false
-  const shown = new Set<string>()
-
-  const open = () => openQuestions([...questions.values()], answered, dismissed)
 
   // Where the engine expands a group itself (`--verbose`, the ctrl+o
   // transcript) each call is a row of its own: which group's run a call's
@@ -632,29 +508,12 @@ export function registerToHuman(on: On) {
       $.ui.invalidate('ui.render')
     }
 
-    // Questions are known whatever the view shows; a new one changes what
-    // the band shows, which was drawn before it.
-    const asked = parsed.spans.map((span, i): Question | undefined => {
-      if (span.kind !== 'need-input' || span.isOpen) {
-        return undefined
-      }
-      const id = `${e.requestId}:${i}`
-      const question = {
-        id,
-        requestId: e.requestId,
-        head: questionHead(span.text),
-        body: span.text,
-        choices: span.choices ?? [],
-      }
-      // The band and the queue drew before this question, or before its
-      // text and choices were whole: ask again when it is new or either changes.
-      const known = questions.get(id)
-      questions.set(id, question)
-      if (!known || known.body !== question.body || !sameChoices(known.choices, question.choices)) {
-        $.ui.invalidate('ui.render')
-      }
-      return question
-    })
+    // The questions this message asks, each once it is whole.
+    const asked = parsed.spans.map((span, i): Question | undefined =>
+      span.kind !== 'need-input' || span.isOpen
+        ? undefined
+        : { id: `${e.requestId}:${i}`, head: questionHead(span.text), choices: span.choices ?? [] },
+    )
     if (!hasReadTranscript && asked.some((question) => question !== undefined)) {
       // A resumed session's answers are in its transcript: read them once,
       // the first time a question draws.
@@ -807,61 +666,26 @@ export function registerToHuman(on: On) {
     return isFolding() && !answered ? recordRow($, e, next, view, { opens: false }) : next(e)
   })
 
-  // The band repeats the newest open question above the prompt, its choices
-  // on digit hotkeys, so it is answered from an empty prompt without a scroll
-  // back to the row; it stays until answered or dismissed.
+  // The band above the prompt names the view and switches it: the whole
+  // transcript as the engine draws it, or the report.
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
-    const opened = open()
-    const question = opened[opened.length - 1]
 
     return (
-      <Box flexDirection="column">
-        {question ? (
-          <Box flexDirection="column">
-            <Box>
-              <Text color="magenta" bold>
-                need input
-              </Text>
-              <Text dimColor> · </Text>
-              <Text wrap="truncate">{label(question.head)}</Text>
-              <Text dimColor> · </Text>
-              <Button key={QUEUE} label={`${opened.length} open`} dimColor onPress={noop} />
-            </Box>
-            <Box>
-              {question.choices.map((choice, n) => (
-                <Box marginRight={2}>
-                  <Button
-                    key={keyOf(question, { kind: 'answer', question, answer: choice.text })}
-                    label={`${choice.text}${choice.recommended ? ' ★' : ''}`}
-                    plain
-                    {...(n < 9 ? { hotkey: String(n + 1) } : {})}
-                    onPress={noop}
-                  />
-                </Box>
-              ))}
-              <Box marginRight={2}>
-                <Button key={keyOf(question, { kind: 'reply', question })} label="reply…" dimColor onPress={noop} />
-              </Box>
-              <Button key={keyOf(question, { kind: 'dismiss', question })} label="dismiss" dimColor onPress={noop} />
-            </Box>
-          </Box>
-        ) : null}
-        <Box>
-          <Text dimColor>to-human view · </Text>
-          <Button
-            key={MODE}
-            label={isFullTranscript ? 'report only' : 'full transcript'}
-            dimColor
-            onPress={() => {
-              isFullTranscript = !isFullTranscript
-            }}
-          />
-        </Box>
+      <Box>
+        <Text dimColor>to-human view · </Text>
+        <Button
+          key={MODE}
+          label={isFullTranscript ? 'report only' : 'full transcript'}
+          dimColor
+          onPress={() => {
+            isFullTranscript = !isFullTranscript
+          }}
+        />
       </Box>
     )
   })
@@ -893,46 +717,12 @@ export function registerToHuman(on: On) {
       return next(e)
     }
     const result = await next(e)
-    const { question } = press
-    if (press.kind === 'dismiss') {
-      dismissed.add(question.head)
-      $.ui.invalidate('ui.render')
-    } else if (press.kind === 'show') {
-      toggle(shown, question.id)
-      $.ui.invalidate('ui.render')
-    } else {
-      const text = answerText(question.head, press.kind === 'answer' ? press.answer : '')
-      const { isFilled } = await $.prompt.fill({ text })
-      if (!isFilled) {
-        $.ui.toast('The answer could not be put in the prompt')
-      }
+    const text = answerText(press.question.head, press.kind === 'answer' ? press.answer : '')
+    const { isFilled } = await $.prompt.fill({ text })
+    if (!isFilled) {
+      $.ui.toast('The answer could not be put in the prompt')
     }
     return result
-  })
-
-  // The queue pane lists every open question; the band's count button opens
-  // and closes it, and the person's own close (its mark, ctrl+x x) is noted.
-  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
-    // Drawn only while open: so a module reloaded under an open pane knows.
-    isQueueOpen = true
-    return drawQueue($, e, { open: open(), shown, keyOf })
-  })
-
-  on('ui.press', { element: QUEUE }, async ($, e, next) => {
-    const result = await next(e)
-    if (isQueueOpen) {
-      isQueueOpen = false
-      await $.ui.close({ id: PANE })
-    } else {
-      await $.ui.open({ id: PANE, title: 'need input' })
-      isQueueOpen = true
-    }
-    return result
-  })
-
-  on('ui.close', { id: PANE }, ($, e, next) => {
-    isQueueOpen = false
-    return next(e)
   })
 
   // An answer is a prompt that names its question, as a choice or `reply`
