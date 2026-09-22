@@ -7,10 +7,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SKILL="$REPO_ROOT/skills/qa-loops/SKILL.md"
-MANUAL="$REPO_ROOT/skills/qa-loops/references/operation-manual.md"
-BOOTSTRAP="$REPO_ROOT/skills/qa-loops/references/review-worker-bootstrap.md"
-WAVEBOARD="$REPO_ROOT/skills/qa-loops/references/wave-board.md"
-DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
+MANUAL="$REPO_ROOT/skills/issue-tracker/references/review-loop.md"
+BOOTSTRAP="$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md"
+WAVEBOARD="$REPO_ROOT/skills/issue-tracker/references/wave-board.md"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
 OLD_PROTOCOL="$REPO_ROOT/skills/qa-loops/references/review-worker-protocol.md"
 
 FAILURES=0
@@ -47,7 +47,7 @@ assert_before() {
 echo "runtime skill — identity and routing:"
 assert_file "$SKILL" "SKILL.md exists"
 assert_contains "$SKILL" "name: qa-loops" "skill frontmatter name is preserved"
-assert_contains "$SKILL" 'Operator or setup invocation: read `references/operation-manual.md` instead.' "operator invocations route to the reference manual"
+assert_contains "$SKILL" 'Operator or setup invocation: read `../issue-tracker/references/review-loop.md` instead.' "operator invocations route to the reference manual"
 assert_contains "$SKILL" "You are a REVIEW worker for PR #{{PR_NUMBER}}" "SKILL.md is the Review Worker Protocol"
 assert_not_contains "$SKILL" "## Adopting a repo (checklist)" "operator setup is absent from the runtime skill"
 assert_contains "$SKILL" "dispatch prompt" "SKILL.md points the worker at the dispatch prompt for the manifest snapshots"
@@ -326,10 +326,13 @@ else
 fi
 
 echo "dispatch wiring:"
-assert_contains "$DISPATCH" 'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"' "dispatcher renders the worker bootstrap"
+assert_contains "$DISPATCH" 'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-standin-bootstrap.md"' "dispatcher renders the worker bootstrap"
 assert_contains "$DISPATCH" "P_IMPLEMENT_PROTOCOL_FILE" "dispatcher binds the implement contract path"
 assert_not_contains "$DISPATCH" "review-worker-protocol.md" "dispatcher no longer bypasses the skill entrypoint"
 assert_missing "$OLD_PROTOCOL" "retired protocol reference file is removed"
+assert_contains "$REPO_ROOT/skills/issue-tracker/references/pr-review-dispatch.yml" \
+  "skills/issue-tracker/scripts/review-dispatch.sh" \
+  "the installed GH Action runs the dispatcher at its issue-tracker home"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

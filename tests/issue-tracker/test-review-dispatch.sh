@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Hermetic tests for review-dispatch.sh (the qa-loops trigger half).
+# Hermetic tests for review-dispatch.sh (the review loop's trigger half).
 #
 # Side channels stubbed: `gh` (canned per-PR JSON + a call log), `claude`
 # (agents view from a file), and the sminos CLI (one stub executable whose
@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
@@ -529,18 +529,22 @@ if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
 # The renderer used to substitute an unknown {{X}} with "", so a binding a mode
 # block asks for and no call site supplies shipped as a silent blank — and no
 # downstream assertion can tell "empty by design" from "erased". Driven through
-# a copy of the skill whose template carries one placeholder nothing fills
-# (the template path is derived from the script's own dir, so the copy IS the
-# lever); the sibling skills the dispatcher sources are symlinked back.
+# a copy of the dispatcher's own skill dir whose template carries one
+# placeholder nothing fills (the template path is derived from the script's
+# own dir, so the copy IS the lever); the sibling skill the dispatcher
+# sources (sminos) is symlinked back.
 echo "unrendered placeholder fails closed:"
-ALT_SKILLS="$TEST_ROOT/alt-skills"; mkdir -p "$ALT_SKILLS"
+ALT_SKILLS="$TEST_ROOT/alt-skills"
+mkdir -p "$ALT_SKILLS/issue-tracker/scripts" "$ALT_SKILLS/issue-tracker/references"
 ln -s "$REPO_ROOT/skills/sminos" "$ALT_SKILLS/sminos"
-cp -R "$REPO_ROOT/skills/qa-loops" "$ALT_SKILLS/qa-loops"
+cp "$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh" "$ALT_SKILLS/issue-tracker/scripts/review-dispatch.sh"
+cp "$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md" \
+    "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
 printf '\n- `FORGOTTEN_BINDING`: {{FORGOTTEN_BINDING}}\n' \
-    >> "$ALT_SKILLS/qa-loops/references/review-worker-bootstrap.md"
+    >> "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
 reset_state
 rm -f "$PROMPT_DIR/review-pr-5.prompt"
-if ALT_OUT="$("$ALT_SKILLS/qa-loops/scripts/review-dispatch.sh" 5 2>&1)"; then
+if ALT_OUT="$("$ALT_SKILLS/issue-tracker/scripts/review-dispatch.sh" 5 2>&1)"; then
     fail "a placeholder no call site supplies fails the dispatch"
 else
     pass "a placeholder no call site supplies fails the dispatch"

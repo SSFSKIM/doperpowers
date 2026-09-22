@@ -16,8 +16,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TEMPLATE="$REPO_ROOT/skills/qa-loops/references/review-worker-bootstrap.md"
-DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
+TEMPLATE="$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
 IMPL_TEMPLATE="$REPO_ROOT/skills/issue-tracker/references/worker-bootstrap.md"
 IMPL_DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh"
 
@@ -46,7 +46,7 @@ before() {  # before <name> <first> <second> <file>
 
 echo "honesty pins — the copied renderer still matches review-dispatch.sh:"
 t "dispatcher renders the same bootstrap template file" \
-  'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"' "$DISPATCH"
+  'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-standin-bootstrap.md"' "$DISPATCH"
 t "dispatcher carries the mode-fence regex literally" \
   't = re.sub(r"<!-- mode:([\w-]+) -->\n(.*?)<!-- /mode:\1 -->\n",' "$DISPATCH"
 t "the surviving block is the run's REVIEW_MODE" \
