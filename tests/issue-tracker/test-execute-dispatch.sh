@@ -470,6 +470,37 @@ PY
 : > "$SPAWN_LOG"
 out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
 assert_contains "$out" "architect cap reached" "an ARCHITECT-role worker on an in-progress ticket occupies the architect slot through the build"
+
+# ...and the slot comes back when the build ends, not when the seat does. The
+# Architect keeps its binding, its role and its run through the review of its
+# own PR — hours of reading a PR, not designing — so the lane's state tuple
+# stops at in-progress. Counting in-review here is what held the single
+# architect slot for the whole review and left the design queue idle behind it.
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["8"]["labels"] = ["status:in-review", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+: > "$SPAWN_LOG"
+out="$(ARCHITECT_MAX_CONCURRENT=1 run 9)"
+assert_not_contains "$out" "architect cap reached" "an ARCHITECT-role owner reviewing its own PR frees the architect slot"
+assert_contains "$out" "dispatched #9" "...so a second architect ticket dispatches at cap 1"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))          # back to the build
+s["issues"]["8"]["labels"] = ["status:in-progress", "priority:P0"]
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+d = os.environ["DAEMON_HOME"]
+for f in os.listdir(d):                                   # #9 just dispatched
+    if f.endswith(".json"):
+        try:
+            if str(json.load(open(os.path.join(d, f))).get("ticket")) == "9":
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+PY
+
 # ...and never the implement one: the role filter is the only thing keeping the
 # two lanes apart now that they share the in-progress state.
 python3 - <<'PY'
