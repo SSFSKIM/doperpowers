@@ -16,7 +16,12 @@
 #            or live-but-silent past the stall threshold on a state it has
 #            already handed off — and the dispatch pass fresh-dispatches it
 #            (re-orientation is cheap pre-verdict; a lingering binding is
-#            not, it holds the destination lane's slot).
+#            not, it holds the destination lane's slot). An in-review ticket's
+#            bound seat is the OWNER of the review it dispatched: same
+#            verdicts, same nudge-then-park ladder, but counted in its own
+#            key and bounded by the REVIEW's progress — a new [review-trail]
+#            comment on the ticket resets the count, so only a review that
+#            has actually stopped reaches the cap.
 #   CANCEL   live implement/spike workers whose ticket reached a terminal
 #            state (done/wontfix) → retire + a [board] termination comment.
 #            Park states never cancel (park = pause); review-pr-* and
@@ -166,14 +171,27 @@ log "[sweep $(date -u +%Y-%m-%dT%H:%M:%SZ)] tick — repo=$BOARD_REPO"
 
 # Bound implement/spike metas joined with ticket state, one line each:
 #   <state>|<ticket>|<uuid>|<status>|<current>|<updated>|<recoveries>|<is-epic>
+#   |<review-trail>|<review-recoveries>|<review-trail-seen>
 # Review/land species are excluded here once, for every pass.
-_bound_rows() {
-  python3 - <<'PY'
+#
+# The last three columns are the OWNER-IN-REVIEW ladder (pass_recover's
+# in-review arm): the ticket's count of `[review-trail]` comments — the
+# review's own progress signal, one per round — beside the seat's own count of
+# nudges and of the trail it last reset on. The comment count costs a gh read
+# per row, so it is taken only where it is read: for an `in-review` row, and
+# only when the caller asks (`_bound_rows trail`). Repo-side authors only, like
+# every other comment-driven decision this tick makes — on a public consumer
+# repo an outsider could otherwise post `[review-trail]` and keep an abandoned
+# review's ladder resetting forever.
+_bound_rows() {  # [trail]
+  T_TRAIL="${1:-}" python3 - <<'PY'
 import glob, json, os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
 tickets = B.snapshot()
 eps = B.epics(tickets)
+want_trail = bool(os.environ.get("T_TRAIL"))
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
     if p.endswith(".reply.json"):
         continue
@@ -192,10 +210,17 @@ for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
     tk = str(m.get("ticket") or "").lstrip("#")
     if not tk or tk not in tickets:
         continue
+    trail = "0"
+    if want_trail and tickets[tk]["state"] == "in-review":
+        trail = str(sum(1 for c in B.comments(tk)
+                        if (c.get("authorAssociation") or "") in TRUSTED
+                        and (c.get("body") or "").lstrip().startswith("[review-trail]")))
     print("|".join([tickets[tk]["state"], tk, m.get("uuid") or "",
                     m.get("status") or "", m.get("current") or m.get("uuid") or "",
                     str(m.get("updated") or ""), str(m.get("sweep_recoveries") or "0"),
-                    "1" if tk in eps else "0"]))
+                    "1" if tk in eps else "0", trail,
+                    str(m.get("review_recoveries") or "0"),
+                    str(m.get("review_trail_seen") or "0")]))
 PY
 }
 
@@ -285,32 +310,49 @@ EOF
   printf '%s' "$newest"
 }
 
-_recover() {  # <ticket> <uuid> <recoveries> <why>
-  local tk="$1" uuid="$2" recov="$3" why="$4"
+# <ticket> <uuid> <recoveries> <why> [review]
+#
+# The fifth argument selects the REVIEW ladder: its own counter
+# (`review_recoveries`, reset by the review's own progress — see pass_recover)
+# and a nudge that asks for the review rather than for the build. The two
+# ladders never read or write each other's counter: a seat recovered twice
+# mid-build and a review that stopped are different failures, and the second
+# gets its own three attempts.
+_recover() {
+  local tk="$1" uuid="$2" recov="$3" why="$4" kind="${5:-build}"
+  local key=sweep_recoveries role="worker" note prompt
+  if [ "$kind" = review ]; then
+    key=review_recoveries
+    role="owner"
+    note="auto-recovery exhausted: the owner $uuid was nudged $RECOVERY_CAP times about its review of this ticket's pull request and no new [review-trail] comment appeared between them ($why); review the PR by hand, or answer here to put the owner back on it"
+    prompt="SWEEP RECOVERY: your review of ticket #$tk's pull request has no live QA agent ($why). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it."
+  else
+    note="auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (sminos resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch"
+    prompt="SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead."
+  fi
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
-    log "[sweep] RECOVER: #$tk worker $uuid $why — cap ($RECOVERY_CAP) exhausted, parking needs-human"
+    log "[sweep] RECOVER: #$tk $role $uuid $why — cap ($RECOVERY_CAP) exhausted, parking needs-human"
     # The one sanctioned cross-session transition on a LIVE binding: a stalled
     # worker at cap still holds a working meta, and the live-binding guard
     # (board-transition.sh, dp#63) refuses everyone but the owner without a
     # stated override. Recovery-exhaustion is that stated case.
-    BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound worker $uuid ($why)" \
-      "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human \
-      "auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (sminos resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch" \
+    BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound $role $uuid ($why)" \
+      "$BOARD_SCRIPTS/board-transition.sh" "$tk" needs-human "$note" \
       >>"$SWEEP_LOG" 2>&1 \
       || log "[sweep] RECOVER: #$tk park transition FAILED (see log)"
     return
   fi
-  _meta_put "$uuid" sweep_recoveries "$((recov + 1))" \
+  _meta_put "$uuid" "$key" "$((recov + 1))" \
     || { log "[sweep] RECOVER: #$tk meta update failed — skipping resume"; return; }
-  log "[sweep] RECOVER: #$tk worker $uuid $why — resume attempt $((recov + 1))/$RECOVERY_CAP"
-  nohup "$SMINOS_CLI" resume --wait "$uuid" \
-    "SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead." \
-    >>"$SWEEP_LOG" 2>&1 &
+  log "[sweep] RECOVER: #$tk $role $uuid $why — resume attempt $((recov + 1))/$RECOVERY_CAP"
+  nohup "$SMINOS_CLI" resume --wait "$uuid" "$prompt" >>"$SWEEP_LOG" 2>&1 &
 }
 
 pass_recover() {
   local acted=0 state tk uuid status current recov fin tx age act
-  while IFS='|' read -r state tk uuid status current _ recov is_epic; do
+  local is_epic trail rrecov seen
+  while IFS='|' read -r state tk uuid status current _ recov is_epic \
+                        trail rrecov seen; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked|error) ;; *) [ "$status" = "idle" ] || continue ;; esac
     fin="$("$SMINOS_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
@@ -384,16 +426,57 @@ pass_recover() {
               fi
             fi ;;
         esac ;;
+      in-review)
+        # THE OWNER'S REVIEW. What is bound to an in-review ticket here is the
+        # seat that opened the PR — the review species own their own lifecycle
+        # and _bound_rows dropped them — and while its QA agent runs that seat
+        # is BUSY in the harness's eyes, which is why the same four verdicts
+        # read the same way as on an in-flight ticket.
+        #
+        # The ladder is the difference, and it is bounded by the REVIEW's
+        # progress rather than the seat's: the agent posts a [review-trail]
+        # comment at every round's end, so a count above the one this seat last
+        # saw means the nudges are landing and the count starts over. A review
+        # that keeps moving is never parked for taking a long time; one that
+        # has stopped reaches a human in three.
+        if [ "${trail:-0}" -gt "${seen:-0}" ]; then
+          log "[sweep] RECOVER: #$tk review trail advanced (${seen:-0} → ${trail:-0}) — the owner's recovery count starts over"
+          if _meta_put "$uuid" review_recoveries 0 review_trail_seen "$trail"; then
+            rrecov=0
+          else
+            log "[sweep] RECOVER: #$tk meta update failed — the review ladder stands where it was"
+          fi
+        fi
+        case "$fin" in
+          absent) _recover "$tk" "$uuid" "$rrecov" "the session is gone" review; acted=$((acted+1)) ;;
+          error)  _recover "$tk" "$uuid" "$rrecov" "the turn errored" review; acted=$((acted+1)) ;;
+          idle)   _recover "$tk" "$uuid" "$rrecov" "its turn ended with nothing running under it" review; acted=$((acted+1)) ;;
+          live)
+            # Same tree-wide silence signal as the in-flight arm: the QA agent
+            # writes under the seat's session directory, so a review in
+            # progress is never silent.
+            act="$(_activity_epoch "$current")"
+            if [ -n "$act" ]; then
+              age="$(( ( $(date +%s) - act ) / 60 ))"
+              if [ "$age" -ge "$STALL_MIN" ]; then
+                _recover "$tk" "$uuid" "$rrecov" "nothing has been written for ${age}m (stall threshold ${STALL_MIN}m)" review
+                acted=$((acted+1))
+              fi
+            fi ;;
+        esac ;;
     esac
   done <<EOF
-$(_bound_rows | grep -E '^(in-progress|in-design|ready-for-architect|ready-for-implementer)\|' || true)
+$(_bound_rows trail | grep -E '^(in-progress|in-design|in-review|ready-for-architect|ready-for-implementer)\|' || true)
 EOF
   log "[sweep] RECOVER: $acted acted"
 }
 
 pass_cancel() {
   local acted=0 state tk uuid status current recov fin
-  while IFS='|' read -r state tk uuid status current _ recov is_epic; do
+  # Every column is named, the ones this pass ignores included: the last
+  # variable of a `read` takes the whole remainder, so an unnamed tail would
+  # arrive inside `is_epic` the next time a column is added.
+  while IFS='|' read -r state tk uuid status current _ recov is_epic _ _ _; do
     [ -n "$uuid" ] || continue
     case "$status" in working|blocked) ;; *) continue ;; esac
     fin="$("$SMINOS_CLI" sync "$uuid" 2>/dev/null)" || fin="noop"
@@ -1185,7 +1268,8 @@ PY
 
 pass_relay() {
   local acted=0 state tk uuid status current recov fin tx turn_end verdict cid
-  while IFS='|' read -r state tk uuid status current _ recov is_epic; do
+  # Named to the end of the row for the reason pass_cancel names its tail.
+  while IFS='|' read -r state tk uuid status current _ recov is_epic _ _ _; do
     [ -n "$uuid" ] || continue
     # Normalize first: a --no-wait worker that parked leaves its meta
     # status=working forever (nothing else syncs it). Only a genuinely
