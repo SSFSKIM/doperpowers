@@ -30,7 +30,8 @@ dispatched into. Test-driven development applies to testable logic.
 The whole-branch review — subagent-driven-execution's final review, or for
 a spec worked in order doperpowers:review-code at the rung the spec's
 verification entry names — and its fix loop are yours unless the brief says
-a review loop owns them (the board's does, from the PR on): then stop after
+a review loop owns them (on the board that loop is the owning
+seat's QA agent, from the PR on): then stop after
 the last frontier review or the last milestone and leave the branch review
 to it — but first disposition what that review would have triaged. The task
 reviews' deferred Minor findings live in the ledger, which the loop's
