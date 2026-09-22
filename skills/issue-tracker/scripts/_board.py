@@ -53,6 +53,13 @@ EDGE_NOTE_REQUIRED = {
     # on another one records the blocked-by edge and hands the ticket back to
     # its own queue. The note names the blocker and any banked branch.
     ("in-progress", "ready-for-implementer"),
+    # The repair-and-rebuild (the review fold): an Architect owner whose review
+    # turned up a design gap repairs the plan and builds again, without handing
+    # the ticket back. Counted by the subtraction below — under the old design
+    # this path WAS the counted in-review → ready-for-architect escalation, and
+    # folding the reviewer into the owner must not turn it into an unbounded
+    # self-loop for the seat with the most authorship stake.
+    ("in-review", "in-progress"),
 }
 # Convergence-counted escalation edges: a SECOND traversal of the same
 # edge on one ticket converts to a needs-human park (board-transition

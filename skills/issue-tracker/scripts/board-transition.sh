@@ -457,6 +457,10 @@ if (cur, to) in B.CONVERGENCE_EDGES:
                 "mechanical bounce; this traversal's position: %s — see "
                 "the comment trail for the first" % (cur, to, note))
         to = "needs-human"
+        # The transmuted write is not the traversal the worker asked for — the
+        # repaired plan is not in force — so it mints no pin. Clearing T_PLAN
+        # is what skips both the pin gates and the plan: meta write below.
+        env["T_PLAN"] = ""
 
 if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
