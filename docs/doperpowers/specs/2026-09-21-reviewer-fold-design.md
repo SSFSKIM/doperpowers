@@ -83,9 +83,12 @@ Observable behavior. Commands run from the repository root unless stated.
    `Workflow(` and `{{` do not appear in the body: the agent has no Workflow
    tool and no placeholders.
 3. **Engine step, single rungs.** The body instructs: at `low`, `medium`,
-   `high`, dispatch `doperpowers:reviewer-<rung>` through the Agent tool with
-   `isolation: "worktree"`, the brief `skills/review-code/SKILL.md` gives for a
-   single reviewer (base, merge base, head, the diff command), an optional
+   `high`, dispatch `doperpowers:reviewer-<rung>` through the Agent tool
+   without isolation, the brief `skills/review-code/SKILL.md` gives for a
+   single reviewer (base, merge base, head, the diff command) prefixed by the
+   location line the review workflow's `repo` argument renders (`The
+   repository under review is at <path>: run git with -C <path> and read
+   files under that path.`), an optional
    `Lens for this review:` line, and the anti-recursion sentence; read the
    rubric's text result (`## Findings` with `[P0]`–`[P3]` items, `## Verdict`);
    a reviewer that returned no findings but whose verdict names nothing it
@@ -99,7 +102,7 @@ Observable behavior. Commands run from the repository root unless stated.
    with the brief this spec names, stay bound; on `NEEDS_PANEL` fetch the
    branch, fast-forward the checkout to the requested `headCommit` and verify
    `git rev-parse HEAD` prints it, run
-   `Workflow({ scriptPath: "<review-code>/workflows/code-review.js", args: {…} })`
+   `Workflow({ scriptPath: "<review-code>/workflows/code-review.js", args: {…, repo: "<that checkout's absolute path>"} })`
    in the background, write the result to a file under the report directory,
    resume the agent with the path; on `ESCALATE` answer per the rule for its
    kind — a spec conflict by which-governs or one re-pin through
@@ -268,9 +271,15 @@ these differences:
   board, the human on their next wake, and — for exactly three kinds — your
   dispatcher." The binding barrier paragraph is gone: there is no registry
   race for a subagent.
-- **Workspace.** The agent is dispatched with `isolation: "worktree"`, so it
-  starts in a fresh worktree at the dispatcher's HEAD — the PR head on the
-  ticket branch for an owner, the head the stand-in positioned at otherwise.
+- **Workspace.** The agent is dispatched with `isolation: "worktree"`, which
+  gives it a worktree of its own — cut at the repository's main checkout
+  HEAD, not the dispatcher's (Surprises, Task 11). Its first act is to
+  position that worktree at the brief's head: `git fetch origin <head
+  branch>` then `git checkout --detach <head>`, and `git rev-parse HEAD` must
+  print the brief's `head:`; a head the fetch cannot reach is a park. From
+  there the no-ref-switch rule holds: the range it reviews is the brief's,
+  and a worktree moved under a live fixer wave loses the wave. The brief
+  carries `head branch:` for this and for the push chain.
   It creates one scratch directory with `mktemp -d` outside that worktree
   for wave boards, findings files, and the accepted-commit ledger, and never
   names that path to a fixer. The dispatcher removes the worktree after a
@@ -333,8 +342,10 @@ findings file path, the escalation answer, or the park's answers verbatim.
 
 Level is the highest of the spec's verification rung, the floor, and the size
 rule, as today. At `low`, `medium`, and `high` the agent dispatches
-`doperpowers:reviewer-<rung>` through the Agent tool, `isolation: "worktree"`,
-with the single-reviewer brief from `skills/review-code/SKILL.md`, the
+`doperpowers:reviewer-<rung>` through the Agent tool without isolation, the
+location line naming the agent's own worktree (the shape the review
+workflow's `repo` argument renders), the single-reviewer brief from
+`skills/review-code/SKILL.md`, the
 anti-recursion sentence the workflow adds, and, for lensed extra calls, a
 `Lens for this review:` line. It launches the round's calls in the
 background, writes the compliance audit, and only then reads their returns.
@@ -672,8 +683,9 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   hand on the merge-side states).
   Date/Author: 2026-09-21.
 - Decision: Single rungs by direct dispatch of the registered reviewer agents
-  with worktree isolation and text results; the panel handed up as
-  `NEEDS_PANEL`.
+  with text results, pointed at the agent's worktree by the location line
+  rather than isolated (isolation would cut them at the main checkout —
+  see the 2026-09-22 decision below); the panel handed up as `NEEDS_PANEL`.
   Rationale: subagents have no Workflow tool (probe-verified 2026-09-09 and
   again 2026-09-20) but can dispatch an isolated child (probe 2026-09-20);
   the Agent tool takes no output schema, so the rubric's text is what the
@@ -762,11 +774,33 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   Rejected: the first draft's `DONE` covering cap parks.
   Date/Author: 2026-09-21, from the adversarial spec review.
 - Decision: A handed-up panel runs from a dispatcher checkout fast-forwarded
-  to the requested head.
-  Rationale: the workflow cuts reviewer worktrees at the caller's HEAD; the
-  SHA alone only scopes the diff, so a stale checkout reads old files against
-  a new diff.
-  Date/Author: 2026-09-21, from the adversarial spec review.
+  to the requested head, and the `Workflow` call passes that checkout's
+  absolute path as `repo`.
+  Rationale: the SHA alone only scopes the diff, so a stale checkout reads
+  old files against a new diff; and without `repo` the workflow isolates
+  each lane at the repository's main checkout HEAD, not the caller's
+  (Surprises, Task 11), so the fast-forward alone positions nothing the
+  lanes read. `repo` is the workflow's existing switch for exactly this.
+  Date/Author: 2026-09-21, from the adversarial spec review; `repo` added
+  2026-09-22 from the gh smoke.
+- Decision: The harness's worktree isolation is kept for the QA agent as a
+  workspace of its own, and positioning at the reviewed head is the agent's
+  own first act; reviewers and the panel are pointed at a path instead of
+  isolated.
+  Rationale: `isolation: "worktree"` cuts every child at the repository's
+  main checkout HEAD (two live drills, two controlled probes, and the plan
+  author's own probe, 2026-09-22). The agent's push chain already requires
+  its worktree to equal `origin/<head branch>` before any wave, so a fetch
+  and detached checkout to the brief's head is the same act one step
+  earlier, not a new ref-switch. Reviewers hold no Edit or Write tool, and
+  the wave-boundary cleanliness checks catch a stray write; the review
+  workflow's `repo` argument already renders the location line and drops
+  isolation for exactly this case, so one mechanism serves both rungs.
+  Rejected: the owner creating a detached worktree at the head and passing
+  its path — it works, but it moves worktree lifecycle into three protocols
+  and their tests for a one-line difference in the agent; sharing the
+  owner's checkout — fixer waves would mutate the owner's tree under it.
+  Date/Author: 2026-09-22, from the gh smoke's BLOCKED return.
 - Decision: `REVIEW_LEVEL`, `AUTO_MERGE`, and `TECH_DEBT_ISSUE` become
   worker-bootstrap bindings for the IMPLEMENT and ARCHITECT roles.
   Rationale: a spawned seat cannot inherit the dispatcher's environment, and
@@ -1243,3 +1277,4 @@ Pending — written at finish.
   observation are contradicted and await the plan author's repair. Everything
   in the lane ahead of the review worked end to end on one bound seat.
 - 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced across `skills/issue-tracker/SKILL.md` and `references/*.md` by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. The board scripts' comments lost the retired actor names too, but they are maintainer-facing and carry no fence: `review lane` stays there for the sweep's dispatch pass, the `in-review` state, and the server's `qagent` lane. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.
+- 2026-09-22: Task 11 repair — the QA agent positions its isolated worktree at the brief's head itself; single-rung reviewers and the panel are pointed at a path (`repo`), not isolated. Task 13 carries the change; Tasks 11 and 12 re-run after it.

@@ -440,3 +440,29 @@ select count(*) from board.run r join board.ticket t on t.id = r.ticket_id
 **Tests:** observed behavior only.
 
 **Decisions:** the deployed service serves boards per repo name, so a scratch name isolates the smoke from this repository's live queue while exercising the API binding end to end; the first real ticket on this repository's board follows the merge. A stuck ticket is returned through `needs-human` with the evidence, never force-closed.
+
+---
+
+### Task 13: Positioning — the QA agent finds the reviewed head itself
+
+**Files:**
+- Modify: `agents/qa-loop.md` (Workspace, Engine step 2), `agents/codex/qa-loop.toml` (mirror)
+- Modify: `skills/issue-tracker/references/architect-worker-protocol.md`, `implement-worker-protocol.md`, `review-standin-protocol.md` (the dispatch sentence, the brief's `head branch:` line, the `repo` arg on the panel call)
+- Modify: `tests/issue-tracker/test-qa-loop-agent.sh`, `test-protocol-content.sh`, `test-review-standin.sh`
+- Test: those three, `tests/codex/test-native-agents.py`, `scripts/lint-shell.sh`
+
+**Interfaces:**
+- Consumes: the spec's 2026-09-22 positioning decision and the Task 11 Surprises entry; `skills/review-code/workflows/code-review.js`'s `repo` argument and the `WHERE` line it renders.
+- Produces: brief line `head branch: <headRefName>` (after `head:`; from `gh pr view <n> --json headRefName`; in scale mode the integration ref); the agent's positioning act; the location line on single-rung reviewer dispatches; `repo` on every panel `Workflow` call.
+
+**Deliverables:**
+- [ ] `agents/qa-loop.md` Workspace: the worktree is cut at the repository's main checkout HEAD; first act `git fetch origin <head branch>` then `git checkout --detach <head>`; `git rev-parse HEAD` must print the brief's `head:`, an unreachable head parks; the no-ref-switch rule applies from that point. Engine step 2: each reviewer run is an Agent call WITHOUT `isolation`, its prompt prefixed by `The repository under review is at <this worktree's absolute path>: run git with -C <path> and read files under that path.` (the exact shape `code-review.js` renders as `WHERE`), then the existing brief. Mirror in the toml. Commit: `qa-loop: the agent positions itself at the reviewed head; reviewers are pointed at its worktree`
+- [ ] Owner and stand-in protocols: the dispatch sentence reads that the agent's worktree is cut at the main checkout and the agent positions itself at `head:`; the brief gains `head branch:`; the panel `Workflow` args gain `repo: "<absolute path of the checkout you fast-forwarded>"`. Commit: `owner protocols: the brief names the head branch and the panel names its checkout`
+- [ ] Tests: `test-qa-loop-agent.sh` asserts the positioning act, the `head branch` read, the `The repository under review is at` line in the engine step, and that `isolation` does not appear in the engine step (it may appear in Workspace); `test-protocol-content.sh` and `test-review-standin.sh` assert the `head branch:` brief line and `repo:` in the panel call. Commit with the protocol change.
+- [ ] Re-run Task 11: both drills on the kept scratch repository `SSFSKIM/fold-smoke-0922` with fresh tickets (the parked #2 and #3 are closed `wontfix` with a note pointing at the new ones); the plugin-cache staging and restore exactly as Task 11 specifies. Evidence as Task 11 lists. Then Task 12 under its own gate.
+
+**Tests:** structural (above) plus the live drills.
+
+**Decisions:**
+- One mechanism for both rungs: the location line is what `repo` renders, so single-rung and panel reviewers are positioned the same way.
+- The agent keeps harness isolation for its workspace; only its starting commit was wrong, and the push chain already required it to equal the remote head before a wave. Not chosen: the owner provisioning a detached worktree and passing its path (three protocols and lifecycle for a one-line difference), or sharing the owner's checkout (waves would mutate it).
