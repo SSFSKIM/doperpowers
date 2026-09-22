@@ -2164,7 +2164,7 @@ assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse
     "$(git -C "$LOCAL_REPO" rev-parse origin/main)" \
     "with no branch: of its own it falls back to the default branch, not the previous cycle's integration ref"
 NEXT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
-assert_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: main' "and its integration ref collapses onto the base — the stand-in's `aggregate range: none`"
+assert_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: main' "and its integration ref collapses onto the base, which is the stand-in's aggregate-range-none case"
 assert_not_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: epic/integration' "no trace of the cleared integration ref reaches the worker"
 
 # ---- the scale selector needs a closure package, not any pr: value ------------
