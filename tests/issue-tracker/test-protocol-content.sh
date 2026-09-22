@@ -105,8 +105,11 @@ assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-bloc
 # PARENT_PIN and TICKET_BODY_FILE are the API binding's two additions: the
 # parent-contract window a claim was cut against (no read a worker may make
 # hands it over), and the assignment file the claim delivered in place of a
-# ticket-body read route.
-want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}} {{TICKET_BODY_FILE}}"
+# ticket-body read route. AUTO_MERGE, REVIEW_LEVEL and TECH_DEBT_ISSUE are the
+# review the owner runs on its own PR: the switch, the floor, and the sink for
+# a finding it logs rather than fixes — dispatcher-owned, like every other
+# name here, because none of them is the worker's to choose.
+want_boot="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_LEVEL}} {{ROLE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -234,6 +237,11 @@ assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the ma
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
 assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
 assert_not_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: retired land template stays absent"
+# The two review knobs the execute dispatcher reads, stated in the values a
+# worker and an operator actually see — the bootstrap renders `off`/`medium`,
+# and a table that spelled the switch `false` made the operator translate.
+assert_contains "$sweepdoc" '| `AUTO_MERGE_ENABLED` | off |' "sweep-setup: the merge switch's default reads as the worker sees it"
+assert_contains "$sweepdoc" '| `REVIEW_LEVEL` | medium |' "sweep-setup: the review floor knob carries its default"
 tbody="$(cat "$REFS/issue-dispatch.yml")"
 assert_contains "$tbody" "permissions: {}" "issue-dispatch.yml: zero-permission job"
 assert_not_contains "$tbody" "uses: actions/checkout" "issue-dispatch.yml: never checks out repo code"
