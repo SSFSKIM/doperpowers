@@ -29,6 +29,18 @@ assert_not_contains() {
     if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; else pass "$3"; fi
 }
+# Order is behavior: the fleet view is the only place a seat in review says it
+# is reviewing, and a status line written after the dispatch — or not at all,
+# which is what two of sixteen treatment sessions did in the task-8 eval —
+# leaves the seat looking idle for the whole review. assert_order pins the
+# three acts of the closing turn to their sequence.
+assert_order() {  # <file> <earlier> <later> <label>
+    local a b
+    a="$(grep -nF -- "$2" "$1" | head -1 | cut -d: -f1)"
+    b="$(grep -nF -- "$3" "$1" | head -1 | cut -d: -f1)"
+    if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then pass "$4"; else
+        fail "$4"; echo "    '$2' at line ${a:-none}, '$3' at line ${b:-none}"; fi
+}
 
 echo "protocol content:"
 [ -f "$PROTO" ] || { echo "missing $PROTO"; exit 1; }
@@ -299,6 +311,16 @@ echo "the owner's QA agent (architect side):"
 assert_contains "$arch" "doperpowers:qa-loop" "architect: the review runs as the seat's own qa-loop agent"
 assert_contains "$arch" 'isolation: "worktree"' "...cut as a fresh worktree at the seat's head"
 assert_contains "$arch" "mode: pr" "...briefed with the mode line the agent reads first"
+assert_contains "$arch" "your dispatcher answers escalations; return for them" \
+    "...and the sentence that tells the agent where its escalations go"
+for _act in '**1. Say what this seat is doing.**' '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**'; do
+    assert_contains "$arch" "$_act" "architect: the closing turn is a numbered act — $_act"
+done
+assert_order "$ARCHITECT" 'sminos status <your alias> "reviewing: <PR URL>"' \
+    '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
+    "architect: the status line comes BEFORE the dispatch"
+assert_order "$ARCHITECT" '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**' \
+    "...and the turn ends after it"
 assert_contains "$arch" "review level floor:" "...relaying the dispatcher-owned level floor"
 assert_contains "$arch" "auto-merge:" "...and the auto-merge switch"
 for _ret in "NEEDS_PANEL level=" "ESCALATE kind=spec-conflict" "ESCALATE kind=design-gap" \
@@ -330,6 +352,13 @@ assert_not_contains "$arch" "scale-review dispatcher" \
 echo "the owner's QA agent (executor side):"
 assert_contains "$proto" "doperpowers:qa-loop" "executor: the review runs as the seat's own qa-loop agent"
 assert_contains "$proto" 'isolation: "worktree"' "...cut as a fresh worktree at the seat's head"
+assert_contains "$proto" "your dispatcher answers escalations; return for them" \
+    "...and the sentence that tells the agent where its escalations go"
+assert_order "$PROTO" 'sminos status <your alias> "reviewing: <PR URL>"' \
+    '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
+    "executor: the status line comes BEFORE the dispatch"
+assert_order "$PROTO" '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**' \
+    "...and the turn ends after it"
 assert_contains "$proto" 'ready-for-architect "<impasse>"' \
     "executor: a design gap or a pinned-plan spec conflict returns to the architect lane"
 assert_contains "$proto" 'reply `wave`' "executor: no dismissal channel — the finding waves like any other"

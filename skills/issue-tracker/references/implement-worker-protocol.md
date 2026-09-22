@@ -295,9 +295,14 @@ the spec.
 
 From the PR on the review is YOURS to run — as a subagent, not as a
 handoff. You stay bound to the ticket through it, and your scope ends at
-`done`. Say what this seat is doing:
+`done`. Three acts close this turn, in this order:
+
+**1. Say what this seat is doing.**
 `{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"`
-then dispatch ONE `doperpowers:qa-loop` agent through the Agent tool with
+(the CLI is not on PATH; `sminos list` shows your seat's name). The fleet
+view is the only place a seat in review says so.
+
+**2. Dispatch ONE `doperpowers:qa-loop` agent** through the Agent tool with
 `isolation: "worktree"` — it starts in a fresh worktree cut at YOUR head.
 Its brief carries one line each, in this order:
 
@@ -320,9 +325,11 @@ Relay `review level floor` and `auto-merge` VERBATIM from your bindings:
 the agent states both in the review trail, so a relay that lowered the
 floor or flipped the switch is visible on the PR. The report and any
 panel findings live in YOUR worktree, never in the agent's — a `DONE`
-return removes that one. Then end your turn: while the agent runs your
-session is busy in the harness's eyes even though your turn has ended,
-so the sweep leaves you alone, and the return arrives as a notification.
+return removes that one.
+
+**3. End your turn.** While the agent runs your session is busy in the
+harness's eyes even though your turn has ended, so the sweep leaves you
+alone, and the return arrives as a notification that starts your next one.
 
 ## Answering the review
 
