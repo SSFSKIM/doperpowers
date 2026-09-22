@@ -78,7 +78,10 @@ assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
 echo "placeholders:"
 # The protocol keeps only the tokens its own clauses use; the worker reads
 # its ticket and the repo-facts manifest itself (no inlined bodies).
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+# AUTO_MERGE, REVIEW_LEVEL and TECH_DEBT_ISSUE joined the set with the QA
+# agent: the Executor relays them into the brief of the review it dispatches
+# on its own PR, and a spawned seat cannot read them from anywhere else.
+want="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}} {{REVIEW_LEVEL}} {{TECH_DEBT_ISSUE}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
@@ -227,7 +230,10 @@ assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
 echo "unattended sweep (dispatch is event/cron-driven, ritual unchanged):"
-assert_contains "$proto" "review loop deliberately skips drafts" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
+# The consequence, not the mechanism: a draft used to mean "no reviewer
+# attaches"; now the seat is the one that would dispatch, so the same
+# shakedown finding reads as "you dispatch no review over a draft".
+assert_contains "$proto" "you dispatch no review over one" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
 assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
 assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
 assert_contains "$tracker" "execute-dispatch.sh" "tracker: ritual names its mechanical executable"
@@ -320,6 +326,24 @@ assert_not_contains "$arch" "never review your own pull request" \
     "...in any phrasing"
 assert_not_contains "$arch" "scale-review dispatcher" \
     "...an owned epic's scale review has no separate dispatcher"
+
+echo "the owner's QA agent (executor side):"
+assert_contains "$proto" "doperpowers:qa-loop" "executor: the review runs as the seat's own qa-loop agent"
+assert_contains "$proto" 'isolation: "worktree"' "...cut as a fresh worktree at the seat's head"
+assert_contains "$proto" 'ready-for-architect "<impasse>"' \
+    "executor: a design gap or a pinned-plan spec conflict returns to the architect lane"
+assert_contains "$proto" 'reply `wave`' "executor: no dismissal channel — the finding waves like any other"
+for _ret in "NEEDS_PANEL level=" "ESCALATE kind=spec-conflict" "ESCALATE kind=design-gap" \
+            "ESCALATE kind=dismissal" "PARKED" "ENGINE-UNAVAILABLE"; do
+    assert_contains "$proto" "$_ret" "executor: the \`$_ret\` return has an answer"
+done
+assert_contains "$proto" "git worktree remove" "executor: and \`DONE\` is where the agent's worktree is removed"
+assert_contains "$proto" "never grade, triage, or merge" \
+    "executor authority: the owner answers its review's escalations, never grades them"
+assert_not_contains "$proto" "never review your own pull request" \
+    "...and the blanket self-review prohibition is gone here too"
+assert_not_contains "$proto" "scale-review dispatcher" \
+    "...an Executor never meets a scale-review dispatcher"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
 REVIEW="$REPO_ROOT/agents/qa-loop.md"
