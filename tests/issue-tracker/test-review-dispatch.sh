@@ -486,6 +486,7 @@ assert_not_contains "$PROMPT" "risk-surface manifest" "no risk-surface snapshot 
 assert_not_contains "$PROMPT" "repo-facts manifest" "no repo-facts snapshot rides the prompt"
 assert_not_contains "$PROMPT" "MANIFEST_REF" "no manifest ref binding survives"
 assert_not_contains "$PROMPT" "BIND_READY" "no startup barrier rides the prompt"
+assert_not_contains "$PROMPT" "SKILL_FILE" "no skill path rides the prompt — the stand-in follows a pinned protocol"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survives"
 assert_contains "$PROMPT" '`REVIEW_MODE`: pr' "leaf prompt binds the ordinary pr mode"
 assert_not_contains "$PROMPT" "recomposition epic" "leaf prompt carries none of the scale variant's framing"
