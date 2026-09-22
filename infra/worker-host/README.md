@@ -156,16 +156,14 @@ timer is re-armed by cloud-init and its `ExecCondition` finds the seeded
 
 **Upgrading an existing body (layer-3 state is persistent by design).** The
 volume outlives every template fix, so a body seeded from an older
-`env.example` keeps the old values until an operator edits them. One such
-change so far: `WORKER_ENGINE=codex` left the template when the lanes moved
-to their own claude defaults — on any body seeded before that, remove the
-`WORKER_ENGINE` line from BOTH `/data/worker/.env` and
-`/data/worker/runner/.env` (the runner file is a §2.6 *copy*, not a symlink;
-editing only `~/.env` leaves event-triggered dispatches on the old route),
-then restart the runner so it rereads its env:
+`env.example` keeps the old values until an operator edits them. Change a
+value in BOTH `/data/worker/.env` and `/data/worker/runner/.env` (the runner
+file is a §2.6 *copy*, not a symlink; editing only `~/.env` leaves
+event-triggered dispatches on the old value), then restart the runner so it
+rereads its env:
 `cd /data/worker/runner && sudo ./svc.sh stop && sudo ./svc.sh start`.
-Verify: `grep WORKER_ENGINE ~/.env ~/runner/.env` returns nothing, and the
-next label-less implement dispatch spawns a plain-Claude worker.
+Verify against a live dispatch, not the file alone. A key the pipeline has
+since retired is inert wherever it lingers — drop it on the next edit.
 
 ## 5. Triage tenant (`application-agents/triaging-feedback` poller)
 

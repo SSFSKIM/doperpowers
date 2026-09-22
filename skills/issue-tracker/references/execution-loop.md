@@ -128,9 +128,6 @@ What changes and what doesn't:
   registered `--spawned-by <spike>` with honest gate-triage against the
   Ticket Gate; murkier outcomes stay a Recommendation line for the
   human.
-- The engine label picks a model route only (web reach is harness-level —
-  every worker has it); choose per the work's model fit, mechanism
-  unchanged.
 - Category labels are plain words by design (`bug`/`enhancement` always
   were) — in a consumer repo that already used a descriptive `spike`
   label, existing tickets carrying it now read as spike-lane tickets:

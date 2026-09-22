@@ -247,9 +247,7 @@ gh for status labels); registering decomposition children (--parent
 directly. NEVER: implementation code in your own hands
 (your plan-executor writes it), terminal states
 (the ONE exception is a recomposition verdict on your own epic, below),
-other tickets' states, reviewing your own pull request. Your dispatch
-ignores engine:* labels by design (plan authorship is never
-label-routed) — a route question is not yours to answer.
+other tickets' states, reviewing your own pull request.
 
 **Parent-contract contradiction ([parent-impact]).** Your ticket can itself
 be a CHILD: `parent-pin: #<parent> @ <hash>` in its `board:meta` names the

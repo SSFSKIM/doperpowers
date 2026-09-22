@@ -308,14 +308,8 @@ pick by repo visibility:
    (or `wontfix "superseded by PR"`); if work genuinely remains, dispatch as
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
-2. Resolve the ENGINE — ticket label `engine:claude`/`engine:codex` →
-   `$WORKER_ENGINE` → default `claude`. Every worker is ONE species — a
-   Claude-harness daemon; the engine names only its model route (`codex` =
-   the clodex gateway settings, GPT models through the local proxy;
-   `claude` = plain Claude models). Label `engine:codex` to put one ticket
-   back on the gateway; `engine:claude` is redundant only while no
-   `WORKER_ENGINE` override is set — under `WORKER_ENGINE=codex` it is the
-   one per-ticket way back onto plain Claude, so it is never safe to strip.
+2. Every worker is a Claude-harness seat; `--model` names its model and the
+   gateway serves it.
    Render the spawn bootstrap
    (`references/worker-bootstrap.md` —
    the worker opens its protocol from the dispatcher-pinned file the
@@ -329,30 +323,25 @@ pick by repo visibility:
    `PROTOCOL_FILE` =
    the lane's protocol (spike → `references/spike-worker-protocol.md`;
    architect → `references/architect-worker-protocol.md`; else
-   `references/implement-worker-protocol.md`). The ARCHITECT dispatch ignores `engine:*` labels and
-   `$WORKER_ENGINE` — plan authorship is never label-routed — and pins
-   `${ARCHITECT_MODEL:-fable}` on the plain-Claude route; the
-   engine resolution earlier in this step applies to the other roles.
+   `references/implement-worker-protocol.md`).
    `ISSUE_NUMBER`, `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
-   `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
+   and `DECOMPOSE_DOC` = the ABSOLUTE path of
    `references/implement-decompose.md` (a
    runtime-opened procedure: the prompt carries only the pointer; the
    worker opens it when Check-2 says decompose; "(none — spike lane)" for
    a spike).
 3. Spawn via `sminos spawn "<n>-<slug>" "<prompt>" --cwd <repo> --worktree <n>-<slug>`
    — always a worktree; workers write code.
-   The claude route — the default — passes no gateway env, and pins the
-   lane's model with `--model`: `${ARCHITECT_MODEL:-fable}` on the architect
-   lane, `${IMPLEMENT_MODEL:-opus}` on implement and spike. Both lanes
-   pin rather than inherit, so the operator's own session model never
-   silently collapses the split's two model economies onto one price.
-   Since `sminos spawn` writes no settings/effort into the seat record, these
-   wakes stay plain. The codex route prefixes the gateway env and pins
-   the gateway's model alias:
-   `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" sminos spawn … --model fable`
-   (`sminos spawn` persists settings/effort into the seat record;
-   `sminos resume` restores them on every resume — without that a gateway
-   worker silently reverts to plain models on its first resume).
+   One route: the seat is a Claude-harness session and `--model` is the
+   whole of it — `${ARCHITECT_MODEL:-fable}` on the architect lane,
+   `${IMPLEMENT_MODEL:-sol}` on implement and spike. Both lanes pin rather
+   than inherit, so the operator's own session model never silently
+   collapses the split's two model economies onto one price.
+   `DAEMON_CLAUDE_SETTINGS=''` and `DAEMON_CLAUDE_EFFORT=''` ride the spawn
+   as ASSIGNMENTS, not omissions: `sminos spawn` persists what it inherits
+   into the seat record and `sminos resume` restores it, so a dispatcher
+   running inside a gateway-routed seat would otherwise hand its own
+   settings to every worker it spawns and to every later wake of one.
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) for an
    Executor, `in-design` (+ a `[gate]` comment) for an Architect, or

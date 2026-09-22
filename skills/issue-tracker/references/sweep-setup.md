@@ -98,8 +98,9 @@ actually run before trusting a cron arming.
 |---|---|---|
 | `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (Reviewer workers never count) |
 | `ARCHITECT_MAX_CONCURRENT` | 1 | architect-lane slot cap — the Fable-spend lever; counted over ARCHITECT-role workers from `ready-for-architect` through `in-progress` (an Architect executes its own plan), separate from the implement cap. The default 1 now spans design plus build; raise it when queued design work waits on a long build |
-| `ARCHITECT_MODEL` | fable | model pin for the architect route; the architect dispatch ignores `engine:*` labels and `WORKER_ENGINE` — plan authorship is never label-routed |
-| `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
+| `ARCHITECT_MODEL` | fable | model pin for the architect route — plan authorship is the frontier tier |
+| `IMPLEMENT_MODEL` | sol | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
+| `REVIEW_MODEL` | sol | model pin for the Reviewer worker, the same tier and for the same reason |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
 | `SWEEP_STALL_DEPENDENCY_MINUTES` | 2880 (48h) | a BLOCKER unworked and silent this long parks the ticket waiting on it, `needs-human`, with the blocker and the chain in the note. The other half of the same doctrine as the API board's `DEPENDENCY_STALL_MS`; raise it on a board with a weekly human cadence. A dependency CYCLE is reported at once — it needs no clock |
@@ -107,7 +108,6 @@ actually run before trusting a cron arming.
 | `BOARD_STALL_WINDOW_MIN` | 15 | *api binding.* Minutes to wait before the first nudge when the error states no reset time, and between nudges always |
 | `BOARD_STALL_MAX_WAIT_MIN` | 360 | *api binding.* Ceiling on a stated reset time the tick will WAIT for. A weekly limit resets days out; honouring it would renew the lease and hold the ticket silently for all of them, so past the ceiling the ordinary window applies, the ladder runs out, and the outage reaches a human through `BOARD_STALL_CYCLES` below |
 | `BOARD_STALL_CYCLES` | 3 | *api binding.* Harness-error ladders ONE TICKET may run out before the tick stops spending recovery on it. The per-run ladder above resets on every successor, so on its own it never accumulates — a fault that outlives its worker (an expired login, a multi-day weekly limit) would churn a fresh successor every hour and tell nobody. This count survives successors, is cleared only by a worker that answers as itself again, and ends at an env-issue plus a suppression |
-| `WORKER_ENGINE` | claude (all lanes) | overrides the lanes' default model route; an `engine:*` ticket/PR label wins over it. Setting it applies to BOTH lanes — `WORKER_ENGINE=codex` puts every worker on the clodex gateway |
 | `AUTO_MERGE_ENABLED` | false | Reviewer worker merges its confident verdicts (off = observation mode) |
 
 ## The event path (lower latency, needs a runner)

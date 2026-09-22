@@ -27,7 +27,7 @@ Full design + rationale: `docs/doperpowers/specs/2026-07-08-pr-review-loop-desig
 
 | piece | what |
 |---|---|
-| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` seat (`sminos spawn`; default route is plain Claude models, `engine:codex` opts into the clodex gateway settings) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
+| `scripts/review-dispatch.sh <pr#> \| --sweep` | mechanical trigger: dedupe → PR + ticket context → detached worktree at the PR head SHA → spawn a `review-pr-<n>` seat (`sminos spawn --model ${REVIEW_MODEL:-sol}`) → exclusively bind it to the primary ticket under the registry lock → complete a dispatcher-ready / worker-ack startup barrier so `board-answer.sh` reaches the parked reviewer and no review action races binding |
 | doperpowers:review-code | the review engine, pure correctness — no ticket/spec input of any kind. The worker runs it from its own session through the lane's workflow (`workflows/code-review.js`, pinned by the `REVIEW_CODE_DIR` binding) at a level it derives from the ticket's spec (its verification entry), the dispatcher's `REVIEW_LEVEL` floor, and the diff's size: one registered reviewer (`doperpowers:reviewer-low|medium|high`) at the single-reviewer levels, the multi-lens panel at xhigh/max; every reviewer works in a fresh worktree at the reviewed head. At a single-reviewer level the worker may add 1–3 lensed calls per round, each carrying a diff-derived structural focus mandate (`lens`) |
 | `SKILL.md` | the Review Worker Protocol — invoked by every Reviewer worker; the dispatch bootstrap supplies its `{{PLACEHOLDERS}}` as runtime bindings. The engine-start and engine-fallback text live in its START ENGINE section; the worker reads PR and ticket bodies live via gh (only the BASE-ref manifest snapshots ride the prompt) |
 | `references/wave-board.md` | runtime-opened fix-wave companion: board-file schema, the fixer's verify-then-fix contract, disposition grading |
@@ -239,9 +239,6 @@ self-review bias: the entity that grades the fixes never wrote them.
     inside every worker is doperpowers:review-code's lane, whose reviewer
     agents are pinned to GPT models served through it (see that skill).
     Set `REVIEW_LEVEL` in the dispatcher's environment to raise the level
-    floor for the repo (default medium). The default worker route is plain
-    Claude models and needs nothing else; setting `WORKER_ENGINE=codex`
-    (env) or labeling `engine:codex` opts a repo/PR onto the clodex gateway
-    route for the worker itself, which additionally needs the gateway
-    settings (`~/.claude/clodex-settings.json`, override via
-    `CLODEX_SETTINGS`).
+    floor for the repo (default medium). The worker itself is an ordinary
+    Claude-harness seat on `REVIEW_MODEL` (default sol) and needs nothing
+    else.
