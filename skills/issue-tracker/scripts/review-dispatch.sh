@@ -102,6 +102,10 @@
 # leave that tracking ref stale and the manifests would silently read empty.
 #
 # Dedupe policy (references/review-loop.md table):
+# the PR's ticket is bound to a live seat that is not a QAGENT → skip, the
+# owner reviews (it dispatches the review as its own subagent); a QAGENT
+# binding is a stand-in's and falls through to the rest. Then, by the newest
+# review-pr-<n> registry entry:
 # a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
 # retire + respawn; a cleanly finished reviewer → triggered mode re-dispatches
 # (explicit event = fresh signal), sweep mode skips; a FAILED reviewer —
@@ -281,6 +285,68 @@ if best:
                                     m.get("engine") or "claude", m.get("pid", ""), m.get("host", ""),
                                     m.get("boot_id", "")))
 PY
+}
+
+# The ticket's live OWNER, printed as "<role>|<name>" (empty when it has none).
+#
+# The review loop now runs as a subagent of the seat that owns the ticket, so a
+# ticket bound to a live seat is already being reviewed by that seat, and a
+# stand-in dispatched onto it would be the second review of one PR. A `QAGENT`
+# meta is a stand-in, not an owner: it falls through to the ordinary dedupe
+# below, which is what the outage streak and the review cap read.
+#
+# Liveness here is _decide's: an active status on this host and boot. A STALLED
+# owner still reads live — taking its review away is the wrong repair, and the
+# sweep's recover pass owns that case.
+_live_owner() {  # <ticket>
+  DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$1" T_HOST="${DAEMON_HOST:-}" T_BOOT="${DAEMON_BOOT_ID:-}" python3 - <<'PY'
+import glob, json, os
+home = os.environ["DAEMON_HOME"]; issue = os.environ["T_ISSUE"]
+host = os.environ.get("T_HOST") or ""; boot = os.environ.get("T_BOOT") or ""
+for p in sorted(glob.glob(os.path.join(home, "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if str(m.get("ticket", "")).lstrip("#") != issue:
+        continue
+    if m.get("status") not in ("working", "blocked", "idle"):
+        continue
+    if str(m.get("role") or "") == "QAGENT":
+        continue
+    mh = str(m.get("host") or ""); mb = str(m.get("boot_id") or "")
+    if mh and host and mh != host:
+        continue
+    if mb and boot and mb != boot:
+        continue
+    print("%s|%s" % (m.get("role") or "unlabelled", m.get("name") or m.get("uuid") or ""))
+    break
+PY
+}
+
+# The PR's primary ticket: the first issue it closes. The sweep resolves this
+# from its one list call and hands it down; a triggered dispatch has no listing,
+# and the owner-first rule needs the number BEFORE the registry dedupe — ahead
+# of dispatch_one's own read. Same close-keyword semantics as the two
+# enumeration sites (a stacked PR onto an integration branch leaves
+# closingIssuesReferences empty). Empty when the PR is ticketless or gh will not
+# answer: both fall through to the dedupe, as a ticketless PR always has.
+_primary_ticket() {  # <pr>
+  gh pr view "$1" -R "$BOARD_REPO" --json title,body,closingIssuesReferences 2>/dev/null \
+    | python3 -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+linked = [str(n["number"]) for n in (d.get("closingIssuesReferences") or [])]
+text = (d.get("title") or "") + "\n" + (d.get("body") or "")
+for m in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)", text, re.I):
+    if m.group(1) not in linked:
+        linked.append(m.group(1))
+print(linked[0] if linked else "")' || true
 }
 
 # Live gh-mode reviewers counted off the registry — the sweep's new-spawn
@@ -1241,7 +1307,18 @@ _decide() {
 # ticket's next return to in-review behind "skip finished reviewer"
 # forever.
 run_for() {  # $1=pr $2=mode $3=off-review-status $4=ticket-number
-  local pr="$1" mode="$2" stale="${3:-}" tid="${4:-}" verdict resume
+  local pr="$1" mode="$2" stale="${3:-}" tid="${4:-}" argc="$#" verdict resume owner
+  # OWNER FIRST, ahead of every registry rule below. The sweep resolved the
+  # ticket already (an empty $4 there means ticketless); a triggered dispatch
+  # resolves it here, since the PR event carries a number and nothing else.
+  [ "$argc" -ge 4 ] || tid="$(_primary_ticket "$pr")"
+  if [ -n "$tid" ]; then
+    owner="$(_live_owner "$tid")"
+    if [ -n "$owner" ]; then
+      echo "#$pr: owner reviews — skip (ticket #$tid is bound to live ${owner%%|*} seat ${owner#*|}, which dispatches its own review)"
+      return
+    fi
+  fi
   verdict="$(_decide "review-pr-$pr" "$mode")"
   if [ -n "$stale" ]; then
     case "$verdict" in

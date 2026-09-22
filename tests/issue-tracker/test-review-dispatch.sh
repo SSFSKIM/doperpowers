@@ -557,15 +557,16 @@ else
     pass "no prompt reaches a worker on a failed render"
 fi
 
-# Ticket ownership is exclusive: the reviewer replaces the finished implement
-# worker as board-answer's resume target.
+# Ticket ownership is exclusive: the stand-in replaces the RETIRED implement
+# worker as board-answer's resume target. (A worker still holding a live status
+# is the ticket's owner and reviews it itself — owner-first dedupe below.)
 echo "review ticket binding:"
 reset_state
 OLD="impl0000-0000-4000-8000-000000000000" python3 - <<'PY'
 import json, os
 u = os.environ["OLD"]
 json.dump({"uuid": u, "current": u, "name": "implement-ticket-7",
-           "status": "idle", "ticket": "7", "updated": "2026-07-07T00:00:00Z"},
+           "status": "retired", "ticket": "7", "updated": "2026-07-07T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 "$DISPATCH" 5 >/dev/null
@@ -733,6 +734,61 @@ out="$("$DISPATCH" 6)"
 assert_contains "$out" "draft" "draft PR skipped"
 assert_equals "$(cat "$SPAWN_LOG")" "" "draft PR spawns nothing"
 
+# ---- owner-first dedupe --------------------------------------------------------
+# The review runs as a subagent of the seat that owns the ticket, so a PR whose
+# primary ticket is bound to a live seat that is not a stand-in is already being
+# reviewed — by its owner. The stand-in exists for the reviews nobody owns.
+echo "owner-first dedupe:"
+seed_owner() {  # $1=role $2=status [$3=host $4=boot]
+  R="$1" S="$2" H="${3:-}" B="${4:-}" python3 - <<'PY'
+import json, os
+u = "ace00001-0000-4000-8000-000000000000"
+m = {"uuid": u, "current": u, "name": "7-add-f", "role": os.environ["R"],
+     "ticket": "7", "status": os.environ["S"], "updated": "2026-07-08T00:00:00Z"}
+if os.environ["H"]:
+    m["host"] = os.environ["H"]
+if os.environ["B"]:
+    m["boot_id"] = os.environ["B"]
+json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+}
+reset_state; seed_owner ARCHITECT idle
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "a ticket bound to a live architect seat is the owner's review"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no stand-in spawns over a live architect owner"
+
+reset_state; seed_owner IMPLEMENT working
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "an implement seat owns its review too"
+assert_no_spawn review-pr-5 "no stand-in spawns over a live implement owner"
+
+# Sweep mode reads the same rule — the cron tick must not spawn a second
+# reviewer over the seat that is already running one.
+reset_state; seed_owner ARCHITECT idle
+out="$("$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "sweep mode skips an owned review too"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep spawns nothing over a live owner"
+
+# A QAGENT-bound ticket is a STAND-IN's, not an owner's: it falls through to the
+# ordinary dedupe, which is what the outage streak and the review cap read.
+reset_state; seed_owner QAGENT working
+echo '[{"id": "ace00001", "sessionId": "ace00001-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "owner reviews" "a QAGENT-bound ticket is not read as an owner's review"
+
+# Identity is part of liveness, as everywhere else in this dispatcher: a meta
+# from another host or a previous boot is a dead session, not an owner.
+reset_state; seed_owner ARCHITECT working old-host boot-old
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "owner reviews" "a foreign-host owner meta is a dead session, not a live owner"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the stand-in dispatches over a dead owner meta"
+
+# No owner at all: the stand-in spawns, as a review nobody owns must.
+reset_state
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "no live owner: the stand-in spawns"
+assert_contains "$(cat "$SPAWN_LOG")" "--role QAGENT" "the stand-in's seat carries the QAGENT role from birth"
+
 # ---- dedupe: active / dead / finished -----------------------------------------
 echo "dedupe:"
 seed_reviewer() {  # $1=status
@@ -827,16 +883,16 @@ assert_contains "$out" "active reviewer" "busy reviewer still skips as active"
 assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 
 # ---- normalize lingering ticket owners BEFORE binding --------------------------
-# The incoming reviewer binds to the PR's primary ticket, but the OUTGOING
-# worker on that ticket is a claude-species daemon with no self-finalizer: its
-# meta lingers status=working after its turn ends, and board-bind protects a
-# working owner as ACTIVE. Left alone that refuses the reviewer's bind on every
-# tick — which retired three reviewers in the 2026-07-18 live shakedown. The
-# dispatcher therefore runs `sminos sync` over every meta bound to the
-# ticket first, so the registry states the truth before ownership is adjudicated.
-# The scale-review half of this is covered further down (the epic's Architect);
-# these two cases pin the PR half, and pin BOTH directions of what finalize
-# decides — the point is that dispatch does not assume, it asks.
+# The incoming stand-in binds to the PR's primary ticket, but a dead owner's
+# meta lingers status=working — a claude-species daemon has no self-finalizer —
+# and board-bind protects a working owner as ACTIVE. Left alone that refuses the
+# bind on every tick, which retired three reviewers in the 2026-07-18 live
+# shakedown. The dispatcher therefore runs `sminos sync` over every meta bound
+# to the ticket first, so the registry states the truth before ownership is
+# adjudicated. A lingering owner of THIS boot is the ticket's live owner and
+# never reaches this code — owner-first dedupe above skips the PR — so what the
+# normalization still has to settle is the previous boot's residue.
+# The scale-review half is covered further down (the epic's Architect).
 echo "normalize ticket owners before bind:"
 ticket_owner() {  # <ticket> → name of whichever meta currently holds it
     T="$1" python3 - <<'PY'
@@ -849,46 +905,29 @@ for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
         print(m.get("name") or m.get("uuid") or "")
 PY
 }
-seed_ticket_owner() {  # lingering executor meta bound to #7 (PR 5's primary ticket)
+seed_ticket_owner() {  # PREVIOUS BOOT's executor meta, still bound to #7
     python3 - <<'PY'
 import json, os
 u = "beef0001-0000-4000-8000-000000000000"
 json.dump({"uuid": u, "current": u, "name": "7-add-f", "role": "IMPLEMENT",
-           "ticket": "7", "status": "working", "updated": "2026-07-08T00:00:00Z"},
+           "ticket": "7", "status": "working", "boot_id": "boot-old",
+           "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 }
 OWNER_META="$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.json"
 
-# (a) the owner's turn is OVER — finalize settles it, and the reviewer binds.
 reset_state; seed_ticket_owner
 echo '[{"id": "beef0001", "sessionId": "beef0001-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
 # rc captured rather than let errexit kill the run: losing the normalization is
 # a bind refusal, and a regression should NAME itself here instead of aborting
 # the suite at this line with no assertion output.
 out="$("$DISPATCH" 5 2>&1)" || true
-assert_not_contains "$out" "bind to ticket #7 failed" "dispatch does not bind-fail over a finished owner"
-assert_contains "$(cat "$OWNER_META")" '"status": "idle"' "a lingering finished ticket owner is finalized before the bind"
+assert_not_contains "$out" "bind to ticket #7 failed" "dispatch does not bind-fail over a stale owner"
+assert_contains "$(cat "$OWNER_META")" '"status": "idle"' "a lingering ticket owner is finalized before the bind"
 assert_file_exists "$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.reply.txt" "finalize recorded the owner's closing reply"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "reviewer is dispatched over the normalized owner"
-assert_equals "$(ticket_owner 7)" "review-pr-5" "the reviewer's bind succeeded — it now owns #7"
-
-# (b) counter-case: the owner is genuinely mid-turn. finalize keeps it live,
-# board-bind refuses (correctly — a live worker's ticket is not up for grabs),
-# and the reviewer is retired with its startup barrier never published, so the
-# spawned session cannot begin reviewing work it does not own.
-reset_state; seed_ticket_owner
-echo '[{"id": "beef0001", "sessionId": "beef0001-0000-4000-8000-000000000000", "state": "working", "status": "busy"}]' > "$MOCK_DIR/agents.json"
-out="$(REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 2>&1)" || true
-assert_contains "$(cat "$OWNER_META")" '"status": "working"' "a genuinely live ticket owner survives finalize as live"
-assert_equals "$(ticket_owner 7)" "7-add-f" "the live owner keeps #7 — the reviewer never takes it"
-assert_contains "$out" "bind to ticket #7 failed" "board-bind refuses the reviewer over a live owner"
-assert_contains "$(cat "$SPAWN_LOG")" "retire:" "the refused reviewer is retired rather than left running"
-if compgen -G "$DAEMON_HOME/review-pr-5-control.*" > /dev/null; then
-    fail "the refused reviewer's startup barrier is torn down"
-else
-    pass "the refused reviewer's startup barrier is torn down"
-fi
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the stand-in is dispatched over the normalized owner"
+assert_equals "$(ticket_owner 7)" "review-pr-5" "the stand-in's bind succeeded — it now owns #7"
 
 # ---- dedupe without exported DAEMON_HOME (production repro) -------------------
 # In launchd/cron the parent process never exports DAEMON_HOME — the script's
@@ -1265,10 +1304,14 @@ seed_outage_metas() {  # $1 = how many consecutive outage reviewers to seed
   local i
   for f in "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; do rm -f "$f"; done
   for i in $(seq 1 "$1"); do
+    # BOUND AND QAGENT, as a real stand-in is: the streak's subject is a seat
+    # holding the PR's ticket, and only the QAGENT exemption keeps owner-first
+    # from reading it as an owner and skipping the streak decision entirely.
     U="feed000$i-0000-4000-8000-000000000000" I="$i" python3 - <<'PY'
 import json, os
 u = os.environ["U"]; i = os.environ["I"]
 json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "role": "QAGENT", "ticket": "7",
            "status": "idle", "updated": "2026-07-0%sT00:00:00Z" % i},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
