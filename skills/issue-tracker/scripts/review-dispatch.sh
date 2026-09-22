@@ -101,7 +101,7 @@
 # origin/<base>, refreshed by the per-dispatch fetch; a narrowed clone can
 # leave that tracking ref stale and the manifests would silently read empty.
 #
-# Dedupe policy (references/operation-manual.md table):
+# Dedupe policy (references/review-loop.md table):
 # a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
 # retire + respawn; a cleanly finished reviewer → triggered mode re-dispatches
 # (explicit event = fresh signal), sweep mode skips; a FAILED reviewer —
@@ -140,8 +140,8 @@ SMINOS_CLI="${SMINOS_CLI:-$(cd "$SKILL_DIR/../sminos/scripts" && pwd)/sminos}"
 export SMINOS_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
-BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-worker-bootstrap.md"
-IMPLEMENT_PROTOCOL_FILE="${SKILL_DIR%/*}/issue-tracker/references/implement-worker-protocol.md"
+BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-standin-bootstrap.md"
+IMPLEMENT_PROTOCOL_FILE="$SKILL_DIR/references/implement-worker-protocol.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -699,7 +699,7 @@ PY
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_MANIFEST_REF="$BASE_REF" \
-    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="${SKILL_DIR%/*}/qa-loops/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
@@ -845,7 +845,7 @@ _dispatch_epic_locked() {
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_MANIFEST_REF="$base_ref" \
-    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="${SKILL_DIR%/*}/qa-loops/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
@@ -1704,7 +1704,7 @@ PY
     P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_MANIFEST_REF="$DEFAULT_BRANCH" \
-    P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
+    P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="${SKILL_DIR%/*}/qa-loops/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \

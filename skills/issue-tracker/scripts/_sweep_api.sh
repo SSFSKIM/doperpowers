@@ -2732,7 +2732,7 @@ PY
 phase_dispatch() {
   local impl revw
   impl="$SCRIPT_DIR/execute-dispatch.sh"
-  revw="$SCRIPT_DIR/../../qa-loops/scripts/review-dispatch.sh"
+  revw="$SCRIPT_DIR/review-dispatch.sh"
   # DAEMON_HOME/SMINOS_CLI are resolved here but NOT exported (see above),
   # so they are passed explicitly: without them a non-default registry — a
   # test seam, a second fleet on one host — would silently split in two, this

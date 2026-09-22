@@ -156,7 +156,7 @@ t "and so does the executor dispatcher" \
   tick "$REPO_ROOT/skills/issue-tracker/scripts/execute-dispatch.sh" --sweep
 t "and the review dispatcher" \
   "board.json names binding=api but no repo" \
-  tick "$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh" --sweep
+  tick "$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh" --sweep
 rm -f "$DAEMON_HOME"/*.json
 
 # A BLANK IS A BLANK however it is spelled. `[ -n " " ]` is true, so a repo of

@@ -11,7 +11,7 @@
 # barrier, which the review protocol makes a hard gate.
 . "$(dirname "$0")/helpers.sh"
 
-DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
 
 free_port() { python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }

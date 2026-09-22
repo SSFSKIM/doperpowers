@@ -5,7 +5,7 @@ description: Use when assigned to review a specific opened pull request in the a
 
 # Reviewer Worker Protocol
 
-Operator or setup invocation: read `references/operation-manual.md` instead.
+Operator or setup invocation: read `../issue-tracker/references/review-loop.md` instead.
 The protocol below is for a dispatched Reviewer worker.
 
 ## Role
@@ -415,7 +415,7 @@ dispatched the build registers — not findings for you to route.
 ## FIX WAVES
 
 Zero WAVE items → skip to RE-REVIEW/ESCALATE. Otherwise open
-`references/wave-board.md` (next to this file) — the board schema, the
+`../issue-tracker/references/wave-board.md` — the board schema, the
 fixer dispatch contract, and the grading procedure live there. The shape:
 write `<review-tmp>/pr-{{PR_NUMBER}}-fix-wave-<k>.md` (worker-local
 state — never commit or push it), dispatch the wave's fixer, wait for

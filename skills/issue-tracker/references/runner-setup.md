@@ -67,7 +67,7 @@ crontab -e
 # the runner) — set it inline on the command, adjusted to the dirs found above.
 # Keep AUTO_MERGE_ENABLED in lock-step with the workflow's env (default off =
 # observation mode; sweep-dispatched reviewers honor the same rollout gate):
-*/30 * * * * PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> AUTO_MERGE_ENABLED=false $HOME/.claude/plugins/marketplaces/doperpowers/skills/qa-loops/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
+*/30 * * * * PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" LOCAL_REPO=/path/to/clone BOARD_REPO=<OWNER>/<REPO> AUTO_MERGE_ENABLED=false $HOME/.claude/plugins/marketplaces/doperpowers/skills/issue-tracker/scripts/review-dispatch.sh --sweep >> $HOME/Library/Logs/review-sweep.log 2>&1
 ```
 
 ## 7. (Optional) Per-repo risk-surface manifest
