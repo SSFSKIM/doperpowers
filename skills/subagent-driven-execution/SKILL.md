@@ -116,14 +116,14 @@ through the local gateway; the task grain is calibrated to that tier, and
 fixes resume the same executor. `doperpowers:task-reviewer` is pinned to
 sol at high effort too, the same tier as the low review rung. A simple
 task — a doc update, a mechanical rename, a verification walk with every
-command given — can go to sonnet by passing `model: sonnet` at dispatch,
-which overrides the executor's pin. Never dispatch workers on fable or
-astra: the top tier adds cost without adding reliability — the plan
-and the brief absorb the difficulty, not the model. When a worker reports
-BLOCKED on reasoning capacity rather than missing context, a sonnet task
-moves to sol; from sol there is no tier above — the difficulty moves into
-the brief: resolve the hard call yourself and re-dispatch, or split the
-task.
+command given — can go to sonnet, the tier below sol, by passing
+`model: sonnet` at dispatch, which overrides the executor's pin. Never
+dispatch workers on fable or astra: the top tier adds cost without adding
+reliability — the plan and the brief absorb the difficulty, not the model.
+When a worker reports BLOCKED on reasoning capacity rather than missing
+context, a sonnet task moves to sol; from sol there is no tier above — the
+difficulty moves into the brief: resolve the hard call yourself and
+re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: it goes through
 doperpowers:review-code at the rung the spec's verification entry names
