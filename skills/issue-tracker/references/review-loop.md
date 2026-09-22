@@ -75,10 +75,19 @@ replies (engine outage) and `error`-finalized turns (dead seat, e.g. the
 gateway refused before any reply existed) count as ONE shared streak — the
 sweep skips it (naming the cap as the reason). Any cleanly finished stand-in
 breaks the streak. An explicit PR event — workflow trigger or manual
-dispatch — always re-dispatches regardless. The cap is the stand-in lane's:
-an OWNER whose review stalls is recovered by the board sweep's recover pass,
-which nudges the seat and parks the ticket after three nudges without a new
-review-trail comment.
+dispatch — always re-dispatches regardless.
+
+That cap is the stand-in lane's. An OWNER whose review stops is recovered by
+the board sweep's recover pass instead, and bounded by a different thing: the
+review's own progress. The pass nudges an `in-review` seat that is idle and
+silent past the stall threshold — dispatch a fresh agent unless one is
+running, restate a park or a verdict the review already reached — and each
+nudge counts, except that a new review-trail record since the last one resets
+the count to zero. So a review posting rounds is never parked for taking a
+long time; a review that has stopped moving parks the ticket `needs-human` at
+the third nudge. The seat's local `in review` mark is only how the tick finds
+candidates cheaply: the ticket's own state decides, so a review the board
+already parked or finished is left alone rather than nudged.
 
 ## Merge authority
 

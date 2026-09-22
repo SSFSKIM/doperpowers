@@ -219,6 +219,17 @@ proposals, registration and comments are the only channels.
   exists) — same protocol, late: park (`in-progress → needs-human` /
   `interactive-preferred` are legal), commit WIP to the branch, state the
   park crisply, end the turn.
+- **Owner idle in review** — the seat that opened the PR ends its turn while
+  its QA agent runs, so an `in-review` seat that is idle and silent past the
+  stall threshold has no review running under it (the agent died, or its
+  escalation landed in a session nobody woke). The sweep's recover pass
+  nudges that seat to re-read the ticket and the PR and dispatch a fresh
+  agent unless one is already running. The nudges are bounded by the
+  REVIEW's progress, not the seat's: a new `[review-trail]` comment (its
+  `review-trail` event on the API board) starts the count over, so a review
+  that keeps posting rounds is never parked for taking a long time, and one
+  that has stopped reaches a human — `needs-human`, naming the exhausted
+  ladder — in three.
 
 ## Interim dispatch
 
