@@ -354,10 +354,14 @@ reviewer whose `## Verdict` names nothing it examined, or that says it could
 not inspect the range, is a failed sweep. At `xhigh` and `max` the agent
 returns `NEEDS_PANEL`. The dispatcher fetches the branch and fast-forwards
 its own checkout to the requested `headCommit`, verifying `git rev-parse
-HEAD` prints it, because the workflow cuts every reviewer's worktree at the
-caller's HEAD and the SHA alone only scopes the diff command — after a fix
-wave the agent's head is ahead of the dispatcher's checkout, and a panel run
-from the old head would read old files against a new diff. Every head the
+HEAD` prints it, and passes that checkout's absolute path as the workflow's
+`repo` argument: the SHA alone only scopes the diff command, and without
+`repo` the workflow isolates every lane at the repository's main checkout
+HEAD, not the caller's, so the fast-forward alone positions nothing a lane
+reads. With `repo`, the lanes run `git -C` against the dispatcher's checkout
+and read its files — after a fix wave the agent's head is ahead of that
+checkout until the fast-forward, and a panel run from the old head would
+read old files against a new diff. Every head the
 agent asks a panel to review is already pushed: a wave pushes before
 re-review. The dispatcher then runs the workflow call, saves the result
 object to `<report-dir>/findings-r<N>.json`, and resumes the agent with that
