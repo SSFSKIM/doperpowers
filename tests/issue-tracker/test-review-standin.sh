@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Structural invariants for the qa-loops runtime skill, its wave-board
-# reference, and the operator reference. Assertions pin STRUCTURE (headings,
-# ordering, tokens, placeholder sets) — not sentences.
+# Structural invariants for the review stand-in — the seat that hosts a review
+# nobody owns: its protocol, its dispatch bootstrap, the wave-board reference
+# its agent opens at runtime, and the operator reference. Assertions pin
+# STRUCTURE (headings, ordering, tokens, placeholder sets) — not sentences.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SKILL="$REPO_ROOT/skills/qa-loops/SKILL.md"
+PROTOCOL="$REPO_ROOT/skills/issue-tracker/references/review-standin-protocol.md"
 MANUAL="$REPO_ROOT/skills/issue-tracker/references/review-loop.md"
 BOOTSTRAP="$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md"
 WAVEBOARD="$REPO_ROOT/skills/issue-tracker/references/wave-board.md"
 DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
-OLD_PROTOCOL="$REPO_ROOT/skills/qa-loops/references/review-worker-protocol.md"
+RETIRED_SKILL="$REPO_ROOT/skills/qa-loops"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -44,172 +45,108 @@ assert_before() {
     fi
 }
 
-echo "runtime skill — identity and routing:"
-assert_file "$SKILL" "SKILL.md exists"
-assert_contains "$SKILL" "name: qa-loops" "skill frontmatter name is preserved"
-assert_contains "$SKILL" 'Operator or setup invocation: read `../issue-tracker/references/review-loop.md` instead.' "operator invocations route to the reference manual"
-assert_contains "$SKILL" "You are a REVIEW worker for PR #{{PR_NUMBER}}" "SKILL.md is the Review Worker Protocol"
-assert_not_contains "$SKILL" "## Adopting a repo (checklist)" "operator setup is absent from the runtime skill"
-assert_contains "$SKILL" "dispatch prompt" "SKILL.md points the worker at the dispatch prompt for the manifest snapshots"
-assert_not_contains "$SKILL" "---- PR #{{PR_NUMBER}} brief ----" "SKILL.md carries no dead unrendered brief tail"
-
-echo "runtime skill — orchestrator section structure:"
-want_headings="Role
-ORIENT (read-only)
-START ENGINE
-COMPLIANCE AUDIT (concurrent, before JOIN)
-JOIN
-TRIAGE
-FIX WAVES
-RE-REVIEW
-ESCALATE
-Scale review (recomposition epics)
-AUTHORITY
-REVIEW TRAIL"
-got_headings="$(grep '^## ' "$SKILL" 2>/dev/null | sed 's/^## //' || true)"
-if [[ "$got_headings" == "$want_headings" ]]; then
-    pass "the twelve protocol sections exist in order"
+echo "the retired skill:"
+assert_missing "$RETIRED_SKILL" "skills/qa-loops is gone — the loop is the qa-loop agent"
+if grep -rn 'doperpowers:qa-loops\|skills/qa-loops\|tests/qa-loops' \
+       "$REPO_ROOT/skills" "$REPO_ROOT/agents" "$REPO_ROOT/hooks" "$REPO_ROOT/scripts" \
+       "$REPO_ROOT/tests" "$REPO_ROOT/CLAUDE.md" "$REPO_ROOT/README.md" \
+       --exclude="$(basename "$0")" >/dev/null 2>&1; then
+    fail "nothing routes to the retired skill any more"
+    grep -rn 'doperpowers:qa-loops\|skills/qa-loops\|tests/qa-loops' \
+        "$REPO_ROOT/skills" "$REPO_ROOT/agents" "$REPO_ROOT/hooks" "$REPO_ROOT/scripts" \
+        "$REPO_ROOT/tests" "$REPO_ROOT/CLAUDE.md" "$REPO_ROOT/README.md" \
+        --exclude="$(basename "$0")" | sed 's/^/    /'
 else
-    fail "the twelve protocol sections exist in order"
+    pass "nothing routes to the retired skill any more"
+fi
+
+echo "stand-in protocol — structure:"
+assert_file "$PROTOCOL" "the stand-in protocol exists"
+want_headings="Role
+Position
+Dispatch
+Relay"
+got_headings="$(grep '^## ' "$PROTOCOL" 2>/dev/null | sed 's/^## //' || true)"
+if [[ "$got_headings" == "$want_headings" ]]; then
+    pass "the four sections exist in order"
+else
+    fail "the four sections exist in order"
     echo "    expected:"; printf '      %s\n' $want_headings
     echo "    actual:";   printf '      %s\n' $got_headings
 fi
+assert_contains "$PROTOCOL" "no review judgment" "the stand-in judges nothing — the agent does"
+assert_before "$PROTOCOL" "## Position" "## Dispatch" "positioning precedes the dispatch it positions for"
 
-echo "runtime skill — orchestrator doctrine:"
-assert_contains "$SKILL" "graded and accepted" "code reaches the branch only as graded fixer commits"
-assert_contains "$SKILL" "protocol-audit.md" "the compliance audit is a recorded artifact"
-assert_contains "$SKILL" "BEFORE reading any engine output" "audit is recorded before native findings are read"
-assert_contains "$SKILL" "stay read-only" "worker stays read-only in the shared worktree until JOIN"
-assert_contains "$SKILL" "verify-then-fix" "verification lives in the fixer contract"
-assert_contains "$SKILL" "ROUTE each finding to exactly one bin" "finding routing lives in the runtime skill"
-assert_not_contains "$SKILL" "don't re-derive" "the severity re-derivation ban is retired — the worker routes on its own assessment"
-assert_contains "$SKILL" "starting rank, not your verdict" "native severity is a prior the worker may overrule"
-assert_contains "$SKILL" "stated reason in the trail" "departures from the native rank are recorded, not forbidden"
-assert_contains "$SKILL" "references/wave-board.md" "wave mechanics live in the runtime-opened reference"
-assert_contains "$SKILL" "<review-tmp>/pr-{{PR_NUMBER}}-fix-wave-" "wave board path is pinned in the dispatcher-session tmp dir"
-assert_not_contains "$SKILL" ".doperpowers/qa/" "no wave state path under the PR-controlled worktree (symlink escape)"
-assert_contains "$SKILL" "Maximum 4 waves" "wave cap is pinned"
-assert_not_contains "$SKILL" "confident-ready" "the confident-ready state is retired — confident verdicts merge"
+echo "stand-in protocol — positioning:"
+assert_contains "$PROTOCOL" 'git checkout --detach {{HEAD_SHA}}' "a PR review positions at the briefed head"
+assert_contains "$PROTOCOL" "baseRefName,headRefName,headRefOid" "the api mode resolves base and head off the PR"
+assert_contains "$PROTOCOL" "ls-remote --symref origin HEAD" "a scale review resolves its base from origin's own symref"
+assert_contains "$PROTOCOL" "aggregate range: none" "an epic with no integration branch says so in the brief"
+assert_contains "$PROTOCOL" "needs-human" "a ref that will not resolve parks instead of reviewing the wrong range"
 
-echo "runtime skill — compliance audit policy:"
-assert_contains "$SKILL" "PROTOCOL BLOCKER" "protocol-blocker class exists"
-assert_contains "$SKILL" "SPEC FINDING" "spec-finding class exists"
-assert_contains "$SKILL" "AUDIT NOTE" "audit-note class exists"
-assert_not_contains "$SKILL" "EVIDENCE FINDING" "evidence findings are merged into spec findings"
-assert_contains "$SKILL" "parks confidence, not progress" "protocol blocker parks confidence while fixing continues"
-assert_contains "$SKILL" "canonical primary spec" "issue body is the canonical primary specification"
-assert_contains "$SKILL" "never the PR head" "referenced documents resolve from base, never PR head"
-assert_contains "$SKILL" "answered fork ONLY" "pre-resume human answers scope to the answered fork"
-assert_contains "$SKILL" "[gate] pass" "gate-comment evidence anchors the audit"
-assert_contains "$SKILL" "userContentEdits" "post-gate drift resolves through GitHub edit history"
-assert_not_contains "$SKILL" "sha256" "no hash-fingerprint machinery (timestamps, not hashes)"
-assert_not_contains "$SKILL" "SHA-256" "no hash-fingerprint machinery in prose either"
-assert_contains "$SKILL" "{{IMPLEMENT_PROTOCOL_FILE}}" "implement contract is the dispatcher-owned binding"
-assert_contains "$SKILL" "dispatch exclusively binds this reviewer" "ticketed parks have one resumable review owner"
-assert_contains "$SKILL" "BINDING BARRIER" "worker cannot start review before exclusive binding completes"
-assert_contains "$SKILL" "{{BIND_READY_FILE}}" "worker barrier uses the dispatcher-owned ready file"
-assert_contains "$SKILL" "regular file with mode 0600" "barrier validates the hidden ledger artifact"
-assert_contains "$SKILL" "write the acknowledgement" "worker acks the barrier before ORIENT"
-# The barrier's expected identity must be satisfiable in BOTH variants: a
-# scale worker is review-epic-<n> with no PR number at all, so a hardcoded
-# review-pr-{{PR_NUMBER}} could never be verified or acked.
-assert_contains "$SKILL" 'registry meta is this `{{WORKER_NAME}}` worker' "the barrier's expected identity is the dispatcher-bound worker name"
-assert_not_contains "$SKILL" 'meta is this `review-pr-{{PR_NUMBER}}` worker' "the barrier no longer hardcodes the PR-variant identity"
-assert_before "$SKILL" "BINDING BARRIER" "## ORIENT" "binding barrier precedes every review action"
-assert_contains "$SKILL" "board-answer" "active early park distinguishes notification from resume"
+echo "stand-in protocol — the dispatch:"
+assert_contains "$PROTOCOL" "doperpowers:qa-loop" "the review is one qa-loop agent"
+assert_not_contains "$PROTOCOL" "doperpowers:qa-loops" "the retired skill is not named"
+assert_contains "$PROTOCOL" 'isolation: "worktree"' "the agent reviews in its own worktree"
+assert_contains "$PROTOCOL" "ticket body file:" "the claim's body file rides the brief when the bootstrap bound one"
+assert_contains "$PROTOCOL" "your dispatcher answers escalations; return for them" "the brief carries the escalation sentence the agent expects"
+assert_contains "$PROTOCOL" "review level floor:" "the brief relays the dispatcher-owned floor"
+assert_contains "$PROTOCOL" "auto-merge:" "the brief relays the merge switch"
 
-echo "runtime skill — E1 architect-lane rules (plan pin, PLAN-EXECUTION mode, ready-for-architect escalation):"
-assert_contains "$SKILL" "resolve that path at exactly that SHA, never" "the plan: pin joins the spec hierarchy, resolved at its exact SHA, never the branch tip"
-assert_contains "$SKILL" "and neither posts one." "a real plan: revision pin means no executor [gate] pass exists (the Architect's plan-executor and a PLAN-EXECUTION worker both post none)"
-assert_contains "$SKILL" "carries that Executor's \`[gate] pass\`" "a plan: pre-spec ticket built by an Executor ran DIRECT and keeps a real [gate] pass to anchor on"
-assert_contains "$SKILL" "\`[board] in-progress: direct:\`" "a plan: pre-spec ticket built by an Architect anchors on the build-edge comment instead"
-assert_contains "$SKILL" "Architect handoff comment (the \`plan:\` pin's authorization — see the" "the missing-Validation-Evidence-section rule admits the Architect handoff comment alongside [gate] pass"
-assert_contains "$SKILL" "defect an AGENT can re-cut: set ticket #{{ISSUE_NUMBER}} to" "RE-REVIEW's seam-clustered impasse routes to ready-for-architect, not needs-human"
-assert_contains "$SKILL" "cap) or was just routed to ready-for-architect (the seam-clustered" "ESCALATE's PARKED tier covers a ticket just routed to ready-for-architect"
-assert_contains "$SKILL" "a finding that is missing DESIGN (not just missing work) passes" "TOO BIG registration births a design-missing finding on the architect lane"
+echo "stand-in protocol — the relay:"
+assert_contains "$PROTOCOL" "NEEDS_PANEL" "panel levels come back to the seat that has the Workflow tool"
+assert_contains "$PROTOCOL" "code-review.js" "the panel runs review-code's own workflow"
+assert_contains "$PROTOCOL" "Workflow(" "the panel call is the Workflow tool's"
+assert_contains "$PROTOCOL" "PARKED" "a park ends the turn and resumes through the answer relay"
+assert_contains "$PROTOCOL" "ESCALATE" "the three escalation kinds are answered here"
+assert_contains "$PROTOCOL" "ready-for-architect" "a design gap on a PR goes back to the architect lane"
+assert_contains "$PROTOCOL" "board-register.sh" "a scale design gap registers the corrective child first"
+assert_contains "$PROTOCOL" "no dismissal channel" "a stand-in holds no design intent to dismiss a finding with"
+assert_contains "$PROTOCOL" "ENGINE-UNAVAILABLE" "an engine outage is echoed, not judged"
+assert_contains "$PROTOCOL" "DONE" "a finished review ends the turn"
+assert_contains "$PROTOCOL" "git worktree remove" "the agent's worktree is removed on DONE"
+assert_not_contains "$PROTOCOL" "BIND_READY" "no startup barrier survives in the protocol"
+assert_not_contains "$PROTOCOL" "RISK_MANIFEST" "no manifest snapshot rides the stand-in"
 
-echo "runtime skill — escalation and dead ends:"
-assert_contains "$SKILL" "MERGE verdict requires ALL" "merge authority lives in the runtime skill"
-assert_contains "$SKILL" "No unresolved PROTOCOL BLOCKER or SPEC FINDING" "worker-owned findings disqualify the merge verdict"
-assert_contains "$SKILL" "PARKED tier" "escalation has a terminal branch for an already-parked ticket"
-assert_contains "$SKILL" "NEVER merge over a park" "the merge verdict cannot overwrite a needs-human park"
-assert_contains "$SKILL" "the fix did not hold" "a re-flag matching a FIXED item re-waves as a live blocker, never a dupe"
-assert_contains "$SKILL" "resolved by verification, not by a wave" "evidence-only spec findings have a resolvable route"
-assert_contains "$SKILL" "unrun portion remains an unresolved SPEC FINDING" "substituted validation never silently verifies the original claim"
-assert_contains "$SKILL" "transition needs-human immediately, before JOIN" "protocol blocker parks early while fixing continues"
-assert_contains "$SKILL" "Never describe intended behavior as observed behavior" "human questions during a live wave are answered from evidence"
-assert_contains "$SKILL" "auto-merge on" "self-merge authority remains gated by auto-merge"
-assert_contains "$SKILL" "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed" "the worker resolves a noninteractive merge method before merging"
-assert_contains "$SKILL" "board sweep's FINALIZE pass" "a deferred auto-merge hands ticket finalize to the sweep"
-assert_contains "$SKILL" "needs-human" "human park route remains in the runtime skill"
-assert_not_contains "$SKILL" "needs-info" "review-loop parks remain human-unparked"
-assert_not_contains "$SKILL" "→ blocked" "retired blocked vocabulary stays absent"
-assert_contains "$SKILL" "structured PR comment" "ticketless TOO BIG routes to a PR comment"
-assert_contains "$SKILL" "doperpowers:issue-tracker" "TOO BIG registration routes through the issue-tracker skill"
-assert_contains "$SKILL" "author its body at register time" "TOO BIG ticket body is authored at register time"
-assert_not_contains "$SKILL" "then flesh out its pre-spec body" "the two-step register-then-fill wording is retired"
-assert_contains "$SKILL" "deferred-findings" "TECH_DEBT_ISSUE=none routes LOG to the trail"
-assert_contains "$SKILL" "primary only" "secondary linked issues never receive board writes"
-# The build's own reviews leave findings behind whose record (an SDE ledger)
-# never reaches this loop. They arrive in the PR body already reasoned about,
-# so the wave-everything default for NEW findings would re-open settled calls.
-assert_contains "$SKILL" '`## Unresolved Review Findings` section carries findings' "carried build-review findings reach TRIAGE through their own PR-body section"
-assert_contains "$SKILL" "not new — triage them with the round's findings" "carried findings are triaged with the round, not as new findings"
-assert_contains "$SKILL" "is a LOG on that reason" "a deferral that still holds LOGs on its stated reason, no fix wave"
-assert_contains "$SKILL" "not findings for you to route" "the PR body's Residue belongs to the session that registers it"
-
-echo "runtime skill — placeholder set:"
-# MANIFEST_REF is the API binding's addition: dispatch there cannot know the
-# PR's base, so it names the ref the two manifest snapshots were taken from and
-# the worker re-reads them when the base it resolves turns out to differ.
-want_placeholders="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{TECH_DEBT_ISSUE}} {{WORKER_NAME}}"
-got_placeholders="$(grep -o '{{[A-Z_]*}}' "$SKILL" | sort -u | tr '\n' ' ' | sed 's/ $//')"
-if [[ "$got_placeholders" == "$want_placeholders" ]]; then
-    pass "runtime placeholder set is exact"
+echo "stand-in bootstrap:"
+assert_file "$BOOTSTRAP" "the stand-in bootstrap exists"
+assert_contains "$BOOTSTRAP" "dispatcher-pinned copy" "bootstrap routes the protocol through the dispatcher-pinned file"
+assert_contains "$BOOTSTRAP" '{{PROTOCOL_FILE}}' "bootstrap binds the stand-in protocol's path"
+assert_not_contains "$BOOTSTRAP" '{{SKILL_FILE}}' "no skill path binding survives"
+assert_not_contains "$BOOTSTRAP" "Use doperpowers:qa-loops" "the bootstrap invokes no skill"
+assert_not_contains "$BOOTSTRAP" '{{BIND_READY_FILE}}' "no startup barrier binding survives"
+assert_not_contains "$BOOTSTRAP" '{{MANIFEST_REF}}' "no manifest ref binding survives"
+assert_not_contains "$BOOTSTRAP" '{{RISK_MANIFEST}}' "no risk-surface snapshot rides the prompt"
+assert_not_contains "$BOOTSTRAP" '{{REPO_FACTS}}' "no repo-facts snapshot rides the prompt"
+assert_not_contains "$BOOTSTRAP" "{{PR_BODY}}" "no inlined PR body (the agent reads the PR live via gh)"
+assert_not_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "no inlined ticket body"
+assert_contains "$BOOTSTRAP" '{{IMPLEMENT_PROTOCOL_FILE}}' "bootstrap binds the canonical implement contract path"
+assert_contains "$BOOTSTRAP" '`ROLE`: {{ROLE}}' "bootstrap binds the seat's role"
+assert_contains "$BOOTSTRAP" '`REVIEW_MODE`: {{REVIEW_MODE}}' "bootstrap binds the review variant"
+assert_contains "$BOOTSTRAP" '`CLOSURE_PACKAGE`: {{CLOSURE_PACKAGE}}' "bootstrap binds the scale variant's entry artifact"
+assert_contains "$BOOTSTRAP" '`WORKER_NAME`: {{WORKER_NAME}}' "bootstrap binds the registry identity"
+assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a mode block"
+assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
+# Spec acceptance 5's roster, plus PROTOCOL_FILE. The per-mode split is
+# test-bootstrap-parity.sh's; this is the set the template may name at all.
+want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PR_NUMBER}} {{PR_URL}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{REVIEW_MODE}} {{ROLE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
+got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [[ "$got_rboot" == "$want_rboot" ]]; then
+    pass "bootstrap placeholder set is exact"
 else
-    fail "runtime placeholder set is exact"
-    echo "    expected: $want_placeholders"
-    echo "    actual:   $got_placeholders"
+    fail "bootstrap placeholder set is exact"
+    echo "    expected: $want_rboot"
+    echo "    actual:   $got_rboot"
 fi
 
 echo "wave board reference:"
 assert_file "$WAVEBOARD" "wave-board reference exists"
 assert_contains "$WAVEBOARD" '"disposition"' "board schema carries a disposition slot per item"
 assert_contains "$WAVEBOARD" '"items"' "board frontmatter is a strict JSON object with items"
-assert_contains "$WAVEBOARD" "<review-tmp>/pr-<PR>-fix-wave-" "board path lives in the dispatcher-session tmp dir"
+assert_contains "$WAVEBOARD" "<review-tmp>/pr-<PR>-fix-wave-" "board path lives in the agent's scratch dir"
 assert_not_contains "$WAVEBOARD" ".doperpowers/qa" "board reference carries no worktree path a PR could pre-create"
 assert_contains "$WAVEBOARD" "symlink" "board reference names the symlink hazard that forbids worktree residency"
 assert_contains "$WAVEBOARD" "rebuild the board from the trail" "long-park tmp loss has a documented recovery"
-# Engine-start + fallback text lives inline in the skill's START ENGINE
-# section — the engine-blocks indirection is retired.
-if [ -e "$REPO_ROOT/skills/qa-loops/references/engine-blocks" ]; then
-    fail "engine-blocks dir is retired (engine text lives in SKILL.md)"
-else
-    pass "engine-blocks dir is retired (engine text lives in SKILL.md)"
-fi
-assert_contains "$SKILL" "EXCEPT a needs-human park" "review-tmp survives a park so mid-wave boards persist"
-assert_not_contains "$SKILL" "Do NOT wait on it" "background-run rule is stated as shape, not double prohibition"
-assert_contains "$SKILL" "the only place engine output is read" "audit independence keeps its positive statement"
-assert_contains "$SKILL" "IN THE BACKGROUND" "engine starts in the background (audit runs concurrently)"
-assert_contains "$SKILL" "45 minutes" "engine wait is bounded (hung-engine timeout)"
-assert_contains "$SKILL" "ENGINE-UNAVAILABLE" "fallback carries the sweep retry marker"
-assert_contains "$SKILL" "stays in-review" "engine-down never parks needs-human"
-# The engine is doperpowers:review-code's lane, run by the worker itself through
-# the lane's workflow at every level (isolated worktree per reviewer), at a
-# level the spec's verification entry can raise but never lower, and a
-# reviewer that could not inspect the range never reads as clean.
-assert_contains "$SKILL" "doperpowers:reviewer-low" "engine names the registered reviewer rungs"
-assert_contains "$SKILL" "{{REVIEW_CODE_DIR}}/workflows/code-review.js" "panel levels run review-code's workflow from the dispatcher-pinned skill dir"
-assert_contains "$SKILL" 'lens: "<mandate>"' "lensed runs ride the workflow's lens argument"
-assert_contains "$SKILL" "pass no \`repo\` argument" "reviewers work in fresh worktrees, never this checkout"
-assert_contains "$SKILL" "could not inspect" "a reviewer whose tools failed is a failed sweep, not a clean one"
-assert_contains "$SKILL" "at panel levels this is the" "the explanation check is scoped to single-reviewer levels; the panel's failure signal is interrupted"
-assert_contains "$SKILL" "never ends the review" "a lensed call that will not launch is a recorded failure, not an outage"
-assert_contains "$SKILL" "the audit is your independent judgment" "a result that lands early waits for the audit"
-assert_contains "$SKILL" "Nothing lowers a rung the spec named" "the spec's verification rung is a floor"
-assert_not_contains "$SKILL" "review-engine" "the codex engine script is gone from the protocol"
-assert_not_contains "$SKILL" "codex" "no codex process in the review path"
-assert_not_contains "$SKILL" "CODEX_REVIEW" "no codex engine env in the protocol"
 assert_contains "$WAVEBOARD" "VERIFY THEN FIX" "fixer contract relocates code verification"
 assert_not_contains "$WAVEBOARD" "never implement from the finding text alone" "verify-then-fix is stated as grounding, not a prohibition"
 assert_contains "$WAVEBOARD" "a finding can be wrong" "the contract names why verification comes first"
@@ -240,17 +177,14 @@ assert_contains "$WAVEBOARD" "discard the contaminated board" "nested-writer rec
 assert_contains "$WAVEBOARD" "fresh board with blank dispositions" "re-wave cannot reuse contaminated board state"
 assert_contains "$WAVEBOARD" "full unpushed range" "push gate validates every local commit, not only the latest wave"
 assert_contains "$WAVEBOARD" "accepted-commit ledger" "push provenance has a durable per-commit gate"
-assert_contains "$WAVEBOARD" "dispatcher control directory" "ledger path is undisclosed to the fixer tree"
+assert_contains "$WAVEBOARD" "never written into a fixer prompt" "the ledger path is undisclosed to the fixer tree"
+assert_not_contains "$WAVEBOARD" "binding barrier" "the retired barrier no longer supplies the ledger"
+assert_not_contains "$WAVEBOARD" "dispatcher control directory" "the ledger lives in the agent's own scratch dir now"
 assert_contains "$WAVEBOARD" "ledger content fingerprint" "late ledger tampering is detected before push"
 assert_contains "$WAVEBOARD" "remote head differs from <push-base>" "unexpected remote movement blocks automatic salvage"
 assert_before "$WAVEBOARD" "fresh remote SHA" "git reset --hard <wave-base>" "remote publication is ruled out before local reset"
 assert_contains "$WAVEBOARD" "If this was the last wave the protocol's cap allows" "wave-cap contamination parks instead of exceeding the cap"
-assert_contains "$SKILL" "scratch control state" "orchestrator write whitelist covers safety artifacts"
-assert_contains "$SKILL" "do not rebase" "push rejection never asks the orchestrator to resolve code conflicts"
-assert_not_contains "$SKILL" "log it twice" "re-flag dedupe states the routing fact, not a prohibition tail"
-assert_not_contains "$SKILL" "in one shell command" "no shell-packaging mandate in the protocol either"
-assert_not_contains "$SKILL" "NOT grant confidence" "the cap exit states the fact — there is no confidence to grant"
-assert_before "$SKILL" "transition needs-human immediately, before JOIN" "## JOIN" "protocol blocker park precedes JOIN"
+assert_contains "$WAVEBOARD" "Agent tool, \`general-purpose\`" "the fixer is dispatched through the Agent tool"
 assert_before "$WAVEBOARD" "record <wave-base> before dispatch" "Dispatch the wave's fixer" "wave boundary is captured before dispatch"
 assert_before "$WAVEBOARD" "stop the authorized fixer and every descendant" "QUIESCENCE GATE" "descendants stop before quiescence"
 assert_before "$WAVEBOARD" "QUIESCENCE GATE" "discard the contaminated board" "quiescence precedes contaminated-state disposal"
@@ -262,11 +196,15 @@ assert_contains "$WAVEBOARD" "appears in the commits being pushed" "push gate sc
 assert_contains "$WAVEBOARD" "published history is never rewritten" "the board-removal exception is scoped to unpushed commits"
 
 echo "operator reference:"
-assert_file "$MANUAL" "operation manual exists"
-assert_contains "$MANUAL" "# QA Loops — the autonomous review loop" "operation manual preserves the loop overview"
+assert_file "$MANUAL" "the review loop's operator reference exists"
 assert_contains "$MANUAL" "## Dedupe & sweep policy" "operation manual preserves operating policy"
 assert_contains "$MANUAL" "## Adopting a repo (checklist)" "operation manual preserves setup guidance"
-assert_contains "$MANUAL" '`SKILL.md` | the Review Worker Protocol' "operation manual points to the runtime skill"
+assert_contains "$MANUAL" "## Migrating an installed workflow" "an installed Action copy has a migration note"
+assert_contains "$MANUAL" "owner reviews" "the dedupe table leads with the owner's own review"
+assert_contains "$MANUAL" "agents/qa-loop.md" "the manual points at the agent that IS the loop"
+assert_contains "$MANUAL" "references/review-standin-protocol.md" "...and at the stand-in's protocol"
+assert_contains "$MANUAL" "references/review-standin-bootstrap.md" "...and at the stand-in's bootstrap"
+assert_not_contains "$MANUAL" '`SKILL.md`' "the retired skill is no longer a piece of the loop"
 assert_contains "$MANUAL" "only non-blocker findings" "operation manual matches the protocol's self-merge findings clause"
 assert_not_contains "$MANUAL" "only low findings" "retired low-findings wording stays absent from the manual"
 assert_contains "$MANUAL" "fix wave" "operation manual describes the fix-wave delegation"
@@ -286,50 +224,16 @@ assert_not_contains "$MANUAL" "below the engine's critical/high class" "manual r
 assert_not_contains "$MANUAL" "review-engine.sh" "manual no longer names the codex engine script"
 assert_not_contains "$MANUAL" "codex login" "the codex CLI is no longer a runner prerequisite"
 assert_contains "$MANUAL" "REVIEW_LEVEL" "manual documents the operator's level floor"
+assert_not_contains "$MANUAL" "REVIEW_ACK_POLLS" "the retired barrier's knobs are gone from the manual"
 assert_not_contains "$MANUAL" "one fail-safe shell step" "manual states the fail-safe order, not shell packaging"
 
-echo "runtime skill — E2 scale-review variant (recomposition epics):"
-assert_contains "$SKILL" 'A `review-epic-<n>` dispatch is the E2 scale review' "the scale section is keyed to the dispatcher's worker name"
-assert_contains "$SKILL" "no fix waves and no merge step" "the scale variant drops the wave/merge machinery"
-assert_contains "$SKILL" "never merges, so the two verdicts" "a scale run never takes the ESCALATE ladder"
-assert_before "$SKILL" "REVIEW_MODE\` binding reads \`scale\`" "## ORIENT" "the mode fork is announced before the PR-shaped flow begins"
-
-echo "worker bootstrap:"
-assert_file "$BOOTSTRAP" "worker bootstrap exists"
-assert_contains "$BOOTSTRAP" "Use doperpowers:qa-loops" "bootstrap names the runtime skill"
-assert_contains "$BOOTSTRAP" "dispatcher-pinned copy" "bootstrap routes the protocol through the dispatcher-pinned file"
-assert_contains "$BOOTSTRAP" '{{SKILL_FILE}}' "bootstrap binds the canonical skill path"
-assert_contains "$BOOTSTRAP" "over any same-named skill" "bootstrap outranks PR-controlled workspace skills"
-assert_contains "$BOOTSTRAP" '{{IMPLEMENT_PROTOCOL_FILE}}' "bootstrap binds the canonical implement contract path"
-assert_contains "$BOOTSTRAP" '{{BIND_READY_FILE}}' "bootstrap binds the dispatcher-owned startup barrier"
-assert_not_contains "$BOOTSTRAP" "{{PR_BODY}}" "no inlined PR body (the worker reads the PR live via gh)"
-assert_not_contains "$BOOTSTRAP" "{{ISSUE_BODY}}" "no inlined ticket body (the worker reads the ticket live via gh)"
-assert_not_contains "$BOOTSTRAP" "{{ENGINE_BLOCK}}" "no engine-block binding (engine text lives in the skill)"
-assert_contains "$BOOTSTRAP" "{{RISK_MANIFEST}}" "bootstrap supplies the BASE-ref risk-surface snapshot"
-assert_contains "$BOOTSTRAP" "{{REPO_FACTS}}" "bootstrap supplies the BASE-ref repo-facts snapshot"
-assert_contains "$BOOTSTRAP" '`REVIEW_MODE`: {{REVIEW_MODE}}' "bootstrap binds the review variant (pr | scale)"
-assert_contains "$BOOTSTRAP" '`CLOSURE_PACKAGE`: {{CLOSURE_PACKAGE}}' "bootstrap binds the scale reviewer's entry artifact"
-assert_contains "$BOOTSTRAP" '`WORKER_NAME`: {{WORKER_NAME}}' "bootstrap binds the registry identity both variants' barriers verify"
-assert_contains "$BOOTSTRAP" "SCALE REVIEWER of recomposition epic" "bootstrap carries the scale variant's own opening"
-assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a mode block"
-assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
-# ...plus TICKET_BODY_FILE, the api-mode block's assignment file: a claim
-# response is the only route a run has to its own ticket text.
-want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BIND_READY_FILE}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{MANIFEST_REF}} {{PR_NUMBER}} {{PR_URL}} {{REPO_FACTS}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{REVIEW_MODE}} {{RISK_MANIFEST}} {{SCALE_RANGE_NOTE}} {{SKILL_FILE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
-got_rboot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
-if [[ "$got_rboot" == "$want_rboot" ]]; then
-    pass "bootstrap placeholder set is exact"
-else
-    fail "bootstrap placeholder set is exact"
-    echo "    expected: $want_rboot"
-    echo "    actual:   $got_rboot"
-fi
-
 echo "dispatch wiring:"
-assert_contains "$DISPATCH" 'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-standin-bootstrap.md"' "dispatcher renders the worker bootstrap"
+assert_contains "$DISPATCH" 'BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-standin-bootstrap.md"' "dispatcher renders the stand-in bootstrap"
+assert_contains "$DISPATCH" 'PROTOCOL_FILE="$SKILL_DIR/references/review-standin-protocol.md"' "dispatcher pins the stand-in protocol"
 assert_contains "$DISPATCH" "P_IMPLEMENT_PROTOCOL_FILE" "dispatcher binds the implement contract path"
-assert_not_contains "$DISPATCH" "review-worker-protocol.md" "dispatcher no longer bypasses the skill entrypoint"
-assert_missing "$OLD_PROTOCOL" "retired protocol reference file is removed"
+assert_not_contains "$DISPATCH" "REVIEW_ACK_POLLS" "the barrier's acknowledgement poll is gone"
+assert_not_contains "$DISPATCH" "bind-ready.json" "the barrier file is gone"
+assert_not_contains "$DISPATCH" "accepted-commits.json" "the dispatcher no longer owns the accepted-commit ledger"
 assert_contains "$REPO_ROOT/skills/issue-tracker/references/pr-review-dispatch.yml" \
   "skills/issue-tracker/scripts/review-dispatch.sh" \
   "the installed GH Action runs the dispatcher at its issue-tracker home"
