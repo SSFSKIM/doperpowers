@@ -12,7 +12,10 @@ MANUAL="$REPO_ROOT/skills/issue-tracker/references/review-loop.md"
 BOOTSTRAP="$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md"
 WAVEBOARD="$REPO_ROOT/skills/issue-tracker/references/wave-board.md"
 DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
-RETIRED_SKILL="$REPO_ROOT/skills/qa-loops"
+# The retired skill's name is BUILT, never written: spelled out anywhere in this
+# file it would be its own hit in the route sweep below.
+retired="qa-loop""s"
+RETIRED_SKILL="$REPO_ROOT/skills/$retired"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
@@ -46,16 +49,15 @@ assert_before() {
 }
 
 echo "the retired skill:"
-assert_missing "$RETIRED_SKILL" "skills/qa-loops is gone — the loop is the qa-loop agent"
-if grep -rn 'doperpowers:qa-loops\|skills/qa-loops\|tests/qa-loops' \
-       "$REPO_ROOT/skills" "$REPO_ROOT/agents" "$REPO_ROOT/hooks" "$REPO_ROOT/scripts" \
-       "$REPO_ROOT/tests" "$REPO_ROOT/CLAUDE.md" "$REPO_ROOT/README.md" \
-       --exclude="$(basename "$0")" >/dev/null 2>&1; then
-    fail "nothing routes to the retired skill any more"
-    grep -rn 'doperpowers:qa-loops\|skills/qa-loops\|tests/qa-loops' \
+assert_missing "$RETIRED_SKILL" "the retired skill's directory is gone — the loop is the qa-loop agent"
+routes() {
+    grep -rnE "doperpowers:$retired|skills/$retired|tests/$retired" \
         "$REPO_ROOT/skills" "$REPO_ROOT/agents" "$REPO_ROOT/hooks" "$REPO_ROOT/scripts" \
-        "$REPO_ROOT/tests" "$REPO_ROOT/CLAUDE.md" "$REPO_ROOT/README.md" \
-        --exclude="$(basename "$0")" | sed 's/^/    /'
+        "$REPO_ROOT/tests" "$REPO_ROOT/CLAUDE.md" "$REPO_ROOT/README.md" 2>/dev/null
+}
+if [[ -n "$(routes)" ]]; then
+    fail "nothing routes to the retired skill any more"
+    routes | sed 's/^/    /'
 else
     pass "nothing routes to the retired skill any more"
 fi
@@ -86,7 +88,7 @@ assert_contains "$PROTOCOL" "needs-human" "a ref that will not resolve parks ins
 
 echo "stand-in protocol — the dispatch:"
 assert_contains "$PROTOCOL" "doperpowers:qa-loop" "the review is one qa-loop agent"
-assert_not_contains "$PROTOCOL" "doperpowers:qa-loops" "the retired skill is not named"
+assert_not_contains "$PROTOCOL" "doperpowers:$retired" "the retired skill is not named"
 assert_contains "$PROTOCOL" 'isolation: "worktree"' "the agent reviews in its own worktree"
 assert_contains "$PROTOCOL" "ticket body file:" "the claim's body file rides the brief when the bootstrap bound one"
 assert_contains "$PROTOCOL" "your dispatcher answers escalations; return for them" "the brief carries the escalation sentence the agent expects"
@@ -113,7 +115,7 @@ assert_file "$BOOTSTRAP" "the stand-in bootstrap exists"
 assert_contains "$BOOTSTRAP" "dispatcher-pinned copy" "bootstrap routes the protocol through the dispatcher-pinned file"
 assert_contains "$BOOTSTRAP" '{{PROTOCOL_FILE}}' "bootstrap binds the stand-in protocol's path"
 assert_not_contains "$BOOTSTRAP" '{{SKILL_FILE}}' "no skill path binding survives"
-assert_not_contains "$BOOTSTRAP" "Use doperpowers:qa-loops" "the bootstrap invokes no skill"
+assert_not_contains "$BOOTSTRAP" "Use doperpowers:$retired" "the bootstrap invokes no skill"
 assert_not_contains "$BOOTSTRAP" '{{BIND_READY_FILE}}' "no startup barrier binding survives"
 assert_not_contains "$BOOTSTRAP" '{{MANIFEST_REF}}' "no manifest ref binding survives"
 assert_not_contains "$BOOTSTRAP" '{{RISK_MANIFEST}}' "no risk-surface snapshot rides the prompt"

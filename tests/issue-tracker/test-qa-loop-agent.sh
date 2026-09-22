@@ -130,7 +130,7 @@ assert_not_contains "$AGENT" "Workflow(" "the agent never calls the workflow a s
 assert_not_contains "$AGENT" "BIND_READY_FILE" "the binding barrier is gone"
 assert_not_contains "$AGENT" "MANIFEST_REF" "the agent reads the manifests from the base ref itself"
 assert_not_contains "$AGENT" "SKILL_FILE" "the body is the contract — no skill file to open"
-assert_not_contains "$AGENT" "doperpowers:qa-loops" "the retired skill is never named"
+assert_not_contains "$AGENT" "qa-loops" "the retired skill is never named"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

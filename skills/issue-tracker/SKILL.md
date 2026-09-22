@@ -10,7 +10,7 @@ single source of truth.** Tickets are **purpose-units**: born as pre-specs
 from an `organizing-sprints` materialization (or registered directly here),
 gated and driven to a PR by autonomous Executor
 workers (`references/implement-worker-protocol.md`), reviewed to a confident merge by
-Reviewer workers (doperpowers:qa-loops), tracked as GitHub issues with
+the owning seat's QA agent (`agents/qa-loop.md`), tracked as GitHub issues with
 typed edges (sub-issue = parent, dependency = blocked-by, provenance =
 spawned-by).
 
@@ -48,7 +48,8 @@ unattended repos).
 |---|---|---|
 | **Architect Worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through design and build (`in-design`, the build edge to `in-progress` with the `plan:` pin, `in-review` with the PR); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | `references/architect-worker-protocol.md` |
 | **Executor Worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations — DIRECT tickets, and PLAN-EXECUTION as the recovery lane for a plan whose Architect session was lost | `references/implement-worker-protocol.md` |
-| **Reviewer Worker** (daemon, one PR) | its PR's ticket (`needs-human` / `ready-for-architect`); finding-tickets; the merge itself + post-merge finalize on a confident verdict; a scale review's clean `done` on a recomposition epic | doperpowers:qa-loops |
+| **QA agent** (subagent of the owning seat, sol) | the PR's ticket open states as the owner's run (`needs-human`, the re-pin self-edge); finding-tickets; the merge itself + `done` as post-merge finalize; a scale review's clean `done` on a recomposition epic. Never `ready-for-architect`: a design gap returns to its dispatcher, which writes that edge | `agents/qa-loop.md` |
+| **Review stand-in** (seat, one PR nobody owns) | nothing of its own — it dispatches the QA agent and writes only the edges an owner's answer would have been: `ready-for-architect` on a design gap or a pinned-plan spec conflict, `needs-human` on a body-only one | `references/review-standin-protocol.md` |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the in-flight pull (`in-design`/`in-progress` by the epic's lane) and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
@@ -349,8 +350,9 @@ pick by repo visibility:
    edge (`in-progress`, plan pinned) and `in-review` with the PR — one
    session end to end; `ARCHITECT_MAX_CONCURRENT` meters that whole span.
 
-Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
-are picked up by the review loop (doperpowers:qa-loops). The ritual is
+Nobody judges turn-ends. Parked tickets wait for the wake ritual; an opened PR
+is reviewed by the QA agent its owner dispatches, or by a stand-in when nobody
+owns it (`references/review-loop.md`). The ritual is
 mechanized end-to-end by `scripts/execute-dispatch.sh` (`<n>` triggered, `--sweep` catch-up —
 same steps, registry-first dedupe, cap-bounded); unattended, `board-sweep.sh`
 invokes it on a timer. Running the ritual by hand stays valid — the sweep's
@@ -361,7 +363,7 @@ calls, not a parallel doctrine.** For your own work: in-session fan-out is
 native subagents; a raw ad-hoc
 seat is reserved for work that must survive your session with no board to
 hold it. Board pipeline workers' doctrine is the worker protocols under
-`references/` and doperpowers:qa-loops, and nobody sits between them and
+`references/` and the QA agent's own body, and nobody sits between them and
 the board.
 
 ## The wake ritual (the human's catch-up)
@@ -420,10 +422,11 @@ execution-side protocols live here — `references/implement-worker-protocol.md`
 `references/spike-worker-protocol.md` — sharing one bootstrap
 (`references/worker-bootstrap.md`) and one dispatcher
 (`scripts/execute-dispatch.sh`); the operator manual for that loop is
-`references/execution-loop.md`. The review-side protocol is
-doperpowers:qa-loops itself (`SKILL.md`; bootstrap
-`references/review-worker-bootstrap.md`). This file owns only the schema
-they write against.
+`references/execution-loop.md`. The review side is `agents/qa-loop.md` — the
+agent the owning seat dispatches — with `references/review-standin-protocol.md`
+and `references/review-standin-bootstrap.md` for the reviews nobody owns, and
+`references/review-loop.md` as its operator manual. This file owns only the
+schema they write against.
 
 ## The ticket body (pre-spec)
 

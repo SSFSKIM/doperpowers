@@ -491,7 +491,7 @@ assert_contains "$PROMPT" '`REVIEW_MODE`: pr' "leaf prompt binds the ordinary pr
 assert_not_contains "$PROMPT" "recomposition epic" "leaf prompt carries none of the scale variant's framing"
 assert_not_contains "$PROMPT" "CLOSURE_PACKAGE" "leaf prompt carries no closure-package binding"
 assert_not_contains "$PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
-assert_not_contains "$PROMPT" "doperpowers:qa-loops" "the retired skill is not invoked"
+assert_not_contains "$PROMPT" "qa-loops" "the retired skill is not invoked"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/review-standin-protocol.md" "prompt carries the canonical stand-in protocol path"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/implement-worker-protocol.md" "prompt carries the canonical implement-contract path (the dispatcher-pinned protocol file)"
