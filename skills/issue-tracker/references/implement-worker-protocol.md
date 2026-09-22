@@ -96,7 +96,7 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 
 - Pass → {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress
 then a one-line gate comment:
-{{BOARD_SCRIPTS}}/board-comment.sh {{ISSUE_NUMBER}} "[gate] pass — {{ENGINE_NAME}}/<mode>: <one line>"
+{{BOARD_SCRIPTS}}/board-comment.sh {{ISSUE_NUMBER}} "[gate] pass — <mode>: <one line>"
 In PLAN-EXECUTION mode the verdict differs: your first board write is
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress "plan-execution: <plan path>@<sha>"
 and you post NO `[gate]` comment — the design was authorized at the

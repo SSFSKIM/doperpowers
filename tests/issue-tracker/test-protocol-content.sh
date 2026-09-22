@@ -78,7 +78,7 @@ assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
 echo "placeholders:"
 # The protocol keeps only the tokens its own clauses use; the worker reads
 # its ticket and the repo-facts manifest itself (no inlined bodies).
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
@@ -104,7 +104,7 @@ assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-bloc
 # parent-contract window a claim was cut against (no read a worker may make
 # hands it over), and the assignment file the claim delivered in place of a
 # ticket-body read route.
-want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}} {{TICKET_BODY_FILE}}"
+want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}} {{TICKET_BODY_FILE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -124,7 +124,7 @@ SPIKE="$REFS/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
 # The brief/facts tails ride the bootstrap's binding sections for both lanes.
-want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+want_spike="{{BOARD_SCRIPTS}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
@@ -242,7 +242,6 @@ assert_not_contains "$arch" "Ends at the plan" "scope no longer ends at the plan
 assert_contains "$arch" "plan-executor" "...through a plan-executor subagent it keeps bound to the ticket"
 assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
 assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
-assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
 assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
 assert_contains "$arch" "## Build" "the Architect has a Build phase, not just a handoff"
 assert_contains "$arch" 'in-progress "plan-execution:' "...whose board write is the build edge with the plan-execution note"
