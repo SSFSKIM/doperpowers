@@ -172,9 +172,11 @@ design reasoning they are answered from. So:
   yours. On a ticket whose `plan:` pin names a document, `ready-for-architect`
   with the conflict as the note; on a body-only ticket, `needs-human` with both
   positions. Either way, end your turn.
-- `dismissal` — reply `no dismissal channel from a stand-in` and resume the
-  agent. The finding then waves or LOGs like any other, which is the right
-  outcome: a dismissal is a claim about design intent, and nobody here holds it.
+- `dismissal` — resume the agent with `SendMessage` carrying
+  `no dismissal channel from a stand-in`; your turn does not end here, the
+  review continues. The finding then waves or LOGs like any other, which is the
+  right outcome: a dismissal is a claim about design intent, and nobody here
+  holds it.
 
 A ticketless PR has no board to write: every escalation above becomes one PR
 comment naming the impasse, and your turn ends.

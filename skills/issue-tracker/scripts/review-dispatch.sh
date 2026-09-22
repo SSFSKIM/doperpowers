@@ -853,7 +853,7 @@ _dispatch_epic_locked() {
       || { echo "$name: checkout of origin/$int_ref failed" >&2; return 1; }
   else
     git -C "$LOCAL_REPO" worktree add -q --detach "$wt" "origin/$int_ref" \
-      || { echo "$name: worktree add failed" >&2; return 1; }
+      || { echo "$name: worktree add failed (origin/$int_ref)" >&2; return 1; }
   fi
 
   # No PR bindings at all: the mode:scale template blocks carry no
