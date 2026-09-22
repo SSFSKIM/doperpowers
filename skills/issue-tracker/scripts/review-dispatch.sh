@@ -146,6 +146,9 @@ LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
 BOOTSTRAP_TEMPLATE="$SKILL_DIR/references/review-standin-bootstrap.md"
 IMPLEMENT_PROTOCOL_FILE="$SKILL_DIR/references/implement-worker-protocol.md"
+# The stand-in's own protocol, pinned by path the way every other lane's worker
+# protocol is: it is the dispatcher's copy, not the workspace's.
+PROTOCOL_FILE="$SKILL_DIR/references/review-standin-protocol.md"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -159,6 +162,7 @@ git -C "$LOCAL_REPO" rev-parse --git-dir >/dev/null 2>&1 || die "LOCAL_REPO is n
 # Every path above is already absolute, so this is safe to do here.
 cd "$LOCAL_REPO" || die "cannot cd to LOCAL_REPO: $LOCAL_REPO"
 [ -f "$BOOTSTRAP_TEMPLATE" ] || die "worker bootstrap missing: $BOOTSTRAP_TEMPLATE"
+[ -f "$PROTOCOL_FILE" ] || die "stand-in protocol missing: $PROTOCOL_FILE"
 [ -x "$SMINOS_CLI" ] || die "the sminos CLI is not executable at $SMINOS_CLI (set SMINOS_CLI)"
 # The registry root moved to ~/.claude/sminos and this script scans it
 # directly, so it must never be the first process to look at an empty new
@@ -669,7 +673,7 @@ _with_dispatch_lock() {  # <worker-name> <fn> [args…]
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() { _with_dispatch_lock "review-pr-$1" _dispatch_one_locked "$@"; }
 _dispatch_one_locked() {
-  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt control_dir bind_ready ledger
+  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue issue_url td wt prompt control_dir bind_ready ledger
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -696,8 +700,14 @@ PY
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
   # primary ticket (first linked issue; the full list rides the prompt as
-  # numbers only — the worker reads PR and ticket bodies live via gh)
+  # numbers only — the stand-in and its agent read PR and ticket bodies live
+  # via gh). The URL is the ticket's own, the brief's `ticket: <n> <url>` line.
   issue="${LINKED_ISSUES%% *}"
+  if [ -n "$issue" ]; then
+    issue_url="https://github.com/$BOARD_REPO/issues/$issue"
+  else
+    issue_url="none"
+  fi
 
   # standing tech-debt sink (optional)
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
@@ -757,15 +767,15 @@ PY
   fi
 
   prompt="$(P_PR_NUMBER="$pr" P_PR_URL="$PR_URL" P_REVIEW_MODE="pr" \
-    P_WORKER_NAME="review-pr-$pr" \
+    P_ROLE=QAGENT P_WORKER_NAME="review-pr-$pr" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$BASE_REF" P_HEAD_REF="$HEAD_REF" \
     P_HEAD_SHA="$HEAD_SHA" P_ISSUE_NUMBER="${issue:-none}" \
+    P_ISSUE_URL="$issue_url" \
     P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_MANIFEST_REF="$BASE_REF" \
-    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="${SKILL_DIR%/*}/qa-loops/SKILL.md" \
+    P_PROTOCOL_FILE="$PROTOCOL_FILE" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
@@ -798,7 +808,7 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [child pu
 _dispatch_epic_locked() {
   local etid="$1" pkg="$2" branch="${3:-}" pulls="${4:-}"
   local name tmp wt int_ref base_ref td prompt pr_ref
-  local control_dir bind_ready ledger range_note
+  local control_dir bind_ready ledger
   name="review-epic-$etid"
   # Two different refs, and conflating them cost the engine its whole range:
   #   int_ref  — the epic's integration branch, where the worktree sits (the
@@ -848,13 +858,10 @@ _dispatch_epic_locked() {
       || echo "$name: pull head refs/pull/$pr_ref/head is unfetchable — that child's range may not resolve" >&2
   done
   # No integration branch left ⇒ the worktree sits on the default branch and
-  # there is no aggregate range at all; say so in the prompt rather than
-  # letting the worker run an engine over nothing.
-  if [ "$int_ref" = "$base_ref" ]; then
-    range_note="This epic has NO aggregate branch range: its integration branch is gone (deleted when its children merged), so this worktree sits on $base_ref itself and an engine run based on origin/$base_ref would review nothing. The review ranges are the per-child base/head ranges the closure package names — drive the engine over those, one range at a time (the worktree is yours to move: detach it at a range's head and run the engine with that range's base)."
-  else
-    range_note="Your aggregate review range is this worktree's integration branch '$int_ref' against origin/$base_ref — the branch it merges into — which is exactly what the engine's \`--base origin/$base_ref\` reviews."
-  fi
+  # there is no aggregate range at all. The bindings say so by themselves —
+  # INTEGRATION_REF equal to BASE_REF is that fact — and the stand-in's
+  # protocol turns it into the brief's `aggregate range: none` line, which
+  # sends the agent at the closure package's per-child ranges instead.
   _finalize_ticket_owners "$etid"
 
   tmp="$(mktemp -d)"
@@ -904,14 +911,13 @@ _dispatch_epic_locked() {
   # {{PR_NUMBER}}/{{PR_URL}}/{{HEAD_*}} slot to fill.
   prompt="$(P_REVIEW_MODE="scale" P_CLOSURE_PACKAGE="$pkg" \
     P_REPO="$BOARD_REPO" P_BASE_REF="$base_ref" \
-    P_WORKER_NAME="$name" P_INTEGRATION_REF="$int_ref" \
-    P_SCALE_RANGE_NOTE="$range_note" \
+    P_ROLE=QAGENT P_WORKER_NAME="$name" P_INTEGRATION_REF="$int_ref" \
     P_ISSUE_NUMBER="$etid" P_ISSUE_LIST="$etid" \
+    P_ISSUE_URL="https://github.com/$BOARD_REPO/issues/$etid" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_MANIFEST_REF="$base_ref" \
-    P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="${SKILL_DIR%/*}/qa-loops/SKILL.md" \
+    P_PROTOCOL_FILE="$PROTOCOL_FILE" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
@@ -1772,16 +1778,18 @@ PY
     http://*|https://*) mode=api ;;
     ?*) mode=api-scale ;;
   esac
-  prompt="$(P_REVIEW_MODE="$mode" P_WORKER_NAME="$name" \
+  # ISSUE_URL is `none` on this binding: the board is not GitHub, the ticket has
+  # no URL of its own, and its text is the claim's body file.
+  prompt="$(P_REVIEW_MODE="$mode" P_ROLE=QAGENT P_WORKER_NAME="$name" \
     P_CLOSURE_PACKAGE="$C_PR" P_INTEGRATION_REF="$C_BRANCH" \
     P_REPO="$BOARD_REPO" \
     P_BASE_REF="$([ "$mode" = api-scale ] && echo "$DEFAULT_BRANCH" || echo UNRESOLVED-resolve-from-the-PR)" \
     P_ISSUE_NUMBER="$C_TICKET" P_ISSUE_LIST="$C_TICKET" \
+    P_ISSUE_URL=none \
     P_TICKET_BODY_FILE="$body_file" \
     P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
     P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
-    P_MANIFEST_REF="$DEFAULT_BRANCH" \
-    P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="${SKILL_DIR%/*}/qa-loops/SKILL.md" \
+    P_PROTOCOL_FILE="$PROTOCOL_FILE" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
