@@ -859,6 +859,18 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   fence; the server counts every open run today and would hold the slot
   regardless of the client. Recorded from planning and the plan review.
   Date/Author: 2026-09-21.
+- Decision: The `phase` key is a candidate filter, not the authority. The
+  API tick's review-recovery phase reads each candidate's ticket before it
+  acts and proceeds only when the state is `in-review`; a candidate whose
+  ticket is `needs-human` is restamped `review-parked` and left alone, and
+  any other state clears the key.
+  Rationale: the server parks a ticket by itself — the convergence
+  transmute and the reconciler's dependency-stall park both write
+  `needs-human` with no client transition to stamp the seat — so a local
+  `review` can outlive the review. The tick already reads the timeline of
+  every candidate; the ticket read is the same cost and removes the case
+  where the sweep resumes a parked owner. Recorded from Task 5's review.
+  Date/Author: 2026-09-22.
 - Decision: The trail's re-pin record is `[trail] re-pin <path>@<sha> —
   <delta>`, beside `[trail] dismissed …`.
   Date/Author: 2026-09-21, from planning.
@@ -957,3 +969,4 @@ Pending — written at finish.
 - 2026-09-21: Task 1 review — the return contract covers an armed auto-merge, ticketless observation mode, and both scale outcomes.
 - 2026-09-21: acceptance 8's grep no longer names `DAEMON_CLAUDE_SETTINGS=`; the dispatchers' explicit clearing stays.
 - 2026-09-22: Task 4 review — acceptance 8's grep excludes sminos, codex-companion, and review-bench: none of the three is the board route.
+- 2026-09-22: Task 5 review — the API tick's review recovery verifies the ticket's state before it acts; `phase` filters candidates and the server's own parks are corrected there.
