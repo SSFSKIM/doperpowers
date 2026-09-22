@@ -1046,4 +1046,58 @@ t  "and its run goes back as well"          '"path": "/runs/72/end"' cat "$FIX13
 nt "no worker is spawned for either"        "ARGS name=31"  \
    bash -c "cat '$DH13/spawn-capture.txt' 2>/dev/null || true"
 
+# =========================================================================
+# Scenario 14 — AN OWNER IN REVIEW HOLDS NO LANE SLOT. The Architect that
+# opened its PR keeps the binding through the review while its run has
+# ended: an idle seat, still lane=architect, still carrying its run id.
+# Counted as an open run it held the single frontier slot for the whole
+# review — a review is hours, and the queued design work behind it waited
+# on a seat that was only reading its own PR. The seat's `phase` mark is
+# what takes it off the lane, through the park its review may take and back;
+# a seat still in design keeps the slot it is actually spending.
+# =========================================================================
+PORT14="$(free_port)"
+FIX14="$(mktemp)"; : > "$FIX14.log"
+cat > "$FIX14" <<'JSON'
+[
+ {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX14" "$PORT14" & MOCK14=$!
+trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 $MOCK11 $MOCK12 $MOCK13 $MOCK14 2>/dev/null' EXIT
+wait_for_port "$PORT14" || { echo "FAIL mock server never listened on $PORT14"; exit 1; }
+
+r14="$(apirepo "$PORT14")"
+# One open architect run in this repo, in whatever phase the drill names.
+plant_owner() {  # plant_owner <daemon-home> [phase]
+  printf '{"uuid":"arch0001","current":"arch0001","name":"55-api-architect",
+           "status":"idle","run_id":55,"lane":"architect","ticket":"55",
+           "role":"ARCHITECT","board":"api:http://127.0.0.1:%s",
+           "board_repo":"testrepo"%s}' \
+    "$PORT14" "$([ -n "${2:-}" ] && printf ',"phase":"%s"' "$2")" > "$1/arch0001.json"
+}
+# IMPLEMENT_MAX_CONCURRENT=0 keeps the implement and spike lanes out of the
+# log, so every claim it holds is the architect lane asking for work.
+sweep14() {  # sweep14 <daemon-home>
+  ( cd "$r14" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
+      DAEMON_HOME="$1" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r14" \
+      BOARD_CREDENTIALS_FILE="$CREDS" ARCHITECT_MAX_CONCURRENT=1 \
+      IMPLEMENT_MAX_CONCURRENT=0 "$DISPATCH" --sweep ) >/dev/null 2>&1 || true
+}
+# The request body is logged as a JSON string, so the lane reads escaped.
+arch_claims() { echo "architect-claims=[$(grep -c '\\"lane\\": \\"architect\\"' "$FIX14.log" || true)]"; }
+
+DH14A="$(mktemp -d)"; plant_owner "$DH14A" review
+: > "$FIX14.log"; sweep14 "$DH14A"
+t  "an architect seat in review does not hold the local architect slot" \
+   "architect-claims=[1]" arch_claims
+
+DH14B="$(mktemp -d)"; plant_owner "$DH14B" review-parked
+: > "$FIX14.log"; sweep14 "$DH14B"
+t  "a parked review owner holds none either" "architect-claims=[1]" arch_claims
+
+DH14C="$(mktemp -d)"; plant_owner "$DH14C"
+: > "$FIX14.log"; sweep14 "$DH14C"
+t  "an architect seat in design holds it" "architect-claims=[0]" arch_claims
+
 finish

@@ -217,6 +217,16 @@ for p in glob.glob(os.path.join(os.environ["T_DHOME"], "*.json")):
     # next lane, dispatching its own ticket to the wrong role and model.
     if not A.meta_is_mine(m, *MINE):
         continue
+    # AN OWNER IN REVIEW SPENDS NO LANE. The seat keeps its binding, its lane
+    # and its run id through the review of its own PR, so it counted as an
+    # open run and held the slot for the whole review — hours, while the
+    # queue behind it waited on a seat that was only reading its PR. The mark
+    # is the transition's (board-transition.sh, board-answer.sh); a park out
+    # of the review is still the review. A pre-check either way: under this
+    # binding the server's own cap counts by ticket state and is the
+    # authority.
+    if m.get("phase") in ("review", "review-parked"):
+        continue
     # AN OPEN RUN is what a slot is: `lane` alone counted a session whose run
     # the server has since ended (the sweep strips run_id from such a meta and
     # deliberately keeps the lane, which is what a successor inherits), so a
@@ -711,6 +721,10 @@ sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
 tickets = B.snapshot()
 LANE = os.environ["LANE"]
+# NEITHER TUPLE HOLDS in-review, which is this side of the parity the api
+# count keeps with the `phase` mark: an owner reviewing its own PR spends no
+# lane slot. Here the ticket's state says so directly — the gh path reads the
+# board — so nothing is stamped or read on the seat.
 lane = {"architect": ("ready-for-architect", "in-design", "in-progress"),
         "implement": ("ready-for-implementer", "in-progress")}[LANE]
 ROLES = {"architect": ("ARCHITECT",), "implement": ("IMPLEMENT", "SPIKE")}[LANE]
