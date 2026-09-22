@@ -195,47 +195,6 @@ os.replace(tmp, p)
 PY
 }
 
-# The seats whose review phase MOVES, and what it moves to — the scan half of
-# _phase_stamp below. A FUNCTION, not an inline "$(…)", for board-answer.sh's
-# reason: bash 3.2 lexes a command substitution with a matcher that does not
-# understand the heredoc inside it, so every apostrophe in this prose would
-# toggle its quote state and the script would die at parse time.
-_phase_rows() {  # <ticket> <state> — "<uuid> <phase>" per seat whose mark moves
-  local board repo
-  if [ "$BOARD_BINDING" = api ]; then board="api:${BOARD_API_URL:-}"; repo="${BOARD_REPO:-}"
-  # gh mode needs no repo dimension: the owner/name inside the key IS the identity.
-  else board="gh:${BOARD_REPO:-}"; repo=""; fi
-  T_ID="${1#\#}" T_STATE="$2" T_DHOME="$DAEMON_HOME" T_BOARD="$board" T_REPO="$repo" \
-  _py - <<'PY'
-import glob, json, os
-from _board_api import meta_is_mine
-env = os.environ
-tid, state = env["T_ID"], env["T_STATE"]
-for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
-    if p.endswith(".reply.json"):
-        continue
-    try:
-        m = json.load(open(p))
-    except Exception:
-        continue
-    if str(m.get("ticket", "")).lstrip("#") != tid:
-        continue
-    # The registry is machine-global and a board is not: a neighbouring repo
-    # seat on ITS ticket 9 is not ours to mark.
-    if not meta_is_mine(m, env["T_BOARD"], env["T_REPO"]):
-        continue
-    cur = str(m.get("phase") or "")
-    if state == "in-review":
-        want = "review"
-    elif state == "needs-human" and cur:
-        want = "review-parked"
-    else:
-        want = ""
-    if want != cur:
-        print("%s %s" % (m.get("uuid") or os.path.basename(p)[:-5], want))
-PY
-}
-
 # Mark the seats bound to <ticket> with the ticket's review phase: `review`
 # while it is in-review, `review-parked` after a park out of the review, no key
 # at all otherwise. The local lane cap and the tick's review-recovery selector
@@ -251,19 +210,94 @@ PY
 # left holding a lane slot the live one does not is the accounting this exists
 # to get right. No bound seat marks nothing, and a failure is reported and
 # never fatal — the transition it follows has already landed.
+#
+# READ, DERIVE AND WRITE ARE ONE CRITICAL SECTION, under the registry lock
+# every other writer of this key takes. The scan used to run outside it and
+# only the per-seat writes were locked, which is not the same thing at all:
+# what this derives is a DIFFERENCE, and "no difference" is itself a decision
+# to write nothing. The sweep's review-recovery phase repairs the same key from
+# the other side, and the two interleaved like this —
+#
+#   repair holds the lock, reads the board: `needs-human`, decides review-parked
+#   an answer lands, returning the ticket to in-review, and stamps:
+#       the unlocked scan reads phase=review, wants `review`, emits NO row
+#   repair writes review-parked, last
+#
+# — leaving a seat marked `review-parked` on a ticket that is in review, which
+# no ladder ever visits again and no client transition is left to clear. Held
+# across the derivation, the answer's stamp waits, re-reads `review-parked`,
+# and writes `review` last: whichever side takes the lock second sees the
+# other's write and corrects it. Writing inline rather than through _meta_put
+# is what makes that safe — flock is per open file description, so a locked
+# parent calling that helper would block on itself forever.
 _phase_stamp() {  # <ticket> <state-the-board-wrote>
-  local rows uuid want
+  local board repo
   [ -n "${2:-}" ] && [ -d "$DAEMON_HOME" ] || return 0
-  rows="$(_phase_rows "$1" "$2")" \
-    || { echo "note: #$1 — the seat review phase was not updated (registry scan failed)" >&2
-         return 0; }
-  while read -r uuid want; do
-    [ -n "$uuid" ] || continue
-    _meta_put "$uuid" phase "$want" \
-      || echo "note: #$1 — the review phase write on seat ${uuid%%-*} failed" >&2
-  done <<EOF
-$rows
-EOF
+  if [ "$BOARD_BINDING" = api ]; then board="api:${BOARD_API_URL:-}"; repo="${BOARD_REPO:-}"
+  # gh mode needs no repo dimension: the owner/name inside the key IS the identity.
+  else board="gh:${BOARD_REPO:-}"; repo=""; fi
+  T_ID="${1#\#}" T_STATE="$2" T_DHOME="$DAEMON_HOME" T_BOARD="$board" T_REPO="$repo" \
+  _py - <<'PY' || echo "note: the seat review phase was not updated (registry scan failed)" >&2
+import fcntl, glob, json, os, sys
+from _board_api import meta_is_mine
+env = os.environ
+tid, state, home = env["T_ID"], env["T_STATE"], env["T_DHOME"]
+lock = open(os.path.join(home, ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    for p in sorted(glob.glob(os.path.join(home, "*.json"))):
+        if p.endswith(".reply.json"):
+            continue
+        try:
+            with open(p) as f:
+                m = json.load(f)
+        except Exception:
+            continue
+        if str(m.get("ticket", "")).lstrip("#") != tid:
+            continue
+        # The registry is machine-global and a board is not: a neighbouring
+        # repo seat on ITS ticket 9 is not ours to mark.
+        if not meta_is_mine(m, env["T_BOARD"], env["T_REPO"]):
+            continue
+        cur = str(m.get("phase") or "")
+        if state == "in-review":
+            want = "review"
+        elif state == "needs-human" and cur:
+            want = "review-parked"
+        else:
+            want = ""
+        if want == cur:
+            continue
+        if want:
+            m["phase"] = want
+        else:
+            m.pop("phase", None)
+        # A meta holding the run bearer is 0600 from creation — recreating it
+        # at the default umask would republish that secret, if only for the
+        # width of one write. `updated` is never touched: the sweep's relay
+        # pass reads it as last-turn activity.
+        try:
+            mode = 0o600 if m.get("run_bearer") else os.stat(p).st_mode & 0o777
+            tmp = p + ".tmp"
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                   mode), "w") as f:
+                json.dump(m, f, indent=2)
+            os.chmod(tmp, mode)
+            os.replace(tmp, p)
+        except OSError as e:
+            # One seat's write, not the scan: the rest are still marked, and a
+            # transition that already landed is never failed for this.
+            sys.stderr.write("note: #%s — the review phase write on seat %s "
+                             "failed (%s)\n"
+                             % (tid, os.path.basename(p)[:8], e))
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
 }
 
 # Verbs with no API-mode counterpart refuse in one voice: the same message from

@@ -343,4 +343,93 @@ t  "the whole-tick run reaches the review-recover phase" "review-recover: #72" c
 t  "...and nudges its candidate"                 "RESUME uuid=u-all"        cat "$RESUME2"
 t  "...having renewed that run first"            '"path": "/runs/72/renew"' cat "$FIX.log"
 
+# =========================================================================
+# THE REAL OVERLAP. The two-read drill above pins what the repair does with a
+# ticket that moved; this one pins the ORDERING between two live processes,
+# which is where the defect actually lived: the repair held the registry lock
+# across its board read, and the answer's own stamp derived its difference
+# OUTSIDE that lock. Reading `phase=review` while the repair was mid-flight,
+# the stamp concluded there was nothing to write — and the repair then wrote
+# `review-parked` last, onto a ticket that was back in review.
+#
+# The board read is what holds the window open: this server answers the
+# REPAIR's re-read (the second GET) only once the gate file appears, so the
+# repair provably holds the lock while the stamp runs.
+# =========================================================================
+PORT2="$(free_port)"
+MARK="$TDIR/in-reread"; GATE="$TDIR/gate"
+cat > "$TDIR/blocking-server.py" <<'PYS'
+import http.server, json, os, sys, time
+port, mark, gate = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+
+class H(http.server.BaseHTTPRequestHandler):
+    n = 0
+
+    def do_GET(self):
+        H.n += 1
+        if H.n >= 2:            # the repair's re-read, inside the lock
+            open(mark, "w").close()
+            while not os.path.exists(gate):
+                time.sleep(0.02)
+        body = json.dumps({"id": 80, "state": "needs-human", "priority": "P1",
+                           "title": "parked, and answered mid-repair"}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+PYS
+python3 "$TDIR/blocking-server.py" "$PORT2" "$MARK" "$GATE" & BLOCKER=$!
+trap 'kill $MOCK $BLOCKER 2>/dev/null; { wait $MOCK $BLOCKER; } 2>/dev/null || true; rm -rf "$TDIR"' EXIT
+wait_for_port "$PORT2" || { echo "FAIL blocking server never listened on $PORT2"; exit 1; }
+
+r3="$(mkrepo)"; mkdir -p "$r3/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT2" > "$r3/.doperpowers/board.json"
+DH3="$TDIR/registry-race"; mkdir -p "$DH3"
+printf '%s\n' '{"uuid":"u-overlap","current":"u-overlap","status":"idle","run_id":80,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"80",
+                 "run_bearer":"tok-80","phase":"review"}' > "$DH3/u-overlap.json"
+chmod 600 "$DH3/u-overlap.json"
+stale u-overlap
+
+( cd "$r3" && env HOME="$TESTHOME" DAEMON_HOME="$DH3" SMINOS_CLI="$DS/sminos" \
+    RESUME_LOG="$TDIR/resume-race.log" BOARD_CREDENTIALS_FILE="$CREDS" \
+    "$SCRIPTS/_sweep_api.sh" review-recover ) > "$TDIR/race.out" 2>&1 &
+REPAIR=$!
+# The repair is now inside its re-read, holding the registry lock.
+until [ -f "$MARK" ]; do sleep 0.02; done
+
+# THE ANSWER'S HALF, as board-answer and board-transition run it: the ticket is
+# back in-review server-side and the seat is stamped for that state.
+# EXPORTED, not an assignment prefix: bash honours a prefix on a special
+# builtin (`.`) only in POSIX mode, so `DAEMON_HOME=… . _lib.sh` left the
+# suite's own registry in place and the stamp scanned the wrong one — which
+# looks exactly like the lock working.
+( : > "$TDIR/stamp-started"
+  cd "$r3" || exit 1
+  export DAEMON_HOME="$DH3" BOARD_CREDENTIALS_FILE="$CREDS"
+  . "$SCRIPTS/_lib.sh" && _phase_stamp 80 in-review
+  : > "$TDIR/stamp-done" ) > "$TDIR/stamp.out" 2>&1 &
+STAMP=$!
+until [ -f "$TDIR/stamp-started" ]; do sleep 0.02; done
+# Give it every chance to finish if it is going to: the point of the assertion
+# below is that it CANNOT while the repair holds the lock.
+tries=100
+while [ "$tries" -gt 0 ] && [ ! -f "$TDIR/stamp-done" ]; do tries=$((tries - 1)); sleep 0.02; done
+nt "the answer's stamp waits for the repair's lock" "yes" \
+  bash -c "[ -f '$TDIR/stamp-done' ] && echo yes || echo no"
+
+: > "$GATE"          # the repair's re-read returns; it writes and releases
+wait $REPAIR $STAMP 2>/dev/null || true
+t  "...and writes last, so the answer's mark stands" "[review]" \
+  bash -c "python3 -c 'import json,sys; print(\"[%s]\" % json.load(open(sys.argv[1])).get(\"phase\", \"<absent>\"))' '$DH3/u-overlap.json'"
+t  "...the repair having written its own mark first" "review-parked" cat "$TDIR/race.out"
+
 finish
