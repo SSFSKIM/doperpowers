@@ -65,7 +65,7 @@ inside Codex; Claude's registered agents and companion remain available.
 
 ## The skills
 
-Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Sixteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written

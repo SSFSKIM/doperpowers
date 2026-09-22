@@ -97,8 +97,9 @@
 # leaves origin/<base> stale or absent — the range under review would be wrong.
 #
 # Dedupe policy (references/review-loop.md table):
-# the PR's ticket is bound to a live seat that is not a QAGENT → skip, the
-# owner reviews (it dispatches the review as its own subagent); a QAGENT
+# the PR's ticket — or, on the scale path, the epic itself — is bound to a live
+# seat that is not a QAGENT → skip, the owner reviews (it dispatches the review
+# as its own subagent, and stays bound while that agent works); a QAGENT
 # binding is a stand-in's and falls through to the rest. Then, by the newest
 # review-pr-<n> registry entry:
 # a live ACTIVE reviewer → skip; a dead ACTIVE reviewer →
@@ -289,9 +290,12 @@ PY
 #
 # The review loop now runs as a subagent of the seat that owns the ticket, so a
 # ticket bound to a live seat is already being reviewed by that seat, and a
-# stand-in dispatched onto it would be the second review of one PR. A `QAGENT`
-# meta is a stand-in, not an owner: it falls through to the ordinary dedupe
-# below, which is what the outage streak and the review cap read.
+# stand-in dispatched onto it would be the second review of one artifact — and,
+# worse, board-bind would take the ticket away from the owner that is still
+# working it (an owner goes idle while its agent runs, and only an ACTIVE owner
+# refuses a rebind). Both the PR path and the epic scale path ask this first. A
+# `QAGENT` meta is a stand-in, not an owner: it falls through to the ordinary
+# dedupe below, which is what the outage streak and the review cap read.
 #
 # Liveness here is _decide's: an active status on this host and boot. A STALLED
 # owner still reads live — taking its review away is the wrong repair, and the
@@ -322,6 +326,12 @@ for p in sorted(glob.glob(os.path.join(home, "*.json"))):
     print("%s|%s" % (m.get("role") or "unlabelled", m.get("name") or m.get("uuid") or ""))
     break
 PY
+}
+
+# One wording for both paths: <printed ticket or PR>, <the bound ticket>, the
+# "<role>|<name>" _live_owner returned, and what that owner dispatches.
+_owner_skip() {  # <number> <ticket> <role|name> <what>
+  echo "#$1: owner reviews — skip (ticket #$2 is bound to live ${3%%|*} seat ${3#*|}, which dispatches its own $4)"
 }
 
 # The PR's primary ticket: the first issue it closes. The sweep resolves this
@@ -778,7 +788,15 @@ PY
 # the sweep runs it behind `||`.
 dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [child pull numbers]
   # Scale review is sweep-only, so the spawn throttle sits on the wrapper —
-  # every epic spawn route (fresh, respawn, superseded) funnels through here.
+  # every epic spawn route (fresh, respawn, superseded) funnels through here,
+  # and so does the owner-first rule: the spawn below binds the epic, and the
+  # seat that dispatched its own scale review is bound to it already.
+  local epic_owner
+  epic_owner="$(_live_owner "$1")"
+  if [ -n "$epic_owner" ]; then
+    _owner_skip "$1" "$1" "$epic_owner" "scale review"
+    return 0
+  fi
   if [ "$(_gh_review_slots)" -ge "$REVIEW_CAP" ]; then
     echo "epic #$1: review cap reached ($REVIEW_CAP live) — queued for a later tick"
     return 0
@@ -1216,7 +1234,7 @@ run_for() {  # $1=pr $2=mode $3=off-review-status $4=ticket-number
   if [ -n "$tid" ]; then
     owner="$(_live_owner "$tid")"
     if [ -n "$owner" ]; then
-      echo "#$pr: owner reviews — skip (ticket #$tid is bound to live ${owner%%|*} seat ${owner#*|}, which dispatches its own review)"
+      _owner_skip "$pr" "$tid" "$owner" "review"
       return
     fi
   fi
@@ -1317,7 +1335,16 @@ _cleanup_orphaned_reviewer() {  # <worker-name> <why>
 # An ACTIVE reviewer is never touched: it owns its own exit, and its package
 # is the current one by construction.
 sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=child pull numbers
-  local etid="$1" pkg="$2" verdict meta uuid
+  local etid="$1" pkg="$2" verdict meta uuid owner
+  # OWNER FIRST, ahead of every registry rule below — the epic's own version of
+  # run_for's opening move. Asked here rather than only at the spawn, so a live
+  # owner's epic reaches neither the dedupe's retires nor the superseded-package
+  # comparison.
+  owner="$(_live_owner "$etid")"
+  if [ -n "$owner" ]; then
+    _owner_skip "$etid" "$etid" "$owner" "scale review"
+    return
+  fi
   verdict="$(_decide "review-epic-$etid" sweep)"
   case "$verdict" in
     dispatch)   dispatch_epic "$@"; return ;;

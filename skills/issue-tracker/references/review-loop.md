@@ -45,15 +45,19 @@ of its fixers. Full design + rationale:
 
 ## Dedupe & sweep policy
 
-The first rule is the owner's: a PR whose primary ticket is bound in the seat
-registry to a live seat that is not a `QAGENT` is that seat's review, and the
-dispatcher skips it (`#<pr>: owner reviews — skip`) in both modes. A
-`QAGENT`-bound ticket is a stand-in's own and falls through to the rest, which
-reads the newest `review-pr-<n>` registry entry:
+The first rule is the owner's: a PR whose primary ticket — or an epic whose own
+number — is bound in the seat registry to a live seat that is not a `QAGENT` is
+that seat's review, and the dispatcher skips it
+(`#<n>: owner reviews — skip`) in triggered mode, in the sweep, and on the epic
+scale path. An owner goes IDLE while its QA agent works and `board-bind` refuses
+only an ACTIVE owner, so without this rule a stand-in would bind the ticket away
+from the seat still reviewing it. A `QAGENT`-bound ticket is a stand-in's own and
+falls through to the rest, which reads the newest `review-pr-<n>` (or
+`review-epic-<n>`) registry entry:
 
 | registry entry | triggered mode (PR event) | sweep mode (cron) |
 |---|---|---|
-| the ticket has a live non-QAGENT owner | skip — the owner reviews | skip — the owner reviews |
+| the ticket or epic has a live non-QAGENT owner | skip — the owner reviews | skip — the owner reviews |
 | none / retired | dispatch | dispatch |
 | ACTIVE (working/blocked), session live | skip | skip |
 | ACTIVE, session gone (daemon died) | retire → dispatch | retire → dispatch |

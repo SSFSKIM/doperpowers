@@ -1967,16 +1967,40 @@ issues = [
 ]
 json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
 PY
+# OWNER-FIRST ON THE SCALE PATH. The recomposing Architect dispatches its own
+# scale review and ends its turn while the agent works, so its seat sits IDLE
+# and bound to the epic — a state board-bind does not refuse, since only an
+# ACTIVE owner blocks a rebind. Without this rule the next tick would spawn a
+# stand-in that binds the epic out from under the seat still reviewing it.
+reset_state
+python3 - <<'PY'
+import json, os
+u = "arch0009-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "20-recompose-epic", "role": "ARCHITECT",
+           "ticket": "20", "status": "idle", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+OUT_EPIC_OWNER="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$OUT_EPIC_OWNER" "#20: owner reviews — skip" "an epic bound to a live architect seat is that seat's scale review"
+assert_no_spawn review-epic-20 "no scale stand-in spawns over a live epic owner"
+assert_equals "$(ticket_owner 20)" "20-recompose-epic" "and the owner keeps the epic — nothing rebinds it"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "nor is anything retired on the way past"
+
 # The epic's outgoing owner: the Architect that assembled the closure package.
 # Its claude-species meta lingers status=working after its turn ends, and the
 # real board-bind.sh refuses to rebind a ticket owned by an ACTIVE daemon —
 # so the dispatch must finalize it first (2026-07-18 shakedown) or every
-# scale reviewer would bind-fail and be retired.
+# scale reviewer would bind-fail and be retired. What is left for that
+# normalization to settle is the PREVIOUS BOOT's residue: a lingering owner of
+# THIS boot is the epic's live owner and never reaches the dispatch at all
+# (the owner-first case above skips it).
+reset_state
 python3 - <<'PY'
 import json, os
 u = "arch0001-0000-4000-8000-000000000000"
 json.dump({"uuid": u, "current": u, "name": "20-recompose-epic", "role": "ARCHITECT",
-           "ticket": "20", "status": "working", "updated": "2026-08-01T00:00:00Z"},
+           "ticket": "20", "status": "working", "boot_id": "boot-old",
+           "updated": "2026-08-01T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 echo '[{"id": "arch0001", "sessionId": "arch0001-0000-4000-8000-000000000000", "state": "done"}]' \
@@ -2283,6 +2307,7 @@ import json, os
 for i in (1, 2, 3):
     u = "feed000%d-0000-4000-8000-000000000000" % i
     json.dump({"uuid": u, "current": u, "name": "review-epic-20", "engine": "codex",
+               "role": "QAGENT", "ticket": "20",
                "status": "idle", "closure_package": os.environ["PKG"],
                "updated": "2026-07-0%dT00:00:00Z" % i},
               open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
@@ -2367,6 +2392,7 @@ import json, os
 home = os.environ["DAEMON_HOME"]
 def meta(uuid, status, updated, retired_from=None):
     m = {"uuid": uuid, "current": uuid, "name": "review-epic-20",
+         "role": "QAGENT", "ticket": "20",
          "status": status, "updated": updated}
     if retired_from:
         m["retired_from"] = retired_from
