@@ -71,7 +71,7 @@ CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
 # Repo-wide review config, injected into every worker prompt: the seat that
 # owns a ticket dispatches its own QA agent once its PR is open, so the switch
 # and the floor are this dispatcher's to hand over — the same two knobs, read
-# the same way, as the review lane's own dispatcher.
+# the same way, as the review dispatcher that covers the PRs nobody owns.
 case "${AUTO_MERGE_ENABLED:-false}" in
   true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
   *) AUTO_MERGE_DISPLAY="off" ;;

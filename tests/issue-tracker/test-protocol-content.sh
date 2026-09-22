@@ -613,13 +613,15 @@ assert_contains "$texec" "effort: high" "...at high reasoning effort"
 
 # ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
 # agent (agents/qa-loop.md) and, on a PR nobody owns, by the review stand-in
-# seat; the Reviewer worker and the qa-loops skill it loaded no longer exist,
-# so a sentence still naming them points a reader at something nothing can
-# dispatch. Five such sentences survived the fold in SKILL.md and
-# sweep-setup.md and were read back as live doctrine: in a fresh-context
-# wording check (2026-09-22) five of five samples answered "the Reviewer
-# worker" for the two sweep knobs and two of five for who merges the PR.
-# review-loop.md's migration note is the one licensed mention — it exists to
+# seat the review dispatcher spawns. The fold left no review lane, no
+# Reviewer worker and no qa-loops skill, so prose naming any of them points
+# a reader at something nothing can dispatch. Six such sentences survived in
+# SKILL.md and sweep-setup.md and were read back as live doctrine: in a
+# fresh-context wording check (2026-09-22) five of five samples answered "the
+# Reviewer worker" for the two sweep knobs and two of five for who merges the
+# PR. The pattern fences the lane and the daemon too, not just the worker —
+# the same sentence can go stale under any of its old names.
+# review-loop.md's migration note is the one licensed mention: it exists to
 # tell an adopting repo which retired path to stop calling.
 echo "the review's actors, after the fold:"
 stale=""
@@ -628,7 +630,7 @@ for f in "$TRACKER" "$REFS"/*.md; do
         /^## Migrating an installed workflow$/ { skip = 1 }
         /^## / && !/^## Migrating an installed workflow$/ { skip = 0 }
         !skip
-    ' "$f" | grep -niE 'qa-loops|reviewer workers?|reviewer seat' || true)"
+    ' "$f" | grep -niE 'qa-loops|reviewer workers?|reviewer seat|review lane|review workers?|reviewer? daemon' || true)"
     [ -n "$hits" ] && stale="$stale$(basename "$f"): $hits"$'\n'
 done
 if [ -n "$stale" ]; then

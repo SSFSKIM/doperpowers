@@ -931,7 +931,7 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   Evidence: `skills/review-code/workflows/code-review.js` `ISOLATION` and
   the `DIFF` string.
 
-### From the execution (Tasks 1–9)
+### From the execution (Tasks 1–10)
 
 - Observation: Six of this branch's stops were contradictions inside the
   plan or the spec rather than problems in the code, and each was repaired
@@ -1086,20 +1086,22 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   indistinguishable on dispatch outcome. The original score file had been
   written while a control rep was still running; re-scoring showed that rep
   had in fact dispatched a qa-loop.
-- Observation: Five sentences outside the protocol files still named the
-  retired Reviewer worker after the fold, and were read back as live
-  doctrine.
+- Observation: Six sentences outside the protocol files still named the
+  retired Reviewer worker and its lane after the fold, and were read back as
+  live doctrine — a stale actor name is a wrong answer, not a stale word.
   Evidence: a fresh-context wording check over the skill's "Who writes the
-  board" table and the sweep's knob rows (5 samples per arm, 2026-09-22):
-  on the pre-fix text 5/5 answered "the Reviewer worker" for both sweep
-  knobs and 2/5 for who merges the PR, with four of five self-correcting
-  mid-answer on who writes the design-gap edge. On the corrected text 5/5
-  answered the owning seat's QA agent, the Executor, and the review
-  stand-in, with no self-correction.
+  board" table and the sweep's knob rows (5 samples per arm, 2026-09-22).
+  On the pre-fix text: 5/5 named "the Reviewer worker" as the actor both
+  sweep knobs apply to and 2/5 as the merger; on who writes the design-gap
+  edge, 5/5 opened on the wrong actor and only 3/5 arrived at the right one,
+  two of those reversing themselves mid-sentence. On the corrected text,
+  5/5 on all three with no reversal, and the five replies converged on one
+  shape where the five before them had produced five.
   `tests/issue-tracker/test-protocol-content.sh` now fences the retired
-  names across `skills/issue-tracker/SKILL.md` and `references/*.md`,
-  excepting `review-loop.md`'s migration note, which exists to tell an
-  adopting repo which retired path to stop calling.
+  names — the worker, the seat, the lane, the daemon, the skill — across
+  `skills/issue-tracker/SKILL.md` and `references/*.md`, excepting
+  `review-loop.md`'s migration note, which exists to tell an adopting repo
+  which retired path to stop calling.
 - Observation: Acceptance 9's code and service behavior is verified; its
   merge-and-deploy clause is not yet satisfied and is Task 12's gate.
   Evidence: arkho PR https://github.com/SSFSKIM/arkho/pull/80 is open at

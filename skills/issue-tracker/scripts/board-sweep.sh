@@ -29,7 +29,7 @@
 #            (the reviewer IS what put the ticket in its terminal state)
 #            and are never board-cancelled.
 #   FINALIZE closed tickets still carrying a status:* label — an armed
-#            auto-merge lands after the Reviewer worker's turn ended, so the
+#            auto-merge lands after the QA agent's turn ended, so the
 #            PR's "Closes #N" closed the issue but board-transition's
 #            terminal path (label strip, terminal sweeps, epic
 #            recomposition) never ran → re-run the terminal transition
@@ -501,7 +501,7 @@ EOF
   log "[sweep] CANCEL: $acted acted"
 }
 
-# An armed auto-merge lands after the Reviewer worker's turn ended: the PR's
+# An armed auto-merge lands after the QA agent's turn ended: the PR's
 # "Closes #N" closes the ticket, but the label strip, terminal sweeps, and
 # epic recomposition run only through board-transition — the issue sits
 # closed with a residual status:* label (lint flags it) and its parent

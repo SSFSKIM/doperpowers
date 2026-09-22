@@ -1527,7 +1527,7 @@ _api_drop_journal() {  # <nonce>
 }
 
 # Claim one ticket on the qagent lane under <nonce> and hand it to a fresh
-# Reviewer worker. The return contract is the implement dispatcher's, verbatim —
+# review stand-in. The return contract is the implement dispatcher's, verbatim —
 # one shared function name, one shared meaning:
 #   rc 0  claimed and handed off
 #   rc 1  nothing dispatched and NOTHING IS OUTSTANDING — the lane was empty,
