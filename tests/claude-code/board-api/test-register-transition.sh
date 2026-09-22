@@ -106,8 +106,20 @@ last_transition_body() {
     python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
 }
 
+# THE SERVER'S ANSWER IS WHAT MARKS THE SEAT. This transition asks for
+# in-review and the board converges it to a park, so the seat bound to #9 comes
+# out of it marked `review-parked`: a client marking from the edge it REQUESTED
+# would write `review` and leave the owner off its lane in a park nobody is
+# reviewing in.
+cat > "$DAEMON_HOME/seat-9.json" <<'META'
+{"uuid":"seat-9","status":"idle","ticket":"9","lane":"implementer","phase":"review"}
+META
+phase9() { python3 -c "import json
+print('phase=[%s]' % (json.load(open('$DAEMON_HOME/seat-9.json')).get('phase') or '<absent>'))"; }
 t "transition prints SERVER to, not requested" "→ needs-human (converged)" \
   V board-transition.sh 9 in-review "note here"
+t "...and the seat is marked from that answer, not the requested edge" \
+  "phase=[review-parked]" phase9
 # A BIRTH NAMES ITS REPO; A MOVE DOES NOT (the register half is asserted below,
 # once one has been posted). An id-targeted route needs no repo name: the ticket
 # already has one, and a second opinion about it could only ever contradict the

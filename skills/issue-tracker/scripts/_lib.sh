@@ -161,6 +161,111 @@ _rerender_if_serving() {
 export BOARD_SCRIPTS
 _py() { PYTHONPATH="$BOARD_SCRIPTS${PYTHONPATH:+:$PYTHONPATH}" python3 "$@"; }
 
+# Set seat-record fields under the registry lock — key/value pairs, an EMPTY
+# value REMOVING the key. `updated` is never rewritten: the sweep's relay pass
+# reads it as last-turn activity, so a bookkeeping write that refreshed it
+# would read as a worker that had just spoken. (board-sweep.sh carries its own
+# copy of this helper — it sources _binding.sh alone, not this file.)
+_meta_put() {  # <uuid> <key> <value> [<key> <value> …]
+  # \037-TERMINATED, not newline-separated: a command substitution strips
+  # TRAILING newlines, so a removal — whose value is the empty string, and is
+  # normally the last field — lost that field and the key silently stayed.
+  M_UUID="$1" M_KV="$(printf "%s\037" "${@:2}")" python3 - <<'PY'
+import fcntl, json, os
+home = os.environ["DAEMON_HOME"]
+lock = open(os.path.join(home, ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+p = os.path.join(home, os.environ["M_UUID"] + ".json")
+m = json.load(open(p))
+kv = os.environ["M_KV"].split("\x1f")[:-1]
+for k, v in zip(kv[0::2], kv[1::2]):
+    if v == "":
+        m.pop(k, None)
+    else:
+        m[k] = v
+# A meta holding the run bearer is 0600 from creation — recreating it at the
+# default umask would republish that secret, if only for the width of one
+# write. Any other meta keeps the mode it already had.
+mode = 0o600 if m.get("run_bearer") else os.stat(p).st_mode & 0o777
+tmp = p + ".tmp"
+with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as f:
+    json.dump(m, f, indent=2)
+os.chmod(tmp, mode)   # umask narrowing, and a tmp left by an earlier crash
+os.replace(tmp, p)
+PY
+}
+
+# The seats whose review phase MOVES, and what it moves to — the scan half of
+# _phase_stamp below. A FUNCTION, not an inline "$(…)", for board-answer.sh's
+# reason: bash 3.2 lexes a command substitution with a matcher that does not
+# understand the heredoc inside it, so every apostrophe in this prose would
+# toggle its quote state and the script would die at parse time.
+_phase_rows() {  # <ticket> <state> — "<uuid> <phase>" per seat whose mark moves
+  local board repo
+  if [ "$BOARD_BINDING" = api ]; then board="api:${BOARD_API_URL:-}"; repo="${BOARD_REPO:-}"
+  # gh mode needs no repo dimension: the owner/name inside the key IS the identity.
+  else board="gh:${BOARD_REPO:-}"; repo=""; fi
+  T_ID="${1#\#}" T_STATE="$2" T_DHOME="$DAEMON_HOME" T_BOARD="$board" T_REPO="$repo" \
+  _py - <<'PY'
+import glob, json, os
+from _board_api import meta_is_mine
+env = os.environ
+tid, state = env["T_ID"], env["T_STATE"]
+for p in sorted(glob.glob(os.path.join(env["T_DHOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if str(m.get("ticket", "")).lstrip("#") != tid:
+        continue
+    # The registry is machine-global and a board is not: a neighbouring repo
+    # seat on ITS ticket 9 is not ours to mark.
+    if not meta_is_mine(m, env["T_BOARD"], env["T_REPO"]):
+        continue
+    cur = str(m.get("phase") or "")
+    if state == "in-review":
+        want = "review"
+    elif state == "needs-human" and cur:
+        want = "review-parked"
+    else:
+        want = ""
+    if want != cur:
+        print("%s %s" % (m.get("uuid") or os.path.basename(p)[:-5], want))
+PY
+}
+
+# Mark the seats bound to <ticket> with the ticket's review phase: `review`
+# while it is in-review, `review-parked` after a park out of the review, no key
+# at all otherwise. The local lane cap and the tick's review-recovery selector
+# read this off the registry rather than paying a ticket read per seat per
+# tick.
+#
+# DERIVED FROM THE STATE THE BOARD WROTE, never the edge the caller asked for:
+# the convergence rule and the server both transmute a rebuild into a park, and
+# that park is a review park. `needs-human` reads the seat's own mark for the
+# same reason — it is the record of where the park came from.
+#
+# EVERY bound seat, because the phase is the TICKET's: a stale second binding
+# left holding a lane slot the live one does not is the accounting this exists
+# to get right. No bound seat marks nothing, and a failure is reported and
+# never fatal — the transition it follows has already landed.
+_phase_stamp() {  # <ticket> <state-the-board-wrote>
+  local rows uuid want
+  [ -n "${2:-}" ] && [ -d "$DAEMON_HOME" ] || return 0
+  rows="$(_phase_rows "$1" "$2")" \
+    || { echo "note: #$1 — the seat review phase was not updated (registry scan failed)" >&2
+         return 0; }
+  while read -r uuid want; do
+    [ -n "$uuid" ] || continue
+    _meta_put "$uuid" phase "$want" \
+      || echo "note: #$1 — the review phase write on seat ${uuid%%-*} failed" >&2
+  done <<EOF
+$rows
+EOF
+}
+
 # Verbs with no API-mode counterpart refuse in one voice: the same message from
 # four copies drifted the moment one of them was edited, and this one described
 # a route set (edge re-cut / priority / relates / body edits) that does not name

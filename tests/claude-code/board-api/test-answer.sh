@@ -358,6 +358,81 @@ t  "exactly two queue walks ran, both before the POST" "seq=[QQP]" qp_seq
 t  "and the answer names the park the retry served" '\"correlationId\": \"cid-12\"' cat "$FIX2.log"
 
 # =========================================================================
+# A PARK ANSWERED BACK INTO THE REVIEW LANE. A seat whose ticket is under
+# review holds no lane slot, and the mark the local cap reads for that lives
+# on the seat record. On this binding the server's `returnedTo` is the only
+# thing that knows the return state, so the restore rides it — and it has to
+# land before the wake, since a mark written after the resume reaches a lane
+# check that has already run. Its own fixture world (the shared one's `once`
+# rows are consumed by the drills above).
+# =========================================================================
+PORT3="$(free_port)"
+FIX3="$TDIR/fixtures-review.json"; : > "$FIX3.log"
+cat > "$FIX3" <<'JSON'
+[
+ {"method":"GET","path":"/queue/decisions?limit=200","status":200,
+  "body":{"items":[{"ticket_id":21,"correlation_id":"cid-21","species":"board",
+                    "state":"needs-human"}],"next":null,"as_of":20}},
+ {"method":"POST","path":"/tickets/21/park-answer","status":200,
+  "body":{"answered":true,"returnedTo":"in-review","answerEventId":211}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"once":true,
+  "body":[{"answerEventId":211,"ticketId":21,"correlationId":"cid-21",
+           "replies":["the finding stands"]}]},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"POST","path":"/answers/211/ack","status":200,"body":{"acked":true}}
+]
+JSON
+python3 "$TESTS_DIR/mock-server.py" "$FIX3" "$PORT3" & MOCK3=$!
+trap 'kill $MOCK ${MOCK2:-} ${MOCK3:-} 2>/dev/null' EXIT
+wait_for_port "$PORT3" || { echo "FAIL mock server never listened on $PORT3"; exit 1; }
+r3="$(mkrepo)"; mkdir -p "$r3/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT3" > "$r3/.doperpowers/board.json"
+DH3="$TDIR/registry-review"; mkdir -p "$DH3"
+TX3="$PROJ/u-21-cur.jsonl"; : > "$TX3"
+# Parked out of the review: the mark the park left behind is what the answer
+# has to restore. No `updated` field — a helper that rewrote one would be
+# inventing last-turn activity the relay pass reads as real.
+cat > "$DH3/u-21.json" <<'META'
+{"uuid":"u-21","current":"u-21-cur","status":"idle","run_id":77,"fence":1,
+ "lane":"implementer","bind_confirmed":true,"ticket":"21","run_bearer":"tok-w21",
+ "phase":"review-parked"}
+META
+chmod 600 "$DH3/u-21.json"
+DS3="$TDIR/sminos-stub-review"; mkdir -p "$DS3"
+cat > "$DS3/sminos" <<EOF
+#!/usr/bin/env bash
+verb="\${1:-}"; shift || true
+case "\$verb" in
+migrate) exit 0 ;;
+sync)    echo noop ;;
+meta)    exit 0 ;;
+resume)
+  if [ "\${1:-}" = "--wait" ]; then shift; fi
+  python3 -c "import json;print('phase=[%s]' % (json.load(open('$DH3/u-21.json')).get('phase') or '<absent>'))" \
+    > "$TDIR/phase-at-resume"
+  printf '%s\n' "\$2" >> "$TX3"
+  ;;
+*) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
+esac
+EOF
+chmod +x "$DS3/sminos"
+ANS3() {  # ANS3 <args...> — one board-answer.sh run against the review world
+  ( cd "$r3" || exit 1
+    export PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" HOME="$TESTHOME" \
+      DAEMON_HOME="$DH3" SMINOS_CLI="$DS3/sminos" BOARD_CREDENTIALS_FILE="$CREDS"
+    bounded "$SCRIPTS/board-answer.sh" "$@" )
+}
+OUTREV="$TDIR/answer-review.out"
+ANS3 21 "the finding stands" > "$OUTREV" 2>&1 || true
+phase21()  { python3 -c "import json;print('phase=[%s]' % (json.load(open('$DH3/u-21.json')).get('phase') or '<absent>'))"; }
+upd21()    { python3 -c "import json;print('updated=[%s]' % (json.load(open('$DH3/u-21.json')).get('updated') or '<absent>'))"; }
+t  "the server's return into the review lane is what prints" "answered #21 → in-review" cat "$OUTREV"
+t  "the bound seat carries the review mark again"  "phase=[review]"   phase21
+t  "and it was there before the worker was woken"  "phase=[review]"   cat "$TDIR/phase-at-resume"
+t  "the mark invents no last-turn activity"        "updated=[<absent>]" upd21
+t  "the answer still reached the worker"           "the finding stands" cat "$TX3"
+
+# =========================================================================
 # gh mode is untouched: --to has no gh half, and says so instead of being
 # silently dropped onto a path that derives its return state from the meta.
 # =========================================================================

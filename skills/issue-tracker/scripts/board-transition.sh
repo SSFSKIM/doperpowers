@@ -184,6 +184,14 @@ if tid:
         sys.exit(1)
 PY
 
+# The seat bound to this ticket carries the ticket's review phase in its own
+# record (_lib.sh's _phase_stamp), and what decides it is the state the write
+# LANDED in — never the edge asked for, which convergence and the server both
+# transmute. Both arms below hand that state back through this file.
+T_PHASE_OUT="$(mktemp "${TMPDIR:-/tmp}/board-phase.XXXXXX")"
+trap 'rm -f "$T_PHASE_OUT"' EXIT
+export T_PHASE_OUT
+
 # API mode: legality, the convergence rule, the note/PR/plan requirements and
 # every sweep above live server-side — the client sends the edge and reports
 # the state the server wrote.
@@ -286,7 +294,10 @@ out = A.transition(tid, env["T_TO"],
 # Print the state the server WROTE — convergence can transmute the target.
 suffix = " (converged)" if out.get("converged") else ""
 print("#%s: → %s%s" % (tid, out["to"], suffix))
+with open(env["T_PHASE_OUT"], "w") as f:
+    f.write(str(out["to"]))
 PY
+  _phase_stamp "$tid" "$(cat "$T_PHASE_OUT")"
   _rerender_if_serving
   exit 0
 fi
@@ -302,6 +313,14 @@ tid = B.resolve(env["T_ID"], tickets)
 to, note = env["T_TO"], env["T_NOTE"]
 n = tickets[tid]
 cur = n["state"]
+
+
+def phase_out(state):
+    """Hand the state this write LANDED in back to the shell, for the review
+    phase of the seat bound to the ticket. Written on every path that writes
+    the board — a refusal raises before reaching one, and marks nothing."""
+    with open(env["T_PHASE_OUT"], "w") as f:
+        f.write(str(state))
 
 if to not in B.STATES:
     B.die("unknown state: %s" % to)
@@ -399,6 +418,7 @@ if to == cur and not re_pin:
         print(ln)
     if not out:
         print("#%s: already %s — nothing to finalize" % (tid, cur))
+    phase_out(cur)
     raise SystemExit(0)
 if cur in (B.UNTRACKED, B.CONFLICT):
     # repair: any open state is reachable; terminal still goes through the machine
@@ -662,7 +682,9 @@ eligible_lines = B.newly_eligible(tickets, tid) if to == "done" else []
 
 for ln in eligible_lines + lines:
     print(ln)
+phase_out(to)
 PY
 
+_phase_stamp "$tid" "$(cat "$T_PHASE_OUT")"
 
 _rerender_if_serving

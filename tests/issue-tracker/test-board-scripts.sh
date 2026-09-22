@@ -2186,6 +2186,49 @@ assert_contains "$(state "s['issues']['$rb_t']['body']")" "note: convergence: se
 assert_contains "$(state "s['issues']['$rb_t']['body']")" "plan: $FOLD_A" "the pin in force is the one the rebuild that DID happen minted"
 assert_not_contains "$(state "s['issues']['$rb_t']['body']")" "$SHA_B" "...and the transmuted write records no pin of its own"
 
+echo "the seat's review phase:"
+# The lane-cap pre-check and the tick's review recovery read the SEAT record —
+# a ticket read per seat per tick is the cost the registry exists to avoid — so
+# the transition that moves the ticket is what marks the seat bound to it.
+run board-register.sh "Phase probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+ph_t="$(state "s['next']-1")"
+PH_SEAT="$DAEMON_HOME/phase-seat.json"
+cat > "$PH_SEAT" <<META
+{"uuid": "phase-seat", "status": "idle", "ticket": "$ph_t", "cwd": "$WORK",
+ "board": "gh:test/repo", "role": "IMPLEMENT", "updated": "2026-09-21T00:00:00Z"}
+META
+phase() { python3 -c "import json;print(json.load(open('$PH_SEAT')).get('phase') or '<absent>')"; }
+seat_updated() { python3 -c "import json;print(json.load(open('$PH_SEAT')).get('updated'))"; }
+run board-transition.sh "$ph_t" in-progress >/dev/null
+assert_equals "$(phase)" "<absent>" "a ticket outside the review lane marks nothing"
+run board-transition.sh "$ph_t" in-review "PR open" --branch tick/fold \
+    --pr "https://github.com/test/repo/pull/$ph_t" >/dev/null
+assert_equals "$(phase)" "review" "entering in-review marks the bound seat"
+assert_equals "$(seat_updated)" "2026-09-21T00:00:00Z" \
+  "the mark never rewrites updated (the relay reads it as last-turn activity)"
+run board-transition.sh "$ph_t" in-review "re-pin: acceptance 2 re-cut" --plan "$FOLD_A" >/dev/null
+assert_equals "$(phase)" "review" "the re-pin self-edge keeps the mark"
+run board-transition.sh "$ph_t" needs-human "the review found a design gap" >/dev/null
+assert_equals "$(phase)" "review-parked" "a park out of the review is still the review"
+# The relay resumes the bound session: the stub from the answer section above,
+# re-armed (a real sminos here would reach the operator's own fleet).
+export STUB_STATE="$TEST_ROOT/stub-state" SMINOS_CLI="$STUB_SMINOS/sminos"
+run board-answer.sh "$ph_t" "the finding stands — fix it" >/dev/null
+assert_contains "$(state "s['issues']['$ph_t']['labels']")" "status:in-review" "the answer returns the ticket to the review lane"
+assert_equals "$(phase)" "review" "...and the relay restores the mark"
+run board-transition.sh "$ph_t" ready-for-architect "design gap — back to the architect" >/dev/null
+assert_equals "$(phase)" "<absent>" "leaving the review lane clears the mark"
+# A transition on an unbound ticket writes no seat record of its own.
+before_n="$(find "$DAEMON_HOME" -name '*.json' | wc -l | tr -d ' ')"
+run board-register.sh "Unbound phase probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+up_t="$(state "s['next']-1")"
+run board-transition.sh "$up_t" in-progress >/dev/null
+run board-transition.sh "$up_t" in-review "PR open" --branch tick/fold \
+    --pr "https://github.com/test/repo/pull/$up_t" >/dev/null
+assert_equals "$(find "$DAEMON_HOME" -name '*.json' | wc -l | tr -d ' ')" "$before_n" \
+  "a ticket with no bound seat marks nothing"
+unset SMINOS_CLI STUB_STATE
+
 echo "review-trail comment kind:"
 # The QA agent's review artifact. Under gh nothing enforces it; the marker is
 # what an evidence-gated close reads on the API board.

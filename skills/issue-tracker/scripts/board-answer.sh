@@ -60,6 +60,14 @@ esac; done
 # and its ack speak AUTOMATION (`unrelayed`/`ack-answer` admit no human).
 if [ "$BOARD_BINDING" = api ]; then
   [ -z "$posted" ] || die "--posted is gh-mode-only: an API park-answer IS the record — pass the answers"
+  # The seat's review phase follows the state the SERVER returned the ticket
+  # to — the only thing on this binding that knows it — and it is restored
+  # before the wake below: a mark written after the resume reaches a lane check
+  # that has already run. (gh mode needs no twin: its return goes through
+  # board-transition.sh, which marks the seat itself.)
+  T_PHASE_OUT="$(mktemp "${TMPDIR:-/tmp}/board-phase.XXXXXX")"
+  trap 'rm -f "$T_PHASE_OUT"' EXIT
+  export T_PHASE_OUT
   T_ID="$tid" T_ANSWERS="$answers" T_TO="$to" _api_py - <<'PY'
 import os
 import _board_api as A
@@ -96,7 +104,10 @@ out = A.park_answer(tid, [os.environ["T_ANSWERS"]],
 if out.get("superseded"):
     A.die("#%s: answer superseded — the standing question changed; re-read the queue" % tid)
 print("answered #%s → %s" % (tid, out.get("returnedTo", "?")))
+with open(os.environ["T_PHASE_OUT"], "w") as f:
+    f.write(str(out.get("returnedTo") or ""))
 PY
+  _phase_stamp "$tid" "$(cat "$T_PHASE_OUT")"
   # Inline relay: the human's answer resumes the worker NOW, not on the next
   # tick — the same blocking feel as gh mode's direct resume. Delivery and its
   # delivery-gated ack are the sweep's, never a second copy of that logic here.
