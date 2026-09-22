@@ -139,6 +139,16 @@ meta u-cap '{"uuid":"u-cap","current":"u-cap","status":"idle","run_id":67,
              "review_trail_seen":"0"}'
 stale u-cap
 
+# Its ticket is SUPPRESSED: a human already holds an env-issue saying the
+# substrate under this ticket is broken, and no more recovery is spent here
+# until they clear it — this ladder included.
+meta u-supp '{"uuid":"u-supp","current":"u-supp","status":"idle","run_id":69,
+              "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"69",
+              "run_bearer":"tok-69","phase":"review"}'
+stale u-supp
+SUPD="$TDIR/suppress"; mkdir -p "$SUPD"
+printf '{"ticket":"69","state":"in-review","reason":"env-issue #99"}' > "$SUPD/69.json"
+
 # Idle between agent rounds, but it wrote moments ago — inside the threshold,
 # which is what tells a pause from a stall.
 meta u-fresh '{"uuid":"u-fresh","current":"u-fresh","status":"idle","run_id":68,
@@ -179,7 +189,7 @@ chmod +x "$DS/sminos"
 
 SW() {  # one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" \
-      BOARD_CREDENTIALS_FILE="$CREDS" "$@" )
+      BOARD_SUPPRESS_DIR="$SUPD" BOARD_CREDENTIALS_FILE="$CREDS" "$@" )
 }
 RECOVER() { SW "${@:2}" "$SCRIPTS/_sweep_api.sh" review-recover > "$1" 2>&1 || true; }
 
@@ -226,6 +236,10 @@ t  "...as a park"                                '\"to\": \"needs-human\"' cat "
 t  "...naming the exhausted ladder"              "needs-human"              cat "$O1"
 t  "...and the owner is not nudged again"        "0"                        resumes_for u-cap
 t  "...and the park leaves the seat review-parked" "review-parked"          mfield u-cap phase
+
+t  "a suppressed ticket freezes this ladder too"  "0"                       resumes_for u-supp
+t  "...and the tick says why"                     "suppressed"               cat "$O1"
+nt "...without reading the ticket at all"         "/tickets/69"              cat "$FIX.log"
 
 t  "exactly two owners were nudged"              "2"                        resumes
 

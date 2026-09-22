@@ -1323,6 +1323,15 @@ phase_review_recover() {
     [ -n "$turn_epoch" ] || continue
     age=$(( ( $(date +%s) - turn_epoch ) / 60 ))
     [ "$age" -ge "$REVIEW_STALL_MIN" ] || continue
+    # A SUPPRESSED TICKET IS FROZEN, THIS LADDER INCLUDED — the same ruling
+    # the harness-error ladder makes. Suppression says a human has been told
+    # the substrate is broken here and no more recovery is to be spent until
+    # they clear it; nudging a worker into that substrate three times and then
+    # parking the ticket spends exactly that.
+    if _suppressed "$ticket"; then
+      echo "review-recover: #$ticket — suppressed; the owner's review ladder stands untouched until the suppression lifts"
+      continue
+    fi
     if ! _budget_left; then
       [ -n "$budget_said" ] || {
         echo "review-recover: tick budget exhausted — the rest ride the next tick"
