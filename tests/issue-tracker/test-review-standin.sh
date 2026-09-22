@@ -90,6 +90,11 @@ echo "stand-in protocol — the dispatch:"
 assert_contains "$PROTOCOL" "doperpowers:qa-loop" "the review is one qa-loop agent"
 assert_not_contains "$PROTOCOL" "doperpowers:$retired" "the retired skill is not named"
 assert_contains "$PROTOCOL" 'isolation: "worktree"' "the agent reviews in its own worktree"
+# That worktree is cut at the repository's main checkout head, not the stand-in's
+# (Task 11, 2026-09-22), so the agent positions itself — and the brief's head
+# branch is the only thing it has to fetch from.
+assert_contains "$PROTOCOL" "head branch:" "the brief names the branch the agent positions itself from"
+assert_not_contains "$PROTOCOL" "worktree cut at YOUR HEAD" "the false cut-point claim is gone"
 assert_contains "$PROTOCOL" "ticket body file:" "the claim's body file rides the brief when the bootstrap bound one"
 assert_contains "$PROTOCOL" "your dispatcher answers escalations; return for them" "the brief carries the escalation sentence the agent expects"
 assert_contains "$PROTOCOL" "review level floor:" "the brief relays the dispatcher-owned floor"
@@ -99,6 +104,8 @@ echo "stand-in protocol — the relay:"
 assert_contains "$PROTOCOL" "NEEDS_PANEL" "panel levels come back to the seat that has the Workflow tool"
 assert_contains "$PROTOCOL" "code-review.js" "the panel runs review-code's own workflow"
 assert_contains "$PROTOCOL" "Workflow(" "the panel call is the Workflow tool's"
+assert_contains "$PROTOCOL" 'repo: "<absolute path of the checkout you positioned>"' \
+    "...naming the checkout it positioned, without which the workflow reads the main checkout instead"
 assert_contains "$PROTOCOL" "PARKED" "a park ends the turn and resumes through the answer relay"
 assert_contains "$PROTOCOL" "ESCALATE" "the three escalation kinds are answered here"
 assert_contains "$PROTOCOL" "ready-for-architect" "a design gap on a PR goes back to the architect lane"

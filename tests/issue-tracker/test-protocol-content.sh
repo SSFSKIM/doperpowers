@@ -310,7 +310,14 @@ assert_contains "$arch" "before the build edge" "architect: reviews run before t
 # returns leaves its agent waiting for an answer nobody will send.
 echo "the owner's QA agent (architect side):"
 assert_contains "$arch" "doperpowers:qa-loop" "architect: the review runs as the seat's own qa-loop agent"
-assert_contains "$arch" 'isolation: "worktree"' "...cut as a fresh worktree at the seat's head"
+assert_contains "$arch" 'isolation: "worktree"' "...cut as a worktree of the agent's own"
+# The harness cuts that worktree at the REPOSITORY'S MAIN CHECKOUT head, never
+# the dispatcher's (Task 11's two live drills, 2026-09-22), so the agent
+# positions itself — and it can only do that if the brief names the branch to
+# fetch. A brief without `head branch:` leaves the agent on the wrong range.
+assert_contains "$arch" "head branch: <headRefName>" "...and the brief names the branch the agent fetches to position itself"
+assert_contains "$arch" "baseRefName,headRefName,headRefOid" "...resolved off the PR in one gh read"
+assert_not_contains "$arch" "fresh worktree cut at YOUR head" "architect: the false cut-point claim is gone"
 assert_contains "$arch" "mode: pr" "...briefed with the mode line the agent reads first"
 assert_contains "$arch" "your dispatcher answers escalations; return for them" \
     "...and the sentence that tells the agent where its escalations go"
@@ -340,6 +347,11 @@ done
 assert_contains "$arch" "git worktree remove" "architect: and \`DONE\` is where the agent's worktree is removed"
 assert_contains "$arch" "merge --ff-only" \
     "architect: the panel runs from a checkout fast-forwarded onto the agent's pushed fixes"
+# The fast-forward positions nothing on its own: without `repo` the workflow
+# isolates every lane at the main checkout head, so the panel would read old
+# files against a new diff (Task 11).
+assert_contains "$arch" 'repo: "<absolute path of the checkout you fast-forwarded>"' \
+    "...and the workflow call names that checkout, or the fast-forward is inert"
 assert_contains "$arch" "findings-r" "...and its result object is saved for the agent to read"
 assert_contains "$arch" "git push origin" \
     "architect: every pin the owner mints follows a push (the pin gate verifies the sha on the remote)"
@@ -349,6 +361,8 @@ assert_contains "$arch" "rebuild: " "architect: a design gap can be answered by 
 assert_contains "$arch" "second design-gap" "...and a second one on the same ticket is the human's"
 assert_contains "$arch" "dismiss: " "architect: a dismissal is answered with a pointer into the pinned spec"
 assert_contains "$arch" "mode: scale" "architect: the recomposition claim dispatches the same agent in scale mode"
+assert_contains "$arch" "\`head branch:\` the integration ref" \
+    "...whose brief positions the agent on the integration ref, the scale path's head branch"
 # The scale path named the in-review write and the dispatch but not the status
 # line, and a current-protocol eval cell (treat-arch-scale-2) skipped it — the
 # same omission act 1's pairing fixed for the PR path, on the one closing turn
@@ -368,7 +382,12 @@ assert_not_contains "$arch" "scale-review dispatcher" \
 
 echo "the owner's QA agent (executor side):"
 assert_contains "$proto" "doperpowers:qa-loop" "executor: the review runs as the seat's own qa-loop agent"
-assert_contains "$proto" 'isolation: "worktree"' "...cut as a fresh worktree at the seat's head"
+assert_contains "$proto" 'isolation: "worktree"' "...cut as a worktree of the agent's own"
+assert_contains "$proto" "head branch: <headRefName>" "...and the brief names the branch the agent fetches to position itself"
+assert_contains "$proto" "baseRefName,headRefName,headRefOid" "...resolved off the PR in one gh read"
+assert_not_contains "$proto" "fresh worktree cut at YOUR head" "executor: the false cut-point claim is gone"
+assert_contains "$proto" 'repo: "<absolute path of the checkout you fast-forwarded>"' \
+    "executor: the panel's workflow call names the checkout it fast-forwarded"
 assert_contains "$proto" "your dispatcher answers escalations; return for them" \
     "...and the sentence that tells the agent where its escalations go"
 assert_order "$PROTO" 'sminos status <your alias> "reviewing: <PR URL>"' \

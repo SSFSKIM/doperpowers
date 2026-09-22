@@ -25,10 +25,11 @@ what this seat is doing:
 
 ## Position
 
-The agent is dispatched with `isolation: "worktree"` and starts in a fresh
-worktree cut at YOUR HEAD, so a checkout left at the wrong ref reviews the
-wrong range. Position first, before anything else. Create your scratch
-directory in the same breath —
+Two things read this checkout: the brief you write from it — its `head:` and
+`head branch:` are what the agent positions its OWN worktree at — and a
+handed-up panel, which runs over the path you pass as `repo`. A checkout left
+at the wrong ref therefore briefs the wrong range. Position first, before
+anything else. Create your scratch directory in the same breath —
 `mktemp -d "${TMPDIR:-/tmp}/{{WORKER_NAME}}.XXXXXX"` — and call it `<scratch>`;
 the brief's report file and any panel findings file live there, outside every
 worktree.
@@ -94,7 +95,10 @@ checkout.
 ## Dispatch
 
 ONE `doperpowers:qa-loop` agent through the Agent tool, with
-`isolation: "worktree"`. Its brief carries one line each, in this order:
+`isolation: "worktree"` — a worktree of the agent's own, which the harness
+cuts at the repository's main checkout head, not yours; the agent fetches
+`head branch:` and positions itself at `head:` as its first act. Its brief
+carries one line each, in this order:
 
     mode: pr                                 — or `scale`
     ticket: {{ISSUE_NUMBER}} {{ISSUE_URL}}   — or `ticket: none`
@@ -104,6 +108,8 @@ ONE `doperpowers:qa-loop` agent through the Agent tool, with
                                                `integration ref: {{INTEGRATION_REF}}`
     base: <the branch name you resolved>
     head: <the sha your worktree is at>
+    head branch: <the branch you positioned from>
+                                             — in scale mode, `{{INTEGRATION_REF}}`
     review level floor: {{REVIEW_LEVEL}}
     auto-merge: {{AUTO_MERGE}}
     board scripts: {{BOARD_SCRIPTS}}
@@ -125,9 +131,9 @@ The agent's first line is one of five.
 
 **`NEEDS_PANEL level=<xhigh|max> base=<ref> baseCommit=<sha> headCommit=<sha> round=<n>`**
 — the panel belongs to the Workflow tool, which a subagent does not have. It is
-yours to run, and your checkout is what it reads: the workflow cuts every
-reviewer's worktree at YOUR head and the SHA only scopes the diff command, so a
-stale checkout reads old files against a new diff. Position, then run:
+yours to run, and your checkout is what it reads: the SHA only scopes the diff
+command, and the files every lane opens come from the checkout you name as
+`repo`, so a stale one reads old files against a new diff. Position, then run:
 
 ```
 git fetch origin && git checkout --detach <headCommit>
@@ -135,12 +141,15 @@ git fetch origin && git checkout --detach <headCommit>
 
 Verify that `git rev-parse HEAD` prints `<headCommit>`; a head that will not
 check out is a `needs-human` park naming the sha, never a panel run over
-whatever the checkout happens to hold. Then, in the background:
+whatever the checkout happens to hold. Then, in the background — `repo` is what
+makes that positioning count, since without it the workflow isolates every lane
+at the repository's main checkout head instead:
 
 ```
 Workflow({ scriptPath: "{{REVIEW_CODE_DIR}}/workflows/code-review.js",
            args: { level: "<level>", base: "<base>", baseCommit: "<baseCommit>",
-                   headCommit: "<headCommit>" } })
+                   headCommit: "<headCommit>",
+                   repo: "<absolute path of the checkout you positioned>" } })
 ```
  Save the result object to
 `<scratch>/findings-r<n>.json` WITHOUT acting on its contents — the findings are

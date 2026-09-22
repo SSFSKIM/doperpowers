@@ -26,6 +26,24 @@ assert_not_contains() {
     if grep -Fq -- "$2" "$1" 2>/dev/null; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in: $1"; else pass "$3"; fi
 }
+# Positioning is section-local: the harness's worktree isolation belongs in
+# Workspace and must NOT reach the engine's reviewer dispatches, so those two
+# assertions need a section, not the whole file.
+section() {
+    awk -v want="$1" '
+        $0 == want { inside = 1; next }
+        inside && (/^## / || /^### /) { exit }
+        inside { print }
+    ' "$AGENT"
+}
+assert_text_contains() {
+    if printf '%s\n' "$1" | grep -Fq -- "$2" 2>/dev/null; then pass "$3"; else
+        fail "$3"; echo "    expected to find: $2"; echo "    in section: $4"; fi
+}
+assert_text_not_contains() {
+    if printf '%s\n' "$1" | grep -Fq -- "$2" 2>/dev/null; then
+        fail "$3"; echo "    expected NOT to find: $2"; echo "    in section: $4"; else pass "$3"; fi
+}
 
 echo "agent identity:"
 assert_file "$AGENT" "agents/qa-loop.md exists"
@@ -102,12 +120,44 @@ assert_contains "$AGENT" "not in the tech-debt" "a dismissal never enters the de
 assert_contains "$AGENT" "which governs" "a spec-conflict answer may settle precedence"
 assert_contains "$AGENT" "one re-pin" "the re-pin channel is bounded at one per review"
 assert_contains "$AGENT" "second design-gap" "a second design-gap belongs to the human"
-assert_contains "$AGENT" 'isolation: "worktree"' "the engine's reviewers run isolated from this checkout"
 assert_contains "$AGENT" "doperpowers:reviewer-" "the single-reviewer rungs are dispatched by name"
 assert_contains "$AGENT" "Lens for this review:" "a lensed call appends the engine's lens line"
 assert_contains "$AGENT" "review-trail" "the trail is posted as a typed board comment"
 assert_contains "$AGENT" "mktemp -d" "control state lives in a scratch directory outside the worktree"
 assert_contains "$AGENT" "hash" "a panel findings file is pinned by hash in the trail"
+
+# The harness cuts an isolated child at the REPOSITORY'S MAIN CHECKOUT head, not
+# the dispatcher's — two live board drills parked on it before their first engine
+# round (Task 11, 2026-09-22). So the agent positions its own workspace, and the
+# reviewers it dispatches are pointed at that path instead of being isolated onto
+# the same wrong range. Both halves are section-local: `isolation` belongs in
+# Workspace and nowhere near the engine's dispatches.
+echo "positioning — the agent finds the reviewed head itself:"
+workspace="$(section '### Workspace')"
+engine="$(section '## Engine')"
+[[ -n "$workspace" ]] || { echo "  [FAIL] the Workspace section exists"; FAILURES=$((FAILURES + 1)); }
+[[ -n "$engine" ]] || { echo "  [FAIL] the Engine section exists"; FAILURES=$((FAILURES + 1)); }
+assert_contains "$AGENT" "head branch: <branch>" "the brief carries the head branch the agent fetches"
+assert_text_contains "$workspace" 'isolation: "worktree"' \
+    "the workspace is still the harness's isolated worktree" "Workspace"
+assert_text_contains "$workspace" "MAIN CHECKOUT head" \
+    "...but the body says where that worktree is actually cut" "Workspace"
+assert_text_contains "$workspace" "git fetch origin <head branch>" \
+    "...so the agent's first act fetches the head branch" "Workspace"
+assert_text_contains "$workspace" "git checkout --detach <head>" \
+    "...and detaches at the brief's head" "Workspace"
+assert_text_contains "$workspace" "\`git rev-parse HEAD\` must then print the brief's" \
+    "...and the position is verified against the brief before the review starts" "Workspace"
+assert_text_contains "$workspace" "cannot reach is a park" \
+    "...a head the fetch cannot reach parks rather than reviewing the wrong range" "Workspace"
+assert_text_contains "$workspace" "never check out another ref in this worktree" \
+    "...and the no-ref-switch rule holds from that point" "Workspace"
+assert_text_contains "$engine" "The repository under review is at" \
+    "a single-rung reviewer is pointed at the agent's worktree by the location line" "Engine"
+assert_text_not_contains "$engine" "isolation" \
+    "...and is dispatched without it — an isolated reviewer lands on the main checkout" "Engine"
+assert_text_contains "$engine" "as the workflow's \`repo\`" \
+    "a handed-up panel is run over the dispatcher's checkout, named as the workflow's repo arg" "Engine"
 
 echo "the fixer's view of the scratch directory:"
 assert_contains "$AGENT" "absolute board path" "a fixer is given the absolute wave-board path the wave-board contract requires"

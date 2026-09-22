@@ -311,15 +311,18 @@ mid-build — which is the state the sweep's recover pass and your human are
 both reading when they decide whether to reclaim it.
 
 **2. Dispatch ONE `doperpowers:qa-loop` agent** through the Agent tool with
-`isolation: "worktree"` — it starts in a fresh worktree cut at YOUR head.
-Its brief carries one line each, in this order:
+`isolation: "worktree"` — a worktree of the agent's own, which the harness
+cuts at the repository's main checkout head, not yours. The agent positions it
+at the brief's `head:` itself, which is why the brief names the branch to
+fetch as well as the sha. Its brief carries one line each, in this order:
 
     mode: pr
     ticket: {{ISSUE_NUMBER}} {{ISSUE_URL}}
     ticket body file: <path>        — only when your bootstrap named one
     pr: <n> <url>
-    base: <baseRefName>             — gh pr view <n> --json baseRefName,headRefOid
+    base: <baseRefName>             — gh pr view <n> --json baseRefName,headRefName,headRefOid
     head: <headRefOid>
+    head branch: <headRefName>
     review level floor: {{REVIEW_LEVEL}}
     auto-merge: {{AUTO_MERGE}}
     board scripts: {{BOARD_SCRIPTS}}
@@ -346,10 +349,10 @@ design is not yours: you built to a plan or a brief you did not author.
 
 **`NEEDS_PANEL level=<xhigh|max> base=<ref> baseCommit=<sha> headCommit=<sha> round=<n>`**
 — the panel belongs to the Workflow tool, which a subagent does not
-have. It is yours to run, and your checkout is what it reads: the
-workflow cuts every reviewer's worktree at YOUR head and the sha only
-scopes the diff command, so a stale checkout reads old files against a
-new diff. The agent's accepted fixes are already pushed, so fast-forward
+have. It is yours to run, and your checkout is what it reads: the sha
+only scopes the diff command, and the files every lane opens come from
+the checkout you name as `repo`, so a stale one reads old files against
+a new diff. The agent's accepted fixes are already pushed, so fast-forward
 onto them:
 
 ```
@@ -359,12 +362,15 @@ git fetch origin <branch> && git merge --ff-only origin/<branch>
 Confirm `[ "$(git rev-parse HEAD)" = <headCommit> ]`; a head that will
 not fast-forward is a `needs-human` park naming the sha, never a panel
 run over whatever your checkout happens to hold. Then, in the
-background:
+background — `repo` is what makes the fast-forward count, since without
+it the workflow isolates every lane at the repository's main checkout
+head instead:
 
 ```
 Workflow({ scriptPath: "{{BOARD_SCRIPTS}}/../../review-code/workflows/code-review.js",
            args: { level: "<level>", base: "<base>", baseCommit: "<baseCommit>",
-                   headCommit: "<headCommit>" } })
+                   headCommit: "<headCommit>",
+                   repo: "<absolute path of the checkout you fast-forwarded>" } })
 ```
 
 Save the result object to `<report dir>/findings-r<N>.json` WITHOUT
