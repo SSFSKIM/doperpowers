@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # _sweep_api.sh — the API-binding unattended tick (spec § four-phase tick):
-#   renew → stall → relay → resume-first → fresh claims. Each phase
-#   independently guarded; each invokable alone:
-#   _sweep_api.sh [renew|stall|relay|resume|dispatch|all]
+#   renew → stall → review-recover → relay → resume-first → fresh claims. Each
+#   phase independently guarded; each invokable alone:
+#   _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]
 #
 # The gh-mode tick (board-sweep.sh) re-derives its work-list from GitHub and
 # the registry; this one re-derives it from the board API and the registry.
@@ -20,6 +20,15 @@
 #          runs out over and over registers an env-issue and is SUPPRESSED: a
 #          harness fault that outlives its worker reaches a human instead of
 #          buying a fresh successor every hour forever.
+#   REVIEW a bound OWNER whose review stopped. The seat that opened the PR
+#   RECOVER dispatches one qa-loop agent and ends its turn, so a seat that is
+#          live, idle and silent past BOARD_REVIEW_STALL_MIN with its ticket
+#          still in review has nothing running under it. Its meta's `phase`
+#          is only the candidate filter — the TICKET is read before anything
+#          is spent, because a local `review` outlives the review whenever the
+#          board parked the ticket itself. Bounded nudges, and the bound is
+#          the review's own progress: a new `review-trail` event resets the
+#          count, and a ladder that runs out parks the ticket needs-human.
 #   RELAY  answers the human has posted, from /answers/unrelayed, into the
 #          bound worker session. The ack is DELIVERY-GATED: it fires only when
 #          the sentinel is already in the transcript or a resume returned
@@ -75,6 +84,10 @@
 #                                an env-issue plus a suppression, the same
 #                                destination the resume path's three failed
 #                                cycles reach.
+#   BOARD_REVIEW_STALL_MIN       minutes of silence before a live, idle owner
+#                                whose ticket is in review counts as having no
+#                                review running (45). Its cap is the gh tick's
+#                                SWEEP_RECOVERY_CAP — one doctrine, one number
 #   BOARD_SWEEP_TICK_BUDGET      seconds after which the serial phases stop
 #                                taking NEW items (900); the item in flight
 #                                always finishes. Lease safety across a long
@@ -408,6 +421,14 @@ case "$STALL_MAX_WAIT_MIN" in ''|*[!0-9]*) STALL_MAX_WAIT_MIN=360 ;; esac
 # The TICKET-level rung of the same ladder (see _stall_cycles).
 STALL_CYCLE_CAP="${BOARD_STALL_CYCLES:-3}"
 case "$STALL_CYCLE_CAP" in ''|*[!0-9]*) STALL_CYCLE_CAP=3 ;; esac
+# The owner-in-review ladder (phase 1c). The silence threshold is this
+# binding's own knob; the cap is the gh tick's SWEEP_RECOVERY_CAP, because the
+# two ticks run one doctrine and a fleet that lowered the number on one board
+# meant it for the other too.
+REVIEW_STALL_MIN="${BOARD_REVIEW_STALL_MIN:-45}"
+case "$REVIEW_STALL_MIN" in ''|*[!0-9]*) REVIEW_STALL_MIN=45 ;; esac
+REVIEW_RECOVERY_CAP="${SWEEP_RECOVERY_CAP:-3}"
+case "$REVIEW_RECOVERY_CAP" in ''|*[!0-9]*) REVIEW_RECOVERY_CAP=3 ;; esac
 # Where _registry_metas parks its exit status. The status, never the rows: the
 # rows carry the run bearer, and that secret does not touch disk here.
 SCAN_RC="$SCRATCH/scan-rc"
@@ -1204,6 +1225,185 @@ phase_stall() {
     esac
   done < <(_registry_metas)
   _scan_ok || die "registry scan failed — stall phase saw no metas it can trust"
+}
+
+# ---- phase 1c: the owner whose review stopped ------------------------------
+# The seat that opened the PR owns its review: it dispatches one qa-loop agent
+# and ends its turn. While that agent runs the seat is busy in the harness's
+# eyes, so a seat that is LIVE, IDLE and silent past the threshold with its
+# ticket still in review has no review running under it — the agent died, or
+# returned an escalation into a session nobody woke. Renewal keeps its lease
+# fresh, the harness-error ladder reads ordinary prose, and no other phase
+# owns it.
+#
+# Set fields on one meta under the registry lock, key/value pairs — an EMPTY
+# value REMOVES the key. `updated` is never touched: the relay phase reads it
+# as last-turn activity, and a bookkeeping write that refreshed it would read
+# as a worker that had just spoken. (_lib.sh carries the same helper for the
+# board verbs; this file does not source it.)
+_meta_write() {  # <path> <k> <v> [<k> <v> ...]
+  T_PATH="$1" T_KV="$(printf '%s\037' "${@:2}")" T_DHOME="$DAEMON_HOME" \
+  python3 - <<'PY'
+import fcntl, json, os
+env = os.environ
+lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    path = env["T_PATH"]
+    with open(path) as f:
+        m = json.load(f)
+    kv = env["T_KV"].split("\037")[:-1]
+    for k, v in zip(kv[0::2], kv[1::2]):
+        if v == "":
+            m.pop(k, None)
+        else:
+            m[k] = v
+    # A meta holding the run bearer is 0600 from creation — recreating it at
+    # the default umask would republish that secret, if only for the width of
+    # one write.
+    mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+}
+
+# The board's own word for a ticket's state, or "" when it cannot say. Read as
+# automation, by id: a targeted 404 is authoritative absence (_escalate reads
+# it the same way), and "" is never acted on — a read this tick could not make
+# must not clear a mark or nudge a worker.
+_ticket_state() {  # <ticket>
+  T_TID="$1" _api_py - <<'PY'
+import os
+import _board_api as A
+row = A.ticket(os.environ["T_TID"], principal="automation")
+print(row["state"] if row else "")
+PY
+}
+
+# How many review rounds this ticket's trail records. PROGRESS IS A REVIEW
+# ARTIFACT, not seat activity: the agent records one `review-trail` event at
+# every round's end, so a count above the one the seat last saw is proof the
+# review is moving, however quiet the session looks.
+_review_trail_count() {  # <ticket>
+  T_TID="$1" _api_py - <<'PY'
+import os
+import _board_api as A
+recs = (A.timeline(os.environ["T_TID"], principal="automation") or {}).get("records") or []
+print(sum(1 for r in recs if str(r.get("kind") or "") == "review-trail"))
+PY
+}
+
+phase_review_recover() {
+  local uuid run bindc ticket bearer fence lane status sexhausted path
+  local state trail seen recov transcript turn_epoch age budget_said=""
+  # shellcheck disable=SC2034  # the unused names exist to hold the columns
+  while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
+                            sexhausted path; do
+    [ -n "$run" ] && [ -n "$ticket" ] || continue
+    # THE REGISTRY IS THE CANDIDATE FILTER, and only that. It is what this tick
+    # can scan for free; the ticket below is what decides.
+    [ "$(_meta_field "$path" phase)" = review ] || continue
+    [ "$(_liveness "$uuid")" = live ] || continue
+    # Re-read after the sync above, which promotes a natively-woken seat.
+    [ "$(_meta_field "$path" status)" = idle ] || continue
+    turn_epoch=""
+    transcript="$(_transcript_for_uuid "$uuid")"
+    [ -z "$transcript" ] || turn_epoch="$(_mtime_epoch "$transcript" || true)"
+    # No transcript is no signal, exactly as it is for the gh tick's stall arm.
+    [ -n "$turn_epoch" ] || continue
+    age=$(( ( $(date +%s) - turn_epoch ) / 60 ))
+    [ "$age" -ge "$REVIEW_STALL_MIN" ] || continue
+    if ! _budget_left; then
+      [ -n "$budget_said" ] || {
+        echo "review-recover: tick budget exhausted — the rest ride the next tick"
+        budget_said=1; }
+      continue
+    fi
+    # THE TICKET IS THE AUTHORITY. The seat's mark is written by the client's
+    # own transitions, so a local `review` outlives the review whenever the
+    # board moved the ticket without one — the convergence transmute and the
+    # reconciler's dependency-stall park both park server-side, and nothing
+    # stamps the seat then. Nudging on the stale mark would wake a worker onto
+    # a ticket that is not in review at all, so the mark is verified, and
+    # repaired, before anything is spent.
+    state="$(_ticket_state "$ticket")" \
+      || { echo "review-recover: #$ticket — the board would not say what state it is in; the next tick decides" >&2; continue; }
+    case "$state" in
+      in-review) ;;
+      '') echo "review-recover: #$ticket — the board answered with no state at all; nothing is touched" >&2
+          continue ;;
+      needs-human)
+        # A park out of a review IS a review park, whoever wrote it: the seat
+        # keeps its history so that a parked owner is never a candidate again
+        # until the answer puts it back.
+        _meta_write "$path" phase review-parked \
+          && echo "review-recover: #$ticket is parked needs-human while the seat still read \`review\` — the seat is marked review-parked and left to the answer" \
+          || echo "review-recover: #$ticket — marking the seat review-parked failed; the next tick retries" >&2
+        continue ;;
+      *)
+        _meta_write "$path" phase "" \
+          && echo "review-recover: #$ticket is $state — the review is over and the seat's mark is cleared" \
+          || echo "review-recover: #$ticket — clearing the seat's stale review mark failed; the next tick retries" >&2
+        continue ;;
+    esac
+    # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay refuses
+    # one: a resume with an empty BOARD_RUN_TOKEN hands the worker the
+    # configured human/automation credentials instead of its own fence. Phase
+    # 1's bind repair is the route that gives such a meta its bearer back, and
+    # no attempt is spent here.
+    [ -n "$bearer" ] || {
+      echo "review-recover: #$ticket — $uuid holds no run bearer; phase 1's bind repair owns it, not this nudge" >&2
+      continue; }
+    trail="$(_review_trail_count "$ticket")" \
+      || { echo "review-recover: #$ticket — the timeline could not be read; nothing is spent on it this tick" >&2; continue; }
+    case "$trail" in ''|*[!0-9]*) trail=0 ;; esac
+    seen="$(_meta_field "$path" review_trail_seen)"
+    case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
+    recov="$(_meta_field "$path" review_recoveries)"
+    case "$recov" in ''|*[!0-9]*) recov=0 ;; esac
+    if [ "$trail" -gt "$seen" ]; then
+      if _meta_write "$path" review_recoveries 0 review_trail_seen "$trail"; then
+        echo "review-recover: #$ticket — the review recorded a new round ($seen → $trail); the owner's recovery count starts over"
+        recov=0; seen="$trail"
+      else
+        echo "review-recover: #$ticket — recording the review's progress failed; the ladder stands where it was" >&2
+      fi
+    fi
+    if [ "$recov" -ge "$REVIEW_RECOVERY_CAP" ]; then
+      echo "review-recover: #$ticket — $uuid was nudged $recov times with no new review round; parking needs-human"
+      # The park is the ONE board write this phase makes, and it is the same
+      # exit the gh tick takes at the same cap. The stated override is what
+      # the live-binding guard (dp#63) asks of anyone but the owner, and the
+      # transition's own stamp leaves the seat `review-parked`.
+      BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound owner $uuid (review stalled)" \
+        "$SCRIPT_DIR/board-transition.sh" "$ticket" needs-human \
+        "auto-recovery exhausted: the owner $uuid was nudged $recov times about its review of this ticket's pull request and no new review round was recorded between them; review the PR by hand, or answer here to put the owner back on it" \
+        || echo "review-recover: #$ticket — the park transition failed; the next tick retries" >&2
+      continue
+    fi
+    if _meta_write "$path" review_recoveries "$((recov + 1))" review_trail_seen "$seen"; then
+      echo "review-recover: #$ticket — $uuid is idle ${age}m into a review with no agent under it; nudge $((recov + 1)) of $REVIEW_RECOVERY_CAP"
+      # Backgrounded: the nudged turn is the worker's, not this tick's, and
+      # the tick holds the lock every other phase needs.
+      BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
+        nohup "$SMINOS_CLI" resume --wait "$uuid" \
+        "SWEEP RECOVERY: your review of ticket #$ticket's pull request has no live QA agent (idle for ${age}m with nothing running under it). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it." \
+        >/dev/null 2>&1 &
+    else
+      echo "review-recover: #$ticket — the attempt could not be recorded, so none was made; the next tick retries" >&2
+    fi
+  done < <(_registry_metas)
+  _scan_ok || die "registry scan failed — review-recover phase saw no metas it can trust"
 }
 
 # ---- phase 2: answer relay -------------------------------------------------
@@ -2774,6 +2974,7 @@ phase_dispatch() {
 case "${1:-all}" in
   renew) phase_renew ;;
   stall) phase_stall ;;
+  review-recover) phase_review_recover ;;
   relay) phase_relay ;;
   resume) phase_resume ;;
   dispatch) phase_dispatch ;;
@@ -2787,7 +2988,12 @@ case "${1:-all}" in
   # next tick, and ahead of relay and resume: a worker it revives can answer
   # its own relay this same tick, and one whose ladder it just spent must be
   # counted out before the phase that would claim a successor for it.
-  all) phase_renew || true; phase_stall || true; phase_relay || true
+  all) phase_renew || true; phase_stall || true
+       # REVIEW-RECOVER RUNS BEFORE RELAY for the reason stall does: a nudged
+       # owner can answer its own relay in this same tick, and one whose
+       # ladder just ran out is parked before the relay reads the wake queue.
+       phase_review_recover || true
+       phase_relay || true
        phase_resume || true
        # The same budget the arms above stop on, as an absolute the dispatchers
        # can read across the process boundary. Set only here: this is the tick
@@ -2795,5 +3001,5 @@ case "${1:-all}" in
        TICK_DEADLINE="$((TICK_START + TICK_BUDGET))"
        if _budget_left; then phase_dispatch || true
        else echo "dispatch: tick budget exhausted — fresh claims ride the next tick"; fi ;;
-  *) die "usage: _sweep_api.sh [renew|stall|relay|resume|dispatch|all]" ;;
+  *) die "usage: _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]" ;;
 esac
