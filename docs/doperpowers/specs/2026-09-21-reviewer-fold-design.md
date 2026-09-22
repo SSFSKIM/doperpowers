@@ -969,13 +969,14 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   `to === 'in-review' && isEpic && pr != null`.
 - Observation: Renaming the pinned tier to a model name the reader cannot
   place silently disarms the cheap override standing beside it.
-  Evidence: 120 fresh single-shot samples over the SDE Model selection
-  text. The sentence offering `model: sonnet` was byte-identical in both
-  arms; with `opus` named as the pinned tier the override was taken 5/5,
-  with `sol` 1/5. Naming the relation — "sonnet, the tier below sol" —
-  restored it to 5/5. A read-back check ("what does this text say?")
-  answers correctly every time and cannot detect this; only a control arm
-  can.
+  Evidence: 90 fresh single-shot sonnet samples over the SDE Model
+  selection text (three batches of 30, inside a 120-call grid whose fourth
+  batch was the issue-tracker ritual below). The sentence offering
+  `model: sonnet` was byte-identical in both arms; with `opus` named as the
+  pinned tier the override was taken 5/5, with `sol` 1/5. Naming the
+  relation — "sonnet, the tier below sol" — restored it to 5/5, 14/15
+  pooled. A read-back check ("what does this text say?") answers correctly
+  every time and cannot detect this; only a control arm can.
 - Observation: The dispatch ritual's gateway scrub had never actually been
   emitted.
   Evidence: under the old wording 10/10 unlabelled-or-architect dispatches
@@ -1010,6 +1011,9 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   reaches it. The test's own header already says it "string-matches its
   verbal explanation against expected keywords". Recorded, not owned;
   tightening it to accept paraphrase, or replacing it with a drill, is debt.
+  Run records: `.doperpowers/sde/2026-09-21-reviewer-fold/logs/task-10-{pre,post}-run-skill-tests.log`
+  for the full-runner pair, and the eleven isolated reps at
+  `/tmp/flake-branch-{1..3}.log` and `/tmp/flake-main-{1..8}.log`.
 - Observation: A control that shares a file path with the treatment is not
   a control.
   Evidence: the stand-in eval's first tools-enabled control still bound
@@ -1082,10 +1086,12 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   window while the repair holds the lock.
 - Observation: The recovery nudge's wording was not shown to beat a generic
   nudge; the claim was withdrawn.
-  Evidence: at n=3 per arm per scenario treatment and control were
-  indistinguishable on dispatch outcome. The original score file had been
+  Evidence: six sessions in all — two scenarios, each with two treatment
+  reps and one control — and on each scenario the control reached the same
+  dispatch outcome as the treatment. The original score file had been
   written while a control rep was still running; re-scoring showed that rep
-  had in fact dispatched a qa-loop.
+  had in fact dispatched a qa-loop. One control parking the ticket is the
+  only difference, and it was not repeated.
 - Observation: Six sentences outside the protocol files still named the
   retired Reviewer worker and its lane after the fold, and were read back as
   live doctrine — a stale actor name is a wrong answer, not a stale word.
@@ -1101,12 +1107,14 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   names — the worker, the seat, the lane, the daemon, the skill — across
   `skills/issue-tracker/SKILL.md` and `references/*.md`, excepting
   `review-loop.md`'s migration note, which exists to tell an adopting repo
-  which retired path to stop calling.
+  which retired path to stop calling. Harness, prompts and all ten raw
+  replies: `.doperpowers/sde/2026-09-21-reviewer-fold/task-10-eval/`.
 - Observation: Acceptance 9's code and service behavior is verified; its
   merge-and-deploy clause is not yet satisfied and is Task 12's gate.
   Evidence: arkho PR https://github.com/SSFSKIM/arkho/pull/80 is open at
-  review-clean head `36b11fe`, where all nine sub-items and `npm test`
-  pass. "merged to arkho `main` and the Render service reports the new
+  review-clean head `36b11fe`, where all nine sub-items pass and `npm test`
+  is regression-clean — 753 tests, 750 passing, the same three cancellations
+  pristine `origin/main` carries. "merged to arkho `main` and the Render service reports the new
   revision" stands ahead of acceptance 11(b)'s smoke, not ahead of this
   branch's records.
 
@@ -1152,4 +1160,4 @@ Pending — written at finish.
 - 2026-09-22: Task 7 review — owner-first covers the epic scale path; the stand-in never spawns or rebinds over a live owner.
 - 2026-09-22: Task 8 review — the owner's closing turn is three acts in order, and the board write and the sminos status line are one block the scale path carries too.
 - 2026-09-22: Task 9 review — a failed progress-reset decides nothing, and the API tick's phase repair derives and writes under one lock.
-- 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced by `test-protocol-content.sh` outside `review-loop.md`'s migration note. Surprises from Tasks 1–9 recorded above.
+- 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill, the sweep's knob table and the board scripts' comments name the QA agent and the review stand-in, fenced by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.
