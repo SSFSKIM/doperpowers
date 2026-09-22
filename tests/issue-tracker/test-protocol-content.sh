@@ -620,7 +620,13 @@ assert_contains "$texec" "effort: high" "...at high reasoning effort"
 # fresh-context wording check (2026-09-22) five of five samples answered "the
 # Reviewer worker" for the two sweep knobs and two of five for who merges the
 # PR. The pattern fences the lane and the daemon too, not just the worker —
-# the same sentence can go stale under any of its old names.
+# the same sentence can go stale under any of its old names, and `review(er)?`
+# is written out because `reviewer?` would make the r optional and miss
+# "review daemon" while matching "reviewe daemon".
+# Scope is the prose an agent LOADS. The board scripts' comments were
+# corrected by hand and are deliberately outside this fence: `review lane`
+# still means the sweep's dispatch pass, the in-review state, and the
+# server's qagent lane there, so the same words are not stale in them.
 # review-loop.md's migration note is the one licensed mention: it exists to
 # tell an adopting repo which retired path to stop calling.
 echo "the review's actors, after the fold:"
@@ -630,7 +636,7 @@ for f in "$TRACKER" "$REFS"/*.md; do
         /^## Migrating an installed workflow$/ { skip = 1 }
         /^## / && !/^## Migrating an installed workflow$/ { skip = 0 }
         !skip
-    ' "$f" | grep -niE 'qa-loops|reviewer workers?|reviewer seat|review lane|review workers?|reviewer? daemon' || true)"
+    ' "$f" | grep -niE 'qa-loops|review(er)? workers?|reviewer seat|review lane|review(er)? daemon' || true)"
     [ -n "$hits" ] && stale="$stale$(basename "$f"): $hits"$'\n'
 done
 if [ -n "$stale" ]; then

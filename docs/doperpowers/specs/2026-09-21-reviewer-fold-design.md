@@ -1107,8 +1107,12 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   names — the worker, the seat, the lane, the daemon, the skill — across
   `skills/issue-tracker/SKILL.md` and `references/*.md`, excepting
   `review-loop.md`'s migration note, which exists to tell an adopting repo
-  which retired path to stop calling. Harness, prompts and all ten raw
-  replies: `.doperpowers/sde/2026-09-21-reviewer-fold/task-10-eval/`.
+  which retired path to stop calling. The fence is deliberately scoped to
+  the prose an agent loads; the board scripts' comments were corrected by
+  hand and are not fenced, because `review lane` still means the sweep's
+  dispatch pass, the `in-review` state, and the server's `qagent` lane
+  there. Harness, prompts and all ten raw replies:
+  `.doperpowers/sde/2026-09-21-reviewer-fold/task-10-eval/`.
 - Observation: Acceptance 9's code and service behavior is verified; its
   merge-and-deploy clause is not yet satisfied and is Task 12's gate.
   Evidence: arkho PR https://github.com/SSFSKIM/arkho/pull/80 is open at
@@ -1160,4 +1164,4 @@ Pending — written at finish.
 - 2026-09-22: Task 7 review — owner-first covers the epic scale path; the stand-in never spawns or rebinds over a live owner.
 - 2026-09-22: Task 8 review — the owner's closing turn is three acts in order, and the board write and the sminos status line are one block the scale path carries too.
 - 2026-09-22: Task 9 review — a failed progress-reset decides nothing, and the API tick's phase repair derives and writes under one lock.
-- 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill, the sweep's knob table and the board scripts' comments name the QA agent and the review stand-in, fenced by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.
+- 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced across `skills/issue-tracker/SKILL.md` and `references/*.md` by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. The board scripts' comments lost the retired actor names too, but they are maintainer-facing and carry no fence: `review lane` stays there for the sweep's dispatch pass, the `in-review` state, and the server's `qagent` lane. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.

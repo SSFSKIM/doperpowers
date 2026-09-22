@@ -31,12 +31,12 @@
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
-#   REVIEW_MODEL        model pin for the review daemon (default sol) — every
+#   REVIEW_MODEL        model pin for the review stand-in (default sol) — every
 #                       worker is a Claude-harness seat, and the model name is
 #                       the whole route; pinned, not inherited, so the
 #                       operator's own session model never sets the review
 #                       lane's price
-#   REVIEW_EFFORT       reasoning effort for the review daemon (default high —
+#   REVIEW_EFFORT       reasoning effort for the review stand-in (default high —
 #                       the QAgent tier is sol/high by design)
 #   REVIEW_LEVEL        the review engine's level floor for this repo —
 #                       low|medium|high|xhigh|max (default medium, review-code's
