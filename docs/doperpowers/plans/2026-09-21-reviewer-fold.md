@@ -304,6 +304,7 @@ select count(*) from board.run r join board.ticket t on t.id = r.ticket_id
 - `owner-first: a ticket bound to a live architect seat is skipped` — seed `in-review` ticket 12 with PR 5, a meta `{"name":"12-arch-slug","ticket":"12","role":"ARCHITECT","status":"idle",...}`; triggered dispatch of PR 5 prints `#5: owner reviews — skip` and spawns nothing.
 - `owner-first: an implement seat too` — role `IMPLEMENT`, same outcome.
 - `owner-first: an epic in scale review with a live architect seat is skipped` — `in-review` epic 20, a meta `{"ticket":"20","role":"ARCHITECT","status":"idle",...}`; the epic scale sweep prints `#20: owner reviews — skip` and neither spawns nor rebinds.
+- Any existing scale-sweep case that expected a spawn or rebind over an idle owner-bound epic is re-anchored to the skip; that lingering-owner behavior is the contradiction this removes.
 - `no live owner: the stand-in spawns` — no meta → a spawn with `--role QAGENT`, the rendered prompt carrying `PROTOCOL_FILE` ending `review-standin-protocol.md` and none of `BIND_READY_FILE`, `MANIFEST_REF`, `SKILL_FILE`.
 - `a finished stand-in with ENGINE-UNAVAILABLE reaches the streak decision` — the existing outage-cap case re-anchored: a `QAGENT` meta with a reply file ending `ENGINE-UNAVAILABLE` still drives the streak.
 - `test-bootstrap-parity.sh`: the review side's placeholder set is the roster in spec acceptance 5 plus `PROTOCOL_FILE`.
