@@ -2097,6 +2097,54 @@ out="$(run board-transition.sh "$cs_e" in-review "answered: retry the review")"
 assert_contains "$out" "#$cs_e: needs-human → in-review" "the recipe in the park note works: the epic returns with no --pr"
 assert_contains "$(state "s['issues']['$cs_e']['body']")" "pr: https://github.com/o/r/issues/$cs_e#pkg" "the closure package it returns with is the one it carried"
 
+# ---- the review fold: the re-pin self-edge and the counted rebuild edge -------
+# A review that re-cuts the plan contract does it on the BOARD, not on the
+# branch: the owner pushes the repaired document, then mints the new pin with
+# a same-state in-review transition, and the audit re-anchors on the newest
+# pin-minting comment. The Architect's repair-and-rebuild back to in-progress
+# is the other half of the fold, and it is convergence-counted — the seat with
+# the most authorship stake must not get an unbounded self-loop.
+echo "re-pin / rebuild:"
+SHA_B="89abcdef0123456789abcdef0123456789abcdef"
+SHA_UNPUSHED="ffffffffffffffffffffffffffffffffffffffff"
+FOLD_A="docs/plans/fold.md@$SHA40"
+FOLD_B="docs/plans/fold.md@$SHA_B"
+python3 - <<'REFS'
+import json, os
+p = os.environ["MOCK_GH_REFS"]
+refs = json.load(open(p))
+for sha in ("0123456789abcdef0123456789abcdef01234567",
+            "89abcdef0123456789abcdef0123456789abcdef"):
+    refs["compare"]["tick/fold...%s" % sha] = "identical"
+    refs["contents"].append("docs/plans/fold.md@%s" % sha)
+json.dump(refs, open(p, "w"))
+REFS
+mk_review() {  # -> $fold_t, a fresh ticket in in-review with pr: and branch: recorded
+    run board-register.sh "$1" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+    fold_t="$(state "s['next']-1")"
+    run board-transition.sh "$fold_t" in-progress >/dev/null
+    run board-transition.sh "$fold_t" in-review "PR open" \
+        --branch tick/fold --pr "https://github.com/test/repo/pull/$fold_t" >/dev/null
+}
+
+# The rebuild edge: in-review → in-progress with the repaired plan's pin.
+mk_review "Rebuild probe"
+rb_t="$fold_t"
+err="$(run board-transition.sh "$rb_t" in-progress --branch tick/fold --plan "$FOLD_A" 2>&1 || true)"
+assert_contains "$err" "a note is required on the in-review → in-progress edge" "the rebuild edge is note-required"
+out="$(run board-transition.sh "$rb_t" in-progress "rebuild: the design gap, repaired" --branch tick/fold --plan "$FOLD_A")"
+assert_contains "$out" "#$rb_t: in-review → in-progress" "the Architect rebuilds from in-review"
+assert_contains "$(state "s['issues']['$rb_t']['body']")" "plan: $FOLD_A" "the rebuild mints its own pin"
+assert_equals "$(state "s['issues']['$rb_t']['comments'][-1]")" "[board] in-review → in-progress: rebuild: the design gap, repaired" "the counted edge's comment is the audit's anchor for a rebuild"
+# ...twice on one ticket with no human event between is the second design gap,
+# which is the human's — and the transmuted write mints no pin.
+run board-transition.sh "$rb_t" in-review "round 2" --pr "https://github.com/test/repo/pull/$rb_t" >/dev/null
+out="$(run board-transition.sh "$rb_t" in-progress "rebuild: the same gap again" --branch tick/fold --plan "$FOLD_B")"
+assert_contains "$out" "#$rb_t: in-review → needs-human" "a second rebuild converges to a human park"
+assert_contains "$(state "s['issues']['$rb_t']['body']")" "note: convergence: second traversal of in-review → in-progress" "the park names the convergence"
+assert_contains "$(state "s['issues']['$rb_t']['body']")" "plan: $FOLD_A" "the pin in force is the one the rebuild that DID happen minted"
+assert_not_contains "$(state "s['issues']['$rb_t']['body']")" "$SHA_B" "...and the transmuted write records no pin of its own"
+
 # ---- convergence resets at a recomposition-cycle boundary ---------------------
 # Two successive closure packages that each turn up a real defect are not a
 # mechanical bounce: the second escalation is about a package that did not

@@ -195,8 +195,10 @@ if [ "$BOARD_BINDING" = api ]; then
   # and an arbitrary --plan value here bought a worker the right to skip its gate
   # entirely. gh mode's four checks, mirrored:
   if [ -n "$plan" ]; then
-    # 1. THE EDGE, not just the destination. Only an Architect finishing a
-    #    design pass may mint a pin; every other legal promotion into
+    # 1. THE EDGE, not just the destination. Only the four edges that re-cut
+    #    what the plan SAYS may mint a pin — the Architect's handoff and build
+    #    out of a design pass, the owner's rebuild and re-pin out of a review
+    #    that found the plan wrong; every other legal promotion into
     #    ready-for-implementer (a park return) would otherwise mint one too, and
     #    there is no legitimate re-supply case — plan meta survives park
     #    round-trips untouched.
@@ -228,8 +230,10 @@ PY
     # path today. They stay: they are the gh checks mirrored, and the day the
     # service's state table gains the edge, deleting the refusal above is the
     # whole change.
-    { [ "$_cur" = in-design ] && { [ "$to" = ready-for-implementer ] || [ "$to" = in-progress ]; }; } \
-      || die "--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build) (#$tid is $_cur → $to)"
+    case "$_cur:$to" in
+      in-design:ready-for-implementer|in-design:in-progress|in-review:in-progress|in-review:in-review) ;;
+      *) die "--plan rides the pin-minting edges only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build, in-review → in-progress for a rebuild, in-review → in-review for a re-pin) (#$tid is $_cur → $to)" ;;
+    esac
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
     # its own body: no revision to pin (the review loop anchors on this edge's
     # comment), but the branch still names where the work lives — a recovery
@@ -486,15 +490,22 @@ if to == "in-review" and not env["T_PR"]:
 if env["T_PLAN"]:
     import re as _re
     # The EDGE, not just the destination: a plan pin authorizes gate-free
-    # PLAN-EXECUTION, and only an Architect finishing a design pass may mint
-    # one. Every other legal promotion into ready-for-implementer (a park
-    # return from needs-info/needs-human/interactive-preferred/deferred)
-    # would otherwise mint one too — and there is no legitimate re-supply
-    # case, since plan meta survives park round-trips untouched.
-    if cur != "in-design" or to not in ("ready-for-implementer", "in-progress"):
-        B.die("--plan rides the Architect edges out of in-design only "
+    # PLAN-EXECUTION, so only the four edges that re-cut what the plan SAYS may
+    # mint one — the Architect's handoff and build out of a design pass, and
+    # the owner's rebuild and re-pin out of a review that found the plan wrong.
+    # Every other legal promotion into ready-for-implementer (a park return
+    # from needs-info/needs-human/interactive-preferred/deferred) would
+    # otherwise mint one too — and there is no legitimate re-supply case,
+    # since plan meta survives park round-trips untouched.
+    if (cur, to) not in (("in-design", "ready-for-implementer"),
+                         ("in-design", "in-progress"),
+                         ("in-review", "in-progress"),
+                         ("in-review", "in-review")):
+        B.die("--plan rides the pin-minting edges only "
               "(in-design → ready-for-implementer for a handoff, "
-              "in-design → in-progress for a build)")
+              "in-design → in-progress for a build, "
+              "in-review → in-progress for a rebuild, "
+              "in-review → in-review for a re-pin)")
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
     # its own body: no revision to pin (the review loop anchors on this edge's
     # comment), but the branch still names where the work lives — a recovery
@@ -567,9 +578,9 @@ elif to == "ready-for-architect" or (cur == "in-design" and to == "ready-for-imp
     # unrelated `pre-spec` ruling value caused two defects on this branch,
     # so this clears the field outright rather than keying on "has a pin").
     # Entry into ready-for-architect always means the plan is being
-    # re-cut (T_PLAN can only be set on the in-design →
-    # ready-for-implementer edge — validated above — so this branch never
-    # collides with a fresh pin write). The Architect's own decompose exit
+    # re-cut (T_PLAN can only be set on a pin-minting edge — validated
+    # above — and none of those enters ready-for-architect, so this branch
+    # never collides with a fresh pin write). The Architect's own decompose exit
     # (in-design -> ready-for-implementer with no --plan) is a positive
     # "no plan" statement — a pin surviving it is stale by construction.
     # Deliberately NOT extended to other edges into ready-for-implementer:

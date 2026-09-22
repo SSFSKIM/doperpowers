@@ -301,8 +301,8 @@ t "and --repair-path is refused in gh mode" "api-binding-only" \
 PIN_OUT="$(mktemp)"
 V board-transition.sh 9 ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" \
   > "$PIN_OUT" 2>&1 || true
-t "a plan pin off the Architect handoff edge is refused" \
-  "rides the Architect edges out of in-design only" cat "$PIN_OUT"
+t "a plan pin off a pin-minting edge is refused" \
+  "rides the pin-minting edges only" cat "$PIN_OUT"
 nt "and never reaches the wire" '\"plan\": \"docs/p.md@aaa' cat "$FIX.log"
 # THE BUILD EDGE IS GH-ONLY, TODAY. The Architect's in-design → in-progress
 # edge is not on the board service's state table, so the request would come
@@ -318,6 +318,20 @@ t "the build edge is refused client-side on an API board" \
 t "...and the refusal names the handoff fallback" \
   "hand off instead: ready-for-implementer" cat "$PIN_OUT"
 nt "and the build edge never reaches the wire" '"path": "/tickets/8/transition"' cat "$FIX.log"
+# THE REVIEW FOLD's two edges mint pins here as they do under gh: the owner's
+# rebuild out of in-review, and its same-state re-pin. Both stop at the pin's
+# own gates, which is the discrimination — an edge refusal would come first.
+V board-transition.sh 9 in-review "re-pin: the delta" \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+nt "the re-pin edge is admitted by the pin gate" "rides the pin-minting edges only" cat "$PIN_OUT"
+t "...and a re-pin with no branch anywhere is still refused" \
+  "needs a branch the sha is reachable from" cat "$PIN_OUT"
+V board-transition.sh 9 in-progress "rebuild: the design gap, repaired" --branch nope \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+nt "the rebuild edge is admitted too" "rides the pin-minting edges only" cat "$PIN_OUT"
+t "...and stops at the same unverifiable-branch check" \
+  "names no commit in this checkout" cat "$PIN_OUT"
+
 V board-transition.sh 8 ready-for-implementer "n" --plan "docs/p.md@deadbeef" \
   > "$PIN_OUT" 2>&1 || true
 t "a short-sha pin is refused as mutable" "immutable pin" cat "$PIN_OUT"
