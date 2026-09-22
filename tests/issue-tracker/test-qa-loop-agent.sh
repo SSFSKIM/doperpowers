@@ -44,6 +44,16 @@ assert_text_not_contains() {
     if printf '%s\n' "$1" | grep -Fq -- "$2" 2>/dev/null; then
         fail "$3"; echo "    expected NOT to find: $2"; echo "    in section: $4"; else pass "$3"; fi
 }
+assert_text_order() {
+    local first second
+    first="$(printf '%s\n' "$1" | grep -nF -m1 -- "$2" | cut -d: -f1 || true)"
+    second="$(printf '%s\n' "$1" | grep -nF -m1 -- "$3" | cut -d: -f1 || true)"
+    if [[ -n "$first" && -n "$second" && "$first" -lt "$second" ]]; then
+        pass "$4"
+    else
+        fail "$4"; echo "    expected '$2' before '$3'"; echo "    in section: $5"
+    fi
+}
 
 echo "agent identity:"
 assert_file "$AGENT" "agents/qa-loop.md exists"
@@ -165,6 +175,12 @@ assert_contains "$AGENT" "no fixer prompt ever names" "the accepted-commit ledge
 assert_not_contains "$AGENT" "Never write that path into a fixer prompt" "secrecy is not blanket over the scratch directory — that would make the wave impossible"
 
 echo "the terminal outcomes:"
+escalate="$(section '## Escalate')"
+[[ -n "$escalate" ]] || { echo "  [FAIL] the Escalate section exists"; FAILURES=$((FAILURES + 1)); }
+assert_text_contains "$escalate" "The trail is therefore a precondition, not aftercare" \
+    "the trail is a precondition for an auto-merge-on terminal path" "Escalate"
+assert_text_order "$escalate" "The trail is therefore a precondition, not aftercare" "gh pr merge <pr>" \
+    "the trail is posted before a merge can auto-close the ticket and trigger cancellation" "Escalate"
 assert_contains "$AGENT" "--json mergedAt" "running checks are waited out by polling the PR's merge state"
 assert_contains "$AGENT" "every 60 seconds for up to 20 minutes" "the wait for running checks is bounded"
 assert_contains "$AGENT" "auto-merge armed on <sha>; the board's finalize pass writes done" "an armed auto-merge returns DONE with its verbatim second line"

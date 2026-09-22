@@ -563,25 +563,32 @@ needs a semantic choice — two implementations of one thing, an invariant
 spanning both sides, code you would write rather than keep — stop and park
 needs-human naming that hunk: that decision belongs to a human or a re-cut.
 
-If ALL hold AND the brief's `auto-merge:` is `on`: merge, pinned to the
-reviewed head — the head your final engine round reviewed, advanced only by
-your own graded closing-wave push when one landed. Headless gh never picks a
-merge method itself — resolve the repo's first (`gh repo view --json
-squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed`; first allowed of
-`--squash` / `--merge` / `--rebase`), then
+If ALL hold AND the brief's `auto-merge:` is `on`, post the review-trail
+comment before the first operation that can make the PR terminal: the merge
+command, the bounded wait during which an external merge may land, or arming
+auto-merge. A successful merge closes the ticket immediately; the cancel pass
+may then retire your dispatcher and interrupt this agent, as the Task 13 gh
+smoke observed. The trail is therefore a precondition, not aftercare: if its
+post fails, do not merge or arm.
+
+Then merge, pinned to the reviewed head — the head your final engine round
+reviewed, advanced only by your own graded closing-wave push when one landed.
+Headless gh never picks a merge method itself — resolve the repo's first (`gh
+repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed`;
+first allowed of `--squash` / `--merge` / `--rebase`), then
 `gh pr merge <pr> <method-flag> --match-head-commit <reviewed-head>` — the pin
 makes a head that moved after your review fail the merge instead of landing
-unreviewed; on that failure park needs-human with both SHAs. Post the
-review-trail comment and finalize with
-`<scripts>/board-transition.sh <ticket> done`, then return `DONE`.
+unreviewed; on that failure park needs-human with both SHAs. After a successful
+merge finalize with `<scripts>/board-transition.sh <ticket> done`, then return
+`DONE`.
 
-Checks still RUNNING at verdict time: wait them out, bounded — poll
-`gh pr view <pr> --json mergedAt` every 60 seconds for up to 20 minutes.
-Merged inside that window → post the trail, finalize with
+Checks still RUNNING at verdict time: with the trail already posted, wait them
+out, bounded — poll `gh pr view <pr> --json mergedAt` every 60 seconds for up to 20
+minutes. Merged inside that window → finalize with
 `<scripts>/board-transition.sh <ticket> done`, and return `DONE`. Still
 running when the window closes → arm GitHub auto-merge on the reviewed head
-(`gh pr merge <pr> --auto <method-flag> --match-head-commit <reviewed-head>`),
-post the trail, and return `DONE` whose second line is exactly
+(`gh pr merge <pr> --auto <method-flag> --match-head-commit <reviewed-head>`)
+and return `DONE` whose second line is exactly
 
     auto-merge armed on <sha>; the board's finalize pass writes done
 
