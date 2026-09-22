@@ -39,6 +39,12 @@
 #                   symmetric with ARCHITECT_MODEL; pinned rather than
 #                   inherited so the operator's own session model never
 #                   silently re-fuses the two lanes onto one price
+#   AUTO_MERGE_ENABLED  merge kill switch for the QA agent the dispatched
+#                   worker runs on its own PR (default false = observation
+#                   mode: review and park, no merge)
+#   REVIEW_LEVEL    that review's level floor (low|medium|high|xhigh|max,
+#                   default medium) — an unknown value is refused here,
+#                   before any spawn
 #   BOARD_SCRIPTS / SMINOS_CLI / DAEMON_HOME / IMPLEMENT_BOOTSTRAP_TEMPLATE
 #                   overrides (tests)
 set -euo pipefail
@@ -62,6 +68,22 @@ ARCHITECT_PROTOCOL="$SKILL_DIR/references/architect-worker-protocol.md"
 ARCH_CAP="${ARCHITECT_MAX_CONCURRENT:-1}"
 DECOMPOSE_DOC="$SKILL_DIR/references/implement-decompose.md"
 CAP="${IMPLEMENT_MAX_CONCURRENT:-5}"
+# Repo-wide review config, injected into every worker prompt: the seat that
+# owns a ticket dispatches its own QA agent once its PR is open, so the switch
+# and the floor are this dispatcher's to hand over — the same two knobs, read
+# the same way, as the review lane's own dispatcher.
+case "${AUTO_MERGE_ENABLED:-false}" in
+  true|1|on|yes|TRUE|True) AUTO_MERGE_DISPLAY="on" ;;
+  *) AUTO_MERGE_DISPLAY="off" ;;
+esac
+# An unknown floor is refused HERE, before any spawn: the worker would
+# otherwise carry a level the review workflow has no rung for and discover it
+# only once its review began.
+REVIEW_LEVEL="${REVIEW_LEVEL:-medium}"
+case "$REVIEW_LEVEL" in
+  low|medium|high|xhigh|max) ;;
+  *) echo "REVIEW_LEVEL must be one of low|medium|high|xhigh|max (got '$REVIEW_LEVEL')" >&2; exit 2 ;;
+esac
 # Surfaces claimed by dispatches earlier in this process (one sweep = one
 # process, so a plain variable is the in-tick claim set — see the surface
 # guard in dispatch_one). SURFACE_OVERRIDE=1 bypasses that guard, loudly.
@@ -367,13 +389,14 @@ PY
   # that exists before the bind, and reconciliation needs it to tell "never
   # spawned" from "spawned, live, unbound".
   _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name"
-  # ENV_TRACKER_ISSUE is "none" here: the API board has no env-tracker label,
-  # and an env-issue ticket is registered by the sweep, not pointed at from
-  # here.
+  # ENV_TRACKER_ISSUE and TECH_DEBT_ISSUE are "none" here: the API board has
+  # neither label, and an env-issue ticket is registered by the sweep, not
+  # pointed at from here.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$C_TICKET" \
     P_ISSUE_URL="$BOARD_API_URL/tickets/$C_TICKET" \
     P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
-    P_ENV_TRACKER_ISSUE=none \
+    P_ENV_TRACKER_ISSUE=none P_TECH_DEBT_ISSUE=none \
+    P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_PROTOCOL_FILE="$protocol_file" P_DECOMPOSE_DOC="$decompose" \
     P_TICKET_BODY_FILE="$body_file" P_PARENT_PIN="${C_PARENT_PIN:-none (no parent)}" \
     _render_bootstrap)" \
@@ -905,9 +928,13 @@ PY
   # The prompt carries bindings only — the worker reads its ticket (and the
   # repo's .doperpowers/repo-facts.md, if any) from gh / its own worktree.
   et="$(gh issue list -R "$BOARD_REPO" --label env-tracker --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
+  # The standing tech-debt sink the QA agent logs a deferred finding to
+  # (optional — "none" when the board has no open issue labeled tech-debt).
+  td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$n" P_ISSUE_URL="$T_URL" \
     P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
-    P_ENV_TRACKER_ISSUE="${et:-none}" \
+    P_ENV_TRACKER_ISSUE="${et:-none}" P_TECH_DEBT_ISSUE="${td:-none}" \
+    P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_PROTOCOL_FILE="$protocol_file" \
     P_DECOMPOSE_DOC="$decompose" \
     _render_bootstrap)" \

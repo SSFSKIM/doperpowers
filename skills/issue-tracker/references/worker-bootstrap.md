@@ -31,3 +31,10 @@ Runtime bindings (dispatcher-owned):
 - `DECOMPOSE_DOC`: {{DECOMPOSE_DOC}}
 - `ENV_TRACKER_ISSUE`: {{ENV_TRACKER_ISSUE}} — standing env-friction tracker
   ("none" when the board has no open issue labeled `env-tracker`)
+- `AUTO_MERGE`: {{AUTO_MERGE}} — the merge switch the QA agent you dispatch on
+  your own PR runs under ("off" is observation mode: review and park, no merge)
+- `REVIEW_LEVEL`: {{REVIEW_LEVEL}} — that review's level floor (low/medium/high
+  run one reviewer; xhigh/max run the panel)
+- `TECH_DEBT_ISSUE`: {{TECH_DEBT_ISSUE}} — standing tech-debt sink for a finding
+  logged rather than fixed ("none" when the board has no open issue labeled
+  `tech-debt`)

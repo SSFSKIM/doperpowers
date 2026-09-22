@@ -180,6 +180,12 @@ assert_file_not_contains "$PROMPT" "ARM64-FACT" "prompt carries no inlined repo-
 assert_file_not_contains "$PROMPT" "EXECUTION (gate passed)" "prompt carries no execution block (the doctrine lives in the protocol)"
 assert_file_contains "$PROMPT" "implement-worker-protocol.md" "execution lane opens the implement protocol"
 assert_file_not_contains "$PROMPT" "{{" "no unrendered placeholder survives"
+# The owner dispatches its own QA agent after the PR opens, so the review
+# bindings ride the execution lane's bootstrap. Their defaults are what an
+# unconfigured board gets.
+assert_file_contains "$PROMPT" '`AUTO_MERGE`: off' "the merge switch defaults off (observation mode)"
+assert_file_contains "$PROMPT" '`REVIEW_LEVEL`: medium' "the review floor defaults to medium"
+assert_file_contains "$PROMPT" '`TECH_DEBT_ISSUE`: none' "no open tech-debt issue reads as none"
 meta_ticket="$(python3 -c "
 import glob, json
 print(next((m.get('ticket','') for p in glob.glob('$DAEMON_HOME/*.json')
@@ -894,6 +900,49 @@ out="$(SURFACE_OVERRIDE=1 run 20)"
 assert_contains "$out" "SURFACE_OVERRIDE=1: dispatching #20 onto occupied surface recommend-rpc (occupant #22)" \
   "override dispatches with a loud line (triggered mode shares the guard)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn: 20-" "override actually spawned"
+
+# ---- the owner's review bindings (the reviewer fold) --------------------------
+# The seat that owns the ticket dispatches its own QA agent once the PR is
+# open, so the review floor, the merge switch and the tech-debt sink are
+# dispatcher-owned bindings on this lane exactly as they are on the review
+# lane's — read from the sweep's environment, rendered into the bootstrap.
+echo "execute-dispatch: the owner's review bindings"
+rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
+python3 - <<'PY'
+import json, os
+def issue(num, title, labels):
+    return {"number": num, "id": "ID_%d" % num, "title": title, "body": "body",
+            "state": "OPEN", "stateReason": None, "labels": labels,
+            "assignees": [], "parent": None, "blockedBy": [], "closesPRs": [],
+            "xrefPRs": [], "comments": [],
+            "createdAt": "2026-09-21T00:00:00Z", "updatedAt": "2026-09-21T00:00:00Z",
+            "url": "https://github.com/test/repo/issues/%d" % num}
+s = {"next": 100, "labels": [], "issues": {
+    "40": issue(40, "Carry the review bindings", ["status:ready-for-implementer",
+                                                  "priority:P1"]),
+    "41": issue(41, "Refuse an unknown floor", ["status:ready-for-implementer",
+                                                "priority:P2"]),
+    "90": issue(90, "Standing tech-debt sink", ["tech-debt"]),
+}}
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+out="$(AUTO_MERGE_ENABLED=true REVIEW_LEVEL=high run 40)"
+assert_contains "$out" "dispatched #40" "the configured dispatch lands"
+PROMPT40="$PROMPT_DIR/40-carry-the-review-bindings.prompt"
+assert_file_contains "$PROMPT40" '`AUTO_MERGE`: on' "AUTO_MERGE_ENABLED=true reaches the worker as on"
+assert_file_contains "$PROMPT40" '`REVIEW_LEVEL`: high' "the configured review floor reaches the worker"
+assert_file_contains "$PROMPT40" '`TECH_DEBT_ISSUE`: 90' "the open tech-debt issue is the sink"
+
+# An unknown floor is refused BEFORE any spawn: the worker would otherwise
+# carry a level its review workflow has no rung for, and only discover it
+# hours later, mid-review.
+: > "$SPAWN_LOG"
+rc=0; out="$(REVIEW_LEVEL=loud run 41)" || rc=$?
+assert_contains "$out" "REVIEW_LEVEL must be one of low|medium|high|xhigh|max" \
+  "an unknown review floor is named in the refusal"
+if [ "$rc" -ne 0 ]; then pass "an unknown review floor exits non-zero"; else
+  fail "an unknown review floor exits non-zero"; fi
+assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "...and nothing is spawned"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
