@@ -220,19 +220,6 @@ PY
 )" || die "--plan needs the ticket's current state to check the pin-minting edge, and the board would not answer"
     _cur="${_row%% *}" _rec_branch="${_row#* }"
     [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the pin-minting edge cannot be checked"
-    # THE BUILD EDGE IS GH-ONLY, TODAY. Legality on this path is the board
-    # service's, and its state table has no in-design → in-progress entry: the
-    # request comes back 409 with a generic illegal-transition message, after
-    # the Architect has already pushed the plan. Refuse it here, where the
-    # exit can be named — the legacy handoff carries the same pin into the
-    # implement queue. (A build edge without --plan never reaches this block
-    # and still meets the server's 409; --plan is what the build edge is.)
-    { [ "$_cur" != in-design ] || [ "$to" != in-progress ]; } \
-      || die "the build edge (in-design → in-progress) is not supported by the API board service yet — hand off instead: ready-for-implementer \"<note>\" --branch <b> --plan <pin>|pre-spec (an Executor runs it: PLAN-EXECUTION from a real pin, DIRECT from the body on pre-spec)"
-    # The two build-edge checks below are consequently unreachable on this
-    # path today. They stay: they are the gh checks mirrored, and the day the
-    # service's state table gains the edge, deleting the refusal above is the
-    # whole change.
     case "$_cur:$to" in
       in-design:ready-for-implementer|in-design:in-progress|in-review:in-progress|in-review:in-review) ;;
       *) die "--plan rides the pin-minting edges only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build, in-review → in-progress for a rebuild, in-review → in-review for a re-pin) (#$tid is $_cur → $to)" ;;

@@ -44,6 +44,8 @@ cat > "$FIX" <<'JSON'
   "body":{"items":[{"id":8,"state":"in-design","priority":"P1","title":"a design pass",
                     "owner_run":null,"plan":null,"pr_url":null}],
           "next":null,"as_of":118}},
+ {"method":"POST","path":"/tickets/8/transition","status":200,
+  "body":{"ok":true,"to":"in-progress"}},
  {"method":"POST","path":"/tickets/9/transition","status":200,
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
@@ -307,20 +309,21 @@ V board-transition.sh 9 ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%
 t "a plan pin off a pin-minting edge is refused" \
   "rides the pin-minting edges only" cat "$PIN_OUT"
 nt "and never reaches the wire" '\"plan\": \"docs/p.md@aaa' cat "$FIX.log"
-# THE BUILD EDGE IS GH-ONLY, TODAY. The Architect's in-design → in-progress
-# edge is not on the board service's state table, so the request would come
-# back a generic 409 after the plan was already pushed. The client refuses it
-# first and names the exit: the legacy handoff carries the same plan value into
-# the implement queue, where an Executor runs it — PLAN-EXECUTION from a real
-# pin, DIRECT from the body on `pre-spec`.
+# THE BUILD EDGE REACHES THE BOARD. The service's state table carries the
+# Architect's in-design → in-progress edge now, so the client's own refusal of
+# it — which existed only to name an exit ahead of a generic 409 — is gone, and
+# the request goes on the wire like any other.
 : > "$FIX.log"
+V board-transition.sh 8 in-progress "direct: pre-spec suffices as the plan" \
+  --branch tick/build --plan pre-spec > "$PIN_OUT" 2>&1 || true
+t "the build edge reaches the API board" '"path": "/tickets/8/transition"' cat "$FIX.log"
+t "...and the client reports the state the server wrote" "#8: → in-progress" cat "$PIN_OUT"
+# A real pin on that edge is held to the PIN's own gates — the edge refusal
+# used to hide them.
 V board-transition.sh 8 in-progress "plan-execution: docs/p.md@$(printf 'a%.0s' $(seq 40))" \
   --branch tick/build --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
-t "the build edge is refused client-side on an API board" \
-  "not supported by the API board service yet" cat "$PIN_OUT"
-t "...and the refusal names the handoff fallback" \
-  "hand off instead: ready-for-implementer" cat "$PIN_OUT"
-nt "and the build edge never reaches the wire" '"path": "/tickets/8/transition"' cat "$FIX.log"
+t "...and a real pin on it still verifies before the wire" \
+  "names no commit in this checkout" cat "$PIN_OUT"
 # THE REVIEW FOLD's two edges mint pins here as they do under gh: the owner's
 # rebuild out of in-review, and its same-state re-pin. Both stop at the pin's
 # own gates, which is the discrimination — an edge refusal would come first.
