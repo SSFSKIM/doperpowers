@@ -931,6 +931,183 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   Evidence: `skills/review-code/workflows/code-review.js` `ISOLATION` and
   the `DIFF` string.
 
+### From the execution (Tasks 1–9)
+
+- Observation: Six of this branch's stops were contradictions inside the
+  plan or the spec rather than problems in the code, and each was repaired
+  in the document before the executor resumed.
+  Evidence: `.doperpowers/sde/2026-09-21-reviewer-fold/progress.md` — who
+  writes `ready-for-architect` in stand-in mode (`36999eba`); a return
+  contract with no legal outcome for an armed auto-merge, a ticketless
+  observation run, or a scale verdict (`f494d11f`); acceptance 8's route
+  grep against the dispatcher's own env scrub and then against Task 4's
+  scope (`16a5b84b`, `513f46e4`); the phase mark a server-raised park
+  leaves stale (`6ec43cd7`); and owner-first on the epic scale path
+  (`309db239..b77dfd3d`).
+- Observation: A test that compares a database-written timestamp against
+  the host clock cannot run on a Postgres inside the Docker Desktop VM.
+  Evidence: two VM candidates measured ~70 ms ahead of the host, so
+  `board-service`'s `test/mirror-loop.test.js` (`expires_at <= new Date()`)
+  failed deterministically and an `nsenter` clock repair did not stick. A
+  host-native Postgres 16 on `127.0.0.1:5456` measured ±0.5 ms. It also
+  needs `lc_messages = 'C'`: `test/feed-replica.test.js` matches Postgres'
+  lock-timeout text in English and this host's locale is Korean.
+- Observation: `board-service`'s suite is regression-clean, not all-green.
+  Evidence: pristine `origin/main` ran 739 tests, 736 passing, 3 cancelled;
+  the branch ran 753/750 with the same three, all in
+  `test/mirror-github.test.js` from `AbortSignal.timeout()`'s unref'd timer
+  under Node v22.23.2 (`src/mirror/github.js:246`). Two load-sensitive
+  drills outside the diff each failed once across nine full runs and were
+  left alone.
+- Observation: A server guard keyed on an edge's flags does not survive a
+  new edge onto the same state — the same forged-close hole reappeared once
+  after it was closed.
+  Evidence: the epic package stamp was keyed on `require_pr`, which the
+  `in-review → in-review` re-pin edge does not carry, so a run could write
+  its own `pr_url` and `package_event_id` in one transaction and close a
+  scale review it never had. Re-derived from the value instead:
+  `to === 'in-review' && isEpic && pr != null`.
+- Observation: Renaming the pinned tier to a model name the reader cannot
+  place silently disarms the cheap override standing beside it.
+  Evidence: 120 fresh single-shot samples over the SDE Model selection
+  text. The sentence offering `model: sonnet` was byte-identical in both
+  arms; with `opus` named as the pinned tier the override was taken 5/5,
+  with `sol` 1/5. Naming the relation — "sonnet, the tier below sol" —
+  restored it to 5/5. A read-back check ("what does this text say?")
+  answers correctly every time and cannot detect this; only a control arm
+  can.
+- Observation: The dispatch ritual's gateway scrub had never actually been
+  emitted.
+  Evidence: under the old wording 10/10 unlabelled-or-architect dispatches
+  emitted no `DAEMON_CLAUDE_*` prefix at all, so under an ambient gateway
+  shell the spawned seat inherited the operator's settings; the
+  "ASSIGNMENTS, not omissions" wording produced the explicit scrub 15/15.
+- Observation: The seat's `phase` mark is written by client-side
+  transitions, so a park the server raises leaves it stale by design.
+  Evidence: under the API binding a server-originated park passes through
+  no client script, so `phase` stays `review` where a client-driven park
+  reads `review-parked`. The lane cap excludes both identically and is
+  unaffected; the recovery selector cannot tell them apart from the mark,
+  so it verifies the ticket's state before acting and corrects the key
+  itself (boundary recorded at plan repair `6ec43cd7`, implemented in
+  Task 9).
+- Observation: `tests/claude-code/test-subagent-driven-execution.sh` fails
+  at a rate on any tree, this branch's or `main`'s, because it regex-matches
+  a live session's free text against fixed keyword lists — a correct answer
+  in other words is a failure, and which assertion catches it is chance.
+  Evidence: three different assertions failed this way during the
+  initiative. Task 6, Test 5, on a reply that described reading the diff as
+  "verified against the diff, which is the reviewer's actual view of the
+  change". Task 10, Test 6 (`executor.*fix\|fix.*issues`, matched per line),
+  on a reply that put "findings go back to the executor that wrote the code"
+  on one line and "every fix goes through a worker" on another. And on
+  `origin/main` unmodified, Test 4 (`Step 1\|beginning\|start\|Load Plan`),
+  on a reply that said "the first step of its loop … at setup". Measured
+  over the same unchanged suite: one failure in five runs on the branch, one
+  in eight on `origin/main`. The section the Task 10 failure probes —
+  `skills/subagent-driven-execution/SKILL.md` lines 60–110, the fix loop —
+  is byte-identical between the branch and `main`, so nothing on this branch
+  reaches it. The test's own header already says it "string-matches its
+  verbal explanation against expected keywords". Recorded, not owned;
+  tightening it to accept paraphrase, or replacing it with a drill, is debt.
+- Observation: A control that shares a file path with the treatment is not
+  a control.
+  Evidence: the stand-in eval's first tools-enabled control still bound
+  `PROTOCOL_FILE` to this initiative's own protocol, so every control rep
+  read the new text and behaved like treatment. Re-rendered from the
+  pre-task commit `f0fc00ff` with the retired `qa-loops/SKILL.md` restored:
+  control 0/3 correct on a dismissal and 0/3 on a design gap (none wrote
+  any board edge), treatment 3/3 on both, touching no board state on the
+  dismissal.
+- Observation: Owner-first dedupe has two paths; the epic scale path was
+  the one the design named only by implication.
+  Evidence: the first pass covered the PR path while a live owner's epic
+  still fell through to the stand-in's retire and superseded-package logic.
+  Closed at `cdb2535d` with one shared `_owner_skip` helper, so the two
+  wordings cannot drift apart.
+- Observation: "reply and resume the agent" reads as "reply and end the
+  turn" to a fair share of readers.
+  Evidence: 2/5 first-round samples ended the turn; the line now says the
+  turn does not end there (`f70771db`), 5/5 on re-test.
+- Observation: An eval gate can pass a cell for structural reasons that
+  have nothing to do with the behavior under test — three of them here.
+  Evidence: the owner-protocol gate was rewritten three times. It never
+  required the `in-review` transition it claimed to check (a spec-conflict
+  cell passed having written only `ready-for-architect`); it read only the
+  first review dispatch (`qa[0]`), hiding a rebuild's second review whose
+  `head:` slot carried prose instead of a sha; and its turn-end criterion
+  measured an interval that structurally cannot contain anything. The final
+  form gates per review HEAD across the harness's real `system/init` turn
+  boundary, drops child events by `parent_tool_use_id`, and counts a board
+  write only in shell command position — 10/10 required cells pass at all
+  11 heads, the 3 baseline cells fail 3/3.
+- Observation: That gate found a protocol defect the structural tests could
+  not see.
+  Evidence: the scale and recomposition path had never received the "two
+  writes, one block" pairing Closing Artifact got, so a treatment seat wrote
+  the `in-review` edge and dispatched without the sminos status line beside
+  it. Fixed at `4ae0e2e1` with an `assert_order` pin.
+  Debt this leaves, both P3 and covered structurally by
+  `test-protocol-content.sh`: no tools-enabled cell covers `PARKED` → a
+  resumed answer, `ENGINE-UNAVAILABLE` → recovery → a fresh agent, or a
+  truthful `DONE` exit (each needs a two-turn `claude -p --resume` cell, or
+  a merge route the harness's permission mode will not misread as a merge
+  without review); and the scale brief's three lines do not say where
+  `closure package:` sits in Closing Artifact's line order, so one seat put
+  it after `mode:`.
+- Observation: Locking each write orders the writes; it does not order a
+  decision taken on an unlocked read.
+  Evidence: the API tick's phase repair re-read the ticket inside
+  `.metalock`, but its stamp still derived "no difference, write nothing"
+  from an unlocked scan — so a repair could stamp `review-parked` over a
+  `board-answer`'s freshly committed `in-review`, leaving nothing to
+  reclaim the seat as a candidate again. Fixed by moving the whole
+  scan-derive-write inside the lock and writing inline; a nested
+  `_meta_put` would self-deadlock, flock being per open file description.
+- Observation: Progress that was not recorded decides nothing.
+  Evidence: when the meta write recording review progress failed, both
+  ticks still decided on the unpersisted count in hand, so a review that
+  had just posted a round could be parked at the cap on a reset that never
+  landed. Reproduced by injecting a directory at the meta writer's tmp path
+  — a crashed tick's real leftover — giving `IsADirectoryError` on the gh
+  tick and `PermissionError` on the API tick.
+- Observation: A concurrency drill can pass for the wrong reason when its
+  environment never reaches the code under test.
+  Evidence: `DAEMON_HOME=… . "$SCRIPTS/_lib.sh"` — an assignment prefix on
+  a special builtin, which POSIX mode does not scope to the command — ran
+  the stamp against the suite's own registry, matched no seat, and returned
+  instantly, indistinguishable from "the lock held". Fixed by exporting
+  inside the subshell; the drill now blocks the repair's re-read on a gate
+  file and asserts the answer's call cannot complete inside a two-second
+  window while the repair holds the lock.
+- Observation: The recovery nudge's wording was not shown to beat a generic
+  nudge; the claim was withdrawn.
+  Evidence: at n=3 per arm per scenario treatment and control were
+  indistinguishable on dispatch outcome. The original score file had been
+  written while a control rep was still running; re-scoring showed that rep
+  had in fact dispatched a qa-loop.
+- Observation: Five sentences outside the protocol files still named the
+  retired Reviewer worker after the fold, and were read back as live
+  doctrine.
+  Evidence: a fresh-context wording check over the skill's "Who writes the
+  board" table and the sweep's knob rows (5 samples per arm, 2026-09-22):
+  on the pre-fix text 5/5 answered "the Reviewer worker" for both sweep
+  knobs and 2/5 for who merges the PR, with four of five self-correcting
+  mid-answer on who writes the design-gap edge. On the corrected text 5/5
+  answered the owning seat's QA agent, the Executor, and the review
+  stand-in, with no self-correction.
+  `tests/issue-tracker/test-protocol-content.sh` now fences the retired
+  names across `skills/issue-tracker/SKILL.md` and `references/*.md`,
+  excepting `review-loop.md`'s migration note, which exists to tell an
+  adopting repo which retired path to stop calling.
+- Observation: Acceptance 9's code and service behavior is verified; its
+  merge-and-deploy clause is not yet satisfied and is Task 12's gate.
+  Evidence: arkho PR https://github.com/SSFSKIM/arkho/pull/80 is open at
+  review-clean head `36b11fe`, where all nine sub-items and `npm test`
+  pass. "merged to arkho `main` and the Render service reports the new
+  revision" stands ahead of acceptance 11(b)'s smoke, not ahead of this
+  branch's records.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
@@ -971,3 +1148,6 @@ Pending — written at finish.
 - 2026-09-22: Task 4 review — acceptance 8's grep excludes sminos, codex-companion, and review-bench: none of the three is the board route.
 - 2026-09-22: Task 5 review — the API tick's review recovery verifies the ticket's state before it acts; `phase` filters candidates and the server's own parks are corrected there.
 - 2026-09-22: Task 7 review — owner-first covers the epic scale path; the stand-in never spawns or rebinds over a live owner.
+- 2026-09-22: Task 8 review — the owner's closing turn is three acts in order, and the board write and the sminos status line are one block the scale path carries too.
+- 2026-09-22: Task 9 review — a failed progress-reset decides nothing, and the API tick's phase repair derives and writes under one lock.
+- 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced by `test-protocol-content.sh` outside `review-loop.md`'s migration note. Surprises from Tasks 1–9 recorded above.

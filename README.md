@@ -27,7 +27,7 @@ The agent refuses to jump straight to code. It interviews you (`brainstorming`) 
 The same grill and spec, then the spec is broken into tasks an executor can own from one self-contained brief (`writing-plans`), and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
 
 **Unattended** — the same method with nobody watching.
-Tickets live as GitHub issues and gated workers pick them up (`issue-tracker`): an Architect grills against the ticket, writes the spec, and executes it through a subagent that comes back to it when the plan does not cover a decision; a review loop lands the PRs (`qa-loops`); the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
+Tickets live as GitHub issues and gated workers pick them up (`issue-tracker`): an Architect grills against the ticket, writes the spec, and executes it through a subagent that comes back to it when the plan does not cover a decision; the same seat then runs the review of its own PR through a QA agent that lands it (`qa-loop`); the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
 
 ---
 

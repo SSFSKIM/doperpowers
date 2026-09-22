@@ -204,3 +204,4 @@ models with the human.
 ## Revision Notes
 
 - 2026-09-13: the first follow-on landed — qa-loops' Reviewer worker dispatches this lane itself (the rung agents through the Agent tool, the panel through the Workflow tool) at a level derived from the ticket's spec, an operator floor, and the diff's size; `review-engine.sh` and its hermetic suite moved to `tests/review-bench/` as the codex baseline. Design: `2026-09-13-qa-loops-native-review-design.md`. The codex panel's deletion remains the open follow-on.
+- 2026-09-21: the lane's board-side caller changes hands — the owning seat's QA agent (`agents/qa-loop.md`) dispatches the rung agents through the Agent tool at `low`/`medium`/`high`, and at `xhigh`/`max` returns `NEEDS_PANEL` to its dispatcher, which runs the panel workflow on its behalf: a subagent has no Workflow tool. Design: `2026-09-21-reviewer-fold-design.md`.
