@@ -2173,6 +2173,16 @@ assert_contains "$(state "s['issues']['$rb_t']['body']")" "note: convergence: se
 assert_contains "$(state "s['issues']['$rb_t']['body']")" "plan: $FOLD_A" "the pin in force is the one the rebuild that DID happen minted"
 assert_not_contains "$(state "s['issues']['$rb_t']['body']")" "$SHA_B" "...and the transmuted write records no pin of its own"
 
+echo "review-trail comment kind:"
+# The QA agent's review artifact. Under gh nothing enforces it; the marker is
+# what an evidence-gated close reads on the API board.
+run board-register.sh "Review trail probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+rt_t="$(state "s['next']-1")"
+run board-comment.sh "$rt_t" --kind review-trail --text "level medium" >/dev/null
+assert_equals "$(state "s['issues']['$rt_t']['comments'][-1]")" "[review-trail] level medium" "the review-trail kind renders its marker"
+err="$(run board-comment.sh "$rt_t" --kind review-trial --text "typo" 2>&1 || true)"
+assert_contains "$err" "review-trail" "the closed-set refusal names the kinds it accepts"
+
 # ---- convergence resets at a recomposition-cycle boundary ---------------------
 # Two successive closure packages that each turn up a real defect are not a
 # mechanical bounce: the second escalation is about a package that did not

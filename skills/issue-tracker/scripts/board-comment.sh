@@ -3,8 +3,8 @@
 #
 # Usage:
 #   board-comment.sh <number> <text>                       # plain comment
-#   board-comment.sh <number> --kind <k> --json '<payload>' [--text <text>]
-#     k: parent-impact | closure-package | parent-impact-consumed
+#   board-comment.sh <number> --kind <k> [--json '<payload>'] [--text <text>]
+#     k: parent-impact | closure-package | parent-impact-consumed | review-trail
 #   board-comment.sh <number> -- <text>   # text that starts with a dash
 #
 # gh mode: `gh issue comment` (typed kinds land as "[<kind>] <json>" marker
@@ -43,8 +43,8 @@ while [ $# -gt 0 ]; do case "$1" in
      text="$1"; have_text=1; shift ;;
 esac; done
 case "$kind" in
-  comment|parent-impact|closure-package|parent-impact-consumed) ;;
-  *) die "kind must be one of comment|parent-impact|closure-package|parent-impact-consumed" ;;
+  comment|parent-impact|closure-package|parent-impact-consumed|review-trail) ;;
+  *) die "kind must be one of comment|parent-impact|closure-package|parent-impact-consumed|review-trail" ;;
 esac
 # Validated once, ahead of the binding branch: gh mode interpolates the payload
 # into a marker comment rather than parsing it, so without this the same
@@ -71,7 +71,12 @@ else
   if [ "$kind" = comment ]; then
     gh issue comment "$tid" -R "$BOARD_REPO" --body "$text"
   else
-    gh issue comment "$tid" -R "$BOARD_REPO" --body "[$kind] ${text:+$text }${json}"
+    # Assembled from the parts that are THERE: review-trail carries text and
+    # no payload, and the payload-slot separator would otherwise trail it.
+    _body="[$kind]"
+    [ -z "$text" ] || _body="$_body $text"
+    [ -z "$json" ] || _body="$_body $json"
+    gh issue comment "$tid" -R "$BOARD_REPO" --body "$_body"
   fi
 fi
 _rerender_if_serving
