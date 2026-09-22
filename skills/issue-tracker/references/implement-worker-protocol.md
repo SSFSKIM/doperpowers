@@ -286,5 +286,6 @@ most about this residual right now; a skeleton registered "to fill in
 later" is silent scope loss with a ticket number. --note stays a
 one-line summary — it lives in an invisible meta block, never carries
 the spec.
-From the PR on, the review loop (doperpowers:qa-loops) owns the path to merge.
+From the PR on, the review loop — your `doperpowers:qa-loop` agent — owns the
+path to merge.
 

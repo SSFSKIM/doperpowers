@@ -1,5 +1,5 @@
 # pr-review-dispatch.yml — dispatch a local review-worker daemon on PR events.
-# Template from doperpowers:qa-loops — copy into .github/workflows/.
+# Template from doperpowers:issue-tracker — copy into .github/workflows/.
 #
 # SETUP (per adopting repo — see runner-setup.md in the issue-tracker skill):
 #   1. PRIVATE REPOS ONLY. A self-hosted runner on a public repo lets a

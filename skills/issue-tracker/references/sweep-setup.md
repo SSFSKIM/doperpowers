@@ -115,10 +115,10 @@ actually run before trusting a cron arming.
 
 The sweep is the transport that needs nobody's permission. When the repo
 also has a registered self-hosted runner (label `claude-review` — see
-doperpowers:qa-loops `references/runner-setup.md`), GitHub events can
+`references/runner-setup.md`), GitHub events can
 dispatch the latency-sensitive lanes directly; the sweep stays as catch-up:
 
-- PR opened → Reviewer worker: `qa-loops/references/pr-review-dispatch.yml`
+- PR opened → review stand-in: `references/pr-review-dispatch.yml`
 - issue becomes ready → Executor worker: `references/issue-dispatch.yml`
 
 Both templates keep the same security posture: no checkout of PR code,

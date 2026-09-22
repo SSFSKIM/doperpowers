@@ -54,6 +54,18 @@ assert_no_spawn() {  # assert_no_spawn <worker-name> <label>
 # A binding is only bound when it arrives with a VALUE. Anchored on the rendered
 # roster line shape (- `NAME`: value), so a binding that rendered as a blank —
 # the shape an unsupplied placeholder used to take — reads as unbound here.
+ticket_owner() {  # <ticket> → name of whichever meta currently holds it
+    T="$1" python3 - <<'PY'
+import glob, json, os
+for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    m = json.load(open(p))
+    if str(m.get("ticket", "")).lstrip("#") == os.environ["T"]:
+        print(m.get("name") or m.get("uuid") or "")
+PY
+}
+
 assert_bound() {  # assert_bound <prompt> <NAME> <lane>
     local v; v="$(printf '%s\n' "$1" | sed -n "s/^- \`$2\`: \(.*\)$/\1/p" | head -1)"
     if [[ -n "$v" ]]; then pass "\`$2\` renders with a value ($3)"; else
@@ -151,33 +163,6 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "updated": "2026-07-08T00:%02d:00Z" % int(os.environ.get("SPAWN_N") or 0)},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-  # Simulate the worker's first protocol action: wait for the dispatcher-owned
-  # ready file, validate it, then acknowledge before ORIENT. Tests can suppress
-  # this to prove dispatch does not report success for a worker that never starts.
-  bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
-  # The real barrier also verifies the worker's OWN registry identity against
-  # the name the protocol gives it. A stub that acked without checking hid a
-  # barrier no scale worker could ever satisfy (it named review-pr-<n> while a
-  # scale worker is review-epic-<n>), so check it here: a mismatch leaves the
-  # barrier unacked and dispatch fails exactly as it would in production.
-  wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
-  if [ "$wname" != "$name" ]; then
-    echo "stub worker: barrier identity mismatch (prompt names '$wname', registry name is '$name')" >&2
-    bind_ready=""
-  fi
-  if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
-    READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
-import json, os, time
-ready=os.environ["READY"]
-for _ in range(500):
-    if os.path.isfile(ready):
-        ack=ready+".ack"; tmp=ack+".tmp"
-        with open(tmp,"w") as f: json.dump({"uuid":os.environ["UUID"]},f)
-        os.replace(tmp,ack)
-        break
-    time.sleep(0.01)
-PY
-  fi
   if [ "${STUB_BAD_SPAWN_BANNER:-0}" = "1" ]; then
     echo "seat spawned without parseable identity"
   else
@@ -488,42 +473,37 @@ assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
     fail "worktree is detached"; else pass "worktree is detached"; fi
 PROMPT="$(cat "$PROMPT_DIR/review-pr-5.prompt")"
-BIND_READY="$(printf '%s\n' "$PROMPT" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
-assert_contains "$PROMPT" "REVIEW worker for PR #5" "prompt carries the worker bootstrap header"
-assert_contains "$PROMPT" '`BIND_READY_FILE`:' "prompt carries the startup binding barrier"
-if [ -n "$BIND_READY" ] && [ -f "$BIND_READY" ]; then pass "bind-ready barrier opens after exclusive binding"; else fail "bind-ready barrier opens after exclusive binding"; fi
-assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ticket": "7"' "barrier proves the primary ticket binding"
-assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ledger"' "barrier carries the undisclosed ledger path to the orchestrator"
-if [ -f "$BIND_READY.ack" ]; then pass "dispatch waits for worker barrier acknowledgement"; else fail "dispatch waits for worker barrier acknowledgement"; fi
-assert_not_contains "$PROMPT" "Adds f." "prompt carries no inlined PR body (the worker reads the PR live via gh)"
+assert_contains "$PROMPT" "REVIEW STAND-IN for PR #5" "prompt carries the stand-in bootstrap header"
+assert_not_contains "$PROMPT" "Adds f." "prompt carries no inlined PR body (the agent reads the PR live via gh)"
 assert_contains "$PROMPT" '`ISSUE_NUMBER`: 7' "prompt binds the primary ticket (Closes #7 parsed from the body)"
+assert_contains "$PROMPT" '`ISSUE_URL`: https://github.com/test/repo/issues/7' "prompt binds the ticket URL the brief's ticket line carries"
 assert_not_contains "$PROMPT" "Ticket seven brief body" "prompt carries no inlined ticket body"
 assert_contains "$PROMPT" '`BASE_REF`: main' "prompt carries the base ref"
 assert_contains "$PROMPT" '`TECH_DEBT_ISSUE`: 99' "prompt carries the standing tech-debt issue binding"
 assert_contains "$PROMPT" '`AUTO_MERGE`: off' "prompt binds auto-merge off by default (observation mode)"
-assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
-assert_contains "$PROMPT" "no repo-facts manifest" "prompt renders the repo-facts-absent fallback when the repo has none"
+assert_contains "$PROMPT" '`ROLE`: QAGENT' "prompt binds the seat's role"
+assert_not_contains "$PROMPT" "risk-surface manifest" "no risk-surface snapshot rides the prompt — the agent reads it from the base ref"
+assert_not_contains "$PROMPT" "repo-facts manifest" "no repo-facts snapshot rides the prompt"
+assert_not_contains "$PROMPT" "MANIFEST_REF" "no manifest ref binding survives"
+assert_not_contains "$PROMPT" "BIND_READY" "no startup barrier rides the prompt"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survives"
 assert_contains "$PROMPT" '`REVIEW_MODE`: pr' "leaf prompt binds the ordinary pr mode"
-assert_not_contains "$PROMPT" "SCALE REVIEWER" "leaf prompt carries none of the scale variant's framing"
+assert_not_contains "$PROMPT" "recomposition epic" "leaf prompt carries none of the scale variant's framing"
 assert_not_contains "$PROMPT" "CLOSURE_PACKAGE" "leaf prompt carries no closure-package binding"
 assert_not_contains "$PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
-assert_contains "$PROMPT" "Use doperpowers:qa-loops" "prompt names the Review Worker Protocol skill"
+assert_not_contains "$PROMPT" "doperpowers:qa-loops" "the retired skill is not invoked"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
-assert_contains "$PROMPT" "$REPO_ROOT/skills/qa-loops/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/review-standin-protocol.md" "prompt carries the canonical stand-in protocol path"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/implement-worker-protocol.md" "prompt carries the canonical implement-contract path (the dispatcher-pinned protocol file)"
 assert_contains "$PROMPT" '`REVIEW_LEVEL`: medium' "prompt binds the review level floor (default medium)"
 assert_contains "$PROMPT" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "prompt pins review-code's skill dir (the panel workflow's home)"
 assert_not_contains "$PROMPT" "review-engine.sh" "no codex engine script rides the prompt"
 assert_not_contains "$PROMPT" "CODEX_REVIEW" "no codex engine env rides the prompt"
-# The bindings a reviewer cannot function without, pinned on the VALUE side:
+# The bindings a stand-in cannot function without, pinned on the VALUE side:
 # an existing `NAME`: assertion passes just as well against a rendered blank.
-assert_bound "$PROMPT" BIND_READY_FILE pr
+assert_bound "$PROMPT" PROTOCOL_FILE pr
 assert_bound "$PROMPT" IMPLEMENT_PROTOCOL_FILE pr
 assert_bound "$PROMPT" BOARD_SCRIPTS pr
-SKILL_PIN="$(printf '%s\n' "$PROMPT" | sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' | head -1)"
-if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
-    fail "SKILL_FILE renders a protocol path"; fi
 
 # ---- an unsupplied bootstrap placeholder fails the render ----------------------
 # The renderer used to substitute an unknown {{X}} with "", so a binding a mode
@@ -540,6 +520,8 @@ ln -s "$REPO_ROOT/skills/sminos" "$ALT_SKILLS/sminos"
 cp "$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh" "$ALT_SKILLS/issue-tracker/scripts/review-dispatch.sh"
 cp "$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md" \
     "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
+cp "$REPO_ROOT/skills/issue-tracker/references/review-standin-protocol.md" \
+    "$ALT_SKILLS/issue-tracker/references/review-standin-protocol.md"
 printf '\n- `FORGOTTEN_BINDING`: {{FORGOTTEN_BINDING}}\n' \
     >> "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
 reset_state
@@ -621,18 +603,8 @@ if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISP
 else
     pass "bind failure aborts review dispatch"
 fi
-assert_contains "$(cat "$SPAWN_LOG")" "retire:" "bind failure retires the unreachable reviewer"
-assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "bind failure never opens the startup barrier"
-
-# A published barrier is not success until the worker acknowledges it. A model
-# that died/timed out before reading the prompt is retired and dispatch fails.
-reset_state
-if STUB_NO_BIND_ACK=1 REVIEW_ACK_POLLS=2 REVIEW_ACK_DELAY=0.01 "$DISPATCH" 5 >/dev/null 2>&1; then
-    fail "missing worker barrier ack fails dispatch"
-else
-    pass "missing worker barrier ack fails dispatch"
-fi
-assert_contains "$(cat "$SPAWN_LOG")" "retire:" "missing barrier ack retires the non-started reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "bind failure retires the unreachable stand-in"
+assert_equals "$(ticket_owner 7)" "" "a failed bind leaves nobody owning the ticket"
 
 # Exact spawn identity is mandatory. A changed/unparseable banner must fail
 # closed, never fall back to a same-name registry heuristic.
@@ -642,11 +614,7 @@ if STUB_BAD_SPAWN_BANNER=1 "$DISPATCH" 5 >/dev/null 2>&1; then
 else
     pass "unparseable spawn UUID fails dispatch"
 fi
-assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "identity parse failure never opens the barrier"
-
-# Every control-state initialization step is explicitly guarded in sweep mode;
-# set -e is suspended beneath the per-PR `||` wrapper.
-assert_contains "$(cat "$DISPATCH")" "control state initialization failed" "control-state setup has a fail-closed guard"
+assert_equals "$(ticket_owner 7)" "" "an unidentifiable spawn binds no ticket"
 
 # ---- worktree bootstrap hook ---------------------------------------------------
 # WORKTREE_BOOTSTRAP_CMD runs inside the fresh worktree before the worker
@@ -894,17 +862,6 @@ assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 # normalization still has to settle is the previous boot's residue.
 # The scale-review half is covered further down (the epic's Architect).
 echo "normalize ticket owners before bind:"
-ticket_owner() {  # <ticket> → name of whichever meta currently holds it
-    T="$1" python3 - <<'PY'
-import glob, json, os
-for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
-    if p.endswith(".reply.json"):
-        continue
-    m = json.load(open(p))
-    if str(m.get("ticket", "")).lstrip("#") == os.environ["T"]:
-        print(m.get("name") or m.get("uuid") or "")
-PY
-}
 seed_ticket_owner() {  # PREVIOUS BOOT's executor meta, still bound to #7
     python3 - <<'PY'
 import json, os
@@ -1722,10 +1679,10 @@ PY
 reset_state
 out="$(AUTO_MERGE_ENABLED=true DEFAULT_BRANCH=develop "$DISPATCH" 10)"
 P10="$(cat "$PROMPT_DIR/review-pr-10.prompt")"
-assert_contains "$P10" "RISK-FROM-BASE" "manifest content injected from the BASE ref"
-assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side manifest edit does not leak (read from base, not head)"
-assert_contains "$P10" "FACTS-FROM-BASE" "repo-facts content injected from the BASE ref"
-assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side repo-facts edit does not leak (read from base, not head)"
+assert_not_contains "$P10" "RISK-FROM-BASE" "no manifest content rides the prompt — the agent reads it from the base ref itself"
+assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "and certainly not the HEAD-side edit"
+assert_not_contains "$P10" "FACTS-FROM-BASE" "no repo-facts content rides the prompt either"
+assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "nor its HEAD-side edit"
 assert_contains "$P10" '`AUTO_MERGE`: on' "AUTO_MERGE_ENABLED=true binds auto-merge on"
 
 # ---- the one route: a Claude-harness seat and a model name --------------------
@@ -2015,20 +1972,21 @@ EPIC_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$EPIC_PROMPT" '`REVIEW_MODE`: scale' "reviewer prompt carries the scale-review mode"
 assert_contains "$EPIC_PROMPT" "\`CLOSURE_PACKAGE\`: $PKG" "prompt binds the closure package as the entry artifact"
 assert_contains "$EPIC_PROMPT" '`ISSUE_NUMBER`: 20' "prompt binds the epic ticket under review"
-assert_contains "$EPIC_PROMPT" "SCALE REVIEWER of recomposition epic #20" "scale prompt opens as the epic's reviewer, not a PR reviewer"
+assert_contains "$EPIC_PROMPT" "REVIEW STAND-IN for recomposition epic #20" "scale prompt opens as the epic's stand-in, not a PR review"
 assert_not_contains "$EPIC_PROMPT" "PR_NUMBER" "scale prompt carries no PR framing at all (there is no PR)"
 assert_not_contains "$EPIC_PROMPT" "HEAD_SHA" "scale prompt carries no PR-head bindings"
 assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the engine base (the branch the epic integrates into)"
-assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity the startup barrier verifies"
+assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity"
 # The value side, on the scale call site too: the hard-fail sees a missing
 # binding, never an empty-valued one, and this lane has its own P_* block.
-assert_bound "$EPIC_PROMPT" BIND_READY_FILE scale
+assert_bound "$EPIC_PROMPT" PROTOCOL_FILE scale
 assert_bound "$EPIC_PROMPT" IMPLEMENT_PROTOCOL_FILE scale
 assert_bound "$EPIC_PROMPT" BOARD_SCRIPTS scale
 # This epic has no `branch:` meta, so the worktree sits on the default branch
-# itself — there is no aggregate range to hand the engine, and the prompt must
-# say so instead of leaving the worker to review nothing.
-assert_contains "$EPIC_PROMPT" "NO aggregate branch range" "the missing-integration-branch case names the closure package's PR ranges as the review ranges"
+# itself — there is no aggregate range to hand the engine, and the bindings say
+# so by themselves: INTEGRATION_REF equal to BASE_REF is that fact, which the
+# stand-in turns into the brief's `aggregate range: none`.
+assert_contains "$EPIC_PROMPT" '`INTEGRATION_REF`: main' "with no branch of its own the epic's integration ref IS the base"
 assert_not_contains "$EPIC_PROMPT" "{{" "no unsubstituted placeholder survives the scale render"
 assert_not_contains "$EPIC_PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
 EPIC_META="$(python3 - <<'PY'
@@ -2163,7 +2121,7 @@ INT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$INT_PROMPT" '`BASE_REF`: main' "the engine base is the default branch, not the epic's own branch"
 assert_not_contains "$INT_PROMPT" '`BASE_REF`: epic/integration' "the engine never reviews the integration branch against itself"
 assert_contains "$INT_PROMPT" '`INTEGRATION_REF`: epic/integration' "the prompt names the integration branch the worktree sits at"
-assert_contains "$INT_PROMPT" "aggregate review range" "the prompt states the aggregate range the engine's --base gives it"
+assert_contains "$INT_PROMPT" "the aggregate range runs" "the prompt states that the range runs between the two refs it bound"
 
 # ...and the NEXT cycle must not ride that branch. The recomposition return
 # clears `branch:` with `pr:` (both describe a composition that just changed),
@@ -2187,7 +2145,7 @@ assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse
     "$(git -C "$LOCAL_REPO" rev-parse origin/main)" \
     "with no branch: of its own it falls back to the default branch, not the previous cycle's integration ref"
 NEXT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
-assert_contains "$NEXT_PROMPT" "NO aggregate branch range" "and the prompt says so instead of implying a range it does not have"
+assert_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: main' "and its integration ref collapses onto the base — the stand-in's `aggregate range: none`"
 assert_not_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: epic/integration' "no trace of the cleared integration ref reaches the worker"
 
 # ---- the scale selector needs a closure package, not any pr: value ------------
@@ -2277,7 +2235,7 @@ assert_equals "$(git -C "$LOCAL_REPO" rev-parse origin/main)" "$FRESH_MAIN" \
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" "$FRESH_MAIN" \
     "the fallback worktree sits at the FRESH default-branch head (where the merged children are)"
 GONE_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
-assert_contains "$GONE_PROMPT" "NO aggregate branch range" "the fallback prompt still routes the worker to the package's per-child ranges"
+assert_contains "$GONE_PROMPT" '`INTEGRATION_REF`: main' "the fallback prompt binds the base as the integration ref — no aggregate range to review"
 
 # ---- a capped scale review escalates to the human instead of stranding --------
 # The 3-consecutive-failure cap is permanent on the PR path because an

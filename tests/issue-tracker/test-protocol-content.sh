@@ -64,7 +64,7 @@ assert_contains "$proto" "never from the top" "...and says so where the mode is 
 assert_not_contains "$proto" "land on main independently" "landability criterion lives in the gate file, not the protocol"
 assert_contains "$proto" "single home" "park discriminant routes to issue-tracker (single-source)"
 assert_not_contains "$proto" "Knowledge work anyone could do" "needs-info definition not re-vendored in the protocol"
-assert_contains "$proto" "doperpowers:qa-loops" "handoff to the review loop named"
+assert_contains "$proto" "doperpowers:qa-loop" "handoff to the review loop named"
 assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
 assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
@@ -133,7 +133,7 @@ want_spike="{{BOARD_SCRIPTS}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
-# The gate comment is an INTERFACE, not prose: doperpowers:qa-loops keys its
+# The gate comment is an INTERFACE, not prose: the qa-loop agent keys its
 # compliance audit to `[gate] pass` on the ticket, so the lane name and the
 # separator are read by another agent. Pinned literally on both lanes.
 assert_contains "$spike" '"[gate] pass — spike: <one line>"' "spike: the gate comment interface is [gate] pass — spike: <one line>"
@@ -285,7 +285,7 @@ assert_contains "$arch" "approve the design at" "architect: the plan route parks
 assert_contains "$arch" "before the build edge" "architect: reviews run before the build edge (the executor has no context to absorb findings)"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
-REVIEW="$REPO_ROOT/skills/qa-loops/SKILL.md"
+REVIEW="$REPO_ROOT/agents/qa-loop.md"
 [ -f "$REVIEW" ] || { echo "missing $REVIEW"; exit 1; }
 review="$(cat "$REVIEW")"
 # env-issue authority — all four worker protocols carry the same opt-in filing.
@@ -304,7 +304,11 @@ assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-i
 # path, and a worker filing on a side errand would drop the report silently.
 for _pair in "architect:$ARCHITECT" "executor:$PROTO" "spike:$SPIKE" "review:$REVIEW"; do
     _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
-    assert_contains "$_body" 'env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note' "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
+    # The three worker protocols are rendered against a bootstrap and name the
+    # dispatcher's binding; the qa-loop agent carries no placeholders at all and
+    # names the brief's ticket instead. Same command, same --note.
+    _ticket='{{ISSUE_NUMBER}}'; [ "$_name" = review ] && _ticket='<ticket>'
+    assert_contains "$_body" "env-issue <P0..P3> --spawned-by $_ticket --note" "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
     assert_contains "$_body" "Default birth is needs-human" "$_name: env-issue birth default is needs-human"
     assert_contains "$_body" "opt-in authority, not a duty" "$_name: filing is opt-in authority, never a duty"
     assert_contains "$_body" "subagents never write the board" "$_name: subagent write doctrine restated"
@@ -361,9 +365,9 @@ assert_contains "$arch" "Before you release the claim" \
 # default, and an epic has neither a PR body nor an executor gate comment.
 assert_contains "$review" "object is the CLOSURE PACKAGE" \
     "scale audit rebinds its object to the closure package, not a PR"
-assert_contains "$review" "artifact that cannot exist is never a finding" \
+assert_contains "$review" "the absence of an artifact that cannot exist is never a" \
     "scale audit never turns a nonexistent PR artifact into a finding"
-assert_contains "$review" "on the EPIC ISSUE, the same thread its closure package lives in" \
+assert_contains "$review" "on the EPIC ticket, the same thread its closure" \
     "the scale run's review trail has a valid target"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
 # The integration ref is per-cycle supply, not inherited state: the

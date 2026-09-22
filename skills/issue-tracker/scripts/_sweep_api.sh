@@ -2281,16 +2281,17 @@ PY
       echo "resume: #$tid run $C_RUN → the resume forked a turn whose session never resolved; delivery is AMBIGUOUS — no fresh spawn this tick, and no further successor until the fork (pending_short=$post_pending) resolves" >&2
       return 1
     fi
-    # A QAGENT IS NOT FRESH-SPAWNABLE FROM HERE. A Reviewer worker only functions
-    # with its control directory, its accepted-commits ledger and its review
-    # barrier — all built by review-dispatch's own handover, none of them
-    # reproducible here except as a second, drifting copy of it. The designed
-    # route already exists: release the run, and the review dispatcher's
-    # ordinary claim converts the unowned in-flight ticket into a properly
-    # equipped successor (API.md, cold-successor conversion). The folded
-    # answers are NOT acked, so the feed re-serves them to whoever picks it up.
+    # A QAGENT IS NOT FRESH-SPAWNABLE FROM HERE. A review stand-in only
+    # functions with the bootstrap review-dispatch renders for it — the pinned
+    # stand-in protocol, the positioning facts, the dispatcher-owned floor and
+    # merge switch — none of it reproducible here except as a second, drifting
+    # copy of that handover. The designed route already exists: release the
+    # run, and the review dispatcher's ordinary claim converts the unowned
+    # in-flight ticket into a properly equipped successor (API.md,
+    # cold-successor conversion). The folded answers are NOT acked, so the feed
+    # re-serves them to whoever picks it up.
     if [ "$lane" = qagent ]; then
-      echo "resume: #$tid — the predecessor session could not be resumed, and a QAgent cannot be fresh-spawned from the tick (it needs its review barrier and accepted-commit ledger); releasing run $C_RUN so the review dispatcher claims a fully equipped successor" >&2
+      echo "resume: #$tid — the predecessor session could not be resumed, and a QAgent cannot be fresh-spawned from the tick (it needs the review dispatcher's own bootstrap); releasing run $C_RUN so the review dispatcher claims a fully equipped successor" >&2
       rm -f "$CLAIMS_DIR/$nonce.json"
       _attempts "$tid" fail "$C_RUN"
       return 1

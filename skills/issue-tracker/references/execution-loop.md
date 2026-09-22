@@ -7,7 +7,7 @@ this manual.
 
 ## Overview
 
-The execution-side mirror of doperpowers:qa-loops: where the review
+The execution-side mirror of the board's review loop: where the review
 loop puts its rigor gate at the END of the pipeline (a confident review
 verdict before merge), this loop puts its rigor gate at the START — **a worker may not
 write code until the ticket passes the Ticket Gate**. There is NO

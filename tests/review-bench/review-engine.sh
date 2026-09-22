@@ -8,7 +8,7 @@
 # (CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS, see the lens block below),
 # which routes the run through the `adversarial-review` verb with the lens
 # as its focus mandate. Ticket/spec compliance is the REVIEW WORKER's own
-# audit, performed outside this engine (skills/qa-loops/SKILL.md). The
+# audit, performed outside this engine (agents/qa-loop.md). The
 # script stays synchronous; the caller chooses foreground or background. The
 # verdict lands in --out as rendered findings (progress stream:
 # <out>.events.log); the PR diff never enters the caller's context.

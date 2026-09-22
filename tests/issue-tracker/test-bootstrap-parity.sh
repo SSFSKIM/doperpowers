@@ -225,8 +225,8 @@ mode_tail pr \
   'You are the REVIEW STAND-IN for PR #X-PR_NUMBER (X-PR_URL) in X-REPO.' \
   'head (SHA X-HEAD_SHA, head branch X-HEAD_REF, base X-BASE_REF).'
 mode_tail api \
-  "You are the REVIEW STAND-IN — the board's \`qagent\` lane — on ticket" \
-  'the protocol says how.'
+  "You are the REVIEW STAND-IN — the board's \`qagent\` lane — on" \
+  'protocol says how.'
 mode_tail scale \
   'You are the REVIEW STAND-IN for recomposition epic #X-ISSUE_NUMBER in' \
   'between them.'
