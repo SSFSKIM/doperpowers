@@ -1122,6 +1122,76 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   revision" stands ahead of acceptance 11(b)'s smoke, not ahead of this
   branch's records.
 
+### From the gh smoke (Task 11, acceptance 11a) — the fold does not reach its first engine round
+
+- Observation: `isolation: "worktree"` cuts a child's worktree at the
+  REPOSITORY'S MAIN CHECKOUT HEAD, not at the dispatcher's. Not at the
+  caller's HEAD, not at the caller's branch, and not changed by the caller
+  itself being a harness `--worktree` session. This falsifies the Workspace
+  paragraph of "The qa-loop agent" above ("it starts in a fresh worktree at
+  the dispatcher's HEAD"), the rationale of the panel-positioning decision
+  ("the workflow cuts every reviewer's worktree at the caller's HEAD"), and
+  the first half of the earlier observation "The review workflow isolates
+  each reviewer at the caller's HEAD" — whose evidence was a code read, never
+  a positional probe. The consequence is total: the QA agent's Workspace rule
+  correctly refuses to review a range it was not briefed for, so every board
+  review parks on its first act, before any engine round or compliance audit.
+  The same cut governs the engine's single-rung reviewer dispatches, whose
+  `git diff <mb> <head>` still resolves by sha but whose file reads are a
+  different revision than the diff.
+  Evidence, two live drills and two controlled probes.
+  (1) Drill A, the native dispatcher end to end —
+  `execute-dispatch.sh 2` under `BOARD_REPO=SSFSKIM/fold-smoke-0922
+  LOCAL_REPO=/tmp/fold-smoke AUTO_MERGE_ENABLED=true REVIEW_LEVEL=low
+  ARCHITECT_MODEL=fable` — reached `in-review` with PR #5 at
+  `525e22fcf679dc9f2e6db9045f9212705e148b3b`, the architect's own worktree at
+  that same head, and then: `[board] needs-human: QA checkout mismatch:
+  expected 525e22fc… but found c44d61ed…; dispatch a fresh review worktree at
+  the expected head`, and `[review-trail] PARKED. Review level low;
+  auto-merge on. … Engine rounds none because range identity failed before
+  dispatch. Compliance audit not run because this is the wrong range.`
+  (2) Drill B, a hand-spawned IMPLEMENT owner at `REVIEW_LEVEL=xhigh`,
+  `AUTO_MERGE=off`, whose own worktree was verified at PR #4's head
+  `c43beee0d0eafb457221ae64d51f98024b2cb15a`: `[board] needs-human: QA
+  worktree mismatch: dispatched head c43beee…, but reviewer worktree is
+  c44d61ed…`, and a PR trail reading "Engine rounds: none. Compliance audit:
+  not started because the reviewer worktree did not match the pinned range."
+  `c44d61ed…` is the scratch repository's `main`.
+  (3) Probe from a plain linked worktree at `59dce1e4` (main checkout
+  `fe8a4b6d`): the isolated child reported
+  `pwd=…/doperpowers/.claude/worktrees/agent-a1d695cc9c96ebbf3`,
+  `HEAD=fe8a4b6d` — the main checkout's, under the main checkout's worktree
+  root.
+  (4) Probe from a `claude --worktree` seat that COMMITTED on its own worktree
+  branch: `OWNER_HEAD=c0368a2c56da6725c624f3b4282db2bacdf4a42d`, child
+  `HEAD=c44d61ed…` and `ls: probe-marker.txt: No such file or directory`.
+  That rules out the branch-switch in Drill B's setup as the cause.
+  Full trails: `.doperpowers/sde/2026-09-21-reviewer-fold/task-11-report.md`
+  and `logs/task-11-*`. Scratch board kept at
+  https://github.com/SSFSKIM/fold-smoke-0922 with both tickets parked and
+  resumable.
+- Observation: everything in the lane BEFORE the review works on a live gh
+  board, so the fold's failure is located precisely at the hand-off it exists
+  to create.
+  Evidence: on one seat and one binding, ticket #2 ran
+  `ready-for-architect` → gate → `in-design` → `in-progress` → `in-review` in
+  eight minutes, with `[gate] pass — architect: …` carrying the engine-free
+  template of acceptance 8, the architect building through its own
+  `doperpowers:plan-executor` on the staged sol pin, and the `in-review`
+  transition paired with `sminos status … "reviewing: <PR URL>"` as one block
+  — Task 8's ordering, observed live. `sminos list` showed exactly one seat
+  bound to #2 throughout; no second seat was ever bound to either ticket. The
+  owner relayed the floor and the switch verbatim, and the agent's trail
+  stated them back (`Review level: xhigh; auto-merge: off` on #3,
+  `Review level low; auto-merge on` on #2), so acceptance 14's relay-visibility
+  clause holds on a real PR.
+- Observation: a smoke's own fixture can plant a defect in the reviewer's
+  diff by accident. `git add -A` in a checkout that hosts
+  `.claude/worktrees/` commits a live seat's worktree as a gitlink.
+  Evidence: Drill B's first commit carried
+  `.claude/worktrees/2-add-a-version-flag-to-hello-sh | 1 +`; removed with
+  `git rm --cached` and force-pushed before the review was dispatched.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
@@ -1164,4 +1234,12 @@ Pending — written at finish.
 - 2026-09-22: Task 7 review — owner-first covers the epic scale path; the stand-in never spawns or rebinds over a live owner.
 - 2026-09-22: Task 8 review — the owner's closing turn is three acts in order, and the board write and the sminos status line are one block the scale path carries too.
 - 2026-09-22: Task 9 review — a failed progress-reset decides nothing, and the API tick's phase repair derives and writes under one lock.
+- 2026-09-22: Task 11 (acceptance 11a) — the gh smoke ran and returned BLOCKED.
+  Two live drills and two controlled probes establish that
+  `isolation: "worktree"` cuts a child at the repository's main checkout HEAD,
+  not the dispatcher's, so the QA agent parks before its first engine round
+  every time. Recorded under Surprises; the Design's Workspace paragraph, the
+  panel-positioning decision's rationale, and the earlier caller's-HEAD
+  observation are contradicted and await the plan author's repair. Everything
+  in the lane ahead of the review worked end to end on one bound seat.
 - 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced across `skills/issue-tracker/SKILL.md` and `references/*.md` by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. The board scripts' comments lost the retired actor names too, but they are maintainer-facing and carry no fence: `review lane` stays there for the sweep's dispatch pass, the `in-review` state, and the server's `qagent` lane. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.
