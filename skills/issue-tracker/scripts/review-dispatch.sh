@@ -679,7 +679,11 @@ def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
 q("PR_TITLE", d["title"]); q("BASE_REF", d["baseRefName"]); q("HEAD_REF", d["headRefName"])
 q("HEAD_SHA", d["headRefOid"]); q("PR_URL", d["url"]); q("PR_STATE", d["state"])
 q("PR_DRAFT", 1 if d["isDraft"] else 0)
-linked = [str(n["number"]) for n in (d.get("closingIssuesReferences") or [])]
+refs = d.get("closingIssuesReferences") or []
+linked = [str(n["number"]) for n in refs]
+# The linked issues carry their own URLs; a keyword-linked one does not, and is
+# constructed below. The primary ticket's URL is the brief's `ticket:` line.
+urls = {str(n["number"]): n.get("url") or "" for n in refs}
 text = (d.get("title") or "") + "\n" + (d.get("body") or "")
 # same close-keyword semantics as the consumer label automation: stacked PRs
 # onto integration branches leave closingIssuesReferences empty.
@@ -687,6 +691,7 @@ for m in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d
     if m.group(1) not in linked:
         linked.append(m.group(1))
 q("LINKED_ISSUES", " ".join(linked))
+q("PRIMARY_ISSUE_URL", urls.get(linked[0], "") if linked else "")
 PY
 )" || { echo "#$pr: PR json parse failed" >&2; rm -rf "$tmp"; return 1; }
   eval "$exports"
@@ -697,10 +702,14 @@ PY
   # numbers only — the stand-in and its agent read PR and ticket bodies live
   # via gh). The URL is the ticket's own, the brief's `ticket: <n> <url>` line.
   issue="${LINKED_ISSUES%% *}"
-  if [ -n "$issue" ]; then
-    issue_url="https://github.com/$BOARD_REPO/issues/$issue"
-  else
+  if [ -z "$issue" ]; then
     issue_url="none"
+  elif [ -n "$PRIMARY_ISSUE_URL" ]; then
+    issue_url="$PRIMARY_ISSUE_URL"
+  else
+    # A keyword-linked ticket has no URL in the PR payload; github.com's shape
+    # is the fallback rather than a second gh call for one string.
+    issue_url="https://github.com/$BOARD_REPO/issues/$issue"
   fi
 
   # standing tech-debt sink (optional)

@@ -505,6 +505,24 @@ assert_bound "$PROMPT" PROTOCOL_FILE pr
 assert_bound "$PROMPT" IMPLEMENT_PROTOCOL_FILE pr
 assert_bound "$PROMPT" BOARD_SCRIPTS pr
 
+# A ticket linked the ordinary way carries its own URL in the PR payload, and
+# that URL — not a constructed one — is what the brief's `ticket:` line gets.
+reset_state
+SHA="$HEAD_SHA" python3 - <<'PY'
+import json, os
+json.dump({"number": 11, "title": "feat: linked", "body": "No keyword link here.",
+           "baseRefName": "main", "headRefName": "feat/x", "headRefOid": os.environ["SHA"],
+           "url": "https://github.com/test/repo/pull/11", "isDraft": False, "state": "OPEN",
+           "labels": [],
+           "closingIssuesReferences": [{"number": 7,
+                                        "url": "https://gh.example.test/test/repo/issues/7"}]},
+          open(os.path.join(os.environ["MOCK_DIR"], "pr-11.json"), "w"))
+PY
+"$DISPATCH" 11 >/dev/null 2>&1 || true
+assert_contains "$(cat "$PROMPT_DIR/review-pr-11.prompt")" \
+    '`ISSUE_URL`: https://gh.example.test/test/repo/issues/7' \
+    "a linked ticket's own URL rides the prompt, not a constructed one"
+
 # ---- an unsupplied bootstrap placeholder fails the render ----------------------
 # The renderer used to substitute an unknown {{X}} with "", so a binding a mode
 # block asks for and no call site supplies shipped as a silent blank — and no
