@@ -2155,6 +2155,19 @@ err="$(run board-transition.sh "$ur_t" in-review "re-pin: not pushed yet" --plan
 assert_contains "$err" "cannot verify the plan pin against branch tick/fold" "a re-pin whose sha is not on the remote is refused"
 assert_not_contains "$(state "s['issues']['$ur_t']['body']")" "$SHA_UNPUSHED" "...and the refused re-pin wrote nothing"
 
+# `pre-spec` names the ticket BODY as the plan — a ruling an Architect makes
+# during its own design pass. Both review-origin edges exist because a pinned
+# DOCUMENT was found wrong and repaired, so neither may carry the sentinel in
+# place of the repaired revision.
+mk_review "Pre-spec sentinel probe"
+ps_t="$fold_t"
+err="$(run board-transition.sh "$ps_t" in-review "re-pin: the body will do" --plan pre-spec 2>&1 || true)"
+assert_contains "$err" "needs a real <path>@<full-40-hex-sha> pin" "a re-pin may not carry the pre-spec sentinel"
+assert_contains "$(state "s['issues']['$ps_t']['labels']")" "status:in-review" "...and the refusal wrote nothing"
+err="$(run board-transition.sh "$ps_t" in-progress "rebuild: the body will do" --branch tick/fold --plan pre-spec 2>&1 || true)"
+assert_contains "$err" "needs a real <path>@<full-40-hex-sha> pin" "and neither may a rebuild"
+assert_contains "$(state "s['issues']['$ps_t']['labels']")" "status:in-review" "...nor did that one"
+
 # The rebuild edge: in-review → in-progress with the repaired plan's pin.
 mk_review "Rebuild probe"
 rb_t="$fold_t"

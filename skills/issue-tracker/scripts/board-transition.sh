@@ -224,6 +224,11 @@ PY
       in-design:ready-for-implementer|in-design:in-progress|in-review:in-progress|in-review:in-review) ;;
       *) die "--plan rides the pin-minting edges only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build, in-review → in-progress for a rebuild, in-review → in-review for a re-pin) (#$tid is $_cur → $to)" ;;
     esac
+    # ...and `pre-spec` is the DESIGN pass's sentinel only: it names the ticket
+    # BODY as the plan, while a rebuild or a re-pin exists because a pinned
+    # DOCUMENT was found wrong and repaired. Same cut as gh mode's.
+    { [ "$_cur" != in-review ] || [ "$plan" != pre-spec ]; } \
+      || die "--plan pre-spec is the design pass's sentinel (the ticket body is the plan) — $_cur → $to re-cuts a pinned document, so it needs a real <path>@<full-40-hex-sha> pin"
     # The branch the pin (or a pre-spec build) is reached through: the flag
     # when it is given, else whatever the board itself records — the fallback
     # gh mode takes from the meta, and what lets a re-pin re-supply nothing.
@@ -514,6 +519,17 @@ if env["T_PLAN"]:
               "in-design → in-progress for a build, "
               "in-review → in-progress for a rebuild, "
               "in-review → in-review for a re-pin)")
+    # ...and `pre-spec` is the DESIGN pass's sentinel only. It names the ticket
+    # BODY as the plan, which is a ruling an Architect makes about a ticket that
+    # turned out small. A review-origin edge is the opposite case by
+    # construction: the rebuild and the re-pin both exist because a pinned
+    # DOCUMENT was found wrong and repaired, so they carry the repaired
+    # revision — and with it the immutability, reachability and existence
+    # checks below — or they carry nothing the audit can anchor on.
+    if cur == "in-review" and env["T_PLAN"] == "pre-spec":
+        B.die("--plan pre-spec is the design pass's sentinel (the ticket body "
+              "is the plan) — %s → %s re-cuts a pinned document, so it needs a "
+              "real <path>@<full-40-hex-sha> pin" % (cur, to))
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
     # its own body: no revision to pin (the review loop anchors on this edge's
     # comment), but the branch still names where the work lives — a recovery
