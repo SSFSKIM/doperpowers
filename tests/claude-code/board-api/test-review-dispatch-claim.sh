@@ -237,11 +237,11 @@ t "api url exported"          "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/sp
 t "repo pinned for the worker's own checkout"          "BOARD_REPO=testrepo" cat "$DH/spawn-capture.txt"
 # An ambient gateway settings file would be inherited by `sminos spawn` AND
 # persisted into the meta, so every later resume of this reviewer would ride
-# the gateway while the log said claude. The QAgent tier is opus/high.
+# settings this dispatch never chose. The QAgent tier is sol/high.
 t "gateway settings cleared, review effort pinned" "GW settings=[] effort=[high]" \
   cat "$DH/spawn-capture.txt"
 t "the reviewer runs in its own worktree off the repo" \
-  "ARGS name=9-api-qagent cwd=$r worktree=9-api-qagent model=opus" cat "$DH/spawn-capture.txt"
+  "ARGS name=9-api-qagent cwd=$r worktree=9-api-qagent model=sol" cat "$DH/spawn-capture.txt"
 
 # --- the claim journal: the crash-recovery record --------------------------
 t "claim journal marks the spawn complete" '"spawn_completed": true' \

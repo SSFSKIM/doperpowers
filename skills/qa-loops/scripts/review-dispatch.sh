@@ -27,20 +27,13 @@
 # Env:
 #   LOCAL_REPO          canonical local clone of the target repo (default: $PWD)
 #   BOARD_REPO          owner/name (default: resolved from LOCAL_REPO via gh)
-#   REVIEW_MODEL        optional model override for the review daemon
-#                       (claude route defaults to opus, gateway route to fable)
-#   REVIEW_EFFORT       reasoning effort for the claude route (default high —
-#                       the QAgent tier is opus/high by design)
-#   WORKER_ENGINE       which MODEL ROUTE the worker daemon uses: claude|codex
-#                       (default claude). Every worker is a Claude-harness
-#                       daemon; "claude" means plain Claude models, "codex"
-#                       opts the spawn into the clodex gateway settings (GPT
-#                       models via the local proxy). Resolution order per PR:
-#                       an `engine:claude`/`engine:codex` label wins, else
-#                       this env var, else claude.
-#   CLODEX_SETTINGS     gateway settings file for the codex route
-#                       (default ~/.claude/clodex-settings.json)
-#   CLODEX_EFFORT       reasoning effort for the codex route (default xhigh)
+#   REVIEW_MODEL        model pin for the review daemon (default sol) — every
+#                       worker is a Claude-harness seat, and the model name is
+#                       the whole route; pinned, not inherited, so the
+#                       operator's own session model never sets the review
+#                       lane's price
+#   REVIEW_EFFORT       reasoning effort for the review daemon (default high —
+#                       the QAgent tier is sol/high by design)
 #   REVIEW_LEVEL        the review engine's level floor for this repo —
 #                       low|medium|high|xhigh|max (default medium, review-code's
 #                       own default). The worker takes the highest of this, the
@@ -610,7 +603,7 @@ _with_dispatch_lock() {  # <worker-name> <fn> [args…]
 # return 1 so the sweep's per-PR reporter fires instead.
 dispatch_one() { _with_dispatch_lock "review-pr-$1" _dispatch_one_locked "$@"; }
 _dispatch_one_locked() {
-  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt engine control_dir bind_ready ledger
+  local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt control_dir bind_ready ledger
   tmp="$(mktemp -d)"
   pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
@@ -622,9 +615,6 @@ def q(k, v): print("%s=%s" % (k, shlex.quote(str(v))))
 q("PR_TITLE", d["title"]); q("BASE_REF", d["baseRefName"]); q("HEAD_REF", d["headRefName"])
 q("HEAD_SHA", d["headRefOid"]); q("PR_URL", d["url"]); q("PR_STATE", d["state"])
 q("PR_DRAFT", 1 if d["isDraft"] else 0)
-names = [l.get("name", "") for l in (d.get("labels") or [])]
-eng = "claude" if "engine:claude" in names else ("codex" if "engine:codex" in names else "")
-q("ENGINE_LABEL", eng)
 linked = [str(n["number"]) for n in (d.get("closingIssuesReferences") or [])]
 text = (d.get("title") or "") + "\n" + (d.get("body") or "")
 # same close-keyword semantics as the consumer label automation: stacked PRs
@@ -636,7 +626,6 @@ q("LINKED_ISSUES", " ".join(linked))
 PY
 )" || { echo "#$pr: PR json parse failed" >&2; rm -rf "$tmp"; return 1; }
   eval "$exports"
-  engine="${ENGINE_LABEL:-${WORKER_ENGINE:-claude}}"
   if [ "$PR_STATE" != "OPEN" ]; then echo "#$pr: not open ($PR_STATE) — skip"; rm -rf "$tmp"; return 0; fi
   if [ "$PR_DRAFT" != "0" ]; then echo "#$pr: draft — skip"; rm -rf "$tmp"; return 0; fi
 
@@ -712,7 +701,7 @@ PY
     P_MANIFEST_REF="$BASE_REF" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
-    P_ENGINE_NAME="$engine" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
+    P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
@@ -720,7 +709,7 @@ PY
   rm -rf "$tmp"
   [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
 
-  _spawn_reviewer "review-pr-$pr" "$issue" "$prompt" "$wt" "$engine" "$control_dir"
+  _spawn_reviewer "review-pr-$pr" "$issue" "$prompt" "$wt" "$control_dir"
 }
 
 # ---- scale review: one in-review recomposition epic (no PR) --------------------
@@ -731,7 +720,7 @@ PY
 # that branch is gone — the normal shape once children merge and their
 # branches are deleted. Guarded per step for the same reason dispatch_one is:
 # the sweep runs it behind `||`.
-dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-label] [child pull numbers]
+dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [child pull numbers]
   # Scale review is sweep-only, so the spawn throttle sits on the wrapper —
   # every epic spawn route (fresh, respawn, superseded) funnels through here.
   if [ "$(_gh_review_slots)" -ge "$REVIEW_CAP" ]; then
@@ -741,15 +730,10 @@ dispatch_epic() {  # <epic> <closure-package-url> [integration-branch] [engine-l
   _with_dispatch_lock "review-epic-$1" _dispatch_epic_locked "$@"
 }
 _dispatch_epic_locked() {
-  local etid="$1" pkg="$2" branch="${3:-}" eng_label="${4:-}" pulls="${5:-}"
-  local name tmp wt int_ref base_ref td prompt engine pr_ref
+  local etid="$1" pkg="$2" branch="${3:-}" pulls="${4:-}"
+  local name tmp wt int_ref base_ref td prompt pr_ref
   local control_dir bind_ready ledger range_note
   name="review-epic-$etid"
-  # The epic's own engine:* label wins over the environment, exactly as the PR
-  # path resolves it. Scale review is a QAgent route, and per-ticket engine
-  # overrides apply to every QAgent route — the X4 exemption covers ARCHITECT
-  # dispatch only, where plan authorship is deliberately never label-routed.
-  engine="${eng_label:-${WORKER_ENGINE:-claude}}"
   # Two different refs, and conflating them cost the engine its whole range:
   #   int_ref  — the epic's integration branch, where the worktree sits (the
   #              aggregate of the children's merged work).
@@ -863,7 +847,7 @@ _dispatch_epic_locked() {
     P_MANIFEST_REF="$base_ref" \
     P_BIND_READY_FILE="$bind_ready" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
-    P_ENGINE_NAME="$engine" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
+    P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
@@ -871,7 +855,7 @@ _dispatch_epic_locked() {
   rm -rf "$tmp"
   [ -n "$prompt" ] || { echo "$name: empty prompt — not dispatching" >&2; rm -rf "$control_dir"; return 1; }
 
-  _spawn_reviewer "$name" "$etid" "$prompt" "$wt" "$engine" "$control_dir" || return 1
+  _spawn_reviewer "$name" "$etid" "$prompt" "$wt" "$control_dir" || return 1
   # Stamp WHICH closure package this reviewer was dispatched against. That
   # stamp is what lets the next recomposition cycle tell a superseded
   # reviewer from a current one (see sweep_epic). Non-fatal: an unstamped
@@ -962,13 +946,13 @@ PY
 # barrier closed; the caller's own guards handle everything before this.
 # On success the spawned identity is left in REVIEWER_UUID for callers that
 # stamp their own bookkeeping onto the fresh meta.
-_spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-dir> [worktree-name]
-  local name="$1" issue="$2" prompt="$3" wt="$4" engine="$5" control_dir="$6"
+_spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <control-dir> [worktree-name]
+  local name="$1" issue="$2" prompt="$3" wt="$4" control_dir="$5"
   # gh mode hands `sminos spawn` a cwd it prepared itself (the detached PR/epic
   # worktree) and no worktree NAME, so the seat runs right there. The API
   # path has no PR to detach at — it hands over the repo and lets `sminos spawn`
   # cut the isolated worktree, which is the same shape execute-dispatch uses.
-  local wt_name="${7:-}"
+  local wt_name="${6:-}"
   local bind_ready="$control_dir/bind-ready.json"
   local ledger="$control_dir/accepted-commits.json"
   local spawn_out uuid ack
@@ -989,33 +973,19 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> <engine> <control-
   local dispatch_mark
   dispatch_mark="$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)"
 
-  # ONE worker harness, two model routes. The default "claude" engine is a
-  # plain Claude-model seat. engine:codex opts a PR into the GATEWAY
-  # route: the same Claude-harness seat pointed at the local gateway (GPT
-  # models) via --settings. The review engine inside the worker is
-  # doperpowers:review-code's lane on either route; the codex-CLI-as-worker
-  # species is retired.
-  if [ "$engine" = "codex" ]; then
-    spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
-      DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-fable}" --role QAGENT \
-      --stamp "board_dispatch=$dispatch_mark")" \
-      || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
-  else
-    # The QAgent tier is opus/high by design — pinned, not inherited, so the
-    # operator's own session model never silently sets the review lane's
-    # price. `sminos spawn` persists effort into the record; resumes keep it.
-    # The gateway settings are CLEARED, not merely unset by us: this
-    # dispatcher can itself run inside a gateway-routed seat whose
-    # environment exports them, `sminos spawn` would inherit and persist them,
-    # and every later resume would ride the gateway while the log said claude.
-    spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
-      "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
-      --model "${REVIEW_MODEL:-opus}" --role QAGENT \
-      --stamp "board_dispatch=$dispatch_mark")" \
-      || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
-  fi
+  # ONE worker harness and ONE route: a Claude-harness seat, with --model the
+  # whole of the route. The QAgent tier is sol/high by design — pinned, not
+  # inherited, so the operator's own session model never silently sets the
+  # review lane's price. `sminos spawn` persists effort into the record;
+  # resumes keep it. The gateway settings are CLEARED, not merely unset by us:
+  # this dispatcher can itself run inside a gateway-routed seat whose
+  # environment exports them, `sminos spawn` would inherit and persist them,
+  # and every later resume would ride settings this dispatch never chose.
+  spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
+    "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
+    --model "${REVIEW_MODEL:-sol}" --role QAGENT \
+    --stamp "board_dispatch=$dispatch_mark")" \
+    || { echo "$name: Reviewer worker spawn failed" >&2; rm -rf "$control_dir"; return 1; }
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
   REVIEWER_UUID="$uuid"
@@ -1368,7 +1338,7 @@ _cleanup_orphaned_reviewer() {  # <worker-name> <why>
 # counts as superseded — costing one redundant review, never a strand.
 # An ACTIVE reviewer is never touched: it owns its own exit, and its package
 # is the current one by construction.
-sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=engine-label $5=child pull numbers
+sweep_epic() {  # $1=epic $2=closure-package $3=integration-branch $4=child pull numbers
   local etid="$1" pkg="$2" verdict meta uuid
   verdict="$(_decide "review-epic-$etid" sweep)"
   case "$verdict" in
@@ -1641,7 +1611,7 @@ PY
     _api_drop_journal "$nonce"
     return 1
   fi
-  local name engine tmp control_dir prompt
+  local name tmp control_dir prompt
   name="$C_TICKET-api-$lane"
   # Ticket and daemon name are journalled BEFORE the spawn, not after it. The
   # run id reaches a registry meta only through board-bind, which runs at the
@@ -1653,10 +1623,6 @@ PY
   # reconciliation needs it to tell "never spawned" from "spawned, live,
   # unbound".
   _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name"
-  # No labels reach a claim response, so the per-ticket engine override gh mode
-  # reads off the ticket has no API-mode source; the environment is the whole
-  # resolution order here.
-  engine="${WORKER_ENGINE:-claude}"
   tmp="$(mktemp -d)"
   # Same manifest discipline as a PR review — a snapshot from outside the
   # reviewed work — but taken from the DEFAULT BRANCH, the only ref this
@@ -1740,7 +1706,7 @@ PY
     P_MANIFEST_REF="$DEFAULT_BRANCH" \
     P_BIND_READY_FILE="$control_dir/bind-ready.json" P_SKILL_FILE="$SKILL_DIR/SKILL.md" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
-    P_ENGINE_NAME="$engine" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
+    P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_REVIEW_CODE_DIR="$REVIEW_CODE_DIR" \
     RISK_FILE="$tmp/risk.md" FACTS_FILE="$tmp/facts.md" \
     _render_prompt)" \
@@ -1768,7 +1734,7 @@ PY
   CLAIM_TICKET="$C_TICKET" CLAIM_DAEMON="$name" CLAIM_CONTROL="$control_dir"
   BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN_ID" BOARD_RUN_FENCE="$C_FENCE" \
   BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
-    _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" "$engine" \
+    _spawn_reviewer "$name" "$C_TICKET" "$prompt" "$LOCAL_REPO" \
       "$control_dir" "$name" || spawn_rc=1
   unset CLAIM_JOURNAL CLAIM_LANE CLAIM_RUN CLAIM_TICKET CLAIM_DAEMON CLAIM_CONTROL
   # THE RECORD LOSES THE RUN WITH THE RUN. _spawn_reviewer's post-bind failures
@@ -2016,17 +1982,11 @@ for tid in sorted(tickets, key=int):
     # auto-close path never runs it). Handing a PR to a scale reviewer as its
     # closure package is the wrong artifact again — the PR loop owns real PRs.
     if "/pull/" in n["pr"]:
-        print("SKIP|%s|%s||" % (tid, n["pr"]))
+        print("SKIP|%s|%s|" % (tid, n["pr"]))
         continue
-    # Per-ticket engine override, same rule the PR path applies: the label
-    # wins over the environment. Scale review is a QAgent route and QAgent
-    # routes honor it — only ARCHITECT dispatch is exempt (X4).
     # (No apostrophes anywhere in this heredoc: it is nested inside $( ), and
     # bash 3.2 — macOS, where launchd runs this — mis-parses that combination
     # the moment the body contains one.)
-    labels = n.get("labels") or []
-    eng = "claude" if "engine:claude" in labels else (
-        "codex" if "engine:codex" in labels else "")
     # The PR head refs of the children. A squash- or rebase-merged child
     # leaves a head SHA that is an ancestor of nothing on the default branch,
     # and a deleted branch, so a fresh clone cannot detach at the per-child
@@ -2046,11 +2006,11 @@ for tid in sorted(tickets, key=int):
     for x in pulls:
         if x not in seen:
             seen.append(x)
-    print("%s|%s|%s|%s|%s" % (tid, n["pr"], n.get("branch") or "", eng,
-                              " ".join(seen)))
+    print("%s|%s|%s|%s" % (tid, n["pr"], n.get("branch") or "",
+                           " ".join(seen)))
 PY
 )" || { echo "scale review: board snapshot failed — no epic swept this pass" >&2; epic_rows=""; }
-  while IFS='|' read -r etid epkg ebranch eengine epulls; do
+  while IFS='|' read -r etid epkg ebranch epulls; do
     [ -n "$etid" ] || continue
     if [ "$etid" = "SKIP" ]; then
       echo "epic #$epkg: pr: meta is a PR ($ebranch), not a closure package — no scale review (the PR loop owns it)"
@@ -2058,7 +2018,7 @@ PY
     fi
     # </dev/null: the loop is fed by this heredoc, and anything dispatched
     # inside it that read stdin would eat the remaining epic rows.
-    sweep_epic "$etid" "$epkg" "$ebranch" "$eengine" "$epulls" </dev/null \
+    sweep_epic "$etid" "$epkg" "$ebranch" "$epulls" </dev/null \
       || echo "epic #$etid: scale dispatch error (continuing sweep)" >&2
   done <<EOF
 $epic_rows

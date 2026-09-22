@@ -357,10 +357,6 @@ cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$STUB_BOARD/_binding.s
 # definitions only, no side effects at source time, exactly like _binding.sh.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$STUB_BOARD/_claim_journal.sh"
 export BOARD_SCRIPTS="$STUB_BOARD"
-# Every PRE-EXISTING case in this file exercises the claude path unchanged —
-# the label→env→codex resolution only kicks in per-test below via an
-# explicit WORKER_ENGINE=codex prefix.
-export WORKER_ENGINE=claude
 
 # stub gh + claude
 STUB_BIN="$TEST_ROOT/bin"; mkdir -p "$STUB_BIN"
@@ -1685,9 +1681,9 @@ assert_contains "$P10" "FACTS-FROM-BASE" "repo-facts content injected from the B
 assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side repo-facts edit does not leak (read from base, not head)"
 assert_contains "$P10" '`AUTO_MERGE`: on' "AUTO_MERGE_ENABLED=true binds auto-merge on"
 
-# ---- engine switch (label → WORKER_ENGINE → claude) + codex liveness -----------
+# ---- the one route: a Claude-harness seat and a model name --------------------
 # Canned PR on feat/x (labels overridable) + a thin wrapper over $DISPATCH, so
-# an env-var prefix (e.g. `WORKER_ENGINE=codex run_dispatch 41`) reaches the
+# an env-var prefix (e.g. `REVIEW_LEVEL=high run_dispatch 44`) reaches the
 # script for exactly one call.
 gh_pr() {  # $1=number $2=state $3=isDraft(0|1) $4=labels (comma-separated, "" for none)
     N="$1" STATE="$2" DRAFT="$3" LABELS="$4" SHA="$HEAD_SHA" python3 - <<'PY'
@@ -1703,38 +1699,31 @@ PY
 }
 run_dispatch() { "$DISPATCH" "$@"; }
 
-echo "engine switch (one harness, two model routes):"
-# Every route check below is an INDEPENDENT dispatch, and all four canned PRs
+echo "one route (a Claude-harness seat and a model name):"
+# Every route check below is an INDEPENDENT dispatch, and all the canned PRs
 # close the same ticket #7 — so each one starts from reset_state, not merely a
 # cleared spawn log. Leaving the previous reviewer's `working` meta in place
 # would have it own #7 when the next reviewer binds, which board-bind refuses
 # (correctly: one ticket, one active owner).
 reset_state
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
-WORKER_ENGINE=codex run_dispatch 41
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-41" "WORKER_ENGINE=codex spawns the one-harness daemon"
+run_dispatch 41
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-41" "a PR dispatches its reviewer"
 assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "the spawn environment is explicit: no gateway settings, effort high"
+if grep -E -- '--model sol( |$)' "$SPAWN_LOG" > /dev/null; then
+    pass "the review lane pins the QAgent tier to sol"
+else
+    fail "the review lane pins the QAgent tier to sol"
+fi
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
 assert_contains "$prompt" '`REVIEW_LEVEL`: medium' "prompt binds the review level floor"
 assert_contains "$prompt" '`BASE_REF`: main' "prompt binds the base ref the engine call uses"
+assert_contains "$prompt" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "prompt binds the single review engine"
 assert_not_contains "$prompt" "--criteria" "criteria concept is gone from the rendered prompt"
 assert_not_contains "$prompt" "developer_instructions" "no developer instructions ride the rendered prompt"
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
-
-reset_state
-gh_pr 42 OPEN 0 "engine:claude"
-WORKER_ENGINE=codex run_dispatch 42
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-42" "engine:claude label overrides env"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "claude route spawns without the gateway settings, at effort high"
-if grep -E -- '--model opus( |$)' "$SPAWN_LOG" > /dev/null; then
-    pass "claude route pins the QAgent model to opus"
-else
-    fail "claude route pins the QAgent model to opus"
-fi
-prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "claude route binds the same single engine (no per-route fork)"
 
 # REVIEW_LEVEL is the operator's level floor: validated before any spawn, and
 # rendered into the prompt when it is one of review-code's levels.
@@ -1751,31 +1740,21 @@ REVIEW_LEVEL=high run_dispatch 44
 assert_contains "$(cat "$PROMPT_DIR/review-pr-44.prompt")" '`REVIEW_LEVEL`: high' "a valid REVIEW_LEVEL rides the prompt as the level floor"
 
 reset_state
-gh_pr 43 OPEN 0 "engine:claude"
+gh_pr 43 OPEN 0 ""
 # The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
 # itself be running inside a gateway-routed seat whose environment exports
 # these, `sminos spawn` would inherit them AND persist them into the registry
-# record, and every later wake of this reviewer would ride the gateway while
-# the log said claude.
+# record, and every later wake of this reviewer would ride settings this
+# dispatch never chose.
 DAEMON_CLAUDE_SETTINGS="$HOME/.claude/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=xhigh \
     run_dispatch 43
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "an ambient gateway settings/effort pair is cleared on the claude route"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "an ambient gateway settings/effort pair is cleared on spawn"
 assert_not_contains "$(cat "$SPAWN_LOG")" "ambient-gateway.json" "the ambient gateway settings file never reaches the spawned reviewer"
 
-# The built-in default (no label, no WORKER_ENGINE in the environment) is the
-# plain-Claude route — the clodex gateway is opt-in only.
-reset_state
-gh_pr 44 OPEN 0 ""
-env -u WORKER_ENGINE "$DISPATCH" 44
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "built-in default route is plain Claude (no gateway settings) at effort high"
-if grep -E -- '--model opus( |$)' "$SPAWN_LOG" > /dev/null; then
-    pass "built-in default pins the QAgent model to opus"
-else
-    fail "built-in default pins the QAgent model to opus"
-fi
-
-echo "codex reviewer liveness in dedupe:"
+echo "legacy codex-CLI reviewer liveness in dedupe:"
+# A registry record from the retired codex-CLI worker species: the dispatcher
+# no longer spawns one, but the read path that judges its liveness by pid
+# still guards the records that exist.
 reset_state
 sleep 300 & LIVEPID=$!
 python3 - "$DAEMON_HOME" "$LIVEPID" <<'PY'
@@ -1786,11 +1765,11 @@ json.dump({"uuid": "cdec9999-0000-4000-8000-000000000000", "current": "cdec9999-
           open(sys.argv[1] + "/cdec9999-0000-4000-8000-000000000000.json", "w"))
 PY
 gh_pr 43 OPEN 0 ""
-out="$(WORKER_ENGINE=codex run_dispatch 43)"
+out="$(run_dispatch 43)"
 assert_contains "$out" "skip active reviewer" "live codex pid dedupes"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 : > "$SPAWN_LOG"
-out="$(WORKER_ENGINE=codex run_dispatch 43)"
+out="$(run_dispatch 43)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-43" "dead codex pid retires + respawns (via the one-harness spawn)"
 
 # ---- _wt_occupied codex-registry scan (worktree-removal guard, not dedupe) -----
@@ -1801,10 +1780,9 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-43" "dead codex pid retir
 # worktree, status in (working, blocked), and a live pid. This section
 # targets that scan directly, observed the same way as the claude-path guard:
 # through dispatch_one's "live daemon occupies" refusal and whether a spawn
-# happens — not by calling _wt_occupied as an internal. These dispatches use
-# the suite's default WORKER_ENGINE=claude (unqualified "$DISPATCH" 5) since
-# what's under test is the engine field of the meta SITTING in the worktree,
-# not which engine this dispatch itself would spawn as.
+# happens — not by calling _wt_occupied as an internal. What is under test is
+# the engine field of the meta SITTING in the worktree: a legacy codex-CLI
+# record, which the dispatcher no longer creates but must still respect.
 echo "live worktree guard (codex registry scan):"
 reset_state
 out="$("$DISPATCH" 5)"                                     # setup: (re)creates $WT via a real dispatch
@@ -2164,50 +2142,6 @@ assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse
 NEXT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$NEXT_PROMPT" "NO aggregate branch range" "and the prompt says so instead of implying a range it does not have"
 assert_not_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: epic/integration' "no trace of the cleared integration ref reaches the worker"
-
-# ---- scale review honors the epic's engine:* label ----------------------------
-# Scale review is a QAgent route, and per-ticket engine overrides apply to
-# every QAgent route — the X4 exemption covers ARCHITECT dispatch alone, where
-# plan authorship is deliberately never label-routed. The epic's label was
-# ignored and the environment always won.
-echo "scale review engine label:"
-reset_state
-echo "[]" > "$MOCK_DIR/pr-list.json"
-PKG2="https://github.com/test/repo/issues/30#issuecomment-77"
-PKG2="$PKG2" python3 - <<'PY'
-import json, os
-def meta(k, v):
-    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
-issues = [
-    {"number": 30, "state": "OPEN",
-     "labels": ["status:in-review", "engine:claude"],
-     "body": "Epic acceptance." + meta("pr", os.environ["PKG2"]), "parent": None},
-    {"number": 31, "state": "CLOSED", "labels": [], "body": "child", "parent": 30},
-]
-json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
-PY
-: > "$SPAWN_LOG"
-out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-30" "the labelled epic gets its scale reviewer"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "engine:claude on the EPIC routes its scale review through the claude harness at effort high"
-# ...and an unlabelled epic still takes the environment default (the gateway
-# route), which is what the block above already exercised on #20.
-reset_state
-echo "[]" > "$MOCK_DIR/pr-list.json"
-PKG2="$PKG2" python3 - <<'PY'
-import json, os
-def meta(k, v):
-    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
-issues = [
-    {"number": 30, "state": "OPEN", "labels": ["status:in-review"],
-     "body": "Epic acceptance." + meta("pr", os.environ["PKG2"]), "parent": None},
-    {"number": 31, "state": "CLOSED", "labels": [], "body": "child", "parent": 30},
-]
-json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
-PY
-: > "$SPAWN_LOG"
-out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "an unlabelled epic keeps the environment default"
 
 # ---- the scale selector needs a closure package, not any pr: value ------------
 # A LEAF that opened a real PR and later gained children reaches
