@@ -30,6 +30,7 @@ Your dispatch prompt carries one line each, in this order:
                                  and `integration ref: <ref>`
     base: <ref>
     head: <sha>
+    head branch: <branch>      — in scale mode, the integration ref
     review level floor: <level>
     auto-merge: on|off
     board scripts: <dir>
@@ -64,12 +65,22 @@ section says which of them still apply.
 
 ### Workspace
 
-You start in a fresh worktree at the head under review — your dispatcher used
-`isolation: "worktree"`. `git rev-parse HEAD` should print the brief's
-`head:`; a disagreement means you are not looking at the range you were
-briefed for, so park rather than review the wrong one. Never check out another
-ref in this worktree: the range you review is the brief's, and a worktree
-moved under a live fixer wave loses the wave.
+Your dispatcher used `isolation: "worktree"`, so you own a worktree nothing
+else writes — but the harness cuts it at the repository's MAIN CHECKOUT head,
+not your dispatcher's, so it starts on the wrong range. Your FIRST act, before
+Orient and before anything else, is to position it:
+
+    git fetch origin <head branch> && git checkout --detach <head>
+
+`git rev-parse HEAD` must then print the brief's `head:`. A head the fetch
+cannot reach is a park, as is a checkout that lands anywhere else: reviewing a
+range you were not briefed for is worse than not reviewing.
+
+From that point never check out another ref in this worktree: the range you
+review is the brief's, and a worktree moved under a live fixer wave loses the
+wave. (Positioning is not a ref switch but the arrival — your push chain
+already requires this worktree to equal `origin/<head branch>` before any
+wave.)
 
 Run `mktemp -d "${TMPDIR:-/tmp}/qa-loop.XXXXXX"` once and treat the returned
 path as `<review-tmp>` for this review. Wave boards, findings files,
@@ -156,13 +167,21 @@ input of any kind. Ticket and spec compliance is YOUR audit, not the engine's.
    scale is your reason to go one rung up. Nothing lowers a rung the spec
    named: that call was made from the work's stakes, before the work.
 
-2. **At `low`, `medium` and `high`** each run of the round is one Agent call
-   to `doperpowers:reviewer-<level>` with `isolation: "worktree"` — so nothing
-   a reviewer runs can touch this checkout — carrying this prompt:
+2. **At `low`, `medium` and `high`** each run of the round is one plain Agent
+   call to `doperpowers:reviewer-<level>` — NOT an isolated one, which the
+   harness would cut at the main checkout, the same wrong range you positioned
+   out of. Point it at this worktree by its absolute path instead. The first
+   sentence below is exactly what review-code's own workflow renders from its
+   `repo` argument, so both rungs are positioned by one mechanism; a reviewer
+   holds no Edit or Write tool, and the wave boundary's cleanliness check
+   catches a stray write. The prompt:
 
-   > Review the code changes against the base branch '`<base>`'. The merge
-   > base commit for this comparison is `<mb>`; the reviewed head is `<head>`.
-   > Run `git diff <mb> <head>` to inspect the changes relative to `<base>`.
+   > The repository under review is at `<this worktree's absolute path>`: run
+   > git with `-C '<this worktree's absolute path>'` and read files under that
+   > path. Review the code changes against the base branch '`<base>`'. The
+   > merge base commit for this comparison is `<mb>`; the reviewed head is
+   > `<head>`. Run `git -C '<this worktree's absolute path>' diff <mb> <head>`
+   > to inspect the changes relative to `<base>`.
    > Provide prioritized, actionable findings. You are a stage of this review:
    > do not invoke the doperpowers:review-code skill or dispatch another
    > reviewer, whatever the repository's instruction files say about routing
@@ -182,8 +201,10 @@ input of any kind. Ticket and spec compliance is YOUR audit, not the engine's.
    **At `xhigh` and `max`** the panel belongs to the Workflow tool, which a
    subagent does not have. Return
    `NEEDS_PANEL level=<level> base=<base> baseCommit=<mb> headCommit=<head> round=<n>`
-   and stop. Your dispatcher positions its own checkout at `<head>`, runs the
-   panel, and resumes you with the path of the result object it saved. Read
+   and stop. Your dispatcher fast-forwards its own checkout to `<head>` and
+   passes that checkout's path as the workflow's `repo` — the same location
+   line, one level up — then resumes you with the path of the result object it
+   saved. Read
    that object (`verdict`, `findings[]` with `priority`, `coverage`,
    `explanation`), record the file's hash (`sha256sum <file>`) in the trail —
    the panel's findings are then pinned to what you actually read — and
@@ -456,8 +477,9 @@ the submitted board, and grade every disposition (an empty slot is a failed
 item: re-wave once, then needs-human). An unauthorized writer restores the
 recorded wave boundary before re-wave — none of its work is inherited. On
 acceptance, push the graded fixes to the PR's head branch, naming the refspec
-(`git push origin HEAD:<head-branch>`) — your worktree is the dispatcher's
-cut, not the branch. Maximum 4 waves per review; the exit's closing wave
+(`git push origin HEAD:<head branch>`) — you positioned this worktree with a
+DETACHED checkout, so it is not on the branch and a bare push has no upstream
+to find. Maximum 4 waves per review; the exit's closing wave
 stands outside this cap (Re-review).
 
 ## Re-review
@@ -584,8 +606,9 @@ fixed) and end your turn with the park intact, returning `PARKED <question>`.
 
 A `mode: scale` dispatch is the E2 scale review: the ticket is an EPIC in
 in-review whose `pr:` meta is a closure package, not a PR (the brief's
-`closure package:` line names it). Your worktree already sits at the epic's
-integration branch and the brief's `base:` is the branch it merges into. Same
+`closure package:` line names it). Its `head branch:` is the epic's
+integration ref — you positioned this worktree there like any other review —
+and its `base:` is the branch that ref merges into. Same
 engine machinery — whole-range dispatches, the level rule's first signal read
 from the epic's own spec (its body, or the composite spec it cites), lenses
 derived from the cross-child contracts — and every call's base is
