@@ -164,8 +164,12 @@ Observable behavior. Commands run from the repository root unless stated.
    read `model: sol`. `execute-dispatch.sh` and `_sweep_api.sh` pin
    `${IMPLEMENT_MODEL:-sol}` on implement and spike and `${ARCHITECT_MODEL:-fable}`
    on architect; the moved review dispatcher pins `${REVIEW_MODEL:-sol}`.
-   `grep -rn -E 'engine:(claude|codex)|WORKER_ENGINE|CLODEX_|T_ENGINE_LABEL|ENGINE_NAME' skills agents scripts tests CLAUDE.md README.md`
-   returns nothing. (The dispatchers keep clearing `DAEMON_CLAUDE_SETTINGS`
+   `grep -rn -E 'engine:(claude|codex)|WORKER_ENGINE|CLODEX_|T_ENGINE_LABEL|ENGINE_NAME' skills agents scripts tests CLAUDE.md README.md --exclude-dir=sminos --exclude-dir=codex-companion --exclude-dir=review-bench`
+   returns nothing. The three exclusions are not the board route: sminos's
+   `CLODEX_SETTINGS` is its generic env scrub for any seat, the
+   codex-companion tests and fixtures are the separate codex-runtime path
+   that stays as it is, and review-bench results are historical logs. (The
+   dispatchers keep clearing `DAEMON_CLAUDE_SETTINGS`
    and `DAEMON_CLAUDE_EFFORT` on spawn — an explicit environment for the
    child is defensive and route-neutral; that string is not part of the
    route.) The gate comment
@@ -952,3 +956,4 @@ Pending — written at finish.
 - 2026-09-21: execution pre-flight — the agent never writes `ready-for-architect`; the dispatcher does (the plan's Task 1 line contradicted Task 7).
 - 2026-09-21: Task 1 review — the return contract covers an armed auto-merge, ticketless observation mode, and both scale outcomes.
 - 2026-09-21: acceptance 8's grep no longer names `DAEMON_CLAUDE_SETTINGS=`; the dispatchers' explicit clearing stays.
+- 2026-09-22: Task 4 review — acceptance 8's grep excludes sminos, codex-companion, and review-bench: none of the three is the board route.
