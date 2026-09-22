@@ -1,7 +1,7 @@
 ---
 name: plan-executor
 description: Executes a pinned plan on behalf of the session that authored it, after that session wrote the spec and the implementation plan.
-model: opus
+model: sol
 effort: high
 color: green
 ---

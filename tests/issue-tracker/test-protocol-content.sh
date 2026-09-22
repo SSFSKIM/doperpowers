@@ -460,7 +460,7 @@ echo "plan-executor agent (the Architect's hands):"
 PLAN_EXECUTOR="$REPO_ROOT/agents/plan-executor.md"
 [ -f "$PLAN_EXECUTOR" ] || { echo "missing $PLAN_EXECUTOR"; exit 1; }
 pexec="$(cat "$PLAN_EXECUTOR")"
-assert_contains "$pexec" "model: opus" "the plan-executor is pinned to the worker tier"
+assert_contains "$pexec" "model: sol" "the plan-executor is pinned to the worker tier"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
@@ -474,6 +474,13 @@ assert_not_contains "$pexec" "final review is clean" "...closing no longer presu
 assert_contains "$pexec" '## Unresolved Review Findings`, each with where it is' "...and unfixed task-review findings ride their own PR-body section, with the reason each was left"
 assert_contains "$pexec" "deserves its own ticket" "...while Residue keeps its meaning: work for another ticket"
 assert_not_contains "$pexec" 'into the PR body'"'"'s `## Residue`' "...and review findings are not routed into Residue (that list mints tickets)"
+
+echo "task-executor agent (subagent-driven-execution's hands):"
+TASK_EXECUTOR="$REPO_ROOT/agents/task-executor.md"
+[ -f "$TASK_EXECUTOR" ] || { echo "missing $TASK_EXECUTOR"; exit 1; }
+texec="$(cat "$TASK_EXECUTOR")"
+assert_contains "$texec" "model: sol" "the task-executor rides the same worker tier as the plan-executor"
+assert_contains "$texec" "effort: high" "...at high reasoning effort"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
