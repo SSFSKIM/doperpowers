@@ -81,8 +81,8 @@ reporter never parks its own ticket over friction it routed around.
 The architect lane's happy path is `ready-for-architect → in-design →
 in-progress → in-review → done`, one bound session from design to PR; a
 direct ticket starts at `ready-for-implementer` and an Executor takes it
-`in-progress → in-review`. Under the review loop the
-Reviewer worker's confident verdict merges the PR, and the merge itself
+`in-progress → in-review`. Under the review loop the owning seat's QA
+agent merges the PR on its confident verdict, and the merge itself
 closes the ticket to `done`. (`ready-for-implementer` is the Executor
 lane's label; the string keeps its legacy spelling because live boards
 depend on it.)
@@ -114,7 +114,8 @@ many and whatever the ticket's size, is `needs-human` — not steering.
 The discriminant has a THIRD address: missing or broken design that an
 AGENT can author → `ready-for-architect` — written by the Executor's
 gate (plan-need), the Executor mid-build (a genuinely blocked plan),
-and the Reviewer worker at a design-gap impasse; never by-passed into
+the Executor answering its QA agent's design gap, and the review
+stand-in on a PR nobody owns; never by-passed into
 `needs-human` (the human address is for what only a human can give).
 The board counts these escalation edges: a second traversal of the same
 edge on one ticket converts to `needs-human` mechanically.

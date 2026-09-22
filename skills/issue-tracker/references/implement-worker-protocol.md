@@ -162,8 +162,8 @@ frequently, open the PR.
 Push each commit as you make it: if your run is reclaimed mid-build, what
 reached origin is what your successor starts from.
 
-Pre-PR self-review: one independent review pass before opening the PR (and fixing findings) is fine judgment — scale it to the change, and a small diff needs none: skip reviewing yourself and let the reviewer see it all. Do not run review-fix LOOPS: the loop  
-is your QA agent's, and you dispatch it on the PR you open (Closing  
+Pre-PR self-review: one independent review pass before opening the PR (and fixing findings) is fine judgment — scale it to the change, and a small diff needs none: skip reviewing yourself and let the reviewer see it all. Do not run review-fix LOOPS: the loop
+is your QA agent's, and you dispatch it on the PR you open (Closing
 Artifact). Open the PR.
 
 ## Mid-build Forks and Parks

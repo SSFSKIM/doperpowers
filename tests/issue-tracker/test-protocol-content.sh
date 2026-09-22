@@ -611,6 +611,33 @@ texec="$(cat "$TASK_EXECUTOR")"
 assert_contains "$texec" "model: sol" "the task-executor rides the same worker tier as the plan-executor"
 assert_contains "$texec" "effort: high" "...at high reasoning effort"
 
+# ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
+# agent (agents/qa-loop.md) and, on a PR nobody owns, by the review stand-in
+# seat; the Reviewer worker and the qa-loops skill it loaded no longer exist,
+# so a sentence still naming them points a reader at something nothing can
+# dispatch. Five such sentences survived the fold in SKILL.md and
+# sweep-setup.md and were read back as live doctrine: in a fresh-context
+# wording check (2026-09-22) five of five samples answered "the Reviewer
+# worker" for the two sweep knobs and two of five for who merges the PR.
+# review-loop.md's migration note is the one licensed mention — it exists to
+# tell an adopting repo which retired path to stop calling.
+echo "the review's actors, after the fold:"
+stale=""
+for f in "$TRACKER" "$REFS"/*.md; do
+    hits="$(awk '
+        /^## Migrating an installed workflow$/ { skip = 1 }
+        /^## / && !/^## Migrating an installed workflow$/ { skip = 0 }
+        !skip
+    ' "$f" | grep -niE 'qa-loops|reviewer workers?|reviewer seat' || true)"
+    [ -n "$hits" ] && stale="$stale$(basename "$f"): $hits"$'\n'
+done
+if [ -n "$stale" ]; then
+    fail "no retired review actor is named in the skill or its references"
+    printf '%s' "$stale"
+else
+    pass "no retired review actor is named in the skill or its references"
+fi
+
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi
 echo "all tests passed"

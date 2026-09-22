@@ -70,8 +70,8 @@ path):
 
 `bash -lc` loads your login profile, so `gh`, `python3`, and `claude`
 resolve exactly as they do in your terminal. `AUTO_MERGE_ENABLED` arms
-merging for the Reviewer workers the sweep dispatches — drop the line to
-keep them in observation mode (review + park, no merge).
+merging for the QA agents the sweep's seats dispatch on their own PRs —
+drop the line to keep them in observation mode (review + park, no merge).
 
 Arm / un-arm / observe:
 
@@ -96,11 +96,11 @@ actually run before trusting a cron arming.
 
 | env | default | meaning |
 |---|---|---|
-| `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (Reviewer workers never count) |
+| `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots — counted over IMPLEMENT/SPIKE-role workers from `ready-for-implementer` through `in-progress`; a seat whose ticket sits in `in-review` is reviewing its own PR and spends none, and a review stand-in is counted in its own registry |
 | `ARCHITECT_MAX_CONCURRENT` | 1 | architect-lane slot cap — the Fable-spend lever; counted over ARCHITECT-role workers from `ready-for-architect` through `in-progress` (an Architect executes its own plan), separate from the implement cap. The default 1 now spans design plus build; raise it when queued design work waits on a long build |
 | `ARCHITECT_MODEL` | fable | model pin for the architect route — plan authorship is the frontier tier |
 | `IMPLEMENT_MODEL` | sol | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
-| `REVIEW_MODEL` | sol | model pin for the Reviewer worker, the same tier and for the same reason |
+| `REVIEW_MODEL` | sol | model pin for the review stand-in seat the review dispatcher spawns on a PR nobody owns, the same tier and for the same reason |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
 | `SWEEP_STALL_DEPENDENCY_MINUTES` | 2880 (48h) | a BLOCKER unworked and silent this long parks the ticket waiting on it, `needs-human`, with the blocker and the chain in the note. The other half of the same doctrine as the API board's `DEPENDENCY_STALL_MS`; raise it on a board with a weekly human cadence. A dependency CYCLE is reported at once — it needs no clock |
