@@ -154,8 +154,11 @@ LEGAL = {
                               "wontfix", "deferred"},
     # ready-for-architect from in-review: the QAgent's design-gap
     # escalation (E1 third address; convergence-counted).
+    # in-review from in-review: the RE-PIN — the owning seat's same-state edge
+    # carrying a fresh --plan, which is what makes it a transition at all
+    # (board-transition refuses the plan-less self-edge as the no-op it is).
     "in-review":             {"in-progress", "ready-for-architect",
-                              "done", "wontfix",
+                              "in-review", "done", "wontfix",
                               "deferred", "needs-info", "needs-human"},
     "deferred":        {"ready-for-architect", "ready-for-implementer",
                         "needs-info", "needs-human", "interactive-preferred",

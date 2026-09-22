@@ -2127,6 +2127,34 @@ mk_review() {  # -> $fold_t, a fresh ticket in in-review with pr: and branch: re
         --branch tick/fold --pr "https://github.com/test/repo/pull/$fold_t" >/dev/null
 }
 
+mk_review "Re-pin probe"
+rp_t="$fold_t"
+out="$(run board-transition.sh "$rp_t" in-review "re-pin: acceptance 4 re-cut" --plan "$FOLD_A")"
+assert_contains "$out" "#$rp_t: in-review → in-review" "a same-state in-review carrying --plan re-pins the review contract"
+assert_contains "$(state "s['issues']['$rp_t']['labels']")" "status:in-review" "the ticket never leaves in-review"
+assert_contains "$(state "s['issues']['$rp_t']['body']")" "plan: $FOLD_A" "the new pin is recorded"
+assert_contains "$(state "s['issues']['$rp_t']['body']")" "pr: https://github.com/test/repo/pull/$rp_t" "the recorded pr: is reused — the self-edge re-supplies nothing"
+assert_contains "$(state "s['issues']['$rp_t']['body']")" "branch: tick/fold" "...and the recorded branch: is what the pin verified against"
+assert_equals "$(state "s['issues']['$rp_t']['comments'][-1]")" "[board] in-review: re-pin: acceptance 4 re-cut" "the pin-minting comment the audit re-anchors on"
+# --plan is what makes the self-edge a transition at all
+err="$(run board-transition.sh "$rp_t" in-review "nothing to re-pin" 2>&1 || true)"
+assert_contains "$err" "already in-review" "a same-state in-review without --plan is still the no-op refusal"
+# the delta is the whole content of a re-pin, so the note is required
+err="$(run board-transition.sh "$rp_t" in-review --plan "$FOLD_B" 2>&1 || true)"
+assert_contains "$err" "a re-pin needs a note naming the delta" "a re-pin states its delta"
+# ...and the self-edge is in-review's alone: no other state gains one
+run board-register.sh "Same-state build probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+ss_t="$(state "s['next']-1")"
+run board-transition.sh "$ss_t" in-progress >/dev/null
+err="$(run board-transition.sh "$ss_t" in-progress "re-pin?" --plan "$FOLD_A" 2>&1 || true)"
+assert_contains "$err" "already in-progress" "a same-state in-progress with --plan is refused"
+# the owner pushes BEFORE it pins — the remote check still stands on this edge
+mk_review "Re-pin unpushed probe"
+ur_t="$fold_t"
+err="$(run board-transition.sh "$ur_t" in-review "re-pin: not pushed yet" --plan "docs/plans/fold.md@$SHA_UNPUSHED" 2>&1 || true)"
+assert_contains "$err" "cannot verify the plan pin against branch tick/fold" "a re-pin whose sha is not on the remote is refused"
+assert_not_contains "$(state "s['issues']['$ur_t']['body']")" "$SHA_UNPUSHED" "...and the refused re-pin wrote nothing"
+
 # The rebuild edge: in-review → in-progress with the repaired plan's pin.
 mk_review "Rebuild probe"
 rb_t="$fold_t"

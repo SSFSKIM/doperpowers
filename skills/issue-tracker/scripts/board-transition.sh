@@ -201,8 +201,9 @@ if [ "$BOARD_BINDING" = api ]; then
     #    that found the plan wrong; every other legal promotion into
     #    ready-for-implementer (a park return) would otherwise mint one too, and
     #    there is no legitimate re-supply case — plan meta survives park
-    #    round-trips untouched.
-    _cur="$(T_ID="$tid" _api_py - <<'PY'
+    #    round-trips untouched. The ticket's own branch comes back on the same
+    #    read: the re-pin re-supplies nothing, so check 3 falls back to it.
+    _row="$(T_ID="$tid" _api_py - <<'PY'
 import os
 import _board_api as A
 # The one board read on this path that keeps the HUMAN default principal: the
@@ -213,10 +214,12 @@ import _board_api as A
 # substitution, where bash 3.2 lexes the body and a lone quote breaks the whole
 # script at parse time.)
 row = A.ticket(A.ref(os.environ["T_ID"]))
-print(row["state"] if row else "")
+if row:
+    print("%s %s" % (row["state"], row.get("branch") or ""))
 PY
-)" || die "--plan needs the ticket's current state to check the handoff edge, and the board would not answer"
-    [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the handoff edge cannot be checked"
+)" || die "--plan needs the ticket's current state to check the pin-minting edge, and the board would not answer"
+    _cur="${_row%% *}" _rec_branch="${_row#* }"
+    [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the pin-minting edge cannot be checked"
     # THE BUILD EDGE IS GH-ONLY, TODAY. Legality on this path is the board
     # service's, and its state table has no in-design → in-progress entry: the
     # request comes back 409 with a generic illegal-transition message, after
@@ -234,11 +237,15 @@ PY
       in-design:ready-for-implementer|in-design:in-progress|in-review:in-progress|in-review:in-review) ;;
       *) die "--plan rides the pin-minting edges only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build, in-review → in-progress for a rebuild, in-review → in-review for a re-pin) (#$tid is $_cur → $to)" ;;
     esac
+    # The branch the pin (or a pre-spec build) is reached through: the flag
+    # when it is given, else whatever the board itself records — the fallback
+    # gh mode takes from the meta, and what lets a re-pin re-supply nothing.
+    _pin_branch="${branch:-$_rec_branch}"
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
     # its own body: no revision to pin (the review loop anchors on this edge's
     # comment), but the branch still names where the work lives — a recovery
     # Executor runs DIRECT from the body on it.
-    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ] || [ -n "$branch" ]; } \
+    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ] || [ -n "$_pin_branch" ]; } \
       || die "a pre-spec build needs --branch: the work lives there and a recovery Executor resumes from it"
     if [ "$plan" != pre-spec ]; then
       # 2. An IMMUTABLE pin: a path and a full 40-hex sha, never a branch name
@@ -248,21 +255,21 @@ PY
       # 3. A RECORDED BRANCH the sha is reachable from. A PLAN-EXECUTION worker
       #    starts from a fresh cattle clone: without one there is nothing to
       #    fetch and the pin cannot serve the reclaim contract it exists for.
-      #    A1's ticket projection carries no branch column, so unlike gh mode
-      #    there is no recorded value to fall back on — --branch is required.
-      [ -n "$branch" ] \
-        || die "a pinned plan needs a branch the sha is reachable from; pass --branch (the API board records none to fall back on)"
+      #    A board whose ticket projection records none leaves --branch the
+      #    only way to say it.
+      [ -n "$_pin_branch" ] \
+        || die "a pinned plan needs a branch the sha is reachable from; pass --branch (this board records none to fall back on)"
       # 4. ...and "recorded" is not "fetchable". gh mode asks GitHub; there is no
       #    gh here, so the same question is put to the local checkout — which is
       #    the Architect's own, the one that just pushed the plan. Fail CLOSED on
       #    anything unverifiable: an unverifiable pin is not a pin.
       _sha="${plan##*@}" _path="${plan%@*}" _ref=""
-      for _cand in "origin/$branch" "$branch"; do
+      for _cand in "origin/$_pin_branch" "$_pin_branch"; do
         git -C "$BOARD_ROOT" rev-parse --verify --quiet "$_cand^{commit}" >/dev/null && { _ref="$_cand"; break; }
       done
-      [ -n "$_ref" ] || die "branch $branch names no commit in this checkout — fetch it, then retry (the pin is refused until it verifies)"
+      [ -n "$_ref" ] || die "branch $_pin_branch names no commit in this checkout — fetch it, then retry (the pin is refused until it verifies)"
       git -C "$BOARD_ROOT" merge-base --is-ancestor "$_sha" "$_ref" 2>/dev/null \
-        || die "plan sha ${_sha:0:12} is not on branch $branch — a PLAN-EXECUTION worker fetches the sha from that branch and would find nothing; push the commit to it and retry"
+        || die "plan sha ${_sha:0:12} is not on branch $_pin_branch — a PLAN-EXECUTION worker fetches the sha from that branch and would find nothing; push the commit to it and retry"
       git -C "$BOARD_ROOT" cat-file -e "$_sha:$_path" 2>/dev/null \
         || die "the plan path $_path does not exist at ${_sha:0:12} — the pin names an artifact the worker cannot read; fix the path or the sha and retry"
     fi
@@ -372,7 +379,16 @@ if cur == "in-design" and to == "in-progress":
             B.die("surface %s is occupied by %s — hand off instead: "
                   "ready-for-implementer with the same --plan; the implement "
                   "queue serializes the surface" % (_occ[0], _occ[1]))
-if to == cur:
+# THE RE-PIN (the review fold). A review that finds the pinned plan itself
+# wrong re-cuts the contract on the BOARD, never on the branch: the owner
+# pushes the repaired document, then mints a new pin with a same-state
+# in-review transition, and the audit re-anchors on the newest pin-minting
+# comment. --plan is what makes the self-edge a transition; without one it is
+# the no-op the same-state refusal below names, on this state as on every other.
+re_pin = to == cur == "in-review" and bool(env["T_PLAN"])
+if re_pin and not note:
+    B.die("a re-pin needs a note naming the delta")
+if to == cur and not re_pin:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))
     # Finalize: the issue reached this terminal state outside the machine
@@ -476,17 +492,22 @@ if to == "in-review" and not env["T_PR"]:
     # flag". For an EPIC the pr slot carries the recomposition closure
     # package (E2) — same invariant, different artifact.
     #
-    # But ONLY that return may ride the recorded value. A stale pr: survives
+    # The RE-PIN rides it for the same reason and one stronger: the ticket
+    # never left in-review, so the recorded artifact is the one under review.
+    #
+    # But ONLY those two may ride the recorded value. A stale pr: survives
     # every route back out of in-review (a review that bounced the ticket to
     # ready-for-architect leaves it; only recomposition clears it, and the
     # reconciliation return deliberately does not), so accepting the meta on
     # any entry pointed the board at a superseded PR — or, on an epic, at the
     # previous cycle's closure package — with nobody having said so.
     prepark = B.parse_meta(n.get("body")).get("pre-park")
-    if not (cur in B.PARKED and prepark == "in-review" and n.get("pr")):
+    park_return = cur in B.PARKED and prepark == "in-review"
+    if not ((park_return or re_pin) and n.get("pr")):
         B.die("a PR link is required when moving to in-review (--pr URL; for an "
               "epic: the closure-package URL). Only a park return whose "
-              "pre-park: meta records in-review may reuse the recorded one.")
+              "pre-park: meta records in-review, or a re-pin of the ticket "
+              "already under review, may reuse the recorded one.")
 if env["T_PLAN"]:
     import re as _re
     # The EDGE, not just the destination: a plan pin authorizes gate-free

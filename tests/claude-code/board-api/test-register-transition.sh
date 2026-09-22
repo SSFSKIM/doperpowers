@@ -35,6 +35,9 @@ cat > "$FIX" <<'JSON'
  {"method":"GET","path":"/tickets/9","status":200,
   "body":{"id":9,"state":"in-review","priority":"P1","title":"under review",
           "owner_run":null,"plan":null,"pr_url":null}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"state":"in-review","priority":"P1","title":"under review, branch recorded",
+          "owner_run":null,"plan":null,"pr_url":null,"branch":"tick/recorded"}},
  {"method":"GET","path":"/tickets/77","status":404,
   "body":{"error":{"code":"not-found","message":"no such ticket: 77"}}},
  {"method":"GET","path":"/tickets?limit=1","status":200,
@@ -331,6 +334,12 @@ V board-transition.sh 9 in-progress "rebuild: the design gap, repaired" --branch
 nt "the rebuild edge is admitted too" "rides the pin-minting edges only" cat "$PIN_OUT"
 t "...and stops at the same unverifiable-branch check" \
   "names no commit in this checkout" cat "$PIN_OUT"
+# The re-pin re-supplies nothing, so a board row that records a branch is the
+# fallback --branch would have been — the refusal names the recorded one.
+V board-transition.sh 12 in-review "re-pin: the delta" \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+t "a re-pin falls back to the branch the board records" \
+  "branch tick/recorded names no commit in this checkout" cat "$PIN_OUT"
 
 V board-transition.sh 8 ready-for-implementer "n" --plan "docs/p.md@deadbeef" \
   > "$PIN_OUT" 2>&1 || true
