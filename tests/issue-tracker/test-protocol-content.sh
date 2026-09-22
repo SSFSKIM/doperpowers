@@ -83,6 +83,8 @@ got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
 
+assert_contains "$proto" '"[gate] pass — <mode>: <one line>"' "implement: the gate comment interface is [gate] pass — <mode>: <one line>"
+
 echo "protocols are files, not skills:"
 assert_not_contains "$proto" "name: executing" "no skill frontmatter on the implement protocol"
 assert_not_contains "$proto" "Operator or setup invocation" "no operator-routing line (only a dispatched worker ever opens this file)"
@@ -128,6 +130,10 @@ want_spike="{{BOARD_SCRIPTS}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
+# The gate comment is an INTERFACE, not prose: doperpowers:qa-loops keys its
+# compliance audit to `[gate] pass` on the ticket, so the lane name and the
+# separator are read by another agent. Pinned literally on both lanes.
+assert_contains "$spike" '"[gate] pass — spike: <one line>"' "spike: the gate comment interface is [gate] pass — spike: <one line>"
 assert_contains "$spike" "DRAFT" "spike: evidence PR is draft-only"
 assert_not_contains "$spike" "{{EXECUTION_BLOCK}}" "spike: no engine execution block (exploration, not TDD)"
 assert_contains "$spike" 'NEVER "Closes #{{ISSUE_NUMBER}}"' "spike: Closes is forbidden"
