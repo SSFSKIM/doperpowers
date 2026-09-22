@@ -32,21 +32,13 @@
 #                   in-design/in-progress bound metas while an ARCHITECT holds
 #                   the binding (an Architect now builds its own plan),
 #                   separate from the implement cap
-#   ARCHITECT_MODEL model pin for the architect route (default fable);
-#                   the architect dispatch IGNORES engine:* labels and
-#                   WORKER_ENGINE — plan authorship is never label-routed
-#   WORKER_ENGINE   model route codex|claude (default claude); an engine:*
-#                   ticket label wins over the env, so `engine:codex` opts a
-#                   single ticket back onto the gateway
-#   CLODEX_SETTINGS gateway settings file for the codex route
-#                   (default ~/.claude/clodex-settings.json)
-#   CLODEX_EFFORT   reasoning effort for the codex route (default xhigh)
-#   IMPLEMENT_MODEL model pin for the implement/spike routes (claude route
-#                   default opus, codex route default fable) — the worker-tier
-#                   half of the lane split's model economics, symmetric with
-#                   ARCHITECT_MODEL; pinned rather than inherited so the
-#                   operator's own session model never silently re-fuses the
-#                   two lanes onto one price
+#   ARCHITECT_MODEL model pin for the architect route (default fable) —
+#                   plan authorship is the frontier tier
+#   IMPLEMENT_MODEL model pin for the implement/spike routes (default sol) —
+#                   the worker-tier half of the lane split's model economics,
+#                   symmetric with ARCHITECT_MODEL; pinned rather than
+#                   inherited so the operator's own session model never
+#                   silently re-fuses the two lanes onto one price
 #   BOARD_SCRIPTS / SMINOS_CLI / DAEMON_HOME / IMPLEMENT_BOOTSTRAP_TEMPLATE
 #                   overrides (tests)
 set -euo pipefail
@@ -361,9 +353,9 @@ PY
     architect)  role=ARCHITECT; protocol_file="$ARCHITECT_PROTOCOL"; decompose="$DECOMPOSE_DOC"
                 model="${ARCHITECT_MODEL:-fable}" ;;
     spike)      role=SPIKE;     protocol_file="$SPIKE_PROTOCOL";     decompose="(none — spike lane)"
-                model="${IMPLEMENT_MODEL:-opus}" ;;
+                model="${IMPLEMENT_MODEL:-sol}" ;;
     *)          role=IMPLEMENT; protocol_file="$IMPLEMENT_PROTOCOL"; decompose="$DECOMPOSE_DOC"
-                model="${IMPLEMENT_MODEL:-opus}" ;;
+                model="${IMPLEMENT_MODEL:-sol}" ;;
   esac
   name="$C_TICKET-api-$lane"
   # Ticket and daemon name are journalled BEFORE the spawn, not after it. The
@@ -375,15 +367,13 @@ PY
   # that exists before the bind, and reconciliation needs it to tell "never
   # spawned" from "spawned, live, unbound".
   _journal_write "$claims_dir/$nonce.json" "$lane" "$C_RUN_ID" 0 "$C_TICKET" "$name"
-  # ENGINE_NAME is claude here and the engine label plays no part: a claim
-  # response carries the assignment, not the ticket's labels, so there is
-  # nothing to route on. ENV_TRACKER_ISSUE is "none" for the same reason —
-  # the API board has no env-tracker label, and an env-issue ticket is
-  # registered by the sweep, not pointed at from here.
+  # ENV_TRACKER_ISSUE is "none" here: the API board has no env-tracker label,
+  # and an env-issue ticket is registered by the sweep, not pointed at from
+  # here.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$C_TICKET" \
     P_ISSUE_URL="$BOARD_API_URL/tickets/$C_TICKET" \
     P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
-    P_ENV_TRACKER_ISSUE=none P_ENGINE_NAME=claude \
+    P_ENV_TRACKER_ISSUE=none \
     P_PROTOCOL_FILE="$protocol_file" P_DECOMPOSE_DOC="$decompose" \
     P_TICKET_BODY_FILE="$body_file" P_PARENT_PIN="${C_PARENT_PIN:-none (no parent)}" \
     _render_bootstrap)" \
@@ -391,10 +381,10 @@ PY
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
 
-  # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the same reason as the gh path's
-  # claude route: this dispatcher can itself run inside a gateway-routed seat,
-  # and `sminos spawn` persists what it inherits into the registry record, so
-  # every later resume would ride the gateway while the log said claude.
+  # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the same reason as the gh path:
+  # this dispatcher can itself run inside a gateway-routed seat, and `sminos
+  # spawn` persists what it inherits into the registry record, so every later
+  # resume would ride settings this dispatch never chose.
   # BOARD_REPO rides the prefix for the same reason BOARD_API_URL does, and it
   # is the ONE place an api-mode repo key is deliberately put in a child's
   # environment (fix wave 1 took it off _lib.sh's export). An executor checks
@@ -548,7 +538,7 @@ fi
 export BOARD_REPO
 
 # Board facts for ticket <1>, shell-quoted (state, eligibility, title, url,
-# category, engine label). _board.py is the single eligibility authority —
+# category). _board.py is the single eligibility authority —
 # the same predicate board-list.sh tags ELIGIBLE.
 # Cost: this and _slots_used each read a full-board snapshot. In sweep mode
 # those reads hit the tick-scoped file cache (BOARD_SNAPSHOT_CACHE, set by
@@ -572,8 +562,6 @@ q("T_STATE", n["state"])
 q("T_ELIGIBLE", 1 if B.eligible(tickets, tid) else 0)
 q("T_TITLE", n["title"]); q("T_URL", n["url"]); q("T_CATEGORY", n["category"])
 q("T_PARENT", n.get("parent") or "")
-eng = "claude" if "engine:claude" in n["labels"] else ("codex" if "engine:codex" in n["labels"] else "")
-q("T_ENGINE_LABEL", eng)
 # Surface labels, gated on a loaded registry: without .doperpowers/
 # surfaces.md on the default branch the whole surface feature is inert BY
 # CONTRACT — a leftover label in a repo whose registry was removed must not
@@ -759,7 +747,7 @@ PY
 # Runs behind `||` in sweep mode (which suspends errexit through the call
 # subtree), so every step is explicitly guarded and returns 1 on failure.
 dispatch_one() {
-  local n="$1" exports engine role protocol_file decompose prompt name spawn_out uuid meta status lane model surf_locked="" occ
+  local n="$1" exports role protocol_file decompose prompt name spawn_out uuid meta status lane model surf_locked="" occ
 
   meta="$(_bound_meta "$n")"
   if [ -n "$meta" ]; then
@@ -815,8 +803,6 @@ dispatch_one() {
       echo "architect cap reached ($ARCH_CAP): #$n stays queued for the next sweep"
       return 0
     fi
-    # X4 exemption: plan authorship is never label-routed
-    engine="claude"
   else
     occ="$(_slots_used implement || true)"
     case "$occ" in ''|*[!0-9]*)
@@ -826,8 +812,6 @@ dispatch_one() {
       echo "cap reached ($CAP): #$n stays queued for the next sweep"
       return 0
     fi
-    engine="${T_ENGINE_LABEL:-}"
-    [ -n "$engine" ] || engine="${WORKER_ENGINE:-claude}"
   fi
 
   # Surface serialization (spec: one in-flight Executor worker per surface).
@@ -924,35 +908,25 @@ PY
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$n" P_ISSUE_URL="$T_URL" \
     P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
-    P_ENGINE_NAME="$engine" P_PROTOCOL_FILE="$protocol_file" \
+    P_PROTOCOL_FILE="$protocol_file" \
     P_DECOMPOSE_DOC="$decompose" \
     _render_bootstrap)" \
     || { echo "#$n: prompt render failed (unrendered placeholder or template error)" >&2; _surf_unlock "$surf_locked"; return 1; }
   [ -n "$prompt" ] || { echo "#$n: empty prompt — not dispatching" >&2; _surf_unlock "$surf_locked"; return 1; }
 
   name="$n-$T_SLUG"
-  # ONE worker harness, two model routes (same shape as review-dispatch):
-  # codex = the clodex gateway settings (GPT models via the local proxy),
-  # claude = plain Claude models.
-  if [ "$engine" = "codex" ]; then
-    spawn_out="$(DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" \
-      DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" \
-      "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-      --model "${IMPLEMENT_MODEL:-fable}")" \
-      || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
-  else
-    # Cleared, not merely unset by us: this dispatcher can itself run inside a
-    # gateway-routed seat whose environment exports these, and `sminos spawn`
-    # would inherit them, apply the flags AND persist them into the registry
-    # record — so every later resume would keep riding the gateway while the log
-    # said engine=claude.
-    local model="${IMPLEMENT_MODEL:-opus}"
-    [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"
-    spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
-      "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-      --model "$model")" \
-      || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
-  fi
+  # ONE route: every worker is a Claude-harness seat, and --model is the whole
+  # of it. Cleared, not merely unset by us: this dispatcher can itself run
+  # inside a gateway-routed seat whose environment exports these, and `sminos
+  # spawn` would inherit them, apply the flags AND persist them into the
+  # registry record — so every later resume would ride settings this dispatch
+  # never chose.
+  model="${IMPLEMENT_MODEL:-sol}"
+  [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"
+  spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
+    "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
+    --model "$model")" \
+    || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | extract_spawn_uuid)"
   [ -n "$uuid" ] || { echo "#$n: spawned worker UUID was not parseable" >&2; _surf_unlock "$surf_locked"; return 1; }
@@ -1015,7 +989,7 @@ PY
   # refetches and rewrites the file on the next read).
   [ -z "${BOARD_SNAPSHOT_CACHE:-}" ] || rm -f "$BOARD_SNAPSHOT_CACHE"
 
-  echo "dispatched #$n → $name [$uuid] engine=$engine role=$role"
+  echo "dispatched #$n → $name [$uuid] model=$model role=$role"
 }
 
 # ---- modes ---------------------------------------------------------------------

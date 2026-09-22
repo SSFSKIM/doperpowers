@@ -1566,7 +1566,7 @@ _model_for_lane() {
   # frontier tier, worker lanes are the worker tier. Inheriting the operator's
   # own session model here would silently re-fuse the two prices.
   case "$1" in architect) echo "${ARCHITECT_MODEL:-fable}" ;;
-               *) echo "${IMPLEMENT_MODEL:-opus}" ;; esac
+               *) echo "${IMPLEMENT_MODEL:-sol}" ;; esac
 }
 _protocol_for_lane() {
   local refs; refs="$(cd "$SCRIPT_DIR/../references" && pwd)"
@@ -2327,7 +2327,7 @@ $(cat "$dir/body.md")"
     # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the dispatchers, reason: this
     # tick can itself run inside a gateway-routed seat, and `sminos spawn`
     # persists what it inherits into the record, so every later resume would
-    # ride the gateway while the log said claude.
+    # ride settings this dispatch never chose.
     # `--stamp board_dispatch=` marks the seat as dispatcher-spawned on the
     # record's FIRST write. Between that write and the bind below nothing else
     # says whose seat it is, and a crash in there leaves the worker live with a

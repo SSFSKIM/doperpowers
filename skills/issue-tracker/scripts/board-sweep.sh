@@ -80,7 +80,7 @@
 #                                   ticket waiting on it is parked (2880 = 48h,
 #                                   the API board's DEPENDENCY_STALL_MS default)
 #   SWEEP_RECOVERY_CAP              lifetime sweep resumes per daemon (3)
-#   IMPLEMENT_MAX_CONCURRENT WORKER_ENGINE CLODEX_* AUTO_MERGE_ENABLED
+#   IMPLEMENT_MAX_CONCURRENT AUTO_MERGE_ENABLED
 #                                   exported through to the lanes
 #   SWEEP_LOG                       log file (default $DAEMON_HOME/sweep.log)
 #   IMPLEMENT_DISPATCH_CMD REVIEW_DISPATCH_CMD

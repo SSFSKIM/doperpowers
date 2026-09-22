@@ -130,7 +130,7 @@ chmod +x "$SMINOS_CLI"
 
 # ---- board seed ---------------------------------------------------------------
 # 1 ELIGIBLE P1 impl · 2 blocked-by-1 · 3 ELIGIBLE P0 spike · 4 in-progress ·
-# 5 ELIGIBLE P2 engine:claude · 7 ELIGIBLE unprioritized engine:codex
+# 5 ELIGIBLE P2 · 7 ELIGIBLE unprioritized
 python3 - <<'PY'
 import json, os
 def issue(num, title, labels, body="body of #%s", blocked=None):
@@ -148,11 +148,11 @@ s = {"next": 10, "labels": [], "issues": {
     "2": issue(2, "Downstream cleanup", ["status:ready-for-implementer"], blocked=[1]),
     "3": issue(3, "Probe the cache layer", ["status:ready-for-implementer", "priority:P0", "spike"]),
     "4": issue(4, "Mid-flight work", ["status:in-progress"]),
-    "5": issue(5, "Tune the copy", ["status:ready-for-implementer", "priority:P2", "engine:claude"]),
+    "5": issue(5, "Tune the copy", ["status:ready-for-implementer", "priority:P2"]),
     "6": issue(6, "Delivered, awaiting review", ["status:in-review"]),
-    "7": issue(7, "Port the legacy adapter", ["status:ready-for-implementer", "engine:codex"]),
+    "7": issue(7, "Port the legacy adapter", ["status:ready-for-implementer"]),
     "8": issue(8, "Design the ledger split", ["status:ready-for-architect", "priority:P0"]),
-    "9": issue(9, "Design with codex label", ["status:ready-for-architect", "priority:P1", "engine:codex"]),
+    "9": issue(9, "Design the second ledger split", ["status:ready-for-architect", "priority:P1"]),
 }}
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
@@ -166,13 +166,13 @@ assert_contains "$out" "dispatched #1" "triggered dispatch reports the ticket"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn: 1-fix-the-report-builder-pipeline" \
   "spawn registers the <n>-<slug> name (default no-wait)"
 assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | head -1)" "settings=;effort=" \
-  "default engine claude passes no gateway env"
+  "a dispatch hands the spawn an explicit environment, never the ambient one"
 # bracketed so the fixed-string match is exact — the model arg is last on the
 # spawn line, so the closing bracket pins the whole value and an unpinned
 # (empty) or differently-pinned arg cannot satisfy it by prefix.
 first_spawn="$(grep '^spawn:' "$SPAWN_LOG" | head -1)"
-assert_contains "[${first_spawn##* }]" "[model=opus]" \
-  "claude route pins the worker tier (IMPLEMENT_MODEL overrides; never inherited)"
+assert_contains "[${first_spawn##* }]" "[model=sol]" \
+  "the implement lane pins the worker tier (IMPLEMENT_MODEL overrides; never inherited)"
 PROMPT="$PROMPT_DIR/1-fix-the-report-builder-pipeline.prompt"
 assert_file_contains "$PROMPT" "IMPLEMENT worker for ticket #1" "prompt carries the IMPLEMENT role"
 assert_file_not_contains "$PROMPT" "BUILD-MARKER" "prompt carries no inlined issue body (the worker reads its ticket via gh)"
@@ -201,7 +201,7 @@ assert_contains "$out" "skip #4" "non-ready ticket is refused"
 out="$(run 1)"
 assert_contains "$out" "skip #1: bound worker" "working bound meta dedupes re-dispatch"
 
-echo "execute-dispatch: spike lane + engine label"
+echo "execute-dispatch: spike lane"
 
 out="$(run 3)"
 PROMPT3="$PROMPT_DIR/3-probe-the-cache-layer.prompt"
@@ -213,31 +213,6 @@ import glob, json
 print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
             for m in [json.load(open(p))] if m.get('name','').startswith('3-')), ''))")"
 assert_contains "$role_meta_3" "SPIKE" "dispatch persists the SPIKE role into the registry meta"
-
-out="$(run 5)"
-assert_contains "$(grep 'spawn: 5-' "$SPAWN_LOG")" "5-tune-the-copy" "claude-engine ticket dispatches"
-last_env="$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)"
-assert_contains "$last_env" "settings=;effort=" "engine:claude label (redundant since the default flipped) still suppresses the gateway env"
-
-out="$(run 7)"
-assert_contains "$(grep 'spawn: 7-' "$SPAWN_LOG")" "7-port-the-legacy-adapter" "codex-engine ticket dispatches"
-last_env="$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)"
-assert_contains "$last_env" "settings=$HOME/.claude/clodex-settings.json;effort=xhigh" \
-  "engine:codex label opts back into the gateway route"
-assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" \
-  "label-selected codex route pins the gateway model alias"
-
-echo "execute-dispatch: WORKER_ENGINE env override"
-
-rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
-out="$(WORKER_ENGINE=codex run 1)"
-assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=$HOME/.claude/clodex-settings.json;effort=xhigh" \
-  "WORKER_ENGINE=codex overrides the claude default on a label-less ticket"
-
-rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
-out="$(WORKER_ENGINE=codex run 5)"
-assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" \
-  "engine:claude label still wins over WORKER_ENGINE=codex"
 
 rm -f "$DAEMON_HOME"/*.json; : > "$SPAWN_LOG"; echo 0 > "$STUB_COUNT"
 out="$(run 1)"
@@ -264,9 +239,8 @@ assert_contains "$order" "spawn:3-,spawn:8-,spawn:1-,spawn:5-" \
   "sweep dispatches in priority order (P0, P1, P2) across both lanes (#8 is the P0 architect ticket, tid-tiebreaks after #3)"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 2-" "sweep skips blocked tickets"
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn: 4-" "sweep skips non-ready tickets"
-n_gateway="$(grep -c "settings=$HOME/.claude/clodex-settings.json" "$SPAWN_LOG" || true)"
-assert_contains "$n_gateway" "1" \
-  "sweep sends only the engine:codex ticket through the gateway — every other worker rides the claude default"
+assert_not_contains "$(grep '^spawn-env:' "$SPAWN_LOG")" "settings=$TEST_ROOT/ambient-gateway.json" \
+  "no worker in the sweep inherits the ambient gateway settings"
 
 out="$(run --sweep)"
 assert_contains "$out" "skip #3: bound worker" "consecutive sweep re-dispatches nothing"
@@ -366,10 +340,6 @@ import glob, json
 print(next((m.get('role','') for p in glob.glob('$DAEMON_HOME/*.json')
             for m in [json.load(open(p))] if m.get('name','').startswith('8-')), ''))")"
 assert_contains "$role_meta_8" "ARCHITECT" "dispatch persists the ARCHITECT role into the registry meta (Finding D: board-answer's needs-human fallback reads it back)"
-
-out="$(run 9)"
-assert_contains "$(grep '^spawn-env:' "$SPAWN_LOG" | tail -1)" "settings=;effort=" "engine:codex label is IGNORED on the architect lane (X4 exemption)"
-assert_contains "$(grep '^spawn:' "$SPAWN_LOG" | tail -1)" "model=fable" "labelled architect ticket still pins fable"
 
 echo "execute-dispatch: per-lane caps"
 
