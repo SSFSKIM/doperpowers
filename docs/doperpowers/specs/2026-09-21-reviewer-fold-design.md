@@ -970,3 +970,4 @@ Pending — written at finish.
 - 2026-09-21: acceptance 8's grep no longer names `DAEMON_CLAUDE_SETTINGS=`; the dispatchers' explicit clearing stays.
 - 2026-09-22: Task 4 review — acceptance 8's grep excludes sminos, codex-companion, and review-bench: none of the three is the board route.
 - 2026-09-22: Task 5 review — the API tick's review recovery verifies the ticket's state before it acts; `phase` filters candidates and the server's own parks are corrected there.
+- 2026-09-22: Task 7 review — owner-first covers the epic scale path; the stand-in never spawns or rebinds over a live owner.
