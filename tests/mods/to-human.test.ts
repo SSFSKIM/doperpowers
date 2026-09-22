@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import { answerOf, answerText, parse, questionHead, runEnd, runStart } from '../../hooks/mods/to-human'
+import { answerOf, answerText, parse, promptRow, questionHead, runEnd, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -209,4 +209,20 @@ describe('answers', () => {
     ).toEqual({ head: 'Which backend?', answer: 'Postgres' })
   })
 
+})
+
+describe('promptRow', () => {
+  test('a prompt the person typed, or one of unknown origin, is theirs', async () => {
+    expect(promptRow({ kind: 'composer' })).toBe('user')
+    expect(promptRow({ kind: 'bridge' })).toBe('user')
+    expect(promptRow({ kind: 'unclassified' })).toBe('user')
+    expect(promptRow(undefined)).toBe('user')
+  })
+
+  test('a delivery to the session is working record', async () => {
+    expect(promptRow({ kind: 'peer' })).toBe('record')
+    expect(promptRow({ kind: 'peer-send-message' })).toBe('record')
+    expect(promptRow({ kind: 'task-notification' })).toBe('record')
+    expect(promptRow({ kind: 'coordinator' })).toBe('record')
+  })
 })
