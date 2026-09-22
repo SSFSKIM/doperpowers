@@ -95,7 +95,10 @@ cat > "$FIX" <<'JSON'
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
-trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
+# The mock is REAPED inside the trap, with the reap's own output swallowed: a
+# background job killed by a signal and reaped at shell exit makes bash print
+# `Terminated: 15` AFTER the suite's verdict line, which reads like a failure.
+trap 'kill $MOCK 2>/dev/null; { wait $MOCK; } 2>/dev/null || true; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"

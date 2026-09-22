@@ -1412,7 +1412,16 @@ rv_meta rv0134 134 "134-owner" working 3 0; rv_sync rv0134 idle
 #    it must not spend the review's ladder before the first review nudge
 dep_seed 135 in-review
 rv_meta rv0135 135 "135-owner" working "" "" 3; rv_sync rv0135 idle
-# 7. a review stand-in owns its own lifecycle and is excluded here, as ever
+# 7. the reset the trail earned DID NOT PERSIST — and the count in hand says
+#    the opposite of what was observed. At the cap it would park a ticket whose
+#    review had just posted a round, so nothing is spent on it at all. The
+#    injection is a crashed tick's leftover: a DIRECTORY where _meta_put writes
+#    its tmp file, which no *.json scan sees and every write trips over.
+dep_seed 137 in-review
+rv_meta rv0137 137 "137-owner" working 3 0; rv_sync rv0137 idle
+mock_comment 137 "[review-trail] round 1 — level medium, 1 blocker waved"
+mkdir -p "$DAEMON_HOME/rv0137-0000-4000-8000-000000000000.json.tmp"
+# 8. a review stand-in owns its own lifecycle and is excluded here, as ever
 dep_seed 136 in-review
 rv_meta rv0136 136 "review-pr-9" working; rv_sync rv0136 idle
 
@@ -1443,6 +1452,10 @@ assert_contains "$(issue_note 134)" "review" "...with a note about the review"
 assert_contains "$log" "resume:rv0135-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
   "prior build recoveries do not count against the review ladder"
 assert_equals "$(issue_labels 135)" "status:in-review" "...so that ticket is nudged, not parked"
+assert_not_contains "$log" "resume:rv0137" "a reset that failed to persist nudges nobody"
+assert_equals "$(issue_labels 137)" "status:in-review" "...and parks nobody either, though the count in hand is at the cap"
+assert_equals "$(rv_field rv0137 review_recoveries)" "3" "...leaving the ladder exactly where it was for the next tick"
+assert_contains "$out" "the meta update failed — neither nudged nor parked" "...and the tick says so"
 assert_not_contains "$log" "resume:rv0136" "a review-pr-* seat is still excluded"
 assert_equals "$(issue_labels 136)" "status:in-review" "...and is never parked by this pass either"
 

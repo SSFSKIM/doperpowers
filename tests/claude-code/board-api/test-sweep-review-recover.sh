@@ -56,6 +56,9 @@ cat > "$FIX" <<'JSON'
    {"source":"board","cursor":2,"kind":"review-trail","body":{"text":"round 1 — level medium"}}]}},
  {"method":"GET","path":"/tickets/67/timeline","status":200,"body":{"records":[]}},
  {"method":"GET","path":"/tickets/68/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/70/timeline","status":200,"body":{"records":[
+   {"source":"board","cursor":1,"kind":"review-trail","body":{"text":"round 1 — level medium"}}]}},
+ {"method":"GET","path":"/tickets/71/timeline","status":200,"body":{"records":[]}},
  {"method":"GET","path":"/tickets/60","status":200,
   "body":{"id":60,"state":"in-review","priority":"P1","title":"the stalled review"}},
  {"method":"GET","path":"/tickets/64","status":200,
@@ -68,12 +71,31 @@ cat > "$FIX" <<'JSON'
   "body":{"id":67,"state":"in-review","priority":"P1","title":"a review that never moved"}},
  {"method":"GET","path":"/tickets/68","status":200,
   "body":{"id":68,"state":"in-review","priority":"P1","title":"a review still running"}},
+ {"method":"GET","path":"/tickets/70","status":200,
+  "body":{"id":70,"state":"in-review","priority":"P1","title":"a review whose reset will not persist"}},
+ {"method":"GET","path":"/tickets/71","status":200,"once":true,
+  "body":{"id":71,"state":"needs-human","priority":"P1","title":"parked, and answered mid-repair"}},
+ {"method":"GET","path":"/tickets/71","status":200,
+  "body":{"id":71,"state":"in-review","priority":"P1","title":"parked, and answered mid-repair"}},
+ {"method":"GET","path":"/tickets?limit=200&ids=","status":200,
+  "body":{"items":[{"id":69,"state":"in-review","priority":"P1","title":"the suppressed one"},
+                   {"id":99,"state":"needs-human","priority":null,"title":"env issue for #69"}],
+          "next":null,"as_of":1}},
+ {"method":"GET","path":"/tickets/72/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/72","status":200,
+  "body":{"id":72,"state":"in-review","priority":"P1","title":"the whole tick's candidate"}},
+ {"method":"POST","path":"/runs/72/renew","status":200,"body":{"renewed":true}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]},
  {"method":"POST","path":"/tickets/67/transition","status":200,
   "body":{"to":"needs-human","converged":false}}
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
-trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
+# The mock is REAPED inside the trap, with the reap's own output swallowed:
+# a background job killed by a signal and reaped at shell exit makes bash print
+# `Terminated: 15` AFTER the suite's verdict line, which reads like a failure.
+trap 'kill $MOCK 2>/dev/null; { wait $MOCK; } 2>/dev/null || true; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
@@ -147,7 +169,32 @@ meta u-supp '{"uuid":"u-supp","current":"u-supp","status":"idle","run_id":69,
               "run_bearer":"tok-69","phase":"review"}'
 stale u-supp
 SUPD="$TDIR/suppress"; mkdir -p "$SUPD"
-printf '{"ticket":"69","state":"in-review","reason":"env-issue #99"}' > "$SUPD/69.json"
+# The documented record shape — `_check_lift` reads `env_issue`, and the whole
+# tick walks these records, so an invented shape dies there rather than here.
+printf '{"ticket":69,"state":"in-review","env_issue":99}' > "$SUPD/69.json"
+
+# THE RESET THAT DID NOT PERSIST. The timeline records a round this seat has
+# not seen, so the count starts over — but the write recording that fails, and
+# the count in hand (3) says the opposite of what was just observed. Parking on
+# it would park a review that had just posted a round. The injection is a
+# crashed tick's leftover: a DIRECTORY where the meta writer puts its tmp file,
+# which no *.json scan sees and every write trips over.
+meta u-block '{"uuid":"u-block","current":"u-block","status":"idle","run_id":70,
+               "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"70",
+               "run_bearer":"tok-70","phase":"review","review_recoveries":"3",
+               "review_trail_seen":"0"}'
+stale u-block
+mkdir -p "$DH/u-block.json.tmp"
+
+# THE ANSWER LANDING MID-REPAIR. #71 reads needs-human when the decision is
+# made and in-review when the repair re-reads it under the lock — the exact
+# interleaving a park answered by board-answer produces, and the one where a
+# blind write would overwrite the answer's own `review` stamp with
+# `review-parked`, excluding the seat from this ladder for good.
+meta u-race '{"uuid":"u-race","current":"u-race","status":"idle","run_id":71,
+              "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"71",
+              "run_bearer":"tok-71","phase":"review"}'
+stale u-race
 
 # Idle between agent rounds, but it wrote moments ago — inside the threshold,
 # which is what tells a pause from a stall.
@@ -165,7 +212,10 @@ sync)
   # As the real verb reports it: \`noop\` for an ALREADY-TERMINAL record (idle),
   # \`live\` for a running turn. Driven off the record, so a status this phase
   # writes is visible here.
-  python3 - "$DH/\$1.json" <<'PY'
+  # The registry the TICK is pointed at, not a baked one: the whole-tick drill
+  # below runs against a second DAEMON_HOME, and a stub that always read the
+  # first would answer \`absent\` for its seat.
+  python3 - "\${DAEMON_HOME:-$DH}/\$1.json" <<'PY'
 import json, sys
 try:
     m = json.load(open(sys.argv[1]))
@@ -180,7 +230,7 @@ resume)
   [ "\${1:-}" != "--wait" ] || shift
   { echo "RESUME uuid=\$1"
     echo "PROMPT: \$2"
-    env | grep '^BOARD_RUN_' | sort || true; } >> "$RESUME"
+    env | grep '^BOARD_RUN_' | sort || true; } >> "\${RESUME_LOG:-$RESUME}"
   exit 0 ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
@@ -195,6 +245,10 @@ RECOVER() { SW "${@:2}" "$SCRIPTS/_sweep_api.sh" review-recover > "$1" 2>&1 || t
 
 resumes()     { grep -c '^RESUME uuid=' "$RESUME" || true; }
 resumes_for() { grep -c "^RESUME uuid=$1\$" "$RESUME" || true; }
+# The value, BRACKETED. `t` is a substring match, so a bare `review` needle is
+# satisfied by `review-parked` — which is precisely the two values the repair
+# drills have to tell apart.
+mfieldq()     { printf '[%s]\n' "$(mfield "$1" "$2")"; }
 mfield()      { python3 -c 'import json,sys
 m = json.load(open(sys.argv[1]))
 print(m.get(sys.argv[2], "<absent>"))' "$DH/$1.json" "$2"; }
@@ -220,10 +274,10 @@ t  "an owner still writing is inside the threshold" "0"                     resu
 
 # THE TICKET IS THE AUTHORITY, not the seat's mark.
 t  "server-parked: ticket needs-human with phase review → no resume" "0"    resumes_for u-server-park
-t  "...and the meta is restamped review-parked"  "review-parked"            mfield u-server-park phase
+t  "...and the meta is restamped review-parked"  "[review-parked]"          mfieldq u-server-park phase
 t  "...and the tick says the board parked it"    "#64"                      cat "$O1"
 t  "ticket done with phase review → no resume"   "0"                        resumes_for u-done
-t  "...and the stale phase is removed"           "<absent>"                 mfield u-done phase
+t  "...and the stale phase is removed"           "[<absent>]"               mfieldq u-done phase
 
 # Progress is a review artifact, not seat activity.
 t  "a new review-trail event resets the count"   "RESUME uuid=u-trail"      cat "$RESUME"
@@ -235,7 +289,19 @@ t  "cap → POST /tickets/<id>/transition to needs-human" "/tickets/67/transitio
 t  "...as a park"                                '\"to\": \"needs-human\"' cat "$FIX.log"
 t  "...naming the exhausted ladder"              "needs-human"              cat "$O1"
 t  "...and the owner is not nudged again"        "0"                        resumes_for u-cap
-t  "...and the park leaves the seat review-parked" "review-parked"          mfield u-cap phase
+t  "...and the park leaves the seat review-parked" "[review-parked]"        mfieldq u-cap phase
+
+# The reset that did not persist: nothing is spent on that candidate at all.
+t  "a reset that failed to persist nudges nobody"  "0"                      resumes_for u-block
+nt "...and parks nobody either, though the count in hand is at the cap" "/tickets/70/transition" cat "$FIX.log"
+t  "...leaving the ladder exactly where it was"  "3"                        mfield u-block review_recoveries
+t  "...and the tick says so"                     "the meta write failed"    cat "$O1"
+
+# The answer landing mid-repair: the repair re-reads under the lock and writes
+# nothing, so the stamp board-answer just made is the one that stands.
+t  "a ticket answered mid-repair keeps the answer's mark" "[review]"        mfieldq u-race phase
+t  "...and the tick says the ticket moved under it" "left needs-human while its seat's mark was being repaired" cat "$O1"
+nt "...and nothing was nudged on that pass"      "RESUME uuid=u-race"       cat "$O1"
 
 t  "a suppressed ticket freezes this ladder too"  "0"                       resumes_for u-supp
 t  "...and the tick says why"                     "suppressed"               cat "$O1"
@@ -251,11 +317,30 @@ O2="$TDIR/t2.out"; RECOVER "$O2"
 t  "a second tick nudges the same owner once more" "2"                      resumes_for u-rev
 t  "and the ladder advances by one"              "2"                        mfield u-rev review_recoveries
 t  "a seat whose mark was repaired is no longer a candidate" "0"            resumes_for u-server-park
+t  "...while the one the answer returned to review is nudged on the next tick" "RESUME uuid=u-race" cat "$RESUME"
 t  "nor is one whose mark was cleared"           "0"                        resumes_for u-done
 
 # =========================================================================
-# The phase is invocable alone and is part of the full tick.
+# The phase is invocable alone, named in the usage line — and REACHED BY THE
+# WHOLE TICK. The last one needs a budget the tick has not spent (the arms
+# stop taking new items without one) and a registry of its own, so the
+# candidate cannot be confused with the drills above.
 # =========================================================================
 t  "the phase is named in the usage line"        "review-recover"           bash -c "$SCRIPTS/_sweep_api.sh nonsense 2>&1 || true"
+
+DH2="$TDIR/registry-all"; mkdir -p "$DH2"
+RESUME2="$TDIR/resume-all.log"; : > "$RESUME2"
+printf '%s\n' '{"uuid":"u-all","current":"u-all","status":"idle","run_id":72,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"72",
+                 "run_bearer":"tok-72","phase":"review"}' > "$DH2/u-all.json"
+chmod 600 "$DH2/u-all.json"
+stale u-all
+OALL="$TDIR/all.out"
+( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH2" SMINOS_CLI="$DS/sminos" \
+    RESUME_LOG="$RESUME2" BOARD_SUPPRESS_DIR="$SUPD" BOARD_CREDENTIALS_FILE="$CREDS" \
+    BOARD_SWEEP_TICK_BUDGET=900 "$SCRIPTS/_sweep_api.sh" all ) > "$OALL" 2>&1 || true
+t  "the whole-tick run reaches the review-recover phase" "review-recover: #72" cat "$OALL"
+t  "...and nudges its candidate"                 "RESUME uuid=u-all"        cat "$RESUME2"
+t  "...having renewed that run first"            '"path": "/runs/72/renew"' cat "$FIX.log"
 
 finish

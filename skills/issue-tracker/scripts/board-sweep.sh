@@ -439,12 +439,20 @@ pass_recover() {
         # saw means the nudges are landing and the count starts over. A review
         # that keeps moving is never parked for taking a long time; one that
         # has stopped reaches a human in three.
+        #
+        # AND A RESET THAT DID NOT PERSIST IS NOT A DECISION. Progress was
+        # observed; if the write recording it failed, the count in hand is a
+        # stale one that says the opposite — at the cap it would park a ticket
+        # whose review had just posted a round. Nothing is spent on this
+        # candidate at all until the reset lands, and the next tick re-reads
+        # the same trail and tries again.
         if [ "${trail:-0}" -gt "${seen:-0}" ]; then
-          log "[sweep] RECOVER: #$tk review trail advanced (${seen:-0} → ${trail:-0}) — the owner's recovery count starts over"
           if _meta_put "$uuid" review_recoveries 0 review_trail_seen "$trail"; then
+            log "[sweep] RECOVER: #$tk review trail advanced (${seen:-0} → ${trail:-0}) — the owner's recovery count starts over"
             rrecov=0
           else
-            log "[sweep] RECOVER: #$tk meta update failed — the review ladder stands where it was"
+            log "[sweep] RECOVER: #$tk review trail advanced (${seen:-0} → ${trail:-0}) but the meta update failed — neither nudged nor parked this tick; the next one re-reads the trail"
+            continue
           fi
         fi
         case "$fin" in

@@ -1277,6 +1277,62 @@ finally:
 PY
 }
 
+# Repair a seat's stale review mark — UNDER THE REGISTRY LOCK, and only while
+# the ticket is still where the decision was made. Prints `repaired`, or
+# `moved <state>` when it is not; dies when the board or the registry would not
+# answer.
+#
+# THE OTHER WRITER IS THE ANSWER. Answering a park returns the ticket to
+# in-review and marks the seat `review` through _lib.sh's _meta_put, which
+# takes THIS lock. A repair that read the state outside the lock and wrote
+# inside it could land after that stamp and overwrite a live `review` with
+# `review-parked` — a seat excluded from this ladder for good, with no client
+# transition left to clear it, because both the pre-state and the answer's
+# post-state read `review` and no value comparison can tell them apart. So the
+# authoritative read and the write are ONE critical section: an answer that
+# committed before it sees a moved ticket and writes nothing, and an answer
+# that commits after cannot stamp until this releases — so its `review` lands
+# last and wins either way.
+_repair_phase() {  # <meta path> <ticket> <state the decision was made on> <phase|''>
+  T_PATH="$1" T_TID="$2" T_WAS="$3" T_PHASE="$4" T_DHOME="$DAEMON_HOME" \
+  _api_py - <<'PY'
+import fcntl, json, os
+import _board_api as A
+env = os.environ
+path = env["T_PATH"]
+lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    row = A.ticket(env["T_TID"], principal="automation")
+    state = (row or {}).get("state") or ""
+    if state != env["T_WAS"]:
+        # Unreadable counts as moved: a mark is repaired on a state this tick
+        # can name, never on one it guessed.
+        print("moved %s" % (state or "unreadable"))
+        raise SystemExit(0)
+    with open(path) as f:
+        m = json.load(f)
+    if env["T_PHASE"]:
+        m["phase"] = env["T_PHASE"]
+    else:
+        m.pop("phase", None)
+    mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    print("repaired")
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+}
+
 # The board's own word for a ticket's state, or "" when it cannot say. Read as
 # automation, by id: a targeted 404 is authoritative absence (_escalate reads
 # it the same way), and "" is never acted on — a read this tick could not make
@@ -1305,7 +1361,7 @@ PY
 
 phase_review_recover() {
   local uuid run bindc ticket bearer fence lane status sexhausted path
-  local state trail seen recov transcript turn_epoch age budget_said=""
+  local state repair trail seen recov transcript turn_epoch age budget_said=""
   # shellcheck disable=SC2034  # the unused names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
@@ -1355,14 +1411,21 @@ phase_review_recover() {
         # A park out of a review IS a review park, whoever wrote it: the seat
         # keeps its history so that a parked owner is never a candidate again
         # until the answer puts it back.
-        _meta_write "$path" phase review-parked \
-          && echo "review-recover: #$ticket is parked needs-human while the seat still read \`review\` — the seat is marked review-parked and left to the answer" \
-          || echo "review-recover: #$ticket — marking the seat review-parked failed; the next tick retries" >&2
+        repair="$(_repair_phase "$path" "$ticket" needs-human review-parked)" \
+          || repair=""
+        case "$repair" in
+          repaired) echo "review-recover: #$ticket is parked needs-human while the seat still read \`review\` — the seat is marked review-parked and left to the answer" ;;
+          moved*)   echo "review-recover: #$ticket left needs-human while its seat's mark was being repaired (now ${repair#moved }) — nothing is written, and an answer that just landed owns the mark and the worker" ;;
+          *)        echo "review-recover: #$ticket — marking the seat review-parked failed; the next tick retries" >&2 ;;
+        esac
         continue ;;
       *)
-        _meta_write "$path" phase "" \
-          && echo "review-recover: #$ticket is $state — the review is over and the seat's mark is cleared" \
-          || echo "review-recover: #$ticket — clearing the seat's stale review mark failed; the next tick retries" >&2
+        repair="$(_repair_phase "$path" "$ticket" "$state" "")" || repair=""
+        case "$repair" in
+          repaired) echo "review-recover: #$ticket is $state — the review is over and the seat's mark is cleared" ;;
+          moved*)   echo "review-recover: #$ticket left $state while its seat's mark was being cleared (now ${repair#moved }) — nothing is written and the next tick decides" ;;
+          *)        echo "review-recover: #$ticket — clearing the seat's stale review mark failed; the next tick retries" >&2 ;;
+        esac
         continue ;;
     esac
     # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay refuses
@@ -1380,12 +1443,18 @@ phase_review_recover() {
     case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
     recov="$(_meta_field "$path" review_recoveries)"
     case "$recov" in ''|*[!0-9]*) recov=0 ;; esac
+    # A RESET THAT DID NOT PERSIST IS NOT A DECISION. Progress was observed; if
+    # the write recording it failed, the count in hand is a stale one that says
+    # the opposite — at the cap it would park a ticket whose review had just
+    # recorded a round. Nothing is spent on this candidate until the reset
+    # lands, and the next tick re-reads the same timeline and tries again.
     if [ "$trail" -gt "$seen" ]; then
       if _meta_write "$path" review_recoveries 0 review_trail_seen "$trail"; then
         echo "review-recover: #$ticket — the review recorded a new round ($seen → $trail); the owner's recovery count starts over"
         recov=0; seen="$trail"
       else
-        echo "review-recover: #$ticket — recording the review's progress failed; the ladder stands where it was" >&2
+        echo "review-recover: #$ticket — the review recorded a new round ($seen → $trail) but the meta write failed; neither nudged nor parked this tick, and the next one re-reads the timeline" >&2
+        continue
       fi
     fi
     if [ "$recov" -ge "$REVIEW_RECOVERY_CAP" ]; then
