@@ -349,6 +349,13 @@ assert_contains "$arch" "rebuild: " "architect: a design gap can be answered by 
 assert_contains "$arch" "second design-gap" "...and a second one on the same ticket is the human's"
 assert_contains "$arch" "dismiss: " "architect: a dismissal is answered with a pointer into the pinned spec"
 assert_contains "$arch" "mode: scale" "architect: the recomposition claim dispatches the same agent in scale mode"
+# The scale path named the in-review write and the dispatch but not the status
+# line, and a current-protocol eval cell (treat-arch-scale-2) skipped it — the
+# same omission act 1's pairing fixed for the PR path, on the one closing turn
+# that had not been paired.
+assert_order "$ARCHITECT" 'in-review "<summary>" --pr <package URL> --branch <integration ref>' \
+    'sminos status <your alias> "reviewing (scale): <package URL>"' \
+    "...whose act 1 is the same two writes, the status line beside the board write"
 assert_contains "$arch" "corrective child #" "...and a scale design-gap becomes a corrective child"
 assert_contains "$arch" "never grade, triage, or merge" \
     "architect authority: the owner answers its review's escalations, never grades them"

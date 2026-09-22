@@ -504,8 +504,10 @@ lineage.
    lost owner tells a superseded reviewer from a current one by exact
    equality on the package URL, and an edited-in-place comment keeps its
    old URL — the sweep reads the epic as already reviewed and strands it
-   in in-review permanently. Then
+   in in-review permanently. Then Closing Artifact's act 1 — two writes,
+   together:
    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<summary>" --pr <package URL> --branch <integration ref>
+   {{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing (scale): <package URL>"
    Add `--branch` when the composition HAS an integration ref — that is
    the branch the reviewer checks out and reviews against the default
    branch; omit it when the children landed on the default branch
