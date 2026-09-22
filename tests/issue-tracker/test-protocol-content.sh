@@ -284,6 +284,43 @@ assert_not_contains "$arch" "Direct never applies here" "architect: the clause t
 assert_contains "$arch" "approve the design at" "architect: the plan route parks for the human's design approval"
 assert_contains "$arch" "before the build edge" "architect: reviews run before the build edge (the executor has no context to absorb findings)"
 
+# The owner's side of the review fold. The review after the PR is the owning
+# seat's own subagent: dispatched once, answered out of the design reasoning
+# that seat already holds. These pin the half of the qa-loop agent's return
+# contract the owner implements — a protocol that drops one of the five
+# returns leaves its agent waiting for an answer nobody will send.
+echo "the owner's QA agent (architect side):"
+assert_contains "$arch" "doperpowers:qa-loop" "architect: the review runs as the seat's own qa-loop agent"
+assert_contains "$arch" 'isolation: "worktree"' "...cut as a fresh worktree at the seat's head"
+assert_contains "$arch" "mode: pr" "...briefed with the mode line the agent reads first"
+assert_contains "$arch" "review level floor:" "...relaying the dispatcher-owned level floor"
+assert_contains "$arch" "auto-merge:" "...and the auto-merge switch"
+for _ret in "NEEDS_PANEL level=" "ESCALATE kind=spec-conflict" "ESCALATE kind=design-gap" \
+            "ESCALATE kind=dismissal" "PARKED" "ENGINE-UNAVAILABLE"; do
+    assert_contains "$arch" "$_ret" "architect: the \`$_ret\` return has an answer"
+done
+assert_contains "$arch" "git worktree remove" "architect: and \`DONE\` is where the agent's worktree is removed"
+assert_contains "$arch" "merge --ff-only" \
+    "architect: the panel runs from a checkout fast-forwarded onto the agent's pushed fixes"
+assert_contains "$arch" "findings-r" "...and its result object is saved for the agent to read"
+assert_contains "$arch" "git push origin" \
+    "architect: every pin the owner mints follows a push (the pin gate verifies the sha on the remote)"
+assert_contains "$arch" "re-pin: " "architect: a spec conflict can be answered by re-pinning the repaired document"
+assert_contains "$arch" "--plan" "...through the same-state transition that mints the new pin"
+assert_contains "$arch" "rebuild: " "architect: a design gap can be answered by repair and rebuild"
+assert_contains "$arch" "second design-gap" "...and a second one on the same ticket is the human's"
+assert_contains "$arch" "dismiss: " "architect: a dismissal is answered with a pointer into the pinned spec"
+assert_contains "$arch" "mode: scale" "architect: the recomposition claim dispatches the same agent in scale mode"
+assert_contains "$arch" "corrective child #" "...and a scale design-gap becomes a corrective child"
+assert_contains "$arch" "never grade, triage, or merge" \
+    "architect authority: the owner answers its review's escalations, never grades them"
+assert_not_contains "$arch" "reviewing your own pull request" \
+    "...and the blanket self-review prohibition is gone (the owner dispatches the review and answers it)"
+assert_not_contains "$arch" "never review your own pull request" \
+    "...in any phrasing"
+assert_not_contains "$arch" "scale-review dispatcher" \
+    "...an owned epic's scale review has no separate dispatcher"
+
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
 REVIEW="$REPO_ROOT/agents/qa-loop.md"
 [ -f "$REVIEW" ] || { echo "missing $REVIEW"; exit 1; }
@@ -482,7 +519,7 @@ assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
 assert_contains "$pexec" "carries its own execution" "...and its non-SDE mode is a spec that carries its own execution, worked in order"
-assert_contains "$pexec" "a review loop owns them" "...and the whole-branch review is the brief's to assign (the board's review loop owns it)"
+assert_contains "$pexec" "QA agent" "...and the whole-branch review is the brief's to assign (on the board, the owning seat's QA agent)"
 assert_contains "$pexec" "Outcomes & Retrospective" "...and it writes the spec's retrospective before the PR"
 assert_not_contains "$pexec" "final review is clean" "...closing no longer presumes a final review the sequential mode never defined"
 # Review input and follow-up work are different channels: Residue is the list

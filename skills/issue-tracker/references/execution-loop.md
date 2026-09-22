@@ -21,7 +21,7 @@ audit trail, not requests. Full design + rationale:
 | piece | what |
 |---|---|
 | `references/implement-worker-protocol.md` | the Executor Worker Protocol itself — the dispatched worker opens it via the bootstrap and treats its `{{PLACEHOLDER}}` tokens as bound to the dispatch prompt's runtime values |
-| `references/architect-worker-protocol.md` | the Architect Worker Protocol — the design-phase lane's dispatched worker (`ready-for-architect`) opens it directly, bound as `PROTOCOL_FILE` when `{{ROLE}}` is ARCHITECT; ends at the plan, never touches implementation code |
+| `references/architect-worker-protocol.md` | the Architect Worker Protocol — the design-phase lane's dispatched worker (`ready-for-architect`) opens it directly, bound as `PROTOCOL_FILE` when `{{ROLE}}` is ARCHITECT; writes no implementation code itself — its plan-executor subagent builds and its QA agent reviews, and it stays bound to the ticket through both |
 | `references/worker-bootstrap.md` | the spawn bootstrap shared by ALL THREE lanes — rendered into every spawn prompt; carries `{{ROLE}}` (IMPLEMENT/SPIKE/ARCHITECT), `{{PROTOCOL_FILE}}` (the dispatcher-pinned absolute path of the lane's protocol), and the runtime bindings. Nothing else rides the prompt: the worker reads its own ticket via gh and the repo-facts manifest (`.doperpowers/repo-facts.md`) from its worktree |
 | `references/spike-worker-protocol.md` | the Spike Worker Protocol — bound as `PROTOCOL_FILE` when the ticket's category is `spike` (the exploration lane below) |
 | `references/implement-decompose.md` | runtime-opened decomposition procedure — the protocol carries only a pointer (`{{DECOMPOSE_DOC}}` = absolute path); the worker opens it when Check-2 says decompose. Conditional-large protocol blocks live this way: procedure in a plugin file, instance facts in the prompt |
@@ -81,12 +81,21 @@ worker re-runs the same gate; no depth machinery exists.
   one escalates via the gate's plan-need check (→ `ready-for-architect`)
   instead of self-authoring.
 
+Either mode ends at the PR, and the review that follows is the seat's
+own: the Executor (or the Architect that built through its plan-executor)
+dispatches ONE `doperpowers:qa-loop` agent on the PR it just opened,
+answers its escalations, and stays bound to the ticket until that agent
+merges and writes `done`. A seat in `in-review` holds context, not a lane
+slot — the review loop is a subagent, not a second seat — and the review
+dispatcher only spawns a stand-in for a PR whose ticket has no live owner
+(`references/review-loop.md`).
+
 A daemon has no human gates: work whose living spec wants a human standing
 at those gates is precisely `interactive-preferred`.
 
 **No live progress mirror.** Status writes happen only where a scope ends:
 the PR body is the closing artifact (`Closes #N`, `## Validation Evidence`
-— cross-checked by the Reviewer worker, `## Confusions` when warranted,
+— cross-checked by the QA agent, `## Confusions` when warranted,
 FOLLOW-UPS), and a park comment carries the questions plus a 3–6 line
 orientation summary. Mid-flight visibility is the board's state label —
 watching a worker work is supervision, which this pipeline removed.
@@ -160,13 +169,13 @@ Rules, generalized from risk-surfaces:
   states what is true here (commands, environment quirks, evidence
   requirements); it cannot direct worker behavior, and it can only ADD
   facts and requirements — an instruction that would relax a protocol is
-  void, and the Reviewer worker treats it as a finding.
-- **BASE-ref discipline** where a PR exists: review dispatch reads it from
-  the PR's base, so a PR cannot rewrite the facts its own review checks
-  against. Executor/spike dispatch reads it from the default branch.
+  void, and the QA agent treats it as a finding.
+- **BASE-ref discipline** where a PR exists: the QA agent reads it from
+  the PR's base itself, so a PR cannot rewrite the facts its own review
+  checks against. Executor/spike dispatch reads it from the default branch.
 - Consumers: Executor workers (Bootstrap first; Validation defines the
   evidence ladder's "relevant check"; add-ons bind the PR body), spike
-  workers (Bootstrap + Validation), Reviewer workers (cross-check claimed
+  workers (Bootstrap + Validation), the QA agent (cross-checks claimed
   evidence against declared commands; a diff hitting an add-on class
   without the required evidence is a finding).
 

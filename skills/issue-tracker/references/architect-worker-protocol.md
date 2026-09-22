@@ -190,8 +190,9 @@ runs sequentially; an execution plan makes it the SDE controller, which
 dispatches its own task executors and reviewers — depth-2 fan-out is
 available and verified.
 
-While it runs your session is busy in the harness's eyes even though
-your turn has ended, so the sweep leaves you alone; its completion or
+While a subagent of yours runs — this one, and the QA agent of Closing
+Artifact — your session is busy in the harness's eyes even though your
+turn has ended, so the sweep leaves you alone; its completion or
 escalation arrives as a notification that starts your next turn.
 
 On a `BLOCKED` return: the executor names the plan text at issue and a
@@ -210,18 +211,148 @@ On `DONE` (or `DONE_WITH_CONCERNS` whose concerns you have read and
 dispositioned): register every item of the executor's residue list as a
 follow-up ticket (`--spawned-by {{ISSUE_NUMBER}}`, body authored from the
 residue context, per the issue-tracker ticket contract) — a follow-up
-not registered does not exist — then close your scope:
+not registered does not exist — then take the review edge:
 
 {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <PR URL> --branch <branch>
 
-From the PR on, the review loop owns the path to merge. This transition
-ends your scope and releases your binding.
+From the PR on the review is YOURS to run — as a subagent, not as a
+handoff. You stay bound to the ticket through it, and your scope ends at
+`done`. Say what this seat is doing:
+`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"`
+then dispatch ONE `doperpowers:qa-loop` agent through the Agent tool with
+`isolation: "worktree"` — it starts in a fresh worktree cut at YOUR head.
+Its brief carries one line each, in this order:
+
+    mode: pr
+    ticket: {{ISSUE_NUMBER}} {{ISSUE_URL}}
+    ticket body file: <path>        — only when your bootstrap named one
+    pr: <n> <url>
+    base: <baseRefName>             — gh pr view <n> --json baseRefName,headRefOid
+    head: <headRefOid>
+    review level floor: {{REVIEW_LEVEL}}
+    auto-merge: {{AUTO_MERGE}}
+    board scripts: {{BOARD_SCRIPTS}}
+    implement protocol: {{BOARD_SCRIPTS}}/../references/implement-worker-protocol.md
+    tech-debt issue: {{TECH_DEBT_ISSUE}}
+    env-tracker issue: {{ENV_TRACKER_ISSUE}}
+    report: <your plan-executor's report directory>/qa-loop-report.md
+
+and the sentence `your dispatcher answers escalations; return for them`.
+Relay `review level floor` and `auto-merge` VERBATIM from your bindings:
+the agent states both in the review trail, so a relay that lowered the
+floor or flipped the switch is visible on the PR. The report and any
+panel findings live in YOUR worktree, never in the agent's — a `DONE`
+return removes that one. Then end your turn; Build's "while it runs"
+rule holds here too, and the agent's return arrives as a notification.
 
 The other exits above are unchanged: a ticket whose pre-spec suffices
 builds here from its body and goes to `ready-for-implementer` with `--plan
 pre-spec` only when its build edge is refused, a refused build edge on a
 planned ticket goes to that same lane carrying its real pin, and an epic's
 children are registered, never built here.
+
+## Answering the review
+
+The agent's first line is one of five.
+
+**`NEEDS_PANEL level=<xhigh|max> base=<ref> baseCommit=<sha> headCommit=<sha> round=<n>`**
+— the panel belongs to the Workflow tool, which a subagent does not
+have. It is yours to run, and your checkout is what it reads: the
+workflow cuts every reviewer's worktree at YOUR head and the sha only
+scopes the diff command, so a stale checkout reads old files against a
+new diff. The agent's accepted fixes are already pushed, so
+fast-forward onto them:
+
+```
+git fetch origin <branch> && git merge --ff-only origin/<branch>
+```
+
+Confirm `[ "$(git rev-parse HEAD)" = <headCommit> ]`; a head that will
+not fast-forward is a `needs-human` park naming the sha, never a panel
+run over whatever your checkout happens to hold. Then, in the
+background:
+
+```
+Workflow({ scriptPath: "{{BOARD_SCRIPTS}}/../../review-code/workflows/code-review.js",
+           args: { level: "<level>", base: "<base>", baseCommit: "<baseCommit>",
+                   headCommit: "<headCommit>" } })
+```
+
+Save the result object to `<report dir>/findings-r<N>.json` WITHOUT
+acting on its contents — the findings are the agent's to read, and it
+records the file's hash in the trail — and resume the agent with
+`SendMessage` carrying that path.
+
+**`ESCALATE kind=spec-conflict finding=<id> …`** — a finding that
+contradicts the pinned document's own text. The audit's contract is the
+`plan:` pin at its immutable revision; an edit on the branch is
+divergence evidence, never the contract. So your answer has two shapes,
+both resumed with `SendMessage`:
+
+- `which governs: <the text that governs, and why>` — the agent records
+  it in the trail and re-bins the finding;
+- a re-pin, when the document itself is what is wrong: commit the repair
+  on the branch, `git push origin <branch>`, mint the new pin with a
+  same-state transition —
+  {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "re-pin: <delta>" --plan <repo-path>@<full-commit-sha>
+  — and reply `re-pin: <path>@<sha>`. Every pin you mint follows a push:
+  the pin gate verifies the sha on the remote, and a local-only revision
+  is one nobody else can fetch.
+
+One re-pin per review. A second request in the same review is answered
+`park`, and the agent parks the finding with both positions.
+
+**`ESCALATE kind=design-gap finding=<id> …`** — a TOO BIG whose cause is
+a design flaw, or the agent's seam-clustered impasse at its round cap.
+The design is yours; answer with one of:
+
+- **repair and rebuild** — fast-forward onto the agent's pushed fixes
+  first (`git fetch origin <branch> && git merge --ff-only
+  origin/<branch>`), repair the plan, commit, `git push origin <branch>`,
+  then re-take the build edge with the repaired pin:
+  {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-progress "rebuild: <why>" --branch <branch> --plan <repo-path>@<full-commit-sha>
+  dispatch a plan-executor per **Build**, and on its `DONE` re-enter
+  Closing Artifact from the top — a new head gets a fresh agent. This
+  answer ends the current agent's review; it is not resumed.
+- **a corrective follow-up ticket** —
+  {{BOARD_SCRIPTS}}/board-register.sh "<title>" <category> <P0..P3> --spawned-by {{ISSUE_NUMBER}} --body-file <the finding>
+  — then resume the agent with `follow-up #<m>`; it LOGs the finding
+  against that ticket and the review continues.
+- **`park`** — the fork is the human's, and the agent writes the park
+  with both positions.
+
+A second design-gap on the same ticket is `park` with both positions.
+The rebuild edge is convergence-counted, so the board transmutes a
+second traversal to `needs-human` by itself — that is the backstop, not
+your reason to spend one.
+
+**`ESCALATE kind=dismissal finding=<id> …`** — reply
+`dismiss: <section heading or Decision Log entry> — <reasoning>` only
+for a P2 or P3 the pinned spec actually speaks to; the agent opens what
+you point at and refuses a pointer that does not speak to the finding's
+subject. Anything else is `wave`, and the finding goes through the fix
+waves like any other. The spec is not edited to settle a dismissal.
+Either reply resumes the agent with `SendMessage`; your turn does not end
+here, the review continues.
+
+**`PARKED <question>`** — the agent wrote a `needs-human` park and
+stopped on it. End your turn, leaving its worktree and scratch in place:
+the resumed review continues from where it stopped. The park binds YOUR
+run, so `board-answer.sh` returns the ticket to in-review and resumes
+you; forward the answers verbatim to the agent with `SendMessage`. They
+are also on the ticket, which the agent can read itself, so a lost relay
+is not a lost answer.
+
+**`ENGINE-UNAVAILABLE`** — the review engine is down and the agent
+recorded the outage in the trail. Touch NO board state; an infra outage
+is not a human decision and the ticket stays in-review. End your turn.
+The sweep's recover pass nudges you — `resume the review of #<pr>` — and
+that nudge is what you dispatch a fresh agent on, with the same brief.
+
+**`DONE`** — the review is finished and nothing remains local: the merge
+landed and `done` is written, or auto-merge is armed for the board's
+finalize pass. Remove the agent's worktree (`git worktree remove <path>`)
+and end your turn. Your scope ends here.
 
 ## If Resumed With Answers
 
@@ -234,10 +365,11 @@ treat the note as new ticket content: re-enter through the gate, repair
 or re-cut the plan, and take the build edge again — the board's
 convergence rule sends a second disagreement on the same edge to the
 human by itself.
-If a plan-executor subagent was in flight when you parked, the answers
-go to it next: continue it with SendMessage carrying the answers
-verbatim. A design approval resumes you into doperpowers:writing-plans; a
-revision request re-enters the design at the point it names.
+If a subagent was in flight when you parked — a plan-executor, or the QA
+agent whose `PARKED` return ended your turn — the answers go to it next:
+continue it with SendMessage carrying the answers verbatim. A design
+approval resumes you into doperpowers:writing-plans; a revision request
+re-enters the design at the point it names.
 
 ## Authority
 
@@ -246,8 +378,10 @@ gh for status labels); registering decomposition children (--parent
 {{ISSUE_NUMBER}}) and follow-up tickets (--spawned-by {{ISSUE_NUMBER}})
 directly. NEVER: implementation code in your own hands
 (your plan-executor writes it), terminal states
-(the ONE exception is a recomposition verdict on your own epic, below),
-other tickets' states, reviewing your own pull request.
+(`done` is written by your QA agent after the merge; the ONE exception is
+a recomposition verdict on your own epic, below),
+other tickets' states. And never grade, triage, or merge your own pull
+request's review — the QA agent does; you answer its escalations.
 
 **Parent-contract contradiction ([parent-impact]).** Your ticket can itself
 be a CHILD: `parent-pin: #<parent> @ <hash>` in its `board:meta` names the
@@ -353,11 +487,11 @@ lineage.
    artifacts, exact base/head ranges, cross-child contracts, your
    recomposition evidence. Post that package as a
    NEW comment each recomposition cycle; NEVER edit a previous cycle's
-   closure-package comment in place. The scale-review dispatcher tells a
-   superseded reviewer from a current one by exact equality on the
-   package URL, and an edited-in-place comment keeps its old URL — the
-   sweep reads the epic as already reviewed and strands it in in-review
-   permanently. Then
+   closure-package comment in place. The dispatcher that stands in for a
+   lost owner tells a superseded reviewer from a current one by exact
+   equality on the package URL, and an edited-in-place comment keeps its
+   old URL — the sweep reads the epic as already reviewed and strands it
+   in in-review permanently. Then
    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<summary>" --pr <package URL> --branch <integration ref>
    Add `--branch` when the composition HAS an integration ref — that is
    the branch the reviewer checks out and reviews against the default
@@ -365,8 +499,31 @@ lineage.
    directly, and the reviewer works the package's per-child ranges
    instead. The recomposition return clears `branch:` with `pr:`, so
    whatever you supply here is this cycle's, and silence means silence.
-   The scale reviewer's clean verdict closes the epic; any defect
-   becomes a corrective child and the epic waits again.
+   The scale review is yours to run, exactly as a PR review is: position
+   your checkout on the integration ref (the agent's worktree is cut at
+   YOUR head), then dispatch ONE `doperpowers:qa-loop` with
+   `isolation: "worktree"` and Closing Artifact's brief, three lines
+   changed —
+
+       mode: scale
+       closure package: <the package event id or comment URL>
+       integration ref: <ref>          — omit when there is none
+
+   — with no `pr:` line, `base:` the branch the composition merges into,
+   and `head:` the sha you positioned at. Then end your turn. Its
+   returns: `DONE` — the review was clean and the agent wrote `done` on
+   the epic, so remove its worktree and end with no transition of your
+   own; `ESCALATE kind=design-gap` — the agent names the defect and the
+   corrective child it recommends (title, class, priority, body), so
+   register that child and take item 3's release exit,
+   {{BOARD_SCRIPTS}}/board-register.sh "<title>" <category> <P0..P3> --parent {{ISSUE_NUMBER}} --spawned-by {{ISSUE_NUMBER}} --body-file <the finding>
+   {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} needs-info "corrective child #<c> registered — waiting on children"
+   and end — that return ends the agent's review too, so there is
+   nothing to resume. `PARKED`, `NEEDS_PANEL` and `ENGINE-UNAVAILABLE`
+   are answered exactly as in **Answering the review**. A scale run
+   never merges and runs no fix waves: those two verdicts are its only
+   closing ones, and the epic waits for its corrective child and
+   recomposes again.
 5. A change to the parent's PURPOSE, a material reduction of acceptance,
    or a product/taste call is the human's — park needs-human with the
    proposal and your recommendation.
