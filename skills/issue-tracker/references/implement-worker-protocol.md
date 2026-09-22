@@ -256,8 +256,8 @@ subagents never write the board.
 
 ## Closing Artifact
 
-Opening your PR closes out the build:
-{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <URL> --branch <branch>
+Opening your PR closes out the build; the board write that records it is
+act 1 of the three below.
 When the work is done, open it ready for review. Draft stays yours to
 use when the work genuinely isn't reviewable yet — a draft is the spike
 lane's not-for-merge marker and you dispatch no review over one, so
@@ -297,10 +297,18 @@ From the PR on the review is YOURS to run — as a subagent, not as a
 handoff. You stay bound to the ticket through it, and your scope ends at
 `done`. Three acts close this turn, in this order:
 
-**1. Say what this seat is doing.**
-`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"`
-(the CLI is not on PATH; `sminos list` shows your seat's name). The fleet
-view is the only place a seat in review says so.
+**1. Take the review edge and say what this seat is doing** — two writes,
+together:
+
+    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <URL> --branch <branch>
+    {{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"
+
+(the sminos CLI is not on PATH; `sminos list` shows your seat's name.)
+Your turn ends while the agent works, so the fleet view shows this seat
+`idle` for the length of the review: the status line is the whole
+difference between an idle seat whose review is running and one that died
+mid-build — which is the state the sweep's recover pass and your human are
+both reading when they decide whether to reclaim it.
 
 **2. Dispatch ONE `doperpowers:qa-loop` agent** through the Agent tool with
 `isolation: "worktree"` — it starts in a fresh worktree cut at YOUR head.

@@ -211,18 +211,24 @@ On `DONE` (or `DONE_WITH_CONCERNS` whose concerns you have read and
 dispositioned): register every item of the executor's residue list as a
 follow-up ticket (`--spawned-by {{ISSUE_NUMBER}}`, body authored from the
 residue context, per the issue-tracker ticket contract) — a follow-up
-not registered does not exist — then take the review edge:
-
-{{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <PR URL> --branch <branch>
+not registered does not exist — then close out the build.
 
 From the PR on the review is YOURS to run — as a subagent, not as a
 handoff. You stay bound to the ticket through it, and your scope ends at
 `done`. Three acts close this turn, in this order:
 
-**1. Say what this seat is doing.**
-`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"`
-(the CLI is not on PATH; `sminos list` shows your seat's name). The fleet
-view is the only place a seat in review says so.
+**1. Take the review edge and say what this seat is doing** — two writes,
+together:
+
+    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <PR URL> --branch <branch>
+    {{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"
+
+(the sminos CLI is not on PATH; `sminos list` shows your seat's name.)
+Your turn ends while the agent works, so the fleet view shows this seat
+`idle` for the length of the review: the status line is the whole
+difference between an idle seat whose review is running and one that died
+mid-build — which is the state the sweep's recover pass and your human are
+both reading when they decide whether to reclaim it.
 
 **2. Dispatch ONE `doperpowers:qa-loop` agent** through the Agent tool with
 `isolation: "worktree"` — it starts in a fresh worktree cut at YOUR head.

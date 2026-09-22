@@ -29,11 +29,12 @@ assert_not_contains() {
     if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; else pass "$3"; fi
 }
-# Order is behavior: the fleet view is the only place a seat in review says it
-# is reviewing, and a status line written after the dispatch — or not at all,
-# which is what two of sixteen treatment sessions did in the task-8 eval —
-# leaves the seat looking idle for the whole review. assert_order pins the
-# three acts of the closing turn to their sequence.
+# Order is behavior. A seat's turn ENDS while its QA agent runs, so the fleet
+# view shows it idle for the length of the review, and the status line is the
+# only thing separating that from a seat that died mid-build. Four of eighteen
+# treatment sessions in the task-8 eval never wrote it while it stood as its
+# own act; it is now paired with the in-review transition, which no seat skips.
+# assert_order pins both the pairing and the three acts' sequence.
 assert_order() {  # <file> <earlier> <later> <label>
     local a b
     a="$(grep -nF -- "$2" "$1" | head -1 | cut -d: -f1)"
@@ -313,12 +314,21 @@ assert_contains "$arch" 'isolation: "worktree"' "...cut as a fresh worktree at t
 assert_contains "$arch" "mode: pr" "...briefed with the mode line the agent reads first"
 assert_contains "$arch" "your dispatcher answers escalations; return for them" \
     "...and the sentence that tells the agent where its escalations go"
-for _act in '**1. Say what this seat is doing.**' '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**'; do
+for _act in '**1. Take the review edge and say what this seat is doing**' '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**'; do
     assert_contains "$arch" "$_act" "architect: the closing turn is a numbered act — $_act"
 done
 assert_order "$ARCHITECT" 'sminos status <your alias> "reviewing: <PR URL>"' \
     '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
     "architect: the status line comes BEFORE the dispatch"
+# ...and it rides the board write the seat never skips. Standing alone as its
+# own act, the status line was dropped by four of eighteen eval sessions; the
+# transition it now shares an act with is not droppable, and the two are one
+# block.
+assert_order "$ARCHITECT" 'in-review "<one-line>" --pr <PR URL> --branch <branch>' \
+    'sminos status <your alias> "reviewing: <PR URL>"' \
+    "...paired with the in-review write, in that order"
+assert_contains "$arch" "two writes,
+together" "...as one act of two writes, not two acts"
 assert_order "$ARCHITECT" '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**' \
     "...and the turn ends after it"
 assert_contains "$arch" "review level floor:" "...relaying the dispatcher-owned level floor"
@@ -357,6 +367,11 @@ assert_contains "$proto" "your dispatcher answers escalations; return for them" 
 assert_order "$PROTO" 'sminos status <your alias> "reviewing: <PR URL>"' \
     '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
     "executor: the status line comes BEFORE the dispatch"
+assert_order "$PROTO" 'in-review "<one-line>" --pr <URL> --branch <branch>' \
+    'sminos status <your alias> "reviewing: <PR URL>"' \
+    "...paired with the in-review write, in that order"
+assert_contains "$proto" "two writes,
+together" "...as one act of two writes, not two acts"
 assert_order "$PROTO" '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**' \
     "...and the turn ends after it"
 assert_contains "$proto" 'ready-for-architect "<impasse>"' \
