@@ -116,8 +116,8 @@ and the sentence `your dispatcher answers escalations; return for them`.
 
 Relay `review level floor` and `auto-merge` VERBATIM from your bindings: the
 agent states both in the review trail, so a relay that lowered the floor or
-flipped the switch is visible on the PR. Then end your turn — the agent's
-returns arrive as notifications, and your session is busy until it returns.
+flipped the switch is visible on the PR. Then end your turn: the agent's return
+arrives as a notification.
 
 ## Relay
 
@@ -131,13 +131,18 @@ stale checkout reads old files against a new diff. Position, then run:
 
 ```
 git fetch origin && git checkout --detach <headCommit>
-[ "$(git rev-parse HEAD)" = <headCommit> ] || park: the head under review is not reachable
+```
+
+Verify that `git rev-parse HEAD` prints `<headCommit>`; a head that will not
+check out is a `needs-human` park naming the sha, never a panel run over
+whatever the checkout happens to hold. Then, in the background:
+
+```
 Workflow({ scriptPath: "{{REVIEW_CODE_DIR}}/workflows/code-review.js",
            args: { level: "<level>", base: "<base>", baseCommit: "<baseCommit>",
                    headCommit: "<headCommit>" } })
 ```
-
-It runs in the background. Save the result object to
+ Save the result object to
 `<scratch>/findings-r<n>.json` WITHOUT acting on its contents — the findings are
 the agent's to read and it records the file's hash in the trail — and resume the
 agent with `SendMessage` carrying that path.
