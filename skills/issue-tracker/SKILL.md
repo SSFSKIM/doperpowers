@@ -332,8 +332,7 @@ pick by repo visibility:
    a spike).
 3. Spawn via `sminos spawn "<n>-<slug>" "<prompt>" --cwd <repo> --worktree <n>-<slug>`
    — always a worktree; workers write code.
-   One route: the seat is a Claude-harness session and `--model` is the
-   whole of it — `${ARCHITECT_MODEL:-fable}` on the architect lane,
+   Pin the lane's model: `${ARCHITECT_MODEL:-fable}` on the architect lane,
    `${IMPLEMENT_MODEL:-sol}` on implement and spike. Both lanes pin rather
    than inherit, so the operator's own session model never silently
    collapses the split's two model economies onto one price.

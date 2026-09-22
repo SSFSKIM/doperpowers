@@ -605,7 +605,7 @@ dispatch_one() { _with_dispatch_lock "review-pr-$1" _dispatch_one_locked "$@"; }
 _dispatch_one_locked() {
   local pr="$1" mode="${2:-triggered}" tmp pr_json exports issue td wt prompt control_dir bind_ready ledger
   tmp="$(mktemp -d)"
-  pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,labels,closingIssuesReferences)" \
+  pr_json="$(gh pr view "$pr" -R "$BOARD_REPO" --json number,title,body,baseRefName,headRefName,headRefOid,url,isDraft,state,closingIssuesReferences)" \
     || { echo "#$pr: gh pr view failed" >&2; rm -rf "$tmp"; return 1; }
   printf '%s' "$pr_json" > "$tmp/pr.json"
   exports="$(TMP="$tmp" python3 - <<'PY'
