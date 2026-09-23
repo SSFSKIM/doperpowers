@@ -1617,34 +1617,41 @@ phase_relay() {
       fi
       transcript="$(_transcript_for_uuid "$uuid")"
       # The ack is gated on PROVEN delivery (Codex review F1): the sentinel is
-      # already in the transcript, or a resume returned success. A failed
-      # resume acks nothing — the answer stays on the feed for the next tick.
+      # already in the transcript, or a wake returned success. A failed wake
+      # acks nothing — the answer stays on the feed for the next tick.
       if _delivered "$transcript" "$(_sentinel "$aid")"; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
-      # DAEMON_TIMEOUT is bounded here on purpose. `sminos resume`'s default is
-      # 18000 (a wait of DAEMON_TIMEOUT/2 polls — hours), and this tick holds
-      # the whole-tick lock throughout: one long turn would starve lease
-      # renewal past the 15-minute lease and A1 would reclaim runs that are
-      # very much alive. Bounding it is safe because `sminos resume` advances
-      # the meta's `current` to the new turn and injects this prompt BEFORE it
-      # blocks: a timed-out resume exits nonzero, so nothing is acked this
-      # tick, and the next tick's sentinel grep finds the marker in the new
-      # transcript and acks WITHOUT re-delivering (the replay case the test
-      # pins on u-3/u-3-cur). The delivery gate holds; only the ack is late.
+      # WAKE, not resume: the parked worker ended its turn and waits — a live,
+      # idle seat. `sminos resume` stops a live turn and restarts the process;
+      # on an idle seat there is no turn to stop, the harness starts a copy,
+      # and nothing is delivered. `wake` writes to the seat's inbox socket, and
+      # a seat that died since the liveness check is resumed by wake itself —
+      # which is why the run credentials still ride in the env.
+      #
+      # DAEMON_TIMEOUT is bounded here on purpose. The --wait default is 18000
+      # seconds, and this tick holds the whole-tick lock throughout: one long
+      # turn would starve lease renewal past the 15-minute lease and A1 would
+      # reclaim runs that are very much alive. Bounding it is safe because the
+      # prompt lands BEFORE the wait blocks (the socket frame is written, or
+      # the resume fallback advances `current` and injects it): a timed-out
+      # wake exits nonzero, so nothing is acked this tick, and the next tick's
+      # sentinel grep finds the marker in the transcript and acks WITHOUT
+      # re-delivering (the replay case the test pins on u-3/u-3-cur). The
+      # delivery gate holds; only the ack is late.
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
         BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-        "$SMINOS_CLI" resume --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
+        "$SMINOS_CLI" wake --wait "$uuid" "$(_relay_prompt "$aid" "$replies")" --from sweep; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
-        # NOT NECESSARILY A FAILURE. `sminos resume` also exits nonzero when its
-        # bounded watcher expires on a turn it already injected the prompt into
+        # NOT NECESSARILY A FAILURE. `sminos wake` also exits nonzero when its
+        # bounded watcher expires on a turn it already delivered the prompt into
         # — the ORDINARY outcome for a long worker turn, since the bound exists
         # to keep this tick from starving lease renewal. Either way nothing is
         # acked, and the next tick's sentinel check settles which it was without
         # re-delivering. Calling it FAILED trained the reader to expect a broken
         # relay on every long turn.
-        echo "relay: #$tid answer $aid — the resume returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
+        echo "relay: #$tid answer $aid — the wake returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
         continue
       fi
       # PROGRESS IS A SUCCESSFUL ACK, and the ack has to be checked explicitly.

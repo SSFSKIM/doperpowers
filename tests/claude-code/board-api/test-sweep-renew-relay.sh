@@ -8,13 +8,15 @@
 # run-ended is routed to the resume path rather than failing the tick; and a
 # meta whose bind the server never confirmed is repaired through board-bind.
 #
-# RELAY pins: the answer reaches the worker through `sminos resume` with the run
-# credentials re-injected from the meta (ENV, never argv — `sminos resume` forks
-# a fresh process from the caller's environment); the resume's blocking wait is
-# BOUNDED, because the whole tick holds the lock while it runs; the ack fires
-# only on PROVEN delivery — the sentinel already in the transcript, or a resume
-# that returned success; a dead-session or failed delivery acks NOTHING and
-# breaks the drain loop instead of spinning on the same page.
+# RELAY pins: the answer reaches the parked worker — a live, idle seat — through
+# `sminos wake --wait` (a resume on a live idle seat starts a copy), with the run
+# credentials re-injected from the meta (ENV, never argv — a wake that finds the
+# seat dead resumes it, forking a fresh process from the caller's environment);
+# the blocking wait is BOUNDED, because the whole tick holds the lock while it
+# runs; the ack fires only on PROVEN delivery — the sentinel already in the
+# transcript, or a wake that returned success; a dead-session or failed
+# delivery acks NOTHING and breaks the drain loop instead of spinning on the
+# same page.
 #
 # PRINCIPAL ISOLATION pins: an ambient BOARD_RUN_TOKEN — this tick launched
 # from a worker's shell — never becomes the sweep's voice. The client's
@@ -58,7 +60,7 @@ CREDS="$TDIR/creds.env"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n
 #   2. []                                  -> pass 2 sees nothing, drains
 #   3. answer 118 again, sentinel now in the transcript (replay/idempotence)
 #   4. []
-#   5. answer 121 — delivery FAILS (the resume stub exits nonzero)
+#   5. answer 121 — delivery FAILS (the sminos stub exits nonzero)
 #   6. (default, never consumed) answer 120 for a session-less ticket: a
 #      broken zero-ack break would spin on it forever
 PORT="$(free_port)"
@@ -163,9 +165,9 @@ meta u-6 '{"uuid":"u-6","current":"u-6","status":"working","run_id":46,"fence":1
            "lane":"implementer","bind_confirmed":true,"ticket":"31",
            "board":"api:http://127.0.0.1:'"$PORT"'","board_repo":"otherrepo"}'
 
-RESUME_LOG="$TDIR/resume.log"; : > "$RESUME_LOG"
+RELAY_LOG="$TDIR/relay.log"; : > "$RELAY_LOG"
 # The stub records its ENVIRONMENT, not just its argv: both the run
-# credentials and the resume's wait bound are passed that way, and neither is
+# credentials and the delivery's wait bound are passed that way, and neither is
 # observable any other place.
 cat > "$DS/sminos" <<EOF
 #!/usr/bin/env bash
@@ -188,15 +190,17 @@ except Exception:
 print("live" if m.get("status") in ("working", "blocked") else "noop")
 PY
   exit 0 ;;
-resume) ;;
+resume|wake) ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
-if [ "\${1:-}" = "--wait" ]; then shift; fi
-{ echo "RESUME uuid=\$1"
+w=""; if [ "\${1:-}" = "--wait" ]; then w=" --wait"; shift; fi
+{ echo "\$(printf %s "\$verb" | tr a-z A-Z) uuid=\$1"
+  echo "VERB: \$verb\$w"
+  [ "\${3:-}" != "--from" ] || echo "FROM: \${4:-}"
   echo "ARGV: \$*"
   echo "DAEMON_TIMEOUT=\${DAEMON_TIMEOUT:-unset}"
-  env | grep '^BOARD_' | sort || true; } >> "$RESUME_LOG"
-[ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
+  env | grep '^BOARD_' | sort || true; } >> "$RELAY_LOG"
+[ -n "\${DELIVERY_MUST_FAIL:-}" ] && exit 1
 # A REAL transcript line. The delivery proof reads user-role JSONL entries
 # whose content is a plain string — a delivered PROMPT — never the raw bytes:
 # tool results ride the same \`user\` type as a content LIST, which is how
@@ -409,31 +413,37 @@ OUT2="$TDIR/relay.out"
 SW relay > "$OUT2" 2>&1 || true
 
 t "a sentinel quoted as tool-result data is not delivery proof" \
-  "RESUME uuid=u-3"                                                        cat "$RESUME_LOG"
+  "WAKE uuid=u-3"                                                          cat "$RELAY_LOG"
 nt "so the answer is not acked undelivered"  "already delivered (sentinel)" cat "$OUT2"
 t "the sentinel reaches the worker"    "[board-relay answer:118]"          cat "$TX"
 t "so does the protocol instruction"   "Re-state your gate verdict"        cat "$TX"
 t "and the answers, verbatim"          "---- answers (verbatim) ----"      cat "$TX"
 t "every reply line is carried"        "and squash the fixups"             cat "$TX"
 t "the answer is acked after delivery" '"path": "/answers/118/ack"'        cat "$FIX.log"
-t "the resume names the bound session" "RESUME uuid=u-3"                   cat "$RESUME_LOG"
-# `sminos resume` forks a fresh process from the CALLER's env, so the run
-# credentials have to be re-injected from the meta on every resume.
-t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "$RESUME_LOG"
-t  "with its run id"                   "BOARD_RUN_ID=43"                   cat "$RESUME_LOG"
-t  "and its fence"                     "BOARD_RUN_FENCE=1"                 cat "$RESUME_LOG"
-t  "and the board url"                 "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$RESUME_LOG"
+t "the wake names the bound session"   "WAKE uuid=u-3"                     cat "$RELAY_LOG"
+# The parked owner is a LIVE, IDLE seat: `sminos resume` on it has no turn to
+# stop and the harness starts a copy that delivers nothing (observed live).
+t  "the relay wakes it, and waits"     "VERB: wake --wait"                 cat "$RELAY_LOG"
+nt "it never resumes it"               "VERB: resume"                      cat "$RELAY_LOG"
+t  "and signs the delivery as the sweep" "FROM: sweep"                     cat "$RELAY_LOG"
+# A wake that finds the seat dead resumes it, forking a fresh process from the
+# CALLER's env, so the run credentials are re-injected from the meta on every
+# delivery.
+t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "$RELAY_LOG"
+t  "with its run id"                   "BOARD_RUN_ID=43"                   cat "$RELAY_LOG"
+t  "and its fence"                     "BOARD_RUN_FENCE=1"                 cat "$RELAY_LOG"
+t  "and the board url"                 "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$RELAY_LOG"
 # WHEREVER THE URL IS PINNED FOR A WORKER, THE REPO IS PINNED WITH IT. A worker
 # checks out the head it was dispatched for, and a head predating the repo key
 # carries a two-key board.json — so an unpinned sweep-driven turn dies on
 # `binding=api but no repo`. The dispatcher pins it for the FIRST turn; without
 # it here the worker loses the pin on every turn the sweep drives afterwards.
-t  "and the repo it speaks for"        "BOARD_REPO=testrepo"               cat "$RESUME_LOG"
-# `sminos resume` blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours)
-# while THIS tick holds the whole-tick lock, so renewal would starve past the
+t  "and the repo it speaks for"        "BOARD_REPO=testrepo"               cat "$RELAY_LOG"
+# The --wait blocks for DAEMON_TIMEOUT/2 polls (default 18000 — hours) while
+# THIS tick holds the whole-tick lock, so renewal would starve past the
 # 15-minute lease and A1 would reclaim live runs. The relay bounds it.
-t  "the resume's wait is bounded"      "DAEMON_TIMEOUT=300"                cat "$RESUME_LOG"
-argv_only() { grep '^ARGV:' "$RESUME_LOG"; }
+t  "the delivery's wait is bounded"    "DAEMON_TIMEOUT=300"                cat "$RELAY_LOG"
+argv_only() { grep '^ARGV:' "$RELAY_LOG"; }
 nt "the bearer never rides on argv"    "tok-w3"                            argv_only
 # #99 has no bound session: never ack-and-drop — the successor path delivers.
 t  "a session-less answer is reported" "no live bound session"             cat "$OUT2"
@@ -465,9 +475,9 @@ prompt_is_exact() { delivered_content | diff "$EXPECT" - && echo "prompt=exact";
 t "the delivered prompt is byte-exact" "prompt=exact" prompt_is_exact
 
 # ---- replay: the same answer served again, sentinel already present --------
-# This is also the degrade path for a resume whose bounded wait expires:
-# `sminos resume` injects the sentinel-bearing prompt BEFORE it blocks, so a
-# timed-out resume exits nonzero and acks nothing this tick — and the NEXT
+# This is also the degrade path for a delivery whose bounded wait expires:
+# the sentinel-bearing prompt lands BEFORE the wait blocks, so a timed-out
+# wake exits nonzero and acks nothing this tick — and the NEXT
 # tick lands exactly here, finding the sentinel and acking without
 # re-delivering. Run hostile: the ack must speak automation too.
 : > "$FIX.log"
@@ -475,7 +485,7 @@ before="$(grep -c "board-relay" "$TX")"
 SWEVIL relay > "$TDIR/relay2.out" 2>&1 || true
 after="$(grep -c "board-relay" "$TX")"
 delta() { echo "delta=$((after - before))"; }
-t "no double-resume on replay"          "delta=0"                    delta
+t "no double delivery on replay"          "delta=0"                    delta
 t "the replay is recognized as delivered" "already delivered (sentinel)" cat "$TDIR/relay2.out"
 t "and re-acks (ack is set-once)"       '"path": "/answers/118/ack"'  cat "$FIX.log"
 t  "the ack speaks automation, not the ambient run token" '"auth": "Bearer a"' cat "$FIX.log"
@@ -500,9 +510,9 @@ nt "and does not hang"                   "TIMEOUT"                   cat "$OUTAC
 # ---- a failed delivery acks nothing and stops the pass ---------------------
 : > "$FIX.log"
 OUT3="$TDIR/relay3.out"
-RESUME_MUST_FAIL=1 SWB relay > "$OUT3" 2>&1 || true
-t  "a resume that reported no delivery is not called a failure" \
-   "the resume returned no delivery"                              cat "$OUT3"
+DELIVERY_MUST_FAIL=1 SWB relay > "$OUT3" 2>&1 || true
+t  "a wake that reported no delivery is not called a failure" \
+   "the wake returned no delivery"                              cat "$OUT3"
 nt "a failed delivery acks nothing"     "/answers/121/ack"       cat "$FIX.log"
 nt "and the pass does not hang"         "TIMEOUT"                cat "$OUT3"
 
@@ -526,13 +536,13 @@ meta u-7 '{"uuid":"u-7","current":"u-7","status":"idle","run_id":47,"fence":1,
            "lane":"implementer","bind_confirmed":false,"ticket":"78"}'
 : > "$FIX.log"
 OUTC="$TDIR/relay-candidates.out"
-before_c="$(wc -l < "$RESUME_LOG")"
+before_c="$(wc -l < "$RELAY_LOG")"
 SWB relay > "$OUTC" 2>&1 || true
-after_c="$(wc -l < "$RESUME_LOG")"
-resumes_delta() { echo "delta=$((after_c - before_c))"; }
+after_c="$(wc -l < "$RELAY_LOG")"
+delivered_delta() { echo "delta=$((after_c - before_c))"; }
 t  "an unresolved fork is refused, not re-forked" "UNRESOLVED FORK"   cat "$OUTC"
 t  "a bearerless session is refused too"    "holds no run bearer"     cat "$OUTC"
-t  "neither is resumed"                     "delta=0"                 resumes_delta
+t  "neither is woken"                       "delta=0"                 delivered_delta
 nt "and neither answer is acked"            "/answers/124/ack"        cat "$FIX.log"
 nt "nor the other"                          "/answers/125/ack"        cat "$FIX.log"
 rm -f "$DH/u-6.json" "$DH/u-7.json"
@@ -549,7 +559,7 @@ t  "it re-reads the feed exactly once"     "reads=1"              feed_reads
 
 # =========================================================================
 # One tick at a time — a held lock skips the whole thing (the sentinel check
-# and its resume must not interleave with another tick's).
+# and its delivery must not interleave with another tick's).
 # =========================================================================
 : > "$FIX.log"
 mkdir "$DH/.sweep-api.$(lock_key testrepo).lock"
@@ -641,7 +651,7 @@ t  "a startless lock still obeys a live pid" \
 # start comes back EMPTY, and empty is not evidence of death. Compared as a
 # plain string it reads as a mismatch, so the lock is stolen from an owner
 # `kill -0` just said is alive, and two ticks then interleave the sentinel
-# check with its resume: the exact double delivery this lock exists to prevent.
+# check with its delivery: the exact double delivery this lock exists to prevent.
 # UNKNOWN FAILS CLOSED — the stale-age rule alone never overrides a live pid.
 cat > "$STUB/ps" <<'EOF'
 #!/usr/bin/env bash
@@ -658,7 +668,7 @@ rm -f "$STUB/ps"
 # available here are opposite and both fatal.
 #
 # Read as a mismatch, a live owner is robbed mid-tick and two ticks interleave
-# the sentinel check with its resume: the double delivery the lock prevents.
+# the sentinel check with its delivery: the double delivery the lock prevents.
 # Waved through as "unreadable", a RECYCLED pid under such a lock is believed
 # alive forever — no renewal, no relay, no resume, no dispatch — which is the
 # wedge the start time was recorded to prevent in the first place. So a bare
@@ -693,15 +703,15 @@ rm -rf "$LK"
 meta u-8 '{"uuid":"u-8","current":"u-8","status":"working","run_id":50,"fence":2,
            "lane":"implementer","bind_confirmed":true,"ticket":"99","run_bearer":"tok-w8"}'
 : > "$FIX.log"
-before_8="$(wc -l < "$RESUME_LOG")"
+before_8="$(wc -l < "$RELAY_LOG")"
 OUTR="$TDIR/relay-renew-retired.out"
 SWB relay > "$OUTR" 2>&1 || true
-after_8="$(wc -l < "$RESUME_LOG")"
-resumes_8() { echo "delta=$((after_8 - before_8))"; }
+after_8="$(wc -l < "$RELAY_LOG")"
+delivered_8() { echo "delta=$((after_8 - before_8))"; }
 t  "a run ended by the pre-delivery renewal cancels the relay" \
    "ended under the renewal that preceded this delivery"  cat "$OUTR"
 t  "the retirement did land on that meta"  "run_ended_at"  cat "$DH/u-8.json"
-t  "and the session is not resumed on revoked credentials" "delta=0" resumes_8
+t  "and the session is not woken on revoked credentials" "delta=0" delivered_8
 nt "nor is the answer acked"               "/answers/120/ack"        cat "$FIX.log"
 nt "and the pass does not hang"            "TIMEOUT"                 cat "$OUTR"
 rm -f "$DH/u-8.json"

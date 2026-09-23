@@ -141,8 +141,9 @@ case "\$verb" in
 migrate) exit 0 ;;
 sync)    echo noop ;;
 meta)    exit 0 ;;
-resume)
-  if [ "\${1:-}" = "--wait" ]; then shift; fi
+resume|wake)
+  w=""; if [ "\${1:-}" = "--wait" ]; then w=" --wait"; shift; fi
+  printf '%s%s\n' "\$verb" "\$w" >> "$TDIR/relay-verbs"
   printf '%s\n' "\$2" >> "$TX"   # delivery IS the transcript write
   ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
@@ -203,6 +204,10 @@ nt "and never the human token"        '"auth": "Bearer h"' ack_leg
 t  "one walk suffices when it serves the park" "qreads=[1]" qreads
 
 # The relay ran INLINE — the worker is awake before this command returned.
+# A parked owner is a LIVE, IDLE seat: a resume on it has no turn to stop and
+# the harness starts a copy that delivers nothing, so the relay wakes it.
+t  "the parked owner is woken, and waited on" "wake --wait"         cat "$TDIR/relay-verbs"
+nt "never resumed"                        "resume"                   cat "$TDIR/relay-verbs"
 t "the sentinel reached the bound worker" "[board-relay answer:118]" cat "$TX"
 t "with the answer verbatim"              "ship it"                  cat "$TX"
 t "and the protocol instruction"          "Re-state your gate verdict" cat "$TX"
@@ -406,10 +411,10 @@ case "\$verb" in
 migrate) exit 0 ;;
 sync)    echo noop ;;
 meta)    exit 0 ;;
-resume)
+resume|wake)
   if [ "\${1:-}" = "--wait" ]; then shift; fi
   python3 -c "import json;print('phase=[%s]' % (json.load(open('$DH3/u-21.json')).get('phase') or '<absent>'))" \
-    > "$TDIR/phase-at-resume"
+    > "$TDIR/phase-at-delivery"
   printf '%s\n' "\$2" >> "$TX3"
   ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
@@ -428,7 +433,7 @@ phase21()  { python3 -c "import json;print('phase=[%s]' % (json.load(open('$DH3/
 upd21()    { python3 -c "import json;print('updated=[%s]' % (json.load(open('$DH3/u-21.json')).get('updated') or '<absent>'))"; }
 t  "the server's return into the review lane is what prints" "answered #21 → in-review" cat "$OUTREV"
 t  "the bound seat carries the review mark again"  "phase=[review]"   phase21
-t  "and it was there before the worker was woken"  "phase=[review]"   cat "$TDIR/phase-at-resume"
+t  "and it was there before the worker was woken"  "phase=[review]"   cat "$TDIR/phase-at-delivery"
 t  "the mark invents no last-turn activity"        "updated=[<absent>]" upd21
 t  "the answer still reached the worker"           "the finding stands" cat "$TX3"
 
