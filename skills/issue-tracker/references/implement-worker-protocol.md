@@ -208,7 +208,8 @@ YOUR AUTHORITY: your OWN ticket's open states via board-transition.sh
 escalations (`ready-for-architect` at gate time or as a mid-build
 return); registering decomposition children (--parent {{ISSUE_NUMBER}})
 and follow-up tickets (--spawned-by {{ISSUE_NUMBER}}) directly. NEVER: terminal states (done arrives by merge —
-your PR body MUST say "Closes #{{ISSUE_NUMBER}}", and `done` itself is
+under a gh board your PR body MUST say "Closes #{{ISSUE_NUMBER}}" (under an
+API board it must not; see Closing Artifact), and `done` itself is
 written by your QA agent after that merge; wontfix is the human's
 call — to recommend it, park needs-human with the recommendation as the
 note); other tickets' states (a cross-ticket observation is a comment on
@@ -266,7 +267,11 @@ Your PR body is the CLOSING ARTIFACT — the one structured handoff. There is
 no live progress mirror in this pipeline; scope-end writes are the only
 status writes. The body carries:
 
-- "Closes #{{ISSUE_NUMBER}}".
+- Under a gh board, "Closes #{{ISSUE_NUMBER}}". Under an API board, NO
+`Closes`/`Fixes`/`Resolves` line for the ticket: its number is the board's,
+and the merge would close whatever GitHub issue carries that number in the
+PR's repository. The board's `--pr` pin (act 1) and the review trail link
+the ticket instead.
 - "## Validation Evidence" — every claim of done from your execution, each
 with the evidence backing it (test run + result, build + rendered
 behavior, the relevant check). Your QA agent cross-checks this

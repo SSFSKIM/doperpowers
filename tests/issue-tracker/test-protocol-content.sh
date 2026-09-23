@@ -59,6 +59,12 @@ assert_contains "$proto" "A follow-up not registered does not exist" "direct reg
 assert_contains "$proto" "doperpowers:issue-tracker" "registration routes through the issue-tracker skill"
 assert_contains "$proto" "author its body at register time" "follow-up body is authored at register time"
 assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
+# The Closes link is a gh-binding contract: on an API board the ticket number
+# names no GitHub issue, and the keyword would close an unrelated one.
+assert_contains "$proto" 'under a gh board your PR body MUST say "Closes #{{ISSUE_NUMBER}}"' "Authority: the Closes duty is the gh binding's"
+assert_contains "$proto" '- Under a gh board, "Closes #{{ISSUE_NUMBER}}". Under an API board, NO' "Closing Artifact: the Closes bullet splits by binding"
+assert_contains "$proto" '`Closes`/`Fixes`/`Resolves` line for the ticket' "...and an API board's PR body carries no closing keyword for the ticket"
+assert_not_contains "$proto" 'your PR body MUST say "Closes #{{ISSUE_NUMBER}}", and' "...and no binding-blind Closes duty survives"
 assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
 assert_contains "$proto" "EXECUTION (gate passed)" "execution doctrine lives inline in the protocol (no binding indirection)"
 assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
@@ -621,6 +627,8 @@ assert_not_contains "$pexec" "final review is clean" "...closing no longer presu
 # there becomes a ticket (or a fix made to avoid writing one).
 assert_contains "$pexec" '## Unresolved Review Findings`, each with where it is' "...and unfixed task-review findings ride their own PR-body section, with the reason each was left"
 assert_contains "$pexec" "deserves its own ticket" "...while Residue keeps its meaning: work for another ticket"
+assert_contains "$pexec" 'carries `Closes #<ticket>` when the brief'"'"'s ticket is a GitHub issue' "...and writes the Closes link only for a GitHub-issue ticket"
+assert_contains "$pexec" 'no `Closes`/`Fixes`/`Resolves` line' "...and none for a board-service ticket"
 assert_not_contains "$pexec" 'into the PR body'"'"'s `## Residue`' "...and review findings are not routed into Residue (that list mints tickets)"
 
 echo "task-executor agent (subagent-driven-execution's hands):"

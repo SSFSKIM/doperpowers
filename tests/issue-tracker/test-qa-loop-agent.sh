@@ -237,6 +237,23 @@ assert_text_contains "$trail_section" "before every \`ESCALATE\` or \`NEEDS_PANE
 assert_not_contains "$AGENT" "a design-gap answer may end your review outright" \
     "...and no design-gap-only wording survives"
 
+# The ticket link is binding-specific. On the API binding the ticket number is
+# the board's, so a `Closes #<n>` line would close whatever GitHub issue of that
+# number the PR's repository holds — observed as a false audit expectation in
+# the Task 12 API smoke.
+echo "the closing link splits by binding:"
+audit_section="$(section '## Compliance Audit')"
+assert_text_contains "$audit_section" "Under the gh binding (the brief's ticket" \
+    "the audit names the gh binding by its GitHub-issue ticket URL" "Compliance Audit"
+assert_text_contains "$audit_section" "the PR body carries \`Closes #<ticket>\`, and its absence" \
+    "under gh the PR body carries the Closes link, and its absence is the finding" "Compliance Audit"
+assert_text_contains "$audit_section" "must NOT carry a \`Closes\`/\`Fixes\`/\`Resolves #<ticket>\`" \
+    "under the API binding the PR body must not carry a closing keyword for the ticket" "Compliance Audit"
+assert_text_contains "$audit_section" "its presence is a SPEC FINDING" \
+    "...and its presence is the finding" "Compliance Audit"
+assert_text_contains "$audit_section" "board's \`--pr\` pin instead" \
+    "...and the ticket is linked by the trail and the --pr pin instead" "Compliance Audit"
+
 echo "the rehoming is complete:"
 assert_not_contains "$AGENT" "{{" "no dispatcher placeholder survives in the agent body"
 assert_not_contains "$AGENT" "Workflow(" "the agent never calls the workflow a subagent cannot reach"

@@ -73,8 +73,11 @@ escalated.
 
 When the work is complete and every review the brief left to you is clean,
 open the pull request yourself, ready for review (draft only if the work genuinely is not
-reviewable yet). The body carries `Closes #<ticket>` when the brief names a
-ticket, a `## Validation Evidence` section with each claim of done and the
+reviewable yet). The body
+carries `Closes #<ticket>` when the brief's ticket is a GitHub issue (a
+board-service ticket's number names no GitHub issue, so its PR carries
+no `Closes`/`Fixes`/`Resolves` line — the merge would close an unrelated
+issue), a `## Validation Evidence` section with each claim of done and the
 command and output that back it, a `## Confusions` section only if
 something was genuinely confusing, an `## Unresolved Review Findings`
 section when Finishing left any (review input, for whoever reviews the
