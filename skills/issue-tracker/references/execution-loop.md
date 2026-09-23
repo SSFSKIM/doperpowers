@@ -94,7 +94,7 @@ A daemon has no human gates: work whose living spec wants a human standing
 at those gates is precisely `interactive-preferred`.
 
 **No live progress mirror.** Status writes happen only where a scope ends:
-the PR body is the closing artifact (`Closes #N`, `## Validation Evidence`
+the PR body is the closing artifact (`Closes #N` on the gh binding only, `## Validation Evidence`
 — cross-checked by the QA agent, `## Confusions` when warranted,
 FOLLOW-UPS), and a park comment carries the questions plus a 3–6 line
 orientation summary. Mid-flight visibility is the board's state label —
@@ -123,7 +123,7 @@ What changes and what doesn't:
   never parks. Check 2 survives: too-big questions decompose into
   narrower child spikes.
 - **Merge bar is free** — the optional evidence PR is a DRAFT (never
-  `Closes #N`, never marked ready): review dispatch skips drafts and land
+  `Closes #N` under gh, never marked ready): review dispatch skips drafts and land
   dispatch refuses them, so spike code cannot enter the merge lane by
   construction.
 - **End state reuses the board** — a finished spike parks
@@ -183,7 +183,7 @@ Rules, generalized from risk-surfaces:
 
 Own ticket's open states via `board-transition.sh`; direct registration of
 decomposition children (`--parent`) and follow-up tickets (`--spawned-by`).
-NEVER: terminal states (`done` arrives by the PR's `Closes #N` merge;
+NEVER: terminal states (`done` arrives by the QA agent's close, or on gh by the PR's `Closes #N` merge;
 `wontfix` is recommended via a `needs-human` park, decided by the human),
 other tickets' states (cross-ticket observations are comments), scope
 beyond the ticket. There is no proposal block — with no judge to receive
