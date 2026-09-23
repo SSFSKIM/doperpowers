@@ -334,7 +334,7 @@ _recover() {
     note="auto-recovery exhausted: the owner $uuid was nudged $RECOVERY_CAP times about its review of this ticket's pull request and no new [review-trail] comment appeared between them ($why); review the PR by hand, or answer here to put the owner back on it"
     prompt="SWEEP RECOVERY: your review of ticket #$tk's pull request has no live QA agent ($why). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it."
   else
-    note="auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; resume it by hand (sminos resume/board-answer) or re-cut to its ready-for-* lane for a fresh dispatch"
+    note="auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; wake it by hand (sminos wake, or board-answer.sh with the answer) or re-cut to its ready-for-* lane for a fresh dispatch"
     prompt="SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead."
   fi
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
