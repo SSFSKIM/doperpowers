@@ -1,9 +1,9 @@
 ---
-name: explaining
-description: Use when your human partner asks for an explanation — of changes an agent implemented that they did not watch, or of a concept they want to understand — including /explaining, ELI5-style requests, "explain this", "walk me through what changed", "what is X", "help me understand".
+name: progress-report
+description: Use when your human partner asks for an explanation — of changes an agent implemented that they did not watch, or of a concept they want to understand — including /progress-report, ELI5-style requests, "explain this", "walk me through what changed", "what is X", "help me understand".
 ---
 
-# Explaining
+# Progress report
 
 An explanation succeeds when your human partner can act on the subject
 without you: make the next product or technical decision about a change,
