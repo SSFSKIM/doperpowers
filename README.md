@@ -83,7 +83,7 @@ Eighteen skills, grouped by what they're for. Each one auto-triggers from its de
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`; the qa-loops review engine still runs its runtime)
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
-- `progress-report` — explain a change your human partner didn't watch, or a concept, so they can steer it: behavior, the decisions made for them, limits, how to check; or mechanism, boundaries, what it means for them
+- `progress-report` — explain a change your human partner didn't watch, or a concept, so they can steer it: behavior, the decisions made for them, limits, how to check; or mechanism, boundaries, what it means for them — delivered as a self-contained HTML page opened in their browser
 
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)

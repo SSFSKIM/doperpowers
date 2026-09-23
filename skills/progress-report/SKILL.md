@@ -52,6 +52,17 @@ Mechanical churn (version bumps, renames) gets a clause at most.
 4. **What it means for them** — when they named a situation or goal,
    the decision criteria the concept implies for it.
 
+## Delivery
+
+A full explanation is an HTML page: one self-contained file (inline
+CSS, no CDN dependencies, so it renders from disk), written outside the
+working tree since it is for reading rather than committing, and opened
+in their browser. It is a document in the same plain register, carrying
+the parts above in order; the diagrams, tables and step sequences from
+Clarity are drawn with SVG or CSS rather than typed as ASCII. The reply
+is the brief answer plus the page's path. Asked for a brief answer, the
+paragraph is the whole reply and there is no page.
+
 ## Clarity
 
 - Define a term at first use, or don't use it.
