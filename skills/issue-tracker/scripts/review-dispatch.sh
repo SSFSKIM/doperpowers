@@ -334,6 +334,21 @@ _owner_skip() {  # <number> <ticket> <role|name> <what>
   echo "#$1: owner reviews — skip (ticket #$2 is bound to live ${3%%|*} seat ${3#*|}, which dispatches its own $4)"
 }
 
+# The owner-first check again, UNDER the dispatch lock and right before the
+# spawn binds the ticket. The first ask runs before the lock, and the locked
+# section spends a gh read, a fetch and a worktree build after it — a window in
+# which a seat can bind the ticket, and the stand-in's bind would take it away.
+# Succeeds (and skips, dropping the worktree prepared for the spawn) when an
+# owner appeared.
+_owner_arrived() {  # <number> <ticket> <what> <worktree>
+  local owner
+  owner="$(_live_owner "$2")"
+  [ -n "$owner" ] || return 1
+  _owner_skip "$1" "$2" "$owner" "$3"
+  git -C "$LOCAL_REPO" worktree remove --force "$4" 2>/dev/null || rm -rf "$4"
+  return 0
+}
+
 # The PR's primary ticket: the first issue it closes. The sweep resolves this
 # from its one list call and hands it down; a triggered dispatch has no listing,
 # and the owner-first rule needs the number BEFORE the registry dedupe — ahead
@@ -775,6 +790,7 @@ PY
   rm -rf "$tmp"
   [ -n "$prompt" ] || { echo "#$pr: empty prompt — not dispatching" >&2; return 1; }
 
+  if [ -n "$issue" ] && _owner_arrived "$pr" "$issue" review "$wt"; then return 0; fi
   _spawn_reviewer "review-pr-$pr" "$issue" "$prompt" "$wt"
 }
 
@@ -901,6 +917,7 @@ _dispatch_epic_locked() {
     || { echo "$name: prompt render failed" >&2; return 1; }
   [ -n "$prompt" ] || { echo "$name: empty prompt — not dispatching" >&2; return 1; }
 
+  if _owner_arrived "$etid" "$etid" "scale review" "$wt"; then return 0; fi
   _spawn_reviewer "$name" "$etid" "$prompt" "$wt" || return 1
   # Stamp WHICH closure package this reviewer was dispatched against. That
   # stamp is what lets the next recomposition cycle tell a superseded

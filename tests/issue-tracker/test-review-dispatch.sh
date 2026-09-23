@@ -349,6 +349,13 @@ cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >> "$MOCK_LOG"
+# A side effect a case can hang on one call shape: $MOCK_GH_HOOK runs whenever
+# the call's argv contains $MOCK_GH_HOOK_ON. It is how a case makes something
+# happen at a precise point inside the dispatcher (an owner binding the ticket
+# between the owner-first check and the spawn).
+if [ -n "${MOCK_GH_HOOK:-}" ] && [[ "$*" == *"${MOCK_GH_HOOK_ON:-}"* ]]; then
+  bash "$MOCK_GH_HOOK"
+fi
 case "${1:-} ${2:-}" in
   "repo view")
     # two callers: the default-branch read, and BOARD_REPO self-resolution
@@ -769,6 +776,33 @@ reset_state; seed_owner ARCHITECT working old-host boot-old
 out="$("$DISPATCH" 5 2>&1)" || true
 assert_not_contains "$out" "owner reviews" "a foreign-host owner meta is a dead session, not a live owner"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the stand-in dispatches over a dead owner meta"
+
+# THE OWNER THAT ARRIVES MID-DISPATCH. The owner-first check runs before the
+# dispatch lock, and the locked section then spends a gh read, a fetch and a
+# worktree build before the spawn binds the ticket — a seat that binds the
+# ticket inside that window would have its ticket taken by the stand-in. The
+# hook seeds the owner on the locked section's own PR read, after the pre-check
+# has already come back empty.
+OWNER_HOOK="$TEST_ROOT/owner-hook.sh"
+cat > "$OWNER_HOOK" <<'HOOK'
+T="${MOCK_HOOK_TICKET:-7}" python3 - <<'PY'
+import json, os
+u = "ace00009-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "late-owner", "role": "ARCHITECT",
+           "ticket": os.environ["T"], "status": "idle", "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+HOOK
+reset_state
+out="$(MOCK_GH_HOOK="$OWNER_HOOK" MOCK_GH_HOOK_ON="--json number,title" "$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "an owner that binds mid-dispatch is seen by the locked section's own check"
+assert_no_spawn review-pr-5 "...and no stand-in spawns over it"
+assert_equals "$(ticket_owner 7)" "late-owner" "...so the owner keeps its ticket"
+if [ -e "$LOCAL_REPO/.claude/worktrees/review-pr-5" ]; then
+    fail "...and the worktree prepared for the skipped spawn is removed"
+else
+    pass "...and the worktree prepared for the skipped spawn is removed"
+fi
 
 # No owner at all: the stand-in spawns, as a review nobody owns must.
 reset_state
@@ -1985,6 +2019,15 @@ assert_contains "$OUT_EPIC_OWNER" "#20: owner reviews — skip" "an epic bound t
 assert_no_spawn review-epic-20 "no scale stand-in spawns over a live epic owner"
 assert_equals "$(ticket_owner 20)" "20-recompose-epic" "and the owner keeps the epic — nothing rebinds it"
 assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "nor is anything retired on the way past"
+
+# The same window on the scale path: the owner binds the epic after the
+# pre-check, inside the locked spawn (the hook fires on its tech-debt read).
+reset_state
+out="$(MOCK_GH_HOOK="$OWNER_HOOK" MOCK_GH_HOOK_ON="--label tech-debt" MOCK_HOOK_TICKET=20 \
+    "$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$out" "#20: owner reviews — skip" "an epic owner that binds mid-dispatch is seen by the locked spawn's own check"
+assert_no_spawn review-epic-20 "...and no scale stand-in spawns over it"
+assert_equals "$(ticket_owner 20)" "late-owner" "...so the owner keeps the epic"
 
 # The epic's outgoing owner: the Architect that assembled the closure package.
 # Its claude-species meta lingers status=working after its turn ends, and the
