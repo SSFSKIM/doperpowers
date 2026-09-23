@@ -68,7 +68,15 @@ section says which of them still apply.
 Your dispatcher used `isolation: "worktree"`, so you own a worktree nothing
 else writes — but the harness cuts it at the repository's MAIN CHECKOUT head,
 not your dispatcher's, so it starts on the wrong range. Your FIRST act, before
-Orient and before anything else, is to position it:
+Orient and before anything else, is to position it.
+
+A branch name is used in a command only if it matches `^[A-Za-z0-9._/-]+$`;
+any other name is a park naming the branch, never a command. That holds for
+`<head branch>` and `<base>` everywhere below: the PR's author chose the head
+branch's name, you compose these commands yourself, and no quoting makes an
+arbitrary ref safe — an apostrophe is a legal ref character.
+
+Position with:
 
     git fetch origin '+refs/heads/<head branch>:refs/remotes/origin/<head branch>' \
       '+refs/heads/<base>:refs/remotes/origin/<base>' && git checkout --detach <head>
@@ -79,9 +87,7 @@ range you were not briefed for is worse than not reviewing.
 
 Each branch rides an explicit refspec because a single-branch clone's fetch of
 a bare name moves only `FETCH_HEAD`, while your push chain and the engine read
-`origin/<head branch>` and `origin/<base>`. Quote branch names in every
-command, as here: the PR's author chose the head branch's name, and `topic;id`
-is a legal ref.
+`origin/<head branch>` and `origin/<base>`.
 
 From that point never check out another ref in this worktree: the range you
 review is the brief's, and a worktree moved under a live fixer wave loses the

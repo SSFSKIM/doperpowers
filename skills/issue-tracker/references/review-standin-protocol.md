@@ -34,6 +34,12 @@ anything else. Create your scratch directory in the same breath —
 the brief's report file and any panel findings file live there, outside every
 worktree.
 
+A branch name is used in a command only if it matches `^[A-Za-z0-9._/-]+$`;
+any other name is a park naming the branch, never a command. That holds for
+every branch name below, whether a binding carried it or you resolved it: the
+PR's author chose the head branch's name, and no quoting makes an arbitrary ref
+safe — an apostrophe is a legal ref character.
+
 **`REVIEW_MODE: pr`** — the dispatcher detached this worktree at the PR head
 already. Make the base reachable and confirm the head:
 
@@ -56,8 +62,7 @@ git fetch origin '+refs/heads/<baseRefName>:refs/remotes/origin/<baseRefName>' \
 ```
 
 Each branch rides its own refspec, for the reason the scale mode below spells
-out, and every branch name is quoted: the PR's author chose the head branch's
-name, and `topic;id` is a legal ref.
+out.
 
 `baseRefName` is the brief's `base:` — the branch name itself, never `origin/`
 anything; the agent adds the remote where it wants the tracking ref.
@@ -71,7 +76,7 @@ stale local symref or a literal guess):
 
 ```
 BASE="$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]].*#\1#p' | head -1)"
-[ -n "$BASE" ] \
+[[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]] \
   && git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
   && git fetch origin '{{INTEGRATION_REF}}' && git checkout --detach FETCH_HEAD
 ```
@@ -84,6 +89,8 @@ while the integration ref is taken from `FETCH_HEAD` immediately after its own
 fetch. The chain is one `&&` sequence on purpose: run unchained, an empty
 `$BASE` sends an empty refspec out and the integration checkout still succeeds,
 so the sequence exits 0 with the one failure that matters buried in stderr.
+Its first link is the branch-name rule above, applied to the one name this
+command resolves for itself.
 
 `{{INTEGRATION_REF}}` equal to the base you resolved means the integration
 branch was deleted when its children merged: there is no aggregate range, so

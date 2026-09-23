@@ -82,9 +82,8 @@ assert_before "$PROTOCOL" "## Position" "## Dispatch" "positioning precedes the 
 echo "stand-in protocol — positioning:"
 assert_contains "$PROTOCOL" 'git checkout --detach {{HEAD_SHA}}' "a PR review positions at the briefed head"
 assert_contains "$PROTOCOL" "baseRefName,headRefName,headRefOid" "the api mode resolves base and head off the PR"
-# Each branch rides an explicit refspec and a quote: a single-branch clone's
-# fetch of a bare name leaves origin/<ref> absent, and the PR's author chose the
-# head branch's name (`topic;id` is a legal ref).
+# Each branch rides an explicit refspec: a single-branch clone's fetch of a bare
+# name leaves origin/<ref> absent.
 assert_contains "$PROTOCOL" "git fetch origin '+refs/heads/{{BASE_REF}}:refs/remotes/origin/{{BASE_REF}}'" \
     "a PR review fetches the base into its tracking ref, quoted"
 assert_contains "$PROTOCOL" "'+refs/heads/{{HEAD_REF}}:refs/remotes/origin/{{HEAD_REF}}'" \
@@ -95,6 +94,15 @@ assert_contains "$PROTOCOL" "'+refs/heads/<headRefName>:refs/remotes/origin/<hea
     "...and the resolved head branch"
 assert_contains "$PROTOCOL" "git fetch origin '{{INTEGRATION_REF}}'" "the scale fetch quotes the integration ref"
 assert_not_contains "$PROTOCOL" "git fetch origin {{BASE_REF}} {{HEAD_REF}}" "no bare, unquoted branch fetch survives"
+# Quoting cannot make an arbitrary ref safe (an apostrophe is a legal ref
+# character), so a name outside a safe charset parks instead of reaching a shell.
+assert_contains "$PROTOCOL" 'A branch name is used in a command only if it matches `^[A-Za-z0-9._/-]+$`;' \
+    "a branch name reaches a command only inside a safe charset"
+assert_contains "$PROTOCOL" "any other name is a park naming the branch, never a command" \
+    "...and any other name parks rather than being run"
+assert_not_contains "$PROTOCOL" "every branch name is quoted" "quoting is no longer offered as the safeguard"
+assert_contains "$PROTOCOL" '[[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]]' \
+    "...and the scale base, resolved inside its own command, passes the same gate there"
 assert_contains "$PROTOCOL" "ls-remote --symref origin HEAD" "a scale review resolves its base from origin's own symref"
 assert_contains "$PROTOCOL" "aggregate range: none" "an epic with no integration branch says so in the brief"
 assert_contains "$PROTOCOL" "needs-human" "a ref that will not resolve parks instead of reviewing the wrong range"

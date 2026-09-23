@@ -154,8 +154,7 @@ assert_text_contains "$workspace" "MAIN CHECKOUT head" \
     "...but the body says where that worktree is actually cut" "Workspace"
 # Each branch rides an explicit refspec: a single-branch clone's fetch of a bare
 # name moves only FETCH_HEAD, leaving no origin/<head branch> for the push gate
-# and no origin/<base> for the engine. And every branch name is quoted — the
-# PR's author chose the head branch's name, and `topic;id` is a legal ref.
+# and no origin/<base> for the engine.
 assert_text_contains "$workspace" "git fetch origin '+refs/heads/<head branch>:refs/remotes/origin/<head branch>'" \
     "...so the agent's first act fetches the head branch into its tracking ref" "Workspace"
 assert_text_contains "$workspace" "'+refs/heads/<base>:refs/remotes/origin/<base>'" \
@@ -164,6 +163,14 @@ assert_not_contains "$AGENT" "git fetch origin <head branch>" "no fetch names a 
 assert_contains "$AGENT" "git push origin 'HEAD:<head branch>'" "the wave push quotes the branch it names"
 assert_not_contains "$AGENT" "git push origin HEAD:<head branch>" "...and no unquoted push survives"
 assert_contains "$AGENT" "git show 'origin/<base>:.doperpowers/risk-surfaces.md'" "the base-ref manifest read quotes the ref"
+# Quoting cannot make an arbitrary ref safe to paste into a command the agent
+# composes itself — an apostrophe is a legal ref character — so the safeguard is
+# a charset gate: a name outside it parks instead of reaching a shell.
+assert_text_contains "$workspace" 'A branch name is used in a command only if it matches `^[A-Za-z0-9._/-]+$`;' \
+    "a branch name reaches a command only inside a safe charset" "Workspace"
+assert_text_contains "$workspace" "any other name is a park naming the branch, never a command" \
+    "...and any other name parks rather than being run" "Workspace"
+assert_not_contains "$AGENT" "Quote branch names in every" "quoting is no longer offered as the safeguard"
 assert_text_contains "$workspace" "git checkout --detach <head>" \
     "...and detaches at the brief's head" "Workspace"
 assert_text_contains "$workspace" "\`git rev-parse HEAD\` must then print the brief's" \
