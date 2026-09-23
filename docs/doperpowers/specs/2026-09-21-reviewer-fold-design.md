@@ -1334,6 +1334,46 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   had endorsed quoting were the ones that let it through — a test that
   asserts a phrase pins the phrase, not the property.
 
+### From the deployed-service smoke (Task 12, acceptance 11b)
+
+- Observation: on the API binding, ticket #72 of the scratch repo went
+  register → claim (run 53, architect) → in-design → in-progress →
+  in-review (PR fold-smoke-0922#12) → two `review-trail` events → `in-review
+  → done` written by the QA agent under the owning run → the release the
+  close itself writes. One claim, no release before `done`, the merge pinned
+  to the head both trails reviewed (`--match-head-commit 5bcf205`, squash
+  88ceafb, 13:27:50Z). The owner's run survived review end to end; the
+  evidence-gated close and the `in-design → in-progress` edge worked on the
+  deployed service.
+- Observation: the spec-conflict escalation ran live. reviewer-low found the
+  planted no-op test, the ticket's Decision prescribed those lines, the QA
+  agent returned `ESCALATE kind=spec-conflict`, and the owner answered over
+  SendMessage that the pinned ticket governs and a follow-up owns the
+  repair. A defect planted through the ticket's own Decision cannot produce
+  a fix wave — it produces this path instead; the wave itself was observed
+  on the gh binding (Drill B) and is binding-independent.
+- Observation: the API tick had no cancel pass. The server ended the run on
+  `done`, the renew phase stripped it from the seat record, and the owner
+  seat sat idle until retired by hand. Before the fold the owner ended its
+  own session at the handoff; after it, every finished ticket would leave
+  one idle background session. Fixed in the closing wave (parity with gh).
+- Observation: the compliance audit expected `Closes #<n>` in the PR body,
+  which on the API binding names a GitHub issue of the PR's host repository,
+  not the ticket. Fixed in the closing wave: a gh-binding expectation, and
+  on the API board the defect.
+- Observation: three environment failures stood between the merge and the
+  smoke, none in this branch: the python.org framework's certificate symlink
+  pointed at an uninstalled certifi (TLS verification failed for every
+  API-bound board on the machine); the Supabase project was paused for an
+  unpaid invoice (the service 502'd from 12:04Z); and after the restore the
+  database's direct host resolved to IPv6 only, which Render cannot reach —
+  the direct, migration, and mirror URLs now go through the session pooler,
+  recorded in arkho's `render.yaml`.
+- Observation: a follow-up ticket registered by the architect without a
+  parent link was unreadable by the QA run's credential; the sweep claimed
+  it as a real ticket and the implementer handed it back on the blocked-by
+  edge. Both are logged as debt / expected behavior.
+
 ## Outcomes & Retrospective
 
 Written 2026-09-23 at the whole-branch review; the review's own outcome is
@@ -1434,3 +1474,4 @@ convergence signal this repository's review doctrine names.
 - 2026-09-22: Task 13 — both gh drills reached a terminal state after the positioning repair. Drill A was merged by the QA agent at the reviewed head, and Drill B was merged by hand after an observation-mode park. Along the way: the trail now precedes the merge, and `board-comment.sh` no longer doubles a marker already in the text. Two relay gaps are recorded under Surprises and left for a later change: `board-answer.sh` resumes a live seat instead of waking it, and a human merge closes a ticket before any answer can reach its owner.
 - 2026-09-23: Task 13 report — the relay verb for a live idle owner is `wake`; Task 14 carries it. Task 13's own review is folded into the whole-branch review.
 - 2026-09-23: whole-branch review applied — nine fixes, one dismissal by probe, one debt row; delta re-review's charset rule and re-pin round applied; review converged.
+- 2026-09-23: Task 12 ran on the deployed service after arkho PR 80 merged; outcome and the three environment failures recorded; two API-binding gaps (cancel pass, `Closes #<n>`) fixed in the closing wave.
