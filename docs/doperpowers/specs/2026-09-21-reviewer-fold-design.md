@@ -64,7 +64,8 @@ Observable behavior. Commands run from the repository root unless stated.
    frontmatter `model: sol`, `effort: high`, and a `disallowedTools` line
    that names `Skill` and does not name `Agent`. `agents/codex/qa-loop.toml`
    mirrors it and `python3 tests/codex/test-native-agents.py` passes.
-   `test -d skills/qa-loops` fails; `ls skills | wc -l` prints 16.
+   `test -d skills/qa-loops` fails; `ls skills | wc -l` prints 17 (main
+   added `explaining` while this branch removed `qa-loops`).
    `grep -rn 'doperpowers:qa-loops' skills agents hooks scripts tests CLAUDE.md README.md`
    returns nothing.
 2. **The agent body carries the protocol.** A structural test (the successor
