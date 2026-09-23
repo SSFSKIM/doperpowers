@@ -59,7 +59,12 @@ cat > "$FIX" <<'JSON'
  {"method":"GET","path":"/tickets/70/timeline","status":200,"body":{"records":[
    {"source":"board","cursor":1,"kind":"review-trail","body":{"text":"round 1 — level medium"}}]}},
  {"method":"GET","path":"/tickets/71/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/73/timeline","status":200,"body":{"records":[]}},
  {"method":"GET","path":"/tickets/74/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/63","status":200,
+  "body":{"id":63,"state":"needs-human","priority":"P1","title":"parked, still waiting"}},
+ {"method":"GET","path":"/tickets/73","status":200,
+  "body":{"id":73,"state":"in-review","priority":"P1","title":"answered, but the park's stamp landed last"}},
  {"method":"GET","path":"/tickets/74","status":200,
   "body":{"id":74,"state":"in-review","priority":"P1","title":"a review running in the owner's subagent"}},
  {"method":"GET","path":"/tickets/60","status":200,
@@ -206,6 +211,16 @@ meta u-fresh '{"uuid":"u-fresh","current":"u-fresh","status":"idle","run_id":68,
                "run_bearer":"tok-68","phase":"review"}'
 fresh u-fresh
 
+# THE PARK'S STAMP LANDING LAST. The ticket is back in review — the answer
+# stamped the seat `review` — but a delayed `review-parked` write from the park
+# overwrote it. No transition is left to correct the mark, so unless this phase
+# visits `review-parked` seats whose ticket is in review, the owner is out of
+# the ladder for good.
+meta u-late '{"uuid":"u-late","current":"u-late","status":"idle","run_id":73,
+              "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"73",
+              "run_bearer":"tok-73","phase":"review-parked"}'
+stale u-late
+
 # THE REVIEW IS THE OWNER'S SUBAGENT. The seat's own transcript goes quiet for
 # as long as its QA agent runs — the harness writes the child's stream under
 # <session>/subagents/ — so a panel review an hour long reads as a stalled owner
@@ -292,6 +307,10 @@ t  "and the tick says what it did"               "review-recover: #60"      cat 
 t  "working owner → untouched"                   "0"                        wakes_for u-work
 t  "...and its count is never opened"            "<absent>"                 mfield u-work review_recoveries
 t  "phase review-parked → untouched"             "0"                        wakes_for u-parked
+t  "...its ticket still parked, so its mark stands" "[review-parked]"       mfieldq u-parked phase
+t  "review-parked on a ticket back in review → restamped review" "[review]" mfieldq u-late phase
+t  "...and considered from then on: nudged like any stalled owner" "WAKE uuid=u-late" cat "$NUDGES"
+t  "...and the tick says why"                    "#73 is in review while its seat read"  cat "$O1"
 t  "an owner whose QA subagent is still writing is untouched, its own transcript stale" "0" wakes_for u-sub
 t  "an owner still writing is inside the threshold" "0"                     wakes_for u-fresh
 
@@ -330,7 +349,7 @@ t  "a suppressed ticket freezes this ladder too"  "0"                       wake
 t  "...and the tick says why"                     "suppressed"               cat "$O1"
 nt "...without reading the ticket at all"         "/tickets/69"              cat "$FIX.log"
 
-t  "exactly two owners were nudged"              "2"                        wakes
+t  "exactly three owners were nudged"            "3"                        wakes
 
 # =========================================================================
 # Idempotence — a second pass with nothing changed. The ladder advances by

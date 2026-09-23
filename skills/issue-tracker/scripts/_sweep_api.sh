@@ -1383,14 +1383,18 @@ PY
 
 phase_review_recover() {
   local uuid run bindc ticket bearer fence lane status sexhausted path
-  local state repair trail seen recov transcript turn_epoch age budget_said=""
+  local state repair trail seen recov transcript turn_epoch age phase budget_said=""
   # shellcheck disable=SC2034  # the unused names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
     [ -n "$run" ] && [ -n "$ticket" ] || continue
     # THE REGISTRY IS THE CANDIDATE FILTER, and only that. It is what this tick
-    # can scan for free; the ticket below is what decides.
-    [ "$(_meta_field "$path" phase)" = review ] || continue
+    # can scan for free; the ticket below is what decides. `review-parked` is a
+    # candidate too, for one case: a park's delayed stamp can land after the
+    # answer's `review`, leaving a seat marked parked on a ticket back in review
+    # — the ticket read below restamps it, and nothing else ever would.
+    phase="$(_meta_field "$path" phase)"
+    case "$phase" in review|review-parked) ;; *) continue ;; esac
     [ "$(_liveness "$uuid")" = live ] || continue
     # Re-read after the sync above, which promotes a natively-woken seat.
     [ "$(_meta_field "$path" status)" = idle ] || continue
@@ -1428,6 +1432,18 @@ phase_review_recover() {
     # repaired, before anything is spent.
     state="$(_ticket_state "$ticket")" \
       || { echo "review-recover: #$ticket — the board would not say what state it is in; the next tick decides" >&2; continue; }
+    if [ "$phase" = review-parked ]; then
+      # Anything but in-review: the park stands, and so does its mark.
+      [ "$state" = in-review ] || continue
+      repair="$(_repair_phase "$path" "$ticket" in-review review)" || repair=""
+      case "$repair" in
+        repaired) echo "review-recover: #$ticket is in review while its seat read \`review-parked\` (the park's stamp landed after the answer's) — the seat is restamped \`review\` and considered" ;;
+        moved*)   echo "review-recover: #$ticket left in-review while its seat's mark was being restamped (now ${repair#moved }) — nothing is written and the next tick decides"
+                  continue ;;
+        *)        echo "review-recover: #$ticket — restamping the seat \`review\` failed; the next tick retries" >&2
+                  continue ;;
+      esac
+    fi
     case "$state" in
       in-review) ;;
       '') echo "review-recover: #$ticket — the board answered with no state at all; nothing is touched" >&2
