@@ -1308,8 +1308,9 @@ PY
 # in-review and marks the seat `review` through _lib.sh's _meta_put, which
 # takes THIS lock. A repair that read the state outside the lock and wrote
 # inside it could land after that stamp and overwrite a live `review` with
-# `review-parked` — a seat excluded from this ladder for good, with no client
-# transition left to clear it, because both the pre-state and the answer's
+# `review-parked` — a seat this ladder would skip until a later tick's
+# reconcile (below) finds its ticket back in review and restamps it; the lock
+# closes even that window, because both the pre-state and the answer's
 # post-state read `review` and no value comparison can tell them apart. So the
 # authoritative read and the write are ONE critical section: an answer that
 # committed before it sees a moved ticket and writes nothing, and an answer
