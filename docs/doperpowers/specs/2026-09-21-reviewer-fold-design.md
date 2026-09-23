@@ -1230,6 +1230,70 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   `.claude/worktrees/2-add-a-version-flag-to-hello-sh | 1 +`; removed with
   `git rm --cached` and force-pushed before the review was dispatched.
 
+### From the gh smoke re-run (Task 13, after the positioning repair)
+
+- Observation: with the agent positioning itself, both drills run the whole
+  fold to a terminal state on a live gh board.
+  Evidence: Drill A (ticket #10, PR #11, `REVIEW_LEVEL=low`,
+  `AUTO_MERGE_ENABLED=true`, native `execute-dispatch.sh`): the QA agent's
+  first act was `git fetch origin <head branch> && git checkout --detach
+  364bd27…`; one `doperpowers:reviewer-low` round dispatched with no
+  `isolation` and the location line naming the agent's worktree; trail on the
+  ticket at 23:45:41Z and on the PR at 23:45:48Z; `gh pr merge 11 --squash
+  --match-head-commit 364bd27…` at 23:45:55Z (merged 23:45:57Z, `headRefOid`
+  = the reviewed head); `board-transition.sh 10 done` at 23:46:04Z. One seat
+  was bound to #10 throughout. Drill B (ticket #7, PR #8, a hand-spawned
+  IMPLEMENT owner at `xhigh`, auto-merge off, planted vacuous assertion):
+  `NEEDS_PANEL` round 1 at `b78c0eb`, owner `merge --ff-only` and `repo` on
+  the Workflow call, findings `e443bb70…`; a four-commit wave by a depth-two
+  fixer in the agent's worktree, pushed (`f4602ee`); `NEEDS_PANEL` round 2 at
+  the new head with the owner's checkout equal to `headCommit`, verdict
+  correct; observation-mode park. The planted P1 was caught as W1-3.
+- Observation: an agent interrupted after its merge but before its trail
+  leaves the PR with no record. The first Drill A run (ticket #6, PR #9)
+  merged at 23:21:38Z; the merge closed the ticket, the next sweep's CANCEL
+  pass retired the dispatching seat at 23:22:21Z, and the agent died writing
+  its trail — PR #9 carries no `[review-trail]` comment. Repaired in
+  `agents/qa-loop.md`: the trail is posted before the first operation that
+  can make the PR terminal, and a failed post blocks the merge. The re-run
+  (#10) shows the order: trail, then merge, then `done`.
+- Observation: `board-answer.sh`'s relay (`sminos resume --wait`) fails on a
+  parked owner whose seat is still live and idle. `sminos` refused with
+  "resume … started a COPY — the session was still running … Use sminos
+  wake/send for a live seat"; the ticket had already moved back to
+  `in-review`, and the owner was reached only by a hand `sminos wake`. Once
+  woken, the owner re-stated its gate, forwarded the answer verbatim, and the
+  agent's next trail acknowledged it. Left as-is here: the same `resume`
+  call serves the sweep's RECOVER and RELAY passes, so the fix is a relay-verb
+  decision across the board scripts, beyond this plan.
+- Observation: a human merge after an observation-mode park closes the
+  ticket through the PR's `Closes #N` before any answer can be relayed.
+  `board-answer.sh 7 "merged by hand"` then refuses (`#7 is done, not
+  needs-human`), and the sweep's FINALIZE pass writes the terminal transition.
+  That is sufficient for the board. The owner is never told, and the parked
+  agent's worktree and `<review-tmp>` stay behind (`board-gc.sh` reclaims
+  the worktree; the temp directory leaks).
+  Evidence: the merge `gh pr merge 8 --squash --match-head-commit beebcb2…` at
+  23:49:35Z closed #7 at 23:49:36Z; FINALIZE stripped `status:needs-human`
+  at 23:50:31Z.
+- Observation: when a merge moves the base under a parked review, the agent
+  resolves the conflict itself if it is mechanical. The drill's first answer
+  claimed a merge that had not happened, and PR #9 had meanwhile moved
+  `main`. The agent observed both facts. It resolved add/add conflicts in
+  three files as unions, keeping both sides, and pushed the resolution
+  `beebcb2` (parents `f4602ee`, `dc905c7`). The owner ran a third xhigh panel
+  at the resolved head (verdict correct), and the agent parked again at the
+  new head.
+- Observation: every gh trail carried its marker twice
+  (`[review-trail] [review-trail]`). The agent writes one trail with its marker and posts it
+  on the ticket through `board-comment.sh --kind review-trail` (which
+  prefixes the marker) and on the PR verbatim. `board-comment.sh` now leaves
+  a text that already opens with its kind's marker unprefixed.
+- Observation: the cancel pass does not retire a finished owner. Seat #10
+  ended its own turn after the agent's `DONE` (registry status `idle`), so
+  CANCEL acted on nothing, which matches its contract of retiring only a live
+  worker. The seat was retired at teardown.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
@@ -1282,3 +1346,4 @@ Pending — written at finish.
   in the lane ahead of the review worked end to end on one bound seat.
 - 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced across `skills/issue-tracker/SKILL.md` and `references/*.md` by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. The board scripts' comments lost the retired actor names too, but they are maintainer-facing and carry no fence: `review lane` stays there for the sweep's dispatch pass, the `in-review` state, and the server's `qagent` lane. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.
 - 2026-09-22: Task 11 repair — the QA agent positions its isolated worktree at the brief's head itself; single-rung reviewers and the panel are pointed at a path (`repo`), not isolated. Task 13 carries the change; Tasks 11 and 12 re-run after it.
+- 2026-09-22: Task 13 — both gh drills reached a terminal state after the positioning repair. Drill A was merged by the QA agent at the reviewed head, and Drill B was merged by hand after an observation-mode park. Along the way: the trail now precedes the merge, and `board-comment.sh` no longer doubles a marker already in the text. Two relay gaps are recorded under Surprises and left for a later change: `board-answer.sh` resumes a live seat instead of waking it, and a human merge closes a ticket before any answer can reach its owner.
