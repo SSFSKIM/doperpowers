@@ -1310,6 +1310,23 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   CANCEL acted on nothing, which matches its contract of retiring only a live
   worker. The seat was retired at teardown.
 
+### From the whole-branch review (2026-09-23)
+
+- Observation: A subagent's Bash environment carries the parent session's
+  `CLAUDE_CODE_SESSION_ID` — the ids are identical.
+  Evidence: probe 2026-09-23 from this session (`bd52b087…` in both). This
+  refutes the panel's finding that the QA agent cannot act as the owner's
+  run under the API binding: `_board_api.py` resolves the run from the seat
+  record by session id, and the child presents the owner's. Dismissed.
+- Observation: the xhigh panel over the whole branch returned eleven
+  findings; nine were fixed in one wave (re-pin re-positioning, the
+  stand-in's owner re-check inside its lock, stale `review-parked`
+  reconciliation, the API idle-owner clock counting subagent activity,
+  board-identity filters on both registry scans, quoted branch names, an
+  explicit fetch refspec, the trail before every escalation return), one
+  was dismissed by the probe above, and one — API recovery of a silent
+  working owner — is a tech-debt row, the gh arm already covering it.
+
 ## Outcomes & Retrospective
 
 Written 2026-09-23 at the whole-branch review; the review's own outcome is
