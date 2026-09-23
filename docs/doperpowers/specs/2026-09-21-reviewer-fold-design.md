@@ -1312,7 +1312,44 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Written 2026-09-23 at the whole-branch review; the review's own outcome is
+the last bullet.
+
+**What shipped.** One `doperpowers:qa-loop` agent (sol/high) owns the review
+loop as a subagent of the ticket's owner; the Architect and Executor
+protocols dispatch it after the PR opens and stay bound through `done`; a
+thin stand-in seat takes the PRs nobody owns; `skills/qa-loops` is gone and
+its references live under `issue-tracker`. The execution tier is sol and
+the `engine:codex` route is retired. The board schema gained the re-pin
+self-edge and the review→build return on both bindings, the sweep recovers
+an idle owner in review on both ticks, and the arkho service change (PR 80)
+lets the owner's run survive review under the API binding. Fourteen tasks,
+two live smokes on a scratch gh board, one deployed-service smoke still
+gated on PR 80's merge.
+
+**What the smokes proved.** On one bound seat: gate → design → build → PR →
+QA agent → trail → merge pinned to the reviewed head → `done` (Drill A,
+auto-merge on), and three panel hand-ups, a fix wave, and a QA-written park
+under auto-merge off (Drill B). Two defects were found only by running:
+the harness cuts an isolated child at the repository's main checkout, and
+`sminos resume` starts a copy on a live idle seat. Neither was visible from
+the code alone; both were assumptions the design had inherited.
+
+**What cost more than it should have.** Task 8's behavior-eval harness took
+three repair rounds to stop false-passing, for one real protocol defect
+found. The right bound — required paths only, harness-quality findings as
+debt — was set on round three; it should be the default for any eval
+harness a task builds for itself. The stop-and-checkpoint pattern of the
+execution controller left live children unowned three times, and a CLI
+version skew killed two agents mid-run; both are process, not design.
+
+**What to carry forward.** A design that depends on a harness behavior
+(where a child starts, what a verb does to a live process) needs one probe
+before the spec pins it; the two probes this initiative did run (Workflow
+tool, isolation from a subagent) held, the two it did not run failed live.
+Review rounds converge when the exit rule is written down before the round.
+
+**Whole-branch review.** (filled in below when the xhigh panel returns.)
 
 ## Revision Notes
 
