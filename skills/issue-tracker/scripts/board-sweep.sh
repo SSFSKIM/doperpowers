@@ -310,7 +310,14 @@ EOF
   printf '%s' "$newest"
 }
 
-# <ticket> <uuid> <recoveries> <why> [review]
+# <ticket> <uuid> <recoveries> <why> <build|review> <wake|resume>
+#
+# The sixth argument is the verb that reaches the seat, and the caller picks it
+# from the sync verdict it already holds. An IDLE seat is live and waiting: it
+# is woken — `sminos resume` stops a live turn and restarts the process, and on
+# an idle seat there is no turn to stop, so the harness starts a copy and
+# nothing is delivered. A seat that is gone, errored, or live but silent
+# mid-turn is resumed: for the last, the stop-and-restart IS the recovery.
 #
 # The fifth argument selects the REVIEW ladder: its own counter
 # (`review_recoveries`, reset by the review's own progress — see pass_recover)
@@ -319,7 +326,7 @@ EOF
 # mid-build and a review that stopped are different failures, and the second
 # gets its own three attempts.
 _recover() {
-  local tk="$1" uuid="$2" recov="$3" why="$4" kind="${5:-build}"
+  local tk="$1" uuid="$2" recov="$3" why="$4" kind="$5" verb="$6"
   local key=sweep_recoveries role="worker" note prompt
   if [ "$kind" = review ]; then
     key=review_recoveries
@@ -343,9 +350,15 @@ _recover() {
     return
   fi
   _meta_put "$uuid" "$key" "$((recov + 1))" \
-    || { log "[sweep] RECOVER: #$tk meta update failed — skipping resume"; return; }
-  log "[sweep] RECOVER: #$tk $role $uuid $why — resume attempt $((recov + 1))/$RECOVERY_CAP"
-  nohup "$SMINOS_CLI" resume --wait "$uuid" "$prompt" >>"$SWEEP_LOG" 2>&1 &
+    || { log "[sweep] RECOVER: #$tk meta update failed — skipping the nudge"; return; }
+  log "[sweep] RECOVER: #$tk $role $uuid $why — $verb attempt $((recov + 1))/$RECOVERY_CAP"
+  # A wake is signed: without --from, a sender with no session id reads as
+  # `human` to the worker.
+  if [ "$verb" = wake ]; then
+    nohup "$SMINOS_CLI" wake --wait "$uuid" "$prompt" --from sweep >>"$SWEEP_LOG" 2>&1 &
+  else
+    nohup "$SMINOS_CLI" resume --wait "$uuid" "$prompt" >>"$SWEEP_LOG" 2>&1 &
+  fi
 }
 
 pass_recover() {
@@ -378,9 +391,9 @@ pass_recover() {
           continue
         fi
         case "$fin" in
-          absent) _recover "$tk" "$uuid" "$recov" "died mid-turn (session gone)"; acted=$((acted+1)) ;;
-          error)  _recover "$tk" "$uuid" "$recov" "turn errored"; acted=$((acted+1)) ;;
-          idle)   _recover "$tk" "$uuid" "$recov" "finished without a board transition"; acted=$((acted+1)) ;;
+          absent) _recover "$tk" "$uuid" "$recov" "died mid-turn (session gone)" build resume; acted=$((acted+1)) ;;
+          error)  _recover "$tk" "$uuid" "$recov" "turn errored" build resume; acted=$((acted+1)) ;;
+          idle)   _recover "$tk" "$uuid" "$recov" "finished without a board transition" build wake; acted=$((acted+1)) ;;
           live)
             # Silence measured across the whole transcript tree: an Architect
             # past the build edge has ended its turn and is silent in its own
@@ -389,7 +402,7 @@ pass_recover() {
             if [ -n "$act" ]; then
               age="$(( ( $(date +%s) - act ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
-                _recover "$tk" "$uuid" "$recov" "silent for ${age}m (stall threshold ${STALL_MIN}m)"
+                _recover "$tk" "$uuid" "$recov" "silent for ${age}m (stall threshold ${STALL_MIN}m)" build resume
                 acted=$((acted+1))
               fi
             fi ;;
@@ -456,9 +469,9 @@ pass_recover() {
           fi
         fi
         case "$fin" in
-          absent) _recover "$tk" "$uuid" "$rrecov" "the session is gone" review; acted=$((acted+1)) ;;
-          error)  _recover "$tk" "$uuid" "$rrecov" "the turn errored" review; acted=$((acted+1)) ;;
-          idle)   _recover "$tk" "$uuid" "$rrecov" "its turn ended with nothing running under it" review; acted=$((acted+1)) ;;
+          absent) _recover "$tk" "$uuid" "$rrecov" "the session is gone" review resume; acted=$((acted+1)) ;;
+          error)  _recover "$tk" "$uuid" "$rrecov" "the turn errored" review resume; acted=$((acted+1)) ;;
+          idle)   _recover "$tk" "$uuid" "$rrecov" "its turn ended with nothing running under it" review wake; acted=$((acted+1)) ;;
           live)
             # Same tree-wide silence signal as the in-flight arm: the QA agent
             # writes under the seat's session directory, so a review in
@@ -467,7 +480,7 @@ pass_recover() {
             if [ -n "$act" ]; then
               age="$(( ( $(date +%s) - act ) / 60 ))"
               if [ "$age" -ge "$STALL_MIN" ]; then
-                _recover "$tk" "$uuid" "$rrecov" "nothing has been written for ${age}m (stall threshold ${STALL_MIN}m)" review
+                _recover "$tk" "$uuid" "$rrecov" "nothing has been written for ${age}m (stall threshold ${STALL_MIN}m)" review resume
                 acted=$((acted+1))
               fi
             fi ;;

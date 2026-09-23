@@ -258,9 +258,13 @@ if meta.get('status') not in ('working', 'blocked'):
 m = json.load(open(os.environ['FINALIZE_MAP']))
 print(m.get(uuid, 'live'))" "$1"
   ;;
-resume)
-  if [ "${1:-}" = "--wait" ]; then shift; fi
-  echo "resume:$1:${2:0:60}" >> "$ACTION_LOG"
+resume|wake)
+  # Logged as `<verb>:<uuid>:<prompt head>`, and only with --wait: every
+  # recovery nudge blocks on the worker's turn in the background.
+  [ "${1:-}" = "--wait" ] || { echo "stub sminos: $verb without --wait" >&2; exit 2; }
+  shift
+  echo "$verb:$1:${2:0:60}" >> "$ACTION_LOG"
+  [ "${3:-}" != "--from" ] || echo "from:$verb:$1:${4:-}" >> "$ACTION_LOG"
   printf '%s\n' "${2:-}" >> "$RESUME_PROMPTS"
   ;;
 retire)
@@ -638,10 +642,14 @@ assert_not_contains "$log" "retire:aaaa0018" "and a live worker on an IN-FLIGHT 
 # pull moved out from under it — retire the binding, never resume a worker
 # with nothing left to do.
 assert_contains "$log" "retire:aaaa0058-0000-4000-8000-000000000000" "an idle worker on an epic pulled to in-progress is retired"
-assert_not_contains "$log" "resume:aaaa0058" "...and never resumed"
+assert_not_contains "$log" "wake:aaaa0058" "...and never woken"
 assert_contains "$out" "its handoff is done" "the log says why the binding was released"
-# a recomposition Architect mid-claim (epic in in-design) is still resumable
-assert_contains "$log" "resume:aaaa0060-0000-4000-8000-000000000000" "an idle Architect on an epic in in-design still gets the resume ladder"
+# a recomposition Architect mid-claim (epic in in-design) is still recoverable.
+# It is IDLE — a live seat whose turn ended — so the nudge is a wake: `sminos
+# resume` on a live idle seat has no turn to stop, and the harness starts a copy.
+assert_contains "$log" "wake:aaaa0060-0000-4000-8000-000000000000" "an idle Architect on an epic in in-design is woken onto the recovery ladder"
+assert_not_contains "$log" "resume:aaaa0060" "...never resumed (a resume on a live idle seat starts a copy)"
+assert_contains "$log" "from:wake:aaaa0060-0000-4000-8000-000000000000:sweep" "...and the wake is signed by the sweep, not left to read as the human"
 
 # CANCEL
 assert_contains "$log" "retire:aaaa0013-0000-4000-8000-000000000000" "live worker on a terminal ticket is retired"
@@ -1328,7 +1336,7 @@ dep_seed 126 ready-for-implementer 127
 dep_seed 127 in-progress
 dep_worker bbbb0127 127 working "gh:other/repo"
 out="$(run_sweep)"
-assert_contains "$out" "RECOVER: #121 worker bbbb0121-0000-4000-8000-000000000000 finished without a board transition — resume attempt 1/3" "RECOVER backgrounds a resume for #121 in this tick"
+assert_contains "$out" "RECOVER: #121 worker bbbb0121-0000-4000-8000-000000000000 finished without a board transition — wake attempt 1/3" "RECOVER backgrounds a wake for #121 in this tick"
 assert_equals "$(issue_labels 120)" "status:ready-for-implementer" "...so its blocker is still being worked, and the wait behind it is not reported"
 assert_contains "$out" "RECOVER: #124 worker bbbb0124-0000-4000-8000-000000000000 finished without a board transition — cap (3) exhausted, parking needs-human" "the ladder gives up on #124 and parks it"
 assert_contains "$(issue_labels 123)" "status:needs-human" "...and from then on nothing is coming, so the wait behind it IS reported"
@@ -1429,8 +1437,9 @@ rv_meta rv0136 136 "review-pr-9" working; rv_sync rv0136 idle
 out="$(run_sweep)"
 log="$(cat "$ACTION_LOG")"
 
-assert_contains "$log" "resume:rv0130-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
-  "in-review owner idle → resumed with the review nudge"
+assert_contains "$log" "wake:rv0130-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+  "in-review owner idle → woken with the review nudge"
+assert_not_contains "$log" "resume:rv0130" "...never resumed (a resume on a live idle seat starts a copy)"
 assert_contains "$(cat "$RESUME_PROMPTS")" "SWEEP RECOVERY: your review of ticket #130's pull request has no live QA agent" \
   "the nudge names the review and the PR, not the build"
 assert_contains "$(cat "$RESUME_PROMPTS")" "dispatch doperpowers:qa-loop again per your protocol's Closing Artifact" \
@@ -1440,23 +1449,24 @@ assert_contains "$(cat "$RESUME_PROMPTS")" "if the review already reached a park
 assert_equals "$(rv_field rv0130 review_recoveries)" "1" "the review ladder is counted in its own key"
 assert_equals "$(rv_field rv0130 sweep_recoveries)" "<absent>" "and the build ladder is not touched by it"
 assert_contains "$log" "resume:rv0131-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
-  "in-review owner live and silent → resumed"
+  "in-review owner live and silent → resumed (the stop-and-restart is the stronger recovery for a stalled turn)"
+assert_not_contains "$log" "wake:rv0131" "...and not woken"
 assert_not_contains "$log" "resume:rv0132" "in-review owner live and active → untouched"
-assert_contains "$log" "resume:rv0133-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+assert_contains "$log" "wake:rv0133-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
   "a new [review-trail] comment resets the count — the owner is nudged, not parked"
 assert_equals "$(rv_field rv0133 review_recoveries)" "1" "...from zero, not from the two it had"
 assert_equals "$(rv_field rv0133 review_trail_seen)" "1" "...and the trail it reset on is recorded"
-assert_not_contains "$log" "resume:rv0134" "at the cap the owner is not nudged again"
+assert_not_contains "$log" "wake:rv0134" "at the cap the owner is not nudged again"
 assert_contains "$(issue_labels 134)" "status:needs-human" "at the cap → parked needs-human"
 assert_contains "$(issue_note 134)" "review" "...with a note about the review"
-assert_contains "$log" "resume:rv0135-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+assert_contains "$log" "wake:rv0135-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
   "prior build recoveries do not count against the review ladder"
 assert_equals "$(issue_labels 135)" "status:in-review" "...so that ticket is nudged, not parked"
-assert_not_contains "$log" "resume:rv0137" "a reset that failed to persist nudges nobody"
+assert_not_contains "$log" "wake:rv0137" "a reset that failed to persist nudges nobody"
 assert_equals "$(issue_labels 137)" "status:in-review" "...and parks nobody either, though the count in hand is at the cap"
 assert_equals "$(rv_field rv0137 review_recoveries)" "3" "...leaving the ladder exactly where it was for the next tick"
 assert_contains "$out" "the meta update failed — neither nudged nor parked" "...and the tick says so"
-assert_not_contains "$log" "resume:rv0136" "a review-pr-* seat is still excluded"
+assert_not_contains "$log" "wake:rv0136" "a review-pr-* seat is still excluded"
 assert_equals "$(issue_labels 136)" "status:in-review" "...and is never parked by this pass either"
 
 echo
