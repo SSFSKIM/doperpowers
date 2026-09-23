@@ -579,8 +579,8 @@ merge finalize with `<scripts>/board-transition.sh <ticket> done`, then return
 `DONE`.
 
 Checks still RUNNING at verdict time: with the trail already posted, wait them
-out, bounded — poll `gh pr view <pr> --json mergedAt` every 60 seconds for up to 20
-minutes. Merged inside that window → finalize with
+out, bounded — poll `gh pr view <pr> --json mergedAt`
+every 60 seconds for up to 20 minutes. Merged inside that window → finalize with
 `<scripts>/board-transition.sh <ticket> done`, and return `DONE`. Still
 running when the window closes → arm GitHub auto-merge on the reviewed head
 (`gh pr merge <pr> --auto <method-flag> --match-head-commit <reviewed-head>`)
