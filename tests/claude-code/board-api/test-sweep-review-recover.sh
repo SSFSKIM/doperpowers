@@ -59,6 +59,9 @@ cat > "$FIX" <<'JSON'
  {"method":"GET","path":"/tickets/70/timeline","status":200,"body":{"records":[
    {"source":"board","cursor":1,"kind":"review-trail","body":{"text":"round 1 — level medium"}}]}},
  {"method":"GET","path":"/tickets/71/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/74/timeline","status":200,"body":{"records":[]}},
+ {"method":"GET","path":"/tickets/74","status":200,
+  "body":{"id":74,"state":"in-review","priority":"P1","title":"a review running in the owner's subagent"}},
  {"method":"GET","path":"/tickets/60","status":200,
   "body":{"id":60,"state":"in-review","priority":"P1","title":"the stalled review"}},
  {"method":"GET","path":"/tickets/64","status":200,
@@ -203,6 +206,17 @@ meta u-fresh '{"uuid":"u-fresh","current":"u-fresh","status":"idle","run_id":68,
                "run_bearer":"tok-68","phase":"review"}'
 fresh u-fresh
 
+# THE REVIEW IS THE OWNER'S SUBAGENT. The seat's own transcript goes quiet for
+# as long as its QA agent runs — the harness writes the child's stream under
+# <session>/subagents/ — so a panel review an hour long reads as a stalled owner
+# on the parent's clock alone.
+meta u-sub '{"uuid":"u-sub","current":"u-sub","status":"idle","run_id":74,
+             "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"74",
+             "run_bearer":"tok-74","phase":"review"}'
+stale u-sub
+mkdir -p "$TESTHOME/.claude/projects/proj/u-sub/subagents"
+touch "$TESTHOME/.claude/projects/proj/u-sub/subagents/agent-qa.jsonl"
+
 cat > "$DS/sminos" <<EOF
 #!/usr/bin/env bash
 verb="\${1:-}"; shift || true
@@ -278,6 +292,7 @@ t  "and the tick says what it did"               "review-recover: #60"      cat 
 t  "working owner → untouched"                   "0"                        wakes_for u-work
 t  "...and its count is never opened"            "<absent>"                 mfield u-work review_recoveries
 t  "phase review-parked → untouched"             "0"                        wakes_for u-parked
+t  "an owner whose QA subagent is still writing is untouched, its own transcript stale" "0" wakes_for u-sub
 t  "an owner still writing is inside the threshold" "0"                     wakes_for u-fresh
 
 # THE TICKET IS THE AUTHORITY, not the seat's mark.

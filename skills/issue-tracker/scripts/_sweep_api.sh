@@ -536,6 +536,28 @@ _mtime_epoch() {  # <path>
   printf '%s\n' "$e"
 }
 
+# Newest activity anywhere in a transcript's TREE, epoch seconds; empty when
+# there is none. board-sweep.sh's _activity_epoch, over a transcript path this
+# file already resolved: a session whose turn ended while a subagent it
+# dispatched keeps working writes nothing to its own file for the whole run —
+# the child's stream lands under <session>/subagents/ — so the parent's mtime
+# alone reads that work as silence.
+_tree_mtime_epoch() {  # <transcript>
+  local newest e f dir="${1%.jsonl}"
+  newest="$(_mtime_epoch "$1" 2>/dev/null || true)"
+  if [ -d "$dir" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      e="$(_mtime_epoch "$f" 2>/dev/null || true)"
+      [ -n "$e" ] || continue
+      if [ -z "$newest" ] || [ "$e" -gt "$newest" ]; then newest="$e"; fi
+    done <<EOF
+$(find "$dir" -type f 2>/dev/null)
+EOF
+  fi
+  printf '%s' "$newest"
+}
+
 # DELIVERY PROOF READS DELIVERED PROMPTS, not the whole file. The transcript is
 # JSONL and holds everything the session ever saw — tool results, file contents,
 # the worker's own prose — so a fixed-string grep over the raw bytes accepts a
@@ -1374,7 +1396,10 @@ phase_review_recover() {
     [ "$(_meta_field "$path" status)" = idle ] || continue
     turn_epoch=""
     transcript="$(_transcript_for_uuid "$uuid")"
-    [ -z "$transcript" ] || turn_epoch="$(_mtime_epoch "$transcript" || true)"
+    # The whole transcript tree, not the seat's own file: the review runs in
+    # the owner's QA subagent, and a panel round can keep the parent silent
+    # for an hour while the child writes under subagents/.
+    [ -z "$transcript" ] || turn_epoch="$(_tree_mtime_epoch "$transcript")"
     # No transcript is no signal, exactly as it is for the gh tick's stall arm.
     [ -n "$turn_epoch" ] || continue
     age=$(( ( $(date +%s) - turn_epoch ) / 60 ))
