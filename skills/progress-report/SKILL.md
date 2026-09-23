@@ -1,9 +1,9 @@
 ---
-name: explaining
-description: Use when your human partner asks for an explanation — of changes an agent implemented that they did not watch, or of a concept they want to understand — including /explaining, ELI5-style requests, "explain this", "walk me through what changed", "what is X", "help me understand".
+name: progress-report
+description: Use when your human partner asks for an explanation — of changes an agent implemented that they did not watch, or of a concept they want to understand — including /progress-report, ELI5-style requests, "explain this", "walk me through what changed", "what is X", "help me understand".
 ---
 
-# Explaining
+# Progress report
 
 An explanation succeeds when your human partner can act on the subject
 without you: make the next product or technical decision about a change,
@@ -51,6 +51,17 @@ Mechanical churn (version bumps, renames) gets a clause at most.
    it breaks, what it is commonly confused with.
 4. **What it means for them** — when they named a situation or goal,
    the decision criteria the concept implies for it.
+
+## Delivery
+
+A full explanation is an HTML page: one self-contained file (inline
+CSS, no CDN dependencies, so it renders from disk), written outside the
+working tree since it is for reading rather than committing, and opened
+in their browser. It is a document in the same plain register, carrying
+the parts above in order; the diagrams, tables and step sequences from
+Clarity are drawn with SVG or CSS rather than typed as ASCII. The reply
+is the brief answer plus the page's path. Asked for a brief answer, the
+paragraph is the whole reply and there is no page.
 
 ## Clarity
 
