@@ -111,18 +111,19 @@ Tightly-coupled tasks or no plan yet → work manually or brainstorm first.
 
 ## Model selection
 
-`doperpowers:task-executor` is pinned to opus at high reasoning effort;
-the task grain is calibrated to that tier, and fixes resume the same
-executor. `doperpowers:task-reviewer` is pinned to sol at high effort
-through the local gateway, the same tier as the low review rung. A simple
+`doperpowers:task-executor` is pinned to sol at high reasoning effort
+through the local gateway; the task grain is calibrated to that tier, and
+fixes resume the same executor. `doperpowers:task-reviewer` is pinned to
+sol at high effort too, the same tier as the low review rung. A simple
 task — a doc update, a mechanical rename, a verification walk with every
-command given — can go to sonnet by passing `model: sonnet` at dispatch,
-which overrides the executor's pin. Never dispatch workers on the top
-tier (fable): it adds cost without adding reliability — the plan and the
-brief absorb the difficulty, not the model. When a worker reports BLOCKED
-on reasoning capacity rather than missing context, a sonnet task moves to
-opus; from opus there is no tier above — the difficulty moves into the
-brief: resolve the hard call yourself and re-dispatch, or split the task.
+command given — can go to sonnet, the tier below sol, by passing
+`model: sonnet` at dispatch, which overrides the executor's pin. Never
+dispatch workers on fable or astra: the top tier adds cost without adding
+reliability — the plan and the brief absorb the difficulty, not the model.
+When a worker reports BLOCKED on reasoning capacity rather than missing
+context, a sonnet task moves to sol; from sol there is no tier above — the
+difficulty moves into the brief: resolve the hard call yourself and
+re-dispatch, or split the task.
 
 The final whole-branch review is the deliberate exception: it goes through
 doperpowers:review-code at the rung the spec's verification entry names
@@ -139,7 +140,7 @@ entire branch.
   concerns get addressed before review; observations ride along to it.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
-  reasoning capacity (sonnet → opus; from opus, resolve the hard call in
+  reasoning capacity (sonnet → sol; from sol, resolve the hard call in
   the brief), task too large (split it), plan wrong (return to the
   session that dispatched you, or to the human when that is you).
   Something must change — a bare retry answers an escalation with

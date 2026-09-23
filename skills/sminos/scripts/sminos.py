@@ -1567,7 +1567,7 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
         # the next bind decides. Left behind, the stamp would hide the new
         # occupant from every registry scan on the machine.
         drop = ("pending_short", "engine", "pid", "event_log", "run_id", "run_bearer", "fence",
-                "bind_confirmed", "nonce", "run_ended_at", "ticket", "board", "board_dispatch",
+                "bind_confirmed", "nonce", "run_ended_at", "ended_run_id", "ticket", "board", "board_dispatch",
                 "board_detached", "closure_package", "retired_from", "relayed_comment",
                 "sweep_recoveries")
         meta_set(rec_id, {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1,

@@ -35,12 +35,23 @@ cat > "$FIX" <<'JSON'
  {"method":"GET","path":"/tickets/9","status":200,
   "body":{"id":9,"state":"in-review","priority":"P1","title":"under review",
           "owner_run":null,"plan":null,"pr_url":null}},
+ {"method":"GET","path":"/tickets/12","status":200,
+  "body":{"id":12,"state":"in-review","priority":"P1","title":"under review, branch recorded",
+          "owner_run":null,"plan":null,"pr_url":null,"branch":"tick/recorded"}},
+ {"method":"GET","path":"/tickets/13","status":200,
+  "body":{"id":13,"state":"in-review","priority":"P1","title":"re-pin, verifiable",
+          "owner_run":null,"plan":null,"pr_url":"https://github.com/o/r/pull/7",
+          "branch":"tick/live"}},
  {"method":"GET","path":"/tickets/77","status":404,
   "body":{"error":{"code":"not-found","message":"no such ticket: 77"}}},
  {"method":"GET","path":"/tickets?limit=1","status":200,
   "body":{"items":[{"id":8,"state":"in-design","priority":"P1","title":"a design pass",
                     "owner_run":null,"plan":null,"pr_url":null}],
           "next":null,"as_of":118}},
+ {"method":"POST","path":"/tickets/8/transition","status":200,
+  "body":{"ok":true,"to":"in-progress"}},
+ {"method":"POST","path":"/tickets/13/transition","status":200,
+  "body":{"ok":true,"to":"in-review"}},
  {"method":"POST","path":"/tickets/9/transition","status":200,
   "body":{"ok":true,"to":"needs-human","converged":true},"once":true},
  {"method":"POST","path":"/tickets/9/transition","status":200,"body":{"ok":true,"to":"done"}},
@@ -95,8 +106,20 @@ last_transition_body() {
     python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["body"])'
 }
 
+# THE SERVER'S ANSWER IS WHAT MARKS THE SEAT. This transition asks for
+# in-review and the board converges it to a park, so the seat bound to #9 comes
+# out of it marked `review-parked`: a client marking from the edge it REQUESTED
+# would write `review` and leave the owner off its lane in a park nobody is
+# reviewing in.
+cat > "$DAEMON_HOME/seat-9.json" <<'META'
+{"uuid":"seat-9","status":"idle","ticket":"9","lane":"implementer","phase":"review"}
+META
+phase9() { python3 -c "import json
+print('phase=[%s]' % (json.load(open('$DAEMON_HOME/seat-9.json')).get('phase') or '<absent>'))"; }
 t "transition prints SERVER to, not requested" "→ needs-human (converged)" \
   V board-transition.sh 9 in-review "note here"
+t "...and the seat is marked from that answer, not the requested edge" \
+  "phase=[review-parked]" phase9
 # A BIRTH NAMES ITS REPO; A MOVE DOES NOT (the register half is asserted below,
 # once one has been posted). An id-targeted route needs no repo name: the ticket
 # already has one, and a second opinion about it could only ever contradict the
@@ -301,23 +324,73 @@ t "and --repair-path is refused in gh mode" "api-binding-only" \
 PIN_OUT="$(mktemp)"
 V board-transition.sh 9 ready-for-implementer "n" --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" \
   > "$PIN_OUT" 2>&1 || true
-t "a plan pin off the Architect handoff edge is refused" \
-  "rides the Architect edges out of in-design only" cat "$PIN_OUT"
+t "a plan pin off a pin-minting edge is refused" \
+  "rides the pin-minting edges only" cat "$PIN_OUT"
 nt "and never reaches the wire" '\"plan\": \"docs/p.md@aaa' cat "$FIX.log"
-# THE BUILD EDGE IS GH-ONLY, TODAY. The Architect's in-design → in-progress
-# edge is not on the board service's state table, so the request would come
-# back a generic 409 after the plan was already pushed. The client refuses it
-# first and names the exit: the legacy handoff carries the same plan value into
-# the implement queue, where an Executor runs it — PLAN-EXECUTION from a real
-# pin, DIRECT from the body on `pre-spec`.
+# THE BUILD EDGE REACHES THE BOARD. The service's state table carries the
+# Architect's in-design → in-progress edge now, so the client's own refusal of
+# it — which existed only to name an exit ahead of a generic 409 — is gone, and
+# the request goes on the wire like any other.
 : > "$FIX.log"
+V board-transition.sh 8 in-progress "direct: pre-spec suffices as the plan" \
+  --branch tick/build --plan pre-spec > "$PIN_OUT" 2>&1 || true
+t "the build edge reaches the API board" '"path": "/tickets/8/transition"' cat "$FIX.log"
+t "...and the client reports the state the server wrote" "#8: → in-progress" cat "$PIN_OUT"
+# A real pin on that edge is held to the PIN's own gates — the edge refusal
+# used to hide them.
 V board-transition.sh 8 in-progress "plan-execution: docs/p.md@$(printf 'a%.0s' $(seq 40))" \
   --branch tick/build --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
-t "the build edge is refused client-side on an API board" \
-  "not supported by the API board service yet" cat "$PIN_OUT"
-t "...and the refusal names the handoff fallback" \
-  "hand off instead: ready-for-implementer" cat "$PIN_OUT"
-nt "and the build edge never reaches the wire" '"path": "/tickets/8/transition"' cat "$FIX.log"
+t "...and a real pin on it still verifies before the wire" \
+  "names no commit in this checkout" cat "$PIN_OUT"
+# THE REVIEW FOLD's two edges mint pins here as they do under gh: the owner's
+# rebuild out of in-review, and its same-state re-pin. Both stop at the pin's
+# own gates, which is the discrimination — an edge refusal would come first.
+V board-transition.sh 9 in-review "re-pin: the delta" \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+nt "the re-pin edge is admitted by the pin gate" "rides the pin-minting edges only" cat "$PIN_OUT"
+t "...and a re-pin with no branch anywhere is still refused" \
+  "needs a branch the sha is reachable from" cat "$PIN_OUT"
+V board-transition.sh 9 in-progress "rebuild: the design gap, repaired" --branch nope \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+nt "the rebuild edge is admitted too" "rides the pin-minting edges only" cat "$PIN_OUT"
+t "...and stops at the same unverifiable-branch check" \
+  "names no commit in this checkout" cat "$PIN_OUT"
+# `pre-spec` names the ticket BODY as the plan, a ruling of the design pass;
+# a rebuild and a re-pin repair a pinned DOCUMENT, so neither may carry it.
+: > "$FIX.log"
+V board-transition.sh 9 in-review "re-pin: the body will do" --plan pre-spec \
+  > "$PIN_OUT" 2>&1 || true
+t "a re-pin may not carry the pre-spec sentinel" \
+  "needs a real <path>@<full-40-hex-sha> pin" cat "$PIN_OUT"
+nt "...and that refusal never reached the wire" '"path": "/tickets/9/transition"' cat "$FIX.log"
+V board-transition.sh 9 in-progress "rebuild: the body will do" --branch tick/build \
+  --plan pre-spec > "$PIN_OUT" 2>&1 || true
+t "and neither may a rebuild" "needs a real <path>@<full-40-hex-sha> pin" cat "$PIN_OUT"
+
+# The re-pin re-supplies nothing, so a board row that records a branch is the
+# fallback --branch would have been — the refusal names the recorded one.
+V board-transition.sh 12 in-review "re-pin: the delta" \
+  --plan "docs/p.md@$(printf 'a%.0s' $(seq 40))" > "$PIN_OUT" 2>&1 || true
+t "a re-pin falls back to the branch the board records" \
+  "branch tick/recorded names no commit in this checkout" cat "$PIN_OUT"
+# ...and with a pin this checkout can actually verify, the re-pin goes on the
+# wire carrying the repaired revision and NOTHING ELSE: neither --branch nor
+# --pr was given, so neither may appear in the request — those are the values
+# the board already holds and the self-edge exists not to re-supply.
+git -C "$r" checkout -q -b tick/live
+mkdir -p "$r/docs" && printf 'the repaired plan\n' > "$r/docs/p.md"
+git -C "$r" add docs/p.md
+git -C "$r" -c user.email=t@t -c user.name=t commit -q -m "the repaired plan"
+LIVE_SHA="$(git -C "$r" rev-parse HEAD)"
+: > "$FIX.log"
+V board-transition.sh 13 in-review "re-pin: acceptance 4 re-cut" \
+  --plan "docs/p.md@$LIVE_SHA" > "$PIN_OUT" 2>&1 || true
+t "a verifiable re-pin reaches the board" '"path": "/tickets/13/transition"' cat "$FIX.log"
+t "...and the client reports the state the server wrote" "#13: → in-review" cat "$PIN_OUT"
+t "...carrying the repaired revision" "docs/p.md@$LIVE_SHA" cat "$FIX.log"
+nt "...and no branch the caller never gave" '\"branch\"' cat "$FIX.log"
+nt "...and no pr it never gave either" '\"pr\"' cat "$FIX.log"
+
 V board-transition.sh 8 ready-for-implementer "n" --plan "docs/p.md@deadbeef" \
   > "$PIN_OUT" 2>&1 || true
 t "a short-sha pin is refused as mutable" "immutable pin" cat "$PIN_OUT"

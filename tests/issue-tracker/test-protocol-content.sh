@@ -29,6 +29,19 @@ assert_not_contains() {
     if grep -Fq -- "$2" <<<"$1"; then
         fail "$3"; echo "    expected NOT to find: $2"; else pass "$3"; fi
 }
+# Order is behavior. A seat's turn ENDS while its QA agent runs, so the fleet
+# view shows it idle for the length of the review, and the status line is the
+# only thing separating that from a seat that died mid-build. Four of eighteen
+# treatment sessions in the task-8 eval never wrote it while it stood as its
+# own act; it is now paired with the in-review transition, which no seat skips.
+# assert_order pins both the pairing and the three acts' sequence.
+assert_order() {  # <file> <earlier> <later> <label>
+    local a b
+    a="$(grep -nF -- "$2" "$1" | head -1 | cut -d: -f1)"
+    b="$(grep -nF -- "$3" "$1" | head -1 | cut -d: -f1)"
+    if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then pass "$4"; else
+        fail "$4"; echo "    '$2' at line ${a:-none}, '$3' at line ${b:-none}"; fi
+}
 
 echo "protocol content:"
 [ -f "$PROTO" ] || { echo "missing $PROTO"; exit 1; }
@@ -46,6 +59,12 @@ assert_contains "$proto" "A follow-up not registered does not exist" "direct reg
 assert_contains "$proto" "doperpowers:issue-tracker" "registration routes through the issue-tracker skill"
 assert_contains "$proto" "author its body at register time" "follow-up body is authored at register time"
 assert_contains "$proto" "Closes #{{ISSUE_NUMBER}}" "merge-closes contract present"
+# The Closes link is a gh-binding contract: on an API board the ticket number
+# names no GitHub issue, and the keyword would close an unrelated one.
+assert_contains "$proto" 'under a gh board your PR body MUST say "Closes #{{ISSUE_NUMBER}}"' "Authority: the Closes duty is the gh binding's"
+assert_contains "$proto" '- Under a gh board, "Closes #{{ISSUE_NUMBER}}". Under an API board, NO' "Closing Artifact: the Closes bullet splits by binding"
+assert_contains "$proto" '`Closes`/`Fixes`/`Resolves` line for the ticket' "...and an API board's PR body carries no closing keyword for the ticket"
+assert_not_contains "$proto" 'your PR body MUST say "Closes #{{ISSUE_NUMBER}}", and' "...and no binding-blind Closes duty survives"
 assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
 assert_contains "$proto" "EXECUTION (gate passed)" "execution doctrine lives inline in the protocol (no binding indirection)"
 assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
@@ -64,7 +83,7 @@ assert_contains "$proto" "never from the top" "...and says so where the mode is 
 assert_not_contains "$proto" "land on main independently" "landability criterion lives in the gate file, not the protocol"
 assert_contains "$proto" "single home" "park discriminant routes to issue-tracker (single-source)"
 assert_not_contains "$proto" "Knowledge work anyone could do" "needs-info definition not re-vendored in the protocol"
-assert_contains "$proto" "doperpowers:qa-loops" "handoff to the review loop named"
+assert_contains "$proto" "doperpowers:qa-loop" "handoff to the review loop named"
 assert_not_contains "$proto" '"ticket":' "the JSON proposal block is dead"
 assert_not_contains "$proto" "→ blocked" "no retired blocked vocabulary"
 assert_not_contains "$proto" "status:blocked" "no retired blocked label"
@@ -78,10 +97,15 @@ assert_not_contains "$proto" "EXECPLAN:" "retired self-authoring mode removed"
 echo "placeholders:"
 # The protocol keeps only the tokens its own clauses use; the worker reads
 # its ticket and the repo-facts manifest itself (no inlined bodies).
-want="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+# AUTO_MERGE, REVIEW_LEVEL and TECH_DEBT_ISSUE joined the set with the QA
+# agent: the Executor relays them into the brief of the review it dispatches
+# on its own PR, and a spawned seat cannot read them from anywhere else.
+want="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}} {{REVIEW_LEVEL}} {{TECH_DEBT_ISSUE}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
+
+assert_contains "$proto" '"[gate] pass — <mode>: <one line>"' "implement: the gate comment interface is [gate] pass — <mode>: <one line>"
 
 echo "protocols are files, not skills:"
 assert_not_contains "$proto" "name: executing" "no skill frontmatter on the implement protocol"
@@ -103,8 +127,11 @@ assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-bloc
 # PARENT_PIN and TICKET_BODY_FILE are the API binding's two additions: the
 # parent-contract window a claim was cut against (no read a worker may make
 # hands it over), and the assignment file the claim delivered in place of a
-# ticket-body read route.
-want_boot="{{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENGINE_NAME}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{ROLE}} {{TICKET_BODY_FILE}}"
+# ticket-body read route. AUTO_MERGE, REVIEW_LEVEL and TECH_DEBT_ISSUE are the
+# review the owner runs on its own PR: the switch, the floor, and the sink for
+# a finding it logs rather than fixes — dispatcher-owned, like every other
+# name here, because none of them is the worker's to choose.
+want_boot="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_LEVEL}} {{ROLE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -124,10 +151,14 @@ SPIKE="$REFS/spike-worker-protocol.md"
 [ -f "$SPIKE" ] || { echo "missing $SPIKE"; exit 1; }
 spike="$(cat "$SPIKE")"
 # The brief/facts tails ride the bootstrap's binding sections for both lanes.
-want_spike="{{BOARD_SCRIPTS}} {{ENGINE_NAME}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
+want_spike="{{BOARD_SCRIPTS}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}}"
 got_spike="$(grep -o '{{[A-Z_]*}}' "$SPIKE" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_spike" = "$want_spike" ]; then pass "spike placeholder set is exactly: $want_spike"; else
     fail "spike placeholder set drifted"; echo "    expected: $want_spike"; echo "    actual:   $got_spike"; fi
+# The gate comment is an INTERFACE, not prose: the qa-loop agent keys its
+# compliance audit to `[gate] pass` on the ticket, so the lane name and the
+# separator are read by another agent. Pinned literally on both lanes.
+assert_contains "$spike" '"[gate] pass — spike: <one line>"' "spike: the gate comment interface is [gate] pass — spike: <one line>"
 assert_contains "$spike" "DRAFT" "spike: evidence PR is draft-only"
 assert_not_contains "$spike" "{{EXECUTION_BLOCK}}" "spike: no engine execution block (exploration, not TDD)"
 assert_contains "$spike" 'NEVER "Closes #{{ISSUE_NUMBER}}"' "spike: Closes is forbidden"
@@ -176,9 +207,9 @@ TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
 [ -f "$TRACKER" ] || { echo "missing $TRACKER"; exit 1; }
 tracker="$(cat "$TRACKER")"
 assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
-assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: gateway route rides sminos spawn via settings env"
-assert_contains "$tracker" "sminos spawn" "ritual: one spawn command for both routes"
-assert_contains "$tracker" "model route" "ritual: engine resolution states route semantics"
+assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: the spawn's gateway env is cleared by assignment"
+assert_contains "$tracker" "sminos spawn" "ritual: one spawn command"
+assert_contains "$tracker" "Claude-harness seat" "ritual: one route — a seat and a model name"
 assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
 assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
 assert_contains "$tracker" "implement-worker-protocol.md" "ritual: names the implement protocol file it pins"
@@ -218,7 +249,10 @@ assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
 
 echo "unattended sweep (dispatch is event/cron-driven, ritual unchanged):"
-assert_contains "$proto" "review loop deliberately skips drafts" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
+# The consequence, not the mechanism: a draft used to mean "no reviewer
+# attaches"; now the seat is the one that would dispatch, so the same
+# shakedown finding reads as "you dispatch no review over a draft".
+assert_contains "$proto" "you dispatch no review over one" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
 assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
 assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
 assert_contains "$tracker" "execute-dispatch.sh" "tracker: ritual names its mechanical executable"
@@ -228,6 +262,11 @@ assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the ma
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
 assert_contains "$sweepdoc" "issue-dispatch.yml" "sweep-setup: runner-day implement template named"
 assert_not_contains "$sweepdoc" "land-on-approve.yml" "sweep-setup: retired land template stays absent"
+# The two review knobs the execute dispatcher reads, stated in the values a
+# worker and an operator actually see — the bootstrap renders `off`/`medium`,
+# and a table that spelled the switch `false` made the operator translate.
+assert_contains "$sweepdoc" '| `AUTO_MERGE_ENABLED` | off |' "sweep-setup: the merge switch's default reads as the worker sees it"
+assert_contains "$sweepdoc" '| `REVIEW_LEVEL` | medium |' "sweep-setup: the review floor knob carries its default"
 tbody="$(cat "$REFS/issue-dispatch.yml")"
 assert_contains "$tbody" "permissions: {}" "issue-dispatch.yml: zero-permission job"
 assert_not_contains "$tbody" "uses: actions/checkout" "issue-dispatch.yml: never checks out repo code"
@@ -242,7 +281,6 @@ assert_not_contains "$arch" "Ends at the plan" "scope no longer ends at the plan
 assert_contains "$arch" "plan-executor" "...through a plan-executor subagent it keeps bound to the ticket"
 assert_contains "$arch" "--plan" "closing artifact / down-shortcircuit pin --plan"
 assert_contains "$arch" "pre-spec" "down-shortcircuit: pre-spec suffices as the plan"
-assert_not_contains "$arch" "{{ENGINE_NAME}}" "architect route is engine-exempt: no {{ENGINE_NAME}} placeholder"
 assert_contains "$arch" "in-design exit" "too-big decompose routes through in-design (no ready-for-architect → ready-for-implementer edge exists)"
 assert_contains "$arch" "## Build" "the Architect has a Build phase, not just a handoff"
 assert_contains "$arch" 'in-progress "plan-execution:' "...whose board write is the build edge with the plan-execution note"
@@ -271,8 +309,120 @@ assert_not_contains "$arch" "Direct never applies here" "architect: the clause t
 assert_contains "$arch" "approve the design at" "architect: the plan route parks for the human's design approval"
 assert_contains "$arch" "before the build edge" "architect: reviews run before the build edge (the executor has no context to absorb findings)"
 
+# The owner's side of the review fold. The review after the PR is the owning
+# seat's own subagent: dispatched once, answered out of the design reasoning
+# that seat already holds. These pin the half of the qa-loop agent's return
+# contract the owner implements — a protocol that drops one of the five
+# returns leaves its agent waiting for an answer nobody will send.
+echo "the owner's QA agent (architect side):"
+assert_contains "$arch" "doperpowers:qa-loop" "architect: the review runs as the seat's own qa-loop agent"
+assert_contains "$arch" 'isolation: "worktree"' "...cut as a worktree of the agent's own"
+# The harness cuts that worktree at the REPOSITORY'S MAIN CHECKOUT head, never
+# the dispatcher's (Task 11's two live drills, 2026-09-22), so the agent
+# positions itself — and it can only do that if the brief names the branch to
+# fetch. A brief without `head branch:` leaves the agent on the wrong range.
+assert_contains "$arch" "head branch: <headRefName>" "...and the brief names the branch the agent fetches to position itself"
+assert_contains "$arch" "baseRefName,headRefName,headRefOid" "...resolved off the PR in one gh read"
+assert_not_contains "$arch" "fresh worktree cut at YOUR head" "architect: the false cut-point claim is gone"
+assert_contains "$arch" "mode: pr" "...briefed with the mode line the agent reads first"
+assert_contains "$arch" "your dispatcher answers escalations; return for them" \
+    "...and the sentence that tells the agent where its escalations go"
+for _act in '**1. Take the review edge and say what this seat is doing**' '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**'; do
+    assert_contains "$arch" "$_act" "architect: the closing turn is a numbered act — $_act"
+done
+assert_order "$ARCHITECT" 'sminos status <your alias> "reviewing: <PR URL>"' \
+    '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
+    "architect: the status line comes BEFORE the dispatch"
+# ...and it rides the board write the seat never skips. Standing alone as its
+# own act, the status line was dropped by four of eighteen eval sessions; the
+# transition it now shares an act with is not droppable, and the two are one
+# block.
+assert_order "$ARCHITECT" 'in-review "<one-line>" --pr <PR URL> --branch <branch>' \
+    'sminos status <your alias> "reviewing: <PR URL>"' \
+    "...paired with the in-review write, in that order"
+assert_contains "$arch" "two writes,
+together" "...as one act of two writes, not two acts"
+assert_order "$ARCHITECT" '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**' \
+    "...and the turn ends after it"
+assert_contains "$arch" "review level floor:" "...relaying the dispatcher-owned level floor"
+assert_contains "$arch" "auto-merge:" "...and the auto-merge switch"
+for _ret in "NEEDS_PANEL level=" "ESCALATE kind=spec-conflict" "ESCALATE kind=design-gap" \
+            "ESCALATE kind=dismissal" "PARKED" "ENGINE-UNAVAILABLE"; do
+    assert_contains "$arch" "$_ret" "architect: the \`$_ret\` return has an answer"
+done
+assert_contains "$arch" "git worktree remove" "architect: and \`DONE\` is where the agent's worktree is removed"
+assert_contains "$arch" "merge --ff-only" \
+    "architect: the panel runs from a checkout fast-forwarded onto the agent's pushed fixes"
+# The fast-forward positions nothing on its own: without `repo` the workflow
+# isolates every lane at the main checkout head, so the panel would read old
+# files against a new diff (Task 11).
+assert_contains "$arch" 'repo: "<absolute path of the checkout you fast-forwarded>"' \
+    "...and the workflow call names that checkout, or the fast-forward is inert"
+assert_contains "$arch" "findings-r" "...and its result object is saved for the agent to read"
+assert_contains "$arch" "git push origin" \
+    "architect: every pin the owner mints follows a push (the pin gate verifies the sha on the remote)"
+assert_contains "$arch" "re-pin: " "architect: a spec conflict can be answered by re-pinning the repaired document"
+assert_contains "$arch" "--plan" "...through the same-state transition that mints the new pin"
+assert_contains "$arch" "rebuild: " "architect: a design gap can be answered by repair and rebuild"
+assert_contains "$arch" "second design-gap" "...and a second one on the same ticket is the human's"
+assert_contains "$arch" "dismiss: " "architect: a dismissal is answered with a pointer into the pinned spec"
+assert_contains "$arch" "mode: scale" "architect: the recomposition claim dispatches the same agent in scale mode"
+assert_contains "$arch" "\`head branch:\` the integration ref" \
+    "...whose brief positions the agent on the integration ref, the scale path's head branch"
+# The scale path named the in-review write and the dispatch but not the status
+# line, and a current-protocol eval cell (treat-arch-scale-2) skipped it — the
+# same omission act 1's pairing fixed for the PR path, on the one closing turn
+# that had not been paired.
+assert_order "$ARCHITECT" 'in-review "<summary>" --pr <package URL> --branch <integration ref>' \
+    'sminos status <your alias> "reviewing (scale): <package URL>"' \
+    "...whose act 1 is the same two writes, the status line beside the board write"
+assert_contains "$arch" "corrective child #" "...and a scale design-gap becomes a corrective child"
+assert_contains "$arch" "never grade, triage, or merge" \
+    "architect authority: the owner answers its review's escalations, never grades them"
+assert_not_contains "$arch" "reviewing your own pull request" \
+    "...and the blanket self-review prohibition is gone (the owner dispatches the review and answers it)"
+assert_not_contains "$arch" "never review your own pull request" \
+    "...in any phrasing"
+assert_not_contains "$arch" "scale-review dispatcher" \
+    "...an owned epic's scale review has no separate dispatcher"
+
+echo "the owner's QA agent (executor side):"
+assert_contains "$proto" "doperpowers:qa-loop" "executor: the review runs as the seat's own qa-loop agent"
+assert_contains "$proto" 'isolation: "worktree"' "...cut as a worktree of the agent's own"
+assert_contains "$proto" "head branch: <headRefName>" "...and the brief names the branch the agent fetches to position itself"
+assert_contains "$proto" "baseRefName,headRefName,headRefOid" "...resolved off the PR in one gh read"
+assert_not_contains "$proto" "fresh worktree cut at YOUR head" "executor: the false cut-point claim is gone"
+assert_contains "$proto" 'repo: "<absolute path of the checkout you fast-forwarded>"' \
+    "executor: the panel's workflow call names the checkout it fast-forwarded"
+assert_contains "$proto" "your dispatcher answers escalations; return for them" \
+    "...and the sentence that tells the agent where its escalations go"
+assert_order "$PROTO" 'sminos status <your alias> "reviewing: <PR URL>"' \
+    '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
+    "executor: the status line comes BEFORE the dispatch"
+assert_order "$PROTO" 'in-review "<one-line>" --pr <URL> --branch <branch>' \
+    'sminos status <your alias> "reviewing: <PR URL>"' \
+    "...paired with the in-review write, in that order"
+assert_contains "$proto" "two writes,
+together" "...as one act of two writes, not two acts"
+assert_order "$PROTO" '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**' \
+    "...and the turn ends after it"
+assert_contains "$proto" 'ready-for-architect "<impasse>"' \
+    "executor: a design gap or a pinned-plan spec conflict returns to the architect lane"
+assert_contains "$proto" 'reply `wave`' "executor: no dismissal channel — the finding waves like any other"
+for _ret in "NEEDS_PANEL level=" "ESCALATE kind=spec-conflict" "ESCALATE kind=design-gap" \
+            "ESCALATE kind=dismissal" "PARKED" "ENGINE-UNAVAILABLE"; do
+    assert_contains "$proto" "$_ret" "executor: the \`$_ret\` return has an answer"
+done
+assert_contains "$proto" "git worktree remove" "executor: and \`DONE\` is where the agent's worktree is removed"
+assert_contains "$proto" "never grade, triage, or merge" \
+    "executor authority: the owner answers its review's escalations, never grades them"
+assert_not_contains "$proto" "never review your own pull request" \
+    "...and the blanket self-review prohibition is gone here too"
+assert_not_contains "$proto" "scale-review dispatcher" \
+    "...an Executor never meets a scale-review dispatcher"
+
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
-REVIEW="$REPO_ROOT/skills/qa-loops/SKILL.md"
+REVIEW="$REPO_ROOT/agents/qa-loop.md"
 [ -f "$REVIEW" ] || { echo "missing $REVIEW"; exit 1; }
 review="$(cat "$REVIEW")"
 # env-issue authority — all four worker protocols carry the same opt-in filing.
@@ -291,7 +441,11 @@ assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-i
 # path, and a worker filing on a side errand would drop the report silently.
 for _pair in "architect:$ARCHITECT" "executor:$PROTO" "spike:$SPIKE" "review:$REVIEW"; do
     _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
-    assert_contains "$_body" 'env-issue <P0..P3> --spawned-by {{ISSUE_NUMBER}} --note' "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
+    # The three worker protocols are rendered against a bootstrap and name the
+    # dispatcher's binding; the qa-loop agent carries no placeholders at all and
+    # names the brief's ticket instead. Same command, same --note.
+    _ticket='{{ISSUE_NUMBER}}'; [ "$_name" = review ] && _ticket='<ticket>'
+    assert_contains "$_body" "env-issue <P0..P3> --spawned-by $_ticket --note" "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
     assert_contains "$_body" "Default birth is needs-human" "$_name: env-issue birth default is needs-human"
     assert_contains "$_body" "opt-in authority, not a duty" "$_name: filing is opt-in authority, never a duty"
     assert_contains "$_body" "subagents never write the board" "$_name: subagent write doctrine restated"
@@ -348,9 +502,9 @@ assert_contains "$arch" "Before you release the claim" \
 # default, and an epic has neither a PR body nor an executor gate comment.
 assert_contains "$review" "object is the CLOSURE PACKAGE" \
     "scale audit rebinds its object to the closure package, not a PR"
-assert_contains "$review" "artifact that cannot exist is never a finding" \
+assert_contains "$review" "the absence of an artifact that cannot exist is never a" \
     "scale audit never turns a nonexistent PR artifact into a finding"
-assert_contains "$review" "on the EPIC ISSUE, the same thread its closure package lives in" \
+assert_contains "$review" "on the EPIC ticket, the same thread its closure" \
     "the scale run's review trail has a valid target"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
 # The integration ref is per-cycle supply, not inherited state: the
@@ -460,12 +614,12 @@ echo "plan-executor agent (the Architect's hands):"
 PLAN_EXECUTOR="$REPO_ROOT/agents/plan-executor.md"
 [ -f "$PLAN_EXECUTOR" ] || { echo "missing $PLAN_EXECUTOR"; exit 1; }
 pexec="$(cat "$PLAN_EXECUTOR")"
-assert_contains "$pexec" "model: opus" "the plan-executor is pinned to the worker tier"
+assert_contains "$pexec" "model: sol" "the plan-executor is pinned to the worker tier"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
 assert_contains "$pexec" "carries its own execution" "...and its non-SDE mode is a spec that carries its own execution, worked in order"
-assert_contains "$pexec" "a review loop owns them" "...and the whole-branch review is the brief's to assign (the board's review loop owns it)"
+assert_contains "$pexec" "QA agent" "...and the whole-branch review is the brief's to assign (on the board, the owning seat's QA agent)"
 assert_contains "$pexec" "Outcomes & Retrospective" "...and it writes the spec's retrospective before the PR"
 assert_not_contains "$pexec" "final review is clean" "...closing no longer presumes a final review the sequential mode never defined"
 # Review input and follow-up work are different channels: Residue is the list
@@ -473,7 +627,51 @@ assert_not_contains "$pexec" "final review is clean" "...closing no longer presu
 # there becomes a ticket (or a fix made to avoid writing one).
 assert_contains "$pexec" '## Unresolved Review Findings`, each with where it is' "...and unfixed task-review findings ride their own PR-body section, with the reason each was left"
 assert_contains "$pexec" "deserves its own ticket" "...while Residue keeps its meaning: work for another ticket"
+assert_contains "$pexec" 'carries `Closes #<ticket>` when the brief'"'"'s ticket is a GitHub issue' "...and writes the Closes link only for a GitHub-issue ticket"
+assert_contains "$pexec" 'no `Closes`/`Fixes`/`Resolves` line' "...and none for a board-service ticket"
 assert_not_contains "$pexec" 'into the PR body'"'"'s `## Residue`' "...and review findings are not routed into Residue (that list mints tickets)"
+
+echo "task-executor agent (subagent-driven-execution's hands):"
+TASK_EXECUTOR="$REPO_ROOT/agents/task-executor.md"
+[ -f "$TASK_EXECUTOR" ] || { echo "missing $TASK_EXECUTOR"; exit 1; }
+texec="$(cat "$TASK_EXECUTOR")"
+assert_contains "$texec" "model: sol" "the task-executor rides the same worker tier as the plan-executor"
+assert_contains "$texec" "effort: high" "...at high reasoning effort"
+
+# ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
+# agent (agents/qa-loop.md) and, on a PR nobody owns, by the review stand-in
+# seat the review dispatcher spawns. The fold left no review lane, no
+# Reviewer worker and no qa-loops skill, so prose naming any of them points
+# a reader at something nothing can dispatch. Six such sentences survived in
+# SKILL.md and sweep-setup.md and were read back as live doctrine: in a
+# fresh-context wording check (2026-09-22) five of five samples answered "the
+# Reviewer worker" for the two sweep knobs and two of five for who merges the
+# PR. The pattern fences the lane and the daemon too, not just the worker —
+# the same sentence can go stale under any of its old names, and `review(er)?`
+# is written out because `reviewer?` would make the r optional and miss
+# "review daemon" while matching "reviewe daemon".
+# Scope is the prose an agent LOADS. The board scripts' comments were
+# corrected by hand and are deliberately outside this fence: `review lane`
+# still means the sweep's dispatch pass, the in-review state, and the
+# server's qagent lane there, so the same words are not stale in them.
+# review-loop.md's migration note is the one licensed mention: it exists to
+# tell an adopting repo which retired path to stop calling.
+echo "the review's actors, after the fold:"
+stale=""
+for f in "$TRACKER" "$REFS"/*.md; do
+    hits="$(awk '
+        /^## Migrating an installed workflow$/ { skip = 1 }
+        /^## / && !/^## Migrating an installed workflow$/ { skip = 0 }
+        !skip
+    ' "$f" | grep -niE 'qa-loops|review(er)? workers?|reviewer seat|review lane|review(er)? daemon' || true)"
+    [ -n "$hits" ] && stale="$stale$(basename "$f"): $hits"$'\n'
+done
+if [ -n "$stale" ]; then
+    fail "no retired review actor is named in the skill or its references"
+    printf '%s' "$stale"
+else
+    pass "no retired review actor is named in the skill or its references"
+fi
 
 echo
 if [ "$FAILURES" -gt 0 ]; then echo "$FAILURES test(s) FAILED"; exit 1; fi

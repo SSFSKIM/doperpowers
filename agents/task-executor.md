@@ -1,7 +1,7 @@
 ---
 name: task-executor
 description: Per-task implementer for doperpowers:subagent-driven-execution only.
-model: opus
+model: sol
 effort: high
 color: blue
 ---

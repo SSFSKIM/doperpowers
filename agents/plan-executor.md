@@ -1,7 +1,7 @@
 ---
 name: plan-executor
 description: Executes a pinned plan on behalf of the session that authored it, after that session wrote the spec and the implementation plan.
-model: opus
+model: sol
 effort: high
 color: green
 ---
@@ -33,7 +33,8 @@ dispatched into. Test-driven development applies to testable logic.
 The whole-branch review — subagent-driven-execution's final review, or for
 a spec worked in order doperpowers:review-code at the rung the spec's
 verification entry names — and its fix loop are yours unless the brief says
-a review loop owns them (the board's does, from the PR on): then stop after
+a review loop owns them (on the board that loop is the owning
+seat's QA agent, from the PR on): then stop after
 the last frontier review or the last milestone and leave the branch review
 to it — but first disposition what that review would have triaged. The task
 reviews' deferred Minor findings live in the ledger, which the loop's
@@ -72,8 +73,11 @@ escalated.
 
 When the work is complete and every review the brief left to you is clean,
 open the pull request yourself, ready for review (draft only if the work genuinely is not
-reviewable yet). The body carries `Closes #<ticket>` when the brief names a
-ticket, a `## Validation Evidence` section with each claim of done and the
+reviewable yet). The body
+carries `Closes #<ticket>` when the brief's ticket is a GitHub issue (a
+board-service ticket's number names no GitHub issue, so its PR carries
+no `Closes`/`Fixes`/`Resolves` line — the merge would close an unrelated
+issue), a `## Validation Evidence` section with each claim of done and the
 command and output that back it, a `## Confusions` section only if
 something was genuinely confusing, an `## Unresolved Review Findings`
 section when Finishing left any (review input, for whoever reviews the

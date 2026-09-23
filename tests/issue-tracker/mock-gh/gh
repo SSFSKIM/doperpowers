@@ -117,6 +117,31 @@ def main():
         print(s["issues"][num]["url"])
         return
 
+    if argv[:2] == ["issue", "list"]:
+        # The standing-tracker probes (env-tracker, tech-debt): the first OPEN
+        # issue carrying a label, read as a bare number through jq. Only that
+        # one projection is taught — a mock that guessed at another `--json`
+        # field or jq expression would answer a question nobody asked it.
+        if opt(argv, "--json") != "number":
+            die("unhandled issue list fields: %s" % opt(argv, "--json"))
+        if (opt(argv, "--state") or "open") != "open":
+            die("unhandled issue list state: %s" % opt(argv, "--state"))
+        want = []
+        for l in opt(argv, "--label", multi=True):
+            want += [x for x in l.split(",") if x]
+        rows = [it for _, it in sorted(s["issues"].items(), key=lambda kv: int(kv[0]))
+                if it["state"] == "OPEN" and all(w in it["labels"] for w in want)]
+        rows = rows[:int(opt(argv, "--limit") or 30)]
+        jq = opt(argv, "-q") or opt(argv, "--jq")
+        if jq is None:
+            print(json.dumps([{"number": it["number"]} for it in rows]))
+            return
+        if jq != ".[0].number":
+            die("unhandled jq filter: %s" % jq)
+        if rows:                      # no match prints nothing, as gh does
+            print(rows[0]["number"])
+        return
+
     if argv[:2] == ["issue", "edit"]:
         it = issue(s, argv[2])
         for l in opt(argv, "--remove-label", multi=True):

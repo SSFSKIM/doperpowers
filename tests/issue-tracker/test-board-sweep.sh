@@ -41,6 +41,10 @@ export MOCK_GH_LOG="$TEST_ROOT/gh-log.jsonl"
 export BOARD_REPO="test/repo"
 export BOARD_SCRIPTS="$REPO_ROOT/skills/issue-tracker/scripts"
 export ACTION_LOG="$TEST_ROOT/actions.log"; : > "$ACTION_LOG"
+# The resume PROMPTS, whole. ACTION_LOG keeps only their first 60 characters
+# (it is an ordering log), and what a nudge actually tells a worker to do is
+# the behavior under test wherever the sweep writes one.
+export RESUME_PROMPTS="$TEST_ROOT/resume-prompts.log"; : > "$RESUME_PROMPTS"
 export SWEEP_LOG="$TEST_ROOT/sweep.log"
 export MOCK_PR_LIST="$TEST_ROOT/pr-list.json"; echo "[]" > "$MOCK_PR_LIST"
 export COMMENTS_DIR="$TEST_ROOT/comments"; mkdir -p "$COMMENTS_DIR"
@@ -254,9 +258,14 @@ if meta.get('status') not in ('working', 'blocked'):
 m = json.load(open(os.environ['FINALIZE_MAP']))
 print(m.get(uuid, 'live'))" "$1"
   ;;
-resume)
-  if [ "${1:-}" = "--wait" ]; then shift; fi
-  echo "resume:$1:${2:0:60}" >> "$ACTION_LOG"
+resume|wake)
+  # Logged as `<verb>:<uuid>:<prompt head>`, and only with --wait: every
+  # recovery nudge blocks on the worker's turn in the background.
+  [ "${1:-}" = "--wait" ] || { echo "stub sminos: $verb without --wait" >&2; exit 2; }
+  shift
+  echo "$verb:$1:${2:0:60}" >> "$ACTION_LOG"
+  [ "${3:-}" != "--from" ] || echo "from:$verb:$1:${4:-}" >> "$ACTION_LOG"
+  printf '%s\n' "${2:-}" >> "$RESUME_PROMPTS"
   ;;
 retire)
   echo "retire:$1" >> "$ACTION_LOG"
@@ -487,6 +496,13 @@ meta(U("aaaa0050"), "50-handed-off", "50", "working")
 meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
 meta(U("aaaa0073"), "73-building", "73", "working")
 meta(U("aaaa0074"), "74-silent", "74", "working")
+# ANOTHER BOARD's live worker on its own ticket 13. The registry is
+# machine-global and a board is not, so the number alone says nothing: #13 is
+# done HERE, and retiring this seat would kill a neighbour's work.
+meta(U("aaaa0095"), "13-elsewhere", "13", "working")
+m = json.load(open(os.path.join(os.environ["DAEMON_HOME"], U("aaaa0095") + ".json")))
+m["board"] = "gh:other/repo"
+json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], U("aaaa0095") + ".json"), "w"))
 PY
 
 # sync verdicts per uuid (only consulted for working/blocked records —
@@ -502,7 +518,8 @@ json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0020"): "absent", U("aaaa0021"): "absent",
            U("aaaa0050"): "live", U("aaaa0051"): "live",
            U("aaaa0058"): "idle", U("aaaa0060"): "idle",
-           U("aaaa0073"): "live", U("aaaa0074"): "live"},
+           U("aaaa0073"): "live", U("aaaa0074"): "live",
+           U("aaaa0095"): "live"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
@@ -633,13 +650,18 @@ assert_not_contains "$log" "retire:aaaa0018" "and a live worker on an IN-FLIGHT 
 # pull moved out from under it — retire the binding, never resume a worker
 # with nothing left to do.
 assert_contains "$log" "retire:aaaa0058-0000-4000-8000-000000000000" "an idle worker on an epic pulled to in-progress is retired"
-assert_not_contains "$log" "resume:aaaa0058" "...and never resumed"
+assert_not_contains "$log" "wake:aaaa0058" "...and never woken"
 assert_contains "$out" "its handoff is done" "the log says why the binding was released"
-# a recomposition Architect mid-claim (epic in in-design) is still resumable
-assert_contains "$log" "resume:aaaa0060-0000-4000-8000-000000000000" "an idle Architect on an epic in in-design still gets the resume ladder"
+# a recomposition Architect mid-claim (epic in in-design) is still recoverable.
+# It is IDLE — a live seat whose turn ended — so the nudge is a wake: `sminos
+# resume` on a live idle seat has no turn to stop, and the harness starts a copy.
+assert_contains "$log" "wake:aaaa0060-0000-4000-8000-000000000000" "an idle Architect on an epic in in-design is woken onto the recovery ladder"
+assert_not_contains "$log" "resume:aaaa0060" "...never resumed (a resume on a live idle seat starts a copy)"
+assert_contains "$log" "from:wake:aaaa0060-0000-4000-8000-000000000000:sweep" "...and the wake is signed by the sweep, not left to read as the human"
 
 # CANCEL
 assert_contains "$log" "retire:aaaa0013-0000-4000-8000-000000000000" "live worker on a terminal ticket is retired"
+assert_not_contains "$log" "retire:aaaa0095" "another board's worker on the same ticket number is not this board's to cancel"
 c13="$(python3 -c "
 import json, os
 s = json.load(open(os.environ['MOCK_GH_STATE']))
@@ -1323,7 +1345,7 @@ dep_seed 126 ready-for-implementer 127
 dep_seed 127 in-progress
 dep_worker bbbb0127 127 working "gh:other/repo"
 out="$(run_sweep)"
-assert_contains "$out" "RECOVER: #121 worker bbbb0121-0000-4000-8000-000000000000 finished without a board transition — resume attempt 1/3" "RECOVER backgrounds a resume for #121 in this tick"
+assert_contains "$out" "RECOVER: #121 worker bbbb0121-0000-4000-8000-000000000000 finished without a board transition — wake attempt 1/3" "RECOVER backgrounds a wake for #121 in this tick"
 assert_equals "$(issue_labels 120)" "status:ready-for-implementer" "...so its blocker is still being worked, and the wait behind it is not reported"
 assert_contains "$out" "RECOVER: #124 worker bbbb0124-0000-4000-8000-000000000000 finished without a board transition — cap (3) exhausted, parking needs-human" "the ladder gives up on #124 and parks it"
 assert_contains "$(issue_labels 123)" "status:needs-human" "...and from then on nothing is coming, so the wait behind it IS reported"
@@ -1331,6 +1353,130 @@ assert_contains "$(issue_note 123)" "#124, which is needs-human" "...naming the 
 assert_contains "$(issue_labels 126)" "status:needs-human" "a worker bound to ANOTHER board's ticket of the same number suppresses nothing here"
 assert_contains "$(issue_note 126)" "#127, which is in-progress" "...the blocker reads as unworked, because that binding is not this board's"
 assert_equals "$(issue_labels 84)" "status:ready-for-implementer" "while an UNSTAMPED legacy meta still reads as this board's own, and does suppress"
+
+# ---- RECOVER — an owner whose review stopped ----------------------------------
+# An `in-review` ticket's bound seat is the OWNER that opened the PR and
+# dispatched the QA agent (the review species are excluded from _bound_rows).
+# While that agent runs the seat is busy in the harness's eyes, so the failure
+# shapes are the in-flight arm's — dead, errored, idle, or live and silent past
+# the threshold. What differs is the ladder: it is bounded by the REVIEW's
+# progress, not the seat's. A review that is moving posts a [review-trail]
+# comment at every round's end, so a new one resets the count; three nudges
+# with no new trail comment park the ticket for a human.
+echo "board-sweep: RECOVER pass — an owner in review"
+
+rv_meta() {  # <uuid-stem> <ticket> <name> <status> [review-recov] [trail-seen] [build-recov]
+    T_U="$1" T_TK="$2" T_NAME="$3" T_ST="$4" T_RR="${5:-}" T_TS="${6:-}" T_SR="${7:-}" \
+    python3 - <<'PY'
+import json, os
+u = "%s-0000-4000-8000-000000000000" % os.environ["T_U"]
+m = {"uuid": u, "current": u, "name": os.environ["T_NAME"],
+     "ticket": os.environ["T_TK"], "status": os.environ["T_ST"],
+     "updated": "2026-07-18T00:00:00Z"}
+for key, var in (("review_recoveries", "T_RR"), ("review_trail_seen", "T_TS"),
+                 ("sweep_recoveries", "T_SR")):
+    if os.environ.get(var):
+        m[key] = os.environ[var]
+with open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w") as f:
+    json.dump(m, f)
+PY
+}
+rv_sync() {  # <uuid-stem> <verdict> — what `sminos sync` answers for that seat
+    T_U="$1" T_V="$2" python3 - <<'PY'
+import json, os
+p = os.environ["FINALIZE_MAP"]
+with open(p) as f:
+    m = json.load(f)
+m["%s-0000-4000-8000-000000000000" % os.environ["T_U"]] = os.environ["T_V"]
+with open(p, "w") as f:
+    json.dump(m, f)
+PY
+}
+rv_field() {  # <uuid-stem> <key> → the meta's value, or <absent>
+    T_U="$1" T_K="$2" python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["DAEMON_HOME"],
+                 "%s-0000-4000-8000-000000000000.json" % os.environ["T_U"])
+with open(p) as f:
+    print(json.load(f).get(os.environ["T_K"], "<absent>"))
+PY
+}
+rv_transcript() {  # <uuid-stem> stale|fresh
+    f="$HOME/.claude/projects/proj/$1-0000-4000-8000-000000000000.jsonl"
+    touch "$f"
+    [ "$2" = fresh ] || touch -t 202607170000 "$f"
+}
+
+# 1. its turn ended with no agent running
+dep_seed 130 in-review
+rv_meta rv0130 130 "130-owner" working; rv_sync rv0130 idle
+# 2. live, but nothing has been written anywhere under the session for hours
+dep_seed 131 in-review
+rv_meta rv0131 131 "131-owner" working; rv_sync rv0131 live
+rv_transcript rv0131 stale
+# 3. live and writing — the QA agent is working and the owner is not stalled
+dep_seed 132 in-review
+rv_meta rv0132 132 "132-owner" working; rv_sync rv0132 live
+rv_transcript rv0132 fresh
+# 4. the review POSTED a round since the last tick: the ladder starts over
+dep_seed 133 in-review
+rv_meta rv0133 133 "133-owner" working 2 0; rv_sync rv0133 idle
+mock_comment 133 "[review-trail] round 1 — level medium, 2 blockers waved"
+# 5. three nudges, no new trail: the review is not moving and a human is asked
+dep_seed 134 in-review
+rv_meta rv0134 134 "134-owner" working 3 0; rv_sync rv0134 idle
+# 6. the seat was recovered three times MID-BUILD — a different failure, and
+#    it must not spend the review's ladder before the first review nudge
+dep_seed 135 in-review
+rv_meta rv0135 135 "135-owner" working "" "" 3; rv_sync rv0135 idle
+# 7. the reset the trail earned DID NOT PERSIST — and the count in hand says
+#    the opposite of what was observed. At the cap it would park a ticket whose
+#    review had just posted a round, so nothing is spent on it at all. The
+#    injection is a crashed tick's leftover: a DIRECTORY where _meta_put writes
+#    its tmp file, which no *.json scan sees and every write trips over.
+dep_seed 137 in-review
+rv_meta rv0137 137 "137-owner" working 3 0; rv_sync rv0137 idle
+mock_comment 137 "[review-trail] round 1 — level medium, 1 blocker waved"
+mkdir -p "$DAEMON_HOME/rv0137-0000-4000-8000-000000000000.json.tmp"
+# 8. a review stand-in owns its own lifecycle and is excluded here, as ever
+dep_seed 136 in-review
+rv_meta rv0136 136 "review-pr-9" working; rv_sync rv0136 idle
+
+: > "$ACTION_LOG"
+out="$(run_sweep)"
+log="$(cat "$ACTION_LOG")"
+
+assert_contains "$log" "wake:rv0130-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+  "in-review owner idle → woken with the review nudge"
+assert_not_contains "$log" "resume:rv0130" "...never resumed (a resume on a live idle seat starts a copy)"
+assert_contains "$(cat "$RESUME_PROMPTS")" "SWEEP RECOVERY: your review of ticket #130's pull request has no live QA agent" \
+  "the nudge names the review and the PR, not the build"
+assert_contains "$(cat "$RESUME_PROMPTS")" "dispatch doperpowers:qa-loop again per your protocol's Closing Artifact" \
+  "...and tells the owner what to do when no review is running"
+assert_contains "$(cat "$RESUME_PROMPTS")" "if the review already reached a park or a verdict, restate it" \
+  "...and what to do when one already finished"
+assert_equals "$(rv_field rv0130 review_recoveries)" "1" "the review ladder is counted in its own key"
+assert_equals "$(rv_field rv0130 sweep_recoveries)" "<absent>" "and the build ladder is not touched by it"
+assert_contains "$log" "resume:rv0131-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+  "in-review owner live and silent → resumed (the stop-and-restart is the stronger recovery for a stalled turn)"
+assert_not_contains "$log" "wake:rv0131" "...and not woken"
+assert_not_contains "$log" "resume:rv0132" "in-review owner live and active → untouched"
+assert_contains "$log" "wake:rv0133-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+  "a new [review-trail] comment resets the count — the owner is nudged, not parked"
+assert_equals "$(rv_field rv0133 review_recoveries)" "1" "...from zero, not from the two it had"
+assert_equals "$(rv_field rv0133 review_trail_seen)" "1" "...and the trail it reset on is recorded"
+assert_not_contains "$log" "wake:rv0134" "at the cap the owner is not nudged again"
+assert_contains "$(issue_labels 134)" "status:needs-human" "at the cap → parked needs-human"
+assert_contains "$(issue_note 134)" "review" "...with a note about the review"
+assert_contains "$log" "wake:rv0135-0000-4000-8000-000000000000:SWEEP RECOVERY: your review" \
+  "prior build recoveries do not count against the review ladder"
+assert_equals "$(issue_labels 135)" "status:in-review" "...so that ticket is nudged, not parked"
+assert_not_contains "$log" "wake:rv0137" "a reset that failed to persist nudges nobody"
+assert_equals "$(issue_labels 137)" "status:in-review" "...and parks nobody either, though the count in hand is at the cap"
+assert_equals "$(rv_field rv0137 review_recoveries)" "3" "...leaving the ladder exactly where it was for the next tick"
+assert_contains "$out" "the meta update failed — neither nudged nor parked" "...and the tick says so"
+assert_not_contains "$log" "wake:rv0136" "a review-pr-* seat is still excluded"
+assert_equals "$(issue_labels 136)" "status:in-review" "...and is never parked by this pass either"
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

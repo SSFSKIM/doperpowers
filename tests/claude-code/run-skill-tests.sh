@@ -102,6 +102,7 @@ tests=(
     "board-api/test-review-dispatch-claim.sh"
     "board-api/test-sweep-renew-relay.sh"
     "board-api/test-sweep-stall.sh"
+    "board-api/test-sweep-review-recover.sh"
     "board-api/test-sweep-resume.sh"
     "board-api/test-run-self-location.sh"
     "board-api/test-store-scope.sh"
@@ -128,11 +129,12 @@ tests=(
     # hermetic suite can carry it. Needs `claude` on PATH on top of the tier's
     # own gate, and skips 77 without it.
     "board-api/integration/test-bg-worker-actor.sh"
-    # qa-loops: the suites in tests/qa-loops/ are hand-run (the spec's
-    # acceptance invokes them as a glob). The bootstrap parity fence is listed
-    # here because it is hermetic and sub-second — no dispatcher, no gh, no
-    # ports, just the two bootstrap templates rendered in-process.
-    "../qa-loops/test-bootstrap-parity.sh"
+    # review loop: test-review-dispatch.sh and test-review-standin.sh in
+    # tests/issue-tracker/ are hand-run (the spec's acceptance invokes them
+    # by name). The bootstrap parity fence is listed here because it is
+    # hermetic and sub-second — no dispatcher, no gh, no ports, just the two
+    # bootstrap templates rendered in-process.
+    "../issue-tracker/test-bootstrap-parity.sh"
 )
 
 # Integration tests (slow, full execution)

@@ -95,7 +95,10 @@ cat > "$FIX" <<'JSON'
 ]
 JSON
 python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
-trap 'kill $MOCK 2>/dev/null; rm -rf "$TDIR"' EXIT
+# The mock is REAPED inside the trap, with the reap's own output swallowed: a
+# background job killed by a signal and reaped at shell exit makes bash print
+# `Terminated: 15` AFTER the suite's verdict line, which reads like a failure.
+trap 'kill $MOCK 2>/dev/null; { wait $MOCK; } 2>/dev/null || true; rm -rf "$TDIR"' EXIT
 wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
 
 r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
@@ -622,7 +625,10 @@ t  "and stamps the meta it found"        "78"                            mfield 
 rc 0 "stall runs as a phase of its own"  env HOME="$TESTHOME" DAEMON_HOME="$DH" \
   SMINOS_CLI="$DS/sminos" BOARD_CREDENTIALS_FILE="$CREDS" \
   sh -c "cd '$r' && '$SCRIPTS/_sweep_api.sh' stall"
-t  "and an unknown phase names it"       "renew|stall|relay"             \
+# The needle stops where the list starts: a phase added in the middle of it
+# (review-recover) is not this drill's business, and pinning the whole line
+# made the usage message fail a test about the stall phase.
+t  "and an unknown phase names it"       "usage: _sweep_api.sh [renew|stall" \
   env HOME="$TESTHOME" DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" \
   BOARD_CREDENTIALS_FILE="$CREDS" sh -c "cd '$r' && '$SCRIPTS/_sweep_api.sh' nope"
 

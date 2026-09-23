@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # test-review-dispatch-claim.sh — review-dispatch.sh's API branch: the qagent
 # lane claimed off the board, the crash-recoverable claim journal, and the
-# Reviewer worker's handover (spawn env, startup barrier, bind, lane stamp).
+# review stand-in's handover (spawn env, bind, lane stamp).
 #
 # Same two halves as the execution-side suite: what went on the wire (the
 # fixture mock's request log) and what landed on disk (journal, assignment
 # body, registry meta, the environment the worker was spawned with). The
 # `sminos spawn` stub prints the REAL no-wait banner (the uuid handed to
-# board-bind is parsed out of it) and plays the worker's half of the startup
-# barrier, which the review protocol makes a hard gate.
+# board-bind is parsed out of it).
 . "$(dirname "$0")/helpers.sh"
 
-DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
 
 free_port() { python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
@@ -92,40 +91,6 @@ rec.update({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ[
             "role": os.environ["R"], "status": "working", "updated": "2026-08-09T00:00:00Z"})
 json.dump(rec, open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-# The worker's first protocol action is the BINDING BARRIER: wait for the
-# dispatcher-owned ready file, check it names this worker, acknowledge. The
-# dispatcher does not report success until that ack exists.
-bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
-wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
-[ "$wname" = "$name" ] || bind_ready=""
-# REVIEW_STUB_NO_ACK plays the worker that never crosses its barrier — a model
-# or auth failure on the far side. The dispatcher has to notice, and the record
-# has to lose the run the dispatcher then ends.
-if [ -n "$bind_ready" ] && [ -z "${REVIEW_STUB_NO_ACK:-}" ]; then
-  READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
-import glob, json, os, shutil, time
-ready = os.environ["READY"]
-home = os.environ["DAEMON_HOME"]
-for _ in range(500):
-    if os.path.isfile(ready):
-        # The claim journal AT THE INSTANT BEFORE THE ACK. The handoff is not
-        # durable until this ack exists, so the dispatcher may not have marked
-        # it done yet — and after the fact every order looks the same.
-        # The journals live in a per-binding subdirectory of the root; this
-        # fixture world has exactly one binding, so the one subdirectory under
-        # the store IS the journal directory.
-        snap = os.path.join(home, "claims-at-ack")
-        keyed = glob.glob(os.path.join(home, "board-claims", "*"))
-        if not os.path.exists(snap) and keyed:
-            shutil.copytree(keyed[0], snap)
-        ack = ready + ".ack"; tmp = ack + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"uuid": os.environ["UUID"]}, f)
-        os.replace(tmp, ack)
-        break
-    time.sleep(0.01)
-PY
-fi
 echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: sminos reply ${uuid%%-*})"
 EOF
 chmod +x "$DS/sminos"
@@ -193,7 +158,6 @@ mkdir -p "$DH/board-suppress"; echo 2 > "$DH/board-suppress/.attempts-9"
 ( cd "$r" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     BOARD_RUN_TOKEN=ambient-worker-bearer \
     DAEMON_CLAUDE_SETTINGS="$STUB/ambient-gateway.json" \
     "$DISPATCH" --sweep ) > "$OUT" 2>&1 || true
@@ -237,11 +201,11 @@ t "api url exported"          "BOARD_API_URL=http://127.0.0.1:$PORT" cat "$DH/sp
 t "repo pinned for the worker's own checkout"          "BOARD_REPO=testrepo" cat "$DH/spawn-capture.txt"
 # An ambient gateway settings file would be inherited by `sminos spawn` AND
 # persisted into the meta, so every later resume of this reviewer would ride
-# the gateway while the log said claude. The QAgent tier is opus/high.
+# settings this dispatch never chose. The QAgent tier is sol/high.
 t "gateway settings cleared, review effort pinned" "GW settings=[] effort=[high]" \
   cat "$DH/spawn-capture.txt"
 t "the reviewer runs in its own worktree off the repo" \
-  "ARGS name=9-api-qagent cwd=$r worktree=9-api-qagent model=opus" cat "$DH/spawn-capture.txt"
+  "ARGS name=9-api-qagent cwd=$r worktree=9-api-qagent model=sol" cat "$DH/spawn-capture.txt"
 
 # --- the claim journal: the crash-recovery record --------------------------
 t "claim journal marks the spawn complete" '"spawn_completed": true' \
@@ -250,15 +214,11 @@ t "claim journal carries the run id"       '"run_id": 51' \
   bash -c "cat '$CL'/*.json"
 t "claim journal carries the lane"         '"lane": "qagent"' \
   bash -c "cat '$CL'/*.json"
-# THE HANDOFF IS DURABLE ONLY AFTER THE WORKER ACKS. Marked at the bind, a
-# crash before the barrier was published left a journal saying "handed off"
-# over a reviewer that can never start: it waits out its 120-second barrier
-# bound, ends without reviewing, and the ticket stays owned by a session
-# nothing will ever wake. The control dir travels in the journal because the
-# ack file inside it is the only thing reconciliation can tell those apart by.
-t "the journal is still open when the worker acks" '"spawn_completed": false' \
-  bash -c "cat '$DH'/claims-at-ack/*.json"
-t "and it names the control dir the barrier lives in" '"control"' \
+# THE HANDOFF IS DURABLE ONLY AFTER THE BIND. Marked ahead of it, a crash in
+# that window left a journal saying "handed off" over a meta holding no run
+# credential at all — reconciliation's `repaired` arm, the implement lane's own
+# shape, covers what is left.
+nt "the journal carries no control directory" '"control"' \
   bash -c "cat '$CL'/*.json"
 t "assignment body written beside it"      "review it" \
   bash -c "cat '$CL'/*.body.md"
@@ -308,14 +268,6 @@ meta_mode() {
 print("%o" % (os.stat(glob.glob(sys.argv[1])[0]).st_mode & 0o777))' "$DH/bbbb0001-*.json"
 }
 t "the bearer meta is not world-readable" "600" meta_mode
-barrier() {
-  local f; f="$(find "$DH" -name bind-ready.json -type f -print | head -1)"
-  [ -n "$f" ] || { echo "no-barrier"; return; }
-  [ -f "$f.ack" ] && echo "barrier=published ack=yes" || echo "barrier=published ack=no"
-}
-t "the startup barrier opened and the worker acknowledged it" \
-  "barrier=published ack=yes" barrier
-
 # --- the prompt the reviewer actually woke up with -------------------------
 prompt() { cat "$DH/prompt-9-api-qagent.md"; }
 t  "the reviewer is told it is the qagent lane on its ticket" \
@@ -326,9 +278,10 @@ t  "the api review mode is the one rendered"     '`REVIEW_MODE`: api' prompt
 nt "and it is not the api-scale variant"         '`REVIEW_MODE`: api-scale' prompt
 t  "the assignment file is pinned in the prompt" "$CL/" prompt
 t  "the board scripts, not gh, are the board"    "board-show.sh 9"   prompt
-t  "the barrier file is bound"                   '`BIND_READY_FILE`: ' prompt
-nt "no PR framing reaches an api reviewer"       "You are a REVIEW worker for PR" prompt
-nt "no scale framing either"                     "SCALE REVIEWER"     prompt
+t  "the stand-in protocol is bound"              '`PROTOCOL_FILE`: '  prompt
+nt "no startup barrier survives"                 "BIND_READY"         prompt
+nt "no PR framing reaches an api stand-in"       "STAND-IN for PR"    prompt
+nt "no scale framing either"                     "recomposition epic" prompt
 nt "nothing was left unrendered"                 "{{"                 prompt
 # THE BASE OF AN API REVIEW IS NOT KNOWABLE AT CLAIM TIME. The board carries no
 # PR — the ticket's `pr` value is read by the WORKER — so binding the default
@@ -339,8 +292,9 @@ nt "nothing was left unrendered"                 "{{"                 prompt
 # worker that skipped the resolution gets `fatal: bad revision`, never a quietly
 # wrong range) and the prompt hands the worker the resolution.
 t  "the base binding says it is unresolved"      '`BASE_REF`: UNRESOLVED' prompt
-t  "the worker is told to read the base off the PR" "gh pr view <n> --json" prompt
-t  "the manifests name the ref they came from"   '`MANIFEST_REF`: '   prompt
+t  "and positioning is handed to the stand-in"    "positioning is yours" prompt
+nt "no manifest snapshot rides the prompt"       "MANIFEST_REF"       prompt
+nt "...nor its risk-surface content"             "risk-surface manifest" prompt
 # The bindings an api reviewer cannot function without, pinned on the VALUE
 # side: a `NAME`: assertion passes just as well against a rendered blank, which
 # is the shape a call site that stopped supplying a placeholder used to take.
@@ -348,16 +302,16 @@ bound() {  # bound <NAME> <prompt-file> — reads the rendered roster line shape
   local v; v="$(sed -n "s/^- \`$1\`: \(.*\)$/\1/p" "$2" | head -1)"
   [ -n "$v" ] && echo "$1 bound: $v" || echo "$1 UNBOUND"
 }
-skill_pin() {  # skill_pin <prompt-file> — SKILL_FILE renders in prose, not on the roster
+protocol_pin() {  # protocol_pin <prompt-file> — the pin also renders in prose
   local v; v="$(sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' "$1" | head -1)"
-  [ -n "$v" ] && echo "SKILL_FILE bound: $v" || echo "SKILL_FILE UNBOUND"
+  [ -n "$v" ] && echo "PROTOCOL_FILE bound: $v" || echo "PROTOCOL_FILE UNBOUND"
 }
 API_PROMPT="$DH/prompt-9-api-qagent.md"
-t "the barrier file binding carries a value"     "BIND_READY_FILE bound" bound BIND_READY_FILE "$API_PROMPT"
+t "the protocol binding carries a value"         "PROTOCOL_FILE bound" bound PROTOCOL_FILE "$API_PROMPT"
 t "the implement contract carries a value"       "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE "$API_PROMPT"
 t "the board scripts binding carries a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS "$API_PROMPT"
 t "the assignment file binding carries a value"  "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE "$API_PROMPT"
-t "the pinned protocol path carries a value"     "SKILL_FILE bound" skill_pin "$API_PROMPT"
+t "the pinned protocol path carries a value"     "PROTOCOL_FILE bound" protocol_pin "$API_PROMPT"
 
 # --- the triggered form: gh-only, and it says so ---------------------------
 triggered() {
@@ -423,7 +377,6 @@ OUT2="$(mktemp)"
 ( cd "$r2" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH2" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r2" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT2" 2>&1 || true
 
 t "a lost response is replayed under its own nonce" '\"dispatchNonce\": \"nonce-a\"' cat "$FIX2.log"
@@ -508,7 +461,6 @@ OUT3="$(mktemp)"
 ( cd "$r3" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH3" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r3" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT3" 2>&1 || true
 
 nt "a run is NOT ended while a meta is unreadable" '"path": "/runs/99/end"' cat "$FIX3.log"
@@ -527,16 +479,16 @@ held_wire() {
 t "a held run sends nothing" "posts=1 ends=0" held_wire
 
 # =========================================================================
-# Scenario 4 — THE HANDOFF WINDOW'S REMAINING CRASH POINT, and the release
-# that fails. The journal is marked only once the worker has acked the startup
-# barrier, which leaves one shape a crash can produce: a bound meta under an
-# open journal. Two of those are indistinguishable by the run alone —
-#   (s) bound, barrier never published: the reviewer waited out its 120-second
-#       bound and ended. Repairing the marker would leave the ticket owned by
-#       a session that can never start and a lease this tick renews forever.
-#   (t) bound, barrier crossed, only the marker write lost: a working reviewer
-#       that must not be touched.
-# — and the ack file inside the journalled control dir is what separates them.
+# Scenario 4 — RECONCILIATION'S ARMS, driven by hand-written journals.
+# _claim_journal.sh reads an optional `control` directory and the ack file
+# inside it to tell a handover that never completed from one that did; the
+# review dispatcher no longer writes that field (the startup barrier retired
+# with the fold), so these fixtures stand in for any future caller that does,
+# and for the arms themselves:
+#   (s) bound, no ack: a delivery that never completed — repairing the marker
+#       would leave the ticket owned by a session that can never start.
+#   (t) the same with the ack present: a working reviewer, never touched.
+#   (v) the same as (s) with a LIVE writer: a peer mid-handover, left alone.
 # Beside them, (u): a release that FAILS keeps its journal. It is the only
 # retry handle there is; dropped, the run stays open owning its ticket and no
 # later tick can retry, so "it retries next tick" was never true.
@@ -600,7 +552,6 @@ OUT4="$(mktemp)"
 ( cd "$r4" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH4" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r4" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT4" 2>&1 || true
 
 # --- (s) a reviewer that can never start is not left owning its ticket -----
@@ -631,7 +582,7 @@ t  "its journal is left open for the peer to mark" '"spawn_completed": false' \
    cat "$CL4/nonce-v.json"
 nt "and its run is not ended"    '"path": "/runs/73/end"'   cat "$FIX4.log"
 
-# --- (t) a reviewer that DID cross its barrier is left alone ---------------
+# --- (t) a completed delivery is left alone --------------------------------
 nt "an acked reviewer's run is never ended" '"path": "/runs/71/end"' cat "$FIX4.log"
 nt "and its worker is never retired"        "retire ffff0002"  \
    bash -c "cat '$DH4/spawn-capture.txt' 2>/dev/null || echo none"
@@ -645,12 +596,13 @@ t  "the record stays open on disk"          '"spawn_completed": false' \
 t  "and its assignment body is not dropped" "still-there" gone4 "$CL4/nonce-u.body.md"
 
 # =========================================================================
-# Scenario 5 — THE MANIFEST SNAPSHOTS COME FROM A CURRENT TRACKING REF. The
-# PR path fetches head and base before its own two `git show` calls; this path
-# fetched nothing, so a clone whose origin/<default> was stale — or, in a fresh
-# clone, absent — handed the worker an empty or outdated risk-surface and
-# repo-facts policy and then told it to KEEP those copies whenever its resolved
-# base matches MANIFEST_REF. git only: this dispatcher never invokes gh.
+# Scenario 5 — NO MANIFEST RIDES THE PROMPT. The dispatcher used to snapshot
+# the repo's risk-surface and repo-facts manifests into every review prompt,
+# which meant fetching for them and naming the ref they came from. The QA agent
+# reads them itself with `git show` from the base ref — same BASE-ref
+# discipline, one less thing to keep current — so a remote that has them must
+# leave no trace in what the stand-in wakes up with. git only, as before: this
+# dispatcher never invokes gh.
 # =========================================================================
 PORT5="$(free_port)"
 FIX5="$(mktemp)"; : > "$FIX5.log"
@@ -684,14 +636,13 @@ OUT5="$(mktemp)"
 ( cd "$r5" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH5" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r5" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT5" 2>&1 || true
 
 prompt5() { cat "$DH5/prompt-50-api-qagent.md"; }
-t  "the risk-surface snapshot is the remote's"  "RISK-SURFACE-FROM-ORIGIN" prompt5
-t  "so is the repo-facts snapshot"              "REPO-FACTS-FROM-ORIGIN"   prompt5
-nt "neither degrades to the empty fallback"     "no repo risk-surface manifest" prompt5
-nt "the fetch is git, never gh"                 "GH-CALLED" cat "$MARKER"
+nt "no risk-surface snapshot rides the prompt"  "RISK-SURFACE-FROM-ORIGIN" prompt5
+nt "nor a repo-facts one"                       "REPO-FACTS-FROM-ORIGIN"   prompt5
+nt "and no manifest ref is named at all"        "MANIFEST_REF"             prompt5
+nt "nothing here went through gh"               "GH-CALLED" cat "$MARKER"
 
 # =========================================================================
 # Scenario 6 — THE SCALE VARIANT. A claim whose `pr` is not URL-shaped is an
@@ -723,84 +674,36 @@ OUT6="$(mktemp)"
 ( cd "$r6" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH6" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r6" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT6" 2>&1 || true
 
 SCALE_PROMPT="$DH6/prompt-88-api-qagent.md"
 t "the scale dispatch reports the handoff" "claimed #88 run=61" cat "$OUT6"
 t "the bind reached the wire" '"path": "/runs/61/bind"' cat "$FIX6.log"
 t "an event-id pr renders the api-scale block" \
-  "SCALE REVIEWER of recomposition epic #88" cat "$SCALE_PROMPT"
+  "REVIEW STAND-IN for recomposition epic #88" cat "$SCALE_PROMPT"
 t "the closure package binding rides the prompt" '`CLOSURE_PACKAGE`: 3141' cat "$SCALE_PROMPT"
 t "the integration ref binding rides the prompt" \
   '`INTEGRATION_REF`: epic/e9-integration' cat "$SCALE_PROMPT"
 t "the assignment file still rides an api-scale prompt" '`TICKET_BODY_FILE`: ' cat "$SCALE_PROMPT"
 # The value side on the api-scale call site too — the same P_* block serves
 # both api modes, but only the api render was pinned on values before.
-t "the api-scale barrier file carries a value"   "BIND_READY_FILE bound" bound BIND_READY_FILE "$SCALE_PROMPT"
+t "the api-scale protocol binding carries a value" "PROTOCOL_FILE bound" bound PROTOCOL_FILE "$SCALE_PROMPT"
 t "the api-scale implement contract carries a value" "IMPLEMENT_PROTOCOL_FILE bound" bound IMPLEMENT_PROTOCOL_FILE "$SCALE_PROMPT"
 t "the api-scale board scripts carry a value"    "BOARD_SCRIPTS bound" bound BOARD_SCRIPTS "$SCALE_PROMPT"
 t "the api-scale assignment file carries a value" "TICKET_BODY_FILE bound" bound TICKET_BODY_FILE "$SCALE_PROMPT"
-t "the api-scale protocol pin carries a value"   "SKILL_FILE bound" skill_pin "$SCALE_PROMPT"
-t "the scale prompt orders the integration checkout" \
-  "git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
-# THE CHECKOUT NAMES THE REF THE FETCH JUST WROTE. `git fetch origin <ref>` on a
-# single-branch clone — the shape `git clone --single-branch` and every worktree
-# cut from one leaves behind — updates no remote-tracking ref, because the
-# configured refspec does not cover that branch; only FETCH_HEAD moves. A worker
-# ordered onto `origin/<ref>` then reviews an absent or stale ref, silently.
-t "the scale checkout uses the ref the fetch wrote" \
-  "git checkout --detach FETCH_HEAD" cat "$SCALE_PROMPT"
-nt "and never the remote-tracking ref the fetch may not have moved" \
-  "checkout --detach origin/" cat "$SCALE_PROMPT"
-# THE WORKER RESOLVES ITS OWN BASE, AUTHORITATIVELY. The dispatcher's
-# DEFAULT_BRANCH ladder can settle on a stale local origin/HEAD or, with no
-# network and no gh, on the literal `main` — and an epic reviewed (and closed)
-# against a branch it does not merge into is the wrong range, silently, because
-# every fetch still succeeds. Origin's own HEAD symref is the one answer that
-# can be neither stale-local nor guessed, and the worker has the network to ask
-# for it, so the rendered binding is an echo and `ls-remote` is the authority.
-t "the scale prompt resolves the base from the remote itself" \
-  "git ls-remote --symref origin HEAD" cat "$SCALE_PROMPT"
-t "and fetches the resolved base, not the rendered one" \
-  'git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"' cat "$SCALE_PROMPT"
-# THE GUARD IS STRUCTURAL, NOT PROSE. Three unconditional lines let an
-# unresolved base sail through: the base fetch goes out with an empty refspec
-# and the integration fetch/checkout still succeeds on its own, so the sequence
-# exits 0 and the worker positions itself against an unverified base instead of
-# parking. Everything below the resolution therefore hangs off one `&&` chain.
-t "the base resolution gates the fetches structurally" \
-  '[ -n "$BASE" ]' cat "$SCALE_PROMPT"
-t "the base fetch is chained behind that gate" \
-  '&& git fetch origin "+refs/heads/$BASE' cat "$SCALE_PROMPT"
-t "and so is the integration fetch that follows it" \
-  "&& git fetch origin epic/e9-integration" cat "$SCALE_PROMPT"
-nt "the rendered base is never baked into the fetch" \
-  "+refs/heads/main:refs/remotes/origin/main" cat "$SCALE_PROMPT"
-nt "and never the bare form that may write no tracking ref" \
-  "git fetch origin main" cat "$SCALE_PROMPT"
-# THE ECHO IS NOT A FALLBACK. An ls-remote that cannot answer leaves the base
-# unverifiable, which is precisely the wrong-range risk the resolution removes;
-# the run parks rather than reviewing against a guess.
-t "an unresolvable base parks instead of falling back" \
-  'needs-human "scale review: could not resolve the repo default branch from origin"' \
-  cat "$SCALE_PROMPT"
-t "and the rendered binding is named as the echo it is" \
-  "best-effort echo" cat "$SCALE_PROMPT"
-# The binding still rides the prompt as context (and as MANIFEST_REF, the ref
-# the two snapshots really came from).
+t "the api-scale protocol pin carries a value"   "PROTOCOL_FILE bound" protocol_pin "$SCALE_PROMPT"
+# HOW the stand-in positions — the symref resolution, the chained fetches, the
+# parks on a ref that will not resolve — lives in the pinned protocol, not in
+# this prompt, and tests/issue-tracker/test-review-standin.sh pins it there.
+# What the prompt still owes the run is the echo it must not trust, and the
+# pointer at the section that says so.
 t "the scale base binding still echoes the default branch" '`BASE_REF`: main' cat "$SCALE_PROMPT"
-# THE EMPTY-REF PARK MUST NOT PRECEDE THE BINDING BARRIER. Parking and ending
-# the turn unacknowledged makes the dispatcher's ack wait time out, retire the
-# worker, and end the run abandoned UNDER AN ALREADY-PARKED TICKET — the one
-# state no operator is told about. The check still precedes any fetch; only the
-# action changes.
-t "the empty-ref stop crosses the binding barrier before parking" \
-  "Cross the BINDING BARRIER first" cat "$SCALE_PROMPT"
+t "and the prompt names that binding as the echo it is" \
+  "best-effort echo" cat "$SCALE_PROMPT"
+t "the prompt sends the stand-in to resolve the base itself" \
+  "resolve the base from the remote itself" cat "$SCALE_PROMPT"
 nt "the scale prompt carries no PR-resolution order" \
-  "UNRESOLVED-resolve-from-the-PR" cat "$SCALE_PROMPT"
-nt "the scale prompt never went out as mode api" \
-  "resolving what that PR MERGES INTO" cat "$SCALE_PROMPT"
+  "UNRESOLVED" cat "$SCALE_PROMPT"
 nt "nothing was left unrendered on the scale prompt" "{{" cat "$SCALE_PROMPT"
 
 # =========================================================================
@@ -830,20 +733,19 @@ OUT7="$(mktemp)"
 ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH7" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r7" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT7" 2>&1 || true
 
 LEAF_PROMPT="$DH7/prompt-92-api-qagent.md"
 t "the URL dispatch reports its handoff" "claimed #92" cat "$OUT7"
-t "a URL pr renders the api block" "resolving what that PR MERGES INTO" cat "$LEAF_PROMPT"
+t "a URL pr renders the api block" "the board carries no PR base" cat "$LEAF_PROMPT"
 t  "the api mode is the one rendered" '`REVIEW_MODE`: api' cat "$LEAF_PROMPT"
 nt "and a leaf is not the api-scale variant" '`REVIEW_MODE`: api-scale' cat "$LEAF_PROMPT"
-nt "no scale framing reaches a leaf reviewer" "SCALE REVIEWER" cat "$LEAF_PROMPT"
+nt "no scale framing reaches a leaf stand-in" "recomposition epic" cat "$LEAF_PROMPT"
 
 # =========================================================================
 # Scenario 8 — THE DEFAULT BRANCH IS A FACT, NOT A GUESS. In API mode there is
-# no gh to ask, and an api-scale run PROMOTES the answer to BASE_REF: the ref
-# the engine ranges the epic against and the ref both manifests are read from.
+# no gh to ask, and an api-scale run PROMOTES the answer to BASE_REF, the ref
+# the engine ranges the epic against.
 # A clone with no origin/HEAD (every `git clone --single-branch`, every
 # worktree cut from one) used to fall straight through to the literal `main`,
 # so a repo whose default branch is anything else got its epic reviewed — and
@@ -882,18 +784,16 @@ OUT8="$(mktemp)"
 ( cd "$r8" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH8" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r8" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT8" 2>&1 || true
 
 TRUNK_PROMPT="$DH8/prompt-77-api-qagent.md"
 t "the dispatch ran" "claimed #77 run=71" cat "$OUT8"
 t "the remote's default branch becomes the epic's base" '`BASE_REF`: trunk' cat "$TRUNK_PROMPT"
 nt "the literal main guess never reaches the worker" '`BASE_REF`: main' cat "$TRUNK_PROMPT"
-t "and the worker is still ordered to resolve the base for itself" \
-  "git ls-remote --symref origin HEAD" cat "$TRUNK_PROMPT"
-nt "so no rendered branch name is baked into the base fetch" \
-  "+refs/heads/trunk:refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
-t "the manifests are read from that same ref" '`MANIFEST_REF`: trunk' cat "$TRUNK_PROMPT"
+t "and the stand-in is still told to resolve the base for itself" \
+  "resolve the base from the remote itself" cat "$TRUNK_PROMPT"
+nt "so no rendered branch name is baked into a fetch" \
+  "refs/remotes/origin/trunk" cat "$TRUNK_PROMPT"
 nt "and none of it went through gh" "GH-CALLED" cat "$MARKER"
 
 # =========================================================================
@@ -930,7 +830,6 @@ OUT9="$(mktemp)"
 ( cd "$r9" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH9" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r9" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     "$DISPATCH" --sweep ) > "$OUT9" 2>&1 || true
 
 NOREF_PROMPT="$DH9/prompt-95-api-qagent.md"
@@ -944,11 +843,11 @@ t "a branch-less epic claim still reaches a worker" "claimed #95 run=81" cat "$O
 nt "the empty integration ref does not fail the render closed" \
   "unrendered placeholders" cat "$OUT9"
 t "the api-scale variant is still the one rendered" \
-  "SCALE REVIEWER of recomposition epic #95" cat "$NOREF_PROMPT"
+  "REVIEW STAND-IN for recomposition epic #95" cat "$NOREF_PROMPT"
 t "the integration ref renders present and empty, not missing" \
   "PRESENT-AND-EMPTY" binding_shape INTEGRATION_REF "$NOREF_PROMPT"
-t "and the WORKER is the party that parks it, with a note" \
-  'needs-human "scale review: the claim carried no integration ref"' cat "$NOREF_PROMPT"
+t "and the prompt sends it to the section that parks on an empty ref" \
+  "what to do when that ref is empty" cat "$NOREF_PROMPT"
 
 # =========================================================================
 # Scenario 10 — ONE RECOVERY ATTEMPT PER TICKET PER TICK REACHES THIS PHASE
@@ -983,7 +882,6 @@ OUT10="$(mktemp)"
 ( cd "$r10" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
     DAEMON_HOME="$DH10" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r10" \
     BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=2 \
-    REVIEW_ACK_POLLS=400 REVIEW_ACK_DELAY=0.02 \
     BOARD_RESUMED_LEDGER="$LEDGER10" \
     "$DISPATCH" --sweep ) > "$OUT10" 2>&1 || true
 
@@ -994,51 +892,5 @@ nt "so no reviewer is spawned for it" "ARGS name=33"  \
    bash -c "cat '$DH10/spawn-capture.txt' 2>/dev/null || echo none"
 journal10() { ls "$CL10"/*.json >/dev/null 2>&1 && echo "journal kept" || echo "journal dropped"; }
 t  "and the journal is dropped with it"  "journal dropped"  journal10
-
-# =========================================================================
-# Scenario 11 — THE RECORD LOSES THE RUN WITH THE RUN. _spawn_reviewer's
-# post-bind failures (the barrier could not be published; the worker never
-# acknowledged it) retire the worker and hand back a failure, and the caller
-# then ends the run and drops the journal. The bind, however, already landed:
-# without a strip the record keeps a confirmed bind and a live bearer for a run
-# that no longer exists — and a session resolves its own run context out of
-# exactly those fields (dp#35), so resuming that seat by hand would turn every
-# board verb into a 401 instead of a clean fall-back to operator credentials.
-# Same end-and-strip the reconciler's `stranded` arm performs, at the other
-# site that ends a bound run.
-# =========================================================================
-PORT11="$(free_port)"
-FIX11="$(mktemp)"; : > "$FIX11.log"
-cat > "$FIX11" <<'JSON'
-[
- {"method":"POST","path":"/runs/claim","status":200,"once":true,
-  "body":{"runId":81,"ticketId":44,"fence":2,"bearer":"tok-noack","plan":null,
-          "body":"a review nobody acknowledges","parentPin":null}},
- {"method":"POST","path":"/runs/claim","status":200,"body":{"claimed":false}},
- {"method":"POST","path":"/runs/81/bind","status":200,"body":{"bound":true}},
- {"method":"POST","path":"/runs/81/end","status":200,"body":{"ended":true}}
-]
-JSON
-python3 "$TESTS_DIR/mock-server.py" "$FIX11" "$PORT11" & MOCK11=$!
-trap 'kill $MOCK $MOCK2 $MOCK3 $MOCK4 $MOCK5 $MOCK6 $MOCK7 $MOCK8 $MOCK9 $MOCK10 $MOCK11 2>/dev/null' EXIT
-wait_for_port "$PORT11" || { echo "FAIL mock server never listened on $PORT11"; exit 1; }
-
-r11="$(apirepo "$PORT11")"
-DH11="$(mktemp -d)"
-OUT11="$(mktemp)"
-( cd "$r11" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
-    DAEMON_HOME="$DH11" SMINOS_CLI="$DS/sminos" LOCAL_REPO="$r11" \
-    BOARD_CREDENTIALS_FILE="$CREDS" REVIEW_MAX_CONCURRENT=1 \
-    REVIEW_ACK_POLLS=5 REVIEW_ACK_DELAY=0.02 REVIEW_STUB_NO_ACK=1 \
-    "$DISPATCH" --sweep ) > "$OUT11" 2>&1 || true
-
-rec11() { cat "$DH11"/bbbb0001-*.json; }
-t  "a worker that never acknowledges the barrier is retired" \
-   "did not acknowledge startup barrier"                     cat "$OUT11"
-t  "and its run is released"        '"path": "/runs/81/end"' cat "$FIX11.log"
-t  "the bind had landed first"      '"path": "/runs/81/bind"' cat "$FIX11.log"
-nt "the ended run's bearer does not stay at rest on its seat" "tok-noack" rec11
-nt "nor the confirmed bind that would let it speak as that run" "bind_confirmed" rec11
-t  "and the seat records when the run ended"                  "run_ended_at"    rec11
 
 finish

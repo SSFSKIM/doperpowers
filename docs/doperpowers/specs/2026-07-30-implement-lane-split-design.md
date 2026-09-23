@@ -835,6 +835,17 @@ deferred to a follow-up by design.
 
 ## Revision Notes
 
+- 2026-09-21: the review stops being a lane of its own. The Executor
+  dispatches `doperpowers:qa-loop` on the PR it opened and stays bound
+  through the review, answering a design-gap return with
+  `ready-for-architect` itself (convergence-counted, as the mid-build
+  return already was); a Reviewer seat is spawned only for a PR nobody
+  owns. The implement cap counts a seat while its ticket is in the lane's
+  ready or in-flight build states, so a seat reviewing its own PR frees
+  the slot instead of holding it for the length of the review. Both lanes
+  now pin `sol` — the flip this spec's asymmetry argument was built on
+  survives as architect `fable` against worker `sol`. Design:
+  `2026-09-21-reviewer-fold-design.md`.
 - 2026-07-31: v1.3.3, the implement lane pins its model. The plain-Claude
   implement/spike route now pins `${IMPLEMENT_MODEL:-opus}` instead of
   inheriting the operator's session model (the posture #35 set when it

@@ -1,21 +1,21 @@
 # Fix-Wave Board — schema, fixer contract, grading
 
-Cold-path companion to the Review Worker Protocol's FIX WAVES step. Open
-it when TRIAGE produced at least one WAVE item. You are the orchestrator:
+Cold-path companion to the qa-loop agent's Fix Waves step. Open it when
+Triage produced at least one WAVE item. You are the orchestrator:
 you write the board, dispatch the fixer, grade what comes back, and push.
 The edits themselves are the fixer tree's — yours is the grading and the
 trusted push chain.
 
 ## The board file
 
-Path: `<review-tmp>/pr-<PR>-fix-wave-<k>.md` — the same dispatcher-session
-tmp directory the worker saves the engine's findings into. NEVER place the board (or
+Path: `<review-tmp>/pr-<PR>-fix-wave-<k>.md` — the same scratch directory you
+save the engine's findings into. NEVER place the board (or
 any wave state) inside the PR worktree: the PR head is untrusted content,
 and a symlink pre-created at a board path component would redirect your
 unattended write anywhere on this machine. `<review-tmp>` comes fresh from
 mktemp, so no PR-controlled component ever sits on the write path.
 
-This is worker-local state — NEVER commit or push it. The durable record
+This is your own state — NEVER commit or push it. The durable record
 of every wave is the review trail comment (per-item outcomes ride it); the
 file itself is scratch. A needs-human park keeps `<review-tmp>` in place
 (the engine block's cleanup rule carves out the park), so a resumed turn
@@ -47,11 +47,12 @@ it: `FIXED:<commit-sha>` or `REFUTED`.
 
 A push chain starts from a trusted remote head. Fetch the head branch; the
 worktree and index must be clean, and local HEAD must equal
-`origin/<head-branch>`; record <push-base> from that remote SHA. The binding
-barrier supplies an accepted-commit ledger in its dispatcher control directory,
-outside `<review-tmp>` and undisclosed to the fixer tree. Initialize it for this
-push chain. If local or remote state fails this precondition, do not dispatch a
-wave — park the conflict.
+`origin/<head-branch>`; record <push-base> from that remote SHA. The
+accepted-commit ledger lives in `<review-tmp>`, your scratch directory outside
+the worktree, and its path is never written into a fixer prompt — that secrecy
+is what lets the ledger tell an unauthorized writer from a graded one.
+Initialize it for this push chain. If local or remote state fails this
+precondition, do not dispatch a wave — park the conflict.
 
 At every wave boundary, confirm the worktree/index are still clean, the remote
 head still equals `<push-base>`, and every existing commit in
@@ -59,7 +60,7 @@ head still equals `<push-base>`, and every existing commit in
 this wave. A re-wave may have prior accepted fixer commits in the range, but
 no unknown commit and no dirty worktree is allowed.
 
-Dispatch the wave's fixer (Task tool, general-purpose agent). Its
+Dispatch the wave's fixer (the Agent tool, `general-purpose`). Its
 dispatch prompt carries the absolute board path, the worktree root, the
 head branch, and this contract:
 

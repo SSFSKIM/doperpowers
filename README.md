@@ -27,7 +27,7 @@ The agent refuses to jump straight to code. It interviews you (`brainstorming`) 
 The same grill and spec, then the spec is broken into tasks an executor can own from one self-contained brief (`writing-plans`), and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
 
 **Unattended** — the same method with nobody watching.
-Tickets live as GitHub issues and gated workers pick them up (`issue-tracker`): an Architect grills against the ticket, writes the spec, and executes it through a subagent that comes back to it when the plan does not cover a decision; a review loop lands the PRs (`qa-loops`); the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
+Tickets live as GitHub issues and gated workers pick them up (`issue-tracker`): an Architect grills against the ticket, writes the spec, and executes it through a subagent that comes back to it when the plan does not cover a decision; the same seat then runs the review of its own PR through a QA agent that lands it (`qa-loop`); the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
 
 ---
 
@@ -65,7 +65,7 @@ inside Codex; Claude's registered agents and companion remain available.
 
 ## The skills
 
-Eighteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -81,13 +81,12 @@ Eighteen skills, grouped by what they're for. Each one auto-triggers from its de
 
 **Keep it honest**
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
-- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`; the qa-loops review engine still runs its runtime)
+- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`)
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
 - `progress-report` — explain a change your human partner didn't watch, or a concept, so they can steer it: behavior, the decisions made for them, limits, how to check; or mechanism, boundaries, what it means for them — delivered as a self-contained HTML page opened in their browser
 
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)
-- `qa-loops` — the autonomous PR-review and self-merge loop
 - `sminos` — the fleet registry: seats (durable background sessions with a role, in a group), spawn/wake/attach, topology, and the group board
 
 **Deployed alongside, not a skill**

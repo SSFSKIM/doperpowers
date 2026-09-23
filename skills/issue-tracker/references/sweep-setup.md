@@ -70,8 +70,8 @@ path):
 
 `bash -lc` loads your login profile, so `gh`, `python3`, and `claude`
 resolve exactly as they do in your terminal. `AUTO_MERGE_ENABLED` arms
-merging for the Reviewer workers the sweep dispatches — drop the line to
-keep them in observation mode (review + park, no merge).
+merging for the QA agents the sweep's seats dispatch on their own PRs —
+drop the line to keep them in observation mode (review + park, no merge).
 
 Arm / un-arm / observe:
 
@@ -96,10 +96,11 @@ actually run before trusting a cron arming.
 
 | env | default | meaning |
 |---|---|---|
-| `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots (Reviewer workers never count) |
+| `IMPLEMENT_MAX_CONCURRENT` | 5 | implement/spike worker slots — counted over IMPLEMENT/SPIKE-role workers from `ready-for-implementer` through `in-progress`; a seat whose ticket sits in `in-review` is reviewing its own PR and spends none, and a review stand-in is counted in its own registry |
 | `ARCHITECT_MAX_CONCURRENT` | 1 | architect-lane slot cap — the Fable-spend lever; counted over ARCHITECT-role workers from `ready-for-architect` through `in-progress` (an Architect executes its own plan), separate from the implement cap. The default 1 now spans design plus build; raise it when queued design work waits on a long build |
-| `ARCHITECT_MODEL` | fable | model pin for the architect route; the architect dispatch ignores `engine:*` labels and `WORKER_ENGINE` — plan authorship is never label-routed |
-| `IMPLEMENT_MODEL` | opus (claude route) / fable (codex route) | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
+| `ARCHITECT_MODEL` | fable | model pin for the architect route — plan authorship is the frontier tier |
+| `IMPLEMENT_MODEL` | sol | model pin for the implement and spike routes — the worker tier. Pinned, not inherited: an operator whose own session runs the frontier model would otherwise pay frontier rates on both lanes and collapse the split's economics |
+| `REVIEW_MODEL` | sol | model pin for the review stand-in seat the review dispatcher spawns on a PR nobody owns, the same tier and for the same reason |
 | `SWEEP_STALL_MINUTES` | 45 | a live worker silent this long is resumed with a nudge |
 | `SWEEP_RECOVERY_CAP` | 3 | lifetime sweep-initiated resumes per daemon, then park `needs-human` |
 | `SWEEP_STALL_DEPENDENCY_MINUTES` | 2880 (48h) | a BLOCKER unworked and silent this long parks the ticket waiting on it, `needs-human`, with the blocker and the chain in the note. The other half of the same doctrine as the API board's `DEPENDENCY_STALL_MS`; raise it on a board with a weekly human cadence. A dependency CYCLE is reported at once — it needs no clock |
@@ -107,17 +108,17 @@ actually run before trusting a cron arming.
 | `BOARD_STALL_WINDOW_MIN` | 15 | *api binding.* Minutes to wait before the first nudge when the error states no reset time, and between nudges always |
 | `BOARD_STALL_MAX_WAIT_MIN` | 360 | *api binding.* Ceiling on a stated reset time the tick will WAIT for. A weekly limit resets days out; honouring it would renew the lease and hold the ticket silently for all of them, so past the ceiling the ordinary window applies, the ladder runs out, and the outage reaches a human through `BOARD_STALL_CYCLES` below |
 | `BOARD_STALL_CYCLES` | 3 | *api binding.* Harness-error ladders ONE TICKET may run out before the tick stops spending recovery on it. The per-run ladder above resets on every successor, so on its own it never accumulates — a fault that outlives its worker (an expired login, a multi-day weekly limit) would churn a fresh successor every hour and tell nobody. This count survives successors, is cleared only by a worker that answers as itself again, and ends at an env-issue plus a suppression |
-| `WORKER_ENGINE` | claude (all lanes) | overrides the lanes' default model route; an `engine:*` ticket/PR label wins over it. Setting it applies to BOTH lanes — `WORKER_ENGINE=codex` puts every worker on the clodex gateway |
-| `AUTO_MERGE_ENABLED` | false | Reviewer worker merges its confident verdicts (off = observation mode) |
+| `AUTO_MERGE_ENABLED` | off | the review merges its confident verdicts (off = observation mode: review and park, no merge). Set it to `true`/`1`/`on`/`yes` to arm; anything else reads as off. Read by both dispatchers: the review dispatcher, which arms the stand-in it spawns on a PR nobody owns, and the execute dispatcher, which hands it to every Executor and Architect for the QA agent they dispatch on their own PR |
+| `REVIEW_LEVEL` | medium | that review's level floor (`low`/`medium`/`high` run one reviewer, `xhigh`/`max` the panel). Read by both dispatchers, and an unknown value refuses the tick before any spawn |
 
 ## The event path (lower latency, needs a runner)
 
 The sweep is the transport that needs nobody's permission. When the repo
 also has a registered self-hosted runner (label `claude-review` — see
-doperpowers:qa-loops `references/runner-setup.md`), GitHub events can
+`references/runner-setup.md`), GitHub events can
 dispatch the latency-sensitive lanes directly; the sweep stays as catch-up:
 
-- PR opened → Reviewer worker: `qa-loops/references/pr-review-dispatch.yml`
+- PR opened → review stand-in: `references/pr-review-dispatch.yml`
 - issue becomes ready → Executor worker: `references/issue-dispatch.yml`
 
 Both templates keep the same security posture: no checkout of PR code,

@@ -2,8 +2,8 @@
 # becomes ready. Template from doperpowers:issue-tracker — copy into
 # .github/workflows/ of the consumer repo.
 #
-# SETUP (per adopting repo — same posture as pr-review-dispatch.yml in
-# doperpowers:qa-loops; see runner-setup.md there):
+# SETUP (per adopting repo — same posture as pr-review-dispatch.yml beside
+# it; see runner-setup.md there):
 #   1. PRIVATE REPOS ONLY, self-hosted runner labeled `claude-review`.
 #   2. Security properties this template maintains — keep them:
 #      - NO actions/checkout: the job never executes repo code; the worker

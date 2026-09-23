@@ -931,11 +931,15 @@ set -euo pipefail
 verb="${1:-}"; shift || true
 case "$verb" in
 migrate) exit 0 ;;
-resume)
-  if [ "${1:-}" = "--wait" ]; then shift; fi
-  printf '%s\n' "$1" > "$STUB_STATE/resume.uuid"
-  printf '%s' "$2" > "$STUB_STATE/resume.msg"
-  echo "resumed: [sminos stub]"
+resume|wake)
+  # The verb and its --wait are recorded: a parked owner is a LIVE, IDLE
+  # seat, which only `wake` reaches — `resume` on it starts a copy.
+  wait_flag=""
+  if [ "${1:-}" = "--wait" ]; then wait_flag=" --wait"; shift; fi
+  printf '%s%s\n' "$verb" "$wait_flag" > "$STUB_STATE/relay.verb"
+  printf '%s\n' "$1" > "$STUB_STATE/relay.uuid"
+  printf '%s' "$2" > "$STUB_STATE/relay.msg"
+  echo "$verb: [sminos stub]"
   ;;
 sync)
   printf '%s\n' "$1" >> "$STUB_STATE/sync.log"
@@ -993,13 +997,15 @@ assert_fails run board-answer.sh "$ans_t"               # missing answers (arity
 out="$(run board-answer.sh "$ans_t" "1: use X. 2: defer Y.")"
 assert_contains "$(state "s['issues']['$ans_t']['comments']")" "[answers] 1: use X. 2: defer Y." "answers posted on the ticket first"
 assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:in-progress" "ticket resumed to in-progress"
-assert_equals "$(cat "$STUB_STATE/resume.uuid")" "cccccccc-1111-2222-3333-444444444444" "bound meta routed to sminos resume"
-msg="$(cat "$STUB_STATE/resume.msg")"
+assert_equals "$(cat "$STUB_STATE/relay.uuid")" "cccccccc-1111-2222-3333-444444444444" "bound meta routed to its session"
+assert_equals "$(cat "$STUB_STATE/relay.verb")" "wake --wait" \
+  "the parked owner is reached by wake --wait (live and idle — a resume on it starts a copy)"
+msg="$(cat "$STUB_STATE/relay.msg")"
 assert_contains "$msg" "1: use X. 2: defer Y." "answers relayed verbatim"
 assert_contains "$msg" "[gate] re-pass" "relay carries the re-verdict guard"
 assert_contains "$msg" "the ticket remains the record" "relay names the record"
 
-# a second bound meta → sminos resume; --posted relays a pointer, posts nothing
+# a second bound meta → sminos wake; --posted relays a pointer, posts nothing
 run board-transition.sh "$ans_t" needs-human "round 2 questions" >/dev/null
 rm "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json"
 cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
@@ -1008,8 +1014,9 @@ cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
 META
 out="$(run board-answer.sh "$ans_t" --posted)"
 assert_contains "$(cat "$STUB_STATE/sync.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay syncs a lingering finished Claude owner before status check"
-assert_equals "$(cat "$STUB_STATE/resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to sminos resume"
-assert_contains "$(cat "$STUB_STATE/resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
+assert_equals "$(cat "$STUB_STATE/relay.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to its session"
+assert_equals "$(cat "$STUB_STATE/relay.verb")" "wake --wait" "...by wake --wait as well"
+assert_contains "$(cat "$STUB_STATE/relay.msg")" "already on the ticket" "--posted relays a pointer, not a body"
 assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "2" "--posted posts its own [answers] marker (the mechanical convergence reset)"
 
 # a mid-turn session is refused — nothing is waiting for answers
@@ -1638,11 +1645,15 @@ migrate) exit 0 ;;
 sync)   echo noop ;;
 retire) true ;;
 meta)   exit 0 ;;
-resume)
-  if [ "${1:-}" = "--wait" ]; then shift; fi
-  printf '%s\n' "$1" > "$STUB_STATE/resume.uuid"
-  printf '%s' "$2" > "$STUB_STATE/resume.msg"
-  echo "resumed: [sminos stub]"
+resume|wake)
+  # The verb and its --wait are recorded: a parked owner is a LIVE, IDLE
+  # seat, which only `wake` reaches — `resume` on it starts a copy.
+  wait_flag=""
+  if [ "${1:-}" = "--wait" ]; then wait_flag=" --wait"; shift; fi
+  printf '%s%s\n' "$verb" "$wait_flag" > "$STUB_STATE/relay.verb"
+  printf '%s\n' "$1" > "$STUB_STATE/relay.uuid"
+  printf '%s' "$2" > "$STUB_STATE/relay.msg"
+  echo "$verb: [sminos stub]"
   ;;
 *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
@@ -2096,6 +2107,155 @@ assert_contains "$(state "s['issues']['$cs_e']['body']")" "pre-park: in-review" 
 out="$(run board-transition.sh "$cs_e" in-review "answered: retry the review")"
 assert_contains "$out" "#$cs_e: needs-human → in-review" "the recipe in the park note works: the epic returns with no --pr"
 assert_contains "$(state "s['issues']['$cs_e']['body']")" "pr: https://github.com/o/r/issues/$cs_e#pkg" "the closure package it returns with is the one it carried"
+
+# ---- the review fold: the re-pin self-edge and the counted rebuild edge -------
+# A review that re-cuts the plan contract does it on the BOARD, not on the
+# branch: the owner pushes the repaired document, then mints the new pin with
+# a same-state in-review transition, and the audit re-anchors on the newest
+# pin-minting comment. The Architect's repair-and-rebuild back to in-progress
+# is the other half of the fold, and it is convergence-counted — the seat with
+# the most authorship stake must not get an unbounded self-loop.
+echo "re-pin / rebuild:"
+SHA_B="89abcdef0123456789abcdef0123456789abcdef"
+SHA_UNPUSHED="ffffffffffffffffffffffffffffffffffffffff"
+FOLD_A="docs/plans/fold.md@$SHA40"
+FOLD_B="docs/plans/fold.md@$SHA_B"
+python3 - <<'REFS'
+import json, os
+p = os.environ["MOCK_GH_REFS"]
+refs = json.load(open(p))
+for sha in ("0123456789abcdef0123456789abcdef01234567",
+            "89abcdef0123456789abcdef0123456789abcdef"):
+    refs["compare"]["tick/fold...%s" % sha] = "identical"
+    refs["contents"].append("docs/plans/fold.md@%s" % sha)
+json.dump(refs, open(p, "w"))
+REFS
+mk_review() {  # -> $fold_t, a fresh ticket in in-review with pr: and branch: recorded
+    run board-register.sh "$1" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+    fold_t="$(state "s['next']-1")"
+    run board-transition.sh "$fold_t" in-progress >/dev/null
+    run board-transition.sh "$fold_t" in-review "PR open" \
+        --branch tick/fold --pr "https://github.com/test/repo/pull/$fold_t" >/dev/null
+}
+
+mk_review "Re-pin probe"
+rp_t="$fold_t"
+out="$(run board-transition.sh "$rp_t" in-review "re-pin: acceptance 4 re-cut" --plan "$FOLD_A")"
+assert_contains "$out" "#$rp_t: in-review → in-review" "a same-state in-review carrying --plan re-pins the review contract"
+assert_contains "$(state "s['issues']['$rp_t']['labels']")" "status:in-review" "the ticket never leaves in-review"
+assert_contains "$(state "s['issues']['$rp_t']['body']")" "plan: $FOLD_A" "the new pin is recorded"
+assert_contains "$(state "s['issues']['$rp_t']['body']")" "pr: https://github.com/test/repo/pull/$rp_t" "the recorded pr: is reused — the self-edge re-supplies nothing"
+assert_contains "$(state "s['issues']['$rp_t']['body']")" "branch: tick/fold" "...and the recorded branch: is what the pin verified against"
+assert_equals "$(state "s['issues']['$rp_t']['comments'][-1]")" "[board] in-review: re-pin: acceptance 4 re-cut" "the pin-minting comment the audit re-anchors on"
+# --plan is what makes the self-edge a transition at all
+err="$(run board-transition.sh "$rp_t" in-review "nothing to re-pin" 2>&1 || true)"
+assert_contains "$err" "already in-review" "a same-state in-review without --plan is still the no-op refusal"
+# the delta is the whole content of a re-pin, so the note is required
+err="$(run board-transition.sh "$rp_t" in-review --plan "$FOLD_B" 2>&1 || true)"
+assert_contains "$err" "a re-pin needs a note naming the delta" "a re-pin states its delta"
+# ...and the self-edge is in-review's alone: no other state gains one
+run board-register.sh "Same-state build probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+ss_t="$(state "s['next']-1")"
+run board-transition.sh "$ss_t" in-progress >/dev/null
+err="$(run board-transition.sh "$ss_t" in-progress "re-pin?" --plan "$FOLD_A" 2>&1 || true)"
+assert_contains "$err" "already in-progress" "a same-state in-progress with --plan is refused"
+# the owner pushes BEFORE it pins — the remote check still stands on this edge
+mk_review "Re-pin unpushed probe"
+ur_t="$fold_t"
+err="$(run board-transition.sh "$ur_t" in-review "re-pin: not pushed yet" --plan "docs/plans/fold.md@$SHA_UNPUSHED" 2>&1 || true)"
+assert_contains "$err" "cannot verify the plan pin against branch tick/fold" "a re-pin whose sha is not on the remote is refused"
+assert_not_contains "$(state "s['issues']['$ur_t']['body']")" "$SHA_UNPUSHED" "...and the refused re-pin wrote nothing"
+
+# `pre-spec` names the ticket BODY as the plan — a ruling an Architect makes
+# during its own design pass. Both review-origin edges exist because a pinned
+# DOCUMENT was found wrong and repaired, so neither may carry the sentinel in
+# place of the repaired revision.
+mk_review "Pre-spec sentinel probe"
+ps_t="$fold_t"
+err="$(run board-transition.sh "$ps_t" in-review "re-pin: the body will do" --plan pre-spec 2>&1 || true)"
+assert_contains "$err" "needs a real <path>@<full-40-hex-sha> pin" "a re-pin may not carry the pre-spec sentinel"
+assert_contains "$(state "s['issues']['$ps_t']['labels']")" "status:in-review" "...and the refusal wrote nothing"
+err="$(run board-transition.sh "$ps_t" in-progress "rebuild: the body will do" --branch tick/fold --plan pre-spec 2>&1 || true)"
+assert_contains "$err" "needs a real <path>@<full-40-hex-sha> pin" "and neither may a rebuild"
+assert_contains "$(state "s['issues']['$ps_t']['labels']")" "status:in-review" "...nor did that one"
+
+# The rebuild edge: in-review → in-progress with the repaired plan's pin.
+mk_review "Rebuild probe"
+rb_t="$fold_t"
+err="$(run board-transition.sh "$rb_t" in-progress --branch tick/fold --plan "$FOLD_A" 2>&1 || true)"
+assert_contains "$err" "a note is required on the in-review → in-progress edge" "the rebuild edge is note-required"
+out="$(run board-transition.sh "$rb_t" in-progress "rebuild: the design gap, repaired" --branch tick/fold --plan "$FOLD_A")"
+assert_contains "$out" "#$rb_t: in-review → in-progress" "the Architect rebuilds from in-review"
+assert_contains "$(state "s['issues']['$rb_t']['body']")" "plan: $FOLD_A" "the rebuild mints its own pin"
+assert_equals "$(state "s['issues']['$rb_t']['comments'][-1]")" "[board] in-review → in-progress: rebuild: the design gap, repaired" "the counted edge's comment is the audit's anchor for a rebuild"
+# ...twice on one ticket with no human event between is the second design gap,
+# which is the human's — and the transmuted write mints no pin.
+run board-transition.sh "$rb_t" in-review "round 2" --pr "https://github.com/test/repo/pull/$rb_t" >/dev/null
+out="$(run board-transition.sh "$rb_t" in-progress "rebuild: the same gap again" --branch tick/fold --plan "$FOLD_B")"
+assert_contains "$out" "#$rb_t: in-review → needs-human" "a second rebuild converges to a human park"
+assert_contains "$(state "s['issues']['$rb_t']['body']")" "note: convergence: second traversal of in-review → in-progress" "the park names the convergence"
+assert_contains "$(state "s['issues']['$rb_t']['body']")" "plan: $FOLD_A" "the pin in force is the one the rebuild that DID happen minted"
+assert_not_contains "$(state "s['issues']['$rb_t']['body']")" "$SHA_B" "...and the transmuted write records no pin of its own"
+
+echo "the seat's review phase:"
+# The lane-cap pre-check and the tick's review recovery read the SEAT record —
+# a ticket read per seat per tick is the cost the registry exists to avoid — so
+# the transition that moves the ticket is what marks the seat bound to it.
+run board-register.sh "Phase probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+ph_t="$(state "s['next']-1")"
+PH_SEAT="$DAEMON_HOME/phase-seat.json"
+cat > "$PH_SEAT" <<META
+{"uuid": "phase-seat", "status": "idle", "ticket": "$ph_t", "cwd": "$WORK",
+ "board": "gh:test/repo", "role": "IMPLEMENT", "updated": "2026-09-21T00:00:00Z"}
+META
+phase() { python3 -c "import json;print(json.load(open('$PH_SEAT')).get('phase') or '<absent>')"; }
+seat_updated() { python3 -c "import json;print(json.load(open('$PH_SEAT')).get('updated'))"; }
+run board-transition.sh "$ph_t" in-progress >/dev/null
+assert_equals "$(phase)" "<absent>" "a ticket outside the review lane marks nothing"
+run board-transition.sh "$ph_t" in-review "PR open" --branch tick/fold \
+    --pr "https://github.com/test/repo/pull/$ph_t" >/dev/null
+assert_equals "$(phase)" "review" "entering in-review marks the bound seat"
+assert_equals "$(seat_updated)" "2026-09-21T00:00:00Z" \
+  "the mark never rewrites updated (the relay reads it as last-turn activity)"
+run board-transition.sh "$ph_t" in-review "re-pin: acceptance 2 re-cut" --plan "$FOLD_A" >/dev/null
+assert_equals "$(phase)" "review" "the re-pin self-edge keeps the mark"
+run board-transition.sh "$ph_t" needs-human "the review found a design gap" >/dev/null
+assert_equals "$(phase)" "review-parked" "a park out of the review is still the review"
+# The relay resumes the bound session: the stub from the answer section above,
+# re-armed (a real sminos here would reach the operator's own fleet).
+export STUB_STATE="$TEST_ROOT/stub-state" SMINOS_CLI="$STUB_SMINOS/sminos"
+run board-answer.sh "$ph_t" "the finding stands — fix it" >/dev/null
+assert_contains "$(state "s['issues']['$ph_t']['labels']")" "status:in-review" "the answer returns the ticket to the review lane"
+assert_equals "$(phase)" "review" "...and the relay restores the mark"
+run board-transition.sh "$ph_t" ready-for-architect "design gap — back to the architect" >/dev/null
+assert_equals "$(phase)" "<absent>" "leaving the review lane clears the mark"
+# A transition on an unbound ticket writes no seat record of its own.
+before_n="$(find "$DAEMON_HOME" -name '*.json' | wc -l | tr -d ' ')"
+run board-register.sh "Unbound phase probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+up_t="$(state "s['next']-1")"
+run board-transition.sh "$up_t" in-progress >/dev/null
+run board-transition.sh "$up_t" in-review "PR open" --branch tick/fold \
+    --pr "https://github.com/test/repo/pull/$up_t" >/dev/null
+assert_equals "$(find "$DAEMON_HOME" -name '*.json' | wc -l | tr -d ' ')" "$before_n" \
+  "a ticket with no bound seat marks nothing"
+unset SMINOS_CLI STUB_STATE
+
+echo "review-trail comment kind:"
+# The QA agent's review artifact. Under gh nothing enforces it; the marker is
+# what an evidence-gated close reads on the API board.
+run board-register.sh "Review trail probe" enhancement P2 --body-file "$SPEC_BODY" >/dev/null
+rt_t="$(state "s['next']-1")"
+run board-comment.sh "$rt_t" --kind review-trail --text "level medium" >/dev/null
+assert_equals "$(state "s['issues']['$rt_t']['comments'][-1]")" "[review-trail] level medium" "the review-trail kind renders its marker"
+# The QA agent writes one trail and posts it twice — on the ticket through this
+# script, and verbatim as a PR comment — so its text already opens with the
+# marker. Every gh smoke trail landed as "[review-trail] [review-trail] …".
+run board-comment.sh "$rt_t" --kind review-trail --text "[review-trail]
+level low" >/dev/null
+assert_equals "$(state "s['issues']['$rt_t']['comments'][-1]")" "[review-trail]
+level low" "a text that already carries the marker is not marked twice"
+err="$(run board-comment.sh "$rt_t" --kind review-trial --text "typo" 2>&1 || true)"
+assert_contains "$err" "review-trail" "the closed-set refusal names the kinds it accepts"
 
 # ---- convergence resets at a recomposition-cycle boundary ---------------------
 # Two successive closure packages that each turn up a real defect are not a

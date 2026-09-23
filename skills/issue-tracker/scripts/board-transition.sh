@@ -184,6 +184,14 @@ if tid:
         sys.exit(1)
 PY
 
+# The seat bound to this ticket carries the ticket's review phase in its own
+# record (_lib.sh's _phase_stamp), and what decides it is the state the write
+# LANDED in — never the edge asked for, which convergence and the server both
+# transmute. Both arms below hand that state back through this file.
+T_PHASE_OUT="$(mktemp "${TMPDIR:-/tmp}/board-phase.XXXXXX")"
+trap 'rm -f "$T_PHASE_OUT"' EXIT
+export T_PHASE_OUT
+
 # API mode: legality, the convergence rule, the note/PR/plan requirements and
 # every sweep above live server-side — the client sends the edge and reports
 # the state the server wrote.
@@ -195,12 +203,15 @@ if [ "$BOARD_BINDING" = api ]; then
   # and an arbitrary --plan value here bought a worker the right to skip its gate
   # entirely. gh mode's four checks, mirrored:
   if [ -n "$plan" ]; then
-    # 1. THE EDGE, not just the destination. Only an Architect finishing a
-    #    design pass may mint a pin; every other legal promotion into
+    # 1. THE EDGE, not just the destination. Only the four edges that re-cut
+    #    what the plan SAYS may mint a pin — the Architect's handoff and build
+    #    out of a design pass, the owner's rebuild and re-pin out of a review
+    #    that found the plan wrong; every other legal promotion into
     #    ready-for-implementer (a park return) would otherwise mint one too, and
     #    there is no legitimate re-supply case — plan meta survives park
-    #    round-trips untouched.
-    _cur="$(T_ID="$tid" _api_py - <<'PY'
+    #    round-trips untouched. The ticket's own branch comes back on the same
+    #    read: the re-pin re-supplies nothing, so check 3 falls back to it.
+    _row="$(T_ID="$tid" _api_py - <<'PY'
 import os
 import _board_api as A
 # The one board read on this path that keeps the HUMAN default principal: the
@@ -211,30 +222,30 @@ import _board_api as A
 # substitution, where bash 3.2 lexes the body and a lone quote breaks the whole
 # script at parse time.)
 row = A.ticket(A.ref(os.environ["T_ID"]))
-print(row["state"] if row else "")
+if row:
+    print("%s %s" % (row["state"], row.get("branch") or ""))
 PY
-)" || die "--plan needs the ticket's current state to check the handoff edge, and the board would not answer"
-    [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the handoff edge cannot be checked"
-    # THE BUILD EDGE IS GH-ONLY, TODAY. Legality on this path is the board
-    # service's, and its state table has no in-design → in-progress entry: the
-    # request comes back 409 with a generic illegal-transition message, after
-    # the Architect has already pushed the plan. Refuse it here, where the
-    # exit can be named — the legacy handoff carries the same pin into the
-    # implement queue. (A build edge without --plan never reaches this block
-    # and still meets the server's 409; --plan is what the build edge is.)
-    { [ "$_cur" != in-design ] || [ "$to" != in-progress ]; } \
-      || die "the build edge (in-design → in-progress) is not supported by the API board service yet — hand off instead: ready-for-implementer \"<note>\" --branch <b> --plan <pin>|pre-spec (an Executor runs it: PLAN-EXECUTION from a real pin, DIRECT from the body on pre-spec)"
-    # The two build-edge checks below are consequently unreachable on this
-    # path today. They stay: they are the gh checks mirrored, and the day the
-    # service's state table gains the edge, deleting the refusal above is the
-    # whole change.
-    { [ "$_cur" = in-design ] && { [ "$to" = ready-for-implementer ] || [ "$to" = in-progress ]; }; } \
-      || die "--plan rides the Architect edges out of in-design only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build) (#$tid is $_cur → $to)"
+)" || die "--plan needs the ticket's current state to check the pin-minting edge, and the board would not answer"
+    _cur="${_row%% *}" _rec_branch="${_row#* }"
+    [ -n "$_cur" ] || die "--plan: #$tid does not exist on this board — the pin-minting edge cannot be checked"
+    case "$_cur:$to" in
+      in-design:ready-for-implementer|in-design:in-progress|in-review:in-progress|in-review:in-review) ;;
+      *) die "--plan rides the pin-minting edges only (in-design → ready-for-implementer for a handoff, in-design → in-progress for a build, in-review → in-progress for a rebuild, in-review → in-review for a re-pin) (#$tid is $_cur → $to)" ;;
+    esac
+    # ...and `pre-spec` is the DESIGN pass's sentinel only: it names the ticket
+    # BODY as the plan, while a rebuild or a re-pin exists because a pinned
+    # DOCUMENT was found wrong and repaired. Same cut as gh mode's.
+    { [ "$_cur" != in-review ] || [ "$plan" != pre-spec ]; } \
+      || die "--plan pre-spec is the design pass's sentinel (the ticket body is the plan) — $_cur → $to re-cuts a pinned document, so it needs a real <path>@<full-40-hex-sha> pin"
+    # The branch the pin (or a pre-spec build) is reached through: the flag
+    # when it is given, else whatever the board itself records — the fallback
+    # gh mode takes from the meta, and what lets a re-pin re-supply nothing.
+    _pin_branch="${branch:-$_rec_branch}"
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
     # its own body: no revision to pin (the review loop anchors on this edge's
     # comment), but the branch still names where the work lives — a recovery
     # Executor runs DIRECT from the body on it.
-    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ] || [ -n "$branch" ]; } \
+    { [ "$to" != in-progress ] || [ "$plan" != pre-spec ] || [ -n "$_pin_branch" ]; } \
       || die "a pre-spec build needs --branch: the work lives there and a recovery Executor resumes from it"
     if [ "$plan" != pre-spec ]; then
       # 2. An IMMUTABLE pin: a path and a full 40-hex sha, never a branch name
@@ -244,21 +255,21 @@ PY
       # 3. A RECORDED BRANCH the sha is reachable from. A PLAN-EXECUTION worker
       #    starts from a fresh cattle clone: without one there is nothing to
       #    fetch and the pin cannot serve the reclaim contract it exists for.
-      #    A1's ticket projection carries no branch column, so unlike gh mode
-      #    there is no recorded value to fall back on — --branch is required.
-      [ -n "$branch" ] \
-        || die "a pinned plan needs a branch the sha is reachable from; pass --branch (the API board records none to fall back on)"
+      #    A board whose ticket projection records none leaves --branch the
+      #    only way to say it.
+      [ -n "$_pin_branch" ] \
+        || die "a pinned plan needs a branch the sha is reachable from; pass --branch (this board records none to fall back on)"
       # 4. ...and "recorded" is not "fetchable". gh mode asks GitHub; there is no
       #    gh here, so the same question is put to the local checkout — which is
       #    the Architect's own, the one that just pushed the plan. Fail CLOSED on
       #    anything unverifiable: an unverifiable pin is not a pin.
       _sha="${plan##*@}" _path="${plan%@*}" _ref=""
-      for _cand in "origin/$branch" "$branch"; do
+      for _cand in "origin/$_pin_branch" "$_pin_branch"; do
         git -C "$BOARD_ROOT" rev-parse --verify --quiet "$_cand^{commit}" >/dev/null && { _ref="$_cand"; break; }
       done
-      [ -n "$_ref" ] || die "branch $branch names no commit in this checkout — fetch it, then retry (the pin is refused until it verifies)"
+      [ -n "$_ref" ] || die "branch $_pin_branch names no commit in this checkout — fetch it, then retry (the pin is refused until it verifies)"
       git -C "$BOARD_ROOT" merge-base --is-ancestor "$_sha" "$_ref" 2>/dev/null \
-        || die "plan sha ${_sha:0:12} is not on branch $branch — a PLAN-EXECUTION worker fetches the sha from that branch and would find nothing; push the commit to it and retry"
+        || die "plan sha ${_sha:0:12} is not on branch $_pin_branch — a PLAN-EXECUTION worker fetches the sha from that branch and would find nothing; push the commit to it and retry"
       git -C "$BOARD_ROOT" cat-file -e "$_sha:$_path" 2>/dev/null \
         || die "the plan path $_path does not exist at ${_sha:0:12} — the pin names an artifact the worker cannot read; fix the path or the sha and retry"
     fi
@@ -283,7 +294,10 @@ out = A.transition(tid, env["T_TO"],
 # Print the state the server WROTE — convergence can transmute the target.
 suffix = " (converged)" if out.get("converged") else ""
 print("#%s: → %s%s" % (tid, out["to"], suffix))
+with open(env["T_PHASE_OUT"], "w") as f:
+    f.write(str(out["to"]))
 PY
+  _phase_stamp "$tid" "$(cat "$T_PHASE_OUT")"
   _rerender_if_serving
   exit 0
 fi
@@ -299,6 +313,14 @@ tid = B.resolve(env["T_ID"], tickets)
 to, note = env["T_TO"], env["T_NOTE"]
 n = tickets[tid]
 cur = n["state"]
+
+
+def phase_out(state):
+    """Hand the state this write LANDED in back to the shell, for the review
+    phase of the seat bound to the ticket. Written on every path that writes
+    the board — a refusal raises before reaching one, and marks nothing."""
+    with open(env["T_PHASE_OUT"], "w") as f:
+        f.write(str(state))
 
 if to not in B.STATES:
     B.die("unknown state: %s" % to)
@@ -368,7 +390,16 @@ if cur == "in-design" and to == "in-progress":
             B.die("surface %s is occupied by %s — hand off instead: "
                   "ready-for-implementer with the same --plan; the implement "
                   "queue serializes the surface" % (_occ[0], _occ[1]))
-if to == cur:
+# THE RE-PIN (the review fold). A review that finds the pinned plan itself
+# wrong re-cuts the contract on the BOARD, never on the branch: the owner
+# pushes the repaired document, then mints a new pin with a same-state
+# in-review transition, and the audit re-anchors on the newest pin-minting
+# comment. --plan is what makes the self-edge a transition; without one it is
+# the no-op the same-state refusal below names, on this state as on every other.
+re_pin = to == cur == "in-review" and bool(env["T_PLAN"])
+if re_pin and not note:
+    B.die("a re-pin needs a note naming the delta")
+if to == cur and not re_pin:
     if cur not in B.TERMINAL:
         B.die("#%s is already %s" % (tid, cur))
     # Finalize: the issue reached this terminal state outside the machine
@@ -387,6 +418,7 @@ if to == cur:
         print(ln)
     if not out:
         print("#%s: already %s — nothing to finalize" % (tid, cur))
+    phase_out(cur)
     raise SystemExit(0)
 if cur in (B.UNTRACKED, B.CONFLICT):
     # repair: any open state is reachable; terminal still goes through the machine
@@ -457,6 +489,10 @@ if (cur, to) in B.CONVERGENCE_EDGES:
                 "mechanical bounce; this traversal's position: %s — see "
                 "the comment trail for the first" % (cur, to, note))
         to = "needs-human"
+        # The transmuted write is not the traversal the worker asked for — the
+        # repaired plan is not in force — so it mints no pin. Clearing T_PLAN
+        # is what skips both the pin gates and the plan: meta write below.
+        env["T_PLAN"] = ""
 
 if to in B.NOTE_REQUIRED and not note:
     B.die("a note is required when moving to %s" % to)
@@ -468,29 +504,52 @@ if to == "in-review" and not env["T_PR"]:
     # flag". For an EPIC the pr slot carries the recomposition closure
     # package (E2) — same invariant, different artifact.
     #
-    # But ONLY that return may ride the recorded value. A stale pr: survives
+    # The RE-PIN rides it for the same reason and one stronger: the ticket
+    # never left in-review, so the recorded artifact is the one under review.
+    #
+    # But ONLY those two may ride the recorded value. A stale pr: survives
     # every route back out of in-review (a review that bounced the ticket to
     # ready-for-architect leaves it; only recomposition clears it, and the
     # reconciliation return deliberately does not), so accepting the meta on
     # any entry pointed the board at a superseded PR — or, on an epic, at the
     # previous cycle's closure package — with nobody having said so.
     prepark = B.parse_meta(n.get("body")).get("pre-park")
-    if not (cur in B.PARKED and prepark == "in-review" and n.get("pr")):
+    park_return = cur in B.PARKED and prepark == "in-review"
+    if not ((park_return or re_pin) and n.get("pr")):
         B.die("a PR link is required when moving to in-review (--pr URL; for an "
               "epic: the closure-package URL). Only a park return whose "
-              "pre-park: meta records in-review may reuse the recorded one.")
+              "pre-park: meta records in-review, or a re-pin of the ticket "
+              "already under review, may reuse the recorded one.")
 if env["T_PLAN"]:
     import re as _re
     # The EDGE, not just the destination: a plan pin authorizes gate-free
-    # PLAN-EXECUTION, and only an Architect finishing a design pass may mint
-    # one. Every other legal promotion into ready-for-implementer (a park
-    # return from needs-info/needs-human/interactive-preferred/deferred)
-    # would otherwise mint one too — and there is no legitimate re-supply
-    # case, since plan meta survives park round-trips untouched.
-    if cur != "in-design" or to not in ("ready-for-implementer", "in-progress"):
-        B.die("--plan rides the Architect edges out of in-design only "
+    # PLAN-EXECUTION, so only the four edges that re-cut what the plan SAYS may
+    # mint one — the Architect's handoff and build out of a design pass, and
+    # the owner's rebuild and re-pin out of a review that found the plan wrong.
+    # Every other legal promotion into ready-for-implementer (a park return
+    # from needs-info/needs-human/interactive-preferred/deferred) would
+    # otherwise mint one too — and there is no legitimate re-supply case,
+    # since plan meta survives park round-trips untouched.
+    if (cur, to) not in (("in-design", "ready-for-implementer"),
+                         ("in-design", "in-progress"),
+                         ("in-review", "in-progress"),
+                         ("in-review", "in-review")):
+        B.die("--plan rides the pin-minting edges only "
               "(in-design → ready-for-implementer for a handoff, "
-              "in-design → in-progress for a build)")
+              "in-design → in-progress for a build, "
+              "in-review → in-progress for a rebuild, "
+              "in-review → in-review for a re-pin)")
+    # ...and `pre-spec` is the DESIGN pass's sentinel only. It names the ticket
+    # BODY as the plan, which is a ruling an Architect makes about a ticket that
+    # turned out small. A review-origin edge is the opposite case by
+    # construction: the rebuild and the re-pin both exist because a pinned
+    # DOCUMENT was found wrong and repaired, so they carry the repaired
+    # revision — and with it the immutability, reachability and existence
+    # checks below — or they carry nothing the audit can anchor on.
+    if cur == "in-review" and env["T_PLAN"] == "pre-spec":
+        B.die("--plan pre-spec is the design pass's sentinel (the ticket body "
+              "is the plan) — %s → %s re-cuts a pinned document, so it needs a "
+              "real <path>@<full-40-hex-sha> pin" % (cur, to))
     # `pre-spec` on the build edge is a direct ticket the Architect builds from
     # its own body: no revision to pin (the review loop anchors on this edge's
     # comment), but the branch still names where the work lives — a recovery
@@ -563,9 +622,9 @@ elif to == "ready-for-architect" or (cur == "in-design" and to == "ready-for-imp
     # unrelated `pre-spec` ruling value caused two defects on this branch,
     # so this clears the field outright rather than keying on "has a pin").
     # Entry into ready-for-architect always means the plan is being
-    # re-cut (T_PLAN can only be set on the in-design →
-    # ready-for-implementer edge — validated above — so this branch never
-    # collides with a fresh pin write). The Architect's own decompose exit
+    # re-cut (T_PLAN can only be set on a pin-minting edge — validated
+    # above — and none of those enters ready-for-architect, so this branch
+    # never collides with a fresh pin write). The Architect's own decompose exit
     # (in-design -> ready-for-implementer with no --plan) is a positive
     # "no plan" statement — a pin surviving it is stale by construction.
     # Deliberately NOT extended to other edges into ready-for-implementer:
@@ -623,7 +682,9 @@ eligible_lines = B.newly_eligible(tickets, tid) if to == "done" else []
 
 for ln in eligible_lines + lines:
     print(ln)
+phase_out(to)
 PY
 
+_phase_stamp "$tid" "$(cat "$T_PHASE_OUT")"
 
 _rerender_if_serving

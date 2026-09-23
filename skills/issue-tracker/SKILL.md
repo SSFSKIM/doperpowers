@@ -10,7 +10,7 @@ single source of truth.** Tickets are **purpose-units**: born as pre-specs
 from an `organizing-sprints` materialization (or registered directly here),
 gated and driven to a PR by autonomous Executor
 workers (`references/implement-worker-protocol.md`), reviewed to a confident merge by
-Reviewer workers (doperpowers:qa-loops), tracked as GitHub issues with
+the owning seat's QA agent (`agents/qa-loop.md`), tracked as GitHub issues with
 typed edges (sub-issue = parent, dependency = blocked-by, provenance =
 spawned-by).
 
@@ -48,7 +48,8 @@ unattended repos).
 |---|---|---|
 | **Architect Worker** (daemon, one ticket, Fable route) | its OWN ticket's open states through design and build (`in-design`, the build edge to `in-progress` with the `plan:` pin, `in-review` with the PR); NEW child/follow-up tickets; on an EPIC, the recomposition verdict — including that epic's terminal states, the one scoped exception to terminal authority | `references/architect-worker-protocol.md` |
 | **Executor Worker** (daemon, one ticket; a SPIKE worker is the same species on a `spike` ticket) | its OWN ticket's open states; NEW child/follow-up tickets; architect-lane escalations — DIRECT tickets, and PLAN-EXECUTION as the recovery lane for a plan whose Architect session was lost | `references/implement-worker-protocol.md` |
-| **Reviewer Worker** (daemon, one PR) | its PR's ticket (`needs-human` / `ready-for-architect`); finding-tickets; the merge itself + post-merge finalize on a confident verdict; a scale review's clean `done` on a recomposition epic | doperpowers:qa-loops |
+| **QA agent** (subagent of the owning seat, sol) | the PR's ticket open states as the owner's run (`needs-human`, the re-pin self-edge); finding-tickets; the merge itself + `done` as post-merge finalize; a scale review's clean `done` on a recomposition epic. Never `ready-for-architect`: a design gap returns to its dispatcher, which writes that edge | `agents/qa-loop.md` |
+| **Review stand-in** (seat, one PR nobody owns) | nothing of its own — it dispatches the QA agent and writes only the edges an owner's answer would have been: `ready-for-architect` on a design gap or a pinned-plan spec conflict, `needs-human` on a body-only one | `references/review-standin-protocol.md` |
 | **The human** (wake ritual) | everything else — unpark answers, `wontfix`, finalize, priorities, edge re-cuts | this file |
 | **Board bookkeeping** (the scripts' own sweeps, incl. `board-sweep.sh`) | epic states nobody claims by hand — the in-flight pull (`in-design`/`in-progress` by the epic's lane) and the `ready-for-architect` recomposition/reconciliation returns (`[board-epic]` comments); dead-worker recovery parks | this file |
 | **Dispatcher** (interim: a human-run ritual; next phase: an issue-event trigger) | NOTHING | the ritual below |
@@ -80,8 +81,8 @@ reporter never parks its own ticket over friction it routed around.
 The architect lane's happy path is `ready-for-architect → in-design →
 in-progress → in-review → done`, one bound session from design to PR; a
 direct ticket starts at `ready-for-implementer` and an Executor takes it
-`in-progress → in-review`. Under the review loop the
-Reviewer worker's confident verdict merges the PR, and the merge itself
+`in-progress → in-review`. Under the review loop the owning seat's QA
+agent merges the PR on its confident verdict, and the merge itself
 closes the ticket to `done`. (`ready-for-implementer` is the Executor
 lane's label; the string keeps its legacy spelling because live boards
 depend on it.)
@@ -95,7 +96,7 @@ depend on it.)
 | `needs-human` | open + `status:needs-human` | parked for the human **as themselves**: a decision only they can make, or a real-world input only they possess (credentials, auth, production data) | **required** |
 | `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth for a sophisticated result, or core decisions need substantial research first | **required** |
 | `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE (architecture spine / product-core design) needs live steering — decisions too entangled for a question list (enumerable decisions are `needs-human`); never auto-dispatched; take it into a live doperpowers:brainstorming session | **required** |
-| `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it); on an epic, the recomposition closure package rides the same `pr:` slot and draws a scale review | PR link (epic: package link) |
+| `in-review` | open + `status:in-review` | PR open (review rounds, conflicts, merge queue — all of it); on an epic, the recomposition closure package rides the same `pr:` slot and draws a scale review. The owner keeps two edges from here: the **re-pin** — a same-state transition carrying `--plan <path>@<sha>` when the review re-cuts the plan contract itself; the recorded `pr:`/`branch:` are reused and the audit re-anchors on its comment (without `--plan` the self-edge is the no-op it looks like) — and the **rebuild** to `in-progress` with the repaired plan's pin, which is convergence-counted: a second one with no human event between parks `needs-human` | PR link (epic: package link) |
 | `done` | **closed — completed** | landed — normally arrives by the merge itself (PR body `Closes #N` auto-closes); manual flip for non-PR work only, verify it landed first | optional |
 | `wontfix` | **closed — not planned** | rejected | **required** |
 | `deferred` | open + `status:deferred` | tracked, not now | optional |
@@ -113,7 +114,8 @@ many and whatever the ticket's size, is `needs-human` — not steering.
 The discriminant has a THIRD address: missing or broken design that an
 AGENT can author → `ready-for-architect` — written by the Executor's
 gate (plan-need), the Executor mid-build (a genuinely blocked plan),
-and the Reviewer worker at a design-gap impasse; never by-passed into
+the Executor answering its QA agent's design gap, and the review
+stand-in on a PR nobody owns; never by-passed into
 `needs-human` (the human address is for what only a human can give).
 The board counts these escalation edges: a second traversal of the same
 edge on one ticket converts to `needs-human` mechanically.
@@ -259,7 +261,8 @@ binding (or the checkout's own repo), the board's repo key on the api binding
 |---|---|
 | `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike`\|`env-issue` (Categories above owns their semantics — note an `env-issue` with no explicit `--state` is born `needs-human` and is REFUSED without `--note`); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (see The ticket body below — a skeleton birth is refused for a dispatchable lane state and demoted to `needs-info` otherwise); prints `<number> <url>` |
 | `board-body.sh <n> --body-file F` | rewrite a ticket's statement of work (`F` may be `-` for stdin; an empty file is a legal edit — clearing it). Both bindings: the API route refuses `ticket-owned` while a run holds the ticket — the body IS the claim-time assignment, so an edit under an open run reaches nobody; enrichment for a BOUND park rides the park answer, never the body. The gh route is a meta-preserving read-modify-write — the trailing `board:meta` block is spliced back byte-for-byte, never parsed, which bare `gh issue edit` clobbers |
-| `board-transition.sh <n> <state> [note] [--branch B] [--pr URL]` | apply a state change; enforces legality + notes + the in-review PR gate; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent). A ticket mid-turn under a live bound worker is fenced: only that worker's own session transitions it — retire the binding first, or overrule with `BOARD_OWNER_OVERRIDE="<why>"` |
+| `board-transition.sh <n> <state> [note] [--branch B] [--pr URL] [--plan PATH@SHA\|pre-spec]` | apply a state change; enforces legality + notes + the in-review PR gate; `--plan` rides the pin-minting edges only — the Architect's handoff and build out of `in-design`, and out of `in-review` the rebuild (`in-progress`) and the re-pin (the `in-review` self-edge, which needs a note naming the delta) — and a real pin is verified on the remote before anything is written; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent). A ticket mid-turn under a live bound worker is fenced: only that worker's own session transitions it — retire the binding first, or overrule with `BOARD_OWNER_OVERRIDE="<why>"` |
+| `board-comment.sh <n> <text>` / `<n> --kind K [--text T] [--json P]` | append a comment-family event. `K` is `comment`\|`parent-impact`\|`closure-package`\|`parent-impact-consumed`\|`review-trail` — the last is the QA agent's review artifact, which the API board's evidence-gated `in-review → done` requires. gh renders a typed kind as a `[K] …` marker comment (what the sweep's IMPACT scan reads); put `--` ahead of comment text that starts with a dash |
 | `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition. A run bearer holds `--block` on its own ticket and nothing else |
 | `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
 | `board-surface.sh <n> --add NAME \| --remove NAME` | add/remove a `surface:*` label (see Surfaces below). `--add` validates against the registry; `--remove` never does — it is the cleanup for an orphaned label and the escape hatch for a false-positive match |
@@ -307,14 +310,8 @@ pick by repo visibility:
    (or `wontfix "superseded by PR"`); if work genuinely remains, dispatch as
    normal. Derived from GitHub PR state on every snapshot — never a label,
    never auto-closed.
-2. Resolve the ENGINE — ticket label `engine:claude`/`engine:codex` →
-   `$WORKER_ENGINE` → default `claude`. Every worker is ONE species — a
-   Claude-harness daemon; the engine names only its model route (`codex` =
-   the clodex gateway settings, GPT models through the local proxy;
-   `claude` = plain Claude models). Label `engine:codex` to put one ticket
-   back on the gateway; `engine:claude` is redundant only while no
-   `WORKER_ENGINE` override is set — under `WORKER_ENGINE=codex` it is the
-   one per-ticket way back onto plain Claude, so it is never safe to strip.
+2. Every worker is a Claude-harness seat; `--model` names its model and the
+   gateway serves it.
    Render the spawn bootstrap
    (`references/worker-bootstrap.md` —
    the worker opens its protocol from the dispatcher-pinned file the
@@ -328,30 +325,24 @@ pick by repo visibility:
    `PROTOCOL_FILE` =
    the lane's protocol (spike → `references/spike-worker-protocol.md`;
    architect → `references/architect-worker-protocol.md`; else
-   `references/implement-worker-protocol.md`). The ARCHITECT dispatch ignores `engine:*` labels and
-   `$WORKER_ENGINE` — plan authorship is never label-routed — and pins
-   `${ARCHITECT_MODEL:-fable}` on the plain-Claude route; the
-   engine resolution earlier in this step applies to the other roles.
+   `references/implement-worker-protocol.md`).
    `ISSUE_NUMBER`, `ISSUE_URL`, `REPO`, `BOARD_SCRIPTS` = this skill's scripts dir,
-   `ENGINE_NAME` = the engine, and `DECOMPOSE_DOC` = the ABSOLUTE path of
+   and `DECOMPOSE_DOC` = the ABSOLUTE path of
    `references/implement-decompose.md` (a
    runtime-opened procedure: the prompt carries only the pointer; the
    worker opens it when Check-2 says decompose; "(none — spike lane)" for
    a spike).
 3. Spawn via `sminos spawn "<n>-<slug>" "<prompt>" --cwd <repo> --worktree <n>-<slug>`
    — always a worktree; workers write code.
-   The claude route — the default — passes no gateway env, and pins the
-   lane's model with `--model`: `${ARCHITECT_MODEL:-fable}` on the architect
-   lane, `${IMPLEMENT_MODEL:-opus}` on implement and spike. Both lanes
-   pin rather than inherit, so the operator's own session model never
-   silently collapses the split's two model economies onto one price.
-   Since `sminos spawn` writes no settings/effort into the seat record, these
-   wakes stay plain. The codex route prefixes the gateway env and pins
-   the gateway's model alias:
-   `DAEMON_CLAUDE_SETTINGS="${CLODEX_SETTINGS:-$HOME/.claude/clodex-settings.json}" DAEMON_CLAUDE_EFFORT="${CLODEX_EFFORT:-xhigh}" sminos spawn … --model fable`
-   (`sminos spawn` persists settings/effort into the seat record;
-   `sminos resume` restores them on every resume — without that a gateway
-   worker silently reverts to plain models on its first resume).
+   Pin the lane's model: `${ARCHITECT_MODEL:-fable}` on the architect lane,
+   `${IMPLEMENT_MODEL:-sol}` on implement and spike. Both lanes pin rather
+   than inherit, so the operator's own session model never silently
+   collapses the split's two model economies onto one price.
+   `DAEMON_CLAUDE_SETTINGS=''` and `DAEMON_CLAUDE_EFFORT=''` ride the spawn
+   as ASSIGNMENTS, not omissions: `sminos spawn` persists what it inherits
+   into the seat record and `sminos resume` restores it, so a dispatcher
+   running inside a gateway-routed seat would otherwise hand its own
+   settings to every worker it spawns and to every later wake of one.
 4. `board-bind.sh <uuid> <n>`. Write NOTHING else: the worker's first board
    write is its gate verdict — `in-progress` (+ a `[gate]` comment) for an
    Executor, `in-design` (+ a `[gate]` comment) for an Architect, or
@@ -360,8 +351,9 @@ pick by repo visibility:
    edge (`in-progress`, plan pinned) and `in-review` with the PR — one
    session end to end; `ARCHITECT_MAX_CONCURRENT` meters that whole span.
 
-Nobody judges turn-ends. Parked tickets wait for the wake ritual; opened PRs
-are picked up by the review loop (doperpowers:qa-loops). The ritual is
+Nobody judges turn-ends. Parked tickets wait for the wake ritual; an opened PR
+is reviewed by the QA agent its owner dispatches, or by a stand-in when nobody
+owns it (`references/review-loop.md`). The ritual is
 mechanized end-to-end by `scripts/execute-dispatch.sh` (`<n>` triggered, `--sweep` catch-up —
 same steps, registry-first dedupe, cap-bounded); unattended, `board-sweep.sh`
 invokes it on a timer. Running the ritual by hand stays valid — the sweep's
@@ -372,7 +364,7 @@ calls, not a parallel doctrine.** For your own work: in-session fan-out is
 native subagents; a raw ad-hoc
 seat is reserved for work that must survive your session with no board to
 hold it. Board pipeline workers' doctrine is the worker protocols under
-`references/` and doperpowers:qa-loops, and nobody sits between them and
+`references/` and the QA agent's own body, and nobody sits between them and
 the board.
 
 ## The wake ritual (the human's catch-up)
@@ -431,10 +423,11 @@ execution-side protocols live here — `references/implement-worker-protocol.md`
 `references/spike-worker-protocol.md` — sharing one bootstrap
 (`references/worker-bootstrap.md`) and one dispatcher
 (`scripts/execute-dispatch.sh`); the operator manual for that loop is
-`references/execution-loop.md`. The review-side protocol is
-doperpowers:qa-loops itself (`SKILL.md`; bootstrap
-`references/review-worker-bootstrap.md`). This file owns only the schema
-they write against.
+`references/execution-loop.md`. The review side is `agents/qa-loop.md` — the
+agent the owning seat dispatches — with `references/review-standin-protocol.md`
+and `references/review-standin-bootstrap.md` for the reviews nobody owns, and
+`references/review-loop.md` as its operator manual. This file owns only the
+schema they write against.
 
 ## The ticket body (pre-spec)
 

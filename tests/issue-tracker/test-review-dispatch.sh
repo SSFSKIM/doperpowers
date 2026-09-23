@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Hermetic tests for review-dispatch.sh (the qa-loops trigger half).
+# Hermetic tests for review-dispatch.sh (the review loop's trigger half).
 #
 # Side channels stubbed: `gh` (canned per-PR JSON + a call log), `claude`
 # (agents view from a file), and the sminos CLI (one stub executable whose
@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DISPATCH="$REPO_ROOT/skills/qa-loops/scripts/review-dispatch.sh"
+DISPATCH="$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
@@ -54,6 +54,18 @@ assert_no_spawn() {  # assert_no_spawn <worker-name> <label>
 # A binding is only bound when it arrives with a VALUE. Anchored on the rendered
 # roster line shape (- `NAME`: value), so a binding that rendered as a blank —
 # the shape an unsupplied placeholder used to take — reads as unbound here.
+ticket_owner() {  # <ticket> → name of whichever meta currently holds it
+    T="$1" python3 - <<'PY'
+import glob, json, os
+for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
+    if p.endswith(".reply.json"):
+        continue
+    m = json.load(open(p))
+    if str(m.get("ticket", "")).lstrip("#") == os.environ["T"]:
+        print(m.get("name") or m.get("uuid") or "")
+PY
+}
+
 assert_bound() {  # assert_bound <prompt> <NAME> <lane>
     local v; v="$(printf '%s\n' "$1" | sed -n "s/^- \`$2\`: \(.*\)$/\1/p" | head -1)"
     if [[ -n "$v" ]]; then pass "\`$2\` renders with a value ($3)"; else
@@ -151,33 +163,6 @@ json.dump({"uuid": u, "current": u, "name": os.environ["N"], "cwd": os.environ["
            "updated": "2026-07-08T00:%02d:00Z" % int(os.environ.get("SPAWN_N") or 0)},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
-  # Simulate the worker's first protocol action: wait for the dispatcher-owned
-  # ready file, validate it, then acknowledge before ORIENT. Tests can suppress
-  # this to prove dispatch does not report success for a worker that never starts.
-  bind_ready="$(printf '%s\n' "$task" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
-  # The real barrier also verifies the worker's OWN registry identity against
-  # the name the protocol gives it. A stub that acked without checking hid a
-  # barrier no scale worker could ever satisfy (it named review-pr-<n> while a
-  # scale worker is review-epic-<n>), so check it here: a mismatch leaves the
-  # barrier unacked and dispatch fails exactly as it would in production.
-  wname="$(printf '%s\n' "$task" | sed -n 's/^- `WORKER_NAME`: \([^ ][^ ]*\).*/\1/p' | head -1)"
-  if [ "$wname" != "$name" ]; then
-    echo "stub worker: barrier identity mismatch (prompt names '$wname', registry name is '$name')" >&2
-    bind_ready=""
-  fi
-  if [ -n "$bind_ready" ] && [ "${STUB_NO_BIND_ACK:-0}" != "1" ]; then
-    READY="$bind_ready" UUID="$uuid" python3 - <<'PY' >/dev/null 2>&1 &
-import json, os, time
-ready=os.environ["READY"]
-for _ in range(500):
-    if os.path.isfile(ready):
-        ack=ready+".ack"; tmp=ack+".tmp"
-        with open(tmp,"w") as f: json.dump({"uuid":os.environ["UUID"]},f)
-        os.replace(tmp,ack)
-        break
-    time.sleep(0.01)
-PY
-  fi
   if [ "${STUB_BAD_SPAWN_BANNER:-0}" = "1" ]; then
     echo "seat spawned without parseable identity"
   else
@@ -343,6 +328,9 @@ chmod +x "$STUB_BOARD/board-transition.sh"
 # in beside the stub: board-bind stays stubbed, the snapshot is genuine and
 # runs against the mock `gh` below.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_board.py" "$STUB_BOARD/_board.py"
+# The owner-first rule asks whether a seat is THIS board's through
+# _board_api.meta_is_mine, imported from $BOARD_SCRIPTS the same way.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_board_api.py" "$STUB_BOARD/_board_api.py"
 # The dispatcher resolves its board BINDING before anything gh-mode-specific
 # (that is what makes the API path reachable without gh), and it sources that
 # resolver out of $BOARD_SCRIPTS — so the stub dir needs the real one. It is
@@ -357,10 +345,6 @@ cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$STUB_BOARD/_binding.s
 # definitions only, no side effects at source time, exactly like _binding.sh.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$STUB_BOARD/_claim_journal.sh"
 export BOARD_SCRIPTS="$STUB_BOARD"
-# Every PRE-EXISTING case in this file exercises the claude path unchanged —
-# the label→env→codex resolution only kicks in per-test below via an
-# explicit WORKER_ENGINE=codex prefix.
-export WORKER_ENGINE=claude
 
 # stub gh + claude
 STUB_BIN="$TEST_ROOT/bin"; mkdir -p "$STUB_BIN"
@@ -368,6 +352,13 @@ cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >> "$MOCK_LOG"
+# A side effect a case can hang on one call shape: $MOCK_GH_HOOK runs whenever
+# the call's argv contains $MOCK_GH_HOOK_ON. It is how a case makes something
+# happen at a precise point inside the dispatcher (an owner binding the ticket
+# between the owner-first check and the spawn).
+if [ -n "${MOCK_GH_HOOK:-}" ] && [[ "$*" == *"${MOCK_GH_HOOK_ON:-}"* ]]; then
+  bash "$MOCK_GH_HOOK"
+fi
 case "${1:-} ${2:-}" in
   "repo view")
     # two callers: the default-branch read, and BOARD_REPO self-resolution
@@ -492,59 +483,79 @@ assert_equals "$(git -C "$WT" rev-parse HEAD)" "$HEAD_SHA" "worktree checked out
 if git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
     fail "worktree is detached"; else pass "worktree is detached"; fi
 PROMPT="$(cat "$PROMPT_DIR/review-pr-5.prompt")"
-BIND_READY="$(printf '%s\n' "$PROMPT" | grep '^- `BIND_READY_FILE`:' | cut -d' ' -f3- || true)"
-assert_contains "$PROMPT" "REVIEW worker for PR #5" "prompt carries the worker bootstrap header"
-assert_contains "$PROMPT" '`BIND_READY_FILE`:' "prompt carries the startup binding barrier"
-if [ -n "$BIND_READY" ] && [ -f "$BIND_READY" ]; then pass "bind-ready barrier opens after exclusive binding"; else fail "bind-ready barrier opens after exclusive binding"; fi
-assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ticket": "7"' "barrier proves the primary ticket binding"
-assert_contains "$(cat "$BIND_READY" 2>/dev/null || true)" '"ledger"' "barrier carries the undisclosed ledger path to the orchestrator"
-if [ -f "$BIND_READY.ack" ]; then pass "dispatch waits for worker barrier acknowledgement"; else fail "dispatch waits for worker barrier acknowledgement"; fi
-assert_not_contains "$PROMPT" "Adds f." "prompt carries no inlined PR body (the worker reads the PR live via gh)"
+assert_contains "$PROMPT" "REVIEW STAND-IN for PR #5" "prompt carries the stand-in bootstrap header"
+assert_not_contains "$PROMPT" "Adds f." "prompt carries no inlined PR body (the agent reads the PR live via gh)"
 assert_contains "$PROMPT" '`ISSUE_NUMBER`: 7' "prompt binds the primary ticket (Closes #7 parsed from the body)"
+assert_contains "$PROMPT" '`ISSUE_URL`: https://github.com/test/repo/issues/7' "prompt binds the ticket URL the brief's ticket line carries"
 assert_not_contains "$PROMPT" "Ticket seven brief body" "prompt carries no inlined ticket body"
 assert_contains "$PROMPT" '`BASE_REF`: main' "prompt carries the base ref"
 assert_contains "$PROMPT" '`TECH_DEBT_ISSUE`: 99' "prompt carries the standing tech-debt issue binding"
 assert_contains "$PROMPT" '`AUTO_MERGE`: off' "prompt binds auto-merge off by default (observation mode)"
-assert_contains "$PROMPT" "no repo risk-surface manifest" "prompt renders the manifest-absent fallback when the repo has none"
-assert_contains "$PROMPT" "no repo-facts manifest" "prompt renders the repo-facts-absent fallback when the repo has none"
+assert_contains "$PROMPT" '`ROLE`: QAGENT' "prompt binds the seat's role"
+assert_not_contains "$PROMPT" "risk-surface manifest" "no risk-surface snapshot rides the prompt — the agent reads it from the base ref"
+assert_not_contains "$PROMPT" "repo-facts manifest" "no repo-facts snapshot rides the prompt"
+assert_not_contains "$PROMPT" "MANIFEST_REF" "no manifest ref binding survives"
+assert_not_contains "$PROMPT" "BIND_READY" "no startup barrier rides the prompt"
+assert_not_contains "$PROMPT" "SKILL_FILE" "no skill path rides the prompt — the stand-in follows a pinned protocol"
 assert_not_contains "$PROMPT" "{{" "no unsubstituted bootstrap placeholder survives"
 assert_contains "$PROMPT" '`REVIEW_MODE`: pr' "leaf prompt binds the ordinary pr mode"
-assert_not_contains "$PROMPT" "SCALE REVIEWER" "leaf prompt carries none of the scale variant's framing"
+assert_not_contains "$PROMPT" "recomposition epic" "leaf prompt carries none of the scale variant's framing"
 assert_not_contains "$PROMPT" "CLOSURE_PACKAGE" "leaf prompt carries no closure-package binding"
 assert_not_contains "$PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
-assert_contains "$PROMPT" "Use doperpowers:qa-loops" "prompt names the Review Worker Protocol skill"
+assert_not_contains "$PROMPT" "qa-loops" "the retired skill is not invoked"
 assert_contains "$PROMPT" "dispatcher-pinned copy" "prompt routes the protocol through the dispatcher-pinned file"
-assert_contains "$PROMPT" "$REPO_ROOT/skills/qa-loops/SKILL.md" "prompt carries the canonical dispatcher-owned skill path"
+assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/review-standin-protocol.md" "prompt carries the canonical stand-in protocol path"
 assert_contains "$PROMPT" "$REPO_ROOT/skills/issue-tracker/references/implement-worker-protocol.md" "prompt carries the canonical implement-contract path (the dispatcher-pinned protocol file)"
 assert_contains "$PROMPT" '`REVIEW_LEVEL`: medium' "prompt binds the review level floor (default medium)"
 assert_contains "$PROMPT" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "prompt pins review-code's skill dir (the panel workflow's home)"
 assert_not_contains "$PROMPT" "review-engine.sh" "no codex engine script rides the prompt"
 assert_not_contains "$PROMPT" "CODEX_REVIEW" "no codex engine env rides the prompt"
-# The bindings a reviewer cannot function without, pinned on the VALUE side:
+# The bindings a stand-in cannot function without, pinned on the VALUE side:
 # an existing `NAME`: assertion passes just as well against a rendered blank.
-assert_bound "$PROMPT" BIND_READY_FILE pr
+assert_bound "$PROMPT" PROTOCOL_FILE pr
 assert_bound "$PROMPT" IMPLEMENT_PROTOCOL_FILE pr
 assert_bound "$PROMPT" BOARD_SCRIPTS pr
-SKILL_PIN="$(printf '%s\n' "$PROMPT" | sed -n 's/.*dispatcher-pinned copy at `\([^`]*\)`.*/\1/p' | head -1)"
-if [[ -n "$SKILL_PIN" ]]; then pass "SKILL_FILE renders a protocol path"; else
-    fail "SKILL_FILE renders a protocol path"; fi
+
+# A ticket linked the ordinary way carries its own URL in the PR payload, and
+# that URL — not a constructed one — is what the brief's `ticket:` line gets.
+reset_state
+SHA="$HEAD_SHA" python3 - <<'PY'
+import json, os
+json.dump({"number": 11, "title": "feat: linked", "body": "No keyword link here.",
+           "baseRefName": "main", "headRefName": "feat/x", "headRefOid": os.environ["SHA"],
+           "url": "https://github.com/test/repo/pull/11", "isDraft": False, "state": "OPEN",
+           "labels": [],
+           "closingIssuesReferences": [{"number": 7,
+                                        "url": "https://gh.example.test/test/repo/issues/7"}]},
+          open(os.path.join(os.environ["MOCK_DIR"], "pr-11.json"), "w"))
+PY
+"$DISPATCH" 11 >/dev/null 2>&1 || true
+assert_contains "$(cat "$PROMPT_DIR/review-pr-11.prompt")" \
+    '`ISSUE_URL`: https://gh.example.test/test/repo/issues/7' \
+    "a linked ticket's own URL rides the prompt, not a constructed one"
 
 # ---- an unsupplied bootstrap placeholder fails the render ----------------------
 # The renderer used to substitute an unknown {{X}} with "", so a binding a mode
 # block asks for and no call site supplies shipped as a silent blank — and no
 # downstream assertion can tell "empty by design" from "erased". Driven through
-# a copy of the skill whose template carries one placeholder nothing fills
-# (the template path is derived from the script's own dir, so the copy IS the
-# lever); the sibling skills the dispatcher sources are symlinked back.
+# a copy of the dispatcher's own skill dir whose template carries one
+# placeholder nothing fills (the template path is derived from the script's
+# own dir, so the copy IS the lever); the sibling skill the dispatcher
+# sources (sminos) is symlinked back.
 echo "unrendered placeholder fails closed:"
-ALT_SKILLS="$TEST_ROOT/alt-skills"; mkdir -p "$ALT_SKILLS"
+ALT_SKILLS="$TEST_ROOT/alt-skills"
+mkdir -p "$ALT_SKILLS/issue-tracker/scripts" "$ALT_SKILLS/issue-tracker/references"
 ln -s "$REPO_ROOT/skills/sminos" "$ALT_SKILLS/sminos"
-cp -R "$REPO_ROOT/skills/qa-loops" "$ALT_SKILLS/qa-loops"
+cp "$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh" "$ALT_SKILLS/issue-tracker/scripts/review-dispatch.sh"
+cp "$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md" \
+    "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
+cp "$REPO_ROOT/skills/issue-tracker/references/review-standin-protocol.md" \
+    "$ALT_SKILLS/issue-tracker/references/review-standin-protocol.md"
 printf '\n- `FORGOTTEN_BINDING`: {{FORGOTTEN_BINDING}}\n' \
-    >> "$ALT_SKILLS/qa-loops/references/review-worker-bootstrap.md"
+    >> "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
 reset_state
 rm -f "$PROMPT_DIR/review-pr-5.prompt"
-if ALT_OUT="$("$ALT_SKILLS/qa-loops/scripts/review-dispatch.sh" 5 2>&1)"; then
+if ALT_OUT="$("$ALT_SKILLS/issue-tracker/scripts/review-dispatch.sh" 5 2>&1)"; then
     fail "a placeholder no call site supplies fails the dispatch"
 else
     pass "a placeholder no call site supplies fails the dispatch"
@@ -557,15 +568,16 @@ else
     pass "no prompt reaches a worker on a failed render"
 fi
 
-# Ticket ownership is exclusive: the reviewer replaces the finished implement
-# worker as board-answer's resume target.
+# Ticket ownership is exclusive: the stand-in replaces the RETIRED implement
+# worker as board-answer's resume target. (A worker still holding a live status
+# is the ticket's owner and reviews it itself — owner-first dedupe below.)
 echo "review ticket binding:"
 reset_state
 OLD="impl0000-0000-4000-8000-000000000000" python3 - <<'PY'
 import json, os
 u = os.environ["OLD"]
 json.dump({"uuid": u, "current": u, "name": "implement-ticket-7",
-           "status": "idle", "ticket": "7", "updated": "2026-07-07T00:00:00Z"},
+           "status": "retired", "ticket": "7", "updated": "2026-07-07T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 "$DISPATCH" 5 >/dev/null
@@ -614,24 +626,16 @@ chmod +x "$FAIL_BOARD/board-bind.sh"
 # checking for would never be reached.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$FAIL_BOARD/_binding.sh"
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$FAIL_BOARD/_claim_journal.sh"
+# ...and the module the owner-first check imports, for the same reason.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_board_api.py" "$FAIL_BOARD/_board_api.py"
 reset_state
 if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
     fail "bind failure aborts review dispatch"
 else
     pass "bind failure aborts review dispatch"
 fi
-assert_contains "$(cat "$SPAWN_LOG")" "retire:" "bind failure retires the unreachable reviewer"
-assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "bind failure never opens the startup barrier"
-
-# A published barrier is not success until the worker acknowledges it. A model
-# that died/timed out before reading the prompt is retired and dispatch fails.
-reset_state
-if STUB_NO_BIND_ACK=1 REVIEW_ACK_POLLS=2 REVIEW_ACK_DELAY=0.01 "$DISPATCH" 5 >/dev/null 2>&1; then
-    fail "missing worker barrier ack fails dispatch"
-else
-    pass "missing worker barrier ack fails dispatch"
-fi
-assert_contains "$(cat "$SPAWN_LOG")" "retire:" "missing barrier ack retires the non-started reviewer"
+assert_contains "$(cat "$SPAWN_LOG")" "retire:" "bind failure retires the unreachable stand-in"
+assert_equals "$(ticket_owner 7)" "" "a failed bind leaves nobody owning the ticket"
 
 # Exact spawn identity is mandatory. A changed/unparseable banner must fail
 # closed, never fall back to a same-name registry heuristic.
@@ -641,11 +645,7 @@ if STUB_BAD_SPAWN_BANNER=1 "$DISPATCH" 5 >/dev/null 2>&1; then
 else
     pass "unparseable spawn UUID fails dispatch"
 fi
-assert_equals "$(find "$DAEMON_HOME" -name bind-ready.json -type f -print)" "" "identity parse failure never opens the barrier"
-
-# Every control-state initialization step is explicitly guarded in sweep mode;
-# set -e is suspended beneath the per-PR `||` wrapper.
-assert_contains "$(cat "$DISPATCH")" "control state initialization failed" "control-state setup has a fail-closed guard"
+assert_equals "$(ticket_owner 7)" "" "an unidentifiable spawn binds no ticket"
 
 # ---- worktree bootstrap hook ---------------------------------------------------
 # WORKTREE_BOOTSTRAP_CMD runs inside the fresh worktree before the worker
@@ -732,6 +732,109 @@ reset_state
 out="$("$DISPATCH" 6)"
 assert_contains "$out" "draft" "draft PR skipped"
 assert_equals "$(cat "$SPAWN_LOG")" "" "draft PR spawns nothing"
+
+# ---- owner-first dedupe --------------------------------------------------------
+# The review runs as a subagent of the seat that owns the ticket, so a PR whose
+# primary ticket is bound to a live seat that is not a stand-in is already being
+# reviewed — by its owner. The stand-in exists for the reviews nobody owns.
+echo "owner-first dedupe:"
+seed_owner() {  # $1=role $2=status [$3=host $4=boot]
+  R="$1" S="$2" H="${3:-}" B="${4:-}" python3 - <<'PY'
+import json, os
+u = "ace00001-0000-4000-8000-000000000000"
+m = {"uuid": u, "current": u, "name": "7-add-f", "role": os.environ["R"],
+     "ticket": "7", "status": os.environ["S"], "updated": "2026-07-08T00:00:00Z"}
+if os.environ["H"]:
+    m["host"] = os.environ["H"]
+if os.environ["B"]:
+    m["boot_id"] = os.environ["B"]
+json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+}
+reset_state; seed_owner ARCHITECT idle
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "a ticket bound to a live architect seat is the owner's review"
+assert_equals "$(cat "$SPAWN_LOG")" "" "no stand-in spawns over a live architect owner"
+
+reset_state; seed_owner IMPLEMENT working
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "an implement seat owns its review too"
+assert_no_spawn review-pr-5 "no stand-in spawns over a live implement owner"
+
+# Sweep mode reads the same rule — the cron tick must not spawn a second
+# reviewer over the seat that is already running one.
+reset_state; seed_owner ARCHITECT idle
+out="$("$DISPATCH" --sweep 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "sweep mode skips an owned review too"
+assert_equals "$(cat "$SPAWN_LOG")" "" "sweep spawns nothing over a live owner"
+
+# A QAGENT-bound ticket is a STAND-IN's, not an owner's: it falls through to the
+# ordinary dedupe, which is what the outage streak and the review cap read.
+reset_state; seed_owner QAGENT working
+echo '[{"id": "ace00001", "sessionId": "ace00001-0000-4000-8000-000000000000", "state": "working"}]' > "$MOCK_DIR/agents.json"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "owner reviews" "a QAGENT-bound ticket is not read as an owner's review"
+
+# Identity is part of liveness, as everywhere else in this dispatcher: a meta
+# from another host or a previous boot is a dead session, not an owner.
+reset_state; seed_owner ARCHITECT working old-host boot-old
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "owner reviews" "a foreign-host owner meta is a dead session, not a live owner"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the stand-in dispatches over a dead owner meta"
+
+# THE OWNER THAT ARRIVES MID-DISPATCH. The owner-first check runs before the
+# dispatch lock, and the locked section then spends a gh read, a fetch and a
+# worktree build before the spawn binds the ticket — a seat that binds the
+# ticket inside that window would have its ticket taken by the stand-in. The
+# hook seeds the owner on the locked section's own PR read, after the pre-check
+# has already come back empty.
+OWNER_HOOK="$TEST_ROOT/owner-hook.sh"
+cat > "$OWNER_HOOK" <<'HOOK'
+T="${MOCK_HOOK_TICKET:-7}" python3 - <<'PY'
+import json, os
+u = "ace00009-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "late-owner", "role": "ARCHITECT",
+           "ticket": os.environ["T"], "status": "idle", "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+HOOK
+reset_state
+out="$(MOCK_GH_HOOK="$OWNER_HOOK" MOCK_GH_HOOK_ON="--json number,title" "$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "an owner that binds mid-dispatch is seen by the locked section's own check"
+assert_no_spawn review-pr-5 "...and no stand-in spawns over it"
+assert_equals "$(ticket_owner 7)" "late-owner" "...so the owner keeps its ticket"
+if [ -e "$LOCAL_REPO/.claude/worktrees/review-pr-5" ]; then
+    fail "...and the worktree prepared for the skipped spawn is removed"
+else
+    pass "...and the worktree prepared for the skipped spawn is removed"
+fi
+
+# The registry is machine-global and a board is not: a live seat of ANOTHER
+# repo's board on its own ticket 7 owns nothing here. A seat stamped with this
+# board still does.
+seed_board_owner() {  # $1=board stamp
+  BRD="$1" python3 - <<'PY'
+import json, os
+u = "ace00002-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "7-elsewhere", "role": "ARCHITECT",
+           "ticket": "7", "status": "idle", "board": os.environ["BRD"],
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+}
+reset_state; seed_board_owner "gh:other/repo"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "owner reviews" "a foreign board's seat on the same ticket number is not this ticket's owner"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "...so the stand-in dispatches"
+reset_state; seed_board_owner "gh:test/repo"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "a seat stamped with this board is still the owner"
+
+# No owner at all: the stand-in spawns, as a review nobody owns must.
+reset_state
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "no live owner: the stand-in spawns"
+assert_contains "$(cat "$SPAWN_LOG")" "--role QAGENT" "the stand-in's seat carries the QAGENT role from birth"
 
 # ---- dedupe: active / dead / finished -----------------------------------------
 echo "dedupe:"
@@ -827,68 +930,40 @@ assert_contains "$out" "active reviewer" "busy reviewer still skips as active"
 assert_equals "$(cat "$SPAWN_LOG")" "" "busy reviewer spawns nothing"
 
 # ---- normalize lingering ticket owners BEFORE binding --------------------------
-# The incoming reviewer binds to the PR's primary ticket, but the OUTGOING
-# worker on that ticket is a claude-species daemon with no self-finalizer: its
-# meta lingers status=working after its turn ends, and board-bind protects a
-# working owner as ACTIVE. Left alone that refuses the reviewer's bind on every
-# tick — which retired three reviewers in the 2026-07-18 live shakedown. The
-# dispatcher therefore runs `sminos sync` over every meta bound to the
-# ticket first, so the registry states the truth before ownership is adjudicated.
-# The scale-review half of this is covered further down (the epic's Architect);
-# these two cases pin the PR half, and pin BOTH directions of what finalize
-# decides — the point is that dispatch does not assume, it asks.
+# The incoming stand-in binds to the PR's primary ticket, but a dead owner's
+# meta lingers status=working — a claude-species daemon has no self-finalizer —
+# and board-bind protects a working owner as ACTIVE. Left alone that refuses the
+# bind on every tick, which retired three reviewers in the 2026-07-18 live
+# shakedown. The dispatcher therefore runs `sminos sync` over every meta bound
+# to the ticket first, so the registry states the truth before ownership is
+# adjudicated. A lingering owner of THIS boot is the ticket's live owner and
+# never reaches this code — owner-first dedupe above skips the PR — so what the
+# normalization still has to settle is the previous boot's residue.
+# The scale-review half is covered further down (the epic's Architect).
 echo "normalize ticket owners before bind:"
-ticket_owner() {  # <ticket> → name of whichever meta currently holds it
-    T="$1" python3 - <<'PY'
-import glob, json, os
-for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
-    if p.endswith(".reply.json"):
-        continue
-    m = json.load(open(p))
-    if str(m.get("ticket", "")).lstrip("#") == os.environ["T"]:
-        print(m.get("name") or m.get("uuid") or "")
-PY
-}
-seed_ticket_owner() {  # lingering executor meta bound to #7 (PR 5's primary ticket)
+seed_ticket_owner() {  # PREVIOUS BOOT's executor meta, still bound to #7
     python3 - <<'PY'
 import json, os
 u = "beef0001-0000-4000-8000-000000000000"
 json.dump({"uuid": u, "current": u, "name": "7-add-f", "role": "IMPLEMENT",
-           "ticket": "7", "status": "working", "updated": "2026-07-08T00:00:00Z"},
+           "ticket": "7", "status": "working", "boot_id": "boot-old",
+           "updated": "2026-07-08T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 }
 OWNER_META="$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.json"
 
-# (a) the owner's turn is OVER — finalize settles it, and the reviewer binds.
 reset_state; seed_ticket_owner
 echo '[{"id": "beef0001", "sessionId": "beef0001-0000-4000-8000-000000000000", "state": "done"}]' > "$MOCK_DIR/agents.json"
 # rc captured rather than let errexit kill the run: losing the normalization is
 # a bind refusal, and a regression should NAME itself here instead of aborting
 # the suite at this line with no assertion output.
 out="$("$DISPATCH" 5 2>&1)" || true
-assert_not_contains "$out" "bind to ticket #7 failed" "dispatch does not bind-fail over a finished owner"
-assert_contains "$(cat "$OWNER_META")" '"status": "idle"' "a lingering finished ticket owner is finalized before the bind"
+assert_not_contains "$out" "bind to ticket #7 failed" "dispatch does not bind-fail over a stale owner"
+assert_contains "$(cat "$OWNER_META")" '"status": "idle"' "a lingering ticket owner is finalized before the bind"
 assert_file_exists "$DAEMON_HOME/beef0001-0000-4000-8000-000000000000.reply.txt" "finalize recorded the owner's closing reply"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "reviewer is dispatched over the normalized owner"
-assert_equals "$(ticket_owner 7)" "review-pr-5" "the reviewer's bind succeeded — it now owns #7"
-
-# (b) counter-case: the owner is genuinely mid-turn. finalize keeps it live,
-# board-bind refuses (correctly — a live worker's ticket is not up for grabs),
-# and the reviewer is retired with its startup barrier never published, so the
-# spawned session cannot begin reviewing work it does not own.
-reset_state; seed_ticket_owner
-echo '[{"id": "beef0001", "sessionId": "beef0001-0000-4000-8000-000000000000", "state": "working", "status": "busy"}]' > "$MOCK_DIR/agents.json"
-out="$(REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 2>&1)" || true
-assert_contains "$(cat "$OWNER_META")" '"status": "working"' "a genuinely live ticket owner survives finalize as live"
-assert_equals "$(ticket_owner 7)" "7-add-f" "the live owner keeps #7 — the reviewer never takes it"
-assert_contains "$out" "bind to ticket #7 failed" "board-bind refuses the reviewer over a live owner"
-assert_contains "$(cat "$SPAWN_LOG")" "retire:" "the refused reviewer is retired rather than left running"
-if compgen -G "$DAEMON_HOME/review-pr-5-control.*" > /dev/null; then
-    fail "the refused reviewer's startup barrier is torn down"
-else
-    pass "the refused reviewer's startup barrier is torn down"
-fi
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "the stand-in is dispatched over the normalized owner"
+assert_equals "$(ticket_owner 7)" "review-pr-5" "the stand-in's bind succeeded — it now owns #7"
 
 # ---- dedupe without exported DAEMON_HOME (production repro) -------------------
 # In launchd/cron the parent process never exports DAEMON_HOME — the script's
@@ -1265,10 +1340,14 @@ seed_outage_metas() {  # $1 = how many consecutive outage reviewers to seed
   local i
   for f in "$DAEMON_HOME"/*.json "$DAEMON_HOME"/*.reply.txt; do rm -f "$f"; done
   for i in $(seq 1 "$1"); do
+    # BOUND AND QAGENT, as a real stand-in is: the streak's subject is a seat
+    # holding the PR's ticket, and only the QAGENT exemption keeps owner-first
+    # from reading it as an owner and skipping the streak decision entirely.
     U="feed000$i-0000-4000-8000-000000000000" I="$i" python3 - <<'PY'
 import json, os
 u = os.environ["U"]; i = os.environ["I"]
 json.dump({"uuid": u, "current": u, "name": "review-pr-5", "engine": "codex",
+           "role": "QAGENT", "ticket": "7",
            "status": "idle", "updated": "2026-07-0%sT00:00:00Z" % i},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
@@ -1679,15 +1758,15 @@ PY
 reset_state
 out="$(AUTO_MERGE_ENABLED=true DEFAULT_BRANCH=develop "$DISPATCH" 10)"
 P10="$(cat "$PROMPT_DIR/review-pr-10.prompt")"
-assert_contains "$P10" "RISK-FROM-BASE" "manifest content injected from the BASE ref"
-assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side manifest edit does not leak (read from base, not head)"
-assert_contains "$P10" "FACTS-FROM-BASE" "repo-facts content injected from the BASE ref"
-assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "HEAD-side repo-facts edit does not leak (read from base, not head)"
+assert_not_contains "$P10" "RISK-FROM-BASE" "no manifest content rides the prompt — the agent reads it from the base ref itself"
+assert_not_contains "$P10" "RISK-FROM-HEAD-SHOULD-NOT-APPEAR" "and certainly not the HEAD-side edit"
+assert_not_contains "$P10" "FACTS-FROM-BASE" "no repo-facts content rides the prompt either"
+assert_not_contains "$P10" "FACTS-FROM-HEAD-SHOULD-NOT-APPEAR" "nor its HEAD-side edit"
 assert_contains "$P10" '`AUTO_MERGE`: on' "AUTO_MERGE_ENABLED=true binds auto-merge on"
 
-# ---- engine switch (label → WORKER_ENGINE → claude) + codex liveness -----------
+# ---- the one route: a Claude-harness seat and a model name --------------------
 # Canned PR on feat/x (labels overridable) + a thin wrapper over $DISPATCH, so
-# an env-var prefix (e.g. `WORKER_ENGINE=codex run_dispatch 41`) reaches the
+# an env-var prefix (e.g. `REVIEW_LEVEL=high run_dispatch 44`) reaches the
 # script for exactly one call.
 gh_pr() {  # $1=number $2=state $3=isDraft(0|1) $4=labels (comma-separated, "" for none)
     N="$1" STATE="$2" DRAFT="$3" LABELS="$4" SHA="$HEAD_SHA" python3 - <<'PY'
@@ -1703,38 +1782,31 @@ PY
 }
 run_dispatch() { "$DISPATCH" "$@"; }
 
-echo "engine switch (one harness, two model routes):"
-# Every route check below is an INDEPENDENT dispatch, and all four canned PRs
+echo "one route (a Claude-harness seat and a model name):"
+# Every route check below is an INDEPENDENT dispatch, and all the canned PRs
 # close the same ticket #7 — so each one starts from reset_state, not merely a
 # cleared spawn log. Leaving the previous reviewer's `working` meta in place
 # would have it own #7 when the next reviewer binds, which board-bind refuses
 # (correctly: one ticket, one active owner).
 reset_state
 gh_pr 41 OPEN 0 ""                                  # helper: canned PR, no labels
-WORKER_ENGINE=codex run_dispatch 41
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-41" "WORKER_ENGINE=codex spawns the one-harness daemon"
+run_dispatch 41
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-41" "a PR dispatches its reviewer"
 assert_not_contains "$(cat "$SPAWN_LOG")" "codex-spawn:" "codex-CLI worker species is retired from dispatch"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "gateway route rides DAEMON_CLAUDE_SETTINGS/EFFORT"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "the spawn environment is explicit: no gateway settings, effort high"
+if grep -E -- '--model sol( |$)' "$SPAWN_LOG" > /dev/null; then
+    pass "the review lane pins the QAgent tier to sol"
+else
+    fail "the review lane pins the QAgent tier to sol"
+fi
 prompt="$(cat "$PROMPT_DIR/review-pr-41.prompt")"
 assert_contains "$prompt" '`REVIEW_LEVEL`: medium' "prompt binds the review level floor"
 assert_contains "$prompt" '`BASE_REF`: main' "prompt binds the base ref the engine call uses"
+assert_contains "$prompt" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "prompt binds the single review engine"
 assert_not_contains "$prompt" "--criteria" "criteria concept is gone from the rendered prompt"
 assert_not_contains "$prompt" "developer_instructions" "no developer instructions ride the rendered prompt"
 assert_not_contains "$prompt" "{{ENGINE_BLOCK}}" "engine block placeholder rendered"
 assert_not_contains "$prompt" "CODEX_COMPANION" "companion is gone from the prompt"
-
-reset_state
-gh_pr 42 OPEN 0 "engine:claude"
-WORKER_ENGINE=codex run_dispatch 42
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-42" "engine:claude label overrides env"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "claude route spawns without the gateway settings, at effort high"
-if grep -E -- '--model opus( |$)' "$SPAWN_LOG" > /dev/null; then
-    pass "claude route pins the QAgent model to opus"
-else
-    fail "claude route pins the QAgent model to opus"
-fi
-prompt42="$(cat "$PROMPT_DIR/review-pr-42.prompt")"
-assert_contains "$prompt42" "\`REVIEW_CODE_DIR\`: $REPO_ROOT/skills/review-code" "claude route binds the same single engine (no per-route fork)"
 
 # REVIEW_LEVEL is the operator's level floor: validated before any spawn, and
 # rendered into the prompt when it is one of review-code's levels.
@@ -1751,31 +1823,21 @@ REVIEW_LEVEL=high run_dispatch 44
 assert_contains "$(cat "$PROMPT_DIR/review-pr-44.prompt")" '`REVIEW_LEVEL`: high' "a valid REVIEW_LEVEL rides the prompt as the level floor"
 
 reset_state
-gh_pr 43 OPEN 0 "engine:claude"
+gh_pr 43 OPEN 0 ""
 # The clearing has to be an ASSIGNMENT, not an omission: this dispatcher can
 # itself be running inside a gateway-routed seat whose environment exports
 # these, `sminos spawn` would inherit them AND persist them into the registry
-# record, and every later wake of this reviewer would ride the gateway while
-# the log said claude.
+# record, and every later wake of this reviewer would ride settings this
+# dispatch never chose.
 DAEMON_CLAUDE_SETTINGS="$HOME/.claude/ambient-gateway.json" DAEMON_CLAUDE_EFFORT=xhigh \
     run_dispatch 43
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "an ambient gateway settings/effort pair is cleared on the claude route"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "an ambient gateway settings/effort pair is cleared on spawn"
 assert_not_contains "$(cat "$SPAWN_LOG")" "ambient-gateway.json" "the ambient gateway settings file never reaches the spawned reviewer"
 
-# The built-in default (no label, no WORKER_ENGINE in the environment) is the
-# plain-Claude route — the clodex gateway is opt-in only.
-reset_state
-gh_pr 44 OPEN 0 ""
-env -u WORKER_ENGINE "$DISPATCH" 44
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-44" "unlabelled PR with no WORKER_ENGINE still dispatches"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "built-in default route is plain Claude (no gateway settings) at effort high"
-if grep -E -- '--model opus( |$)' "$SPAWN_LOG" > /dev/null; then
-    pass "built-in default pins the QAgent model to opus"
-else
-    fail "built-in default pins the QAgent model to opus"
-fi
-
-echo "codex reviewer liveness in dedupe:"
+echo "legacy codex-CLI reviewer liveness in dedupe:"
+# A registry record from the retired codex-CLI worker species: the dispatcher
+# no longer spawns one, but the read path that judges its liveness by pid
+# still guards the records that exist.
 reset_state
 sleep 300 & LIVEPID=$!
 python3 - "$DAEMON_HOME" "$LIVEPID" <<'PY'
@@ -1786,11 +1848,11 @@ json.dump({"uuid": "cdec9999-0000-4000-8000-000000000000", "current": "cdec9999-
           open(sys.argv[1] + "/cdec9999-0000-4000-8000-000000000000.json", "w"))
 PY
 gh_pr 43 OPEN 0 ""
-out="$(WORKER_ENGINE=codex run_dispatch 43)"
+out="$(run_dispatch 43)"
 assert_contains "$out" "skip active reviewer" "live codex pid dedupes"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null || true
 : > "$SPAWN_LOG"
-out="$(WORKER_ENGINE=codex run_dispatch 43)"
+out="$(run_dispatch 43)"
 assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-43" "dead codex pid retires + respawns (via the one-harness spawn)"
 
 # ---- _wt_occupied codex-registry scan (worktree-removal guard, not dedupe) -----
@@ -1801,10 +1863,9 @@ assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-43" "dead codex pid retir
 # worktree, status in (working, blocked), and a live pid. This section
 # targets that scan directly, observed the same way as the claude-path guard:
 # through dispatch_one's "live daemon occupies" refusal and whether a spawn
-# happens — not by calling _wt_occupied as an internal. These dispatches use
-# the suite's default WORKER_ENGINE=claude (unqualified "$DISPATCH" 5) since
-# what's under test is the engine field of the meta SITTING in the worktree,
-# not which engine this dispatch itself would spawn as.
+# happens — not by calling _wt_occupied as an internal. What is under test is
+# the engine field of the meta SITTING in the worktree: a legacy codex-CLI
+# record, which the dispatcher no longer creates but must still respect.
 echo "live worktree guard (codex registry scan):"
 reset_state
 out="$("$DISPATCH" 5)"                                     # setup: (re)creates $WT via a real dispatch
@@ -1966,16 +2027,49 @@ issues = [
 ]
 json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
 PY
+# OWNER-FIRST ON THE SCALE PATH. The recomposing Architect dispatches its own
+# scale review and ends its turn while the agent works, so its seat sits IDLE
+# and bound to the epic — a state board-bind does not refuse, since only an
+# ACTIVE owner blocks a rebind. Without this rule the next tick would spawn a
+# stand-in that binds the epic out from under the seat still reviewing it.
+reset_state
+python3 - <<'PY'
+import json, os
+u = "arch0009-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "20-recompose-epic", "role": "ARCHITECT",
+           "ticket": "20", "status": "idle", "updated": "2026-08-01T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+OUT_EPIC_OWNER="$("$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$OUT_EPIC_OWNER" "#20: owner reviews — skip" "an epic bound to a live architect seat is that seat's scale review"
+assert_no_spawn review-epic-20 "no scale stand-in spawns over a live epic owner"
+assert_equals "$(ticket_owner 20)" "20-recompose-epic" "and the owner keeps the epic — nothing rebinds it"
+assert_not_contains "$(cat "$SPAWN_LOG")" "retire:" "nor is anything retired on the way past"
+
+# The same window on the scale path: the owner binds the epic after the
+# pre-check, inside the locked spawn (the hook fires on its tech-debt read).
+reset_state
+out="$(MOCK_GH_HOOK="$OWNER_HOOK" MOCK_GH_HOOK_ON="--label tech-debt" MOCK_HOOK_TICKET=20 \
+    "$DISPATCH" --sweep 2>&1 || true)"
+assert_contains "$out" "#20: owner reviews — skip" "an epic owner that binds mid-dispatch is seen by the locked spawn's own check"
+assert_no_spawn review-epic-20 "...and no scale stand-in spawns over it"
+assert_equals "$(ticket_owner 20)" "late-owner" "...so the owner keeps the epic"
+
 # The epic's outgoing owner: the Architect that assembled the closure package.
 # Its claude-species meta lingers status=working after its turn ends, and the
 # real board-bind.sh refuses to rebind a ticket owned by an ACTIVE daemon —
 # so the dispatch must finalize it first (2026-07-18 shakedown) or every
-# scale reviewer would bind-fail and be retired.
+# scale reviewer would bind-fail and be retired. What is left for that
+# normalization to settle is the PREVIOUS BOOT's residue: a lingering owner of
+# THIS boot is the epic's live owner and never reaches the dispatch at all
+# (the owner-first case above skips it).
+reset_state
 python3 - <<'PY'
 import json, os
 u = "arch0001-0000-4000-8000-000000000000"
 json.dump({"uuid": u, "current": u, "name": "20-recompose-epic", "role": "ARCHITECT",
-           "ticket": "20", "status": "working", "updated": "2026-08-01T00:00:00Z"},
+           "ticket": "20", "status": "working", "boot_id": "boot-old",
+           "updated": "2026-08-01T00:00:00Z"},
           open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
 PY
 echo '[{"id": "arch0001", "sessionId": "arch0001-0000-4000-8000-000000000000", "state": "done"}]' \
@@ -1990,20 +2084,21 @@ EPIC_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$EPIC_PROMPT" '`REVIEW_MODE`: scale' "reviewer prompt carries the scale-review mode"
 assert_contains "$EPIC_PROMPT" "\`CLOSURE_PACKAGE\`: $PKG" "prompt binds the closure package as the entry artifact"
 assert_contains "$EPIC_PROMPT" '`ISSUE_NUMBER`: 20' "prompt binds the epic ticket under review"
-assert_contains "$EPIC_PROMPT" "SCALE REVIEWER of recomposition epic #20" "scale prompt opens as the epic's reviewer, not a PR reviewer"
+assert_contains "$EPIC_PROMPT" "REVIEW STAND-IN for recomposition epic #20" "scale prompt opens as the epic's stand-in, not a PR review"
 assert_not_contains "$EPIC_PROMPT" "PR_NUMBER" "scale prompt carries no PR framing at all (there is no PR)"
 assert_not_contains "$EPIC_PROMPT" "HEAD_SHA" "scale prompt carries no PR-head bindings"
 assert_contains "$EPIC_PROMPT" '`BASE_REF`: main' "scale prompt binds the engine base (the branch the epic integrates into)"
-assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity the startup barrier verifies"
+assert_contains "$EPIC_PROMPT" '`WORKER_NAME`: review-epic-20' "scale prompt binds the registry identity"
 # The value side, on the scale call site too: the hard-fail sees a missing
 # binding, never an empty-valued one, and this lane has its own P_* block.
-assert_bound "$EPIC_PROMPT" BIND_READY_FILE scale
+assert_bound "$EPIC_PROMPT" PROTOCOL_FILE scale
 assert_bound "$EPIC_PROMPT" IMPLEMENT_PROTOCOL_FILE scale
 assert_bound "$EPIC_PROMPT" BOARD_SCRIPTS scale
 # This epic has no `branch:` meta, so the worktree sits on the default branch
-# itself — there is no aggregate range to hand the engine, and the prompt must
-# say so instead of leaving the worker to review nothing.
-assert_contains "$EPIC_PROMPT" "NO aggregate branch range" "the missing-integration-branch case names the closure package's PR ranges as the review ranges"
+# itself — there is no aggregate range to hand the engine, and the bindings say
+# so by themselves: INTEGRATION_REF equal to BASE_REF is that fact, which the
+# stand-in turns into the brief's `aggregate range: none`.
+assert_contains "$EPIC_PROMPT" '`INTEGRATION_REF`: main' "with no branch of its own the epic's integration ref IS the base"
 assert_not_contains "$EPIC_PROMPT" "{{" "no unsubstituted placeholder survives the scale render"
 assert_not_contains "$EPIC_PROMPT" "<!-- mode:" "mode blocks are resolved at render, never shipped to the worker"
 EPIC_META="$(python3 - <<'PY'
@@ -2138,7 +2233,7 @@ INT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
 assert_contains "$INT_PROMPT" '`BASE_REF`: main' "the engine base is the default branch, not the epic's own branch"
 assert_not_contains "$INT_PROMPT" '`BASE_REF`: epic/integration' "the engine never reviews the integration branch against itself"
 assert_contains "$INT_PROMPT" '`INTEGRATION_REF`: epic/integration' "the prompt names the integration branch the worktree sits at"
-assert_contains "$INT_PROMPT" "aggregate review range" "the prompt states the aggregate range the engine's --base gives it"
+assert_contains "$INT_PROMPT" "the aggregate range runs" "the prompt states that the range runs between the two refs it bound"
 
 # ...and the NEXT cycle must not ride that branch. The recomposition return
 # clears `branch:` with `pr:` (both describe a composition that just changed),
@@ -2162,52 +2257,8 @@ assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse
     "$(git -C "$LOCAL_REPO" rev-parse origin/main)" \
     "with no branch: of its own it falls back to the default branch, not the previous cycle's integration ref"
 NEXT_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
-assert_contains "$NEXT_PROMPT" "NO aggregate branch range" "and the prompt says so instead of implying a range it does not have"
+assert_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: main' "and its integration ref collapses onto the base, which is the stand-in's aggregate-range-none case"
 assert_not_contains "$NEXT_PROMPT" '`INTEGRATION_REF`: epic/integration' "no trace of the cleared integration ref reaches the worker"
-
-# ---- scale review honors the epic's engine:* label ----------------------------
-# Scale review is a QAgent route, and per-ticket engine overrides apply to
-# every QAgent route — the X4 exemption covers ARCHITECT dispatch alone, where
-# plan authorship is deliberately never label-routed. The epic's label was
-# ignored and the environment always won.
-echo "scale review engine label:"
-reset_state
-echo "[]" > "$MOCK_DIR/pr-list.json"
-PKG2="https://github.com/test/repo/issues/30#issuecomment-77"
-PKG2="$PKG2" python3 - <<'PY'
-import json, os
-def meta(k, v):
-    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
-issues = [
-    {"number": 30, "state": "OPEN",
-     "labels": ["status:in-review", "engine:claude"],
-     "body": "Epic acceptance." + meta("pr", os.environ["PKG2"]), "parent": None},
-    {"number": 31, "state": "CLOSED", "labels": [], "body": "child", "parent": 30},
-]
-json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
-PY
-: > "$SPAWN_LOG"
-out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-epic-30" "the labelled epic gets its scale reviewer"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=;effort=high" "engine:claude on the EPIC routes its scale review through the claude harness at effort high"
-# ...and an unlabelled epic still takes the environment default (the gateway
-# route), which is what the block above already exercised on #20.
-reset_state
-echo "[]" > "$MOCK_DIR/pr-list.json"
-PKG2="$PKG2" python3 - <<'PY'
-import json, os
-def meta(k, v):
-    return "\n\n<!-- board:meta\n%s: %s\n-->\n" % (k, v)
-issues = [
-    {"number": 30, "state": "OPEN", "labels": ["status:in-review"],
-     "body": "Epic acceptance." + meta("pr", os.environ["PKG2"]), "parent": None},
-    {"number": 31, "state": "CLOSED", "labels": [], "body": "child", "parent": 30},
-]
-json.dump(issues, open(os.path.join(os.environ["MOCK_DIR"], "board-issues.json"), "w"))
-PY
-: > "$SPAWN_LOG"
-out="$(WORKER_ENGINE=codex "$DISPATCH" --sweep 2>&1)"
-assert_contains "$(cat "$SPAWN_LOG")" "spawn-env:settings=$HOME/.claude/clodex-settings.json;effort=xhigh" "an unlabelled epic keeps the environment default"
 
 # ---- the scale selector needs a closure package, not any pr: value ------------
 # A LEAF that opened a real PR and later gained children reaches
@@ -2296,7 +2347,7 @@ assert_equals "$(git -C "$LOCAL_REPO" rev-parse origin/main)" "$FRESH_MAIN" \
 assert_equals "$(git -C "$LOCAL_REPO/.claude/worktrees/review-epic-20" rev-parse HEAD)" "$FRESH_MAIN" \
     "the fallback worktree sits at the FRESH default-branch head (where the merged children are)"
 GONE_PROMPT="$(cat "$PROMPT_DIR/review-epic-20.prompt")"
-assert_contains "$GONE_PROMPT" "NO aggregate branch range" "the fallback prompt still routes the worker to the package's per-child ranges"
+assert_contains "$GONE_PROMPT" '`INTEGRATION_REF`: main' "the fallback prompt binds the base as the integration ref — no aggregate range to review"
 
 # ---- a capped scale review escalates to the human instead of stranding --------
 # The 3-consecutive-failure cap is permanent on the PR path because an
@@ -2325,6 +2376,7 @@ import json, os
 for i in (1, 2, 3):
     u = "feed000%d-0000-4000-8000-000000000000" % i
     json.dump({"uuid": u, "current": u, "name": "review-epic-20", "engine": "codex",
+               "role": "QAGENT", "ticket": "20",
                "status": "idle", "closure_package": os.environ["PKG"],
                "updated": "2026-07-0%dT00:00:00Z" % i},
               open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
@@ -2409,6 +2461,7 @@ import json, os
 home = os.environ["DAEMON_HOME"]
 def meta(uuid, status, updated, retired_from=None):
     m = {"uuid": uuid, "current": uuid, "name": "review-epic-20",
+         "role": "QAGENT", "ticket": "20",
          "status": status, "updated": updated}
     if retired_from:
         m["retired_from"] = retired_from

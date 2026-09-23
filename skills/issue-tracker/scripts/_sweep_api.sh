@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # _sweep_api.sh — the API-binding unattended tick (spec § four-phase tick):
-#   renew → stall → relay → resume-first → fresh claims. Each phase
-#   independently guarded; each invokable alone:
-#   _sweep_api.sh [renew|stall|relay|resume|dispatch|all]
+#   renew → stall → review-recover → relay → resume-first → fresh claims. Each
+#   phase independently guarded; each invokable alone:
+#   _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]
 #
 # The gh-mode tick (board-sweep.sh) re-derives its work-list from GitHub and
 # the registry; this one re-derives it from the board API and the registry.
@@ -12,7 +12,9 @@
 #   RENEW  every LIVE run's lease. A dead session's lease is deliberately NOT
 #          renewed — letting it expire is how the server reclaims the run. A
 #          409 run-ended is routed to the resume path, never fatal. A meta the
-#          server never confirmed a bind for is repaired here.
+#          server never confirmed a bind for is repaired here. Once per tick,
+#          the seat of an ended run whose ticket is terminal (done/wontfix)
+#          and whose turn is over is retired — the gh tick's CANCEL parity.
 #   STALL  a bound worker whose LAST TURN IS A HARNESS ERROR. The session is
 #          alive and its seat reads `idle`, so renewal keeps its lease fresh
 #          forever and no other phase owns it. Bounded nudges, then phase 1
@@ -20,6 +22,15 @@
 #          runs out over and over registers an env-issue and is SUPPRESSED: a
 #          harness fault that outlives its worker reaches a human instead of
 #          buying a fresh successor every hour forever.
+#   REVIEW a bound OWNER whose review stopped. The seat that opened the PR
+#   RECOVER dispatches one qa-loop agent and ends its turn, so a seat that is
+#          live, idle and silent past BOARD_REVIEW_STALL_MIN with its ticket
+#          still in review has nothing running under it. Its meta's `phase`
+#          is only the candidate filter — the TICKET is read before anything
+#          is spent, because a local `review` outlives the review whenever the
+#          board parked the ticket itself. Bounded nudges, and the bound is
+#          the review's own progress: a new `review-trail` event resets the
+#          count, and a ladder that runs out parks the ticket needs-human.
 #   RELAY  answers the human has posted, from /answers/unrelayed, into the
 #          bound worker session. The ack is DELIVERY-GATED: it fires only when
 #          the sentinel is already in the transcript or a resume returned
@@ -75,6 +86,10 @@
 #                                an env-issue plus a suppression, the same
 #                                destination the resume path's three failed
 #                                cycles reach.
+#   BOARD_REVIEW_STALL_MIN       minutes of silence before a live, idle owner
+#                                whose ticket is in review counts as having no
+#                                review running (45). Its cap is the gh tick's
+#                                SWEEP_RECOVERY_CAP — one doctrine, one number
 #   BOARD_SWEEP_TICK_BUDGET      seconds after which the serial phases stop
 #                                taking NEW items (900); the item in flight
 #                                always finishes. Lease safety across a long
@@ -408,6 +423,14 @@ case "$STALL_MAX_WAIT_MIN" in ''|*[!0-9]*) STALL_MAX_WAIT_MIN=360 ;; esac
 # The TICKET-level rung of the same ladder (see _stall_cycles).
 STALL_CYCLE_CAP="${BOARD_STALL_CYCLES:-3}"
 case "$STALL_CYCLE_CAP" in ''|*[!0-9]*) STALL_CYCLE_CAP=3 ;; esac
+# The owner-in-review ladder (phase 1c). The silence threshold is this
+# binding's own knob; the cap is the gh tick's SWEEP_RECOVERY_CAP, because the
+# two ticks run one doctrine and a fleet that lowered the number on one board
+# meant it for the other too.
+REVIEW_STALL_MIN="${BOARD_REVIEW_STALL_MIN:-45}"
+case "$REVIEW_STALL_MIN" in ''|*[!0-9]*) REVIEW_STALL_MIN=45 ;; esac
+REVIEW_RECOVERY_CAP="${SWEEP_RECOVERY_CAP:-3}"
+case "$REVIEW_RECOVERY_CAP" in ''|*[!0-9]*) REVIEW_RECOVERY_CAP=3 ;; esac
 # Where _registry_metas parks its exit status. The status, never the rows: the
 # rows carry the run bearer, and that secret does not touch disk here.
 SCAN_RC="$SCRATCH/scan-rc"
@@ -513,6 +536,28 @@ _mtime_epoch() {  # <path>
   e="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || return 1
   case "$e" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$e"
+}
+
+# Newest activity anywhere in a transcript's TREE, epoch seconds; empty when
+# there is none. board-sweep.sh's _activity_epoch, over a transcript path this
+# file already resolved: a session whose turn ended while a subagent it
+# dispatched keeps working writes nothing to its own file for the whole run —
+# the child's stream lands under <session>/subagents/ — so the parent's mtime
+# alone reads that work as silence.
+_tree_mtime_epoch() {  # <transcript>
+  local newest e f dir="${1%.jsonl}"
+  newest="$(_mtime_epoch "$1" 2>/dev/null || true)"
+  if [ -d "$dir" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      e="$(_mtime_epoch "$f" 2>/dev/null || true)"
+      [ -n "$e" ] || continue
+      if [ -z "$newest" ] || [ "$e" -gt "$newest" ]; then newest="$e"; fi
+    done <<EOF
+$(find "$dir" -type f 2>/dev/null)
+EOF
+  fi
+  printf '%s' "$newest"
 }
 
 # DELIVERY PROOF READS DELIVERED PROMPTS, not the whole file. The transcript is
@@ -732,6 +777,47 @@ PY
     esac
   done < <(_registry_metas)
   _scan_ok || die "registry scan failed — renew phase saw no metas it can trust"
+  # Once per tick, not per interleaved renewal: the step reads a ticket per
+  # candidate, and a seat it misses now is still a candidate next tick.
+  [ "${1:-}" = interleaved ] || _retire_finished_seats
+}
+
+# THE SEAT OF A FINISHED TICKET IS RETIRED — the gh tick's CANCEL pass, in this
+# binding's shape. The owner stays bound through `done`: its QA agent writes
+# the terminal transition, the server ends the run with it, and the renewal
+# above strips the run from the meta (`run_ended_at`). No later phase speaks to
+# that seat again, so without this step every finished ticket leaves one idle
+# background session behind.
+#
+# The candidates are runless metas whose run ENDED (the stamp), not ones that
+# never had a run. The TICKET is the authority: only a terminal state retires.
+# A reclaim or a park also ends a run, and that seat is the resume path's — its
+# lane is what a successor inherits. A seat still `working` is left for a later
+# tick rather than retired mid-turn (it is typically verifying the merge and
+# cleaning up), which is why this scans the registry rather than riding the
+# 409 that ended the run: that answer comes once, and the turn may outlast it.
+_retire_finished_seats() {
+  local uuid run bindc ticket bearer fence lane status sexhausted path state
+  # shellcheck disable=SC2034  # the trailing names exist to hold the columns
+  while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
+                            sexhausted path; do
+    [ -z "$run" ] && [ -n "$ticket" ] || continue
+    [ "$status" != retired ] || continue
+    [ -n "$(_meta_field "$path" run_ended_at)" ] || continue
+    state="$(_ticket_state "$ticket" 2>/dev/null)" || state=""
+    case "$state" in done | wontfix) ;; *) continue ;; esac
+    # The status the harness reports NOW, not the one the scan read: sync
+    # reconciles the record, and `live` means a turn is running (or that the
+    # harness could not be asked — claim nothing either way).
+    [ "$("$SMINOS_CLI" sync "$uuid" 2>/dev/null || echo absent)" != live ] || continue
+    [ "$(_meta_field "$path" status)" != working ] || continue
+    if "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1; then
+      echo "run $(_meta_field "$path" ended_run_id): #$ticket is $state — seat $uuid retired"
+    else
+      echo "run $(_meta_field "$path" ended_run_id): #$ticket is $state — retiring seat $uuid failed; retried next tick" >&2
+    fi
+  done < <(_registry_metas all)
+  _scan_ok || echo "registry scan failed — no finished seat was retired this tick" >&2
 }
 
 # INTERLEAVED RENEWAL (spec v1.2.7, amending the v1.2.3 per-item ruling). One
@@ -741,7 +827,7 @@ PY
 # ones this tick is not even touching. Renewal is one cheap idempotent POST per
 # live run, so it runs again AHEAD OF EVERY ITEM rather than once ahead of all
 # of them: no live run's lease then ages more than a single item's bound.
-_tick_renew() { phase_renew || true; }
+_tick_renew() { phase_renew interleaved || true; }
 
 # ---- phase 1b: harness-error stall recovery --------------------------------
 # THE ONE BOUND STATE NO OTHER PHASE OWNS. When a worker's turn dies on a
@@ -1206,6 +1292,287 @@ phase_stall() {
   _scan_ok || die "registry scan failed — stall phase saw no metas it can trust"
 }
 
+# ---- phase 1c: the owner whose review stopped ------------------------------
+# The seat that opened the PR owns its review: it dispatches one qa-loop agent
+# and ends its turn. While that agent runs the seat is busy in the harness's
+# eyes, so a seat that is LIVE, IDLE and silent past the threshold with its
+# ticket still in review has no review running under it — the agent died, or
+# returned an escalation into a session nobody woke. Renewal keeps its lease
+# fresh, the harness-error ladder reads ordinary prose, and no other phase
+# owns it.
+#
+# Set fields on one meta under the registry lock, key/value pairs — an EMPTY
+# value REMOVES the key. `updated` is never touched: the relay phase reads it
+# as last-turn activity, and a bookkeeping write that refreshed it would read
+# as a worker that had just spoken. (_lib.sh carries the same helper for the
+# board verbs; this file does not source it.)
+_meta_write() {  # <path> <k> <v> [<k> <v> ...]
+  T_PATH="$1" T_KV="$(printf '%s\037' "${@:2}")" T_DHOME="$DAEMON_HOME" \
+  python3 - <<'PY'
+import fcntl, json, os
+env = os.environ
+lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    path = env["T_PATH"]
+    with open(path) as f:
+        m = json.load(f)
+    kv = env["T_KV"].split("\037")[:-1]
+    for k, v in zip(kv[0::2], kv[1::2]):
+        if v == "":
+            m.pop(k, None)
+        else:
+            m[k] = v
+    # A meta holding the run bearer is 0600 from creation — recreating it at
+    # the default umask would republish that secret, if only for the width of
+    # one write.
+    mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+}
+
+# Repair a seat's stale review mark — UNDER THE REGISTRY LOCK, and only while
+# the ticket is still where the decision was made. Prints `repaired`, or
+# `moved <state>` when it is not; dies when the board or the registry would not
+# answer.
+#
+# THE OTHER WRITER IS THE ANSWER. Answering a park returns the ticket to
+# in-review and marks the seat `review` through _lib.sh's _meta_put, which
+# takes THIS lock. A repair that read the state outside the lock and wrote
+# inside it could land after that stamp and overwrite a live `review` with
+# `review-parked` — a seat this ladder would skip until a later tick's
+# reconcile (below) finds its ticket back in review and restamps it; the lock
+# closes even that window, because both the pre-state and the answer's
+# post-state read `review` and no value comparison can tell them apart. So the
+# authoritative read and the write are ONE critical section: an answer that
+# committed before it sees a moved ticket and writes nothing, and an answer
+# that commits after cannot stamp until this releases — so its `review` lands
+# last and wins either way.
+_repair_phase() {  # <meta path> <ticket> <state the decision was made on> <phase|''>
+  T_PATH="$1" T_TID="$2" T_WAS="$3" T_PHASE="$4" T_DHOME="$DAEMON_HOME" \
+  _api_py - <<'PY'
+import fcntl, json, os
+import _board_api as A
+env = os.environ
+path = env["T_PATH"]
+lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    row = A.ticket(env["T_TID"], principal="automation")
+    state = (row or {}).get("state") or ""
+    if state != env["T_WAS"]:
+        # Unreadable counts as moved: a mark is repaired on a state this tick
+        # can name, never on one it guessed.
+        print("moved %s" % (state or "unreadable"))
+        raise SystemExit(0)
+    with open(path) as f:
+        m = json.load(f)
+    if env["T_PHASE"]:
+        m["phase"] = env["T_PHASE"]
+    else:
+        m.pop("phase", None)
+    mode = 0o600 if m.get("run_bearer") else os.stat(path).st_mode & 0o777
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w") as f:
+        json.dump(m, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    print("repaired")
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+PY
+}
+
+# The board's own word for a ticket's state, or "" when it cannot say. Read as
+# automation, by id: a targeted 404 is authoritative absence (_escalate reads
+# it the same way), and "" is never acted on — a read this tick could not make
+# must not clear a mark or nudge a worker.
+_ticket_state() {  # <ticket>
+  T_TID="$1" _api_py - <<'PY'
+import os
+import _board_api as A
+row = A.ticket(os.environ["T_TID"], principal="automation")
+print(row["state"] if row else "")
+PY
+}
+
+# How many review rounds this ticket's trail records. PROGRESS IS A REVIEW
+# ARTIFACT, not seat activity: the agent records one `review-trail` event at
+# every round's end, so a count above the one the seat last saw is proof the
+# review is moving, however quiet the session looks.
+_review_trail_count() {  # <ticket>
+  T_TID="$1" _api_py - <<'PY'
+import os
+import _board_api as A
+recs = (A.timeline(os.environ["T_TID"], principal="automation") or {}).get("records") or []
+print(sum(1 for r in recs if str(r.get("kind") or "") == "review-trail"))
+PY
+}
+
+phase_review_recover() {
+  local uuid run bindc ticket bearer fence lane status sexhausted path
+  local state repair trail seen recov transcript turn_epoch age phase budget_said=""
+  # shellcheck disable=SC2034  # the unused names exist to hold the columns
+  while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
+                            sexhausted path; do
+    [ -n "$run" ] && [ -n "$ticket" ] || continue
+    # THE REGISTRY IS THE CANDIDATE FILTER, and only that. It is what this tick
+    # can scan for free; the ticket below is what decides. `review-parked` is a
+    # candidate too, for one case: a park's delayed stamp can land after the
+    # answer's `review`, leaving a seat marked parked on a ticket back in review
+    # — the ticket read below restamps it, and nothing else ever would.
+    phase="$(_meta_field "$path" phase)"
+    case "$phase" in review|review-parked) ;; *) continue ;; esac
+    [ "$(_liveness "$uuid")" = live ] || continue
+    # Re-read after the sync above, which promotes a natively-woken seat.
+    [ "$(_meta_field "$path" status)" = idle ] || continue
+    turn_epoch=""
+    transcript="$(_transcript_for_uuid "$uuid")"
+    # The whole transcript tree, not the seat's own file: the review runs in
+    # the owner's QA subagent, and a panel round can keep the parent silent
+    # for an hour while the child writes under subagents/.
+    [ -z "$transcript" ] || turn_epoch="$(_tree_mtime_epoch "$transcript")"
+    # No transcript is no signal, exactly as it is for the gh tick's stall arm.
+    [ -n "$turn_epoch" ] || continue
+    age=$(( ( $(date +%s) - turn_epoch ) / 60 ))
+    [ "$age" -ge "$REVIEW_STALL_MIN" ] || continue
+    # A SUPPRESSED TICKET IS FROZEN, THIS LADDER INCLUDED — the same ruling
+    # the harness-error ladder makes. Suppression says a human has been told
+    # the substrate is broken here and no more recovery is to be spent until
+    # they clear it; nudging a worker into that substrate three times and then
+    # parking the ticket spends exactly that.
+    if _suppressed "$ticket"; then
+      echo "review-recover: #$ticket — suppressed; the owner's review ladder stands untouched until the suppression lifts"
+      continue
+    fi
+    if ! _budget_left; then
+      [ -n "$budget_said" ] || {
+        echo "review-recover: tick budget exhausted — the rest ride the next tick"
+        budget_said=1; }
+      continue
+    fi
+    # THE TICKET IS THE AUTHORITY. The seat's mark is written by the client's
+    # own transitions, so a local `review` outlives the review whenever the
+    # board moved the ticket without one — the convergence transmute and the
+    # reconciler's dependency-stall park both park server-side, and nothing
+    # stamps the seat then. Nudging on the stale mark would wake a worker onto
+    # a ticket that is not in review at all, so the mark is verified, and
+    # repaired, before anything is spent.
+    state="$(_ticket_state "$ticket")" \
+      || { echo "review-recover: #$ticket — the board would not say what state it is in; the next tick decides" >&2; continue; }
+    if [ "$phase" = review-parked ]; then
+      # Anything but in-review: the park stands, and so does its mark.
+      [ "$state" = in-review ] || continue
+      repair="$(_repair_phase "$path" "$ticket" in-review review)" || repair=""
+      case "$repair" in
+        repaired) echo "review-recover: #$ticket is in review while its seat read \`review-parked\` (the park's stamp landed after the answer's) — the seat is restamped \`review\` and considered" ;;
+        moved*)   echo "review-recover: #$ticket left in-review while its seat's mark was being restamped (now ${repair#moved }) — nothing is written and the next tick decides"
+                  continue ;;
+        *)        echo "review-recover: #$ticket — restamping the seat \`review\` failed; the next tick retries" >&2
+                  continue ;;
+      esac
+    fi
+    case "$state" in
+      in-review) ;;
+      '') echo "review-recover: #$ticket — the board answered with no state at all; nothing is touched" >&2
+          continue ;;
+      needs-human)
+        # A park out of a review IS a review park, whoever wrote it: the seat
+        # keeps its history so that a parked owner is never a candidate again
+        # until the answer puts it back.
+        repair="$(_repair_phase "$path" "$ticket" needs-human review-parked)" \
+          || repair=""
+        case "$repair" in
+          repaired) echo "review-recover: #$ticket is parked needs-human while the seat still read \`review\` — the seat is marked review-parked and left to the answer" ;;
+          moved*)   echo "review-recover: #$ticket left needs-human while its seat's mark was being repaired (now ${repair#moved }) — nothing is written, and an answer that just landed owns the mark and the worker" ;;
+          *)        echo "review-recover: #$ticket — marking the seat review-parked failed; the next tick retries" >&2 ;;
+        esac
+        continue ;;
+      *)
+        repair="$(_repair_phase "$path" "$ticket" "$state" "")" || repair=""
+        case "$repair" in
+          repaired) echo "review-recover: #$ticket is $state — the review is over and the seat's mark is cleared" ;;
+          moved*)   echo "review-recover: #$ticket left $state while its seat's mark was being cleared (now ${repair#moved }) — nothing is written and the next tick decides" ;;
+          *)        echo "review-recover: #$ticket — clearing the seat's stale review mark failed; the next tick retries" >&2 ;;
+        esac
+        continue ;;
+    esac
+    # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay refuses
+    # one: a wake that finds the seat dead resumes it, and a resume with an
+    # empty BOARD_RUN_TOKEN hands the worker the configured human/automation
+    # credentials instead of its own fence. Phase
+    # 1's bind repair is the route that gives such a meta its bearer back, and
+    # no attempt is spent here.
+    [ -n "$bearer" ] || {
+      echo "review-recover: #$ticket — $uuid holds no run bearer; phase 1's bind repair owns it, not this nudge" >&2
+      continue; }
+    trail="$(_review_trail_count "$ticket")" \
+      || { echo "review-recover: #$ticket — the timeline could not be read; nothing is spent on it this tick" >&2; continue; }
+    case "$trail" in ''|*[!0-9]*) trail=0 ;; esac
+    seen="$(_meta_field "$path" review_trail_seen)"
+    case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
+    recov="$(_meta_field "$path" review_recoveries)"
+    case "$recov" in ''|*[!0-9]*) recov=0 ;; esac
+    # A RESET THAT DID NOT PERSIST IS NOT A DECISION. Progress was observed; if
+    # the write recording it failed, the count in hand is a stale one that says
+    # the opposite — at the cap it would park a ticket whose review had just
+    # recorded a round. Nothing is spent on this candidate until the reset
+    # lands, and the next tick re-reads the same timeline and tries again.
+    if [ "$trail" -gt "$seen" ]; then
+      if _meta_write "$path" review_recoveries 0 review_trail_seen "$trail"; then
+        echo "review-recover: #$ticket — the review recorded a new round ($seen → $trail); the owner's recovery count starts over"
+        recov=0; seen="$trail"
+      else
+        echo "review-recover: #$ticket — the review recorded a new round ($seen → $trail) but the meta write failed; neither nudged nor parked this tick, and the next one re-reads the timeline" >&2
+        continue
+      fi
+    fi
+    if [ "$recov" -ge "$REVIEW_RECOVERY_CAP" ]; then
+      echo "review-recover: #$ticket — $uuid was nudged $recov times with no new review round; parking needs-human"
+      # The park is the ONE board write this phase makes, and it is the same
+      # exit the gh tick takes at the same cap. The stated override is what
+      # the live-binding guard (dp#63) asks of anyone but the owner, and the
+      # transition's own stamp leaves the seat `review-parked`.
+      BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound owner $uuid (review stalled)" \
+        "$SCRIPT_DIR/board-transition.sh" "$ticket" needs-human \
+        "auto-recovery exhausted: the owner $uuid was nudged $recov times about its review of this ticket's pull request and no new review round was recorded between them; review the PR by hand, or answer here to put the owner back on it" \
+        || echo "review-recover: #$ticket — the park transition failed; the next tick retries" >&2
+      continue
+    fi
+    if _meta_write "$path" review_recoveries "$((recov + 1))" review_trail_seen "$seen"; then
+      echo "review-recover: #$ticket — $uuid is idle ${age}m into a review with no agent under it; nudge $((recov + 1)) of $REVIEW_RECOVERY_CAP"
+      # Backgrounded: the nudged turn is the worker's, not this tick's, and
+      # the tick holds the lock every other phase needs. A WAKE, because the
+      # candidate is live and idle by this phase's own filter: `sminos resume`
+      # stops a live turn and restarts the process, and on an idle seat there
+      # is no turn to stop — the harness starts a copy and nothing arrives.
+      BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
+        nohup "$SMINOS_CLI" wake --wait "$uuid" \
+        "SWEEP RECOVERY: your review of ticket #$ticket's pull request has no live QA agent (idle for ${age}m with nothing running under it). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it." \
+        --from sweep >/dev/null 2>&1 &
+    else
+      echo "review-recover: #$ticket — the attempt could not be recorded, so none was made; the next tick retries" >&2
+    fi
+  done < <(_registry_metas)
+  _scan_ok || die "registry scan failed — review-recover phase saw no metas it can trust"
+}
+
 # ---- phase 2: answer relay -------------------------------------------------
 _relay_prompt() {  # $1=answer id, $2=replies text
   local sentinel
@@ -1335,34 +1702,41 @@ phase_relay() {
       fi
       transcript="$(_transcript_for_uuid "$uuid")"
       # The ack is gated on PROVEN delivery (Codex review F1): the sentinel is
-      # already in the transcript, or a resume returned success. A failed
-      # resume acks nothing — the answer stays on the feed for the next tick.
+      # already in the transcript, or a wake returned success. A failed wake
+      # acks nothing — the answer stays on the feed for the next tick.
       if _delivered "$transcript" "$(_sentinel "$aid")"; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
-      # DAEMON_TIMEOUT is bounded here on purpose. `sminos resume`'s default is
-      # 18000 (a wait of DAEMON_TIMEOUT/2 polls — hours), and this tick holds
-      # the whole-tick lock throughout: one long turn would starve lease
-      # renewal past the 15-minute lease and A1 would reclaim runs that are
-      # very much alive. Bounding it is safe because `sminos resume` advances
-      # the meta's `current` to the new turn and injects this prompt BEFORE it
-      # blocks: a timed-out resume exits nonzero, so nothing is acked this
-      # tick, and the next tick's sentinel grep finds the marker in the new
-      # transcript and acks WITHOUT re-delivering (the replay case the test
-      # pins on u-3/u-3-cur). The delivery gate holds; only the ack is late.
+      # WAKE, not resume: the parked worker ended its turn and waits — a live,
+      # idle seat. `sminos resume` stops a live turn and restarts the process;
+      # on an idle seat there is no turn to stop, the harness starts a copy,
+      # and nothing is delivered. `wake` writes to the seat's inbox socket, and
+      # a seat that died since the liveness check is resumed by wake itself —
+      # which is why the run credentials still ride in the env.
+      #
+      # DAEMON_TIMEOUT is bounded here on purpose. The --wait default is 18000
+      # seconds, and this tick holds the whole-tick lock throughout: one long
+      # turn would starve lease renewal past the 15-minute lease and A1 would
+      # reclaim runs that are very much alive. Bounding it is safe because the
+      # prompt lands BEFORE the wait blocks (the socket frame is written, or
+      # the resume fallback advances `current` and injects it): a timed-out
+      # wake exits nonzero, so nothing is acked this tick, and the next tick's
+      # sentinel grep finds the marker in the transcript and acks WITHOUT
+      # re-delivering (the replay case the test pins on u-3/u-3-cur). The
+      # delivery gate holds; only the ack is late.
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
         BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-        "$SMINOS_CLI" resume --wait "$uuid" "$(_relay_prompt "$aid" "$replies")"; then
+        "$SMINOS_CLI" wake --wait "$uuid" "$(_relay_prompt "$aid" "$replies")" --from sweep; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
-        # NOT NECESSARILY A FAILURE. `sminos resume` also exits nonzero when its
-        # bounded watcher expires on a turn it already injected the prompt into
+        # NOT NECESSARILY A FAILURE. `sminos wake` also exits nonzero when its
+        # bounded watcher expires on a turn it already delivered the prompt into
         # — the ORDINARY outcome for a long worker turn, since the bound exists
         # to keep this tick from starving lease renewal. Either way nothing is
         # acked, and the next tick's sentinel check settles which it was without
         # re-delivering. Calling it FAILED trained the reader to expect a broken
         # relay on every long turn.
-        echo "relay: #$tid answer $aid — the resume returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
+        echo "relay: #$tid answer $aid — the wake returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
         continue
       fi
       # PROGRESS IS A SUCCESSFUL ACK, and the ack has to be checked explicitly.
@@ -1566,7 +1940,7 @@ _model_for_lane() {
   # frontier tier, worker lanes are the worker tier. Inheriting the operator's
   # own session model here would silently re-fuse the two prices.
   case "$1" in architect) echo "${ARCHITECT_MODEL:-fable}" ;;
-               *) echo "${IMPLEMENT_MODEL:-opus}" ;; esac
+               *) echo "${IMPLEMENT_MODEL:-sol}" ;; esac
 }
 _protocol_for_lane() {
   local refs; refs="$(cd "$SCRIPT_DIR/../references" && pwd)"
@@ -2281,16 +2655,17 @@ PY
       echo "resume: #$tid run $C_RUN → the resume forked a turn whose session never resolved; delivery is AMBIGUOUS — no fresh spawn this tick, and no further successor until the fork (pending_short=$post_pending) resolves" >&2
       return 1
     fi
-    # A QAGENT IS NOT FRESH-SPAWNABLE FROM HERE. A Reviewer worker only functions
-    # with its control directory, its accepted-commits ledger and its review
-    # barrier — all built by review-dispatch's own handover, none of them
-    # reproducible here except as a second, drifting copy of it. The designed
-    # route already exists: release the run, and the review dispatcher's
-    # ordinary claim converts the unowned in-flight ticket into a properly
-    # equipped successor (API.md, cold-successor conversion). The folded
-    # answers are NOT acked, so the feed re-serves them to whoever picks it up.
+    # A QAGENT IS NOT FRESH-SPAWNABLE FROM HERE. A review stand-in only
+    # functions with the bootstrap review-dispatch renders for it — the pinned
+    # stand-in protocol, the positioning facts, the dispatcher-owned floor and
+    # merge switch — none of it reproducible here except as a second, drifting
+    # copy of that handover. The designed route already exists: release the
+    # run, and the review dispatcher's ordinary claim converts the unowned
+    # in-flight ticket into a properly equipped successor (API.md,
+    # cold-successor conversion). The folded answers are NOT acked, so the feed
+    # re-serves them to whoever picks it up.
     if [ "$lane" = qagent ]; then
-      echo "resume: #$tid — the predecessor session could not be resumed, and a QAgent cannot be fresh-spawned from the tick (it needs its review barrier and accepted-commit ledger); releasing run $C_RUN so the review dispatcher claims a fully equipped successor" >&2
+      echo "resume: #$tid — the predecessor session could not be resumed, and a QAgent cannot be fresh-spawned from the tick (it needs the review dispatcher's own bootstrap); releasing run $C_RUN so the review dispatcher claims a fully equipped successor" >&2
       rm -f "$CLAIMS_DIR/$nonce.json"
       _attempts "$tid" fail "$C_RUN"
       return 1
@@ -2327,7 +2702,7 @@ $(cat "$dir/body.md")"
     # DAEMON_CLAUDE_SETTINGS/EFFORT cleared for the dispatchers, reason: this
     # tick can itself run inside a gateway-routed seat, and `sminos spawn`
     # persists what it inherits into the record, so every later resume would
-    # ride the gateway while the log said claude.
+    # ride settings this dispatch never chose.
     # `--stamp board_dispatch=` marks the seat as dispatcher-spawned on the
     # record's FIRST write. Between that write and the bind below nothing else
     # says whose seat it is, and a crash in there leaves the worker live with a
@@ -2732,7 +3107,7 @@ PY
 phase_dispatch() {
   local impl revw
   impl="$SCRIPT_DIR/execute-dispatch.sh"
-  revw="$SCRIPT_DIR/../../qa-loops/scripts/review-dispatch.sh"
+  revw="$SCRIPT_DIR/review-dispatch.sh"
   # DAEMON_HOME/SMINOS_CLI are resolved here but NOT exported (see above),
   # so they are passed explicitly: without them a non-default registry — a
   # test seam, a second fleet on one host — would silently split in two, this
@@ -2773,6 +3148,7 @@ phase_dispatch() {
 case "${1:-all}" in
   renew) phase_renew ;;
   stall) phase_stall ;;
+  review-recover) phase_review_recover ;;
   relay) phase_relay ;;
   resume) phase_resume ;;
   dispatch) phase_dispatch ;;
@@ -2786,7 +3162,12 @@ case "${1:-all}" in
   # next tick, and ahead of relay and resume: a worker it revives can answer
   # its own relay this same tick, and one whose ladder it just spent must be
   # counted out before the phase that would claim a successor for it.
-  all) phase_renew || true; phase_stall || true; phase_relay || true
+  all) phase_renew || true; phase_stall || true
+       # REVIEW-RECOVER RUNS BEFORE RELAY for the reason stall does: a nudged
+       # owner can answer its own relay in this same tick, and one whose
+       # ladder just ran out is parked before the relay reads the wake queue.
+       phase_review_recover || true
+       phase_relay || true
        phase_resume || true
        # The same budget the arms above stop on, as an absolute the dispatchers
        # can read across the process boundary. Set only here: this is the tick
@@ -2794,5 +3175,5 @@ case "${1:-all}" in
        TICK_DEADLINE="$((TICK_START + TICK_BUDGET))"
        if _budget_left; then phase_dispatch || true
        else echo "dispatch: tick budget exhausted — fresh claims ride the next tick"; fi ;;
-  *) die "usage: _sweep_api.sh [renew|stall|relay|resume|dispatch|all]" ;;
+  *) die "usage: _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]" ;;
 esac
