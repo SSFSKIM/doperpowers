@@ -65,7 +65,7 @@ inside Codex; Claude's registered agents and companion remain available.
 
 ## The skills
 
-Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Eighteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -83,6 +83,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`; the qa-loops review engine still runs its runtime)
 - `codex-migration` — move a Claude Code session into Codex as a resumable, app-visible thread (manual `/codex-migration`)
+- `explaining` — explain a change your human partner didn't watch, or a concept, so they can steer it: behavior, the decisions made for them, limits, how to check; or mechanism, boundaries, what it means for them
 
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)
