@@ -1429,8 +1429,9 @@ phase_review_recover() {
         continue ;;
     esac
     # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay refuses
-    # one: a resume with an empty BOARD_RUN_TOKEN hands the worker the
-    # configured human/automation credentials instead of its own fence. Phase
+    # one: a wake that finds the seat dead resumes it, and a resume with an
+    # empty BOARD_RUN_TOKEN hands the worker the configured human/automation
+    # credentials instead of its own fence. Phase
     # 1's bind repair is the route that gives such a meta its bearer back, and
     # no attempt is spent here.
     [ -n "$bearer" ] || {
@@ -1472,11 +1473,14 @@ phase_review_recover() {
     if _meta_write "$path" review_recoveries "$((recov + 1))" review_trail_seen "$seen"; then
       echo "review-recover: #$ticket — $uuid is idle ${age}m into a review with no agent under it; nudge $((recov + 1)) of $REVIEW_RECOVERY_CAP"
       # Backgrounded: the nudged turn is the worker's, not this tick's, and
-      # the tick holds the lock every other phase needs.
+      # the tick holds the lock every other phase needs. A WAKE, because the
+      # candidate is live and idle by this phase's own filter: `sminos resume`
+      # stops a live turn and restarts the process, and on an idle seat there
+      # is no turn to stop — the harness starts a copy and nothing arrives.
       BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
-        nohup "$SMINOS_CLI" resume --wait "$uuid" \
+        nohup "$SMINOS_CLI" wake --wait "$uuid" \
         "SWEEP RECOVERY: your review of ticket #$ticket's pull request has no live QA agent (idle for ${age}m with nothing running under it). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it." \
-        >/dev/null 2>&1 &
+        --from sweep >/dev/null 2>&1 &
     else
       echo "review-recover: #$ticket — the attempt could not be recorded, so none was made; the next tick retries" >&2
     fi

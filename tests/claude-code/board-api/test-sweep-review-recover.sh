@@ -104,7 +104,7 @@ printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT"
 # ---- the registry -----------------------------------------------------------
 DH="$TDIR/registry"; mkdir -p "$DH"
 DS="$TDIR/sminos-stub"; mkdir -p "$DS"
-RESUME="$TDIR/resume.log"; : > "$RESUME"
+NUDGES="$TDIR/nudges.log"; : > "$NUDGES"
 TESTHOME="$TDIR/home"; mkdir -p "$TESTHOME/.claude/projects/proj"
 
 meta() { printf '%s\n' "$2" > "$DH/$1.json"; chmod 600 "$DH/$1.json"; }
@@ -224,13 +224,15 @@ except Exception:
 print("live" if m.get("status") in ("working", "blocked") else "noop")
 PY
   exit 0 ;;
-resume)
-  # Records its ENVIRONMENT as well as its argv: the run credentials ride the
-  # nudge that way and are observable nowhere else.
-  [ "\${1:-}" != "--wait" ] || shift
-  { echo "RESUME uuid=\$1"
+resume|wake)
+  # Records the VERB, and its ENVIRONMENT as well as its argv: the run
+  # credentials ride the nudge that way and are observable nowhere else.
+  w=""; [ "\${1:-}" != "--wait" ] || { w=" --wait"; shift; }
+  { echo "\$(printf %s "\$verb" | tr a-z A-Z) uuid=\$1"
+    echo "VERB: \$verb\$w"
+    [ "\${3:-}" != "--from" ] || echo "FROM: \${4:-}"
     echo "PROMPT: \$2"
-    env | grep '^BOARD_RUN_' | sort || true; } >> "\${RESUME_LOG:-$RESUME}"
+    env | grep '^BOARD_RUN_' | sort || true; } >> "\${NUDGE_LOG:-$NUDGES}"
   exit 0 ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
@@ -243,8 +245,8 @@ SW() {  # one _sweep_api.sh invocation against this fixture world
 }
 RECOVER() { SW "${@:2}" "$SCRIPTS/_sweep_api.sh" review-recover > "$1" 2>&1 || true; }
 
-resumes()     { grep -c '^RESUME uuid=' "$RESUME" || true; }
-resumes_for() { grep -c "^RESUME uuid=$1\$" "$RESUME" || true; }
+wakes()       { grep -c '^WAKE uuid=' "$NUDGES" || true; }
+wakes_for()   { grep -c "^WAKE uuid=$1\$" "$NUDGES" || true; }
 # The value, BRACKETED. `t` is a substring match, so a bare `review` needle is
 # satisfied by `review-parked` — which is precisely the two values the repair
 # drills have to tell apart.
@@ -259,28 +261,34 @@ posts()       { grep -c "\"path\": \"$1\"" "$FIX.log" || true; }
 # =========================================================================
 O1="$TDIR/t1.out"; RECOVER "$O1"
 
-t  "idle owner with phase review and stale transcript → resume called" "RESUME uuid=u-rev" cat "$RESUME"
-t  "the nudge names the review, not the build"  "SWEEP RECOVERY: your review of ticket #60's pull request has no live QA agent" cat "$RESUME"
-t  "...and says what to do when no review is running" "dispatch doperpowers:qa-loop again per your protocol's Closing Artifact" cat "$RESUME"
-t  "...and what to do when one already finished" "if the review already reached a park or a verdict, restate it" cat "$RESUME"
-t  "the nudge carries the run's OWN bearer"      "BOARD_RUN_TOKEN=tok-61"   cat "$RESUME"
+t  "idle owner with phase review and stale transcript → woken" "WAKE uuid=u-rev" cat "$NUDGES"
+# The candidate is IDLE by this phase's own predicate — a live seat whose turn
+# ended. `sminos resume` on it has no turn to stop and the harness starts a
+# copy; `wake` delivers over the seat's socket (and resumes a dead one itself).
+t  "...by wake --wait"                           "VERB: wake --wait"        cat "$NUDGES"
+nt "...never by resume"                          "VERB: resume"             cat "$NUDGES"
+t  "...signed by the sweep"                      "FROM: sweep"              cat "$NUDGES"
+t  "the nudge names the review, not the build"  "SWEEP RECOVERY: your review of ticket #60's pull request has no live QA agent" cat "$NUDGES"
+t  "...and says what to do when no review is running" "dispatch doperpowers:qa-loop again per your protocol's Closing Artifact" cat "$NUDGES"
+t  "...and what to do when one already finished" "if the review already reached a park or a verdict, restate it" cat "$NUDGES"
+t  "the nudge carries the run's OWN bearer"      "BOARD_RUN_TOKEN=tok-61"   cat "$NUDGES"
 t  "the attempt is counted in its own key"       "1"                        mfield u-rev review_recoveries
 t  "and the tick says what it did"               "review-recover: #60"      cat "$O1"
 
-t  "working owner → untouched"                   "0"                        resumes_for u-work
+t  "working owner → untouched"                   "0"                        wakes_for u-work
 t  "...and its count is never opened"            "<absent>"                 mfield u-work review_recoveries
-t  "phase review-parked → untouched"             "0"                        resumes_for u-parked
-t  "an owner still writing is inside the threshold" "0"                     resumes_for u-fresh
+t  "phase review-parked → untouched"             "0"                        wakes_for u-parked
+t  "an owner still writing is inside the threshold" "0"                     wakes_for u-fresh
 
 # THE TICKET IS THE AUTHORITY, not the seat's mark.
-t  "server-parked: ticket needs-human with phase review → no resume" "0"    resumes_for u-server-park
+t  "server-parked: ticket needs-human with phase review → no nudge" "0"     wakes_for u-server-park
 t  "...and the meta is restamped review-parked"  "[review-parked]"          mfieldq u-server-park phase
 t  "...and the tick says the board parked it"    "#64"                      cat "$O1"
-t  "ticket done with phase review → no resume"   "0"                        resumes_for u-done
+t  "ticket done with phase review → no nudge"    "0"                        wakes_for u-done
 t  "...and the stale phase is removed"           "[<absent>]"               mfieldq u-done phase
 
 # Progress is a review artifact, not seat activity.
-t  "a new review-trail event resets the count"   "RESUME uuid=u-trail"      cat "$RESUME"
+t  "a new review-trail event resets the count"   "WAKE uuid=u-trail"        cat "$NUDGES"
 t  "...so the attempt counts from zero again"    "1"                        mfield u-trail review_recoveries
 t  "...and the trail it reset on is recorded"    "1"                        mfield u-trail review_trail_seen
 
@@ -288,11 +296,11 @@ t  "...and the trail it reset on is recorded"    "1"                        mfie
 t  "cap → POST /tickets/<id>/transition to needs-human" "/tickets/67/transition" cat "$FIX.log"
 t  "...as a park"                                '\"to\": \"needs-human\"' cat "$FIX.log"
 t  "...naming the exhausted ladder"              "needs-human"              cat "$O1"
-t  "...and the owner is not nudged again"        "0"                        resumes_for u-cap
+t  "...and the owner is not nudged again"        "0"                        wakes_for u-cap
 t  "...and the park leaves the seat review-parked" "[review-parked]"        mfieldq u-cap phase
 
 # The reset that did not persist: nothing is spent on that candidate at all.
-t  "a reset that failed to persist nudges nobody"  "0"                      resumes_for u-block
+t  "a reset that failed to persist nudges nobody"  "0"                      wakes_for u-block
 nt "...and parks nobody either, though the count in hand is at the cap" "/tickets/70/transition" cat "$FIX.log"
 t  "...leaving the ladder exactly where it was"  "3"                        mfield u-block review_recoveries
 t  "...and the tick says so"                     "the meta write failed"    cat "$O1"
@@ -301,24 +309,24 @@ t  "...and the tick says so"                     "the meta write failed"    cat 
 # nothing, so the stamp board-answer just made is the one that stands.
 t  "a ticket answered mid-repair keeps the answer's mark" "[review]"        mfieldq u-race phase
 t  "...and the tick says the ticket moved under it" "left needs-human while its seat's mark was being repaired" cat "$O1"
-nt "...and nothing was nudged on that pass"      "RESUME uuid=u-race"       cat "$O1"
+nt "...and nothing was nudged on that pass"      "WAKE uuid=u-race"         cat "$O1"
 
-t  "a suppressed ticket freezes this ladder too"  "0"                       resumes_for u-supp
+t  "a suppressed ticket freezes this ladder too"  "0"                       wakes_for u-supp
 t  "...and the tick says why"                     "suppressed"               cat "$O1"
 nt "...without reading the ticket at all"         "/tickets/69"              cat "$FIX.log"
 
-t  "exactly two owners were nudged"              "2"                        resumes
+t  "exactly two owners were nudged"              "2"                        wakes
 
 # =========================================================================
 # Idempotence — a second pass with nothing changed. The ladder advances by
 # one per tick and nothing else moves; the repaired marks stay repaired.
 # =========================================================================
 O2="$TDIR/t2.out"; RECOVER "$O2"
-t  "a second tick nudges the same owner once more" "2"                      resumes_for u-rev
+t  "a second tick nudges the same owner once more" "2"                      wakes_for u-rev
 t  "and the ladder advances by one"              "2"                        mfield u-rev review_recoveries
-t  "a seat whose mark was repaired is no longer a candidate" "0"            resumes_for u-server-park
-t  "...while the one the answer returned to review is nudged on the next tick" "RESUME uuid=u-race" cat "$RESUME"
-t  "nor is one whose mark was cleared"           "0"                        resumes_for u-done
+t  "a seat whose mark was repaired is no longer a candidate" "0"            wakes_for u-server-park
+t  "...while the one the answer returned to review is nudged on the next tick" "WAKE uuid=u-race" cat "$NUDGES"
+t  "nor is one whose mark was cleared"           "0"                        wakes_for u-done
 
 # =========================================================================
 # The phase is invocable alone, named in the usage line — and REACHED BY THE
@@ -329,7 +337,7 @@ t  "nor is one whose mark was cleared"           "0"                        resu
 t  "the phase is named in the usage line"        "review-recover"           bash -c "$SCRIPTS/_sweep_api.sh nonsense 2>&1 || true"
 
 DH2="$TDIR/registry-all"; mkdir -p "$DH2"
-RESUME2="$TDIR/resume-all.log"; : > "$RESUME2"
+NUDGES2="$TDIR/nudges-all.log"; : > "$NUDGES2"
 printf '%s\n' '{"uuid":"u-all","current":"u-all","status":"idle","run_id":72,
                  "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"72",
                  "run_bearer":"tok-72","phase":"review"}' > "$DH2/u-all.json"
@@ -337,10 +345,10 @@ chmod 600 "$DH2/u-all.json"
 stale u-all
 OALL="$TDIR/all.out"
 ( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH2" SMINOS_CLI="$DS/sminos" \
-    RESUME_LOG="$RESUME2" BOARD_SUPPRESS_DIR="$SUPD" BOARD_CREDENTIALS_FILE="$CREDS" \
+    NUDGE_LOG="$NUDGES2" BOARD_SUPPRESS_DIR="$SUPD" BOARD_CREDENTIALS_FILE="$CREDS" \
     BOARD_SWEEP_TICK_BUDGET=900 "$SCRIPTS/_sweep_api.sh" all ) > "$OALL" 2>&1 || true
 t  "the whole-tick run reaches the review-recover phase" "review-recover: #72" cat "$OALL"
-t  "...and nudges its candidate"                 "RESUME uuid=u-all"        cat "$RESUME2"
+t  "...and nudges its candidate"                 "WAKE uuid=u-all"        cat "$NUDGES2"
 t  "...having renewed that run first"            '"path": "/runs/72/renew"' cat "$FIX.log"
 
 # =========================================================================
@@ -400,7 +408,7 @@ chmod 600 "$DH3/u-overlap.json"
 stale u-overlap
 
 ( cd "$r3" && env HOME="$TESTHOME" DAEMON_HOME="$DH3" SMINOS_CLI="$DS/sminos" \
-    RESUME_LOG="$TDIR/resume-race.log" BOARD_CREDENTIALS_FILE="$CREDS" \
+    NUDGE_LOG="$TDIR/nudges-race.log" BOARD_CREDENTIALS_FILE="$CREDS" \
     "$SCRIPTS/_sweep_api.sh" review-recover ) > "$TDIR/race.out" 2>&1 &
 REPAIR=$!
 # The repair is now inside its re-read, holding the registry lock.
