@@ -426,9 +426,7 @@ verify-then-fix job; you judge substance and route.
 Three cases leave you. Each is an
 `ESCALATE kind=<spec-conflict|design-gap|dismissal> finding=<id> …` return
 naming the finding, its file and lines, and your position; your dispatcher
-answers and resumes you, and the answer's disposition goes in the trail. One
-exception: a design-gap answer may end your review outright, so post the
-review trail before you return that kind.
+answers and resumes you, and the answer's disposition goes in the trail.
 
 - **spec-conflict** — a finding that conflicts with the pinned spec's or
   plan's own text. The audit's contract is the `plan:` pin at an immutable
@@ -736,7 +734,11 @@ Post it on a ticketed PR with
 and additionally as a PR comment (`gh pr comment <pr>`) so whoever opens the
 PR reads it. On a ticketless PR the PR comment is the whole record. A scale
 run has no PR: its trail goes on the EPIC ticket, the same thread its closure
-package lives in.
+package lives in. Post the trail so far — rounds, waves, and the question you
+are handing up — before every `ESCALATE` or `NEEDS_PANEL` return too: the sweep
+reads each new trail as the review's progress, so a review waiting on its
+dispatcher's answer resets its owner's recovery count instead of running it
+out.
 
 Cleanup: a `PARKED` return preserves `<review-tmp>` — the wave boards and the
 ledger are what the resumed review reads. Any other terminal outcome removes

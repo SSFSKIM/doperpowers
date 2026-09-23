@@ -213,6 +213,16 @@ assert_not_contains "$AGENT" 'ready-for-architect "scale review' "a scale defect
 assert_not_contains "$AGENT" "board-transition.sh <ticket> ready-for-architect" "the agent never writes the ready-for-architect edge"
 assert_contains "$AGENT" "never yours to write" "ready-for-architect is the answerer's edge, on every path"
 
+# The sweep reads each posted trail as the review's progress. A hand-up of any
+# kind leaves the review waiting on its dispatcher, so the trail so far goes up
+# before every one of them — not only before the design-gap that can end it.
+echo "the trail precedes every hand-up:"
+trail_section="$(section '## Review Trail')"
+assert_text_contains "$trail_section" "before every \`ESCALATE\` or \`NEEDS_PANEL\` return" \
+    "the trail so far is posted before any escalation or panel hand-up" "Review Trail"
+assert_not_contains "$AGENT" "a design-gap answer may end your review outright" \
+    "...and no design-gap-only wording survives"
+
 echo "the rehoming is complete:"
 assert_not_contains "$AGENT" "{{" "no dispatcher placeholder survives in the agent body"
 assert_not_contains "$AGENT" "Workflow(" "the agent never calls the workflow a subagent cannot reach"
