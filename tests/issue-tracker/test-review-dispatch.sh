@@ -328,6 +328,9 @@ chmod +x "$STUB_BOARD/board-transition.sh"
 # in beside the stub: board-bind stays stubbed, the snapshot is genuine and
 # runs against the mock `gh` below.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_board.py" "$STUB_BOARD/_board.py"
+# The owner-first rule asks whether a seat is THIS board's through
+# _board_api.meta_is_mine, imported from $BOARD_SCRIPTS the same way.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_board_api.py" "$STUB_BOARD/_board_api.py"
 # The dispatcher resolves its board BINDING before anything gh-mode-specific
 # (that is what makes the API path reachable without gh), and it sources that
 # resolver out of $BOARD_SCRIPTS — so the stub dir needs the real one. It is
@@ -623,6 +626,8 @@ chmod +x "$FAIL_BOARD/board-bind.sh"
 # checking for would never be reached.
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_binding.sh" "$FAIL_BOARD/_binding.sh"
 cp "$REPO_ROOT/skills/issue-tracker/scripts/_claim_journal.sh" "$FAIL_BOARD/_claim_journal.sh"
+# ...and the module the owner-first check imports, for the same reason.
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_board_api.py" "$FAIL_BOARD/_board_api.py"
 reset_state
 if BOARD_SCRIPTS="$FAIL_BOARD" REVIEW_BIND_ATTEMPTS=1 REVIEW_BIND_DELAY=0 "$DISPATCH" 5 >/dev/null 2>&1; then
     fail "bind failure aborts review dispatch"
@@ -803,6 +808,27 @@ if [ -e "$LOCAL_REPO/.claude/worktrees/review-pr-5" ]; then
 else
     pass "...and the worktree prepared for the skipped spawn is removed"
 fi
+
+# The registry is machine-global and a board is not: a live seat of ANOTHER
+# repo's board on its own ticket 7 owns nothing here. A seat stamped with this
+# board still does.
+seed_board_owner() {  # $1=board stamp
+  BRD="$1" python3 - <<'PY'
+import json, os
+u = "ace00002-0000-4000-8000-000000000000"
+json.dump({"uuid": u, "current": u, "name": "7-elsewhere", "role": "ARCHITECT",
+           "ticket": "7", "status": "idle", "board": os.environ["BRD"],
+           "updated": "2026-07-08T00:00:00Z"},
+          open(os.path.join(os.environ["DAEMON_HOME"], u + ".json"), "w"))
+PY
+}
+reset_state; seed_board_owner "gh:other/repo"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_not_contains "$out" "owner reviews" "a foreign board's seat on the same ticket number is not this ticket's owner"
+assert_contains "$(cat "$SPAWN_LOG")" "spawn:review-pr-5" "...so the stand-in dispatches"
+reset_state; seed_board_owner "gh:test/repo"
+out="$("$DISPATCH" 5 2>&1)" || true
+assert_contains "$out" "#5: owner reviews — skip" "a seat stamped with this board is still the owner"
 
 # No owner at all: the stand-in spawns, as a review nobody owns must.
 reset_state

@@ -183,11 +183,17 @@ log "[sweep $(date -u +%Y-%m-%dT%H:%M:%SZ)] tick — repo=$BOARD_REPO"
 # every other comment-driven decision this tick makes — on a public consumer
 # repo an outsider could otherwise post `[review-trail]` and keep an abandoned
 # review's ladder resetting forever.
+#
+# A meta joins a ticket only when it is THIS board's (meta_is_mine): the
+# registry is machine-global, so a neighbouring repo's seat on its own ticket of
+# the same number would otherwise be recovered, relayed to, or cancelled here.
 _bound_rows() {  # [trail]
   T_TRAIL="${1:-}" python3 - <<'PY'
 import glob, json, os, sys
 sys.path.insert(0, os.environ["BOARD_SCRIPTS"])
 import _board as B
+import _board_api as BA
+BOARD = "gh:" + (os.environ.get("BOARD_REPO") or "")
 tickets = B.snapshot()
 eps = B.epics(tickets)
 want_trail = bool(os.environ.get("T_TRAIL"))
@@ -209,6 +215,8 @@ for p in sorted(glob.glob(os.path.join(os.environ["DAEMON_HOME"], "*.json"))):
         continue
     tk = str(m.get("ticket") or "").lstrip("#")
     if not tk or tk not in tickets:
+        continue
+    if not BA.meta_is_mine(m, BOARD):
         continue
     trail = "0"
     if want_trail and tickets[tk]["state"] == "in-review":

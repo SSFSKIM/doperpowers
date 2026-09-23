@@ -496,6 +496,13 @@ meta(U("aaaa0050"), "50-handed-off", "50", "working")
 meta(U("aaaa0051"), "51-just-handed-off", "51", "working")
 meta(U("aaaa0073"), "73-building", "73", "working")
 meta(U("aaaa0074"), "74-silent", "74", "working")
+# ANOTHER BOARD's live worker on its own ticket 13. The registry is
+# machine-global and a board is not, so the number alone says nothing: #13 is
+# done HERE, and retiring this seat would kill a neighbour's work.
+meta(U("aaaa0095"), "13-elsewhere", "13", "working")
+m = json.load(open(os.path.join(os.environ["DAEMON_HOME"], U("aaaa0095") + ".json")))
+m["board"] = "gh:other/repo"
+json.dump(m, open(os.path.join(os.environ["DAEMON_HOME"], U("aaaa0095") + ".json"), "w"))
 PY
 
 # sync verdicts per uuid (only consulted for working/blocked records —
@@ -511,7 +518,8 @@ json.dump({U("aaaa0010"): "absent", U("aaaa0012"): "live",
            U("aaaa0020"): "absent", U("aaaa0021"): "absent",
            U("aaaa0050"): "live", U("aaaa0051"): "live",
            U("aaaa0058"): "idle", U("aaaa0060"): "idle",
-           U("aaaa0073"): "live", U("aaaa0074"): "live"},
+           U("aaaa0073"): "live", U("aaaa0074"): "live",
+           U("aaaa0095"): "live"},
           open(os.environ["FINALIZE_MAP"], "w"))
 PY
 
@@ -653,6 +661,7 @@ assert_contains "$log" "from:wake:aaaa0060-0000-4000-8000-000000000000:sweep" ".
 
 # CANCEL
 assert_contains "$log" "retire:aaaa0013-0000-4000-8000-000000000000" "live worker on a terminal ticket is retired"
+assert_not_contains "$log" "retire:aaaa0095" "another board's worker on the same ticket number is not this board's to cancel"
 c13="$(python3 -c "
 import json, os
 s = json.load(open(os.environ['MOCK_GH_STATE']))

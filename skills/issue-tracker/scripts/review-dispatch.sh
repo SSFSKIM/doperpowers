@@ -299,10 +299,15 @@ PY
 #
 # Liveness here is _decide's: an active status on this host and boot. A STALLED
 # owner still reads live — taking its review away is the wrong repair, and the
-# sweep's recover pass owns that case.
+# sweep's recover pass owns that case. And the seat must be THIS board's: the
+# registry is machine-global, so a neighbouring repo's seat on its own ticket of
+# the same number is nobody here (meta_is_mine; gh mode's `board` key is the
+# whole identity).
 _live_owner() {  # <ticket>
-  DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$1" T_HOST="${DAEMON_HOST:-}" T_BOOT="${DAEMON_BOOT_ID:-}" python3 - <<'PY'
+  DAEMON_HOME="$DAEMON_HOME" T_ISSUE="$1" T_HOST="${DAEMON_HOST:-}" T_BOOT="${DAEMON_BOOT_ID:-}" \
+  T_BOARD="gh:$BOARD_REPO" PYTHONPATH="$BOARD_SCRIPTS${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
 import glob, json, os
+from _board_api import meta_is_mine
 home = os.environ["DAEMON_HOME"]; issue = os.environ["T_ISSUE"]
 host = os.environ.get("T_HOST") or ""; boot = os.environ.get("T_BOOT") or ""
 for p in sorted(glob.glob(os.path.join(home, "*.json"))):
@@ -317,6 +322,8 @@ for p in sorted(glob.glob(os.path.join(home, "*.json"))):
     if m.get("status") not in ("working", "blocked", "idle"):
         continue
     if str(m.get("role") or "") == "QAGENT":
+        continue
+    if not meta_is_mine(m, os.environ["T_BOARD"]):
         continue
     mh = str(m.get("host") or ""); mb = str(m.get("boot_id") or "")
     if mh and host and mh != host:
