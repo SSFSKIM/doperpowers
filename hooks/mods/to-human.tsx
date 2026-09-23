@@ -1,4 +1,4 @@
-import type { EngineInterface, On, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
 
 /**
  * The three marks the `to-human` output style asks the model to write:
@@ -222,6 +222,31 @@ export function parse(text: string): Parsed {
  * working record (an unmarked message, a tool call and its result).
  */
 export type RowKind = 'user' | 'marked' | 'record'
+
+/**
+ * The origins of a prompt row that is a delivery to the session and not the
+ * person's own words: a subagent's or another session's message, a
+ * background task's notification, a schedule firing, a coordinator's
+ * hand-off, an observer's report, a plugin's submission. Such a row is
+ * working record. Any other origin, and any the engine names later, is
+ * taken as the person's: hiding their own prompt is the worse mistake.
+ */
+const DELIVERED: ReadonlySet<string> = new Set([
+  'task-notification',
+  'scheduled-trigger',
+  'peer',
+  'peer-send-message',
+  'projects-relay',
+  'coordinator',
+  'observer',
+  'observer-activity',
+  'plugin',
+])
+
+/** What a prompt row is by where it came from: the person's, or working record. */
+export function promptRow(origin: Pick<PromptOrigin, 'kind'> | undefined): RowKind {
+  return origin !== undefined && DELIVERED.has(origin.kind) ? 'record' : 'user'
+}
 
 /**
  * The first message of the run of working record `id` belongs to: walking
@@ -490,11 +515,38 @@ export function registerToHuman(on: On) {
     return key
   }
 
-  // The prompt breaks a run: the record before it and the record after it are
-  // two, as the person reads them.
+  // The person's prompt breaks a run: the record before it and the record
+  // after it are two, as the person reads them. A prompt row that is a
+  // delivery (a subagent's message, a task's notification) is working
+  // record, and stands in the run it falls in.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
-    see($, view, e.requestId, 'user')
-    return next(e)
+    const kind = promptRow(e.props.origin)
+    see($, view, e.requestId, kind)
+    return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
+  })
+
+  // The line that closes a turn (`Baked for 3s`, `Waiting for N background
+  // agents to finish`) is working record, but never a row of a run: a run it
+  // started would have no row to draw its button. It is drawn only while
+  // the run of the row before it is unfolded, where it is read as the
+  // transcript's footer of that stretch; otherwise it draws nothing, and the
+  // full transcript shows it as the engine does.
+  const before = new Map<string, string | undefined>()
+  on('ui.render', { component: 'TurnDuration' }, ($, e, next) => {
+    if (!before.has(e.requestId)) {
+      before.set(e.requestId, view.order[view.order.length - 1])
+    }
+    if (!isFolding()) {
+      return next(e)
+    }
+    const prior = before.get(e.requestId)
+    const isShown =
+      prior !== undefined && view.rowOf.get(prior) === 'record' && unfolded.has(runStart(view.order, view.rowOf, prior))
+    if (isShown) {
+      return next(e)
+    }
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {

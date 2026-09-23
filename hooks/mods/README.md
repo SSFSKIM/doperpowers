@@ -24,11 +24,14 @@ a mark, so a session without the output style is left alone. From then on:
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
   unfolds the engine's drawing of the whole block.
-- Messages with no marks at all, and tool calls with their results, are
-  working record, and a run of it draws one `[ working record ]` button
-  rather than one button per row: the run breaks at a prompt, at a message
-  that carries marks, or at a question the human answered, so what stands
-  between two things they read opens and closes as a unit. The button is
+- Messages with no marks at all, tool calls with their results, and prompt
+  rows that are deliveries rather than the person's words (a subagent's or
+  another session's message, a background task's notification, a schedule
+  firing) are working record, and a run of it draws one `[ working record ]`
+  button rather than one button per row: the run breaks at the person's own
+  prompt, at a message that carries marks, or at a question the human
+  answered, so what stands between two things they read opens and closes as
+  a unit. The button is
   drawn by the row the run starts at and the rest of the run draw nothing;
   unfolded, the run shows the engine's own rows as the transcript draws them
   (a group of reads keeps its count line: each call in its place would be
@@ -37,6 +40,11 @@ a mark, so a session without the output style is left alone. From then on:
   a row of its own in the group's run), with `[ fold to report ]` under the
   row the run ends at, where the person is when they finish reading, so as
   the run grows the button moves down with it.
+- The line that closes a turn (`Baked for 3s`, `Waiting for N background
+  agents to finish`) draws only while the run of the row before it is
+  unfolded; otherwise nothing. The attachment rows the engine draws on its
+  own (`Found N new diagnostic issues`) are not a render component a hook
+  can reach, and still draw.
 - A question answered through `AskUserQuestion` draws as the engine draws it
   (the question and the answer given) in the report itself: the answer is the
   human's own words, and they read it as they read a mark.
