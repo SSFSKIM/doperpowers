@@ -361,7 +361,7 @@ select count(*) from board.run r join board.ticket t on t.id = r.ticket_id
 
 **Deliverables:**
 - [ ] gh: `pass_recover`'s state filter includes `in-review`; an `in-review` row with a non-reviewer name (the `_bound_rows` exclusion of `review-pr-*`/`review-epic-*` stays) takes the same decisions as the `in-progress|in-design` arm (`absent`, `error`, `idle` → recover; `live` + silent past `STALL_MIN` → recover), but with the review counter: before deciding, count the ticket's comments whose body starts `[review-trail]`; if the count exceeds the seat's `review_trail_seen`, set `review_recoveries` to 0 and `review_trail_seen` to the count; the nudge increments `review_recoveries`; at `SWEEP_RECOVERY_CAP` the park fires; `sweep_recoveries` is not read or written on this arm. Nudge text: `SWEEP RECOVERY: your review of ticket #<tk>'s pull request has no live QA agent (<why>). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it.` Commit: `sweep: an idle owner in review is recovered, bounded by review progress`
-- [ ] API: `phase_review_recover` selects seat metas with `phase == "review"`, an open `run_id`, `_liveness` live, status `idle`, and parent-transcript mtime older than `BOARD_REVIEW_STALL_MIN` (default 45) minutes (reuse `_transcript_for_uuid` and `_mtime_epoch`); before anything else, reads the candidate's ticket through the client (the read `board-show.sh` uses) and acts on its state: `in-review` continues; `needs-human` restamps the meta `phase=review-parked` (same lock discipline as Task 5) and skips — the server parks by itself through the convergence transmute and the reconciler's dependency-stall park, and no client transition stamps the seat then; any other state removes `phase` and skips; then reads the ticket's timeline (`A.timeline`) and counts `review-trail` events for the same reset rule; nudges through `"$SMINOS_CLI" resume --wait "$uuid" "<the same text>"` in the background; at the cap parks with `BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound owner $uuid (review stalled)" board-transition.sh <tk> needs-human "<note>"`. Commit: `sweep(api): recover an owner whose review stalled`
+- [ ] API: `phase_review_recover` selects seat metas with `phase == "review"`, an open `run_id`, `_liveness` live, status `idle`, and parent-transcript mtime older than `BOARD_REVIEW_STALL_MIN` (default 45) minutes (reuse `_transcript_for_uuid` and `_mtime_epoch`); before anything else, reads the candidate's ticket through the client (the read `board-show.sh` uses) and acts on its state: `in-review` continues; `needs-human` restamps the meta `phase=review-parked` (same lock discipline as Task 5) and skips — the server parks by itself through the convergence transmute and the reconciler's dependency-stall park, and no client transition stamps the seat then; any other state removes `phase` and skips; then reads the ticket's timeline (`A.timeline`) and counts `review-trail` events for the same reset rule; nudges through `"$SMINOS_CLI" wake --wait "$uuid" "<the same text>"` in the background (the candidate is idle; `wake` delivers over the inbox socket to a live seat and falls back to a resume for a dead one — Task 14); at the cap parks with `BOARD_OWNER_OVERRIDE="sweep recovery: cap exhausted on bound owner $uuid (review stalled)" board-transition.sh <tk> needs-human "<note>"`. Commit: `sweep(api): recover an owner whose review stalled`
 - [ ] Docs: `execution-loop.md`'s edge cases gain "Owner idle in review"; `review-loop.md`'s failure-cap section describes the owner path (progress-bounded) beside the stand-in streak.
 
 **Tests:**
@@ -466,3 +466,22 @@ select count(*) from board.run r join board.ticket t on t.id = r.ticket_id
 **Decisions:**
 - One mechanism for both rungs: the location line is what `repo` renders, so single-rung and panel reviewers are positioned the same way.
 - The agent keeps harness isolation for its workspace; only its starting commit was wrong, and the push chain already required it to equal the remote head before a wave. Not chosen: the owner provisioning a detached worktree and passing its path (three protocols and lifecycle for a one-line difference), or sharing the owner's checkout (waves would mutate it).
+
+---
+
+### Task 14: The relay verb — a live idle owner is woken, not restarted
+
+**Files:**
+- Modify: `skills/issue-tracker/scripts/board-answer.sh` (the relay), `board-sweep.sh` (`_recover`), `_sweep_api.sh` (the recover nudges and the park-answer relay)
+- Modify: `tests/issue-tracker/test-board-scripts.sh`, `test-board-sweep.sh`, `tests/claude-code/board-api/test-sweep-review-recover.sh`, `test-sweep-stall.sh`, the answer-phase test
+- Modify: `TECH-DEBT.md` (row 21 removed), `references/execution-loop.md` / `review-loop.md` where they name the verb
+
+**Interfaces:**
+- Consumes: `sminos wake --wait` (inbox-socket delivery to a live seat; falls back to `resume_session` for a dead one) and `sminos resume --wait` (stop-and-restart; starts a copy on a live idle seat — the Task 13 observation).
+- Produces: one rule — a relay to an idle seat (a park answer, an idle-owner recovery) is `wake --wait`; a recovery of a live, silent, busy seat keeps `resume --wait`; a successor session for a reclaimed run keeps `resume`.
+
+**Deliverables:**
+- [ ] `board-answer.sh`: `wake --wait`. `board-sweep.sh` `_recover`: `idle` → `wake`, `absent|error|live-silent` → `resume`, both arms. `_sweep_api.sh`: `phase_review_recover` and the park-answer relay → `wake`; the stall phase on a busy silent seat keeps `resume`; the successor path untouched. Tests assert the verb per case (RED first). Commit: `board: a live idle owner is woken over its socket, not restarted`
+
+**Decisions:**
+- The fold made the idle-live seat the normal state at a park; before it, a parked worker's seat was retired and a fresh process was the only way to carry the run credentials. Under the fold the credentials resolve from the seat record by session id, so a socket frame carries enough.

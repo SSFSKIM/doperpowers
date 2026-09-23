@@ -940,6 +940,21 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   registers a corrective child itself on a design-gap return; the board
   service gains the epic scale handoff edge it lacked.
   Date/Author: 2026-09-21, from the plan review.
+- Decision: A relay to a live idle owner — the park answer, the idle-owner
+  recovery on both ticks — is `sminos wake --wait`, not `resume --wait`;
+  a recovery of a live, silent, busy seat and a successor session for a
+  reclaimed run keep `resume`.
+  Rationale: the fold makes "alive and idle at a park" the owner's normal
+  state, and `resume` is a stop-and-restart that starts a copy when the old
+  process is still running (observed in the Task 13 smoke). `wake`
+  delivers over the inbox socket to a live seat and falls back to a resume
+  for a dead one; the run credentials resolve from the seat record by
+  session id, so a frame carries enough. Before the fold a parked seat was
+  retired first, which is why the scripts reached for a fresh process.
+  Rejected: leaving it as logged debt — the park-and-answer path is the
+  fold's own escalation channel, so a relay that starts a copy is a defect
+  in this initiative, not a pre-existing one.
+  Date/Author: 2026-09-23, from the Task 13 report.
 
 ## Surprises & Discoveries
 
@@ -1347,3 +1362,4 @@ Pending — written at finish.
 - 2026-09-22: Task 10 — the five superseded specs carry their revision note, `CLAUDE.md` names the `qa-loop` agent and `README.md` the fold; the skill and the sweep's knob table name the QA agent and the review stand-in, fenced across `skills/issue-tracker/SKILL.md` and `references/*.md` by `test-protocol-content.sh` over the worker, seat, lane, daemon and skill names alike, outside `review-loop.md`'s migration note. The board scripts' comments lost the retired actor names too, but they are maintainer-facing and carry no fence: `review lane` stays there for the sweep's dispatch pass, the `in-review` state, and the server's `qagent` lane. Surprises from Tasks 1–10 recorded above, fact-checked against the ledger and the task reports.
 - 2026-09-22: Task 11 repair — the QA agent positions its isolated worktree at the brief's head itself; single-rung reviewers and the panel are pointed at a path (`repo`), not isolated. Task 13 carries the change; Tasks 11 and 12 re-run after it.
 - 2026-09-22: Task 13 — both gh drills reached a terminal state after the positioning repair. Drill A was merged by the QA agent at the reviewed head, and Drill B was merged by hand after an observation-mode park. Along the way: the trail now precedes the merge, and `board-comment.sh` no longer doubles a marker already in the text. Two relay gaps are recorded under Surprises and left for a later change: `board-answer.sh` resumes a live seat instead of waking it, and a human merge closes a ticket before any answer can reach its owner.
+- 2026-09-23: Task 13 report — the relay verb for a live idle owner is `wake`; Task 14 carries it. Task 13's own review is folded into the whole-branch review.
