@@ -12,7 +12,7 @@
 # worker's own lane from its registry meta — in-design for an Architect,
 # in-review for a QAgent with the ticket's recorded pr: re-supplied,
 # in-progress otherwise; a review-lane return with no pr: to re-supply is
-# REFUSED and the ticket stays parked), and the bound session is resumed with
+# REFUSED and the ticket stays parked), and the bound session is woken with
 # the answers relayed verbatim — the worker keeps its orientation and
 # re-states its gate verdict before proceeding. No judge is reintroduced:
 # the relay is mechanical, the human is the author, the ticket is the record.
@@ -30,8 +30,8 @@
 # → comment the answers, then `board-transition.sh <n> ready-for-implementer
 # (or ready-for-architect per the park discriminant)`.
 #
-# NEVER RUN IN THE FOREGROUND — the resume blocks for the worker's whole turn
-# (same rule as `sminos resume --wait`): Monitor or background shell.
+# NEVER RUN IN THE FOREGROUND — the wake blocks for the worker's whole turn
+# (same rule as `sminos wake --wait`): Monitor or background shell.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -62,7 +62,7 @@ if [ "$BOARD_BINDING" = api ]; then
   [ -z "$posted" ] || die "--posted is gh-mode-only: an API park-answer IS the record — pass the answers"
   # The seat's review phase follows the state the SERVER returned the ticket
   # to — the only thing on this binding that knows it — and it is restored
-  # before the wake below: a mark written after the resume reaches a lane check
+  # before the wake below: a mark written after the wake reaches a lane check
   # that has already run. (gh mode needs no twin: its return goes through
   # board-transition.sh, which marks the seat itself.)
   T_PHASE_OUT="$(mktemp "${TMPDIR:-/tmp}/board-phase.XXXXXX")"
@@ -108,8 +108,8 @@ with open(os.environ["T_PHASE_OUT"], "w") as f:
     f.write(str(out.get("returnedTo") or ""))
 PY
   _phase_stamp "$tid" "$(cat "$T_PHASE_OUT")"
-  # Inline relay: the human's answer resumes the worker NOW, not on the next
-  # tick — the same blocking feel as gh mode's direct resume. Delivery and its
+  # Inline relay: the human's answer wakes the worker NOW, not on the next
+  # tick — the same blocking feel as gh mode's direct wake. Delivery and its
   # delivery-gated ack are the sweep's, never a second copy of that logic here.
   #
   # A HELD TICK LOCK IS NOT A DELIVERY. The sweep exits 0 when another tick
@@ -300,10 +300,10 @@ echo "relay: #$tid → $engine session ${uuid:0:8} (status=$status, last-updated
 # otherwise), so the flag arm never passes an empty link.
 if [ "$ret" = in-review ]; then
   "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
-    "answers relayed — resuming bound session ${uuid:0:8}" --pr "$pr"
+    "answers relayed — waking bound session ${uuid:0:8}" --pr "$pr"
 else
   "$SCRIPT_DIR/board-transition.sh" "$tid" "$ret" \
-    "answers relayed — resuming bound session ${uuid:0:8}"
+    "answers relayed — waking bound session ${uuid:0:8}"
 fi
 
 if [ -n "$posted" ]; then
@@ -322,4 +322,9 @@ answer that changed the work's shape.
 ---- answers (verbatim from the ticket) ----
 $block"
 
-exec "$SMINOS_CLI" resume --wait "$uuid" "$relay"
+# WAKE, not resume: a parked owner ended its turn and is waiting — a live,
+# idle seat. `sminos resume` stops a live turn and restarts the process; on an
+# idle seat there is no turn to stop, the harness starts a copy, and nothing is
+# delivered. `wake` reaches a live seat over its inbox socket and resumes a
+# dead one itself.
+exec "$SMINOS_CLI" wake --wait "$uuid" "$relay"

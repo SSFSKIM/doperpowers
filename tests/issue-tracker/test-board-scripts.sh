@@ -931,11 +931,15 @@ set -euo pipefail
 verb="${1:-}"; shift || true
 case "$verb" in
 migrate) exit 0 ;;
-resume)
-  if [ "${1:-}" = "--wait" ]; then shift; fi
-  printf '%s\n' "$1" > "$STUB_STATE/resume.uuid"
-  printf '%s' "$2" > "$STUB_STATE/resume.msg"
-  echo "resumed: [sminos stub]"
+resume|wake)
+  # The verb and its --wait are recorded: a parked owner is a LIVE, IDLE
+  # seat, which only `wake` reaches — `resume` on it starts a copy.
+  wait_flag=""
+  if [ "${1:-}" = "--wait" ]; then wait_flag=" --wait"; shift; fi
+  printf '%s%s\n' "$verb" "$wait_flag" > "$STUB_STATE/relay.verb"
+  printf '%s\n' "$1" > "$STUB_STATE/relay.uuid"
+  printf '%s' "$2" > "$STUB_STATE/relay.msg"
+  echo "$verb: [sminos stub]"
   ;;
 sync)
   printf '%s\n' "$1" >> "$STUB_STATE/sync.log"
@@ -993,13 +997,15 @@ assert_fails run board-answer.sh "$ans_t"               # missing answers (arity
 out="$(run board-answer.sh "$ans_t" "1: use X. 2: defer Y.")"
 assert_contains "$(state "s['issues']['$ans_t']['comments']")" "[answers] 1: use X. 2: defer Y." "answers posted on the ticket first"
 assert_contains "$(state "s['issues']['$ans_t']['labels']")" "status:in-progress" "ticket resumed to in-progress"
-assert_equals "$(cat "$STUB_STATE/resume.uuid")" "cccccccc-1111-2222-3333-444444444444" "bound meta routed to sminos resume"
-msg="$(cat "$STUB_STATE/resume.msg")"
+assert_equals "$(cat "$STUB_STATE/relay.uuid")" "cccccccc-1111-2222-3333-444444444444" "bound meta routed to its session"
+assert_equals "$(cat "$STUB_STATE/relay.verb")" "wake --wait" \
+  "the parked owner is reached by wake --wait (live and idle — a resume on it starts a copy)"
+msg="$(cat "$STUB_STATE/relay.msg")"
 assert_contains "$msg" "1: use X. 2: defer Y." "answers relayed verbatim"
 assert_contains "$msg" "[gate] re-pass" "relay carries the re-verdict guard"
 assert_contains "$msg" "the ticket remains the record" "relay names the record"
 
-# a second bound meta → sminos resume; --posted relays a pointer, posts nothing
+# a second bound meta → sminos wake; --posted relays a pointer, posts nothing
 run board-transition.sh "$ans_t" needs-human "round 2 questions" >/dev/null
 rm "$DAEMON_HOME/cccccccc-1111-2222-3333-444444444444.json"
 cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
@@ -1008,8 +1014,9 @@ cat > "$DAEMON_HOME/dddddddd-1111-2222-3333-444444444444.json" <<META
 META
 out="$(run board-answer.sh "$ans_t" --posted)"
 assert_contains "$(cat "$STUB_STATE/sync.log")" "dddddddd-1111-2222-3333-444444444444" "answer relay syncs a lingering finished Claude owner before status check"
-assert_equals "$(cat "$STUB_STATE/resume.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to sminos resume"
-assert_contains "$(cat "$STUB_STATE/resume.msg")" "already on the ticket" "--posted relays a pointer, not a body"
+assert_equals "$(cat "$STUB_STATE/relay.uuid")" "dddddddd-1111-2222-3333-444444444444" "engine-less meta routed to its session"
+assert_equals "$(cat "$STUB_STATE/relay.verb")" "wake --wait" "...by wake --wait as well"
+assert_contains "$(cat "$STUB_STATE/relay.msg")" "already on the ticket" "--posted relays a pointer, not a body"
 assert_equals "$(state "len([c for c in s['issues']['$ans_t']['comments'] if c.startswith('[answers]')])")" "2" "--posted posts its own [answers] marker (the mechanical convergence reset)"
 
 # a mid-turn session is refused — nothing is waiting for answers
@@ -1638,11 +1645,15 @@ migrate) exit 0 ;;
 sync)   echo noop ;;
 retire) true ;;
 meta)   exit 0 ;;
-resume)
-  if [ "${1:-}" = "--wait" ]; then shift; fi
-  printf '%s\n' "$1" > "$STUB_STATE/resume.uuid"
-  printf '%s' "$2" > "$STUB_STATE/resume.msg"
-  echo "resumed: [sminos stub]"
+resume|wake)
+  # The verb and its --wait are recorded: a parked owner is a LIVE, IDLE
+  # seat, which only `wake` reaches — `resume` on it starts a copy.
+  wait_flag=""
+  if [ "${1:-}" = "--wait" ]; then wait_flag=" --wait"; shift; fi
+  printf '%s%s\n' "$verb" "$wait_flag" > "$STUB_STATE/relay.verb"
+  printf '%s\n' "$1" > "$STUB_STATE/relay.uuid"
+  printf '%s' "$2" > "$STUB_STATE/relay.msg"
+  echo "$verb: [sminos stub]"
   ;;
 *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
