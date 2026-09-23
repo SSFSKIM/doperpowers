@@ -73,8 +73,13 @@ else
   else
     # Assembled from the parts that are THERE: review-trail carries text and
     # no payload, and the payload-slot separator would otherwise trail it.
+    # A text already opening with its marker is posted as is: the QA agent
+    # writes one trail for the ticket and the PR alike, marker included.
     _body="[$kind]"
-    [ -z "$text" ] || _body="$_body $text"
+    case "$text" in
+      "[$kind]"*) _body="$text" ;;
+      ?*) _body="$_body $text" ;;
+    esac
     [ -z "$json" ] || _body="$_body $json"
     gh issue comment "$tid" -R "$BOARD_REPO" --body "$_body"
   fi

@@ -2236,6 +2236,13 @@ run board-register.sh "Review trail probe" enhancement P2 --body-file "$SPEC_BOD
 rt_t="$(state "s['next']-1")"
 run board-comment.sh "$rt_t" --kind review-trail --text "level medium" >/dev/null
 assert_equals "$(state "s['issues']['$rt_t']['comments'][-1]")" "[review-trail] level medium" "the review-trail kind renders its marker"
+# The QA agent writes one trail and posts it twice — on the ticket through this
+# script, and verbatim as a PR comment — so its text already opens with the
+# marker. Every gh smoke trail landed as "[review-trail] [review-trail] …".
+run board-comment.sh "$rt_t" --kind review-trail --text "[review-trail]
+level low" >/dev/null
+assert_equals "$(state "s['issues']['$rt_t']['comments'][-1]")" "[review-trail]
+level low" "a text that already carries the marker is not marked twice"
 err="$(run board-comment.sh "$rt_t" --kind review-trial --text "typo" 2>&1 || true)"
 assert_contains "$err" "review-trail" "the closed-set refusal names the kinds it accepts"
 
