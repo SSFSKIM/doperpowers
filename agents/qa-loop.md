@@ -433,8 +433,14 @@ review trail before you return that kind.
   `board-transition.sh <ticket> in-review "re-pin: <delta>" --plan <path>@<newsha>`.
   Re-anchor the audit on the newest `[board] in-review:` comment carrying
   `re-pin:` — the pin-minting comment the audit already treats as the pin in
-  force — and record `[trail] re-pin <path>@<sha> — <delta>` in the trail. The
-  owner gets one re-pin per review; a second is your human partner's: refuse
+  force — and record `[trail] re-pin <path>@<sha> — <delta>` in the trail.
+  The repaired document is a commit the owner pushed, so the PR head moved:
+  fetch the head branch as you did at positioning, fast-forward onto it with
+  `git merge --ff-only 'origin/<head branch>'`, and confirm
+  `git rev-parse HEAD` prints the PR's new head
+  (`gh pr view <pr> --json headRefOid`) — a mismatch parks, as at positioning.
+  Then re-read the pin and continue; the audit and the merge use that head.
+  The owner gets one re-pin per review; a second is your human partner's: refuse
   it and park the finding `needs-human` with both positions.
 - **design-gap** — a TOO BIG whose cause is a design flaw, or the
   seam-clustered impasse at the round cap (Re-review). The answers an owner

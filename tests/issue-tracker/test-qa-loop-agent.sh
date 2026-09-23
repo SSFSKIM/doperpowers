@@ -169,6 +169,19 @@ assert_text_not_contains "$engine" "isolation" \
 assert_text_contains "$engine" "as the workflow's \`repo\`" \
     "a handed-up panel is run over the dispatcher's checkout, named as the workflow's repo arg" "Engine"
 
+# A re-pin is a commit the owner pushed onto the PR branch, so the head the
+# review holds is no longer the PR's head: auditing or merging the old one would
+# drop the repaired contract from the very range the verdict covers.
+echo "a re-pin moves the reviewed head:"
+escalations="$(section '### The three escalations')"
+[[ -n "$escalations" ]] || { echo "  [FAIL] the escalations section exists"; FAILURES=$((FAILURES + 1)); }
+assert_text_contains "$escalations" "git merge --ff-only 'origin/<head branch>'" \
+    "on a re-pin answer the agent fast-forwards to the owner's pushed pin commit" "The three escalations"
+assert_text_contains "$escalations" "prints the PR's new head" \
+    "...verifies the position against the PR's new head" "The three escalations"
+assert_text_contains "$escalations" "the audit and the merge use that head" \
+    "...and audits and merges that head, not the one it was briefed" "The three escalations"
+
 echo "the fixer's view of the scratch directory:"
 assert_contains "$AGENT" "absolute board path" "a fixer is given the absolute wave-board path the wave-board contract requires"
 assert_contains "$AGENT" "no fixer prompt ever names" "the accepted-commit ledger's path is the one thing withheld from a fixer"
