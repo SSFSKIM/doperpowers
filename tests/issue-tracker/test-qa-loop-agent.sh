@@ -198,6 +198,13 @@ assert_text_contains "$escalations" "prints the PR's new head" \
     "...verifies the position against the PR's new head" "The three escalations"
 assert_text_contains "$escalations" "the audit and the merge use that head" \
     "...and audits and merges that head, not the one it was briefed" "The three escalations"
+# The adopted head carries the owner's commit, which no engine round has seen;
+# the merge pins the head the final engine round reviewed, so it needs one.
+assert_text_contains "$escalations" "A head adopted after a re-pin is merge-eligible only after a fresh engine" \
+    "...and that head is merge-eligible only once a fresh engine round has covered it" "The three escalations"
+rereview="$(section '## Re-review')"
+assert_text_contains "$rereview" "or a re-pin that moved the head" \
+    "Re-review's trigger includes the head a re-pin moved" "Re-review"
 
 echo "the fixer's view of the scratch directory:"
 assert_contains "$AGENT" "absolute board path" "a fixer is given the absolute wave-board path the wave-board contract requires"

@@ -447,6 +447,10 @@ answers and resumes you, and the answer's disposition goes in the trail.
   `git rev-parse HEAD` prints the PR's new head
   (`gh pr view <pr> --json headRefOid`) — a mismatch parks, as at positioning.
   Then re-read the pin and continue; the audit and the merge use that head.
+  A head adopted after a re-pin is merge-eligible only after a fresh engine
+  round at the same level, exactly as after a wave that fixed something
+  (Re-review): no engine round has seen the owner's commit, and the merge pins
+  the head the final engine round reviewed.
   The owner gets one re-pin per review; a second is your human partner's: refuse
   it and park the finding `needs-human` with both positions.
 - **design-gap** — a TOO BIG whose cause is a design flaw, or the
@@ -501,8 +505,8 @@ stands outside this cap (Re-review).
 
 ## Re-review
 
-After a wave that fixed anything, rerun the engine — same level, same fan-out
-judgment (a single lens-free dispatch is the norm after a small wave), fresh
+After a wave that fixed anything, or a re-pin that moved the head, rerun the
+engine — same level, same fan-out judgment (a single lens-free dispatch is the norm after a small wave), fresh
 findings files; max 5 engine rounds total. The engine is stateless: it WILL
 re-flag findings you already routed. Match re-flags by file and substance
 against your tech-debt comments and wave dispositions (line numbers shift
