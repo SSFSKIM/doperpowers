@@ -1326,6 +1326,13 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   explicit fetch refspec, the trail before every escalation return), one
   was dismissed by the probe above, and one — API recovery of a silent
   working owner — is a tech-debt row, the gh arm already covering it.
+- Observation: the delta re-review found that single quotes do not make a
+  ref safe (an apostrophe is legal in a ref name; verified by the reviewer
+  with `git check-ref-format` and a stubbed `git`), and that a head adopted
+  after a re-pin reached the merge decision with no engine round over it.
+  Both fixed: the charset rule and the re-pin round. The wording tests that
+  had endorsed quoting were the ones that let it through — a test that
+  asserts a phrase pins the phrase, not the property.
 
 ## Outcomes & Retrospective
 
@@ -1366,7 +1373,15 @@ before the spec pins it; the two probes this initiative did run (Workflow
 tool, isolation from a subagent) held, the two it did not run failed live.
 Review rounds converge when the exit rule is written down before the round.
 
-**Whole-branch review.** (filled in below when the xhigh panel returns.)
+**Whole-branch review.** The xhigh panel (five lanes, one verifier) over
+main..HEAD returned eleven findings: nine fixed in one wave, one dismissed
+by a probe, one logged as debt. The delta re-review at reviewer-high
+returned two more — quoting cannot make an arbitrary ref safe, so a branch
+name outside `[A-Za-z0-9._/-]` is now a park rather than a command, and a
+head adopted after a re-pin needs a fresh engine round before it is
+merge-eligible — both fixed with structural tests, and the loop was closed
+there: two rounds, the second yielding only prose-level fixes, is the
+convergence signal this repository's review doctrine names.
 
 ## Revision Notes
 
@@ -1418,3 +1433,4 @@ Review rounds converge when the exit rule is written down before the round.
 - 2026-09-22: Task 11 repair — the QA agent positions its isolated worktree at the brief's head itself; single-rung reviewers and the panel are pointed at a path (`repo`), not isolated. Task 13 carries the change; Tasks 11 and 12 re-run after it.
 - 2026-09-22: Task 13 — both gh drills reached a terminal state after the positioning repair. Drill A was merged by the QA agent at the reviewed head, and Drill B was merged by hand after an observation-mode park. Along the way: the trail now precedes the merge, and `board-comment.sh` no longer doubles a marker already in the text. Two relay gaps are recorded under Surprises and left for a later change: `board-answer.sh` resumes a live seat instead of waking it, and a human merge closes a ticket before any answer can reach its owner.
 - 2026-09-23: Task 13 report — the relay verb for a live idle owner is `wake`; Task 14 carries it. Task 13's own review is folded into the whole-branch review.
+- 2026-09-23: whole-branch review applied — nine fixes, one dismissal by probe, one debt row; delta re-review's charset rule and re-pin round applied; review converged.
