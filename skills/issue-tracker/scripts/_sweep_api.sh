@@ -12,7 +12,9 @@
 #   RENEW  every LIVE run's lease. A dead session's lease is deliberately NOT
 #          renewed — letting it expire is how the server reclaims the run. A
 #          409 run-ended is routed to the resume path, never fatal. A meta the
-#          server never confirmed a bind for is repaired here.
+#          server never confirmed a bind for is repaired here. Once per tick,
+#          the seat of an ended run whose ticket is terminal (done/wontfix)
+#          and whose turn is over is retired — the gh tick's CANCEL parity.
 #   STALL  a bound worker whose LAST TURN IS A HARNESS ERROR. The session is
 #          alive and its seat reads `idle`, so renewal keeps its lease fresh
 #          forever and no other phase owns it. Bounded nudges, then phase 1
@@ -775,6 +777,47 @@ PY
     esac
   done < <(_registry_metas)
   _scan_ok || die "registry scan failed — renew phase saw no metas it can trust"
+  # Once per tick, not per interleaved renewal: the step reads a ticket per
+  # candidate, and a seat it misses now is still a candidate next tick.
+  [ "${1:-}" = interleaved ] || _retire_finished_seats
+}
+
+# THE SEAT OF A FINISHED TICKET IS RETIRED — the gh tick's CANCEL pass, in this
+# binding's shape. The owner stays bound through `done`: its QA agent writes
+# the terminal transition, the server ends the run with it, and the renewal
+# above strips the run from the meta (`run_ended_at`). No later phase speaks to
+# that seat again, so without this step every finished ticket leaves one idle
+# background session behind.
+#
+# The candidates are runless metas whose run ENDED (the stamp), not ones that
+# never had a run. The TICKET is the authority: only a terminal state retires.
+# A reclaim or a park also ends a run, and that seat is the resume path's — its
+# lane is what a successor inherits. A seat still `working` is left for a later
+# tick rather than retired mid-turn (it is typically verifying the merge and
+# cleaning up), which is why this scans the registry rather than riding the
+# 409 that ended the run: that answer comes once, and the turn may outlast it.
+_retire_finished_seats() {
+  local uuid run bindc ticket bearer fence lane status sexhausted path state
+  # shellcheck disable=SC2034  # the trailing names exist to hold the columns
+  while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
+                            sexhausted path; do
+    [ -z "$run" ] && [ -n "$ticket" ] || continue
+    [ "$status" != retired ] || continue
+    [ -n "$(_meta_field "$path" run_ended_at)" ] || continue
+    state="$(_ticket_state "$ticket" 2>/dev/null)" || state=""
+    case "$state" in done | wontfix) ;; *) continue ;; esac
+    # The status the harness reports NOW, not the one the scan read: sync
+    # reconciles the record, and `live` means a turn is running (or that the
+    # harness could not be asked — claim nothing either way).
+    [ "$("$SMINOS_CLI" sync "$uuid" 2>/dev/null || echo absent)" != live ] || continue
+    [ "$(_meta_field "$path" status)" != working ] || continue
+    if "$SMINOS_CLI" retire "$uuid" >/dev/null 2>&1; then
+      echo "run $(_meta_field "$path" ended_run_id): #$ticket is $state — seat $uuid retired"
+    else
+      echo "run $(_meta_field "$path" ended_run_id): #$ticket is $state — retiring seat $uuid failed; retried next tick" >&2
+    fi
+  done < <(_registry_metas all)
+  _scan_ok || echo "registry scan failed — no finished seat was retired this tick" >&2
 }
 
 # INTERLEAVED RENEWAL (spec v1.2.7, amending the v1.2.3 per-item ruling). One
@@ -784,7 +827,7 @@ PY
 # ones this tick is not even touching. Renewal is one cheap idempotent POST per
 # live run, so it runs again AHEAD OF EVERY ITEM rather than once ahead of all
 # of them: no live run's lease then ages more than a single item's bound.
-_tick_renew() { phase_renew || true; }
+_tick_renew() { phase_renew interleaved || true; }
 
 # ---- phase 1b: harness-error stall recovery --------------------------------
 # THE ONE BOUND STATE NO OTHER PHASE OWNS. When a worker's turn dies on a

@@ -129,7 +129,9 @@ PY
 # reaches this same branch (a reclaimed run answers renew with 409 run-ended),
 # and the successor claimed for that ticket inherits its lane from exactly this
 # meta. The slot is freed by the run id going away, not the lane — the
-# dispatchers count OPEN RUNS, which is what a cap is about.
+# dispatchers count OPEN RUNS, which is what a cap is about. The ended run's id
+# is kept as `ended_run_id` beside the stamp, so a later step that acts on the
+# seat (the sweep retiring it once its ticket is terminal) can still name it.
 _retire_run_locally() { _meta_edit_for_run "$1" "$2" retire; }
 
 # A run THIS BINDING may never speak for is not over — it is somebody else's.
@@ -188,6 +190,7 @@ try:
         for k in ("run_id", "run_bearer", "fence", "bind_confirmed", "nonce"):
             m.pop(k, None)
         m["run_ended_at"] = stamp
+        m["ended_run_id"] = env["T_RUN"]
     mode = os.stat(path).st_mode & 0o777
     tmp = path + ".tmp"
     # Unlink first: os.open(..., mode) does NOT re-mode an existing inode, so a
