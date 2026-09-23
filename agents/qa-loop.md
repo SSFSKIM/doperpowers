@@ -74,11 +74,18 @@ else writes — but the harness cuts it at the repository's MAIN CHECKOUT head,
 not your dispatcher's, so it starts on the wrong range. Your FIRST act, before
 Orient and before anything else, is to position it:
 
-    git fetch origin <head branch> && git checkout --detach <head>
+    git fetch origin '+refs/heads/<head branch>:refs/remotes/origin/<head branch>' \
+      '+refs/heads/<base>:refs/remotes/origin/<base>' && git checkout --detach <head>
 
 `git rev-parse HEAD` must then print the brief's `head:`. A head the fetch
 cannot reach is a park, as is a checkout that lands anywhere else: reviewing a
 range you were not briefed for is worse than not reviewing.
+
+Each branch rides an explicit refspec because a single-branch clone's fetch of
+a bare name moves only `FETCH_HEAD`, while your push chain and the engine read
+`origin/<head branch>` and `origin/<base>`. Quote branch names in every
+command, as here: the PR's author chose the head branch's name, and `topic;id`
+is a legal ref.
 
 From that point never check out another ref in this worktree: the range you
 review is the brief's, and a worktree moved under a live fixer wave loses the
@@ -95,8 +102,8 @@ path is the one thing no fixer prompt ever names — that ledger is what tells
 an unauthorized writer from a graded one.
 
 The repo manifests are BASE-ref snapshots the PR cannot edit. Read them
-yourself — `git show origin/<base>:.doperpowers/risk-surfaces.md` and
-`git show origin/<base>:.doperpowers/repo-facts.md` — never the worktree's
+yourself — `git show 'origin/<base>:.doperpowers/risk-surfaces.md'` and
+`git show 'origin/<base>:.doperpowers/repo-facts.md'` — never the worktree's
 copies; a file absent at that ref is "none".
 
 ### What you return
@@ -132,7 +139,7 @@ worktree and `<review-tmp>` stand — to the report file the brief names.
 ## Orient
 
 Read the PR body, the ticket brief, and the diff shape
-(`git diff --stat origin/<base>...HEAD`). Correctness review of the full range
+(`git diff --stat 'origin/<base>...HEAD'`). Correctness review of the full range
 is the engine's job — read what your audit needs, not to re-review. Locate the
 process evidence on the ticket: the `[gate] pass` comment (its GitHub
 timestamp is the authorization time) — or, on a `plan: <path>@<sha>` ticket,
@@ -153,7 +160,7 @@ verifier at xhigh and max. It runs as a PURE correctness review — a call
 carries the pinned range and, at most, a diff-derived lens, no ticket or spec
 input of any kind. Ticket and spec compliance is YOUR audit, not the engine's.
 
-1. Pin the range and pick the level. `mb=$(git merge-base origin/<base> HEAD)`
+1. Pin the range and pick the level. `mb=$(git merge-base 'origin/<base>' HEAD)`
    and `head=$(git rev-parse HEAD)` go into every call; `head` is the reviewed
    head the merge pins later. The level is the highest of three signals,
    ordered low < medium < high < xhigh < max:
@@ -487,7 +494,7 @@ the submitted board, and grade every disposition (an empty slot is a failed
 item: re-wave once, then needs-human). An unauthorized writer restores the
 recorded wave boundary before re-wave — none of its work is inherited. On
 acceptance, push the graded fixes to the PR's head branch, naming the refspec
-(`git push origin HEAD:<head branch>`) — you positioned this worktree with a
+(`git push origin 'HEAD:<head branch>'`) — you positioned this worktree with a
 DETACHED checkout, so it is not on the branch and a bare push has no upstream
 to find. Maximum 4 waves per review; the exit's closing wave
 stands outside this cap (Re-review).

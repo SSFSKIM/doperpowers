@@ -152,8 +152,18 @@ assert_text_contains "$workspace" 'isolation: "worktree"' \
     "the workspace is still the harness's isolated worktree" "Workspace"
 assert_text_contains "$workspace" "MAIN CHECKOUT head" \
     "...but the body says where that worktree is actually cut" "Workspace"
-assert_text_contains "$workspace" "git fetch origin <head branch>" \
-    "...so the agent's first act fetches the head branch" "Workspace"
+# Each branch rides an explicit refspec: a single-branch clone's fetch of a bare
+# name moves only FETCH_HEAD, leaving no origin/<head branch> for the push gate
+# and no origin/<base> for the engine. And every branch name is quoted — the
+# PR's author chose the head branch's name, and `topic;id` is a legal ref.
+assert_text_contains "$workspace" "git fetch origin '+refs/heads/<head branch>:refs/remotes/origin/<head branch>'" \
+    "...so the agent's first act fetches the head branch into its tracking ref" "Workspace"
+assert_text_contains "$workspace" "'+refs/heads/<base>:refs/remotes/origin/<base>'" \
+    "...and the base into its own, which the engine and the manifests read" "Workspace"
+assert_not_contains "$AGENT" "git fetch origin <head branch>" "no fetch names a bare, unquoted branch"
+assert_contains "$AGENT" "git push origin 'HEAD:<head branch>'" "the wave push quotes the branch it names"
+assert_not_contains "$AGENT" "git push origin HEAD:<head branch>" "...and no unquoted push survives"
+assert_contains "$AGENT" "git show 'origin/<base>:.doperpowers/risk-surfaces.md'" "the base-ref manifest read quotes the ref"
 assert_text_contains "$workspace" "git checkout --detach <head>" \
     "...and detaches at the brief's head" "Workspace"
 assert_text_contains "$workspace" "\`git rev-parse HEAD\` must then print the brief's" \

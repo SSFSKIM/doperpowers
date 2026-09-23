@@ -82,6 +82,19 @@ assert_before "$PROTOCOL" "## Position" "## Dispatch" "positioning precedes the 
 echo "stand-in protocol — positioning:"
 assert_contains "$PROTOCOL" 'git checkout --detach {{HEAD_SHA}}' "a PR review positions at the briefed head"
 assert_contains "$PROTOCOL" "baseRefName,headRefName,headRefOid" "the api mode resolves base and head off the PR"
+# Each branch rides an explicit refspec and a quote: a single-branch clone's
+# fetch of a bare name leaves origin/<ref> absent, and the PR's author chose the
+# head branch's name (`topic;id` is a legal ref).
+assert_contains "$PROTOCOL" "git fetch origin '+refs/heads/{{BASE_REF}}:refs/remotes/origin/{{BASE_REF}}'" \
+    "a PR review fetches the base into its tracking ref, quoted"
+assert_contains "$PROTOCOL" "'+refs/heads/{{HEAD_REF}}:refs/remotes/origin/{{HEAD_REF}}'" \
+    "...and the head branch into its own"
+assert_contains "$PROTOCOL" "git fetch origin '+refs/heads/<baseRefName>:refs/remotes/origin/<baseRefName>'" \
+    "the api mode fetches the resolved base the same way"
+assert_contains "$PROTOCOL" "'+refs/heads/<headRefName>:refs/remotes/origin/<headRefName>'" \
+    "...and the resolved head branch"
+assert_contains "$PROTOCOL" "git fetch origin '{{INTEGRATION_REF}}'" "the scale fetch quotes the integration ref"
+assert_not_contains "$PROTOCOL" "git fetch origin {{BASE_REF}} {{HEAD_REF}}" "no bare, unquoted branch fetch survives"
 assert_contains "$PROTOCOL" "ls-remote --symref origin HEAD" "a scale review resolves its base from origin's own symref"
 assert_contains "$PROTOCOL" "aggregate range: none" "an epic with no integration branch says so in the brief"
 assert_contains "$PROTOCOL" "needs-human" "a ref that will not resolve parks instead of reviewing the wrong range"

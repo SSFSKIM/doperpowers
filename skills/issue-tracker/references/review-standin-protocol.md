@@ -38,7 +38,9 @@ worktree.
 already. Make the base reachable and confirm the head:
 
 ```
-git fetch origin {{BASE_REF}} {{HEAD_REF}} && git checkout --detach {{HEAD_SHA}}
+git fetch origin '+refs/heads/{{BASE_REF}}:refs/remotes/origin/{{BASE_REF}}' \
+  '+refs/heads/{{HEAD_REF}}:refs/remotes/origin/{{HEAD_REF}}' \
+  && git checkout --detach {{HEAD_SHA}}
 ```
 
 **`REVIEW_MODE: api`** — `BASE_REF` is `UNRESOLVED` (the board carries no PR
@@ -48,8 +50,14 @@ binding — then resolve and position:
 
 ```
 gh pr view <n> --json baseRefName,headRefName,headRefOid
-git fetch origin <baseRefName> <headRefName> && git checkout --detach <headRefOid>
+git fetch origin '+refs/heads/<baseRefName>:refs/remotes/origin/<baseRefName>' \
+  '+refs/heads/<headRefName>:refs/remotes/origin/<headRefName>' \
+  && git checkout --detach <headRefOid>
 ```
+
+Each branch rides its own refspec, for the reason the scale mode below spells
+out, and every branch name is quoted: the PR's author chose the head branch's
+name, and `topic;id` is a legal ref.
 
 `baseRefName` is the brief's `base:` — the branch name itself, never `origin/`
 anything; the agent adds the remote where it wants the tracking ref.
@@ -65,7 +73,7 @@ stale local symref or a literal guess):
 BASE="$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]].*#\1#p' | head -1)"
 [ -n "$BASE" ] \
   && git fetch origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
-  && git fetch origin {{INTEGRATION_REF}} && git checkout --detach FETCH_HEAD
+  && git fetch origin '{{INTEGRATION_REF}}' && git checkout --detach FETCH_HEAD
 ```
 
 Each fetch names the ref it will be read through: a single-branch clone's
