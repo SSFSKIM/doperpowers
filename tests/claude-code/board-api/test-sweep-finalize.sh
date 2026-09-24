@@ -13,7 +13,8 @@
 # read, sync-before-status, a failed registry scan, a dead owner left for the reclaim, a
 # live idle owner whose transcript tree is still fresh (a QA child reviewing
 # under it), an owner carrying an unresolved resume fork, a non-null owner run
-# with no seat in this registry (its home host closes it), a GitHub read that
+# with no seat in this registry (its home host closes it), a null owner run
+# with a lingering predecessor seat, a GitHub read that
 # hangs, the whole tick's no-wasted-nudge order, and finalize's share of an
 # `all` tick under slow reads.
 . "$(dirname "$0")/helpers.sh"
@@ -48,10 +49,10 @@ def sha(n):
 def pr(n):
     return f"https://github.com/o/r/pull/{n}"
 
-ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94)
+ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95)
 rows = {n: {"id": n, "state": "in-review", "priority": "P1",
             "title": f"ticket {n}", "pr_url": "512" if n == 84 else pr(n),
-            "owner_run": None if n in (82, 88) else n, "plan": None}
+            "owner_run": None if n in (82, 88, 95) else n, "plan": None}
         for n in ids}
 route("GET", "/tickets?limit=200&states=in-review",
       {"items": list(rows.values()), "next": None, "as_of": 1})
@@ -63,7 +64,7 @@ def trail(cursor, text):
     return {"source": "board", "cursor": str(cursor), "kind": "review-trail",
             "runId": None, "body": {"text": text}}
 
-for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94):
+for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95):
     text = "round 1 — level medium"
     if n != 85:
         text += "\nreviewed head: " + sha(830 if n == 83 else n)
@@ -73,8 +74,9 @@ for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94):
 
 # 91 has no by-id row: its fresh tree skips it before the re-read, as 92's
 # dead owner and 94's remote owner do. 93 has a row and an accepting transition, so only the
-# fork guard can hold it.
-for n in (80, 82, 88, 89, 90, 93):
+# fork guard can hold it. 95 needs a by-id row so the unfixed automation
+# branch attempts a close; the guard must stop it before that read.
+for n in (80, 82, 88, 89, 90, 93, 95):
     row = rows[n].copy()
     if n == 89:
         row["state"] = "in-progress"  # rebuild between list and re-read
@@ -114,6 +116,17 @@ for n in 80 81 83 85 86 87 89 90 91 92 93; do
   meta "$n" "$status"
   touch "$TESTHOME/.claude/projects/proj/u-$n.jsonl"
 done
+# The server reclaimed 95's owner run, but its predecessor seat still holds
+# the old run. The null list owner must not turn it into an automation close.
+meta 95 idle
+python3 - "$DH/u-95.json" <<'PY95'
+import json, sys
+with open(sys.argv[1]) as f:
+    m = json.load(f)
+m["run_id"] = 950
+with open(sys.argv[1], "w") as f:
+    json.dump(m, f)
+PY95
 # 80 and 89 concluded their reviews long ago; 91's QA child writes under its
 # subagents/ right now, so only the TREE says it is active; 92 is dead, and a
 # dead parent's children are dead too, so its fresh file must not hold it.
@@ -145,7 +158,7 @@ url="${3%/}"; n="${url##*/}"
 [ "$n" != "${GH_HANG_PR:-}" ] || sleep "$GH_HANG_SECS"
 case "$n" in
   81) echo '{"mergedAt":null,"mergeCommit":null,"headRefOid":null}'; exit 0 ;;
-  80|82|83|85|86|87|88|89|90|91|92|93|94) ;;
+  80|82|83|85|86|87|88|89|90|91|92|93|94|95) ;;
   *) exit 2 ;;
 esac
 head="$n"; [ "$n" != 83 ] || head=831
@@ -242,7 +255,7 @@ nt "91 is skipped before the by-id re-read" '"path": "/tickets/91"' cat "$FIX.lo
 # would leave the run on a meta nothing renews or strips, so the dead owner is
 # left for its lease to lapse and the reclaim to clear, like a remote run.
 t  "92's dead owner is left for the reclaim and reported as dead" \
-   "#92 — merged, but its owner u-92 is a dead session; its lease will lapse and the reclaim will clear its run, then this closes as automation" cat "$OUT"
+   "#92 — merged, but its owner u-92 is a dead session; its lease will lapse and the reclaim will clear its run, then a successor closes it" cat "$OUT"
 t  "92 is not closed, as its run or as automation" "[0]" post_count 92
 nt "92's dead owner is never reported mid-turn or active" "#92 — merged, but its owner u-92 is mid-turn" cat "$OUT"
 nt "92's dead owner skips the tree gate" "#92 — merged, but its owner u-92 was active" cat "$OUT"
@@ -257,6 +270,13 @@ t  "94's remote owner is left for its home host" \
    "#94 — merged at the reviewed head; owner run 94 lives in another registry; its own host closes" cat "$OUT"
 t  "94 is not closed as automation under a remote run" "[0]" post_count 94
 nt "94 is skipped at owner resolution, before the by-id re-read" '"path": "/tickets/94"' cat "$FIX.log"
+# 95's null owner_run alone is insufficient: the unstripped predecessor seat
+# must be left to the reclaim/retire lifecycle and a successor.
+t  "95's predecessor seat is left for the recovery lifecycle" \
+   "#95 — merged, owner_run cleared but seat u-95 still holds run 950; the reclaim/retire lifecycle strips it and a successor closes" cat "$OUT"
+t  "95 is not closed while its predecessor still holds the run" "[0]" post_count 95
+# The later budget and ordering drills do not include this reclaimed seat.
+rm "$DH/u-95.json"
 t  "90 was synced before its status was trusted" '"status": "working"' cat "$DH/u-90.json"
 # Assert the ordering, rather than only the presence of all three operations.
 t  "80's evidence, fresh by-id read and write are in order" "ordered" python3 - "$FIX.log" <<'PY'

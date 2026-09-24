@@ -1653,7 +1653,7 @@ phase_finalize() {
     return 1
   }
   local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
-  local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence status fresh state now_pr now_run now_plan note output first
+  local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence lingering_uuid lingering_run status fresh state now_pr now_run now_plan note output first
   local transcript turn_epoch age liveness cursor took="" read_secs left
   # The last ticket a tick took, per binding (ticket numbers repeat across
   # boards), written as each is taken so the next tick starts past it.
@@ -1730,10 +1730,13 @@ PY
     fi
     # The whole scan is read, no early break: its status lands in $SCAN_RC
     # only as the scan ends, and a reader that stops early checks it too soon.
-    owner_uuid="" owner_bearer="" owner_fence=""
+    owner_uuid="" owner_bearer="" owner_fence="" lingering_uuid="" lingering_run=""
     while IFS=$'\x1f' read -r meta_uuid bearer meta_run fence; do
       if [ -z "$owner_uuid" ] && [ -n "$run" ] && [ "$meta_run" = "$run" ] && [ -n "$bearer" ]; then
         owner_uuid="$meta_uuid" owner_bearer="$bearer" owner_fence="$fence"
+      fi
+      if [ -z "$lingering_uuid" ] && [ -n "$meta_run" ]; then
+        lingering_uuid="$meta_uuid" lingering_run="$meta_run"
       fi
     done < <(_metas_for_ticket "$ticket")
     # A scan that died is not an empty registry. Read as one, a locally owned
@@ -1752,6 +1755,12 @@ PY
       echo "finalize: #$ticket — merged at the reviewed head; owner run $run lives in another registry; its own host closes"
       continue
     fi
+    # A reclaimed owner's old seat may still hold its run. A done would make
+    # the ticket terminal before the recovery lifecycle can strip that seat.
+    if [ -z "$run" ] && [ -n "$lingering_uuid" ]; then
+      echo "finalize: #$ticket — merged, owner_run cleared but seat $lingering_uuid still holds run $lingering_run; the reclaim/retire lifecycle strips it and a successor closes"
+      continue
+    fi
     # Synced before the status is trusted: the sync promotes a natively-woken
     # seat whose record still says idle.
     liveness=""
@@ -1760,9 +1769,9 @@ PY
     # end the run server-side, but only a renewal's 409 or the reclaim strips
     # the run from its meta, and a dead session is never renewed — its seat
     # would hold the run and a dispatch slot for good. Its lease lapses, the
-    # reclaim clears owner_run, and a later tick closes it as automation.
+    # reclaim clears owner_run, then a successor closes it after seat cleanup.
     if [ "$liveness" = dead ]; then
-      echo "finalize: #$ticket — merged, but its owner $owner_uuid is a dead session; its lease will lapse and the reclaim will clear its run, then this closes as automation"
+      echo "finalize: #$ticket — merged, but its owner $owner_uuid is a dead session; its lease will lapse and the reclaim will clear its run, then a successor closes it"
       continue
     fi
     # AN UNRESOLVED FORK MAY BE LIVE ON THIS RUN, and nothing here can see it:

@@ -23,6 +23,7 @@ evidence gate the server enforces on the owning run's close.
 - [x] M2 — `tests/claude-code/board-api/test-sweep-finalize.sh` written and green; the suite listed in `run-skill-tests.sh`; every other `board-api/test-sweep-*.sh` and `test-sweep-renew-relay.sh` still green.
 - [x] M3 — `agents/qa-loop.md` and `agents/codex/qa-loop.toml` name the reviewed head in the trail and the API finalize pass beside gh's FINALIZE; `references/review-loop.md` names it; TECH-DEBT.md row 26 struck; `tests/issue-tracker/test-qa-loop-agent.sh` pins the new trail line.
 - [x] PR [#182](https://github.com/SSFSKIM/doperpowers/pull/182) opened on `main` from `74-api-finalize`; the full report is returned to the dispatching session rather than written to `.architect/74/plan-executor-report.md` because the worker harness prohibits report `.md` files (TECH-DEBT.md row 25).
+- [x] R5-F1 re-cut — a null-owner ticket with any runful registry seat is left for the recovery lifecycle, and the dead-owner line names the successor; ticket 95 reproduces the unguarded POST and passes with the guard. No new PR or version bump; PR #182's review loop owns the next branch review.
 
 M1 verification: `scripts/lint-shell.sh` found no changed files at baseline;
 `scripts/lint-shell.sh skills/issue-tracker/scripts/_sweep_api.sh
@@ -182,8 +183,8 @@ Per tick:
       meta's run and dispatch slot behind with nothing to strip them. So a
       dead owner is LEFT exactly like a non-null `owner_run` below: its lease
       lapses within one window, the server's reclaim clears `owner_run` and
-      the resume/retire lifecycle strips the runless seat, and a later tick
-      then closes the ticket as automation. Log the `dead owner` line and
+      the resume/retire lifecycle strips the predecessor seat and dispatches
+      a successor, which closes the ticket. Log the `dead owner` line and
       continue. Cleaning up a dead terminal owner is the run-lifecycle's job,
       not finalize's.
       `live` — the sync `_liveness` just ran promotes a natively-woken seat
@@ -218,8 +219,10 @@ Per tick:
       under its child. So finalize writes NOTHING and logs the `another
       registry` line — its home host closes it, or the server's reconciler
       reclaims the expired lease and clears `owner_run`, after which a later
-      tick closes it as automation. Only a NULL `owner_run` (the run ended,
-      or a reclaim cleared it) reaches the automation write in 3f. A
+      tick may close it as automation only if no seat still holds a run;
+      otherwise a successor closes it after the recovery lifecycle strips
+      the predecessor. Only a NULL `owner_run` (the run ended, or a reclaim
+      cleared it) can reach the automation write in 3f. A
       registry scan that died resolves nothing and is not "no seat": stderr
       line, continue.
    e. Fresh read, immediately before the write:
@@ -485,11 +488,14 @@ an `SW` runner). Three seams are new:
   - 81 and 84 need none (never read).
   Transition record bodies carry `to` (the server folds `to_state` into the
   body: `{"note":"…","to":"in-review"}`); trail bodies carry `text`.
-- **By-id rows** (`GET /tickets/<n>`, after the timelines): 80, 82, 88, 90
+- **By-id rows** (`GET /tickets/<n>`, after the timelines): 80, 82, 88, 90, 95
   answer the list row verbatim (state `in-review`, same `pr_url`,
   `owner_run`, `plan` null); 89 answers `state: "in-progress"` with the
-  same pins. 87 (mid-turn), 91 (fresh tree) and 94 (non-null remote owner)
-  are skipped before the re-read, and 83, 85, 86 never reach it; leave them
+  same pins. The 95 row deliberately permits the UNGUARDED pass to
+  attempt a write, making the regression drill red before the guard; the
+  guarded pass skips before this read. 87 (mid-turn), 91 (fresh tree) and
+  94 (non-null remote owner) are skipped before the re-read, and 83, 85,
+  86 never reach it; leave them
   without a row so an out-of-order implementation shows up as a 404 in the
   request log.
 - **Transitions**: `POST /tickets/80/transition` → 200 `{"ok":true,"to":"done"}`;
@@ -541,7 +547,7 @@ the tick output):
 - 90: no POST; `owner u-90 is mid-turn`; and the record now reads `working` (the sync ran before the status was trusted).
 - 91: no POST; no by-id re-read of 91 in the request log (skipped before it); the output contains `owner u-91 was active` and `a review may be running under it`.
 - 94: no POST; no by-id re-read of 94 in the request log (skipped at owner resolution); the output contains `owner run 94 lives in another registry`.
-- 95: no POST; the output contains `seat u-95 still holds run 950` (the null-owner automation close is withheld while a predecessor seat lingers).
+- 95: no POST; the output contains `seat u-95 still holds run 950` (the null-owner automation close is withheld while a predecessor seat lingers). Remove this seat after these assertions so the later budget/ordering drills retain their original fixture cost.
 - 92 (the dead-owner drill added by an earlier fix wave): its seat's session is dead (`_liveness` → dead); assert NO POST and no by-id re-read, and the output contains `its owner u-92 is a dead session`. This drill's earlier expectation (closes as its run) is inverted by the R3-F1 re-pin; update it in place rather than adding a new ticket.
 - The request log shows `GET /tickets/80` AFTER `GET /tickets/80/timeline`
   and before `POST /tickets/80/transition` (the re-read sits immediately
@@ -889,6 +895,8 @@ scratch: never `git add` it.
 
 ## Surprises & Discoveries
 
+- R5-F1 drill: the earlier ticket-95 spec omitted a by-id fixture row, which would have made the unguarded pass fail a 404 before writing. Giving 95 a by-id row proved the missing guard: the red run issued one POST for 95; the corrected pass skips before that read. The seat is removed after the assertion so subsequent whole-tick budget tests keep their original fixture cost.
+
 - Observation: the server's `review-trail-required` gate binds run actors
   only; an automation or human `in-review → done` is unrestricted.
   Evidence: arkho `board-service/src/transitions.js` — the guard block is
@@ -921,6 +929,14 @@ scratch: never `git add` it.
   review loop (R2-F1) and fixed by re-pin.
 
 ## Outcomes & Retrospective
+
+R5-F1 was reproduced first: the ticket-95 fixture (including a by-id row so
+an unguarded pass could reach the write) issued `POST /tickets/95/transition`
+with the original code, despite the reclaimed null owner. With the runful-seat
+check in the existing registry scan, the ticket-95 POST count is zero and its
+predecessor-seat log is present; ticket 92 remains a dead-owner skip. The
+finalize drill and all six board-API sweep drills pass; `scripts/lint-shell.sh`
+passes. Review stays with PR #182's board review loop.
 
 The API tick now closes a PR merged at the reviewed head with the same
 client-side evidence predicate under either principal, and re-reads the pin
@@ -964,9 +980,11 @@ has no seat in this registry is NOT closed here — this host cannot know the
 remote owner's QA child has stopped, and a `done` by any actor would end that
 run under its child. It is logged (`owner run <n> lives in another registry`)
 and left for its home host or for the server's reclaim, which clears
-`owner_run` so a later tick closes it as automation. The automation close is
-now reserved for a null `owner_run` alone (ticket 94 drills the skip; 82 and
-88 remain the null-owner automation cases). The window between the fresh read
+`owner_run`; a successor closes it after the recovery lifecycle strips any
+predecessor seat, or finalize closes it if no seat holds a run. The automation
+close is reserved for a null `owner_run` AND no runful seat in the registry
+(ticket 94 drills the remote-owner skip, 95 the lingering predecessor; 82 and
+88 remain the clean-orphan automation cases). The window between the fresh read
 and a non-run actor's write remains unguarded by the server, as this spec
 scopes out server changes. The worker harness prevented the requested report
 `.md` file, so the implementation account was delivered through handback
