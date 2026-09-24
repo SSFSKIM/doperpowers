@@ -176,12 +176,30 @@ Per tick:
       status) — and only then read `status` (`_meta_field
       "$DAEMON_HOME/<uuid>.json" status`). `working` or `blocked` means the
       owner is mid-turn (its own QA agent may be verifying this very
-      merge): log, continue. Any other status (idle, or a dead session
-      whose run is still open — the run is an identity, and the server
-      checks its fence and liveness itself) writes as the run in step 3f.
-      No seat resolves (owner_run null, or the owner lives in another
-      machine's registry): the automation path in 3f. A registry scan that
-      died resolves nothing and is not "no seat": stderr line, continue.
+      merge): log, continue.
+      A LIVE owner reading `idle` is NOT enough to write: the review runs in
+      the owner's QA subagent, so the parent's turn ends and its seat reads
+      `idle` while the child writes under `subagents/` — closing now ends the
+      run out from under a live review (any `done`, run- or automation-
+      authored, ends the owning run server-side; the principal does not
+      change that). So for a live owner, apply the same activity gate
+      review-recover uses (line 1467): the WHOLE transcript tree must be
+      quiet past `REVIEW_STALL_MIN` before the review counts as concluded —
+      `transcript="$(_transcript_for_uuid "$owner_uuid")"`,
+      `age=$(( ($(date +%s) - _tree_mtime_epoch "$transcript") / 60 ))`, and
+      `age < REVIEW_STALL_MIN` → log the `active` line, continue. A tree
+      quiet at least that long, on a live idle owner whose child has
+      returned, is the concluded review this pass closes. No transcript is
+      no signal (a seat that never wrote): treat as concluded and write.
+      A DEAD owner session has no live child of its own — a dead parent's
+      subagents are dead too — so the tree gate does not apply; write as the
+      run (the run is an identity, and the server checks its own fence and
+      liveness).
+      Any other status on a live owner, past the tree gate, writes as the
+      run in step 3f. No seat resolves (owner_run null, or the owner lives
+      in another machine's registry): the automation path in 3f. A registry
+      scan that died resolves nothing and is not "no seat": stderr line,
+      continue.
    e. Fresh read, immediately before the write:
       `A.ticket(ticket, principal="automation")`. Skip, with the `moved`
       line, unless `state == "in-review"` and `pr_url`, `owner_run` and
@@ -217,6 +235,7 @@ Log lines (stdout unless marked; tests assert on them, so copy them exactly):
     finalize: #<t> — merged, but no review-trail since the ticket last entered review; left for the owner
     finalize: #<t> — merged, but the latest review-trail names no reviewed head; left for the owner
     finalize: #<t> — merged, but its owner <uuid> is mid-turn; its own agent closes
+    finalize: #<t> — merged, but its owner <uuid> was active <age>m ago (a review may be running under it); left for its own agent
     finalize: #<t> — moved between the read and the write (now <state>, pr <pr_url>, owner <owner_run>, plan <plan>); nothing is written
     finalize: tick budget exhausted — the rest ride the next tick
     (stderr) finalize: #<t> — gh could not read <pr_url>; the next tick retries
@@ -269,7 +288,8 @@ Observable on the hermetic suite and on the live board:
    `in-review`, re-read the ticket by id and, when it is still `in-review`
    with the same `pr_url`, `owner_run` and `plan`, write `in-review → done`
    with the note above — as the owning run when a seat record on this
-   machine carries that run's bearer and is not mid-turn after a sync,
+   machine carries that run's bearer, is not mid-turn after a sync, and
+   (for a LIVE owner) has a transcript tree quiet past `REVIEW_STALL_MIN`,
    otherwise as the automation principal with `BOARD_OWNER_OVERRIDE`
    naming the pass. Under `all`, a ticket finalize closed is read as `done`
    by review-recover in the same tick: no wake is sent to its owner.
@@ -282,9 +302,12 @@ Observable on the hermetic suite and on the live board:
    since the latest entry into `in-review`, or whose latest trail names no
    head, is untouched and logged. A ticket whose owner seat is mid-turn —
    by its record, or promoted to `working` by the sync — is untouched and
-   logged. A ticket that left `in-review` (or changed pin or owner) between
-   the list read and the write is untouched and logged. An epic (numeric
-   `pr_url`) is skipped without a gh call.
+   logged. A ticket whose LIVE owner has a fresh transcript tree (a QA
+   child may be reviewing under it) is untouched and logged; it is closed
+   only once the tree is quiet past `REVIEW_STALL_MIN`. A ticket that left
+   `in-review` (or changed pin or owner) between the list read and the
+   write is untouched and logged. An epic (numeric `pr_url`) is skipped
+   without a gh call.
 5. `tests/claude-code/board-api/test-sweep-finalize.sh` drills every case
    above plus the gh-bound refusal, hermetically (fixture mock, stub gh,
    stub sminos), and is listed in `run-skill-tests.sh`.
@@ -320,12 +343,15 @@ pass rides it); a run context always wins.
   `REVIEW RECOVER`, in that list's voice: the ticket whose PR merged after
   its QA agent returned; merge state from GitHub, the reviewed head from the
   trail, the close only when both agree; the server's gate binds run actors
-  only, so the predicate is applied here before either write; the ticket is
-  re-read by id just before the write and a moved one is skipped — a narrow
-  window, not an atomic guard, since a non-run actor has no conditional
-  transition; refused closes are logged and left to the recovery ladder;
-  it runs ahead of review-recover so a merged ticket is closed before a
-  nudge is spent on its owner; the seat is the renew step's to retire.
+  only, so the predicate is applied here before either write; a live owner
+  whose review still runs under its QA subagent is left alone — the same
+  transcript-tree activity gate review-recover uses — so the run is never
+  ended out from under a live child; the ticket is re-read by id just before
+  the write and a moved one is skipped — a narrow window, not an atomic
+  guard, since a non-run actor has no conditional transition; refused closes
+  are logged and left to the recovery ladder; it runs ahead of
+  review-recover so a merged ticket is closed before a nudge is spent on its
+  owner; the seat is the renew step's to retire.
 - `_finalize_candidates`, `_finalize_evidence`, `phase_finalize` after
   `phase_review_recover` (ends at line 1574), exactly as § The pass
   describes. Mirror `phase_review_recover`'s idioms: `_budget_left` with a
@@ -375,11 +401,12 @@ an `SW` runner). Three seams are new:
   - 86: merged at SHA86.
   - 87: merged at SHA87.
   - 88: merged at SHA88.
+  - 91: merged at SHA91.
 - The **list fixture**: `GET /tickets?limit=200&states=in-review` (the
   client appends `&repo=testrepo`; the mock matches by prefix) answering
   `{"items":[…],"next":null,"as_of":1}` with rows carrying `id`, `state`,
   `priority`, `title`, `pr_url`, `owner_run`, `plan` (null throughout):
-  - 80 `https://github.com/o/r/pull/80`, owner_run 80 — the happy path, owner idle.
+  - 80 `https://github.com/o/r/pull/80`, owner_run 80 — the happy path, owner live+idle with a STALE transcript (its review concluded).
   - 81 `…/pull/81`, owner_run 81 — unmerged.
   - 82 `…/pull/82`, owner_run null — merged at the reviewed head, no seat; the server refuses.
   - 83 `…/pull/83`, owner_run 83 — merged off the reviewed head.
@@ -388,14 +415,15 @@ an `SW` runner). Three seams are new:
   - 86 `…/pull/86`, owner_run 86 — the only trail predates the latest entry into in-review.
   - 87 `…/pull/87`, owner_run 87 — owner seat `working`.
   - 88 `…/pull/88`, owner_run null — merged at the reviewed head, no seat; the server accepts.
-  - 89 `…/pull/89`, owner_run 89 — merged at the reviewed head, but the by-id re-read says `in-progress` (a rebuild landed between the list and the write).
+  - 89 `…/pull/89`, owner_run 89 — merged at the reviewed head, owner live+idle with a STALE transcript, but the by-id re-read says `in-progress` (a rebuild landed between the list and the write).
   - 90 `…/pull/90`, owner_run 90 — merged at the reviewed head; the seat record says `idle` but the sync promotes it to `working` (a natively-woken owner).
-  gh answers 89 and 90 as merged at SHA89 / SHA90.
+  - 91 `…/pull/91`, owner_run 91 — merged at the reviewed head, owner live+idle but with a FRESH transcript (a QA child is reviewing under it) → left for its own agent.
+  gh answers 89, 90 and 91 as merged at SHA89 / SHA90 / SHA91.
 - **Timelines** (`GET /tickets/<n>/timeline`, each registered AHEAD of the
   `/tickets/<n>` by-id row it shares a prefix with — the mock takes the
   first match by method + path prefix, and `/tickets/80` is a prefix of
   `/tickets/80/timeline`):
-  - 80, 82, 87, 88, 89, 90: `[transition to in-review (cursor 1), review-trail (cursor 2) with text "round 1 — level medium\nreviewed head: <SHA>"]`.
+  - 80, 82, 87, 88, 89, 90, 91: `[transition to in-review (cursor 1), review-trail (cursor 2) with text "round 1 — level medium\nreviewed head: <SHA>"]`.
   - 83: the same with `reviewed head: SHA83R`.
   - 85: trail text `"round 1 — level medium"` (no head line).
   - 86: `[review-trail (cursor 1) naming SHA86, transition to in-review (cursor 2)]`.
@@ -405,8 +433,8 @@ an `SW` runner). Three seams are new:
 - **By-id rows** (`GET /tickets/<n>`, after the timelines): 80, 82, 88, 90
   answer the list row verbatim (state `in-review`, same `pr_url`,
   `owner_run`, `plan` null); 89 answers `state: "in-progress"` with the
-  same pins. 87 is never re-read (mid-turn is decided before the re-read)
-  and 83, 85, 86 never reach it; leave them without a row so an
+  same pins. 87 (mid-turn) and 91 (fresh tree) are skipped before the
+  re-read, and 83, 85, 86 never reach it; leave them without a row so an
   out-of-order implementation shows up as a 404 in the request log.
 - **Transitions**: `POST /tickets/80/transition` → 200 `{"ok":true,"to":"done"}`;
   `/tickets/82/transition` → 403
@@ -415,17 +443,23 @@ an `SW` runner). Three seams are new:
   unexpected POST answers 404 and the assertion on the request log catches it.
 - **Registry**: `u-80` idle, run 80, bearer `tok-80`, fence 1, ticket 80,
   `bind_confirmed` true, phase review; `u-81`, `u-83`, `u-85`, `u-86`,
-  `u-89`, `u-90` likewise on their tickets; `u-87` the same but
+  `u-89`, `u-90`, `u-91` likewise on their tickets; `u-87` the same but
   `status: working`. No seat for 82, 84, 88.
+- **Transcripts** (the tree gate reads them, so this suite adopts
+  review-recover's transcript scaffolding: a `$TESTHOME/.claude/projects/proj`
+  dir and the `stale`/`fresh` helpers that touch `<uuid>.jsonl` to 2026-07-17
+  or to now). `u-80` and `u-89` are STALE (their reviews concluded, so the
+  tree gate lets them through to the write / the re-read); `u-91` is FRESH (a
+  QA child is active, so the tree gate skips it); `u-90` may be either (the
+  sync promotes it to `working` and the mid-turn check catches it before the
+  tree gate); `u-87` needs none (mid-turn by its record). A seat skipped
+  before owner resolution (81 unmerged, 83 mismatch, 85/86 evidence) never
+  reaches the tree gate, so its transcript is irrelevant.
 - The **sminos stub** is review-recover's (`migrate`, `sync` answering
   from the record, `resume|wake` logging `WAKE uuid=<u>` to
   `$TDIR/nudges.log`), with one addition: `sync u-90` rewrites that
   record's `status` to `working` before answering `live` — the promotion
   the real verb performs on a natively-woken seat.
-- For the whole-tick drill, `u-80`'s transcript is made stale the way
-  review-recover's test does (`stale u-80`: a `$TESTHOME/.claude/projects/proj/u-80.jsonl`
-  touched to 2026-07-17), so review-recover would nudge it if the ticket
-  were still in review.
 
 Assertions (with `t`/`nt` on `cat "$FIX.log"`, `cat "$TDIR/gh.log"`, and
 the tick output):
@@ -441,6 +475,7 @@ the tick output):
 - 88: a POST with `Bearer a` and the note; `done written as automation`.
 - 89: no POST; the output line contains `moved between the read and the write (now in-progress`.
 - 90: no POST; `owner u-90 is mid-turn`; and the record now reads `working` (the sync ran before the status was trusted).
+- 91: no POST; no by-id re-read of 91 in the request log (skipped before it); the output contains `owner u-91 was active` and `a review may be running under it`.
 - The request log shows `GET /tickets/80` AFTER `GET /tickets/80/timeline`
   and before `POST /tickets/80/transition` (the re-read sits immediately
   before the write).
@@ -457,7 +492,7 @@ the tick output):
   as review-recover's whole-tick drill shows: add
   `GET /answers/unrelayed → []`, `GET /runs/needing-resume → []`, and a
   `POST /runs/<n>/renew → 200 {"renewed":true}` per seated run (80, 81,
-  83, 85, 86, 87, 89, 90). Register this drill AFTER the `finalize`-only
+  83, 85, 86, 87, 89, 90, 91). Register this drill AFTER the `finalize`-only
   assertions so the `grep -c` counts above stay exact.
 - gh-bound: `wrong_binding` as in `test-sweep-renew-relay.sh:605` running
   `_sweep_api.sh finalize` from a repo with no api `board.json`; assert
@@ -588,7 +623,10 @@ scratch: never `git add` it.
   `_board_api.ticket(tid, principal="automation")` for the re-read (the
   same fields; `None` when the ticket is gone).
 - Seat liveness: `_liveness <uuid>` (already in `_sweep_api.sh`) for its
-  `sminos sync` side effect before the status read.
+  `sminos sync` side effect before the status read; the activity gate on a
+  live owner reuses `_transcript_for_uuid <uuid>` and `_tree_mtime_epoch
+  <transcript>` (the same pair `phase_review_recover` uses) against
+  `REVIEW_STALL_MIN`.
 - Writes: `board-transition.sh <ticket> done "<note>"` under either
   `BOARD_RUN_TOKEN`/`BOARD_RUN_ID`/`BOARD_RUN_FENCE` or
   `BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="…"`.
@@ -642,6 +680,32 @@ scratch: never `git add` it.
   (sminos.py, the stale-idle repair), so the raw field is not the status —
   review-recover reads it the same way.
   Date/Author: 2026-09-23, Architect #74; the sync from the spec review.
+- Decision: A LIVE owner reading `idle` is not closed until its whole
+  transcript tree is quiet past `REVIEW_STALL_MIN` — the same activity gate
+  review-recover applies.
+  Rationale: an owner's review runs in its QA subagent, so the parent's turn
+  ends and its seat reads `idle` while the child writes under `subagents/`.
+  The mid-turn (`working`) check alone does not see that child, so a finalize
+  on the bare idle status would write `done`, and any `done` — run- or
+  automation-authored — ends the owning run server-side (transitions.js
+  SCOPE_END), pulling the run out from under the live review. The reachable
+  trigger is a PR merged externally (a human) during an active review at the
+  reviewed head. The tree gate is the one signal this file already trusts to
+  tell an active review from a concluded one; a shorter threshold is unsafe
+  because a panel round can keep the tree silent for up to `REVIEW_STALL_MIN`.
+  The cost is that the armed-auto-merge path may wait for tree-quiet, but the
+  close is still direct (no QA re-dispatch), so it is strictly cheaper than
+  the recovery ladder it replaces, and finalize running before review-recover
+  preempts that ladder's nudge.
+  Rejected: comparing the tree mtime to GitHub's `mergedAt` (threshold-free
+  but a cross-clock compare, and it mis-fires when a panel lane is silent
+  from before the merge through the tick); deferring every live owner to the
+  ladder (kills the armed-auto-merge scenario the ticket names first); a
+  dedicated sub-45-minute knob (a new magic number that the panel-silence
+  reality makes unsafe anyway). A DEAD owner session has no live child of its
+  own, so the gate does not apply there.
+  Date/Author: 2026-09-23, Architect #74, from the spec review's second
+  round (R2-F1); adopted by re-pin.
 - Decision: The pass runs BEFORE review-recover in `all`, not after as the
   ticket body says.
   Rationale: review-recover's wake is asynchronous and the woken seat reads
@@ -707,6 +771,15 @@ scratch: never `git add` it.
   finalize after review-recover, although the revised pass, Plan of Work,
   Acceptance and Decision Log all say before. Corrected the stale interface
   line to match the settled order.
+- Observation: an owner whose review runs in its QA subagent reads `idle`,
+  not `working`, so the first-revision mid-turn check (working/blocked only)
+  would have closed a ticket under a live review and ended its run.
+  Evidence: `phase_review_recover` reads the whole transcript TREE (not the
+  seat status) precisely because "a panel round can keep the parent silent
+  for an hour while the child writes under subagents/"
+  (`_sweep_api.sh` review-recover comment, and its `_tree_mtime_epoch` use);
+  the finalize pass needed the same gate and lacked it. Surfaced by the PR
+  review loop (R2-F1) and fixed by re-pin.
 
 ## Outcomes & Retrospective
 
@@ -734,3 +807,11 @@ this is the existing TECH-DEBT.md row 25 contract mismatch.
   the seat is synced before its status is read; the plugin version bump
   joins M1's commit; drills 89 (moved), 90 (stale idle) and the whole-tick
   ordering drill added; the PR body's authoring step named.
+- 2026-09-23: third revision, a re-pin during the PR review loop answering
+  R2-F1 (spec-conflict): a LIVE owner reading `idle` is closed only once its
+  whole transcript tree is quiet past `REVIEW_STALL_MIN` — the same activity
+  gate `phase_review_recover` uses — so finalize never ends a run out from
+  under a live QA child; a new `active <age>m ago` log line; ticket 91 (live
+  owner, fresh tree) and the transcript staleness scaffolding added to the
+  fixture, and `u-80`/`u-89` marked stale so they still proceed. The code
+  change flows through the review loop's fix wave against this revision.
