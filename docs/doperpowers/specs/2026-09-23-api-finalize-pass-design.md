@@ -22,7 +22,7 @@ evidence gate the server enforces on the owning run's close.
 - [x] M1 — `board-transition.sh` honours `BOARD_PRINCIPAL`; `_sweep_api.sh` gains `phase_finalize` and the `finalize` arm, wired into `all` between stall and review-recover; plugin version bumped to 7.119.0 in the same commit.
 - [x] M2 — `tests/claude-code/board-api/test-sweep-finalize.sh` written and green; the suite listed in `run-skill-tests.sh`; every other `board-api/test-sweep-*.sh` and `test-sweep-renew-relay.sh` still green.
 - [x] M3 — `agents/qa-loop.md` and `agents/codex/qa-loop.toml` name the reviewed head in the trail and the API finalize pass beside gh's FINALIZE; `references/review-loop.md` names it; TECH-DEBT.md row 26 struck; `tests/issue-tracker/test-qa-loop-agent.sh` pins the new trail line.
-- [ ] PR opened on `main` from `74-api-finalize`; report written to `.architect/74/plan-executor-report.md`.
+- [x] PR [#182](https://github.com/SSFSKIM/doperpowers/pull/182) opened on `main` from `74-api-finalize`; the full report is returned to the dispatching session rather than written to `.architect/74/plan-executor-report.md` because the worker harness prohibits report `.md` files (TECH-DEBT.md row 25).
 
 M1 verification: `scripts/lint-shell.sh` found no changed files at baseline;
 `scripts/lint-shell.sh skills/issue-tracker/scripts/_sweep_api.sh
@@ -710,7 +710,10 @@ fixture covers both authorities, refusal, mismatch, stale/missing evidence,
 mid-turn owners (including sync promotion), moved tickets and whole-tick
 ordering. The window between the fresh read and a non-run actor's write
 remains unguarded by the server, as this spec explicitly scopes out server
-changes. Review of the complete PR is owned by the board review loop.
+changes. PR #182 is ready for the board review loop, which owns complete-branch
+review. The worker harness prevented the requested report `.md` file, so the
+implementation account is delivered to the dispatcher through handback;
+this is the existing TECH-DEBT.md row 25 contract mismatch.
 
 ## Revision Notes
 
