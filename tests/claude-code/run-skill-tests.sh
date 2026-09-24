@@ -103,6 +103,7 @@ tests=(
     "board-api/test-sweep-renew-relay.sh"
     "board-api/test-sweep-stall.sh"
     "board-api/test-sweep-review-recover.sh"
+    "board-api/test-sweep-finalize.sh"
     "board-api/test-sweep-resume.sh"
     "board-api/test-run-self-location.sh"
     "board-api/test-store-scope.sh"
