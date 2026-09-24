@@ -423,10 +423,13 @@ t  "the share keeps the rotation: each all tick takes the ticket past the last" 
 # The FIRST candidate is always taken, so its read is what the share must cut:
 # a read as long as the whole budget would otherwise spend it on its own, on
 # every tick. Cut at the share's end, it is logged for the next tick and the
-# phases behind it still run.
+# phases behind it still run. The budget is sized for those phases, not for
+# the read: renew and stall ahead of the share and review-recover, relay and
+# resume behind it take seconds of their own here, and an 8s budget left them
+# too little of the half the cut hands back to finish before dispatch's gate.
 for tick in 1 2; do
   : > "$FIX.log"
-  ( BUDGET=8 GH_SLEEP=8 BOARD_GH_TIMEOUT=10 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/first$tick.out" 2>&1 || true
+  ( BUDGET=30 GH_SLEEP=30 BOARD_GH_TIMEOUT=40 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/first$tick.out" 2>&1 || true
   cp "$FIX.log" "$TDIR/first$tick.log"
   t  "budget-long first read, all tick $tick: the read is cut at the share" "gh could not read" cat "$TDIR/first$tick.out"
   nt "budget-long first read, all tick $tick: dispatch still has budget" "dispatch: tick budget exhausted" cat "$TDIR/first$tick.out"
