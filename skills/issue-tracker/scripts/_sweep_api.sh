@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # _sweep_api.sh — the API-binding unattended tick (spec § four-phase tick):
-#   renew → stall → review-recover → relay → resume-first → fresh claims. Each
-#   phase independently guarded; each invokable alone:
-#   _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]
+#   renew → stall → finalize → review-recover → relay → resume-first → fresh claims.
+#   Each phase independently guarded; each invokable alone:
+#   _sweep_api.sh [renew|stall|finalize|review-recover|relay|resume|dispatch|all]
 #
 # The gh-mode tick (board-sweep.sh) re-derives its work-list from GitHub and
 # the registry; this one re-derives it from the board API and the registry.
@@ -22,6 +22,20 @@
 #          runs out over and over registers an env-issue and is SUPPRESSED: a
 #          harness fault that outlives its worker reaches a human instead of
 #          buying a fresh successor every hour forever.
+#   FINALIZE a ticket whose PR merged after its QA agent returned. Read the
+#          merge from GitHub and the reviewed head from its trail; close only
+#          when both agree. The server gates run actors only, so the evidence
+#          predicate applies here before either write. Re-read the ticket by
+#          id just before writing and skip one that moved: this narrows the
+#          window, but is not atomic (non-run actors have no conditional edge).
+#          A live owner whose transcript TREE is not yet quiet past
+#          BOARD_REVIEW_STALL_MIN is left alone — review-recover's activity
+#          gate — so the run never ends under a QA child still reviewing.
+#          The list is taken round-robin past the last ticket a tick took, so
+#          a budget spent mid-list leaves the rest to lead the next tick.
+#          Refused closes stay with the recovery ladder. Run ahead of review
+#          recovery so no nudge is spent on a merged ticket; renew retires the
+#          ended seat on the following tick.
 #   REVIEW a bound OWNER whose review stopped. The seat that opened the PR
 #   RECOVER dispatches one qa-loop agent and ends its turn, so a seat that is
 #          live, idle and silent past BOARD_REVIEW_STALL_MIN with its ticket
@@ -391,6 +405,8 @@ trap 'rm -rf "$SCRATCH"
 TICK_BUDGET="${BOARD_SWEEP_TICK_BUDGET:-900}"
 TICK_START="$(date +%s)"
 _budget_left() { [ "$(( $(date +%s) - TICK_START ))" -lt "$TICK_BUDGET" ]; }
+# Finalize's share of an `all` tick; set only by that arm, never inherited.
+FINALIZE_DEADLINE=""
 
 # One long worker turn must not hold the tick lock past a lease, so both resume
 # vehicles bound their wait. CLAMPED at 2, and validated as an integer: a
@@ -400,6 +416,17 @@ _budget_left() { [ "$(( $(date +%s) - TICK_START ))" -lt "$TICK_BUDGET" ]; }
 RELAY_RESUME_TIMEOUT="${BOARD_RELAY_RESUME_TIMEOUT:-300}"
 case "$RELAY_RESUME_TIMEOUT" in ''|*[!0-9]*) RELAY_RESUME_TIMEOUT=300 ;; esac
 [ "$RELAY_RESUME_TIMEOUT" -ge 2 ] || RELAY_RESUME_TIMEOUT=2
+# The finalize pass scans EVERY in-review ticket, every tick, so it renews on a
+# clock rather than ahead of each item as relay and resume do: a full renewal
+# per candidate would cost runs × candidates calls a tick. RENEWED_AT is when
+# the last renewal pass began (0 = none yet this tick).
+FINALIZE_RENEW_SEC="${BOARD_FINALIZE_RENEW_SEC:-300}"
+case "$FINALIZE_RENEW_SEC" in ''|*[!0-9]*) FINALIZE_RENEW_SEC=300 ;; esac
+# CAPPED at 300 with the read bound (BOARD_GH_TIMEOUT, below): a candidate
+# admitted just inside the interval runs its read and board calls before the
+# next renewal, so the two together must end inside the 15-minute lease.
+[ "$FINALIZE_RENEW_SEC" -le 300 ] 2>/dev/null || FINALIZE_RENEW_SEC=300
+RENEWED_AT=0
 # The predecessor-branch push (_push_bounded) is bounded for the SAME reason,
 # and it is the only network call this tick makes into a remote it does not
 # control. GIT_TERMINAL_PROMPT=0 refuses an interactive credential prompt and
@@ -410,6 +437,22 @@ case "$RELAY_RESUME_TIMEOUT" in ''|*[!0-9]*) RELAY_RESUME_TIMEOUT=300 ;; esac
 BOARD_PUSH_TIMEOUT="${BOARD_PUSH_TIMEOUT:-60}"
 case "$BOARD_PUSH_TIMEOUT" in ''|*[!0-9]*) BOARD_PUSH_TIMEOUT=60 ;; esac
 [ "$BOARD_PUSH_TIMEOUT" -ge 5 ] || BOARD_PUSH_TIMEOUT=5
+# Finalize's GitHub read (_gh_read_bounded) is bounded the same way, per call:
+# a budget checked before the read and a renewal between candidates both wait
+# on the read in flight, so a stalled GitHub request would hold the lock with
+# no renewal until it returned.
+BOARD_GH_TIMEOUT="${BOARD_GH_TIMEOUT:-60}"
+case "$BOARD_GH_TIMEOUT" in ''|*[!0-9]*) BOARD_GH_TIMEOUT=60 ;; esac
+# Decimal from here on: finalize's share adds it in $(( )), which reads a
+# leading zero as octal (08 would abort the tick there).
+BOARD_GH_TIMEOUT="$(( 10#$BOARD_GH_TIMEOUT ))"
+[ "$BOARD_GH_TIMEOUT" -ge 5 ] || BOARD_GH_TIMEOUT=5
+# CAPPED, because the read runs AFTER the renewal that covers it and nothing
+# renews while it waits: a bound past the 15-minute lease lets one stalled
+# read outlive every live run's lease with the lock held. At 300, a read on
+# top of a full renewal interval (FINALIZE_RENEW_SEC) and a candidate's
+# 30-second board calls still ends inside the lease.
+[ "$BOARD_GH_TIMEOUT" -le 300 ] || BOARD_GH_TIMEOUT=300
 
 # The harness-error ladder (phase 1b). Validated the same way, because each is
 # read into arithmetic: a non-numeric override would abort the tick under
@@ -664,6 +707,7 @@ phase_renew() {
   # lived (tab as IFS whitespace collapsed the empty bearer column and the
   # fence came back as the lane).
   local uuid run bindc ticket bearer fence lane status sexhausted path rc
+  RENEWED_AT="$(date +%s)"
   # shellcheck disable=SC2034  # the trailing names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
@@ -1573,6 +1617,246 @@ phase_review_recover() {
   _scan_ok || die "registry scan failed — review-recover phase saw no metas it can trust"
 }
 
+# GitHub PR URLs only: closure-package ids on epics are not pull requests.
+# ROTATED PAST THE LAST TICKET A TICK TOOK ($1): the budget can stop the pass
+# mid-list, and a list read from its head every tick hands the same first
+# tickets the budget every time — a merged ticket behind them is never read.
+_finalize_candidates() {
+  T_AFTER="$1" _api_py - <<'PY'
+import os
+import re
+import _board_api as A
+after = os.environ["T_AFTER"].strip()
+after = int(after) if after.isdigit() else 0
+rows = sorted((row for row in A.tickets_all(states="in-review", principal="automation")
+               if re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?",
+                               row.get("pr_url") or "")),
+              key=lambda row: int(row["id"]))
+for row in ([r for r in rows if int(r["id"]) > after]
+            + [r for r in rows if int(r["id"]) <= after]):
+    print("\x1f".join(str(v or "") for v in
+          (row["id"], row["pr_url"], row.get("owner_run"), row.get("plan"))))
+PY
+}
+
+_finalize_evidence() {  # <ticket>: no-trail, no-head or reviewed sha
+  T_TID="$1" _api_py - <<'PY'
+import os
+import re
+import _board_api as A
+records = (A.timeline(os.environ["T_TID"], principal="automation") or {}).get("records") or []
+board = [r for r in records if r.get("source") == "board"]
+entry = max((int(r["cursor"]) for r in board if r.get("kind") == "transition"
+             and (r.get("body") or {}).get("to") == "in-review"), default=0)
+trails = [r for r in board if r.get("kind") == "review-trail"
+          and int(r["cursor"]) > entry]
+if not trails:
+    print("no-trail")
+else:
+    trail = max(trails, key=lambda r: int(r["cursor"]))
+    match = re.search(r"^reviewed head: ([0-9a-f]{40})\s*$",
+                      (trail.get("body") or {}).get("text") or "", re.MULTILINE)
+    print(match.group(1) if match else "no-head")
+PY
+}
+
+phase_finalize() {
+  command -v gh >/dev/null 2>&1 || {
+    echo "finalize: gh is not on PATH; merged pull requests cannot be read and nothing is closed this tick" >&2
+    return 1
+  }
+  local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
+  local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence lingering_uuid lingering_run status fresh state now_pr now_run now_plan note output first
+  local transcript turn_epoch age liveness cursor took="" read_secs left
+  # The last ticket a tick took, per binding (ticket numbers repeat across
+  # boards), written as each is taken so the next tick starts past it.
+  cursor="$(board_store_dir sweep-finalize)/cursor" || {
+    echo "finalize: its cursor store could not be resolved; nothing is closed this tick" >&2
+    return 1
+  }
+  candidates="$(_finalize_candidates "$(cat "$cursor" 2>/dev/null || true)")" || {
+    echo "finalize: the board would not list its in-review tickets; nothing is closed this tick" >&2
+    return 1
+  }
+  while IFS=$'\x1f' read -r ticket pr_url run plan; do
+    [ -n "$ticket" ] || continue
+    if ! _budget_left; then
+      echo "finalize: tick budget exhausted — the rest ride the next tick"
+      break
+    fi
+    # UNDER `all`, FINALIZE HAS A SHARE OF THE TICK, not all of it: a scan
+    # whose GitHub reads are slow would otherwise spend the whole budget on
+    # every tick, and review-recover, relay, resume and dispatch behind it
+    # would never run. The budget check above cannot stop a read in flight,
+    # so a later candidate is taken only if a read that runs to its bound
+    # still ends inside the share; the first is always taken, its read cut
+    # at the share's end (below), so a share shorter than one read still
+    # moves the cursor without outlasting the share. Empty on a phase asked
+    # for by name: that tick is finalize's alone.
+    if [ -n "$took" ] && [ -n "${FINALIZE_DEADLINE:-}" ] \
+       && [ "$(( $(date +%s) + BOARD_GH_TIMEOUT ))" -gt "$FINALIZE_DEADLINE" ]; then
+      echo "finalize: its share of the tick is spent — the rest ride the next tick"
+      break
+    fi
+    took=1
+    printf '%s\n' "$ticket" > "$cursor"
+    # Serial gh and board reads can fill the tick budget, which is the lease's
+    # length; every live run is renewed again once the last pass is old. Ahead
+    # of the owner lookup, so a run this renewal ends is already off its meta.
+    [ "$(( $(date +%s) - RENEWED_AT ))" -lt "$FINALIZE_RENEW_SEC" ] || _tick_renew
+    read_secs="$BOARD_GH_TIMEOUT"
+    if [ -n "${FINALIZE_DEADLINE:-}" ]; then
+      left="$(( FINALIZE_DEADLINE - $(date +%s) ))"
+      [ "$left" -ge "$read_secs" ] || read_secs="$left"
+      if [ "$read_secs" -lt 1 ]; then
+        echo "finalize: its share of the tick is spent — the rest ride the next tick"
+        break
+      fi
+    fi
+    gh_json="$(_gh_read_bounded "$read_secs" pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
+      echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
+      continue
+    }
+    merge="$(T_GH="$gh_json" python3 - <<'PY'
+import json, os
+pr = json.loads(os.environ["T_GH"])
+if pr.get("mergedAt"):
+    print("\x1f".join((pr.get("headRefOid") or "", (pr.get("mergeCommit") or {}).get("oid") or "")))
+PY
+)" || {
+      echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
+      continue
+    }
+    [ -n "$merge" ] || continue
+    IFS=$'\x1f' read -r merged_head oid <<< "$merge"
+    evidence="$(_finalize_evidence "$ticket")" || {
+      echo "finalize: #$ticket — the timeline could not be read; nothing is written this tick" >&2
+      continue
+    }
+    case "$evidence" in
+      no-trail) echo "finalize: #$ticket — merged, but no review-trail since the ticket last entered review; left for the owner"; continue ;;
+      no-head) echo "finalize: #$ticket — merged, but the latest review-trail names no reviewed head; left for the owner"; continue ;;
+    esac
+    if [ "$merged_head" != "$evidence" ]; then
+      echo "finalize: #$ticket — merged off the reviewed head: GitHub merged $merged_head, the trail names $evidence; left for the owner"
+      continue
+    fi
+    # The whole scan is read, no early break: its status lands in $SCAN_RC
+    # only as the scan ends, and a reader that stops early checks it too soon.
+    owner_uuid="" owner_bearer="" owner_fence="" lingering_uuid="" lingering_run=""
+    while IFS=$'\x1f' read -r meta_uuid bearer meta_run fence; do
+      if [ -z "$owner_uuid" ] && [ -n "$run" ] && [ "$meta_run" = "$run" ] && [ -n "$bearer" ]; then
+        owner_uuid="$meta_uuid" owner_bearer="$bearer" owner_fence="$fence"
+      fi
+      if [ -z "$lingering_uuid" ] && [ -n "$meta_run" ]; then
+        lingering_uuid="$meta_uuid" lingering_run="$meta_run"
+      fi
+    done < <(_metas_for_ticket "$ticket")
+    # A scan that died is not an empty registry. Read as one, a locally owned
+    # ticket would be logged as another registry's; it is reported as what
+    # it is instead.
+    _scan_ok || {
+      echo "finalize: #$ticket — the registry scan failed; nothing is written this tick" >&2
+      continue
+    }
+    # A NON-NULL OWNER WITH NO SEAT HERE lives in another registry, lease-live
+    # (the server reclaims an expired lease and clears owner_run). This host
+    # can read neither its liveness nor its tree, and a done by any actor ends
+    # that run under its QA child — so only a null owner_run closes as
+    # automation below; its home host closes this one, or a reclaim does.
+    if [ -z "$owner_uuid" ] && [ -n "$run" ]; then
+      echo "finalize: #$ticket — merged at the reviewed head; owner run $run lives in another registry; its own host closes"
+      continue
+    fi
+    # A reclaimed owner's old seat may still hold its run. A done would make
+    # the ticket terminal before the recovery lifecycle can strip that seat.
+    if [ -z "$run" ] && [ -n "$lingering_uuid" ]; then
+      echo "finalize: #$ticket — merged, owner_run cleared but seat $lingering_uuid still holds run $lingering_run; the reclaim/retire lifecycle strips it and a successor closes"
+      continue
+    fi
+    # Synced before the status is trusted: the sync promotes a natively-woken
+    # seat whose record still says idle.
+    liveness=""
+    [ -z "$owner_uuid" ] || liveness="$(_liveness "$owner_uuid")"
+    # A DEAD OWNER IS LEFT like a remote one. A done written as its run would
+    # end the run server-side, but only a renewal's 409 or the reclaim strips
+    # the run from its meta, and a dead session is never renewed — its seat
+    # would hold the run and a dispatch slot for good. Its lease lapses, the
+    # reclaim clears owner_run, then a successor closes it after seat cleanup.
+    if [ "$liveness" = dead ]; then
+      echo "finalize: #$ticket — merged, but its owner $owner_uuid is a dead session; its lease will lapse and the reclaim will clear its run, then a successor closes it"
+      continue
+    fi
+    # AN UNRESOLVED FORK MAY BE LIVE ON THIS RUN, and nothing here can see it:
+    # its record reads `error`, not mid-turn, and `current` still names the
+    # superseded turn, so the tree gate below reads the old transcript. A done
+    # would end the run under it — held, as relay and resume hold it.
+    if [ "$liveness" = forked ]; then
+      echo "finalize: #$ticket — merged, but its owner $owner_uuid carries an UNRESOLVED FORK (status=error + pending_short); nothing is written until it resolves — recover the fork by hand (its meta names it in pending_short) or retire the session" >&2
+      continue
+    fi
+    if [ "$liveness" = live ]; then
+      status="$(_meta_field "$DAEMON_HOME/$owner_uuid.json" status)"
+      case "$status" in
+        working|blocked)
+          echo "finalize: #$ticket — merged, but its owner $owner_uuid is mid-turn; its own agent closes"
+          continue ;;
+      esac
+      # An idle LIVE owner is not a concluded review: the review runs in its
+      # QA subagent, which writes under subagents/ after the parent's turn
+      # ended, and any done ends the run out from under it. review-recover's
+      # own activity gate — the whole tree, quiet past REVIEW_STALL_MIN. No
+      # transcript is no signal: a seat that never wrote has no child to end.
+      turn_epoch=""
+      transcript="$(_transcript_for_uuid "$owner_uuid")"
+      [ -z "$transcript" ] || turn_epoch="$(_tree_mtime_epoch "$transcript")"
+      if [ -n "$turn_epoch" ]; then
+        age=$(( ( $(date +%s) - turn_epoch ) / 60 ))
+        if [ "$age" -lt "$REVIEW_STALL_MIN" ]; then
+          echo "finalize: #$ticket — merged, but its owner $owner_uuid was active ${age}m ago (a review may be running under it); left for its own agent"
+          continue
+        fi
+      fi
+    fi
+    fresh="$(T_TID="$ticket" _api_py - <<'PY'
+import os
+import _board_api as A
+row = A.ticket(os.environ["T_TID"], principal="automation")
+if not row:
+    raise SystemExit(1)
+print("\x1f".join(str(v or "") for v in
+      (row["state"], row.get("pr_url"), row.get("owner_run"), row.get("plan"))))
+PY
+)" || {
+      echo "finalize: #$ticket — the board would not re-read the ticket before the write; nothing is written this tick" >&2
+      continue
+    }
+    IFS=$'\x1f' read -r state now_pr now_run now_plan <<< "$fresh"
+    if [ "$state" != in-review ] || [ "$now_pr" != "$pr_url" ] || [ "$now_run" != "$run" ] || [ "$now_plan" != "$plan" ]; then
+      echo "finalize: #$ticket — moved between the read and the write (now $state, pr $now_pr, owner $now_run, plan $now_plan); nothing is written"
+      continue
+    fi
+    note="finalize: $pr_url merged as $oid at the reviewed head $evidence"
+    if [ -n "$owner_uuid" ]; then
+      if output="$(BOARD_RUN_TOKEN="$owner_bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$owner_fence" "$SCRIPT_DIR/board-transition.sh" "$ticket" 'done' "$note" 2>&1)"; then
+        echo "finalize: #$ticket — $pr_url merged as $oid at the reviewed head $evidence; done written as run $run"
+        continue
+      fi
+    else
+      if output="$(BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: $pr_url merged at the reviewed head; the run ended and left no owner" "$SCRIPT_DIR/board-transition.sh" "$ticket" 'done' "$note" 2>&1)"; then
+        echo "finalize: #$ticket — $pr_url merged as $oid at the reviewed head $evidence; done written as automation"
+        continue
+      fi
+    fi
+    first="${output%%$'\n'*}"
+    if [[ "$output" == *review-trail-required* ]]; then
+      echo "finalize: #$ticket — the board refused done (review-trail-required): $first; the ticket stays with the recovery ladder"
+    else
+      echo "finalize: #$ticket — the done transition failed: $first; the next tick retries" >&2
+    fi
+  done <<< "$candidates"
+}
+
 # ---- phase 2: answer relay -------------------------------------------------
 _relay_prompt() {  # $1=answer id, $2=replies text
   local sentinel
@@ -2009,6 +2293,27 @@ try:
 except subprocess.TimeoutExpired:
     sys.stderr.write("push exceeded %ss and was killed\n" % env["T_SECS"])
     sys.exit(1)
+PY
+}
+
+# A gh read under the same deadline, its stdout passed through. The child runs
+# in its OWN process group and the whole group is killed on expiry: gh may
+# spawn helpers, and one left alive would outlive the bound it was killed for.
+_gh_read_bounded() {  # <secs> <gh args...> — gh's exit status, 124 on expiry
+  T_SECS="$1" python3 - "${@:2}" <<'PY'
+import os, signal, subprocess, sys
+secs = float(os.environ["T_SECS"])
+child = subprocess.Popen(["gh"] + sys.argv[1:], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, start_new_session=True)
+try:
+    out, _ = child.communicate(timeout=secs)
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
+    sys.stderr.write("gh exceeded %ss and was killed\n" % os.environ["T_SECS"])
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(child.returncode)
 PY
 }
 
@@ -3148,6 +3453,7 @@ phase_dispatch() {
 case "${1:-all}" in
   renew) phase_renew ;;
   stall) phase_stall ;;
+  finalize) phase_finalize ;;
   review-recover) phase_review_recover ;;
   relay) phase_relay ;;
   resume) phase_resume ;;
@@ -3163,6 +3469,14 @@ case "${1:-all}" in
   # its own relay this same tick, and one whose ladder it just spent must be
   # counted out before the phase that would claim a successor for it.
   all) phase_renew || true; phase_stall || true
+       # FINALIZE RUNS AHEAD of review-recover: its wake is asynchronous,
+       # and a later close might race a nudge already in flight. Close first;
+       # recovery reads done and clears the mark, spending no wake. Relay,
+       # resume and dispatch likewise cannot reclaim this ticket this tick.
+       # Half of what the tick has left, so the phases behind it keep the
+       # other half (see the share gate in phase_finalize).
+       FINALIZE_DEADLINE="$(( $(date +%s) + (TICK_START + TICK_BUDGET - $(date +%s)) / 2 ))"
+       phase_finalize || true
        # REVIEW-RECOVER RUNS BEFORE RELAY for the reason stall does: a nudged
        # owner can answer its own relay in this same tick, and one whose
        # ladder just ran out is parked before the relay reads the wake queue.
@@ -3175,5 +3489,5 @@ case "${1:-all}" in
        TICK_DEADLINE="$((TICK_START + TICK_BUDGET))"
        if _budget_left; then phase_dispatch || true
        else echo "dispatch: tick budget exhausted — fresh claims ride the next tick"; fi ;;
-  *) die "usage: _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]" ;;
+  *) die "usage: _sweep_api.sh [renew|stall|finalize|review-recover|relay|resume|dispatch|all]" ;;
 esac

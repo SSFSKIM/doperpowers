@@ -620,10 +620,14 @@ and return `DONE` whose second line is exactly
 
     auto-merge armed on <sha>; the board's finalize pass writes done
 
-— the merge completes when the checks pass, the PR's `Closes` link closes the
-ticket, and the board sweep's FINALIZE pass finishes what your ended turn
-cannot (label strip, terminal sweeps), which is why `done` is not yours to
-write on this path. A repo that refuses auto-merge parks needs-human instead.
+— the merge completes when the checks pass, and the board's finalize pass
+finishes what your ended turn cannot: on the gh binding the sweep's FINALIZE
+pass (the PR's `Closes` link closes the issue; the pass strips labels and runs
+the terminal sweeps), on the API binding the API tick's finalize pass, which
+reads the merge from GitHub and writes `done` when the merged head is your
+trail's `reviewed head:`. That is why `done` is not yours to write on this
+path, and why the head line in the trail is not optional. A repo that refuses
+auto-merge parks needs-human instead.
 
 If ALL hold BUT auto-merge is `off`: OBSERVATION MODE — do NOT merge and do
 NOT arm auto-merge. Post the review-trail comment stating the merge verdict
@@ -735,7 +739,12 @@ ran.
 ## Review Trail
 
 The review-trail comment records: the level and the auto-merge value you ran
-with; the rounds run — every dispatch (its reviewer agent or the panel; its
+with; on a PR review, the head your latest engine round reviewed — at a
+merge, the sha your merge is pinned to — on its own line as exactly `reviewed head: <sha>`,
+in every trail you post, the trail so far before a hand-up included (the API
+tick's finalize pass compares it with the head GitHub merged and closes the
+ticket only when they agree, so a trail without it leaves an armed merge to
+the recovery ladder); the rounds run — every dispatch (its reviewer agent or the panel; its
 lens mandate verbatim, or lens-free) with the findings it contributed, and the
 hash of any panel findings file, written BEFORE `<review-tmp>` cleanup; the
 compliance-audit verdict with every AUDIT NOTE; every finding with its bin and
@@ -751,7 +760,10 @@ Post it on a ticketed PR with
 and additionally as a PR comment (`gh pr comment <pr>`) so whoever opens the
 PR reads it. On a ticketless PR the PR comment is the whole record. A scale
 run has no PR: its trail goes on the EPIC ticket, the same thread its closure
-package lives in. Post the trail so far — rounds, waves, and the question you
+package lives in, and names the ranges it reviewed — the integration ref's
+head, or each per-child base/head range when there is no aggregate range —
+with no `reviewed head:` line, since no merge follows for finalize to compare.
+Post the trail so far — rounds, waves, and the question you
 are handing up — before every `ESCALATE` or `NEEDS_PANEL` return too: the sweep
 reads each new trail as the review's progress, so a review waiting on its
 dispatcher's answer resets its owner's recovery count instead of running it

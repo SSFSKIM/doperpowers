@@ -232,6 +232,17 @@ assert_contains "$AGENT" "never yours to write" "ready-for-architect is the answ
 # before every one of them — not only before the design-gap that can end it.
 echo "the trail precedes every hand-up:"
 trail_section="$(section '## Review Trail')"
+assert_text_contains "$trail_section" "reviewed head: <sha>" \
+    "the trail names the reviewed head for the API finalize pass" "Review Trail"
+# The head line is a PR's: every PR trail carries it, a hand-up's trail so far
+# included, while a scale run has no PR, no merge, and possibly no aggregate
+# head, so its trail names the ranges it reviewed instead.
+assert_text_contains "$trail_section" "on a PR review, the head your latest engine round reviewed" \
+    "the head line is scoped to PR reviews" "Review Trail"
+assert_text_contains "$trail_section" "the trail so far before a hand-up included" \
+    "...and rides every PR trail, hand-ups included" "Review Trail"
+assert_text_contains "$trail_section" "no \`reviewed head:\` line" \
+    "a scale trail names its reviewed ranges, not a PR head" "Review Trail"
 assert_text_contains "$trail_section" "before every \`ESCALATE\` or \`NEEDS_PANEL\` return" \
     "the trail so far is posted before any escalation or panel hand-up" "Review Trail"
 assert_not_contains "$AGENT" "a design-gap answer may end your review outright" \

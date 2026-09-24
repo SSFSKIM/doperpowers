@@ -1,0 +1,503 @@
+#!/usr/bin/env bash
+# test-sweep-finalize.sh — _sweep_api.sh closes an in-review ticket whose PR
+# merged after its QA agent returned, without waiting for the recovery ladder.
+#
+# THE STATE THIS PASS EXISTS FOR: an armed auto-merge (or a later human merge)
+# lands while the owner is idle and its run is still open. Nothing else writes
+# done on the API board. GitHub's merged head must match the latest review
+# trail after entry into review; a moved ticket and a working owner are left
+# alone. The pass runs before review-recover can wake that idle owner.
+#
+# PINS: run versus automation authority, the server's evidence refusal, head
+# mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
+# read, sync-before-status, a failed registry scan, a dead owner left for the reclaim, a
+# live idle owner whose transcript tree is still fresh (a QA child reviewing
+# under it), an owner carrying an unresolved resume fork, a non-null owner run
+# with no seat in this registry (its home host closes it), a null owner run
+# with a lingering predecessor seat, a GitHub read that
+# hangs, the whole tick's no-wasted-nudge order, and finalize's share of an
+# `all` tick under slow reads.
+. "$(dirname "$0")/helpers.sh"
+
+free_port() { python3 -c 'import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
+wait_for_port() {
+  local tries=200
+  while [ "$tries" -gt 0 ]; do
+    if python3 -c "import socket, sys
+sys.exit(0 if socket.socket().connect_ex(('127.0.0.1', $1)) == 0 else 1)"; then return 0; fi
+    tries=$((tries - 1)); sleep 0.05
+  done
+  return 1
+}
+
+TDIR="$(mktemp -d)"
+trap 'rm -rf "$TDIR"' EXIT
+CREDS="$TDIR/creds.env"; printf 'BOARD_AUTOMATION_TOKEN=a\nBOARD_HUMAN_TOKEN=h\n' > "$CREDS"
+PORT="$(free_port)"
+FIX="$TDIR/fixtures.json"; : > "$FIX.log"
+# The mock matches method + path PREFIX, first match wins. Timeline routes
+# precede their by-id routes so a timeline cannot masquerade as a ticket.
+python3 - "$FIX" <<'PY'
+import json, sys
+
+f = []
+def route(method, path, body, status=200):
+    f.append({"method": method, "path": path, "status": status, "body": body})
+def sha(n):
+    return f"{n:040d}"
+def pr(n):
+    return f"https://github.com/o/r/pull/{n}"
+
+ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95)
+rows = {n: {"id": n, "state": "in-review", "priority": "P1",
+            "title": f"ticket {n}", "pr_url": "512" if n == 84 else pr(n),
+            "owner_run": None if n in (82, 88, 95) else n, "plan": None}
+        for n in ids}
+route("GET", "/tickets?limit=200&states=in-review",
+      {"items": list(rows.values()), "next": None, "as_of": 1})
+
+def transition(cursor):
+    return {"source": "board", "cursor": str(cursor), "kind": "transition",
+            "runId": None, "body": {"note": "review opened", "to": "in-review"}}
+def trail(cursor, text):
+    return {"source": "board", "cursor": str(cursor), "kind": "review-trail",
+            "runId": None, "body": {"text": text}}
+
+for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95):
+    text = "round 1 — level medium"
+    if n != 85:
+        text += "\nreviewed head: " + sha(830 if n == 83 else n)
+    records = ([trail(1, text), transition(2)] if n == 86
+               else [transition(1), trail(2, text)])
+    route("GET", f"/tickets/{n}/timeline", {"records": records})
+
+# 91 has no by-id row: its fresh tree skips it before the re-read, as 92's
+# dead owner and 94's remote owner do. 93 has a row and an accepting transition, so only the
+# fork guard can hold it. 95 needs a by-id row so the unfixed automation
+# branch attempts a close; the guard must stop it before that read.
+for n in (80, 82, 88, 89, 90, 93, 95):
+    row = rows[n].copy()
+    if n == 89:
+        row["state"] = "in-progress"  # rebuild between list and re-read
+    route("GET", f"/tickets/{n}", row)
+
+route("POST", "/tickets/80/transition", {"ok": True, "to": "done"})
+route("POST", "/tickets/82/transition",
+      {"error": {"code": "review-trail-required", "message":
+       "in-review → done needs a review-trail event by this run after the latest entry into in-review"}}, 403)
+route("POST", "/tickets/88/transition", {"ok": True, "to": "done"})
+route("POST", "/tickets/93/transition", {"ok": True, "to": "done"})
+for n in (80, 81, 83, 85, 86, 87, 89, 90, 91, 93):  # a fork keeps its lease
+    route("POST", f"/runs/{n}/renew", {"renewed": True})
+route("GET", "/answers/unrelayed", [])
+route("GET", "/runs/needing-resume", [])
+with open(sys.argv[1], "w") as out:
+    json.dump(f, out)
+PY
+python3 "$TESTS_DIR/mock-server.py" "$FIX" "$PORT" & MOCK=$!
+trap 'kill $MOCK 2>/dev/null; { wait $MOCK; } 2>/dev/null || true; rm -rf "$TDIR"' EXIT
+wait_for_port "$PORT" || { echo "FAIL mock server never listened on $PORT"; exit 1; }
+
+r="$(mkrepo)"; mkdir -p "$r/.doperpowers"
+printf '{"binding":"api","url":"http://127.0.0.1:%s","repo":"testrepo"}' "$PORT" > "$r/.doperpowers/board.json"
+
+DH="$TDIR/registry"; mkdir -p "$DH"
+DS="$TDIR/stubs"; mkdir -p "$DS"
+NUDGES="$TDIR/nudges.log"; : > "$NUDGES"
+TESTHOME="$TDIR/home"; mkdir -p "$TESTHOME/.claude/projects/proj"
+meta() {
+  printf '{"uuid":"u-%s","current":"u-%s","status":"%s","run_id":%s,"fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"%s","run_bearer":"tok-%s","phase":"review"}\n' \
+    "$1" "$1" "$2" "$1" "$1" "$1" > "$DH/u-$1.json"
+  chmod 600 "$DH/u-$1.json"
+}
+for n in 80 81 83 85 86 87 89 90 91 92 93; do
+  status=idle; case "$n" in 87|92) status=working ;; 93) status=error ;; esac
+  meta "$n" "$status"
+  touch "$TESTHOME/.claude/projects/proj/u-$n.jsonl"
+done
+# The server reclaimed 95's owner run, but its predecessor seat still holds
+# the old run. The null list owner must not turn it into an automation close.
+meta 95 idle
+python3 - "$DH/u-95.json" <<'PY95'
+import json, sys
+with open(sys.argv[1]) as f:
+    m = json.load(f)
+m["run_id"] = 950
+with open(sys.argv[1], "w") as f:
+    json.dump(m, f)
+PY95
+# 80 and 89 concluded their reviews long ago; 91's QA child writes under its
+# subagents/ right now, so only the TREE says it is active; 92 is dead, and a
+# dead parent's children are dead too, so its fresh file must not hold it.
+# 93's resume LAUNCHED a turn whose session never resolved: status=error plus
+# pending_short, and `current` still names the superseded turn, whose quiet
+# transcript is all the tree gate can read — the fork writes somewhere else.
+python3 - "$DH/u-93.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); m["pending_short"] = "fork-93"
+json.dump(m, open(sys.argv[1], "w"))
+PY
+touch -t 202607170000 "$TESTHOME/.claude/projects/proj/u-80.jsonl" \
+  "$TESTHOME/.claude/projects/proj/u-89.jsonl" "$TESTHOME/.claude/projects/proj/u-91.jsonl" \
+  "$TESTHOME/.claude/projects/proj/u-93.jsonl"
+mkdir -p "$TESTHOME/.claude/projects/proj/u-91/subagents"
+touch "$TESTHOME/.claude/projects/proj/u-91/subagents/agent-qa.jsonl"
+
+# gh answers from the requested PR number, not the call sequence. A real PR's
+# merge commit and head are separate values, especially for squash merges.
+cat > "$DS/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "GH $*" >> "$GH_LOG"
+# The bound _gh_read_bounded put on this read (its T_SECS reaches gh's env).
+[ -z "${GH_SECS_LOG:-}" ] || echo "${T_SECS:-}" >> "$GH_SECS_LOG"
+[ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
+[ "${1:-}" = pr ] && [ "${2:-}" = view ] && [ "${4:-}" = --json ] &&
+  [ "${5:-}" = mergedAt,mergeCommit,headRefOid ] || exit 2
+url="${3%/}"; n="${url##*/}"
+# One PR's read may hang, as a stalled GitHub request does, in a GRANDCHILD
+# of the call — the process a kill of gh alone would leave behind.
+[ "$n" != "${GH_HANG_PR:-}" ] || sleep "$GH_HANG_SECS"
+case "$n" in
+  81) echo '{"mergedAt":null,"mergeCommit":null,"headRefOid":null}'; exit 0 ;;
+  80|82|83|85|86|87|88|89|90|91|92|93|94|95) ;;
+  *) exit 2 ;;
+esac
+head="$n"; [ "$n" != 83 ] || head=831
+printf '{"mergedAt":"2026-09-23T12:00:00Z","mergeCommit":{"oid":"%040d"},"headRefOid":"%040d"}\n' "$((n * 100))" "$head"
+STUB
+cat > "$DS/sminos" <<'STUB'
+#!/usr/bin/env bash
+verb="${1:-}"; shift || true
+case "$verb" in
+  migrate) exit 0 ;;
+  sync)
+    python3 - "$DAEMON_HOME/$1.json" "$1" <<'PY'
+import json, os, sys
+try:
+    with open(sys.argv[1]) as f:
+        m = json.load(f)
+except Exception:
+    print("absent"); raise SystemExit(0)
+if sys.argv[2] == "u-92":
+    print("absent"); raise SystemExit(0)  # the session is gone; its record still says working
+def pr90_read():
+    try:
+        return "pull/90 " in open(os.environ["GH_LOG"]).read()
+    except Exception:
+        return False
+# The native wake lands after GitHub is read for 90, so a renewal pass that
+# syncs every seat ahead of the first candidate cannot promote u-90 for
+# finalize: only finalize's own sync, before it trusts the status, can.
+if sys.argv[2] == "u-90" and m["status"] == "idle" and pr90_read():
+    m["status"] = "working"  # native wake repaired the stale record
+    with open(sys.argv[1], "w") as f:
+        json.dump(m, f)
+print("live" if m["status"] in ("working", "blocked") else "noop")
+PY
+    ;;
+  resume|wake) echo "WAKE uuid=${1:-}" >> "$NUDGE_LOG" ;;
+  *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
+esac
+STUB
+chmod +x "$DS/gh" "$DS/sminos"
+: > "$TDIR/gh.log"
+SW() {
+  ( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" \
+      NUDGE_LOG="$NUDGES" GH_LOG="$TDIR/gh.log" PATH="$DS:$PATH" \
+      BOARD_CREDENTIALS_FILE="$CREDS" BOARD_SWEEP_TICK_BUDGET="${BUDGET:-900}" GH_SLEEP="${GH_SLEEP:-}" \
+      "$SCRIPTS/_sweep_api.sh" "$@" )
+}
+# Render the API request log's parsed body for assertions on the actual wire,
+# not on escaped JSON-within-JSON in the mock's log.
+posts() { python3 - "$FIX.log" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    req = json.loads(line)
+    if req["method"] == "POST" and req["path"].startswith(sys.argv[2]):
+        body = json.loads(req["body"])
+        print(f'{req["path"]} auth={req["auth"]} to={body.get("to")} note={body.get("note")}')
+PY
+}
+post_count() { printf '[%s]\n' "$(posts "/tickets/$1/transition" | wc -l | tr -d ' ')"; }
+renew_count() { printf '[%s]\n' "$(posts "/runs/$1/renew" | wc -l | tr -d ' ')"; }
+
+# The stand-alone pass: every candidate shares this one fixture world. Its
+# renewal ahead of the first candidate syncs every seat, but u-90's native
+# wake lands only after GitHub is read for 90 (the sminos stub), so the sync
+# that promotes it is still finalize's own.
+OUT="$TDIR/finalize.out"; code=0
+SW finalize > "$OUT" 2>&1 || code=$?
+t  "finalize is invocable alone" "exit=0" printf 'exit=%s\n' "$code"
+M80="$(printf '%040d' 8000)"; SHA80="$(printf '%040d' 80)"
+SHA83M="$(printf '%040d' 831)"; SHA83R="$(printf '%040d' 830)"
+M88="$(printf '%040d' 8800)"; SHA88="$(printf '%040d' 88)"
+t  "80 closes as its owning run with the reviewed merge note" \
+   "/tickets/80/transition auth=Bearer tok-80 to=done note=finalize: https://github.com/o/r/pull/80 merged as $M80 at the reviewed head $SHA80" posts /tickets/80/transition
+t  "80's close is reported as its run" "done written as run 80" cat "$OUT"
+t  "81's open PR is inspected" "pull/81 --json mergedAt,mergeCommit,headRefOid" cat "$TDIR/gh.log"
+t  "81's open PR is not closed" "[0]" post_count 81
+nt "81's ordinary open PR is silent" "#81" cat "$OUT"
+t  "82 makes exactly one refused attempt" "[1]" post_count 82
+t  "82's ownerless attempt is automation, not human" "/tickets/82/transition auth=Bearer a to=done" posts /tickets/82/transition
+t  "82's server evidence refusal is left with recovery" "the board refused done (review-trail-required)" cat "$OUT"
+t  "83 names both mismatched heads" "GitHub merged $SHA83M, the trail names $SHA83R" cat "$OUT"
+t  "83 is not closed off the reviewed head" "[0]" post_count 83
+nt "84's numeric epic package never reaches GitHub" "512" cat "$TDIR/gh.log"
+t  "84's epic package is not closed" "[0]" post_count 84
+t  "85 without a head line is held" "#85 — merged, but the latest review-trail names no reviewed head" cat "$OUT"
+t  "85 is not closed" "[0]" post_count 85
+t  "86's trail before the latest review entry is held" "#86 — merged, but no review-trail since the ticket last entered review" cat "$OUT"
+t  "86 is not closed" "[0]" post_count 86
+t  "87's working owner is left to its agent" "#87 — merged, but its owner u-87 is mid-turn" cat "$OUT"
+t  "87 is not closed" "[0]" post_count 87
+t  "88 closes as automation with the reviewed merge note" \
+   "/tickets/88/transition auth=Bearer a to=done note=finalize: https://github.com/o/r/pull/88 merged as $M88 at the reviewed head $SHA88" posts /tickets/88/transition
+t  "88's close is reported as automation" "done written as automation" cat "$OUT"
+t  "89's moved ticket is held" "#89 — moved between the read and the write (now in-progress" cat "$OUT"
+t  "89 is not closed" "[0]" post_count 89
+t  "90's natively-woken owner is left to its agent" "#90 — merged, but its owner u-90 is mid-turn" cat "$OUT"
+t  "90 is not closed" "[0]" post_count 90
+t  "91's live idle owner with a fresh tree is left to its QA child" \
+   "#91 — merged, but its owner u-91 was active 0m ago (a review may be running under it); left for its own agent" cat "$OUT"
+t  "91 is not closed under its live review" "[0]" post_count 91
+nt "91 is skipped before the by-id re-read" '"path": "/tickets/91"' cat "$FIX.log"
+# 92's session is gone (its record still says working): a done as its run
+# would leave the run on a meta nothing renews or strips, so the dead owner is
+# left for its lease to lapse and the reclaim to clear, like a remote run.
+t  "92's dead owner is left for the reclaim and reported as dead" \
+   "#92 — merged, but its owner u-92 is a dead session; its lease will lapse and the reclaim will clear its run, then a successor closes it" cat "$OUT"
+t  "92 is not closed, as its run or as automation" "[0]" post_count 92
+nt "92's dead owner is never reported mid-turn or active" "#92 — merged, but its owner u-92 is mid-turn" cat "$OUT"
+nt "92's dead owner skips the tree gate" "#92 — merged, but its owner u-92 was active" cat "$OUT"
+nt "92 is skipped before the by-id re-read" '"path": "/tickets/92"' cat "$FIX.log"
+t  "93's owner with an unresolved fork is held and surfaced" \
+   "#93 — merged, but its owner u-93 carries an UNRESOLVED FORK (status=error + pending_short)" cat "$OUT"
+t  "93 is not closed while its fork may be live on the run" "[0]" post_count 93
+nt "93 is held before the by-id re-read" '"path": "/tickets/93"' cat "$FIX.log"
+# 94's owner_run is non-null but no seat here holds it: a lease-live owner in
+# another registry, whose QA child this host cannot see. Not automation's.
+t  "94's remote owner is left for its home host" \
+   "#94 — merged at the reviewed head; owner run 94 lives in another registry; its own host closes" cat "$OUT"
+t  "94 is not closed as automation under a remote run" "[0]" post_count 94
+nt "94 is skipped at owner resolution, before the by-id re-read" '"path": "/tickets/94"' cat "$FIX.log"
+# 95's null owner_run alone is insufficient: the unstripped predecessor seat
+# must be left to the reclaim/retire lifecycle and a successor.
+t  "95's predecessor seat is left for the recovery lifecycle" \
+   "#95 — merged, owner_run cleared but seat u-95 still holds run 950; the reclaim/retire lifecycle strips it and a successor closes" cat "$OUT"
+t  "95 is not closed while its predecessor still holds the run" "[0]" post_count 95
+# The later budget and ordering drills do not include this reclaimed seat.
+rm "$DH/u-95.json"
+t  "90 was synced before its status was trusted" '"status": "working"' cat "$DH/u-90.json"
+# Assert the ordering, rather than only the presence of all three operations.
+t  "80's evidence, fresh by-id read and write are in order" "ordered" python3 - "$FIX.log" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+def index(method, path):
+    return next(i for i, c in enumerate(calls)
+                if c["method"] == method and c["path"].startswith(path))
+timeline = index("GET", "/tickets/80/timeline")
+row = next(i for i, c in enumerate(calls)
+           if c["method"] == "GET" and c["path"] == "/tickets/80")
+write = index("POST", "/tickets/80/transition")
+print("ordered" if timeline < row < write else "out of order")
+PY
+
+# A new tick sees the original list projection again. If review-recover ran
+# before finalize, the stale idle u-80 would be woken before the close.
+: > "$FIX.log"; : > "$NUDGES"
+meta 80 idle
+ALL="$TDIR/all.out"; code=0
+SW all > "$ALL" 2>&1 || code=$?
+t  "all completes" "exit=0" printf 'exit=%s\n' "$code"
+t  "all reaches finalize and closes 80" "#80 — https://github.com/o/r/pull/80 merged as $M80 at the reviewed head $SHA80; done written as run 80" cat "$ALL"
+nt "all spends no review-recover nudge on the closed owner" "u-80" cat "$NUDGES"
+nt "all never starts a nudge for the closed ticket" "review-recover: #80" cat "$ALL"
+t  "80's transition clears its seat's review mark" "phase=<absent>" python3 - "$DH/u-80.json" <<'PY'
+import json, sys
+print("phase=" + str(json.load(open(sys.argv[1])).get("phase", "<absent>")))
+PY
+t  "all's finalize adds no renewal pass on top of the tick's fresh one" "[1]" renew_count 80
+
+# Serial reads across many candidates can fill the tick budget, which is the
+# lease's own length, so the pass renews every live run again once the last
+# renewal is old. At 0 seconds that is ahead of every candidate: run 80 is
+# renewed again after its own ticket's write, on the way to 81 onward.
+: > "$FIX.log"; meta 80 idle; meta 90 idle
+RENEWOUT="$TDIR/renew.out"; code=0
+BOARD_FINALIZE_RENEW_SEC=0 SW finalize > "$RENEWOUT" 2>&1 || code=$?
+t  "the renewing pass completes" "exit=0" printf 'exit=%s\n' "$code"
+t  "live runs are renewed between candidates, not once" "renewed after" python3 - "$FIX.log" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+posts = [c["path"] for c in calls if c["method"] == "POST"]
+write = posts.index("/tickets/80/transition")
+before = "/runs/80/renew" in posts[:write]
+after = "/runs/80/renew" in posts[write + 1:]
+print("renewed after" if before and after else "before=%s after=%s" % (before, after))
+PY
+nt "a dead owner's lease is still left to expire" "/runs/92/renew" posts /runs/
+
+# A registry scan that dies is not an empty registry, and nothing is written
+# off it: an owned ticket (80, or 90 mid-turn) must neither close nor be taken
+# for another registry's. The wrapper kills
+# only the sweep's registry scan (its source is the one that reads `all`), so
+# board-transition's own fence scan still runs as it would in the field.
+SCANSTUB="$TDIR/scanstub"; mkdir -p "$SCANSTUB"
+cat > "$SCANSTUB/python3" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = - ]; then
+  src="\$(cat)"
+  case "\$src" in *keep_runless*) [ ! -s "\$GH_LOG" ] || exit 1 ;; esac
+  exec "$(command -v python3)" "\$@" <<< "\$src"
+fi
+exec "$(command -v python3)" "\$@"
+STUB
+chmod +x "$SCANSTUB/python3"
+: > "$FIX.log"; : > "$TDIR/gh.log"
+SCANFAIL="$TDIR/scanfail.out"; code=0
+# The scan dies only once GitHub has been read: the renewal ahead of the
+# first read would otherwise die first and end the tick, which is renew's
+# failure line, not this pass's.
+( PATH="$SCANSTUB:$PATH"; SW finalize ) > "$SCANFAIL" 2>&1 || code=$?
+t  "a failed registry scan is reported" "#80 — the registry scan failed; nothing is written this tick" cat "$SCANFAIL"
+t  "a failed registry scan does not close 80 as automation" "[0]" post_count 80
+t  "a failed registry scan does not close 90 under its mid-turn owner" "[0]" post_count 90
+nt "a failed registry scan never overrides the local fence" "override:" cat "$SCANFAIL"
+
+# A GitHub read that never answers is bounded where it runs. The budget is
+# checked before each read and renewal runs between candidates, so neither can
+# end a read in flight: unbounded, 80's stalled read would hold the tick lock
+# while every live lease ran down. Bounded, it is killed with its helper, 80 is
+# logged and skipped, and the pass goes on renewing and closing past it.
+: > "$FIX.log"; meta 80 idle
+HANGOUT="$TDIR/hang.out"; code=0; start="$(date +%s)"
+( GH_HANG_PR=80 GH_HANG_SECS=147 BOARD_GH_TIMEOUT=5 BOARD_FINALIZE_RENEW_SEC=0 SW finalize ) > "$HANGOUT" 2>&1 || code=$?
+elapsed=$(( $(date +%s) - start ))
+t  "the hung pass completes" "exit=0" printf 'exit=%s\n' "$code"
+t  "the whole pass ends before the hung read would have answered" "bounded" \
+   bash -c '[ "$1" -lt 147 ] && echo bounded || echo "took ${1}s"' _ "$elapsed"
+t  "80's hung read is logged and left for the next tick" \
+   "#80 — gh could not read https://github.com/o/r/pull/80; the next tick retries" cat "$HANGOUT"
+t  "80 is not closed off a read that never answered" "[0]" post_count 80
+t  "the pass goes on past the hung read: 88 closes" "#88 — https://github.com/o/r/pull/88 merged" cat "$HANGOUT"
+t  "live runs are still renewed after the hung read" "renewed after" python3 - "$FIX.log" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+n = sum(1 for c in calls if c["method"] == "POST" and c["path"] == "/runs/81/renew")
+print("renewed after" if n >= 2 else "renewals=%d" % n)
+PY
+hung_child() { pgrep -f "sleep 147" >/dev/null && echo "still running" || echo "none"; }
+t  "the hung read's helper is killed with it" "none" hung_child
+lock_left() { ls -d "$DH"/.sweep-api.*.lock 2>/dev/null || echo "released"; }
+t  "the tick lock is released" "released" lock_left
+
+# The read bound is capped below the lease: a read runs after the renewal
+# that covers it, so an override past the 15-minute lease would let one
+# stalled read outlive every live lease. Every read takes the capped bound.
+: > "$TDIR/gh.secs"
+( GH_SECS_LOG="$TDIR/gh.secs" BOARD_GH_TIMEOUT=901 SW finalize ) > "$TDIR/cap.out" 2>&1 || true
+read_bounds() { [ -s "$1" ] || { echo "no reads"; return; }; echo "bounds=[$(sort -u "$1" | tr '\n' ' ' | sed 's/ $//')]"; }
+t  "an over-lease read timeout is capped at 300s on every read" "bounds=[300]" read_bounds "$TDIR/gh.secs"
+
+# The renewal interval is capped with it: a candidate admitted just inside the
+# interval still runs its read before the next renewal. On a clock that jumps
+# 400s per GitHub read, an interval of 1000 would renew every third candidate
+# (a lease aging 1200s mid-scan); capped, every read is renewed ahead of.
+CLOCK="$TDIR/clock"; mkdir -p "$CLOCK"
+cat > "$CLOCK/date" <<STUB
+#!/usr/bin/env bash
+if [ "\$*" = +%s ]; then
+  n="\$(grep -c '^GH ' "\$GH_LOG" 2>/dev/null || true)"
+  echo "\$(( \$($(command -v date) +%s) + \${n:-0} * 400 ))"
+else
+  exec $(command -v date) "\$@"
+fi
+STUB
+chmod +x "$CLOCK/date"
+: > "$FIX.log"; : > "$TDIR/gh.log"
+( PATH="$CLOCK:$PATH"; BUDGET=99999999 BOARD_FINALIZE_RENEW_SEC=1000 SW finalize ) > "$TDIR/clock.out" 2>&1 || true
+renewed_per_read() {
+  local reads renews
+  reads="$(grep -c '^GH pr view' "$TDIR/gh.log" || true)"
+  renews="$(posts /runs/81/renew | wc -l | tr -d ' ')"
+  [ "$reads" -ge 3 ] && [ "$reads" = "$renews" ] && echo "renewed ahead of every read" \
+    || echo "reads=$reads renewals=$renews"
+}
+t  "an over-lease renewal interval is capped: every slow read is renewed ahead of" \
+   "renewed ahead of every read" renewed_per_read
+
+# A budget that runs out mid-list must not hand the same head of the list the
+# whole budget every tick: the ticks below each have room for one slow GitHub
+# read, and each must take the ticket past the last one taken, wrapping at the
+# end. Every earlier pass in this file scanned the whole list, so the next
+# ticket past its last is the first again.
+taken() { sed -n 's#^GH pr view https://github.com/o/r/pull/\([0-9]*\) .*#\1#p' "$TDIR/gh.log" | tr '\n' ' '; echo; }
+: > "$TDIR/gh.log"
+for _ in 1 2 3; do
+  ( BUDGET=3 GH_SLEEP=3 SW finalize ) > "$TDIR/rotate.out" 2>&1 || true
+done
+t  "each budget-limited tick takes the ticket past the last one taken" "80 81 82 " taken
+t  "the budget still stops the pass mid-list" "tick budget exhausted — the rest ride the next tick" cat "$TDIR/rotate.out"
+
+# Under `all`, finalize gets a share of the tick, not the whole of it: slow
+# GitHub reads across a long in-review list would otherwise spend every tick's
+# budget, and review-recover, relay, resume and dispatch behind it would never
+# run. Each tick below has 20s, a read takes 3s and may take 10: the share
+# admits one candidate, the phases behind it run (dispatch's claims reach the
+# board), and the next tick's candidate is still the one past the last taken.
+: > "$TDIR/gh.log"
+for tick in 1 2; do
+  : > "$FIX.log"
+  ( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=10 SW all ) > "$TDIR/share$tick.out" 2>&1 || true
+  cp "$FIX.log" "$TDIR/share$tick.log"
+done
+claims() { python3 - "$1" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+n = sum(1 for c in calls if c["method"] == "POST" and c["path"] == "/runs/claim")
+print("claimed" if n else "no claim")
+PY
+}
+for tick in 1 2; do
+  t  "slow-read all tick $tick: finalize stops at its share" "finalize: its share of the tick is spent — the rest ride the next tick" cat "$TDIR/share$tick.out"
+  nt "slow-read all tick $tick: review-recover still has budget" "review-recover: tick budget exhausted" cat "$TDIR/share$tick.out"
+  nt "slow-read all tick $tick: dispatch still has budget" "dispatch: tick budget exhausted" cat "$TDIR/share$tick.out"
+  t  "slow-read all tick $tick: dispatch reaches the board" "claimed" claims "$TDIR/share$tick.log"
+done
+t  "the share keeps the rotation: each all tick takes the ticket past the last" "83 85 " taken
+
+# The FIRST candidate is always taken, so its read is what the share must cut:
+# a read as long as the whole budget would otherwise spend it on its own, on
+# every tick. Cut at the share's end, it is logged for the next tick and the
+# phases behind it still run. The budget is sized for those phases, not for
+# the read: renew and stall ahead of the share and review-recover, relay and
+# resume behind it take seconds of their own here, and an 8s budget left them
+# too little of the half the cut hands back to finish before dispatch's gate.
+for tick in 1 2; do
+  : > "$FIX.log"
+  ( BUDGET=30 GH_SLEEP=30 BOARD_GH_TIMEOUT=40 SW all ) > "$TDIR/first$tick.out" 2>&1 || true
+  cp "$FIX.log" "$TDIR/first$tick.log"
+  t  "budget-long first read, all tick $tick: the read is cut at the share" "gh could not read" cat "$TDIR/first$tick.out"
+  nt "budget-long first read, all tick $tick: dispatch still has budget" "dispatch: tick budget exhausted" cat "$TDIR/first$tick.out"
+  t  "budget-long first read, all tick $tick: dispatch reaches the board" "claimed" claims "$TDIR/first$tick.log"
+done
+
+# A zero-padded timeout override is a decimal number of seconds: 08 read as
+# octal in the share's arithmetic would abort the tick at its second
+# candidate, and every phase behind finalize with it, on every tick.
+: > "$FIX.log"
+( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=08 SW all ) > "$TDIR/padded.out" 2>&1 || true
+cp "$FIX.log" "$TDIR/padded.log"
+nt "zero-padded timeout: no octal arithmetic error" "value too great for base" cat "$TDIR/padded.out"
+t  "zero-padded timeout: finalize stops at its share" "finalize: its share of the tick is spent — the rest ride the next tick" cat "$TDIR/padded.out"
+t  "zero-padded timeout: dispatch reaches the board" "claimed" claims "$TDIR/padded.log"
+
+# A gh-bound checkout refuses the API tick before looking at GitHub.
+ghrepo="$(mkrepo)"
+before="$(wc -l < "$TDIR/gh.log")"
+wrong_binding() { ( cd "$ghrepo" && env HOME="$TESTHOME" DAEMON_HOME="$DH" PATH="$DS:$PATH" GH_LOG="$TDIR/gh.log" "$SCRIPTS/_sweep_api.sh" finalize ); }
+t  "a gh-bound checkout refuses the API pass" "runs only under an api binding" wrong_binding
+gh_unchanged() { [ "$(wc -l < "$TDIR/gh.log")" = "$before" ] && echo unchanged; }
+t  "a gh-bound checkout never calls GitHub" "unchanged" gh_unchanged
+finish
