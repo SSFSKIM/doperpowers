@@ -176,7 +176,8 @@ Per tick:
       whose run is still open — the run is an identity, and the server
       checks its fence and liveness itself) writes as the run in step 3f.
       No seat resolves (owner_run null, or the owner lives in another
-      machine's registry): the automation path in 3f.
+      machine's registry): the automation path in 3f. A registry scan that
+      died resolves nothing and is not "no seat": stderr line, continue.
    e. Fresh read, immediately before the write:
       `A.ticket(ticket, principal="automation")`. Skip, with the `moved`
       line, unless `state == "in-review"` and `pr_url`, `owner_run` and
@@ -216,6 +217,7 @@ Log lines (stdout unless marked; tests assert on them, so copy them exactly):
     finalize: tick budget exhausted — the rest ride the next tick
     (stderr) finalize: #<t> — gh could not read <pr_url>; the next tick retries
     (stderr) finalize: #<t> — the timeline could not be read; nothing is written this tick
+    (stderr) finalize: #<t> — the registry scan failed; nothing is written this tick
     (stderr) finalize: #<t> — the board would not re-read the ticket before the write; nothing is written this tick
     (stderr) finalize: #<t> — the done transition failed: <first line of output>; the next tick retries
     (stderr) finalize: the board would not list its in-review tickets; nothing is closed this tick

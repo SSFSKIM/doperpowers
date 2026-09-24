@@ -10,7 +10,7 @@
 #
 # PINS: run versus automation authority, the server's evidence refusal, head
 # mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
-# read, sync-before-status, a dead owner's stale `working` record, and the
+# read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, and the
 # whole tick's no-wasted-nudge order.
 . "$(dirname "$0")/helpers.sh"
 
@@ -238,6 +238,31 @@ t  "80's transition clears its seat's review mark" "phase=<absent>" python3 - "$
 import json, sys
 print("phase=" + str(json.load(open(sys.argv[1])).get("phase", "<absent>")))
 PY
+
+# A registry scan that dies is not an empty registry. Read as one, every owned
+# ticket would fall to the ownerless automation write, whose override passes
+# the local fence — a mid-turn owner (90) closed under its own agent — and
+# whose principal skips the server's by-this-run trail gate. The wrapper kills
+# only the sweep's registry scan (its source is the one that reads `all`), so
+# board-transition's own fence scan still runs as it would in the field.
+SCANSTUB="$TDIR/scanstub"; mkdir -p "$SCANSTUB"
+cat > "$SCANSTUB/python3" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = - ]; then
+  src="\$(cat)"
+  case "\$src" in *keep_runless*) exit 1 ;; esac
+  exec "$(command -v python3)" "\$@" <<< "\$src"
+fi
+exec "$(command -v python3)" "\$@"
+STUB
+chmod +x "$SCANSTUB/python3"
+: > "$FIX.log"
+SCANFAIL="$TDIR/scanfail.out"; code=0
+( PATH="$SCANSTUB:$PATH"; SW finalize ) > "$SCANFAIL" 2>&1 || code=$?
+t  "a failed registry scan is reported" "#80 — the registry scan failed; nothing is written this tick" cat "$SCANFAIL"
+t  "a failed registry scan does not close 80 as automation" "[0]" post_count 80
+t  "a failed registry scan does not close 90 under its mid-turn owner" "[0]" post_count 90
+nt "a failed registry scan never overrides the local fence" "override:" cat "$SCANFAIL"
 
 # A gh-bound checkout refuses the API tick before looking at GitHub.
 ghrepo="$(mkrepo)"

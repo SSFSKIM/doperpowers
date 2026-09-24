@@ -1661,13 +1661,21 @@ PY
       echo "finalize: #$ticket — merged off the reviewed head: GitHub merged $merged_head, the trail names $evidence; left for the owner"
       continue
     fi
+    # The whole scan is read, no early break: its status lands in $SCAN_RC
+    # only as the scan ends, and a reader that stops early checks it too soon.
     owner_uuid="" owner_bearer="" owner_fence=""
     while IFS=$'\x1f' read -r meta_uuid bearer meta_run fence; do
-      if [ -n "$run" ] && [ "$meta_run" = "$run" ] && [ -n "$bearer" ]; then
+      if [ -z "$owner_uuid" ] && [ -n "$run" ] && [ "$meta_run" = "$run" ] && [ -n "$bearer" ]; then
         owner_uuid="$meta_uuid" owner_bearer="$bearer" owner_fence="$fence"
-        break
       fi
     done < <(_metas_for_ticket "$ticket")
+    # A scan that died is not an empty registry. Read as one, an owned ticket
+    # would fall to the ownerless automation write below — past the local
+    # fence (its override) and the server's by-this-run trail gate.
+    _scan_ok || {
+      echo "finalize: #$ticket — the registry scan failed; nothing is written this tick" >&2
+      continue
+    }
     # Synced before the status is trusted: the sync promotes a natively-woken
     # seat whose record still says idle. A DEAD seat is not mid-turn whatever
     # its record says — a session that died mid-turn leaves `working` behind,
