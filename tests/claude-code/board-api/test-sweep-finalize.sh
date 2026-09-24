@@ -12,7 +12,8 @@
 # mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
 # read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, a
 # live idle owner whose transcript tree is still fresh (a QA child reviewing
-# under it), and the whole tick's no-wasted-nudge order.
+# under it), an owner carrying an unresolved resume fork, and the whole tick's
+# no-wasted-nudge order.
 . "$(dirname "$0")/helpers.sh"
 
 free_port() { python3 -c 'import socket
@@ -45,7 +46,7 @@ def sha(n):
 def pr(n):
     return f"https://github.com/o/r/pull/{n}"
 
-ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92)
+ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93)
 rows = {n: {"id": n, "state": "in-review", "priority": "P1",
             "title": f"ticket {n}", "pr_url": "512" if n == 84 else pr(n),
             "owner_run": None if n in (82, 88) else n, "plan": None}
@@ -60,7 +61,7 @@ def trail(cursor, text):
     return {"source": "board", "cursor": str(cursor), "kind": "review-trail",
             "runId": None, "body": {"text": text}}
 
-for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92):
+for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93):
     text = "round 1 — level medium"
     if n != 85:
         text += "\nreviewed head: " + sha(830 if n == 83 else n)
@@ -68,8 +69,9 @@ for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92):
                else [transition(1), trail(2, text)])
     route("GET", f"/tickets/{n}/timeline", {"records": records})
 
-# 91 has no by-id row: its fresh tree skips it before the re-read.
-for n in (80, 82, 88, 89, 90, 92):
+# 91 has no by-id row: its fresh tree skips it before the re-read. 93 has a
+# row and an accepting transition, so only the fork guard can hold it.
+for n in (80, 82, 88, 89, 90, 92, 93):
     row = rows[n].copy()
     if n == 89:
         row["state"] = "in-progress"  # rebuild between list and re-read
@@ -81,7 +83,8 @@ route("POST", "/tickets/82/transition",
        "in-review → done needs a review-trail event by this run after the latest entry into in-review"}}, 403)
 route("POST", "/tickets/88/transition", {"ok": True, "to": "done"})
 route("POST", "/tickets/92/transition", {"ok": True, "to": "done"})
-for n in (80, 81, 83, 85, 86, 87, 89, 90, 91):
+route("POST", "/tickets/93/transition", {"ok": True, "to": "done"})
+for n in (80, 81, 83, 85, 86, 87, 89, 90, 91, 93):  # a fork keeps its lease
     route("POST", f"/runs/{n}/renew", {"renewed": True})
 route("GET", "/answers/unrelayed", [])
 route("GET", "/runs/needing-resume", [])
@@ -104,16 +107,25 @@ meta() {
     "$1" "$1" "$2" "$1" "$1" "$1" > "$DH/u-$1.json"
   chmod 600 "$DH/u-$1.json"
 }
-for n in 80 81 83 85 86 87 89 90 91 92; do
-  status=idle; case "$n" in 87|92) status=working ;; esac
+for n in 80 81 83 85 86 87 89 90 91 92 93; do
+  status=idle; case "$n" in 87|92) status=working ;; 93) status=error ;; esac
   meta "$n" "$status"
   touch "$TESTHOME/.claude/projects/proj/u-$n.jsonl"
 done
 # 80 and 89 concluded their reviews long ago; 91's QA child writes under its
 # subagents/ right now, so only the TREE says it is active; 92 is dead, and a
 # dead parent's children are dead too, so its fresh file must not hold it.
+# 93's resume LAUNCHED a turn whose session never resolved: status=error plus
+# pending_short, and `current` still names the superseded turn, whose quiet
+# transcript is all the tree gate can read — the fork writes somewhere else.
+python3 - "$DH/u-93.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); m["pending_short"] = "fork-93"
+json.dump(m, open(sys.argv[1], "w"))
+PY
 touch -t 202607170000 "$TESTHOME/.claude/projects/proj/u-80.jsonl" \
-  "$TESTHOME/.claude/projects/proj/u-89.jsonl" "$TESTHOME/.claude/projects/proj/u-91.jsonl"
+  "$TESTHOME/.claude/projects/proj/u-89.jsonl" "$TESTHOME/.claude/projects/proj/u-91.jsonl" \
+  "$TESTHOME/.claude/projects/proj/u-93.jsonl"
 mkdir -p "$TESTHOME/.claude/projects/proj/u-91/subagents"
 touch "$TESTHOME/.claude/projects/proj/u-91/subagents/agent-qa.jsonl"
 
@@ -127,7 +139,7 @@ echo "GH $*" >> "$GH_LOG"
 url="${3%/}"; n="${url##*/}"
 case "$n" in
   81) echo '{"mergedAt":null,"mergeCommit":null,"headRefOid":null}'; exit 0 ;;
-  80|82|83|85|86|87|88|89|90|91|92) ;;
+  80|82|83|85|86|87|88|89|90|91|92|93) ;;
   *) exit 2 ;;
 esac
 head="$n"; [ "$n" != 83 ] || head=831
@@ -224,6 +236,10 @@ M92="$(printf '%040d' 9200)"; SHA92="$(printf '%040d' 92)"
 t  "92's dead owner is not mid-turn and skips the tree gate: it closes as its run" \
    "/tickets/92/transition auth=Bearer tok-92 to=done note=finalize: https://github.com/o/r/pull/92 merged as $M92 at the reviewed head $SHA92" posts /tickets/92/transition
 nt "92's dead owner is never reported mid-turn or active" "#92 — merged, but its owner" cat "$OUT"
+t  "93's owner with an unresolved fork is held and surfaced" \
+   "#93 — merged, but its owner u-93 carries an UNRESOLVED FORK (status=error + pending_short)" cat "$OUT"
+t  "93 is not closed while its fork may be live on the run" "[0]" post_count 93
+nt "93 is held before the by-id re-read" '"path": "/tickets/93"' cat "$FIX.log"
 t  "90 was synced before its status was trusted" '"status": "working"' cat "$DH/u-90.json"
 # Assert the ordering, rather than only the presence of all three operations.
 t  "80's evidence, fresh by-id read and write are in order" "ordered" python3 - "$FIX.log" <<'PY'

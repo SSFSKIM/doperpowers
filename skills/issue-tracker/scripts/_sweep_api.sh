@@ -1634,7 +1634,7 @@ phase_finalize() {
   }
   local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
   local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence status fresh state now_pr now_run now_plan note output first
-  local transcript turn_epoch age
+  local transcript turn_epoch age liveness
   candidates="$(_finalize_candidates)" || {
     echo "finalize: the board would not list its in-review tickets; nothing is closed this tick" >&2
     return 1
@@ -1696,7 +1696,17 @@ PY
     # seat whose record still says idle. A DEAD seat is not mid-turn whatever
     # its record says — a session that died mid-turn leaves `working` behind,
     # and no agent of its will ever close — so it writes as the run below.
-    if [ -n "$owner_uuid" ] && [ "$(_liveness "$owner_uuid")" != dead ]; then
+    liveness=""
+    [ -z "$owner_uuid" ] || liveness="$(_liveness "$owner_uuid")"
+    # AN UNRESOLVED FORK MAY BE LIVE ON THIS RUN, and nothing here can see it:
+    # its record reads `error`, not mid-turn, and `current` still names the
+    # superseded turn, so the tree gate below reads the old transcript. A done
+    # would end the run under it — held, as relay and resume hold it.
+    if [ "$liveness" = forked ]; then
+      echo "finalize: #$ticket — merged, but its owner $owner_uuid carries an UNRESOLVED FORK (status=error + pending_short); nothing is written until it resolves — recover the fork by hand (its meta names it in pending_short) or retire the session" >&2
+      continue
+    fi
+    if [ "$liveness" = live ]; then
       status="$(_meta_field "$DAEMON_HOME/$owner_uuid.json" status)"
       case "$status" in
         working|blocked)
