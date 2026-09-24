@@ -1668,8 +1668,11 @@ PY
         break
       fi
     done < <(_metas_for_ticket "$ticket")
-    if [ -n "$owner_uuid" ]; then
-      _liveness "$owner_uuid" >/dev/null
+    # Synced before the status is trusted: the sync promotes a natively-woken
+    # seat whose record still says idle. A DEAD seat is not mid-turn whatever
+    # its record says — a session that died mid-turn leaves `working` behind,
+    # and no agent of its will ever close — so it writes as the run below.
+    if [ -n "$owner_uuid" ] && [ "$(_liveness "$owner_uuid")" != dead ]; then
       status="$(_meta_field "$DAEMON_HOME/$owner_uuid.json" status)"
       case "$status" in
         working|blocked)

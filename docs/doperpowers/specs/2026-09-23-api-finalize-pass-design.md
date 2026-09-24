@@ -164,7 +164,9 @@ Per tick:
    d. Owner: `_metas_for_ticket "$ticket"` rows (`uuid \x1f bearer \x1f run
       \x1f fence`, confirmed binds first); pick the first whose `run` equals
       the row's `owner_run` and whose bearer is non-empty. Then
-      `_liveness "$uuid" >/dev/null` — for its `sminos sync` side effect,
+      `_liveness "$uuid"` — `dead` skips the status check (a session that
+      died mid-turn leaves `working` in its record), and otherwise it runs
+      for its `sminos sync` side effect,
       which promotes a natively-woken seat whose record still says `idle`
       (review-recover does the same at line 1442 before trusting the
       status) — and only then read `status` (`_meta_field
