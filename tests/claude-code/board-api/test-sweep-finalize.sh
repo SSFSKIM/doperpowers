@@ -12,7 +12,8 @@
 # mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
 # read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, a
 # live idle owner whose transcript tree is still fresh (a QA child reviewing
-# under it), an owner carrying an unresolved resume fork, a GitHub read that
+# under it), an owner carrying an unresolved resume fork, a non-null owner run
+# with no seat in this registry (its home host closes it), a GitHub read that
 # hangs, and the whole tick's no-wasted-nudge order.
 . "$(dirname "$0")/helpers.sh"
 
@@ -46,7 +47,7 @@ def sha(n):
 def pr(n):
     return f"https://github.com/o/r/pull/{n}"
 
-ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93)
+ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94)
 rows = {n: {"id": n, "state": "in-review", "priority": "P1",
             "title": f"ticket {n}", "pr_url": "512" if n == 84 else pr(n),
             "owner_run": None if n in (82, 88) else n, "plan": None}
@@ -61,7 +62,7 @@ def trail(cursor, text):
     return {"source": "board", "cursor": str(cursor), "kind": "review-trail",
             "runId": None, "body": {"text": text}}
 
-for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93):
+for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94):
     text = "round 1 — level medium"
     if n != 85:
         text += "\nreviewed head: " + sha(830 if n == 83 else n)
@@ -69,8 +70,9 @@ for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93):
                else [transition(1), trail(2, text)])
     route("GET", f"/tickets/{n}/timeline", {"records": records})
 
-# 91 has no by-id row: its fresh tree skips it before the re-read. 93 has a
-# row and an accepting transition, so only the fork guard can hold it.
+# 91 has no by-id row: its fresh tree skips it before the re-read, as 94's
+# remote owner does. 93 has a row and an accepting transition, so only the
+# fork guard can hold it.
 for n in (80, 82, 88, 89, 90, 92, 93):
     row = rows[n].copy()
     if n == 89:
@@ -143,7 +145,7 @@ url="${3%/}"; n="${url##*/}"
 [ "$n" != "${GH_HANG_PR:-}" ] || sleep "$GH_HANG_SECS"
 case "$n" in
   81) echo '{"mergedAt":null,"mergeCommit":null,"headRefOid":null}'; exit 0 ;;
-  80|82|83|85|86|87|88|89|90|91|92|93) ;;
+  80|82|83|85|86|87|88|89|90|91|92|93|94) ;;
   *) exit 2 ;;
 esac
 head="$n"; [ "$n" != 83 ] || head=831
@@ -244,6 +246,12 @@ t  "93's owner with an unresolved fork is held and surfaced" \
    "#93 — merged, but its owner u-93 carries an UNRESOLVED FORK (status=error + pending_short)" cat "$OUT"
 t  "93 is not closed while its fork may be live on the run" "[0]" post_count 93
 nt "93 is held before the by-id re-read" '"path": "/tickets/93"' cat "$FIX.log"
+# 94's owner_run is non-null but no seat here holds it: a lease-live owner in
+# another registry, whose QA child this host cannot see. Not automation's.
+t  "94's remote owner is left for its home host" \
+   "#94 — merged at the reviewed head; owner run 94 lives in another registry; its own host closes" cat "$OUT"
+t  "94 is not closed as automation under a remote run" "[0]" post_count 94
+nt "94 is skipped at owner resolution, before the by-id re-read" '"path": "/tickets/94"' cat "$FIX.log"
 t  "90 was synced before its status was trusted" '"status": "working"' cat "$DH/u-90.json"
 # Assert the ordering, rather than only the presence of all three operations.
 t  "80's evidence, fresh by-id read and write are in order" "ordered" python3 - "$FIX.log" <<'PY'
@@ -294,10 +302,9 @@ print("renewed after" if before and after else "before=%s after=%s" % (before, a
 PY
 nt "a dead owner's lease is still left to expire" "/runs/92/renew" posts /runs/
 
-# A registry scan that dies is not an empty registry. Read as one, every owned
-# ticket would fall to the ownerless automation write, whose override passes
-# the local fence — a mid-turn owner (90) closed under its own agent — and
-# whose principal skips the server's by-this-run trail gate. The wrapper kills
+# A registry scan that dies is not an empty registry, and nothing is written
+# off it: an owned ticket (80, or 90 mid-turn) must neither close nor be taken
+# for another registry's. The wrapper kills
 # only the sweep's registry scan (its source is the one that reads `all`), so
 # board-transition's own fence scan still runs as it would in the field.
 SCANSTUB="$TDIR/scanstub"; mkdir -p "$SCANSTUB"

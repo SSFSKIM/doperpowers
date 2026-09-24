@@ -1710,13 +1710,22 @@ PY
         owner_uuid="$meta_uuid" owner_bearer="$bearer" owner_fence="$fence"
       fi
     done < <(_metas_for_ticket "$ticket")
-    # A scan that died is not an empty registry. Read as one, an owned ticket
-    # would fall to the ownerless automation write below — past the local
-    # fence (its override) and the server's by-this-run trail gate.
+    # A scan that died is not an empty registry. Read as one, a locally owned
+    # ticket would be logged as another registry's; it is reported as what
+    # it is instead.
     _scan_ok || {
       echo "finalize: #$ticket — the registry scan failed; nothing is written this tick" >&2
       continue
     }
+    # A NON-NULL OWNER WITH NO SEAT HERE lives in another registry, lease-live
+    # (the server reclaims an expired lease and clears owner_run). This host
+    # can read neither its liveness nor its tree, and a done by any actor ends
+    # that run under its QA child — so only a null owner_run closes as
+    # automation below; its home host closes this one, or a reclaim does.
+    if [ -z "$owner_uuid" ] && [ -n "$run" ]; then
+      echo "finalize: #$ticket — merged at the reviewed head; owner run $run lives in another registry; its own host closes"
+      continue
+    fi
     # Synced before the status is trusted: the sync promotes a natively-woken
     # seat whose record still says idle. A DEAD seat is not mid-turn whatever
     # its record says — a session that died mid-turn leaves `working` behind,
@@ -1779,7 +1788,7 @@ PY
         continue
       fi
     else
-      if output="$(BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: $pr_url merged at the reviewed head; no owning run resolves in this registry" "$SCRIPT_DIR/board-transition.sh" "$ticket" 'done' "$note" 2>&1)"; then
+      if output="$(BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: $pr_url merged at the reviewed head; the run ended and left no owner" "$SCRIPT_DIR/board-transition.sh" "$ticket" 'done' "$note" 2>&1)"; then
         echo "finalize: #$ticket — $pr_url merged as $oid at the reviewed head $evidence; done written as automation"
         continue
       fi
