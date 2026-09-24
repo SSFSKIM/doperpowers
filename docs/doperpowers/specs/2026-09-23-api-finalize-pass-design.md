@@ -183,10 +183,12 @@ Per tick:
       meta's run and dispatch slot behind with nothing to strip them. So a
       dead owner is LEFT exactly like a non-null `owner_run` below: its lease
       lapses within one window, the server's reclaim clears `owner_run` and
-      the resume/retire lifecycle strips the predecessor seat and dispatches
-      a successor, which closes the ticket. Log the `dead owner` line and
-      continue. Cleaning up a dead terminal owner is the run-lifecycle's job,
-      not finalize's.
+      the recovery lifecycle dispatches a successor, which closes the ticket.
+      Log the `dead owner` line and continue. Cleaning up a dead terminal
+      owner is the run-lifecycle's job, not finalize's. (That lifecycle does
+      not today reliably strip a dead session's own run_id — renew skips dead
+      sessions — so its slot can linger until manual repair; that is a
+      pre-existing gap, ticket #75, that finalize neither causes nor fixes.)
       `live` — the sync `_liveness` just ran promotes a natively-woken seat
       whose record still says `idle` (review-recover does the same before
       trusting the status); then read `status` (`_meta_field
@@ -203,11 +205,20 @@ Per tick:
       quiet past `REVIEW_STALL_MIN` before the review counts as concluded —
       `transcript="$(_transcript_for_uuid "$owner_uuid")"`,
       `age=$(( ($(date +%s) - _tree_mtime_epoch "$transcript") / 60 ))`, and
-      `age < REVIEW_STALL_MIN` → log the `active` line, continue. A tree
-      quiet at least that long, on a live idle owner whose child has
-      returned, is the concluded review this pass closes as the run in step
-      3f — a live owner's next renewal then gets 409 run-ended and strips its
-      seat. No transcript is no signal (a seat that never wrote): treat as
+      `age < REVIEW_STALL_MIN` → log the `active` line, continue. This gate
+      is the board's BEST-EFFORT liveness proxy, not a proof: a quiet tree
+      does not prove the QA child ended, only that it has written nothing for
+      `REVIEW_STALL_MIN`. It is exactly the proxy review-recover trusts to
+      tell a stalled review from a live one, so finalize inherits the same
+      residual — a child silent past the threshold that this pass then closes
+      under. That residual is bounded to a review that both concluded enough
+      to have merged AND is somehow still writing (an external merge during a
+      long-silent panel round), and it is the identical risk the board already
+      accepts for review-recover; a stricter proof would need direct subagent
+      liveness the sweep does not have. A tree quiet at least that long, on a
+      live idle owner, is the concluded review this pass closes as the run in
+      step 3f — a live owner's next renewal then gets 409 run-ended and strips
+      its seat. No transcript is no signal (a seat that never wrote): treat as
       concluded and write.
       No LOCAL seat resolves the owner: the automation path is NOT the
       universal fallback — it is reserved for `owner_run == null`. A ticket
@@ -220,8 +231,8 @@ Per tick:
       registry` line — its home host closes it, or the server's reconciler
       reclaims the expired lease and clears `owner_run`, after which a later
       tick may close it as automation only if no seat still holds a run;
-      otherwise a successor closes it after the recovery lifecycle strips
-      the predecessor. Only a NULL `owner_run` (the run ended, or a reclaim
+      otherwise a successor closes it (the recovery lifecycle's job, ticket
+      #75 covering the slot-cleanup gap). Only a NULL `owner_run` (the run ended, or a reclaim
       cleared it) can reach the automation write in 3f. A
       registry scan that died resolves nothing and is not "no seat": stderr
       line, continue.
@@ -241,18 +252,27 @@ Per tick:
       As automation (ONLY when `owner_run == null` AND no seat in this
       registry still holds a run for this ticket): first the LINGERING-SEAT
       guard. finalize does NOT participate in the reclaim lifecycle: a
-      crashed owner's run is ended by the server's reclaim, but the local
-      seat that held it is stripped and retired only by the renew phase's 409
-      (never fired for a dead session) or the resume/reclaim path — and a
-      `done` here makes the ticket terminal, which short-circuits that path,
-      stranding the dead predecessor's run and dispatch slot. So before the
-      automation close, scan `_metas_for_ticket "$ticket"` (already in hand
-      from 3d) for ANY row whose run is non-empty. If one exists, a
-      predecessor seat is still un-stripped: LEAVE the ticket, log the
-      `predecessor seat` line, and let the recovery lifecycle strip that seat
-      and hand the ticket to a successor, which closes it as its own run. The
-      automation write fires only for a ticket with `owner_run == null` and
-      no runful seat at all — a genuinely clean orphan.
+      crashed owner's run is ended by the server's reclaim, but a `done` here
+      makes the ticket terminal, which short-circuits the resume path, so
+      finalize closing a ticket that still has a runful predecessor seat
+      would strand that seat's dispatch slot. So before the automation close,
+      scan `_metas_for_ticket "$ticket"` (already in hand from 3d) for ANY
+      row whose run is non-empty. If one exists, a predecessor seat is still
+      un-stripped: LEAVE the ticket, log the `predecessor seat` line, and let
+      the recovery lifecycle hand the ticket to a successor, which closes it
+      as its own run. The automation write fires only for a ticket with
+      `owner_run == null` and no runful seat at all — a genuinely clean
+      orphan.
+      NOTE (honesty, from review R1-F2): the guard keeps finalize from
+      CAUSING a slot leak, but it does not itself clean up a crashed owner's
+      seat. The current lifecycle does NOT reliably strip a DEAD session's
+      run_id at all — the renew phase skips a dead session (so its 409 never
+      fires) and `_resume_one` assumes the predecessor was already stripped
+      by that 409 (`_sweep_api.sh:2790-2791`). So a crashed worker's slot can
+      linger until manual repair regardless of finalize. That is a
+      pre-existing run-lifecycle gap, tracked as a follow-up (ticket #75),
+      NOT finalize's to fix; finalize's contract here is only that it never
+      makes it worse by short-circuiting the successor path.
       `BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: <pr_url> merged at the reviewed head; the run ended and left no owner" board-transition.sh <ticket> done "<note>"`.
       A NON-NULL `owner_run` with no local seat took the `another registry`
       skip in 3d and never reaches here. The override is the dp#63 fence's
@@ -279,7 +299,7 @@ Log lines (stdout unless marked; tests assert on them, so copy them exactly):
     finalize: #<t> — merged, but its owner <uuid> is mid-turn; its own agent closes
     finalize: #<t> — merged, but its owner <uuid> was active <age>m ago (a review may be running under it); left for its own agent
     finalize: #<t> — merged, but its owner <uuid> is a dead session; its lease will lapse and the reclaim will clear its run, then a successor closes it
-    finalize: #<t> — merged, owner_run cleared but seat <uuid> still holds run <n>; the reclaim/retire lifecycle strips it and a successor closes
+    finalize: #<t> — merged, owner_run cleared but seat <uuid> still holds run <n>; left for the recovery lifecycle (a successor closes it)
     finalize: #<t> — moved between the read and the write (now <state>, pr <pr_url>, owner <owner_run>, plan <plan>); nothing is written
     finalize: tick budget exhausted — the rest ride the next tick
     (stderr) finalize: #<t> — gh could not read <pr_url>; the next tick retries
@@ -357,11 +377,12 @@ Observable on the hermetic suite and on the live board:
    run. A merged ticket whose `owner_run` is already null but a predecessor
    seat still holds a run (a dead owner reclaimed but not yet stripped) is
    also untouched and logged: finalize does not close it, so it never
-   short-circuits the reclaim/retire lifecycle that strips the seat and
-   hands the ticket to a successor, which closes it. A ticket that left
-   `in-review` (or changed pin or owner) between the list read and the write
-   is untouched and logged. An epic (numeric `pr_url`) is skipped without a
-   gh call.
+   short-circuits the recovery lifecycle, which hands the ticket to a
+   successor that closes it. (Whether that lifecycle then strips the dead
+   predecessor's slot is a separate, pre-existing gap — ticket #75 — that
+   finalize neither causes nor fixes.) A ticket that left `in-review` (or
+   changed pin or owner) between the list read and the write is untouched
+   and logged. An epic (numeric `pr_url`) is skipped without a gh call.
 5. `tests/claude-code/board-api/test-sweep-finalize.sh` drills every case
    above plus the gh-bound refusal, hermetically (fixture mock, stub gh,
    stub sminos), and is listed in `run-skill-tests.sh`.
@@ -849,13 +870,20 @@ scratch: never `git add` it.
   `_retire_finished_seats` only retires a RUNLESS meta. A finalize close of a
   dead run therefore leaks the seat's run and dispatch slot with nothing left
   to clean it. Leaving the dead owner routes it through the existing reclaim
-  path, which strips the run and retires the seat exactly as for any
-  reclaimed run, and a later tick then closes the null-owner ticket as
-  automation. This also removes the dead-owner special case entirely (one
-  rule: a non-null `owner_run`, dead-local or remote, is left; only null
-  closes as automation), and matches the reviewer's point that reconciling a
-  dead terminal owner is the run-lifecycle's job, not finalize's. A LIVE
-  owner is unaffected: it is renewed, so its 409 strips it after a close.
+  path (a successor closes the ticket), and a later tick closes a
+  null-owner clean orphan as automation. This also removes the dead-owner
+  special case entirely (one rule: a non-null `owner_run`, dead-local or
+  remote, is left; only null closes as automation), and matches the
+  reviewer's point that reconciling a dead terminal owner is the
+  run-lifecycle's job, not finalize's. A LIVE owner is unaffected: it is
+  renewed, so its 409 strips it after a close.
+  Correction (from review R1-F2, superseding a claim in this entry): the
+  reclaim path does NOT reliably strip a dead session's run — the renew
+  phase skips dead sessions and `_resume_one` assumes the 409 already
+  stripped the predecessor — so a crashed worker's slot can linger until
+  manual repair. That is a pre-existing lifecycle gap (ticket #75); the
+  finalize decision above stands because finalize's contract is only to not
+  CAUSE the leak, which the lingering-seat guard (next entry) enforces.
   Rejected: closing the dead owner as automation and extending
   `_retire_finished_seats` to strip a still-run meta on a dead terminal seat
   (more logic in a delicate lifecycle path, for an edge — a crashed owner —
@@ -865,8 +893,11 @@ scratch: never `git add` it.
 - Decision: finalize does not participate in the reclaim lifecycle at all.
   The automation close fires only for a null `owner_run` AND when no seat in
   this registry still holds a run for the ticket; any lingering runful seat
-  makes finalize LEAVE the ticket for the recovery machinery, which strips
-  the seat and hands the ticket to a successor that closes it.
+  makes finalize LEAVE the ticket for the recovery machinery, which hands the
+  ticket to a successor that closes it. (Whether that machinery also strips
+  the dead predecessor's slot is a pre-existing gap, ticket #75; finalize's
+  contract is only to not CAUSE the leak by short-circuiting the successor
+  path.)
   Rationale: the R3-F1 revision assumed "leave the dead owner, the reclaim
   clears owner_run, then finalize closes as automation" — but the fresh pass
   showed the leak just moves: after the reclaim nulls owner_run, finalize's
@@ -892,6 +923,30 @@ scratch: never `git add` it.
   delicate lifecycle path, the coupling this decision removes).
   Date/Author: 2026-09-24, Architect #74, from the fresh QA pass's design-gap
   (R5-F1); adopted by repair-and-rebuild.
+- Decision: the spec states finalize's owner-liveness and seat-cleanup
+  reasoning HONESTLY, without overclaiming guarantees it does not have.
+  Rationale: the review pass over the rebuilt head raised two spec-conflicts
+  that were about the DOCUMENT overclaiming, not about finalize's behavior.
+  (1) The live-owner tree-quiet gate is the board's BEST-EFFORT liveness
+  proxy — the identical one review-recover trusts — not a proof the QA child
+  ended; the narrow residual (a child silent past `REVIEW_STALL_MIN` that
+  finalize closes under, reachable only via an external merge during a long
+  panel silence) is the same risk the board already accepts board-wide, and a
+  stricter proof needs direct subagent liveness the sweep lacks. (2) The
+  lingering-seat guard keeps finalize from CAUSING a slot leak, but the
+  current run-lifecycle does not itself reliably strip a dead session's
+  run_id (renew skips dead sessions; `_resume_one` assumes the 409 already
+  stripped the predecessor), so a crashed worker's slot can linger — a
+  pre-existing gap, ticket #75, that finalize neither causes nor fixes. Both
+  are corrected as documentation honesty; finalize's behavior is unchanged
+  and correct for its charter (close a merged ticket; never end a run it
+  cannot show is done; never strand a slot).
+  Rejected: making finalize prove child-death or strip dead seats itself —
+  the first needs machinery the sweep does not have, the second is #75's and
+  couples finalize into a lifecycle it should not own.
+  Date/Author: 2026-09-24, Architect #74, from the fresh QA pass's
+  spec-conflicts (R1-F2, R1-F3); adopted by re-pin, with #75 filed for the
+  pre-existing lifecycle gap.
 
 ## Surprises & Discoveries
 
@@ -1038,3 +1093,15 @@ scopes out server changes. The worker harness prevented the requested report
   Outcomes and the Decision Log updated; the dead-owner log line's tail now
   says a successor closes it. Built by a plan-executor and reviewed by a
   fresh QA pass (this answer ends the prior pass; it is not resumed).
+- 2026-09-24: seventh revision, a re-pin during the fresh QA pass answering
+  its two spec-conflicts (R1-F2, R1-F3) as documentation honesty, no behavior
+  change. The tree-quiet gate is stated as the board's best-effort liveness
+  proxy (not a proof), inheriting review-recover's accepted residual; the
+  lingering-seat guard is stated to keep finalize from CAUSING a leak while
+  the pre-existing dead-session slot-cleanup gap (renew skips dead sessions;
+  `_resume_one` assumes the 409 already stripped the predecessor) is left to
+  the run-lifecycle and filed as ticket #75. Overclaims that the lifecycle
+  strips the dead seat were corrected across step 3d, 3f, acceptance, the log
+  line, and the Decision Log. R1-F1 (timeout arithmetic) is an ordinary fix
+  wave. No code behavior change from this re-pin; the doc now matches what
+  finalize actually guarantees.
