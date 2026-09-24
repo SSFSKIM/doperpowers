@@ -134,6 +134,7 @@ touch "$TESTHOME/.claude/projects/proj/u-91/subagents/agent-qa.jsonl"
 cat > "$DS/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "GH $*" >> "$GH_LOG"
+[ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
 [ "${1:-}" = pr ] && [ "${2:-}" = view ] && [ "${4:-}" = --json ] &&
   [ "${5:-}" = mergedAt,mergeCommit,headRefOid ] || exit 2
 url="${3%/}"; n="${url##*/}"
@@ -176,7 +177,7 @@ chmod +x "$DS/gh" "$DS/sminos"
 SW() {
   ( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" \
       NUDGE_LOG="$NUDGES" GH_LOG="$TDIR/gh.log" PATH="$DS:$PATH" \
-      BOARD_CREDENTIALS_FILE="$CREDS" BOARD_SWEEP_TICK_BUDGET=900 \
+      BOARD_CREDENTIALS_FILE="$CREDS" BOARD_SWEEP_TICK_BUDGET="${BUDGET:-900}" GH_SLEEP="${GH_SLEEP:-}" \
       "$SCRIPTS/_sweep_api.sh" "$@" )
 }
 # Render the API request log's parsed body for assertions on the actual wire,
@@ -316,6 +317,19 @@ t  "a failed registry scan is reported" "#80 — the registry scan failed; nothi
 t  "a failed registry scan does not close 80 as automation" "[0]" post_count 80
 t  "a failed registry scan does not close 90 under its mid-turn owner" "[0]" post_count 90
 nt "a failed registry scan never overrides the local fence" "override:" cat "$SCANFAIL"
+
+# A budget that runs out mid-list must not hand the same head of the list the
+# whole budget every tick: the ticks below each have room for one slow GitHub
+# read, and each must take the ticket past the last one taken, wrapping at the
+# end. Every earlier pass in this file scanned the whole list, so the next
+# ticket past its last is the first again.
+taken() { sed -n 's#^GH pr view https://github.com/o/r/pull/\([0-9]*\) .*#\1#p' "$TDIR/gh.log" | tr '\n' ' '; echo; }
+: > "$TDIR/gh.log"
+for _ in 1 2 3; do
+  ( BUDGET=3 GH_SLEEP=3 BOARD_FINALIZE_RENEW_SEC=99999999999 SW finalize ) > "$TDIR/rotate.out" 2>&1 || true
+done
+t  "each budget-limited tick takes the ticket past the last one taken" "80 81 82 " taken
+t  "the budget still stops the pass mid-list" "tick budget exhausted — the rest ride the next tick" cat "$TDIR/rotate.out"
 
 # A gh-bound checkout refuses the API tick before looking at GitHub.
 ghrepo="$(mkrepo)"

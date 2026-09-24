@@ -31,6 +31,8 @@
 #          A live owner whose transcript TREE is not yet quiet past
 #          BOARD_REVIEW_STALL_MIN is left alone — review-recover's activity
 #          gate — so the run never ends under a QA child still reviewing.
+#          The list is taken round-robin past the last ticket a tick took, so
+#          a budget spent mid-list leaves the rest to lead the next tick.
 #          Refused closes stay with the recovery ladder. Run ahead of review
 #          recovery so no nudge is spent on a merged ticket; renew retires the
 #          ended seat on the following tick.
@@ -1594,15 +1596,24 @@ phase_review_recover() {
 }
 
 # GitHub PR URLs only: closure-package ids on epics are not pull requests.
+# ROTATED PAST THE LAST TICKET A TICK TOOK ($1): the budget can stop the pass
+# mid-list, and a list read from its head every tick hands the same first
+# tickets the budget every time — a merged ticket behind them is never read.
 _finalize_candidates() {
-  _api_py - <<'PY'
+  T_AFTER="$1" _api_py - <<'PY'
+import os
 import re
 import _board_api as A
-for row in A.tickets_all(states="in-review", principal="automation"):
-    url = row.get("pr_url") or ""
-    if re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?", url):
-        print("\x1f".join(str(v or "") for v in
-              (row["id"], url, row.get("owner_run"), row.get("plan"))))
+after = os.environ["T_AFTER"].strip()
+after = int(after) if after.isdigit() else 0
+rows = sorted((row for row in A.tickets_all(states="in-review", principal="automation")
+               if re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?",
+                               row.get("pr_url") or "")),
+              key=lambda row: int(row["id"]))
+for row in ([r for r in rows if int(r["id"]) > after]
+            + [r for r in rows if int(r["id"]) <= after]):
+    print("\x1f".join(str(v or "") for v in
+          (row["id"], row["pr_url"], row.get("owner_run"), row.get("plan"))))
 PY
 }
 
@@ -1634,8 +1645,14 @@ phase_finalize() {
   }
   local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
   local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence status fresh state now_pr now_run now_plan note output first
-  local transcript turn_epoch age liveness
-  candidates="$(_finalize_candidates)" || {
+  local transcript turn_epoch age liveness cursor
+  # The last ticket a tick took, per binding (ticket numbers repeat across
+  # boards), written as each is taken so the next tick starts past it.
+  cursor="$(board_store_dir sweep-finalize)/cursor" || {
+    echo "finalize: its cursor store could not be resolved; nothing is closed this tick" >&2
+    return 1
+  }
+  candidates="$(_finalize_candidates "$(cat "$cursor" 2>/dev/null || true)")" || {
     echo "finalize: the board would not list its in-review tickets; nothing is closed this tick" >&2
     return 1
   }
@@ -1645,6 +1662,7 @@ phase_finalize() {
       echo "finalize: tick budget exhausted — the rest ride the next tick"
       break
     fi
+    printf '%s\n' "$ticket" > "$cursor"
     # Serial gh and board reads can fill the tick budget, which is the lease's
     # length; every live run is renewed again once the last pass is old. Ahead
     # of the owner lookup, so a run this renewal ends is already off its meta.
