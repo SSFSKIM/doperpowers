@@ -433,6 +433,16 @@ for tick in 1 2; do
   t  "budget-long first read, all tick $tick: dispatch reaches the board" "claimed" claims "$TDIR/first$tick.log"
 done
 
+# A zero-padded timeout override is a decimal number of seconds: 08 read as
+# octal in the share's arithmetic would abort the tick at its second
+# candidate, and every phase behind finalize with it, on every tick.
+: > "$FIX.log"
+( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=08 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/padded.out" 2>&1 || true
+cp "$FIX.log" "$TDIR/padded.log"
+nt "zero-padded timeout: no octal arithmetic error" "value too great for base" cat "$TDIR/padded.out"
+t  "zero-padded timeout: finalize stops at its share" "finalize: its share of the tick is spent — the rest ride the next tick" cat "$TDIR/padded.out"
+t  "zero-padded timeout: dispatch reaches the board" "claimed" claims "$TDIR/padded.log"
+
 # A gh-bound checkout refuses the API tick before looking at GitHub.
 ghrepo="$(mkrepo)"
 before="$(wc -l < "$TDIR/gh.log")"

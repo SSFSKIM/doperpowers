@@ -439,6 +439,9 @@ case "$BOARD_PUSH_TIMEOUT" in ''|*[!0-9]*) BOARD_PUSH_TIMEOUT=60 ;; esac
 # no renewal until it returned.
 BOARD_GH_TIMEOUT="${BOARD_GH_TIMEOUT:-60}"
 case "$BOARD_GH_TIMEOUT" in ''|*[!0-9]*) BOARD_GH_TIMEOUT=60 ;; esac
+# Decimal from here on: finalize's share adds it in $(( )), which reads a
+# leading zero as octal (08 would abort the tick there).
+BOARD_GH_TIMEOUT="$(( 10#$BOARD_GH_TIMEOUT ))"
 [ "$BOARD_GH_TIMEOUT" -ge 5 ] || BOARD_GH_TIMEOUT=5
 
 # The harness-error ladder (phase 1b). Validated the same way, because each is
