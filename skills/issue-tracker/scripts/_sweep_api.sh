@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # _sweep_api.sh — the API-binding unattended tick (spec § four-phase tick):
-#   renew → stall → review-recover → relay → resume-first → fresh claims. Each
-#   phase independently guarded; each invokable alone:
-#   _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]
+#   renew → stall → finalize → review-recover → relay → resume-first → fresh claims.
+#   Each phase independently guarded; each invokable alone:
+#   _sweep_api.sh [renew|stall|finalize|review-recover|relay|resume|dispatch|all]
 #
 # The gh-mode tick (board-sweep.sh) re-derives its work-list from GitHub and
 # the registry; this one re-derives it from the board API and the registry.
@@ -22,6 +22,15 @@
 #          runs out over and over registers an env-issue and is SUPPRESSED: a
 #          harness fault that outlives its worker reaches a human instead of
 #          buying a fresh successor every hour forever.
+#   FINALIZE a ticket whose PR merged after its QA agent returned. Read the
+#          merge from GitHub and the reviewed head from its trail; close only
+#          when both agree. The server gates run actors only, so the evidence
+#          predicate applies here before either write. Re-read the ticket by
+#          id just before writing and skip one that moved: this narrows the
+#          window, but is not atomic (non-run actors have no conditional edge).
+#          Refused closes stay with the recovery ladder. Run ahead of review
+#          recovery so no nudge is spent on a merged ticket; renew retires the
+#          ended seat on the following tick.
 #   REVIEW a bound OWNER whose review stopped. The seat that opened the PR
 #   RECOVER dispatches one qa-loop agent and ends its turn, so a seat that is
 #          live, idle and silent past BOARD_REVIEW_STALL_MIN with its ticket
@@ -1571,6 +1580,140 @@ phase_review_recover() {
     fi
   done < <(_registry_metas)
   _scan_ok || die "registry scan failed — review-recover phase saw no metas it can trust"
+}
+
+# GitHub PR URLs only: closure-package ids on epics are not pull requests.
+_finalize_candidates() {
+  _api_py - <<'PY'
+import re
+import _board_api as A
+for row in A.tickets_all(states="in-review", principal="automation"):
+    url = row.get("pr_url") or ""
+    if re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?", url):
+        print("\x1f".join(str(v or "") for v in
+              (row["id"], url, row.get("owner_run"), row.get("plan"))))
+PY
+}
+
+_finalize_evidence() {  # <ticket>: no-trail, no-head or reviewed sha
+  T_TID="$1" _api_py - <<'PY'
+import os
+import re
+import _board_api as A
+records = (A.timeline(os.environ["T_TID"], principal="automation") or {}).get("records") or []
+board = [r for r in records if r.get("source") == "board"]
+entry = max((int(r["cursor"]) for r in board if r.get("kind") == "transition"
+             and (r.get("body") or {}).get("to") == "in-review"), default=0)
+trails = [r for r in board if r.get("kind") == "review-trail"
+          and int(r["cursor"]) > entry]
+if not trails:
+    print("no-trail")
+else:
+    trail = max(trails, key=lambda r: int(r["cursor"]))
+    match = re.search(r"^reviewed head: ([0-9a-f]{40})\s*$",
+                      (trail.get("body") or {}).get("text") or "", re.MULTILINE)
+    print(match.group(1) if match else "no-head")
+PY
+}
+
+phase_finalize() {
+  command -v gh >/dev/null 2>&1 || {
+    echo "finalize: gh is not on PATH; merged pull requests cannot be read and nothing is closed this tick" >&2
+    return 1
+  }
+  local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
+  local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence status fresh state now_pr now_run now_plan note output first
+  candidates="$(_finalize_candidates)" || {
+    echo "finalize: the board would not list its in-review tickets; nothing is closed this tick" >&2
+    return 1
+  }
+  while IFS=$'\x1f' read -r ticket pr_url run plan; do
+    [ -n "$ticket" ] || continue
+    if ! _budget_left; then
+      echo "finalize: tick budget exhausted — the rest ride the next tick"
+      break
+    fi
+    gh_json="$(gh pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
+      echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
+      continue
+    }
+    merge="$(T_GH="$gh_json" python3 - <<'PY'
+import json, os
+pr = json.loads(os.environ["T_GH"])
+if pr.get("mergedAt"):
+    print("\x1f".join((pr.get("headRefOid") or "", (pr.get("mergeCommit") or {}).get("oid") or "")))
+PY
+)" || {
+      echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
+      continue
+    }
+    [ -n "$merge" ] || continue
+    IFS=$'\x1f' read -r merged_head oid <<< "$merge"
+    evidence="$(_finalize_evidence "$ticket")" || {
+      echo "finalize: #$ticket — the timeline could not be read; nothing is written this tick" >&2
+      continue
+    }
+    case "$evidence" in
+      no-trail) echo "finalize: #$ticket — merged, but no review-trail since the ticket last entered review; left for the owner"; continue ;;
+      no-head) echo "finalize: #$ticket — merged, but the latest review-trail names no reviewed head; left for the owner"; continue ;;
+    esac
+    if [ "$merged_head" != "$evidence" ]; then
+      echo "finalize: #$ticket — merged off the reviewed head: GitHub merged $merged_head, the trail names $evidence; left for the owner"
+      continue
+    fi
+    owner_uuid="" owner_bearer="" owner_fence=""
+    while IFS=$'\x1f' read -r meta_uuid bearer meta_run fence; do
+      if [ -n "$run" ] && [ "$meta_run" = "$run" ] && [ -n "$bearer" ]; then
+        owner_uuid="$meta_uuid" owner_bearer="$bearer" owner_fence="$fence"
+        break
+      fi
+    done < <(_metas_for_ticket "$ticket")
+    if [ -n "$owner_uuid" ]; then
+      _liveness "$owner_uuid" >/dev/null
+      status="$(_meta_field "$DAEMON_HOME/$owner_uuid.json" status)"
+      case "$status" in
+        working|blocked)
+          echo "finalize: #$ticket — merged, but its owner $owner_uuid is mid-turn; its own agent closes"
+          continue ;;
+      esac
+    fi
+    fresh="$(T_TID="$ticket" _api_py - <<'PY'
+import os
+import _board_api as A
+row = A.ticket(os.environ["T_TID"], principal="automation")
+if not row:
+    raise SystemExit(1)
+print("\x1f".join(str(v or "") for v in
+      (row["state"], row.get("pr_url"), row.get("owner_run"), row.get("plan"))))
+PY
+)" || {
+      echo "finalize: #$ticket — the board would not re-read the ticket before the write; nothing is written this tick" >&2
+      continue
+    }
+    IFS=$'\x1f' read -r state now_pr now_run now_plan <<< "$fresh"
+    if [ "$state" != in-review ] || [ "$now_pr" != "$pr_url" ] || [ "$now_run" != "$run" ] || [ "$now_plan" != "$plan" ]; then
+      echo "finalize: #$ticket — moved between the read and the write (now $state, pr $now_pr, owner $now_run, plan $now_plan); nothing is written"
+      continue
+    fi
+    note="finalize: $pr_url merged as $oid at the reviewed head $evidence"
+    if [ -n "$owner_uuid" ]; then
+      if output="$(BOARD_RUN_TOKEN="$owner_bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$owner_fence" "$SCRIPT_DIR/board-transition.sh" "$ticket" 'done' "$note" 2>&1)"; then
+        echo "finalize: #$ticket — $pr_url merged as $oid at the reviewed head $evidence; done written as run $run"
+        continue
+      fi
+    else
+      if output="$(BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: $pr_url merged at the reviewed head; no owning run resolves in this registry" "$SCRIPT_DIR/board-transition.sh" "$ticket" 'done' "$note" 2>&1)"; then
+        echo "finalize: #$ticket — $pr_url merged as $oid at the reviewed head $evidence; done written as automation"
+        continue
+      fi
+    fi
+    first="${output%%$'\n'*}"
+    if [[ "$output" == *review-trail-required* ]]; then
+      echo "finalize: #$ticket — the board refused done (review-trail-required): $first; the ticket stays with the recovery ladder"
+    else
+      echo "finalize: #$ticket — the done transition failed: $first; the next tick retries" >&2
+    fi
+  done <<< "$candidates"
 }
 
 # ---- phase 2: answer relay -------------------------------------------------
@@ -3148,6 +3291,7 @@ phase_dispatch() {
 case "${1:-all}" in
   renew) phase_renew ;;
   stall) phase_stall ;;
+  finalize) phase_finalize ;;
   review-recover) phase_review_recover ;;
   relay) phase_relay ;;
   resume) phase_resume ;;
@@ -3163,6 +3307,11 @@ case "${1:-all}" in
   # its own relay this same tick, and one whose ladder it just spent must be
   # counted out before the phase that would claim a successor for it.
   all) phase_renew || true; phase_stall || true
+       # FINALIZE RUNS AHEAD of review-recover: its wake is asynchronous,
+       # and a later close might race a nudge already in flight. Close first;
+       # recovery reads done and clears the mark, spending no wake. Relay,
+       # resume and dispatch likewise cannot reclaim this ticket this tick.
+       phase_finalize || true
        # REVIEW-RECOVER RUNS BEFORE RELAY for the reason stall does: a nudged
        # owner can answer its own relay in this same tick, and one whose
        # ladder just ran out is parked before the relay reads the wake queue.
@@ -3175,5 +3324,5 @@ case "${1:-all}" in
        TICK_DEADLINE="$((TICK_START + TICK_BUDGET))"
        if _budget_left; then phase_dispatch || true
        else echo "dispatch: tick budget exhausted — fresh claims ride the next tick"; fi ;;
-  *) die "usage: _sweep_api.sh [renew|stall|review-recover|relay|resume|dispatch|all]" ;;
+  *) die "usage: _sweep_api.sh [renew|stall|finalize|review-recover|relay|resume|dispatch|all]" ;;
 esac

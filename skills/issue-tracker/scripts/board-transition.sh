@@ -59,6 +59,9 @@ done
 # RUNS via fences, but this client-side fence is what stands between a
 # non-run session and a ticket a local worker owns, in either binding.
 #
+# BOARD_PRINCIPAL=automation makes a run-less API write the automation
+# principal's (the sweep finalize pass rides it); a run context always wins.
+#
 # Two scope cuts keep the fence honest. (1) Ticket numbers are BOARD-local
 # and the registry is machine-global, so a binding only counts when its
 # board-bind-stamped `board` key names THIS board; a meta predating the stamp
@@ -274,10 +277,12 @@ PY
         || die "the plan path $_path does not exist at ${_sha:0:12} — the pin names an artifact the worker cannot read; fix the path or the sha and retry"
     fi
   fi
-  T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" _api_py - <<'PY'
+  T_ID="$tid" T_TO="$to" T_NOTE="$note" T_BRANCH="$branch" T_PR="$pr" T_PLAN="$plan" T_PRINCIPAL="${BOARD_PRINCIPAL:-human}" _api_py - <<'PY'
 import os
 import _board_api as A
 env = os.environ
+if env["T_PRINCIPAL"] not in ("human", "automation"):
+    raise SystemExit("BOARD_PRINCIPAL must be human or automation")
 tid = A.ref(env["T_ID"])   # '#12' → 12, and a junk ref dies as a junk
                            # ref — not as A.transition's int() traceback
 # The fence comes off the same run context the bearer does, so a worker whose
@@ -290,7 +295,8 @@ fence = _ctx["fence"] if _ctx else None
 out = A.transition(tid, env["T_TO"],
                    note=env["T_NOTE"] or None, pr=env["T_PR"] or None,
                    plan=env["T_PLAN"] or None, branch=env["T_BRANCH"] or None,
-                   fence=int(fence) if fence else None)
+                   fence=int(fence) if fence else None,
+                   principal=env["T_PRINCIPAL"])
 # Print the state the server WROTE — convergence can transmute the target.
 suffix = " (converged)" if out.get("converged") else ""
 print("#%s: → %s%s" % (tid, out["to"], suffix))

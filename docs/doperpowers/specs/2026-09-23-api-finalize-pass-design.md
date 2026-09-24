@@ -19,10 +19,17 @@ evidence gate the server enforces on the owning run's close.
 
 ## Progress
 
-- [ ] M1 — `board-transition.sh` honours `BOARD_PRINCIPAL`; `_sweep_api.sh` gains `phase_finalize` and the `finalize` arm, wired into `all` between stall and review-recover; plugin version bumped to 7.119.0 in the same commit.
+- [x] M1 — `board-transition.sh` honours `BOARD_PRINCIPAL`; `_sweep_api.sh` gains `phase_finalize` and the `finalize` arm, wired into `all` between stall and review-recover; plugin version bumped to 7.119.0 in the same commit.
 - [ ] M2 — `tests/claude-code/board-api/test-sweep-finalize.sh` written and green; the suite listed in `run-skill-tests.sh`; every other `board-api/test-sweep-*.sh` and `test-sweep-renew-relay.sh` still green.
 - [ ] M3 — `agents/qa-loop.md` and `agents/codex/qa-loop.toml` name the reviewed head in the trail and the API finalize pass beside gh's FINALIZE; `references/review-loop.md` names it; TECH-DEBT.md row 26 struck; `tests/issue-tracker/test-qa-loop-agent.sh` pins the new trail line.
 - [ ] PR opened on `main` from `74-api-finalize`; report written to `.architect/74/plan-executor-report.md`.
+
+M1 verification: `scripts/lint-shell.sh` found no changed files at baseline;
+`scripts/lint-shell.sh skills/issue-tracker/scripts/_sweep_api.sh
+skills/issue-tracker/scripts/board-transition.sh` passed after the edit;
+`scripts/bump-version.sh --check` reported four declared manifests at 7.119.0
+with no drift. The audit additionally identified this spec's intended references
+to 7.119.0 as undeclared documentation, not a manifest mismatch.
 
 ## The state this pass exists for
 
