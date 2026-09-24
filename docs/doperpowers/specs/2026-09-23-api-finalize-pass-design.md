@@ -196,10 +196,21 @@ Per tick:
       run (the run is an identity, and the server checks its own fence and
       liveness).
       Any other status on a live owner, past the tree gate, writes as the
-      run in step 3f. No seat resolves (owner_run null, or the owner lives
-      in another machine's registry): the automation path in 3f. A registry
-      scan that died resolves nothing and is not "no seat": stderr line,
-      continue.
+      run in step 3f.
+      No LOCAL seat resolves the owner: the automation path is NOT the
+      universal fallback — it is reserved for `owner_run == null`. A ticket
+      whose `owner_run` is NON-NULL but has no seat in this registry has a
+      lease-live owner in another registry (only a live sweep renews a
+      lease, and the server reclaims an expired one): this host cannot read
+      that owner's liveness or its transcript, so it cannot know the remote
+      QA child has stopped, and a `done` by any actor releases that run
+      under its child. So finalize writes NOTHING and logs the `another
+      registry` line — its home host closes it, or the server's reconciler
+      reclaims the expired lease and clears `owner_run`, after which a later
+      tick closes it as automation. Only a NULL `owner_run` (the run ended,
+      or a reclaim cleared it) reaches the automation write in 3f. A
+      registry scan that died resolves nothing and is not "no seat": stderr
+      line, continue.
    e. Fresh read, immediately before the write:
       `A.ticket(ticket, principal="automation")`. Skip, with the `moved`
       line, unless `state == "in-review"` and `pr_url`, `owner_run` and
@@ -211,13 +222,15 @@ Per tick:
       conditional transition for a non-run actor, and the ticket rules out
       a server change. Say so in the header paragraph; do not describe the
       check as atomic.
-   f. Write. As the run:
+   f. Write. As the run (a local seat resolved the owner):
       `BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" board-transition.sh <ticket> done "<note>"`.
-      As automation:
-      `BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: <pr_url> merged at the reviewed head; no owning run resolves in this registry" board-transition.sh <ticket> done "<note>"`.
-      The override is the dp#63 fence's stated reason; it only ever prints
-      when a mid-turn seat of some other run fences the ticket, and it is
-      passed so the write is never refused for lack of one.
+      As automation (ONLY when `owner_run == null`):
+      `BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: <pr_url> merged at the reviewed head; the run ended and left no owner" board-transition.sh <ticket> done "<note>"`.
+      A NON-NULL `owner_run` with no local seat took the `another registry`
+      skip in 3d and never reaches here. The override is the dp#63 fence's
+      stated reason; it only ever prints when a mid-turn seat of some other
+      run fences the ticket, and it is passed so the write is never refused
+      for lack of one.
    g. Read the outcome: exit 0 → the success line. Output containing
       `review-trail-required` → the refusal line, no retry, continue. Any
       other failure → stderr line with the first line of the output.
@@ -232,6 +245,7 @@ Log lines (stdout unless marked; tests assert on them, so copy them exactly):
     finalize: #<t> — <pr_url> merged as <oid> at the reviewed head <sha>; done written as automation
     finalize: #<t> — merged off the reviewed head: GitHub merged <merged_head>, the trail names <sha>; left for the owner
     finalize: #<t> — the board refused done (review-trail-required): <server message>; the ticket stays with the recovery ladder
+    finalize: #<t> — merged at the reviewed head; owner run <n> lives in another registry; its own host closes
     finalize: #<t> — merged, but no review-trail since the ticket last entered review; left for the owner
     finalize: #<t> — merged, but the latest review-trail names no reviewed head; left for the owner
     finalize: #<t> — merged, but its owner <uuid> is mid-turn; its own agent closes
@@ -289,10 +303,10 @@ Observable on the hermetic suite and on the live board:
    with the same `pr_url`, `owner_run` and `plan`, write `in-review → done`
    with the note above — as the owning run when a seat record on this
    machine carries that run's bearer, is not mid-turn after a sync, and
-   (for a LIVE owner) has a transcript tree quiet past `REVIEW_STALL_MIN`,
-   otherwise as the automation principal with `BOARD_OWNER_OVERRIDE`
-   naming the pass. Under `all`, a ticket finalize closed is read as `done`
-   by review-recover in the same tick: no wake is sent to its owner.
+   (for a LIVE owner) has a transcript tree quiet past `REVIEW_STALL_MIN`;
+   as the automation principal with `BOARD_OWNER_OVERRIDE` ONLY when
+   `owner_run` is null. Under `all`, a ticket finalize closed is read as
+   `done` by review-recover in the same tick: no wake is sent to its owner.
 2. A `done` the server refuses with `review-trail-required` is logged with
    the server's message and left alone: exactly one transition attempt per
    tick, no forced close, the ticket stays in-review.
@@ -304,7 +318,10 @@ Observable on the hermetic suite and on the live board:
    by its record, or promoted to `working` by the sync — is untouched and
    logged. A ticket whose LIVE owner has a fresh transcript tree (a QA
    child may be reviewing under it) is untouched and logged; it is closed
-   only once the tree is quiet past `REVIEW_STALL_MIN`. A ticket that left
+   only once the tree is quiet past `REVIEW_STALL_MIN`. A merged ticket
+   whose `owner_run` is non-null but has no seat in this registry is
+   untouched and logged (its home host or a reclaim closes it); only a null
+   `owner_run` reaches the automation close. A ticket that left
    `in-review` (or changed pin or owner) between the list read and the
    write is untouched and logged. An epic (numeric `pr_url`) is skipped
    without a gh call.
@@ -402,28 +419,30 @@ an `SW` runner). Three seams are new:
   - 87: merged at SHA87.
   - 88: merged at SHA88.
   - 91: merged at SHA91.
+  - 94: merged at SHA94.
 - The **list fixture**: `GET /tickets?limit=200&states=in-review` (the
   client appends `&repo=testrepo`; the mock matches by prefix) answering
   `{"items":[…],"next":null,"as_of":1}` with rows carrying `id`, `state`,
   `priority`, `title`, `pr_url`, `owner_run`, `plan` (null throughout):
   - 80 `https://github.com/o/r/pull/80`, owner_run 80 — the happy path, owner live+idle with a STALE transcript (its review concluded).
   - 81 `…/pull/81`, owner_run 81 — unmerged.
-  - 82 `…/pull/82`, owner_run null — merged at the reviewed head, no seat; the server refuses.
+  - 82 `…/pull/82`, owner_run null — merged at the reviewed head, no seat, owner_run null; the automation write is refused by the server.
   - 83 `…/pull/83`, owner_run 83 — merged off the reviewed head.
   - 84 `"512"`, owner_run 84 — an epic's package id.
   - 85 `…/pull/85`, owner_run 85 — trail without a head line.
   - 86 `…/pull/86`, owner_run 86 — the only trail predates the latest entry into in-review.
   - 87 `…/pull/87`, owner_run 87 — owner seat `working`.
-  - 88 `…/pull/88`, owner_run null — merged at the reviewed head, no seat; the server accepts.
+  - 88 `…/pull/88`, owner_run null — merged at the reviewed head, no seat, owner_run null; the automation write is accepted.
   - 89 `…/pull/89`, owner_run 89 — merged at the reviewed head, owner live+idle with a STALE transcript, but the by-id re-read says `in-progress` (a rebuild landed between the list and the write).
   - 90 `…/pull/90`, owner_run 90 — merged at the reviewed head; the seat record says `idle` but the sync promotes it to `working` (a natively-woken owner).
   - 91 `…/pull/91`, owner_run 91 — merged at the reviewed head, owner live+idle but with a FRESH transcript (a QA child is reviewing under it) → left for its own agent.
-  gh answers 89, 90 and 91 as merged at SHA89 / SHA90 / SHA91.
+  - 94 `…/pull/94`, owner_run 94 — merged at the reviewed head, but NO seat for run 94 in this registry (a non-null owner_run whose owner lives elsewhere) → skipped with the `another registry` line.
+  gh answers 89, 90, 91 and 94 as merged at SHA89 / SHA90 / SHA91 / SHA94.
 - **Timelines** (`GET /tickets/<n>/timeline`, each registered AHEAD of the
   `/tickets/<n>` by-id row it shares a prefix with — the mock takes the
   first match by method + path prefix, and `/tickets/80` is a prefix of
   `/tickets/80/timeline`):
-  - 80, 82, 87, 88, 89, 90, 91: `[transition to in-review (cursor 1), review-trail (cursor 2) with text "round 1 — level medium\nreviewed head: <SHA>"]`.
+  - 80, 82, 87, 88, 89, 90, 91, 94: `[transition to in-review (cursor 1), review-trail (cursor 2) with text "round 1 — level medium\nreviewed head: <SHA>"]`.
   - 83: the same with `reviewed head: SHA83R`.
   - 85: trail text `"round 1 — level medium"` (no head line).
   - 86: `[review-trail (cursor 1) naming SHA86, transition to in-review (cursor 2)]`.
@@ -433,9 +452,10 @@ an `SW` runner). Three seams are new:
 - **By-id rows** (`GET /tickets/<n>`, after the timelines): 80, 82, 88, 90
   answer the list row verbatim (state `in-review`, same `pr_url`,
   `owner_run`, `plan` null); 89 answers `state: "in-progress"` with the
-  same pins. 87 (mid-turn) and 91 (fresh tree) are skipped before the
-  re-read, and 83, 85, 86 never reach it; leave them without a row so an
-  out-of-order implementation shows up as a 404 in the request log.
+  same pins. 87 (mid-turn), 91 (fresh tree) and 94 (non-null remote owner)
+  are skipped before the re-read, and 83, 85, 86 never reach it; leave them
+  without a row so an out-of-order implementation shows up as a 404 in the
+  request log.
 - **Transitions**: `POST /tickets/80/transition` → 200 `{"ok":true,"to":"done"}`;
   `/tickets/82/transition` → 403
   `{"error":{"code":"review-trail-required","message":"in-review → done needs a review-trail event by this run after the latest entry into in-review"}}`;
@@ -444,7 +464,12 @@ an `SW` runner). Three seams are new:
 - **Registry**: `u-80` idle, run 80, bearer `tok-80`, fence 1, ticket 80,
   `bind_confirmed` true, phase review; `u-81`, `u-83`, `u-85`, `u-86`,
   `u-89`, `u-90`, `u-91` likewise on their tickets; `u-87` the same but
-  `status: working`. No seat for 82, 84, 88.
+  `status: working`. No seat for 82, 84, 88, 94 — 82/88 carry a null
+  `owner_run` (the automation close), while 94 carries a non-null
+  `owner_run` with no matching seat (the `another registry` skip), which is
+  the difference the new gate turns on. (Tickets 92 and 93, added by the
+  fix waves for the dead-owner and unresolved-fork drills, keep their
+  numbers; the remote-owner drill takes the next free number, 94.)
 - **Transcripts** (the tree gate reads them, so this suite adopts
   review-recover's transcript scaffolding: a `$TESTHOME/.claude/projects/proj`
   dir and the `stale`/`fresh` helpers that touch `<uuid>.jsonl` to 2026-07-17
@@ -476,6 +501,7 @@ the tick output):
 - 89: no POST; the output line contains `moved between the read and the write (now in-progress`.
 - 90: no POST; `owner u-90 is mid-turn`; and the record now reads `working` (the sync ran before the status was trusted).
 - 91: no POST; no by-id re-read of 91 in the request log (skipped before it); the output contains `owner u-91 was active` and `a review may be running under it`.
+- 94: no POST; no by-id re-read of 94 in the request log (skipped at owner resolution); the output contains `owner run 94 lives in another registry`.
 - The request log shows `GET /tickets/80` AFTER `GET /tickets/80/timeline`
   and before `POST /tickets/80/transition` (the re-read sits immediately
   before the write).
@@ -747,6 +773,25 @@ scratch: never `git add` it.
   novel finding (the server's principal asymmetry) is a fact from the
   server source, not a design fork.
   Date/Author: 2026-09-23, Architect #74.
+- Decision: The automation close is reserved for `owner_run == null`. A
+  merged ticket whose `owner_run` is non-null but has no seat in this
+  registry is left alone, logged `owner run <n> lives in another registry`.
+  Rationale: a non-null `owner_run` means a lease-live owner in some
+  registry — only a live sweep renews a lease, and the server reclaims an
+  expired one — and this host can read neither that owner's liveness nor its
+  transcript, so it cannot apply the live-owner tree gate the R2-F1 fix
+  established. A `done` by any actor releases that run under its QA child, so
+  closing a remote-owned ticket from here reintroduces the very hazard the
+  tree gate removed, un-guardably. Nothing strands: the owner's home host
+  closes it, or a dead owner's lease lapses within one window and the
+  server's reclaim clears `owner_run`, after which the next tick closes it as
+  automation — no new client read of the remote lease is needed.
+  Rejected: the first re-pin's fallback (automation-close whenever no LOCAL
+  seat resolves, remote owner or not), which the human overruled; a
+  client-side probe of the remote lease (a new cross-registry read the
+  reclaim already makes unnecessary).
+  Date/Author: 2026-09-24, Architect #74, from the human's answer to the
+  review-loop park (R3-F2); the human's second re-pin.
 
 ## Surprises & Discoveries
 
@@ -811,18 +856,19 @@ the tick, each change landing with its own red/green drill in
   expiry), so a stalled request is logged and skipped instead of holding the
   tick lock while leases run down.
 
-What remains open is a policy question, not a technical defect: a ticket
-whose `owner_run` resolves to no seat in this registry — an owner on another
-host, or one whose seat is gone — still closes as automation under the stated
-override, as this plan pins. The review loop's position is that such a
-remote owner may still have a live QA child whose run that `done` would end.
-Settling it needs a second re-pin, which the loop could not mint, so ticket
-#74 is parked needs-human with both positions and PR #182 is not merged; the
-fallback is unchanged until the human decides. The window between the fresh
-read and a non-run actor's write also remains unguarded by the server, as
-this spec scopes out server changes. The worker harness prevented the
-requested report `.md` file, so the implementation account was delivered
-through handback (TECH-DEBT.md row 25).
+The remote-owner policy question the review loop parked is now settled by the
+human (their second re-pin): a merged ticket whose `owner_run` is non-null but
+has no seat in this registry is NOT closed here — this host cannot know the
+remote owner's QA child has stopped, and a `done` by any actor would end that
+run under its child. It is logged (`owner run <n> lives in another registry`)
+and left for its home host or for the server's reclaim, which clears
+`owner_run` so a later tick closes it as automation. The automation close is
+now reserved for a null `owner_run` alone (ticket 94 drills the skip; 82 and
+88 remain the null-owner automation cases). The window between the fresh read
+and a non-run actor's write remains unguarded by the server, as this spec
+scopes out server changes. The worker harness prevented the requested report
+`.md` file, so the implementation account was delivered through handback
+(TECH-DEBT.md row 25).
 
 ## Revision Notes
 
@@ -843,3 +889,11 @@ through handback (TECH-DEBT.md row 25).
   owner, fresh tree) and the transcript staleness scaffolding added to the
   fixture, and `u-80`/`u-89` marked stale so they still proceed. The code
   change flows through the review loop's fix wave against this revision.
+- 2026-09-24: fourth revision, the human's second re-pin answering the
+  review loop's R3-F2 park: the automation close is reserved for a null
+  `owner_run`; a non-null `owner_run` with no local seat is skipped and
+  logged (`owner run <n> lives in another registry`) for its home host or a
+  reclaim to close. New log line and acceptance clause; ticket 94 drills the
+  skip (92/93 already taken by the fix waves' dead-owner and fork drills);
+  the Outcomes policy-question paragraph rewritten as settled. The code
+  change flows through a fresh QA pass against this revision.
