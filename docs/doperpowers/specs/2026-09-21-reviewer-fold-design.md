@@ -1373,6 +1373,30 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   parent link was unreadable by the QA run's credential; the sweep claimed
   it as a real ticket and the implementer handed it back on the blocked-by
   edge. Both are logged as debt / expected behavior.
+- Observation (first real ticket, #74, 2026-09-24): the Architect seat, on
+  fable, was paused by the harness's safeguard classifier on the QA agent's
+  hand-back — a review report whose vocabulary (trust boundaries, authority,
+  unauthorized) read as a cyber task — and sat for 18 minutes with the
+  daemon reporting `waitingFor: "dialog open"`. The ticket stayed
+  `in-review` and the seat `working`, so the idle-gated recovery ladder
+  never looked at it; the sweep's status column read `blocked`. Cleared by
+  attaching to the session and taking the dialog's own "switch to Opus"
+  option; the seat finished the ticket on Opus. Nothing in the fold detects
+  this shape; debt row 27.
+- Observation (same ticket): every bound the design set fired and held.
+  Three review loops ran (5, 5 and 4 engine rounds) because the ticket's
+  substance — who may close a ticket whose owner is dead, remote, or still
+  mid-review — resurfaced at each seam a fix touched. The owner spent its
+  one re-pin in each loop; the first loop's second plan conflict parked the
+  ticket to the human (answered about four hours later, the QA agent
+  landing independent fixes meanwhile and returning PARKED at the round
+  cap); the second loop's design gap at the cap sent the ticket back to
+  `in-progress` for a re-cut and a fresh loop; the third loop converged in
+  four rounds and merged at its reviewed head, filing the pre-existing slot
+  leak it could not own as #75. The park answer's `wake --wait` expired on
+  the long turn and the ack settled on the next tick's sentinel, as
+  designed. Wall clock 10 h 48 min from dispatch to merge, 30 commits on
+  the PR.
 
 ## Outcomes & Retrospective
 
@@ -1422,6 +1446,18 @@ head adopted after a re-pin needs a fresh engine round before it is
 merge-eligible — both fixed with structural tests, and the loop was closed
 there: two rounds, the second yielding only prose-level fixes, is the
 convergence signal this repository's review doctrine names.
+
+**First real ticket (2026-09-24).** #74 — the API finalize pass, debt row
+26 — went through the fold on this repository's live board: one Architect
+seat, three QA loops, one human park, one re-cut, a merge at the reviewed
+head, `done` written by the seat, and the seat retired by the sweep's
+retire-finished step on the next tick. The loop's bounds did the work the
+design assigned them; the one stall was outside the design (the safeguard
+dialog, in Surprises). The P1 lifecycle defects the loops fixed — lease
+renewal across the scan, the failed registry scan, the live QA child under
+an idle owner, the remote owner, the dead owner — are findings a
+single-round review would not have reached; the one the ticket could not
+own went to #75.
 
 ## Revision Notes
 
@@ -1475,3 +1511,5 @@ convergence signal this repository's review doctrine names.
 - 2026-09-23: Task 13 report — the relay verb for a live idle owner is `wake`; Task 14 carries it. Task 13's own review is folded into the whole-branch review.
 - 2026-09-23: whole-branch review applied — nine fixes, one dismissal by probe, one debt row; delta re-review's charset rule and re-pin round applied; review converged.
 - 2026-09-23: Task 12 ran on the deployed service after arkho PR 80 merged; outcome and the three environment failures recorded; two API-binding gaps (cancel pass, `Closes #<n>`) fixed in the closing wave.
+- 2026-09-24: first real ticket (#74) recorded in Surprises and Outcomes;
+  the safeguard-dialog stall logged as debt row 27.
