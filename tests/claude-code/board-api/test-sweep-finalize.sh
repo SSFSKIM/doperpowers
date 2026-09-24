@@ -14,7 +14,8 @@
 # live idle owner whose transcript tree is still fresh (a QA child reviewing
 # under it), an owner carrying an unresolved resume fork, a non-null owner run
 # with no seat in this registry (its home host closes it), a GitHub read that
-# hangs, and the whole tick's no-wasted-nudge order.
+# hangs, the whole tick's no-wasted-nudge order, and finalize's share of an
+# `all` tick under slow reads.
 . "$(dirname "$0")/helpers.sh"
 
 free_port() { python3 -c 'import socket
@@ -367,6 +368,46 @@ for _ in 1 2 3; do
 done
 t  "each budget-limited tick takes the ticket past the last one taken" "80 81 82 " taken
 t  "the budget still stops the pass mid-list" "tick budget exhausted — the rest ride the next tick" cat "$TDIR/rotate.out"
+
+# Under `all`, finalize gets a share of the tick, not the whole of it: slow
+# GitHub reads across a long in-review list would otherwise spend every tick's
+# budget, and review-recover, relay, resume and dispatch behind it would never
+# run. Each tick below has 20s, a read takes 3s and may take 10: the share
+# admits one candidate, the phases behind it run (dispatch's claims reach the
+# board), and the next tick's candidate is still the one past the last taken.
+: > "$TDIR/gh.log"
+for tick in 1 2; do
+  : > "$FIX.log"
+  ( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=10 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/share$tick.out" 2>&1 || true
+  cp "$FIX.log" "$TDIR/share$tick.log"
+done
+claims() { python3 - "$1" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+n = sum(1 for c in calls if c["method"] == "POST" and c["path"] == "/runs/claim")
+print("claimed" if n else "no claim")
+PY
+}
+for tick in 1 2; do
+  t  "slow-read all tick $tick: finalize stops at its share" "finalize: its share of the tick is spent — the rest ride the next tick" cat "$TDIR/share$tick.out"
+  nt "slow-read all tick $tick: review-recover still has budget" "review-recover: tick budget exhausted" cat "$TDIR/share$tick.out"
+  nt "slow-read all tick $tick: dispatch still has budget" "dispatch: tick budget exhausted" cat "$TDIR/share$tick.out"
+  t  "slow-read all tick $tick: dispatch reaches the board" "claimed" claims "$TDIR/share$tick.log"
+done
+t  "the share keeps the rotation: each all tick takes the ticket past the last" "83 85 " taken
+
+# The FIRST candidate is always taken, so its read is what the share must cut:
+# a read as long as the whole budget would otherwise spend it on its own, on
+# every tick. Cut at the share's end, it is logged for the next tick and the
+# phases behind it still run.
+for tick in 1 2; do
+  : > "$FIX.log"
+  ( BUDGET=8 GH_SLEEP=8 BOARD_GH_TIMEOUT=10 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/first$tick.out" 2>&1 || true
+  cp "$FIX.log" "$TDIR/first$tick.log"
+  t  "budget-long first read, all tick $tick: the read is cut at the share" "gh could not read" cat "$TDIR/first$tick.out"
+  nt "budget-long first read, all tick $tick: dispatch still has budget" "dispatch: tick budget exhausted" cat "$TDIR/first$tick.out"
+  t  "budget-long first read, all tick $tick: dispatch reaches the board" "claimed" claims "$TDIR/first$tick.log"
+done
 
 # A gh-bound checkout refuses the API tick before looking at GitHub.
 ghrepo="$(mkrepo)"

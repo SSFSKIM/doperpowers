@@ -405,6 +405,8 @@ trap 'rm -rf "$SCRATCH"
 TICK_BUDGET="${BOARD_SWEEP_TICK_BUDGET:-900}"
 TICK_START="$(date +%s)"
 _budget_left() { [ "$(( $(date +%s) - TICK_START ))" -lt "$TICK_BUDGET" ]; }
+# Finalize's share of an `all` tick; set only by that arm, never inherited.
+FINALIZE_DEADLINE=""
 
 # One long worker turn must not hold the tick lock past a lease, so both resume
 # vehicles bound their wait. CLAMPED at 2, and validated as an integer: a
@@ -1652,7 +1654,7 @@ phase_finalize() {
   }
   local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
   local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence status fresh state now_pr now_run now_plan note output first
-  local transcript turn_epoch age liveness cursor
+  local transcript turn_epoch age liveness cursor took="" read_secs left
   # The last ticket a tick took, per binding (ticket numbers repeat across
   # boards), written as each is taken so the next tick starts past it.
   cursor="$(board_store_dir sweep-finalize)/cursor" || {
@@ -1669,12 +1671,36 @@ phase_finalize() {
       echo "finalize: tick budget exhausted — the rest ride the next tick"
       break
     fi
+    # UNDER `all`, FINALIZE HAS A SHARE OF THE TICK, not all of it: a scan
+    # whose GitHub reads are slow would otherwise spend the whole budget on
+    # every tick, and review-recover, relay, resume and dispatch behind it
+    # would never run. The budget check above cannot stop a read in flight,
+    # so a later candidate is taken only if a read that runs to its bound
+    # still ends inside the share; the first is always taken, its read cut
+    # at the share's end (below), so a share shorter than one read still
+    # moves the cursor without outlasting the share. Empty on a phase asked
+    # for by name: that tick is finalize's alone.
+    if [ -n "$took" ] && [ -n "${FINALIZE_DEADLINE:-}" ] \
+       && [ "$(( $(date +%s) + BOARD_GH_TIMEOUT ))" -gt "$FINALIZE_DEADLINE" ]; then
+      echo "finalize: its share of the tick is spent — the rest ride the next tick"
+      break
+    fi
+    took=1
     printf '%s\n' "$ticket" > "$cursor"
     # Serial gh and board reads can fill the tick budget, which is the lease's
     # length; every live run is renewed again once the last pass is old. Ahead
     # of the owner lookup, so a run this renewal ends is already off its meta.
     [ "$(( $(date +%s) - RENEWED_AT ))" -lt "$FINALIZE_RENEW_SEC" ] || _tick_renew
-    gh_json="$(_gh_read_bounded pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
+    read_secs="$BOARD_GH_TIMEOUT"
+    if [ -n "${FINALIZE_DEADLINE:-}" ]; then
+      left="$(( FINALIZE_DEADLINE - $(date +%s) ))"
+      [ "$left" -ge "$read_secs" ] || read_secs="$left"
+      if [ "$read_secs" -lt 1 ]; then
+        echo "finalize: its share of the tick is spent — the rest ride the next tick"
+        break
+      fi
+    fi
+    gh_json="$(_gh_read_bounded "$read_secs" pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
       echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
       continue
     }
@@ -2244,8 +2270,8 @@ PY
 # A gh read under the same deadline, its stdout passed through. The child runs
 # in its OWN process group and the whole group is killed on expiry: gh may
 # spawn helpers, and one left alive would outlive the bound it was killed for.
-_gh_read_bounded() {  # <gh args...> — gh's exit status, 124 on expiry
-  T_SECS="$BOARD_GH_TIMEOUT" python3 - "$@" <<'PY'
+_gh_read_bounded() {  # <secs> <gh args...> — gh's exit status, 124 on expiry
+  T_SECS="$1" python3 - "${@:2}" <<'PY'
 import os, signal, subprocess, sys
 secs = float(os.environ["T_SECS"])
 child = subprocess.Popen(["gh"] + sys.argv[1:], stdin=subprocess.DEVNULL,
@@ -3418,6 +3444,9 @@ case "${1:-all}" in
        # and a later close might race a nudge already in flight. Close first;
        # recovery reads done and clears the mark, spending no wake. Relay,
        # resume and dispatch likewise cannot reclaim this ticket this tick.
+       # Half of what the tick has left, so the phases behind it keep the
+       # other half (see the share gate in phase_finalize).
+       FINALIZE_DEADLINE="$(( $(date +%s) + (TICK_START + TICK_BUDGET - $(date +%s)) / 2 ))"
        phase_finalize || true
        # REVIEW-RECOVER RUNS BEFORE RELAY for the reason stall does: a nudged
        # owner can answer its own relay in this same tick, and one whose
