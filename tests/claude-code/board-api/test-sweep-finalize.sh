@@ -149,6 +149,8 @@ touch "$TESTHOME/.claude/projects/proj/u-91/subagents/agent-qa.jsonl"
 cat > "$DS/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "GH $*" >> "$GH_LOG"
+# The bound _gh_read_bounded put on this read (its T_SECS reaches gh's env).
+[ -z "${GH_SECS_LOG:-}" ] || echo "${T_SECS:-}" >> "$GH_SECS_LOG"
 [ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
 [ "${1:-}" = pr ] && [ "${2:-}" = view ] && [ "${4:-}" = --json ] &&
   [ "${5:-}" = mergedAt,mergeCommit,headRefOid ] || exit 2
@@ -379,6 +381,14 @@ hung_child() { pgrep -f "sleep 147" >/dev/null && echo "still running" || echo "
 t  "the hung read's helper is killed with it" "none" hung_child
 lock_left() { ls -d "$DH"/.sweep-api.*.lock 2>/dev/null || echo "released"; }
 t  "the tick lock is released" "released" lock_left
+
+# The read bound is capped below the lease: a read runs after the renewal
+# that covers it, so an override past the 15-minute lease would let one
+# stalled read outlive every live lease. Every read takes the capped bound.
+: > "$TDIR/gh.secs"
+( GH_SECS_LOG="$TDIR/gh.secs" BOARD_GH_TIMEOUT=901 SW finalize ) > "$TDIR/cap.out" 2>&1 || true
+read_bounds() { [ -s "$1" ] || { echo "no reads"; return; }; echo "bounds=[$(sort -u "$1" | tr '\n' ' ' | sed 's/ $//')]"; }
+t  "an over-lease read timeout is capped at 300s on every read" "bounds=[300]" read_bounds "$TDIR/gh.secs"
 
 # A budget that runs out mid-list must not hand the same head of the list the
 # whole budget every tick: the ticks below each have room for one slow GitHub

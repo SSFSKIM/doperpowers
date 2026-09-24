@@ -443,6 +443,12 @@ case "$BOARD_GH_TIMEOUT" in ''|*[!0-9]*) BOARD_GH_TIMEOUT=60 ;; esac
 # leading zero as octal (08 would abort the tick there).
 BOARD_GH_TIMEOUT="$(( 10#$BOARD_GH_TIMEOUT ))"
 [ "$BOARD_GH_TIMEOUT" -ge 5 ] || BOARD_GH_TIMEOUT=5
+# CAPPED, because the read runs AFTER the renewal that covers it and nothing
+# renews while it waits: a bound past the 15-minute lease lets one stalled
+# read outlive every live run's lease with the lock held. At 300, a read on
+# top of a full renewal interval (FINALIZE_RENEW_SEC) and a candidate's
+# 30-second board calls still ends inside the lease.
+[ "$BOARD_GH_TIMEOUT" -le 300 ] || BOARD_GH_TIMEOUT=300
 
 # The harness-error ladder (phase 1b). Validated the same way, because each is
 # read into arithmetic: a non-numeric override would abort the tick under
