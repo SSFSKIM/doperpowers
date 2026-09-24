@@ -145,7 +145,11 @@ Per tick:
    review after the list read would still land. Step 3e re-reads the ticket
    by id immediately before the write and skips anything that moved.
 3. For each candidate, `_budget_left` first (the same `tick budget exhausted`
-   line the other phases print, then stop). Then:
+   line the other phases print, then stop). Then `_tick_renew` when the last
+   renewal pass began `BOARD_FINALIZE_RENEW_SEC` (default 300) or more
+   seconds ago: serial reads over every in-review ticket can fill the budget,
+   which is the lease's length, and a renewal per candidate would cost runs ×
+   candidates calls every tick. Then:
    a. `gh pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid` — a
       failing gh: stderr line, continue. Parse with python (`mergedAt`,
       `mergeCommit.oid`, `headRefOid`); `mergedAt` null or missing:

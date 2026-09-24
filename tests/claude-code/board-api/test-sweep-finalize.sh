@@ -171,10 +171,13 @@ for line in open(sys.argv[1]):
 PY
 }
 post_count() { printf '[%s]\n' "$(posts "/tickets/$1/transition" | wc -l | tr -d ' ')"; }
+renew_count() { printf '[%s]\n' "$(posts "/runs/$1/renew" | wc -l | tr -d ' ')"; }
 
-# The stand-alone pass: every candidate shares this one fixture world.
+# The stand-alone pass: every candidate shares this one fixture world. Its
+# renewal is held off here (its own run below pins it): a renewal pass syncs
+# every seat, u-90 included, before finalize reaches it.
 OUT="$TDIR/finalize.out"; code=0
-SW finalize > "$OUT" 2>&1 || code=$?
+BOARD_FINALIZE_RENEW_SEC=99999999999 SW finalize > "$OUT" 2>&1 || code=$?
 t  "finalize is invocable alone" "exit=0" printf 'exit=%s\n' "$code"
 M80="$(printf '%040d' 8000)"; SHA80="$(printf '%040d' 80)"
 SHA83M="$(printf '%040d' 831)"; SHA83R="$(printf '%040d' 830)"
@@ -238,6 +241,26 @@ t  "80's transition clears its seat's review mark" "phase=<absent>" python3 - "$
 import json, sys
 print("phase=" + str(json.load(open(sys.argv[1])).get("phase", "<absent>")))
 PY
+t  "all's finalize adds no renewal pass on top of the tick's fresh one" "[1]" renew_count 80
+
+# Serial reads across many candidates can fill the tick budget, which is the
+# lease's own length, so the pass renews every live run again once the last
+# renewal is old. At 0 seconds that is ahead of every candidate: run 80 is
+# renewed again after its own ticket's write, on the way to 81 onward.
+: > "$FIX.log"; meta 80 idle; meta 90 idle
+RENEWOUT="$TDIR/renew.out"; code=0
+BOARD_FINALIZE_RENEW_SEC=0 SW finalize > "$RENEWOUT" 2>&1 || code=$?
+t  "the renewing pass completes" "exit=0" printf 'exit=%s\n' "$code"
+t  "live runs are renewed between candidates, not once" "renewed after" python3 - "$FIX.log" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+posts = [c["path"] for c in calls if c["method"] == "POST"]
+write = posts.index("/tickets/80/transition")
+before = "/runs/80/renew" in posts[:write]
+after = "/runs/80/renew" in posts[write + 1:]
+print("renewed after" if before and after else "before=%s after=%s" % (before, after))
+PY
+nt "a dead owner's lease is still left to expire" "/runs/91/renew" posts /runs/
 
 # A registry scan that dies is not an empty registry. Read as one, every owned
 # ticket would fall to the ownerless automation write, whose override passes
@@ -258,7 +281,9 @@ STUB
 chmod +x "$SCANSTUB/python3"
 : > "$FIX.log"
 SCANFAIL="$TDIR/scanfail.out"; code=0
-( PATH="$SCANSTUB:$PATH"; SW finalize ) > "$SCANFAIL" 2>&1 || code=$?
+# Renewal held off: its own scan would die first and end the tick, which is
+# renew's failure line, not this pass's.
+( PATH="$SCANSTUB:$PATH"; BOARD_FINALIZE_RENEW_SEC=99999999999 SW finalize ) > "$SCANFAIL" 2>&1 || code=$?
 t  "a failed registry scan is reported" "#80 — the registry scan failed; nothing is written this tick" cat "$SCANFAIL"
 t  "a failed registry scan does not close 80 as automation" "[0]" post_count 80
 t  "a failed registry scan does not close 90 under its mid-turn owner" "[0]" post_count 90

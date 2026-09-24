@@ -409,6 +409,13 @@ _budget_left() { [ "$(( $(date +%s) - TICK_START ))" -lt "$TICK_BUDGET" ]; }
 RELAY_RESUME_TIMEOUT="${BOARD_RELAY_RESUME_TIMEOUT:-300}"
 case "$RELAY_RESUME_TIMEOUT" in ''|*[!0-9]*) RELAY_RESUME_TIMEOUT=300 ;; esac
 [ "$RELAY_RESUME_TIMEOUT" -ge 2 ] || RELAY_RESUME_TIMEOUT=2
+# The finalize pass scans EVERY in-review ticket, every tick, so it renews on a
+# clock rather than ahead of each item as relay and resume do: a full renewal
+# per candidate would cost runs × candidates calls a tick. RENEWED_AT is when
+# the last renewal pass began (0 = none yet this tick).
+FINALIZE_RENEW_SEC="${BOARD_FINALIZE_RENEW_SEC:-300}"
+case "$FINALIZE_RENEW_SEC" in ''|*[!0-9]*) FINALIZE_RENEW_SEC=300 ;; esac
+RENEWED_AT=0
 # The predecessor-branch push (_push_bounded) is bounded for the SAME reason,
 # and it is the only network call this tick makes into a remote it does not
 # control. GIT_TERMINAL_PROMPT=0 refuses an interactive credential prompt and
@@ -673,6 +680,7 @@ phase_renew() {
   # lived (tab as IFS whitespace collapsed the empty bearer column and the
   # fence came back as the lane).
   local uuid run bindc ticket bearer fence lane status sexhausted path rc
+  RENEWED_AT="$(date +%s)"
   # shellcheck disable=SC2034  # the trailing names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
@@ -1633,6 +1641,10 @@ phase_finalize() {
       echo "finalize: tick budget exhausted — the rest ride the next tick"
       break
     fi
+    # Serial gh and board reads can fill the tick budget, which is the lease's
+    # length; every live run is renewed again once the last pass is old. Ahead
+    # of the owner lookup, so a run this renewal ends is already off its meta.
+    [ "$(( $(date +%s) - RENEWED_AT ))" -lt "$FINALIZE_RENEW_SEC" ] || _tick_renew
     gh_json="$(gh pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
       echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
       continue
