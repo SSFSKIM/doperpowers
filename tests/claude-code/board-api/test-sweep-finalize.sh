@@ -12,8 +12,8 @@
 # mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
 # read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, a
 # live idle owner whose transcript tree is still fresh (a QA child reviewing
-# under it), an owner carrying an unresolved resume fork, and the whole tick's
-# no-wasted-nudge order.
+# under it), an owner carrying an unresolved resume fork, a GitHub read that
+# hangs, and the whole tick's no-wasted-nudge order.
 . "$(dirname "$0")/helpers.sh"
 
 free_port() { python3 -c 'import socket
@@ -138,6 +138,9 @@ echo "GH $*" >> "$GH_LOG"
 [ "${1:-}" = pr ] && [ "${2:-}" = view ] && [ "${4:-}" = --json ] &&
   [ "${5:-}" = mergedAt,mergeCommit,headRefOid ] || exit 2
 url="${3%/}"; n="${url##*/}"
+# One PR's read may hang, as a stalled GitHub request does, in a GRANDCHILD
+# of the call — the process a kill of gh alone would leave behind.
+[ "$n" != "${GH_HANG_PR:-}" ] || sleep "$GH_HANG_SECS"
 case "$n" in
   81) echo '{"mergedAt":null,"mergeCommit":null,"headRefOid":null}'; exit 0 ;;
   80|82|83|85|86|87|88|89|90|91|92|93) ;;
@@ -317,6 +320,33 @@ t  "a failed registry scan is reported" "#80 — the registry scan failed; nothi
 t  "a failed registry scan does not close 80 as automation" "[0]" post_count 80
 t  "a failed registry scan does not close 90 under its mid-turn owner" "[0]" post_count 90
 nt "a failed registry scan never overrides the local fence" "override:" cat "$SCANFAIL"
+
+# A GitHub read that never answers is bounded where it runs. The budget is
+# checked before each read and renewal runs between candidates, so neither can
+# end a read in flight: unbounded, 80's stalled read would hold the tick lock
+# while every live lease ran down. Bounded, it is killed with its helper, 80 is
+# logged and skipped, and the pass goes on renewing and closing past it.
+: > "$FIX.log"; meta 80 idle
+HANGOUT="$TDIR/hang.out"; code=0; start="$(date +%s)"
+( GH_HANG_PR=80 GH_HANG_SECS=147 BOARD_GH_TIMEOUT=5 BOARD_FINALIZE_RENEW_SEC=0 SW finalize ) > "$HANGOUT" 2>&1 || code=$?
+elapsed=$(( $(date +%s) - start ))
+t  "the hung pass completes" "exit=0" printf 'exit=%s\n' "$code"
+t  "the whole pass ends before the hung read would have answered" "bounded" \
+   bash -c '[ "$1" -lt 147 ] && echo bounded || echo "took ${1}s"' _ "$elapsed"
+t  "80's hung read is logged and left for the next tick" \
+   "#80 — gh could not read https://github.com/o/r/pull/80; the next tick retries" cat "$HANGOUT"
+t  "80 is not closed off a read that never answered" "[0]" post_count 80
+t  "the pass goes on past the hung read: 88 closes" "#88 — https://github.com/o/r/pull/88 merged" cat "$HANGOUT"
+t  "live runs are still renewed after the hung read" "renewed after" python3 - "$FIX.log" <<'PY'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+n = sum(1 for c in calls if c["method"] == "POST" and c["path"] == "/runs/81/renew")
+print("renewed after" if n >= 2 else "renewals=%d" % n)
+PY
+hung_child() { pgrep -f "sleep 147" >/dev/null && echo "still running" || echo "none"; }
+t  "the hung read's helper is killed with it" "none" hung_child
+lock_left() { ls -d "$DH"/.sweep-api.*.lock 2>/dev/null || echo "released"; }
+t  "the tick lock is released" "released" lock_left
 
 # A budget that runs out mid-list must not hand the same head of the list the
 # whole budget every tick: the ticks below each have room for one slow GitHub

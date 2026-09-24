@@ -431,6 +431,13 @@ RENEWED_AT=0
 BOARD_PUSH_TIMEOUT="${BOARD_PUSH_TIMEOUT:-60}"
 case "$BOARD_PUSH_TIMEOUT" in ''|*[!0-9]*) BOARD_PUSH_TIMEOUT=60 ;; esac
 [ "$BOARD_PUSH_TIMEOUT" -ge 5 ] || BOARD_PUSH_TIMEOUT=5
+# Finalize's GitHub read (_gh_read_bounded) is bounded the same way, per call:
+# a budget checked before the read and a renewal between candidates both wait
+# on the read in flight, so a stalled GitHub request would hold the lock with
+# no renewal until it returned.
+BOARD_GH_TIMEOUT="${BOARD_GH_TIMEOUT:-60}"
+case "$BOARD_GH_TIMEOUT" in ''|*[!0-9]*) BOARD_GH_TIMEOUT=60 ;; esac
+[ "$BOARD_GH_TIMEOUT" -ge 5 ] || BOARD_GH_TIMEOUT=5
 
 # The harness-error ladder (phase 1b). Validated the same way, because each is
 # read into arithmetic: a non-numeric override would abort the tick under
@@ -1667,7 +1674,7 @@ phase_finalize() {
     # length; every live run is renewed again once the last pass is old. Ahead
     # of the owner lookup, so a run this renewal ends is already off its meta.
     [ "$(( $(date +%s) - RENEWED_AT ))" -lt "$FINALIZE_RENEW_SEC" ] || _tick_renew
-    gh_json="$(gh pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
+    gh_json="$(_gh_read_bounded pr view "$pr_url" --json mergedAt,mergeCommit,headRefOid 2>/dev/null)" || {
       echo "finalize: #$ticket — gh could not read $pr_url; the next tick retries" >&2
       continue
     }
@@ -2222,6 +2229,27 @@ try:
 except subprocess.TimeoutExpired:
     sys.stderr.write("push exceeded %ss and was killed\n" % env["T_SECS"])
     sys.exit(1)
+PY
+}
+
+# A gh read under the same deadline, its stdout passed through. The child runs
+# in its OWN process group and the whole group is killed on expiry: gh may
+# spawn helpers, and one left alive would outlive the bound it was killed for.
+_gh_read_bounded() {  # <gh args...> — gh's exit status, 124 on expiry
+  T_SECS="$BOARD_GH_TIMEOUT" python3 - "$@" <<'PY'
+import os, signal, subprocess, sys
+secs = float(os.environ["T_SECS"])
+child = subprocess.Popen(["gh"] + sys.argv[1:], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, start_new_session=True)
+try:
+    out, _ = child.communicate(timeout=secs)
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
+    sys.stderr.write("gh exceeded %ss and was killed\n" % os.environ["T_SECS"])
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(child.returncode)
 PY
 }
 
