@@ -422,6 +422,10 @@ case "$RELAY_RESUME_TIMEOUT" in ''|*[!0-9]*) RELAY_RESUME_TIMEOUT=300 ;; esac
 # the last renewal pass began (0 = none yet this tick).
 FINALIZE_RENEW_SEC="${BOARD_FINALIZE_RENEW_SEC:-300}"
 case "$FINALIZE_RENEW_SEC" in ''|*[!0-9]*) FINALIZE_RENEW_SEC=300 ;; esac
+# CAPPED at 300 with the read bound (BOARD_GH_TIMEOUT, below): a candidate
+# admitted just inside the interval runs its read and board calls before the
+# next renewal, so the two together must end inside the 15-minute lease.
+[ "$FINALIZE_RENEW_SEC" -le 300 ] 2>/dev/null || FINALIZE_RENEW_SEC=300
 RENEWED_AT=0
 # The predecessor-branch push (_push_bounded) is bounded for the SAME reason,
 # and it is the only network call this tick makes into a remote it does not

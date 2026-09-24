@@ -173,7 +173,7 @@ case "$verb" in
   migrate) exit 0 ;;
   sync)
     python3 - "$DAEMON_HOME/$1.json" "$1" <<'PY'
-import json, sys
+import json, os, sys
 try:
     with open(sys.argv[1]) as f:
         m = json.load(f)
@@ -181,7 +181,15 @@ except Exception:
     print("absent"); raise SystemExit(0)
 if sys.argv[2] == "u-92":
     print("absent"); raise SystemExit(0)  # the session is gone; its record still says working
-if sys.argv[2] == "u-90" and m["status"] == "idle":
+def pr90_read():
+    try:
+        return "pull/90 " in open(os.environ["GH_LOG"]).read()
+    except Exception:
+        return False
+# The native wake lands after GitHub is read for 90, so a renewal pass that
+# syncs every seat ahead of the first candidate cannot promote u-90 for
+# finalize: only finalize's own sync, before it trusts the status, can.
+if sys.argv[2] == "u-90" and m["status"] == "idle" and pr90_read():
     m["status"] = "working"  # native wake repaired the stale record
     with open(sys.argv[1], "w") as f:
         json.dump(m, f)
@@ -215,10 +223,11 @@ post_count() { printf '[%s]\n' "$(posts "/tickets/$1/transition" | wc -l | tr -d
 renew_count() { printf '[%s]\n' "$(posts "/runs/$1/renew" | wc -l | tr -d ' ')"; }
 
 # The stand-alone pass: every candidate shares this one fixture world. Its
-# renewal is held off here (its own run below pins it): a renewal pass syncs
-# every seat, u-90 included, before finalize reaches it.
+# renewal ahead of the first candidate syncs every seat, but u-90's native
+# wake lands only after GitHub is read for 90 (the sminos stub), so the sync
+# that promotes it is still finalize's own.
 OUT="$TDIR/finalize.out"; code=0
-BOARD_FINALIZE_RENEW_SEC=99999999999 SW finalize > "$OUT" 2>&1 || code=$?
+SW finalize > "$OUT" 2>&1 || code=$?
 t  "finalize is invocable alone" "exit=0" printf 'exit=%s\n' "$code"
 M80="$(printf '%040d' 8000)"; SHA80="$(printf '%040d' 80)"
 SHA83M="$(printf '%040d' 831)"; SHA83R="$(printf '%040d' 830)"
@@ -339,17 +348,18 @@ cat > "$SCANSTUB/python3" <<STUB
 #!/usr/bin/env bash
 if [ "\${1:-}" = - ]; then
   src="\$(cat)"
-  case "\$src" in *keep_runless*) exit 1 ;; esac
+  case "\$src" in *keep_runless*) [ ! -s "\$GH_LOG" ] || exit 1 ;; esac
   exec "$(command -v python3)" "\$@" <<< "\$src"
 fi
 exec "$(command -v python3)" "\$@"
 STUB
 chmod +x "$SCANSTUB/python3"
-: > "$FIX.log"
+: > "$FIX.log"; : > "$TDIR/gh.log"
 SCANFAIL="$TDIR/scanfail.out"; code=0
-# Renewal held off: its own scan would die first and end the tick, which is
-# renew's failure line, not this pass's.
-( PATH="$SCANSTUB:$PATH"; BOARD_FINALIZE_RENEW_SEC=99999999999 SW finalize ) > "$SCANFAIL" 2>&1 || code=$?
+# The scan dies only once GitHub has been read: the renewal ahead of the
+# first read would otherwise die first and end the tick, which is renew's
+# failure line, not this pass's.
+( PATH="$SCANSTUB:$PATH"; SW finalize ) > "$SCANFAIL" 2>&1 || code=$?
 t  "a failed registry scan is reported" "#80 — the registry scan failed; nothing is written this tick" cat "$SCANFAIL"
 t  "a failed registry scan does not close 80 as automation" "[0]" post_count 80
 t  "a failed registry scan does not close 90 under its mid-turn owner" "[0]" post_count 90
@@ -390,6 +400,33 @@ t  "the tick lock is released" "released" lock_left
 read_bounds() { [ -s "$1" ] || { echo "no reads"; return; }; echo "bounds=[$(sort -u "$1" | tr '\n' ' ' | sed 's/ $//')]"; }
 t  "an over-lease read timeout is capped at 300s on every read" "bounds=[300]" read_bounds "$TDIR/gh.secs"
 
+# The renewal interval is capped with it: a candidate admitted just inside the
+# interval still runs its read before the next renewal. On a clock that jumps
+# 400s per GitHub read, an interval of 1000 would renew every third candidate
+# (a lease aging 1200s mid-scan); capped, every read is renewed ahead of.
+CLOCK="$TDIR/clock"; mkdir -p "$CLOCK"
+cat > "$CLOCK/date" <<STUB
+#!/usr/bin/env bash
+if [ "\$*" = +%s ]; then
+  n="\$(grep -c '^GH ' "\$GH_LOG" 2>/dev/null || true)"
+  echo "\$(( \$($(command -v date) +%s) + \${n:-0} * 400 ))"
+else
+  exec $(command -v date) "\$@"
+fi
+STUB
+chmod +x "$CLOCK/date"
+: > "$FIX.log"; : > "$TDIR/gh.log"
+( PATH="$CLOCK:$PATH"; BUDGET=99999999 BOARD_FINALIZE_RENEW_SEC=1000 SW finalize ) > "$TDIR/clock.out" 2>&1 || true
+renewed_per_read() {
+  local reads renews
+  reads="$(grep -c '^GH pr view' "$TDIR/gh.log" || true)"
+  renews="$(posts /runs/81/renew | wc -l | tr -d ' ')"
+  [ "$reads" -ge 3 ] && [ "$reads" = "$renews" ] && echo "renewed ahead of every read" \
+    || echo "reads=$reads renewals=$renews"
+}
+t  "an over-lease renewal interval is capped: every slow read is renewed ahead of" \
+   "renewed ahead of every read" renewed_per_read
+
 # A budget that runs out mid-list must not hand the same head of the list the
 # whole budget every tick: the ticks below each have room for one slow GitHub
 # read, and each must take the ticket past the last one taken, wrapping at the
@@ -398,7 +435,7 @@ t  "an over-lease read timeout is capped at 300s on every read" "bounds=[300]" r
 taken() { sed -n 's#^GH pr view https://github.com/o/r/pull/\([0-9]*\) .*#\1#p' "$TDIR/gh.log" | tr '\n' ' '; echo; }
 : > "$TDIR/gh.log"
 for _ in 1 2 3; do
-  ( BUDGET=3 GH_SLEEP=3 BOARD_FINALIZE_RENEW_SEC=99999999999 SW finalize ) > "$TDIR/rotate.out" 2>&1 || true
+  ( BUDGET=3 GH_SLEEP=3 SW finalize ) > "$TDIR/rotate.out" 2>&1 || true
 done
 t  "each budget-limited tick takes the ticket past the last one taken" "80 81 82 " taken
 t  "the budget still stops the pass mid-list" "tick budget exhausted — the rest ride the next tick" cat "$TDIR/rotate.out"
@@ -412,7 +449,7 @@ t  "the budget still stops the pass mid-list" "tick budget exhausted — the res
 : > "$TDIR/gh.log"
 for tick in 1 2; do
   : > "$FIX.log"
-  ( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=10 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/share$tick.out" 2>&1 || true
+  ( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=10 SW all ) > "$TDIR/share$tick.out" 2>&1 || true
   cp "$FIX.log" "$TDIR/share$tick.log"
 done
 claims() { python3 - "$1" <<'PY'
@@ -439,7 +476,7 @@ t  "the share keeps the rotation: each all tick takes the ticket past the last" 
 # too little of the half the cut hands back to finish before dispatch's gate.
 for tick in 1 2; do
   : > "$FIX.log"
-  ( BUDGET=30 GH_SLEEP=30 BOARD_GH_TIMEOUT=40 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/first$tick.out" 2>&1 || true
+  ( BUDGET=30 GH_SLEEP=30 BOARD_GH_TIMEOUT=40 SW all ) > "$TDIR/first$tick.out" 2>&1 || true
   cp "$FIX.log" "$TDIR/first$tick.log"
   t  "budget-long first read, all tick $tick: the read is cut at the share" "gh could not read" cat "$TDIR/first$tick.out"
   nt "budget-long first read, all tick $tick: dispatch still has budget" "dispatch: tick budget exhausted" cat "$TDIR/first$tick.out"
@@ -450,7 +487,7 @@ done
 # octal in the share's arithmetic would abort the tick at its second
 # candidate, and every phase behind finalize with it, on every tick.
 : > "$FIX.log"
-( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=08 BOARD_FINALIZE_RENEW_SEC=99999999999 SW all ) > "$TDIR/padded.out" 2>&1 || true
+( BUDGET=20 GH_SLEEP=3 BOARD_GH_TIMEOUT=08 SW all ) > "$TDIR/padded.out" 2>&1 || true
 cp "$FIX.log" "$TDIR/padded.log"
 nt "zero-padded timeout: no octal arithmetic error" "value too great for base" cat "$TDIR/padded.out"
 t  "zero-padded timeout: finalize stops at its share" "finalize: its share of the tick is spent — the rest ride the next tick" cat "$TDIR/padded.out"
