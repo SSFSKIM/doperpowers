@@ -10,8 +10,9 @@
 #
 # PINS: run versus automation authority, the server's evidence refusal, head
 # mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
-# read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, and the
-# whole tick's no-wasted-nudge order.
+# read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, a
+# live idle owner whose transcript tree is still fresh (a QA child reviewing
+# under it), and the whole tick's no-wasted-nudge order.
 . "$(dirname "$0")/helpers.sh"
 
 free_port() { python3 -c 'import socket
@@ -44,7 +45,7 @@ def sha(n):
 def pr(n):
     return f"https://github.com/o/r/pull/{n}"
 
-ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91)
+ids = (80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92)
 rows = {n: {"id": n, "state": "in-review", "priority": "P1",
             "title": f"ticket {n}", "pr_url": "512" if n == 84 else pr(n),
             "owner_run": None if n in (82, 88) else n, "plan": None}
@@ -59,7 +60,7 @@ def trail(cursor, text):
     return {"source": "board", "cursor": str(cursor), "kind": "review-trail",
             "runId": None, "body": {"text": text}}
 
-for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91):
+for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92):
     text = "round 1 — level medium"
     if n != 85:
         text += "\nreviewed head: " + sha(830 if n == 83 else n)
@@ -67,7 +68,8 @@ for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91):
                else [transition(1), trail(2, text)])
     route("GET", f"/tickets/{n}/timeline", {"records": records})
 
-for n in (80, 82, 88, 89, 90, 91):
+# 91 has no by-id row: its fresh tree skips it before the re-read.
+for n in (80, 82, 88, 89, 90, 92):
     row = rows[n].copy()
     if n == 89:
         row["state"] = "in-progress"  # rebuild between list and re-read
@@ -78,8 +80,8 @@ route("POST", "/tickets/82/transition",
       {"error": {"code": "review-trail-required", "message":
        "in-review → done needs a review-trail event by this run after the latest entry into in-review"}}, 403)
 route("POST", "/tickets/88/transition", {"ok": True, "to": "done"})
-route("POST", "/tickets/91/transition", {"ok": True, "to": "done"})
-for n in (80, 81, 83, 85, 86, 87, 89, 90):
+route("POST", "/tickets/92/transition", {"ok": True, "to": "done"})
+for n in (80, 81, 83, 85, 86, 87, 89, 90, 91):
     route("POST", f"/runs/{n}/renew", {"renewed": True})
 route("GET", "/answers/unrelayed", [])
 route("GET", "/runs/needing-resume", [])
@@ -102,12 +104,18 @@ meta() {
     "$1" "$1" "$2" "$1" "$1" "$1" > "$DH/u-$1.json"
   chmod 600 "$DH/u-$1.json"
 }
-for n in 80 81 83 85 86 87 89 90 91; do
-  status=idle; case "$n" in 87|91) status=working ;; esac
+for n in 80 81 83 85 86 87 89 90 91 92; do
+  status=idle; case "$n" in 87|92) status=working ;; esac
   meta "$n" "$status"
   touch "$TESTHOME/.claude/projects/proj/u-$n.jsonl"
 done
-touch -t 202607170000 "$TESTHOME/.claude/projects/proj/u-80.jsonl"
+# 80 and 89 concluded their reviews long ago; 91's QA child writes under its
+# subagents/ right now, so only the TREE says it is active; 92 is dead, and a
+# dead parent's children are dead too, so its fresh file must not hold it.
+touch -t 202607170000 "$TESTHOME/.claude/projects/proj/u-80.jsonl" \
+  "$TESTHOME/.claude/projects/proj/u-89.jsonl" "$TESTHOME/.claude/projects/proj/u-91.jsonl"
+mkdir -p "$TESTHOME/.claude/projects/proj/u-91/subagents"
+touch "$TESTHOME/.claude/projects/proj/u-91/subagents/agent-qa.jsonl"
 
 # gh answers from the requested PR number, not the call sequence. A real PR's
 # merge commit and head are separate values, especially for squash merges.
@@ -119,7 +127,7 @@ echo "GH $*" >> "$GH_LOG"
 url="${3%/}"; n="${url##*/}"
 case "$n" in
   81) echo '{"mergedAt":null,"mergeCommit":null,"headRefOid":null}'; exit 0 ;;
-  80|82|83|85|86|87|88|89|90|91) ;;
+  80|82|83|85|86|87|88|89|90|91|92) ;;
   *) exit 2 ;;
 esac
 head="$n"; [ "$n" != 83 ] || head=831
@@ -138,7 +146,7 @@ try:
         m = json.load(f)
 except Exception:
     print("absent"); raise SystemExit(0)
-if sys.argv[2] == "u-91":
+if sys.argv[2] == "u-92":
     print("absent"); raise SystemExit(0)  # the session is gone; its record still says working
 if sys.argv[2] == "u-90" and m["status"] == "idle":
     m["status"] = "working"  # native wake repaired the stale record
@@ -208,10 +216,14 @@ t  "89's moved ticket is held" "#89 — moved between the read and the write (no
 t  "89 is not closed" "[0]" post_count 89
 t  "90's natively-woken owner is left to its agent" "#90 — merged, but its owner u-90 is mid-turn" cat "$OUT"
 t  "90 is not closed" "[0]" post_count 90
-M91="$(printf '%040d' 9100)"; SHA91="$(printf '%040d' 91)"
-t  "91's dead owner is not mid-turn: it closes as its run" \
-   "/tickets/91/transition auth=Bearer tok-91 to=done note=finalize: https://github.com/o/r/pull/91 merged as $M91 at the reviewed head $SHA91" posts /tickets/91/transition
-nt "91's dead owner is never reported mid-turn" "#91 — merged, but its owner" cat "$OUT"
+t  "91's live idle owner with a fresh tree is left to its QA child" \
+   "#91 — merged, but its owner u-91 was active 0m ago (a review may be running under it); left for its own agent" cat "$OUT"
+t  "91 is not closed under its live review" "[0]" post_count 91
+nt "91 is skipped before the by-id re-read" '"path": "/tickets/91"' cat "$FIX.log"
+M92="$(printf '%040d' 9200)"; SHA92="$(printf '%040d' 92)"
+t  "92's dead owner is not mid-turn and skips the tree gate: it closes as its run" \
+   "/tickets/92/transition auth=Bearer tok-92 to=done note=finalize: https://github.com/o/r/pull/92 merged as $M92 at the reviewed head $SHA92" posts /tickets/92/transition
+nt "92's dead owner is never reported mid-turn or active" "#92 — merged, but its owner" cat "$OUT"
 t  "90 was synced before its status was trusted" '"status": "working"' cat "$DH/u-90.json"
 # Assert the ordering, rather than only the presence of all three operations.
 t  "80's evidence, fresh by-id read and write are in order" "ordered" python3 - "$FIX.log" <<'PY'
@@ -260,7 +272,7 @@ before = "/runs/80/renew" in posts[:write]
 after = "/runs/80/renew" in posts[write + 1:]
 print("renewed after" if before and after else "before=%s after=%s" % (before, after))
 PY
-nt "a dead owner's lease is still left to expire" "/runs/91/renew" posts /runs/
+nt "a dead owner's lease is still left to expire" "/runs/92/renew" posts /runs/
 
 # A registry scan that dies is not an empty registry. Read as one, every owned
 # ticket would fall to the ownerless automation write, whose override passes

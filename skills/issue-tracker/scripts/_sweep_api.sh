@@ -28,6 +28,9 @@
 #          predicate applies here before either write. Re-read the ticket by
 #          id just before writing and skip one that moved: this narrows the
 #          window, but is not atomic (non-run actors have no conditional edge).
+#          A live owner whose transcript TREE is not yet quiet past
+#          BOARD_REVIEW_STALL_MIN is left alone — review-recover's activity
+#          gate — so the run never ends under a QA child still reviewing.
 #          Refused closes stay with the recovery ladder. Run ahead of review
 #          recovery so no nudge is spent on a merged ticket; renew retires the
 #          ended seat on the following tick.
@@ -1631,6 +1634,7 @@ phase_finalize() {
   }
   local candidates ticket pr_url run plan gh_json merge merged_head oid evidence
   local meta_uuid bearer meta_run fence owner_uuid owner_bearer owner_fence status fresh state now_pr now_run now_plan note output first
+  local transcript turn_epoch age
   candidates="$(_finalize_candidates)" || {
     echo "finalize: the board would not list its in-review tickets; nothing is closed this tick" >&2
     return 1
@@ -1699,6 +1703,21 @@ PY
           echo "finalize: #$ticket — merged, but its owner $owner_uuid is mid-turn; its own agent closes"
           continue ;;
       esac
+      # An idle LIVE owner is not a concluded review: the review runs in its
+      # QA subagent, which writes under subagents/ after the parent's turn
+      # ended, and any done ends the run out from under it. review-recover's
+      # own activity gate — the whole tree, quiet past REVIEW_STALL_MIN. No
+      # transcript is no signal: a seat that never wrote has no child to end.
+      turn_epoch=""
+      transcript="$(_transcript_for_uuid "$owner_uuid")"
+      [ -z "$transcript" ] || turn_epoch="$(_tree_mtime_epoch "$transcript")"
+      if [ -n "$turn_epoch" ]; then
+        age=$(( ( $(date +%s) - turn_epoch ) / 60 ))
+        if [ "$age" -lt "$REVIEW_STALL_MIN" ]; then
+          echo "finalize: #$ticket — merged, but its owner $owner_uuid was active ${age}m ago (a review may be running under it); left for its own agent"
+          continue
+        fi
+      fi
     fi
     fresh="$(T_TID="$ticket" _api_py - <<'PY'
 import os
