@@ -10,7 +10,7 @@
 #
 # PINS: run versus automation authority, the server's evidence refusal, head
 # mismatch, missing/stale evidence, epic and open-PR filtering, a fresh by-id
-# read, sync-before-status, a failed registry scan, a dead owner's stale `working` record, a
+# read, sync-before-status, a failed registry scan, a dead owner left for the reclaim, a
 # live idle owner whose transcript tree is still fresh (a QA child reviewing
 # under it), an owner carrying an unresolved resume fork, a non-null owner run
 # with no seat in this registry (its home host closes it), a GitHub read that
@@ -71,10 +71,10 @@ for n in (80, 82, 83, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94):
                else [transition(1), trail(2, text)])
     route("GET", f"/tickets/{n}/timeline", {"records": records})
 
-# 91 has no by-id row: its fresh tree skips it before the re-read, as 94's
-# remote owner does. 93 has a row and an accepting transition, so only the
+# 91 has no by-id row: its fresh tree skips it before the re-read, as 92's
+# dead owner and 94's remote owner do. 93 has a row and an accepting transition, so only the
 # fork guard can hold it.
-for n in (80, 82, 88, 89, 90, 92, 93):
+for n in (80, 82, 88, 89, 90, 93):
     row = rows[n].copy()
     if n == 89:
         row["state"] = "in-progress"  # rebuild between list and re-read
@@ -85,7 +85,6 @@ route("POST", "/tickets/82/transition",
       {"error": {"code": "review-trail-required", "message":
        "in-review → done needs a review-trail event by this run after the latest entry into in-review"}}, 403)
 route("POST", "/tickets/88/transition", {"ok": True, "to": "done"})
-route("POST", "/tickets/92/transition", {"ok": True, "to": "done"})
 route("POST", "/tickets/93/transition", {"ok": True, "to": "done"})
 for n in (80, 81, 83, 85, 86, 87, 89, 90, 91, 93):  # a fork keeps its lease
     route("POST", f"/runs/{n}/renew", {"renewed": True})
@@ -239,10 +238,15 @@ t  "91's live idle owner with a fresh tree is left to its QA child" \
    "#91 — merged, but its owner u-91 was active 0m ago (a review may be running under it); left for its own agent" cat "$OUT"
 t  "91 is not closed under its live review" "[0]" post_count 91
 nt "91 is skipped before the by-id re-read" '"path": "/tickets/91"' cat "$FIX.log"
-M92="$(printf '%040d' 9200)"; SHA92="$(printf '%040d' 92)"
-t  "92's dead owner is not mid-turn and skips the tree gate: it closes as its run" \
-   "/tickets/92/transition auth=Bearer tok-92 to=done note=finalize: https://github.com/o/r/pull/92 merged as $M92 at the reviewed head $SHA92" posts /tickets/92/transition
-nt "92's dead owner is never reported mid-turn or active" "#92 — merged, but its owner" cat "$OUT"
+# 92's session is gone (its record still says working): a done as its run
+# would leave the run on a meta nothing renews or strips, so the dead owner is
+# left for its lease to lapse and the reclaim to clear, like a remote run.
+t  "92's dead owner is left for the reclaim and reported as dead" \
+   "#92 — merged, but its owner u-92 is a dead session; its lease will lapse and the reclaim will clear its run, then this closes as automation" cat "$OUT"
+t  "92 is not closed, as its run or as automation" "[0]" post_count 92
+nt "92's dead owner is never reported mid-turn or active" "#92 — merged, but its owner u-92 is mid-turn" cat "$OUT"
+nt "92's dead owner skips the tree gate" "#92 — merged, but its owner u-92 was active" cat "$OUT"
+nt "92 is skipped before the by-id re-read" '"path": "/tickets/92"' cat "$FIX.log"
 t  "93's owner with an unresolved fork is held and surfaced" \
    "#93 — merged, but its owner u-93 carries an UNRESOLVED FORK (status=error + pending_short)" cat "$OUT"
 t  "93 is not closed while its fork may be live on the run" "[0]" post_count 93

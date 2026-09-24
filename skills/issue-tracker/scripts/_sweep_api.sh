@@ -1753,11 +1753,18 @@ PY
       continue
     fi
     # Synced before the status is trusted: the sync promotes a natively-woken
-    # seat whose record still says idle. A DEAD seat is not mid-turn whatever
-    # its record says — a session that died mid-turn leaves `working` behind,
-    # and no agent of its will ever close — so it writes as the run below.
+    # seat whose record still says idle.
     liveness=""
     [ -z "$owner_uuid" ] || liveness="$(_liveness "$owner_uuid")"
+    # A DEAD OWNER IS LEFT like a remote one. A done written as its run would
+    # end the run server-side, but only a renewal's 409 or the reclaim strips
+    # the run from its meta, and a dead session is never renewed — its seat
+    # would hold the run and a dispatch slot for good. Its lease lapses, the
+    # reclaim clears owner_run, and a later tick closes it as automation.
+    if [ "$liveness" = dead ]; then
+      echo "finalize: #$ticket — merged, but its owner $owner_uuid is a dead session; its lease will lapse and the reclaim will clear its run, then this closes as automation"
+      continue
+    fi
     # AN UNRESOLVED FORK MAY BE LIVE ON THIS RUN, and nothing here can see it:
     # its record reads `error`, not mid-turn, and `current` still names the
     # superseded turn, so the tree gate below reads the old transcript. A done
