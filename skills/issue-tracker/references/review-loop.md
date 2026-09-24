@@ -98,7 +98,9 @@ BLOCKER or SPEC FINDING from its own compliance audit; every
 EXISTING CI check green (a repo with no checks merges on the review
 alone; pending checks arm GitHub auto-merge — when that merge lands after
 the agent's turn ended, the board sweep's FINALIZE pass completes the
-ticket bookkeeping the PR's `Closes` link cannot). Every merge — immediate
+ticket bookkeeping the PR's `Closes` link cannot on the gh binding, and on
+the API binding the API tick's finalize pass reads the merge from GitHub and
+writes `done` when the merged head is the trail's `reviewed head:`). Every merge — immediate
 or armed — is pinned to the reviewed head (`--match-head-commit`), so a
 push after the review fails the merge instead of landing unreviewed. A
 failing check, a park, or any unresolved blocker goes `needs-human` with

@@ -21,7 +21,7 @@ evidence gate the server enforces on the owning run's close.
 
 - [x] M1 — `board-transition.sh` honours `BOARD_PRINCIPAL`; `_sweep_api.sh` gains `phase_finalize` and the `finalize` arm, wired into `all` between stall and review-recover; plugin version bumped to 7.119.0 in the same commit.
 - [x] M2 — `tests/claude-code/board-api/test-sweep-finalize.sh` written and green; the suite listed in `run-skill-tests.sh`; every other `board-api/test-sweep-*.sh` and `test-sweep-renew-relay.sh` still green.
-- [ ] M3 — `agents/qa-loop.md` and `agents/codex/qa-loop.toml` name the reviewed head in the trail and the API finalize pass beside gh's FINALIZE; `references/review-loop.md` names it; TECH-DEBT.md row 26 struck; `tests/issue-tracker/test-qa-loop-agent.sh` pins the new trail line.
+- [x] M3 — `agents/qa-loop.md` and `agents/codex/qa-loop.toml` name the reviewed head in the trail and the API finalize pass beside gh's FINALIZE; `references/review-loop.md` names it; TECH-DEBT.md row 26 struck; `tests/issue-tracker/test-qa-loop-agent.sh` pins the new trail line.
 - [ ] PR opened on `main` from `74-api-finalize`; report written to `.architect/74/plan-executor-report.md`.
 
 M1 verification: `scripts/lint-shell.sh` found no changed files at baseline;
@@ -34,8 +34,12 @@ M2 verification: `bash tests/claude-code/board-api/test-sweep-finalize.sh`
 ended `PASS test-sweep-finalize.sh`; all five pre-existing
 `test-sweep-*.sh` suites and `test-sweep-renew-relay.sh` ended in PASS;
 `scripts/lint-shell.sh tests/claude-code/board-api/test-sweep-finalize.sh`
-passed. The old renew-relay and resume fixtures emitted cleanup messages
-from mock-server shutdown, but no test failed.
+passed. The suite was also run against pre-M1 `1d9ccae0` in a disposable
+checkout: the old usage line refused `finalize` and 19 assertions failed,
+establishing the test's red baseline. The old renew-relay and resume fixtures
+emitted cleanup messages from mock-server shutdown, but no test failed.
+M3 verification: `bash tests/issue-tracker/test-qa-loop-agent.sh` passed
+before and after the trail contract edit, including its new head assertion.
 
 ## The state this pass exists for
 
@@ -555,7 +559,7 @@ scratch: never `git add` it.
 
 - `skills/issue-tracker/scripts/_sweep_api.sh`: `phase_finalize()`,
   `_finalize_candidates()`, `_finalize_evidence <ticket>`; case arm
-  `finalize`; wired into `all` after `phase_review_recover`.
+  `finalize`; wired into `all` before `phase_review_recover`.
 - `skills/issue-tracker/scripts/board-transition.sh`: env `BOARD_PRINCIPAL`
   ∈ {`human`, `automation`}, default `human`, API arm only, ignored under a
   run context.
@@ -688,9 +692,22 @@ scratch: never `git add` it.
   `token()` returns `BOARD_HUMAN_TOKEN` for it. Pre-existing; the finalize
   pass is the first caller that needs to say otherwise.
 
+- Observation: the Interfaces and Dependencies list still said `all` wired
+  finalize after review-recover, although the revised pass, Plan of Work,
+  Acceptance and Decision Log all say before. Corrected the stale interface
+  line to match the settled order.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+The API tick now closes a PR merged at the reviewed head with the same
+client-side evidence predicate under either principal, and re-reads the pin
+and ownership immediately before writing. The QA trail supplies the reviewed
+head; the manual, Codex mirror and debt tracker reflect the new path. The
+fixture covers both authorities, refusal, mismatch, stale/missing evidence,
+mid-turn owners (including sync promotion), moved tickets and whole-tick
+ordering. The window between the fresh read and a non-run actor's write
+remains unguarded by the server, as this spec explicitly scopes out server
+changes. Review of the complete PR is owned by the board review loop.
 
 ## Revision Notes
 

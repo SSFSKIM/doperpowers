@@ -232,6 +232,8 @@ assert_contains "$AGENT" "never yours to write" "ready-for-architect is the answ
 # before every one of them — not only before the design-gap that can end it.
 echo "the trail precedes every hand-up:"
 trail_section="$(section '## Review Trail')"
+assert_text_contains "$trail_section" "reviewed head: <sha>" \
+    "the trail names the reviewed head for the API finalize pass" "Review Trail"
 assert_text_contains "$trail_section" "before every \`ESCALATE\` or \`NEEDS_PANEL\` return" \
     "the trail so far is posted before any escalation or panel hand-up" "Review Trail"
 assert_not_contains "$AGENT" "a design-gap answer may end your review outright" \

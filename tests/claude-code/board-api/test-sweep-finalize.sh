@@ -166,7 +166,7 @@ for line in open(sys.argv[1]):
         print(f'{req["path"]} auth={req["auth"]} to={body.get("to")} note={body.get("note")}')
 PY
 }
-post_count() { posts "/tickets/$1/transition" | wc -l | tr -d ' '; }
+post_count() { printf '[%s]\n' "$(posts "/tickets/$1/transition" | wc -l | tr -d ' ')"; }
 
 # The stand-alone pass: every candidate shares this one fixture world.
 OUT="$TDIR/finalize.out"; code=0
@@ -179,28 +179,28 @@ t  "80 closes as its owning run with the reviewed merge note" \
    "/tickets/80/transition auth=Bearer tok-80 to=done note=finalize: https://github.com/o/r/pull/80 merged as $M80 at the reviewed head $SHA80" posts /tickets/80/transition
 t  "80's close is reported as its run" "done written as run 80" cat "$OUT"
 t  "81's open PR is inspected" "pull/81 --json mergedAt,mergeCommit,headRefOid" cat "$TDIR/gh.log"
-t  "81's open PR is not closed" "0" post_count 81
+t  "81's open PR is not closed" "[0]" post_count 81
 nt "81's ordinary open PR is silent" "#81" cat "$OUT"
-t  "82 makes exactly one refused attempt" "1" post_count 82
+t  "82 makes exactly one refused attempt" "[1]" post_count 82
 t  "82's ownerless attempt is automation, not human" "/tickets/82/transition auth=Bearer a to=done" posts /tickets/82/transition
 t  "82's server evidence refusal is left with recovery" "the board refused done (review-trail-required)" cat "$OUT"
 t  "83 names both mismatched heads" "GitHub merged $SHA83M, the trail names $SHA83R" cat "$OUT"
-t  "83 is not closed off the reviewed head" "0" post_count 83
+t  "83 is not closed off the reviewed head" "[0]" post_count 83
 nt "84's numeric epic package never reaches GitHub" "512" cat "$TDIR/gh.log"
-t  "84's epic package is not closed" "0" post_count 84
+t  "84's epic package is not closed" "[0]" post_count 84
 t  "85 without a head line is held" "#85 — merged, but the latest review-trail names no reviewed head" cat "$OUT"
-t  "85 is not closed" "0" post_count 85
+t  "85 is not closed" "[0]" post_count 85
 t  "86's trail before the latest review entry is held" "#86 — merged, but no review-trail since the ticket last entered review" cat "$OUT"
-t  "86 is not closed" "0" post_count 86
+t  "86 is not closed" "[0]" post_count 86
 t  "87's working owner is left to its agent" "#87 — merged, but its owner u-87 is mid-turn" cat "$OUT"
-t  "87 is not closed" "0" post_count 87
+t  "87 is not closed" "[0]" post_count 87
 t  "88 closes as automation with the reviewed merge note" \
    "/tickets/88/transition auth=Bearer a to=done note=finalize: https://github.com/o/r/pull/88 merged as $M88 at the reviewed head $SHA88" posts /tickets/88/transition
 t  "88's close is reported as automation" "done written as automation" cat "$OUT"
 t  "89's moved ticket is held" "#89 — moved between the read and the write (now in-progress" cat "$OUT"
-t  "89 is not closed" "0" post_count 89
+t  "89 is not closed" "[0]" post_count 89
 t  "90's natively-woken owner is left to its agent" "#90 — merged, but its owner u-90 is mid-turn" cat "$OUT"
-t  "90 is not closed" "0" post_count 90
+t  "90 is not closed" "[0]" post_count 90
 t  "90 was synced before its status was trusted" '"status": "working"' cat "$DH/u-90.json"
 # Assert the ordering, rather than only the presence of all three operations.
 t  "80's evidence, fresh by-id read and write are in order" "ordered" python3 - "$FIX.log" <<'PY'
