@@ -168,12 +168,27 @@ Per tick:
    d. Owner: `_metas_for_ticket "$ticket"` rows (`uuid \x1f bearer \x1f run
       \x1f fence`, confirmed binds first); pick the first whose `run` equals
       the row's `owner_run` and whose bearer is non-empty. Then
-      `_liveness "$uuid"` — `dead` skips the status check (a session that
-      died mid-turn leaves `working` in its record), and otherwise it runs
-      for its `sminos sync` side effect,
-      which promotes a natively-woken seat whose record still says `idle`
-      (review-recover does the same at line 1442 before trusting the
-      status) — and only then read `status` (`_meta_field
+      `_liveness "$uuid"`, which routes on three outcomes:
+      `forked` — an unresolved resume fork may be live on this run and
+      nothing here can see it (its record reads `error`, `current` names the
+      superseded turn); a `done` would end the run under it, so leave it and
+      surface it for recovery by hand.
+      `dead` — the owner session is gone. It has no live child (a dead
+      parent's subagents are dead too), but finalize does NOT close it and
+      does NOT write as its run: the local run is cleaned up only by the
+      renew phase's 409 strip or the reclaim/resume path, and a DEAD session
+      is deliberately never renewed (letting the lease lapse is how the
+      server reclaims it), so a finalize `done` on a dead run would leave the
+      meta's run and dispatch slot behind with nothing to strip them. So a
+      dead owner is LEFT exactly like a non-null `owner_run` below: its lease
+      lapses within one window, the server's reclaim clears `owner_run` and
+      the resume/retire lifecycle strips the runless seat, and a later tick
+      then closes the ticket as automation. Log the `dead owner` line and
+      continue. Cleaning up a dead terminal owner is the run-lifecycle's job,
+      not finalize's.
+      `live` — the sync `_liveness` just ran promotes a natively-woken seat
+      whose record still says `idle` (review-recover does the same before
+      trusting the status); then read `status` (`_meta_field
       "$DAEMON_HOME/<uuid>.json" status`). `working` or `blocked` means the
       owner is mid-turn (its own QA agent may be verifying this very
       merge): log, continue.
@@ -189,14 +204,10 @@ Per tick:
       `age=$(( ($(date +%s) - _tree_mtime_epoch "$transcript") / 60 ))`, and
       `age < REVIEW_STALL_MIN` → log the `active` line, continue. A tree
       quiet at least that long, on a live idle owner whose child has
-      returned, is the concluded review this pass closes. No transcript is
-      no signal (a seat that never wrote): treat as concluded and write.
-      A DEAD owner session has no live child of its own — a dead parent's
-      subagents are dead too — so the tree gate does not apply; write as the
-      run (the run is an identity, and the server checks its own fence and
-      liveness).
-      Any other status on a live owner, past the tree gate, writes as the
-      run in step 3f.
+      returned, is the concluded review this pass closes as the run in step
+      3f — a live owner's next renewal then gets 409 run-ended and strips its
+      seat. No transcript is no signal (a seat that never wrote): treat as
+      concluded and write.
       No LOCAL seat resolves the owner: the automation path is NOT the
       universal fallback — it is reserved for `owner_run == null`. A ticket
       whose `owner_run` is NON-NULL but has no seat in this registry has a
@@ -250,6 +261,7 @@ Log lines (stdout unless marked; tests assert on them, so copy them exactly):
     finalize: #<t> — merged, but the latest review-trail names no reviewed head; left for the owner
     finalize: #<t> — merged, but its owner <uuid> is mid-turn; its own agent closes
     finalize: #<t> — merged, but its owner <uuid> was active <age>m ago (a review may be running under it); left for its own agent
+    finalize: #<t> — merged, but its owner <uuid> is a dead session; its lease will lapse and the reclaim will clear its run, then this closes as automation
     finalize: #<t> — moved between the read and the write (now <state>, pr <pr_url>, owner <owner_run>, plan <plan>); nothing is written
     finalize: tick budget exhausted — the rest ride the next tick
     (stderr) finalize: #<t> — gh could not read <pr_url>; the next tick retries
@@ -321,10 +333,13 @@ Observable on the hermetic suite and on the live board:
    only once the tree is quiet past `REVIEW_STALL_MIN`. A merged ticket
    whose `owner_run` is non-null but has no seat in this registry is
    untouched and logged (its home host or a reclaim closes it); only a null
-   `owner_run` reaches the automation close. A ticket that left
-   `in-review` (or changed pin or owner) between the list read and the
-   write is untouched and logged. An epic (numeric `pr_url`) is skipped
-   without a gh call.
+   `owner_run` reaches the automation close. A merged ticket whose local
+   owner seat is a DEAD session is untouched and logged, not closed as its
+   run: the reclaim clears its run and the retire step strips the seat, and
+   a later tick closes the ticket as automation once `owner_run` is null. A
+   ticket that left `in-review` (or changed pin or owner) between the list
+   read and the write is untouched and logged. An epic (numeric `pr_url`)
+   is skipped without a gh call.
 5. `tests/claude-code/board-api/test-sweep-finalize.sh` drills every case
    above plus the gh-bound refusal, hermetically (fixture mock, stub gh,
    stub sminos), and is listed in `run-skill-tests.sh`.
@@ -502,6 +517,7 @@ the tick output):
 - 90: no POST; `owner u-90 is mid-turn`; and the record now reads `working` (the sync ran before the status was trusted).
 - 91: no POST; no by-id re-read of 91 in the request log (skipped before it); the output contains `owner u-91 was active` and `a review may be running under it`.
 - 94: no POST; no by-id re-read of 94 in the request log (skipped at owner resolution); the output contains `owner run 94 lives in another registry`.
+- 92 (the dead-owner drill added by an earlier fix wave): its seat's session is dead (`_liveness` → dead); assert NO POST and no by-id re-read, and the output contains `its owner u-92 is a dead session`. This drill's earlier expectation (closes as its run) is inverted by the R3-F1 re-pin; update it in place rather than adding a new ticket.
 - The request log shows `GET /tickets/80` AFTER `GET /tickets/80/timeline`
   and before `POST /tickets/80/transition` (the re-read sits immediately
   before the write).
@@ -792,6 +808,29 @@ scratch: never `git add` it.
   reclaim already makes unnecessary).
   Date/Author: 2026-09-24, Architect #74, from the human's answer to the
   review-loop park (R3-F2); the human's second re-pin.
+- Decision: A DEAD local owner is folded into the same rule — finalize does
+  not close it as its run; it is left for the reclaim lifecycle, and the
+  ticket closes as automation only once a reclaim has cleared `owner_run`.
+  Rationale: a dead session is deliberately never renewed (the lapsing lease
+  is how the server reclaims the run), so the only mechanisms that strip a
+  run from its local meta — the renew phase's 409 and the resume/reclaim
+  path — never fire from a finalize `done` on a dead run, and
+  `_retire_finished_seats` only retires a RUNLESS meta. A finalize close of a
+  dead run therefore leaks the seat's run and dispatch slot with nothing left
+  to clean it. Leaving the dead owner routes it through the existing reclaim
+  path, which strips the run and retires the seat exactly as for any
+  reclaimed run, and a later tick then closes the null-owner ticket as
+  automation. This also removes the dead-owner special case entirely (one
+  rule: a non-null `owner_run`, dead-local or remote, is left; only null
+  closes as automation), and matches the reviewer's point that reconciling a
+  dead terminal owner is the run-lifecycle's job, not finalize's. A LIVE
+  owner is unaffected: it is renewed, so its 409 strips it after a close.
+  Rejected: closing the dead owner as automation and extending
+  `_retire_finished_seats` to strip a still-run meta on a dead terminal seat
+  (more logic in a delicate lifecycle path, for an edge — a crashed owner —
+  the reclaim already handles).
+  Date/Author: 2026-09-24, Architect #74, from the fresh QA pass (R3-F1);
+  folded into the same (second) human re-pin edit.
 
 ## Surprises & Discoveries
 
@@ -841,8 +880,13 @@ the tick, each change landing with its own red/green drill in
 - A LIVE idle owner is left alone until its whole transcript tree is quiet
   past `REVIEW_STALL_MIN`, so a QA child still reviewing under it is never
   ended by a `done` (the R2-F1 re-pin; ticket 91).
-- A DEAD owner is not mid-turn whatever its record says; it closes as its
-  run (ticket 92).
+- A DEAD owner is not mid-turn whatever its record says, but finalize does
+  not close it either: closing a dead run leaks the local seat (a dead
+  session is never renewed, so no 409 strips it). It is left for the reclaim
+  lifecycle to clear `owner_run` and retire the seat, after which a later
+  tick closes the ticket as automation — the R3-F1 re-pin folded this into
+  the non-null-owner rule and ticket 92's drill now asserts the skip-and-log,
+  not a close.
 - An owner carrying an unresolved resume fork is held and surfaced for
   recovery by hand, since neither its status nor the tree gate can see the
   fork (ticket 93).
@@ -897,3 +941,12 @@ scopes out server changes. The worker harness prevented the requested report
   skip (92/93 already taken by the fix waves' dead-owner and fork drills);
   the Outcomes policy-question paragraph rewritten as settled. The code
   change flows through a fresh QA pass against this revision.
+- 2026-09-24: fifth revision, a re-pin during the fresh QA pass answering
+  R3-F1 (spec-conflict): a DEAD local owner is no longer closed as its run —
+  that leaked the seat's run/dispatch slot, because a dead session is never
+  renewed and `_retire_finished_seats` only retires a runless meta. A dead
+  owner is now left for the reclaim lifecycle (folded into the non-null-owner
+  rule), and ticket 92's dead-owner drill inverts from close-as-run to
+  skip-and-log. New `dead session` log line; step 3d, acceptance, Outcomes
+  and the Decision Log updated. The code change flows through this pass's fix
+  wave against this revision.
