@@ -40,6 +40,9 @@ establishing the test's red baseline. The old renew-relay and resume fixtures
 emitted cleanup messages from mock-server shutdown, but no test failed.
 M3 verification: `bash tests/issue-tracker/test-qa-loop-agent.sh` passed
 before and after the trail contract edit, including its new head assertion.
+Finish verification: `tests/claude-code/run-skill-tests.sh` ended
+`STATUS: PASSED` (26 passed, 0 failed, 9 skipped; integration fixtures
+skip without `ARKHO_DIR`).
 
 ## The state this pass exists for
 
