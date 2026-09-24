@@ -786,15 +786,43 @@ scratch: never `git add` it.
 The API tick now closes a PR merged at the reviewed head with the same
 client-side evidence predicate under either principal, and re-reads the pin
 and ownership immediately before writing. The QA trail supplies the reviewed
-head; the manual, Codex mirror and debt tracker reflect the new path. The
-fixture covers both authorities, refusal, mismatch, stale/missing evidence,
-mid-turn owners (including sync promotion), moved tickets and whole-tick
-ordering. The window between the fresh read and a non-run actor's write
-remains unguarded by the server, as this spec explicitly scopes out server
-changes. PR #182 is ready for the board review loop, which owns complete-branch
-review. The worker harness prevented the requested report `.md` file, so the
-implementation account is delivered to the dispatcher through handback;
-this is the existing TECH-DEBT.md row 25 contract mismatch.
+head — on a PR review only; a scale review's trail names its reviewed ranges
+instead. The manual, Codex mirror and debt tracker reflect the new path.
+
+The PR review loop reshaped how the pass treats an owner and how it spends
+the tick, each change landing with its own red/green drill in
+`test-sweep-finalize.sh`:
+
+- A LIVE idle owner is left alone until its whole transcript tree is quiet
+  past `REVIEW_STALL_MIN`, so a QA child still reviewing under it is never
+  ended by a `done` (the R2-F1 re-pin; ticket 91).
+- A DEAD owner is not mid-turn whatever its record says; it closes as its
+  run (ticket 92).
+- An owner carrying an unresolved resume fork is held and surfaced for
+  recovery by hand, since neither its status nor the tree gate can see the
+  fork (ticket 93).
+- A registry scan that fails writes nothing, rather than reading as an empty
+  registry and falling to the ownerless automation write.
+- Live leases are renewed on a clock (`BOARD_FINALIZE_RENEW_SEC`) across the
+  scan, and the candidate list is taken round-robin past the last ticket a
+  tick took, so a budget that stops mid-list does not starve the same tail
+  every tick.
+- The GitHub read is bounded (`BOARD_GH_TIMEOUT`, its process group killed on
+  expiry), so a stalled request is logged and skipped instead of holding the
+  tick lock while leases run down.
+
+What remains open is a policy question, not a technical defect: a ticket
+whose `owner_run` resolves to no seat in this registry — an owner on another
+host, or one whose seat is gone — still closes as automation under the stated
+override, as this plan pins. The review loop's position is that such a
+remote owner may still have a live QA child whose run that `done` would end.
+Settling it needs a second re-pin, which the loop could not mint, so ticket
+#74 is parked needs-human with both positions and PR #182 is not merged; the
+fallback is unchanged until the human decides. The window between the fresh
+read and a non-run actor's write also remains unguarded by the server, as
+this spec scopes out server changes. The worker harness prevented the
+requested report `.md` file, so the implementation account was delivered
+through handback (TECH-DEBT.md row 25).
 
 ## Revision Notes
 
