@@ -1004,8 +1004,11 @@ the tick, each change landing with its own red/green drill in
 `test-sweep-finalize.sh`:
 
 - A LIVE idle owner is left alone until its whole transcript tree is quiet
-  past `REVIEW_STALL_MIN`, so a QA child still reviewing under it is never
-  ended by a `done` (the R2-F1 re-pin; ticket 91).
+  past `REVIEW_STALL_MIN`, so a QA child still writing under it is not ended
+  by a `done` (the R2-F1 re-pin; ticket 91). Tree silence is the board's
+  best-effort liveness proxy, the same one review-recover trusts, not proof
+  the child finished: a child silent past the threshold keeps the residual
+  the Decision Log accepts.
 - finalize does not participate in the reclaim lifecycle. It closes only a
   live idle owner with a quiet tree (as the run) and a clean null orphan
   with no lingering seat (as automation). Every other owner state — mid-turn,
@@ -1013,7 +1016,10 @@ the tick, each change landing with its own red/green drill in
   seat still holding a run — is LEFT for the machinery that owns it, so a
   `done` never short-circuits the seat cleanup a terminal ticket would block.
   A crashed owner's merged ticket closes via the pre-existing recovery path
-  (reclaim → successor → re-review → close). Three findings landed at this
+  (reclaim → successor → re-review → close). That keeps finalize from
+  causing a slot leak; whether the recovery path itself strips a dead
+  session's run_id is a pre-existing gap finalize neither causes nor fixes
+  (ticket #75). Three findings landed at this
   seam (R3-F1, then R5-F1) before the re-cut; ticket 92 drills the dead owner
   (skip, not close) and ticket 95 the lingering predecessor seat (skip).
 - An owner carrying an unresolved resume fork is held and surfaced for
@@ -1029,14 +1035,40 @@ the tick, each change landing with its own red/green drill in
   expiry), so a stalled request is logged and skipped instead of holding the
   tick lock while leases run down.
 
+The closing QA fix waves hardened those two knobs and one drill:
+
+- `BOARD_GH_TIMEOUT` is normalized to decimal before finalize's share
+  arithmetic, so a zero-padded override such as `08` no longer aborts the
+  tick as an invalid octal number (a zero-padded-timeout drill pins it).
+- Both `BOARD_GH_TIMEOUT` and `BOARD_FINALIZE_RENEW_SEC` are capped at 300
+  seconds, so one read on top of a full renewal interval and a candidate's
+  board calls still ends inside the 15-minute run lease; an over-lease
+  override no longer lets the tick hold the lock past every live lease. The
+  drills that had held renewal off with an over-lease interval now let it run
+  and still pin the behavior they test.
+- The budget-long first-read drill now runs a 30-second budget against a
+  30-second read (was 8 against 8): the 8-second tick left review-recover,
+  relay and resume too little of the budget the cut hands back, so
+  dispatch's budget gate raced them. The proof is unchanged — an uncut read
+  would still spend the whole tick.
+
+On 00a25ed2, the last code change, the aggregate `tests/claude-code/run-skill-tests.sh`
+passed with 26 passed, 0 failed, 9 skipped (the integration suites skip
+without `ARKHO_DIR`). Earlier in the review the same aggregate failed once
+on an unchanged external-model test whose reply said "isolated checkout"
+rather than the literal "worktree" it greps for, then passed on rerun; that
+test is model-output-sensitive and untouched by this change.
+
 The remote-owner policy question the review loop parked is now settled by the
 human (their second re-pin): a merged ticket whose `owner_run` is non-null but
 has no seat in this registry is NOT closed here — this host cannot know the
 remote owner's QA child has stopped, and a `done` by any actor would end that
 run under its child. It is logged (`owner run <n> lives in another registry`)
 and left for its home host or for the server's reclaim, which clears
-`owner_run`; a successor closes it after the recovery lifecycle strips any
-predecessor seat, or finalize closes it if no seat holds a run. The automation
+`owner_run`; a successor closes it, or finalize closes it once no seat in
+this registry holds a run (a dead predecessor's lingering run_id is the
+pre-existing gap of ticket #75, not something this pass relies on the
+lifecycle to clear). The automation
 close is reserved for a null `owner_run` AND no runful seat in the registry
 (ticket 94 drills the remote-owner skip, 95 the lingering predecessor; 82 and
 88 remain the clean-orphan automation cases). The window between the fresh read
