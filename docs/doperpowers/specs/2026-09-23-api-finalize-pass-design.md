@@ -233,9 +233,23 @@ Per tick:
       conditional transition for a non-run actor, and the ticket rules out
       a server change. Say so in the header paragraph; do not describe the
       check as atomic.
-   f. Write. As the run (a local seat resolved the owner):
-      `BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" board-transition.sh <ticket> done "<note>"`.
-      As automation (ONLY when `owner_run == null`):
+   f. Write. As the run (a local seat resolved the owner, live and its tree
+      quiet): `BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" board-transition.sh <ticket> done "<note>"`.
+      As automation (ONLY when `owner_run == null` AND no seat in this
+      registry still holds a run for this ticket): first the LINGERING-SEAT
+      guard. finalize does NOT participate in the reclaim lifecycle: a
+      crashed owner's run is ended by the server's reclaim, but the local
+      seat that held it is stripped and retired only by the renew phase's 409
+      (never fired for a dead session) or the resume/reclaim path — and a
+      `done` here makes the ticket terminal, which short-circuits that path,
+      stranding the dead predecessor's run and dispatch slot. So before the
+      automation close, scan `_metas_for_ticket "$ticket"` (already in hand
+      from 3d) for ANY row whose run is non-empty. If one exists, a
+      predecessor seat is still un-stripped: LEAVE the ticket, log the
+      `predecessor seat` line, and let the recovery lifecycle strip that seat
+      and hand the ticket to a successor, which closes it as its own run. The
+      automation write fires only for a ticket with `owner_run == null` and
+      no runful seat at all — a genuinely clean orphan.
       `BOARD_PRINCIPAL=automation BOARD_OWNER_OVERRIDE="sweep finalize: <pr_url> merged at the reviewed head; the run ended and left no owner" board-transition.sh <ticket> done "<note>"`.
       A NON-NULL `owner_run` with no local seat took the `another registry`
       skip in 3d and never reaches here. The override is the dp#63 fence's
@@ -261,7 +275,8 @@ Log lines (stdout unless marked; tests assert on them, so copy them exactly):
     finalize: #<t> — merged, but the latest review-trail names no reviewed head; left for the owner
     finalize: #<t> — merged, but its owner <uuid> is mid-turn; its own agent closes
     finalize: #<t> — merged, but its owner <uuid> was active <age>m ago (a review may be running under it); left for its own agent
-    finalize: #<t> — merged, but its owner <uuid> is a dead session; its lease will lapse and the reclaim will clear its run, then this closes as automation
+    finalize: #<t> — merged, but its owner <uuid> is a dead session; its lease will lapse and the reclaim will clear its run, then a successor closes it
+    finalize: #<t> — merged, owner_run cleared but seat <uuid> still holds run <n>; the reclaim/retire lifecycle strips it and a successor closes
     finalize: #<t> — moved between the read and the write (now <state>, pr <pr_url>, owner <owner_run>, plan <plan>); nothing is written
     finalize: tick budget exhausted — the rest ride the next tick
     (stderr) finalize: #<t> — gh could not read <pr_url>; the next tick retries
@@ -333,13 +348,17 @@ Observable on the hermetic suite and on the live board:
    only once the tree is quiet past `REVIEW_STALL_MIN`. A merged ticket
    whose `owner_run` is non-null but has no seat in this registry is
    untouched and logged (its home host or a reclaim closes it); only a null
-   `owner_run` reaches the automation close. A merged ticket whose local
+   `owner_run` reaches the automation close, and only when no seat in this
+   registry still holds a run for the ticket. A merged ticket whose local
    owner seat is a DEAD session is untouched and logged, not closed as its
-   run: the reclaim clears its run and the retire step strips the seat, and
-   a later tick closes the ticket as automation once `owner_run` is null. A
-   ticket that left `in-review` (or changed pin or owner) between the list
-   read and the write is untouched and logged. An epic (numeric `pr_url`)
-   is skipped without a gh call.
+   run. A merged ticket whose `owner_run` is already null but a predecessor
+   seat still holds a run (a dead owner reclaimed but not yet stripped) is
+   also untouched and logged: finalize does not close it, so it never
+   short-circuits the reclaim/retire lifecycle that strips the seat and
+   hands the ticket to a successor, which closes it. A ticket that left
+   `in-review` (or changed pin or owner) between the list read and the write
+   is untouched and logged. An epic (numeric `pr_url`) is skipped without a
+   gh call.
 5. `tests/claude-code/board-api/test-sweep-finalize.sh` drills every case
    above plus the gh-bound refusal, hermetically (fixture mock, stub gh,
    stub sminos), and is listed in `run-skill-tests.sh`.
@@ -435,6 +454,7 @@ an `SW` runner). Three seams are new:
   - 88: merged at SHA88.
   - 91: merged at SHA91.
   - 94: merged at SHA94.
+  - 95: merged at SHA95.
 - The **list fixture**: `GET /tickets?limit=200&states=in-review` (the
   client appends `&repo=testrepo`; the mock matches by prefix) answering
   `{"items":[…],"next":null,"as_of":1}` with rows carrying `id`, `state`,
@@ -452,12 +472,13 @@ an `SW` runner). Three seams are new:
   - 90 `…/pull/90`, owner_run 90 — merged at the reviewed head; the seat record says `idle` but the sync promotes it to `working` (a natively-woken owner).
   - 91 `…/pull/91`, owner_run 91 — merged at the reviewed head, owner live+idle but with a FRESH transcript (a QA child is reviewing under it) → left for its own agent.
   - 94 `…/pull/94`, owner_run 94 — merged at the reviewed head, but NO seat for run 94 in this registry (a non-null owner_run whose owner lives elsewhere) → skipped with the `another registry` line.
-  gh answers 89, 90, 91 and 94 as merged at SHA89 / SHA90 / SHA91 / SHA94.
+  - 95 `…/pull/95`, owner_run NULL in the list row (a dead owner already reclaimed), but registry seat u-95 still holds run 950 for ticket 95 (the predecessor not yet stripped) → skipped by the lingering-seat guard.
+  gh answers 89, 90, 91, 94 and 95 as merged at SHA89 / SHA90 / SHA91 / SHA94 / SHA95.
 - **Timelines** (`GET /tickets/<n>/timeline`, each registered AHEAD of the
   `/tickets/<n>` by-id row it shares a prefix with — the mock takes the
   first match by method + path prefix, and `/tickets/80` is a prefix of
   `/tickets/80/timeline`):
-  - 80, 82, 87, 88, 89, 90, 91, 94: `[transition to in-review (cursor 1), review-trail (cursor 2) with text "round 1 — level medium\nreviewed head: <SHA>"]`.
+  - 80, 82, 87, 88, 89, 90, 91, 94, 95: `[transition to in-review (cursor 1), review-trail (cursor 2) with text "round 1 — level medium\nreviewed head: <SHA>"]`.
   - 83: the same with `reviewed head: SHA83R`.
   - 85: trail text `"round 1 — level medium"` (no head line).
   - 86: `[review-trail (cursor 1) naming SHA86, transition to in-review (cursor 2)]`.
@@ -478,7 +499,10 @@ an `SW` runner). Three seams are new:
   unexpected POST answers 404 and the assertion on the request log catches it.
 - **Registry**: `u-80` idle, run 80, bearer `tok-80`, fence 1, ticket 80,
   `bind_confirmed` true, phase review; `u-81`, `u-83`, `u-85`, `u-86`,
-  `u-89`, `u-90`, `u-91` likewise on their tickets; `u-87` the same but
+  `u-89`, `u-90`, `u-91` likewise on their tickets; `u-95` bound to ticket
+  95 but holding run 950 (which does NOT match ticket 95's null owner_run —
+  the un-stripped predecessor the lingering-seat guard skips on); `u-87` the
+  same but
   `status: working`. No seat for 82, 84, 88, 94 — 82/88 carry a null
   `owner_run` (the automation close), while 94 carries a non-null
   `owner_run` with no matching seat (the `another registry` skip), which is
@@ -517,6 +541,7 @@ the tick output):
 - 90: no POST; `owner u-90 is mid-turn`; and the record now reads `working` (the sync ran before the status was trusted).
 - 91: no POST; no by-id re-read of 91 in the request log (skipped before it); the output contains `owner u-91 was active` and `a review may be running under it`.
 - 94: no POST; no by-id re-read of 94 in the request log (skipped at owner resolution); the output contains `owner run 94 lives in another registry`.
+- 95: no POST; the output contains `seat u-95 still holds run 950` (the null-owner automation close is withheld while a predecessor seat lingers).
 - 92 (the dead-owner drill added by an earlier fix wave): its seat's session is dead (`_liveness` → dead); assert NO POST and no by-id re-read, and the output contains `its owner u-92 is a dead session`. This drill's earlier expectation (closes as its run) is inverted by the R3-F1 re-pin; update it in place rather than adding a new ticket.
 - The request log shows `GET /tickets/80` AFTER `GET /tickets/80/timeline`
   and before `POST /tickets/80/transition` (the re-read sits immediately
@@ -831,6 +856,36 @@ scratch: never `git add` it.
   the reclaim already handles).
   Date/Author: 2026-09-24, Architect #74, from the fresh QA pass (R3-F1);
   folded into the same (second) human re-pin edit.
+- Decision: finalize does not participate in the reclaim lifecycle at all.
+  The automation close fires only for a null `owner_run` AND when no seat in
+  this registry still holds a run for the ticket; any lingering runful seat
+  makes finalize LEAVE the ticket for the recovery machinery, which strips
+  the seat and hands the ticket to a successor that closes it.
+  Rationale: the R3-F1 revision assumed "leave the dead owner, the reclaim
+  clears owner_run, then finalize closes as automation" — but the fresh pass
+  showed the leak just moves: after the reclaim nulls owner_run, finalize's
+  automation `done` makes the ticket terminal BEFORE the resume/reclaim path
+  strips the dead predecessor's seat, and a terminal ticket short-circuits
+  that path, so the seat and its dispatch slot still strand. Three findings
+  landed at this one seam across two passes because finalize was trying to
+  model a reclaim/resume/retire ordering it does not control. The convergent
+  fix is to stop modelling it: finalize handles only the cases it fully owns
+  (a live idle owner with a quiet tree → close as the run; a clean null
+  orphan with no seat → close as automation) and defers every owner-lifecycle
+  case — mid-turn, reviewing, forked, dead, remote, or a lingering
+  predecessor — to the machinery that owns it. A crashed owner's merged
+  ticket then closes via the pre-existing recovery path (reclaim → successor
+  → re-review → close), unchanged by this feature. This is robust because it
+  requires no assumption about the lifecycle's internal ordering.
+  Scope note: closing a crashed owner's merged ticket promptly via finalize
+  (instead of via a successor re-review) is a possible future optimization,
+  deliberately OUT of scope here — it is the exact ambition that produced
+  three leaks, and the recovery path already closes the ticket correctly.
+  Rejected: extending `_retire_finished_seats` to strip a runful dead seat on
+  a terminal ticket (real, but it puts finalize's correctness inside a
+  delicate lifecycle path, the coupling this decision removes).
+  Date/Author: 2026-09-24, Architect #74, from the fresh QA pass's design-gap
+  (R5-F1); adopted by repair-and-rebuild.
 
 ## Surprises & Discoveries
 
@@ -880,13 +935,16 @@ the tick, each change landing with its own red/green drill in
 - A LIVE idle owner is left alone until its whole transcript tree is quiet
   past `REVIEW_STALL_MIN`, so a QA child still reviewing under it is never
   ended by a `done` (the R2-F1 re-pin; ticket 91).
-- A DEAD owner is not mid-turn whatever its record says, but finalize does
-  not close it either: closing a dead run leaks the local seat (a dead
-  session is never renewed, so no 409 strips it). It is left for the reclaim
-  lifecycle to clear `owner_run` and retire the seat, after which a later
-  tick closes the ticket as automation — the R3-F1 re-pin folded this into
-  the non-null-owner rule and ticket 92's drill now asserts the skip-and-log,
-  not a close.
+- finalize does not participate in the reclaim lifecycle. It closes only a
+  live idle owner with a quiet tree (as the run) and a clean null orphan
+  with no lingering seat (as automation). Every other owner state — mid-turn,
+  reviewing, forked, dead, remote, or a null owner_run with a predecessor
+  seat still holding a run — is LEFT for the machinery that owns it, so a
+  `done` never short-circuits the seat cleanup a terminal ticket would block.
+  A crashed owner's merged ticket closes via the pre-existing recovery path
+  (reclaim → successor → re-review → close). Three findings landed at this
+  seam (R3-F1, then R5-F1) before the re-cut; ticket 92 drills the dead owner
+  (skip, not close) and ticket 95 the lingering predecessor seat (skip).
 - An owner carrying an unresolved resume fork is held and surfaced for
   recovery by hand, since neither its status nor the tree gate can see the
   fork (ticket 93).
@@ -950,3 +1008,15 @@ scopes out server changes. The worker harness prevented the requested report
   skip-and-log. New `dead session` log line; step 3d, acceptance, Outcomes
   and the Decision Log updated. The code change flows through this pass's fix
   wave against this revision.
+- 2026-09-24: sixth revision, repair-and-rebuild answering the fresh pass's
+  design-gap (R5-F1): the R3-F1 "leave for reclaim" fix still leaked, because
+  after the reclaim nulls `owner_run`, finalize's automation close makes the
+  ticket terminal before the resume path strips the dead predecessor's seat.
+  The re-cut removes finalize from the reclaim lifecycle entirely: the
+  automation close now also requires that no seat in the registry still holds
+  a run for the ticket, so a lingering predecessor makes finalize LEAVE the
+  ticket for the recovery machinery (successor closes it). New
+  `predecessor seat` log line; ticket 95 drills it; step 3f, acceptance,
+  Outcomes and the Decision Log updated; the dead-owner log line's tail now
+  says a successor closes it. Built by a plan-executor and reviewed by a
+  fresh QA pass (this answer ends the prior pass; it is not resumed).
