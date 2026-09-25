@@ -1,5 +1,5 @@
 name = "doperpowers:reviewer-low"
-description = "Independent code reviewer, low rung (sol/high): a small, low-stakes diff. Read-only."
+description = "Independent code reviewer, low rung (sol/xhigh): a small, low-stakes diff. Read-only."
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 developer_instructions = '''

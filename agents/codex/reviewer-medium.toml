@@ -1,5 +1,5 @@
 name = "doperpowers:reviewer-medium"
-description = "Independent code reviewer, medium rung (sol/xhigh): the default for a focused diff. Read-only."
+description = "Independent code reviewer, medium rung (astra/medium): the default for a focused diff. Read-only."
 model = "gpt-5.6-sol"
 model_reasoning_effort = "xhigh"
 developer_instructions = '''
