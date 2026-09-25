@@ -182,6 +182,10 @@ PLANS.md checksum (SHA-256) before the move: `86b545172b5830f1b454800b1ea2940266
   Rejected: keep "narrow and small" and only flip the tie-break — leaves the size ceiling in the bullet when the reader is what the artifact actually depends on. Leave as is — keeps the 9/12 wording and writes ExecPlan-shaped specs for hour-sized work.
   Addendum (the board's form of it, on integrating with the pre-spec build edge): what never applies on the board is the DOCUMENT-FREE form — the reader is always zero-context, so something durable must carry the work. It does not follow that a spec is always authored: a ticket body already self-contained enough for that executor to build from IS the durable execution document, and the Architect's pre-spec build edge runs it as the plan. A body that is not self-contained gets the spec that carries its own execution; taste-heavy, novel, or high-stakes work still takes the spec-plus-execution-plan route and its approval park, unchanged. Rejected: author a spec that restates a sufficient body — it pays the spec's cost for durability the body already has, and it would have reversed the 2026-09-13 pre-spec decision two days after it landed.
   Date/Author: 2026-09-14 (human partner)
+- Decision: plan-executor messages the session that dispatched it at the checkpoints it judges meaningful — `SendMessage` to `main`: what landed, what it absorbed, what comes next, confirm the execution is progressing as intended — and keeps building; the dispatcher reads the message against the plan and replies with a confirmation or a correction. Which moments are checkpoints is the executor's judgment, not a list.
+  Rationale: between the build edge and the return the dispatcher heard nothing unless the plan broke, so a build that drifted from the design's intent without breaking the plan surfaced only at the whole-branch review. A message keeps the executor building while the design owner reads.
+  Rejected: checkpoint returns (a `CHECKPOINT` status resumed by SendMessage) — every checkpoint would idle the executor until the dispatcher's next turn; enumerating the checkpoints (milestones, frontiers) — the plan's shape already names them and the executor reads it.
+  Date/Author: 2026-09-25 (human partner).
 
 ## Surprises & Discoveries
 
@@ -227,3 +231,5 @@ Lessons. (1) The spec review earned its default-on status on its first outing: i
 - 2026-09-13 (after Milestone 6): the review loop's reading of the spec's verification entry changed shape once more — with the loop on doperpowers:review-code's lane it is the review's level, not a reason to fan out codex runs (Acceptance 16's fan-out clause is superseded). Design: `2026-09-13-qa-loops-native-review-design.md`.
 
 - 2026-09-21: phase 2 of the Architect fold, recorded as open here, is designed and built — the review runs as a subagent of the seat that owns the ticket rather than as a second seat, so one seat holds a ticket from design through `done` and a review that finds a design flaw can ask the session that holds the design reasoning. Design: `2026-09-21-reviewer-fold-design.md`.
+
+- 2026-09-25: plan-executor messages its dispatcher at the checkpoints it judges meaningful and keeps building; the Architect protocol and writing-plans answer with a confirmation or a correction. See the Decision Log entry of that date.

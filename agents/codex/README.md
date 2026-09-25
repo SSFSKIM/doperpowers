@@ -21,7 +21,7 @@ judgment; the executors and the QA agent that runs the board's review loop use
 Sol at the project's execution tiers. Role files
 pin both model and effort, so changing the parent model does not change them.
 Claude's `plan-executor` and `qa-loop` are pinned to opus (2026-09-25); the
-Codex mirrors keep Sol, the nearest tier Codex can run.
+Codex mirrors keep Sol, since Codex has no Claude route.
 
 ## Install or update
 

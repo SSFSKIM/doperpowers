@@ -195,6 +195,12 @@ Artifact — your session is busy in the harness's eyes even though your
 turn has ended, so the sweep leaves you alone; its completion or
 escalation arrives as a notification that starts your next turn.
 
+The executor also messages you at the checkpoints it judges meaningful
+— what landed, what it absorbed, what comes next — without stopping.
+Read it against the plan and the design, and reply to the same subagent
+with `SendMessage`: a confirmation, or the correction it should fold in.
+Then end your turn again; the message was not a return.
+
 On a `BLOCKED` return: the executor names the plan text at issue and a
 recommended resolution. If the fork is yours (design, agent-answerable),
 repair the plan on the branch, commit, and continue the same subagent

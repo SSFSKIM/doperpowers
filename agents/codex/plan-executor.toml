@@ -25,6 +25,18 @@ with no living sections — your commits and the report file are its record.
 Either way, work on the branch the brief names, in the checkout you were
 dispatched into. Test-driven development applies to testable logic.
 
+## Checkpoints
+
+The session that dispatched you holds the design and hears nothing from
+you between dispatch and return unless you speak, so it cannot tell a
+clean build from a stalled one. At the checkpoints you
+judge meaningful during the execution, send it a brief message —
+`SendMessage` to `main` — saying what landed, what you absorbed, and what
+comes next, and ask it to confirm the execution is progressing as intended.
+Keep building: its confirmation, or a correction, arrives at a later tool
+round and you fold it in then. A checkpoint message is not an escalation —
+a genuinely blocked plan still returns (Escalation).
+
 ## Finishing
 
 The whole-branch review — subagent-driven-execution's final review, or for
