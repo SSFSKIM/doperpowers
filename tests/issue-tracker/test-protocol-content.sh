@@ -614,7 +614,7 @@ echo "plan-executor agent (the Architect's hands):"
 PLAN_EXECUTOR="$REPO_ROOT/agents/plan-executor.md"
 [ -f "$PLAN_EXECUTOR" ] || { echo "missing $PLAN_EXECUTOR"; exit 1; }
 pexec="$(cat "$PLAN_EXECUTOR")"
-assert_contains "$pexec" "model: sol" "the plan-executor is pinned to the worker tier"
+assert_contains "$pexec" "model: opus" "the plan-executor is pinned to opus"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
@@ -635,7 +635,7 @@ echo "task-executor agent (subagent-driven-execution's hands):"
 TASK_EXECUTOR="$REPO_ROOT/agents/task-executor.md"
 [ -f "$TASK_EXECUTOR" ] || { echo "missing $TASK_EXECUTOR"; exit 1; }
 texec="$(cat "$TASK_EXECUTOR")"
-assert_contains "$texec" "model: sol" "the task-executor rides the same worker tier as the plan-executor"
+assert_contains "$texec" "model: sol" "the task-executor stays on the worker tier"
 assert_contains "$texec" "effort: high" "...at high reasoning effort"
 
 # ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA

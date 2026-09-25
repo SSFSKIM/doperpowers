@@ -957,6 +957,17 @@ Empirical, resolved by acceptance 11 and recorded under Surprises:
   in this initiative, not a pre-existing one.
   Date/Author: 2026-09-23, from the Task 13 report.
 
+- Decision: plan-executor and the QA agent are re-pinned to opus at high
+  effort; task-executor, task-reviewer, the implement and spike lanes, and
+  the stand-in stay on sol.
+  Rationale: the human partner's routing policy ranks opus above sol for
+  reliable execution, and these two roles carry a whole plan or a whole
+  review loop in one context, where the worker tier's bounded reasoning
+  showed. Per-task workers keep the tier the task grain is calibrated to.
+  Reverses the 2026-09-21 "Execution defaults to sol" entry for these two
+  roles only. The Codex mirrors keep Sol, the nearest tier Codex can run.
+  Date/Author: 2026-09-25 (human partner).
+
 ## Surprises & Discoveries
 
 - Observation: A subagent has no Workflow tool but can dispatch a child with
@@ -1513,3 +1524,4 @@ own went to #75.
 - 2026-09-23: Task 12 ran on the deployed service after arkho PR 80 merged; outcome and the three environment failures recorded; two API-binding gaps (cancel pass, `Closes #<n>`) fixed in the closing wave.
 - 2026-09-24: first real ticket (#74) recorded in Surprises and Outcomes;
   the safeguard-dialog stall logged as debt row 27.
+- 2026-09-25: plan-executor and the QA agent re-pinned to opus/high; the rest of the execution tier stays on sol.

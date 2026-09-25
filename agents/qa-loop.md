@@ -1,7 +1,7 @@
 ---
 name: qa-loop
 description: The board's review loop for one pull request, dispatched by the seat that owns its ticket — runs the review engine, audits the work against its contract, drives fix waves, and merges.
-model: sol
+model: opus
 effort: high
 color: yellow
 disallowedTools: Skill

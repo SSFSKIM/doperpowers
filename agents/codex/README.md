@@ -20,6 +20,8 @@ The reviewer pins match Claude's GPT routes. The critic uses Astra for design
 judgment; the executors and the QA agent that runs the board's review loop use
 Sol at the project's execution tiers. Role files
 pin both model and effort, so changing the parent model does not change them.
+Claude's `plan-executor` and `qa-loop` are pinned to opus (2026-09-25); the
+Codex mirrors keep Sol, the nearest tier Codex can run.
 
 ## Install or update
 

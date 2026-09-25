@@ -58,7 +58,7 @@ assert_text_order() {
 echo "agent identity:"
 assert_file "$AGENT" "agents/qa-loop.md exists"
 assert_contains "$AGENT" "name: qa-loop" "frontmatter names the agent"
-assert_contains "$AGENT" "model: sol" "the agent is pinned to sol"
+assert_contains "$AGENT" "model: opus" "the agent is pinned to opus"
 assert_contains "$AGENT" "effort: high" "the agent is pinned to high effort"
 
 # `|| true`: grep finding nothing under `set -e` would abort the suite before
