@@ -44,13 +44,14 @@ export const meta = {
 // ---------------------------------------------------------------- Ladder
 // Effort is the only routing input; the session never chooses models. Sol at
 // xhigh is the rung the X1 baseline was scored on (17/17 seeded, FP 0 as the
-// codex engine's production default). The verifier never runs below its finders:
+// codex engine's production default); it was medium then and is low since
+// 2026-09-25, when medium moved to astra. The verifier never runs below its finders:
 // the panel's one recorded false positive came from a verifier at high under
 // finders at xhigh, and it is the only stage between a plausible candidate and a
 // published finding.
 const LADDER = {
-  low:    { shape: 'single', finder: { model: 'sol', effort: 'high' } },
-  medium: { shape: 'single', finder: { model: 'sol', effort: 'xhigh' } },
+  low:    { shape: 'single', finder: { model: 'sol', effort: 'xhigh' } },
+  medium: { shape: 'single', finder: { model: 'astra', effort: 'medium' } },
   high:   { shape: 'single', finder: { model: 'astra', effort: 'high' } },
   xhigh:  { shape: 'panel', maxLenses: 5,
             deriver: { model: 'sol', effort: 'high' },

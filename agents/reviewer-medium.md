@@ -1,8 +1,8 @@
 ---
 name: reviewer-medium
-description: Independent code reviewer, medium rung (sol/xhigh): the default for a focused diff. Read-only.
-model: sol
-effort: xhigh
+description: Independent code reviewer, medium rung (astra/medium): the default for a focused diff. Read-only.
+model: astra
+effort: medium
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
 ---

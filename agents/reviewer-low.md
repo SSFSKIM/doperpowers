@@ -1,8 +1,8 @@
 ---
 name: reviewer-low
-description: Independent code reviewer, low rung (sol/high): a small, low-stakes diff. Read-only.
+description: Independent code reviewer, low rung (sol/xhigh): a small, low-stakes diff. Read-only.
 model: sol
-effort: high
+effort: xhigh
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
 ---

@@ -28,14 +28,16 @@ Optional:
 
 | Level | Shape | Deriver | Finders | Verifier |
 |---|---|---|---|---|
-| low | single | – | sol / high | – |
-| medium | single | – | sol / xhigh | – |
+| low | single | – | sol / xhigh | – |
+| medium | single | – | astra / medium | – |
 | high | single | – | astra / high | – |
 | xhigh | panel | sol / high | sol / xhigh | sol / xhigh |
 | max | panel | sol / xhigh | astra / high | astra / high |
 
-Medium reproduced the codex baseline exactly on the X1 seeded set (17/17,
-FP 0; `tests/review-bench/results/2026-09-09-native-x1`). Known tendency of
+Sol at xhigh — medium when scored, the low rung since 2026-09-25 — reproduced
+the codex baseline exactly on the X1 seeded set (17/17, FP 0;
+`tests/review-bench/results/2026-09-09-native-x1`); astra at medium is unscored
+on the bench. Known tendency of
 xhigh: Sol finders raise intent-documented design choices and the Sol
 verifier confirms them (two such FPs on the seeded set; max raised none) —
 weigh an xhigh finding against the change's stated intent.
