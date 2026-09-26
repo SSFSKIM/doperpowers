@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-execution
-description: Use when running a spec whose Plan of Work has several milestones in the current session — a fresh executor per milestone, reviewed at dependency frontiers. Invoke this only after doperpowers:brainstorming produced that spec; never straight from a request.
+description: Use when running a spec whose Plan of Work has several milestones in the current session — a fresh executor per milestone, reviewed at dependency frontiers. Invoke this only after doperpowers:execspec produced that spec; never straight from a request.
 ---
 
 # Subagent-Driven Execution

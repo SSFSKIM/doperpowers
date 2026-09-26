@@ -1,6 +1,6 @@
 ---
 name: execspec
-description: Use after doperpowers:brainstorming closed a design and your human partner approved it, when the initiative is complex and sizable enough that reliable execution needs a spec — to write the living spec, review it, and execute it; also to revise a spec mid-flight. Invoke this only after brainstorming ran; never straight from a request.
+description: Use after doperpowers:brainstorming closed a design and your human partner approved it, when the initiative is complex and sizable enough that reliable execution needs a spec — to write the living spec, review it, and execute it; also to revise a spec that already exists. A new spec is written only after brainstorming ran, never straight from a request; revising an existing spec needs no brainstorm.
 ---
 
 # Execspec — the spec and its execution
