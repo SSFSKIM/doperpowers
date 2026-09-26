@@ -24,7 +24,7 @@ ledger and tool results carry the record.
 ## When to use
 
 A spec whose Plan of Work has several milestones (the shape in
-[../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)),
+[../execspec/references/living-spec.md](../execspec/references/living-spec.md)),
 executed in this session. One milestone, or no spec yet → work it directly
 or brainstorm first.
 
@@ -97,9 +97,12 @@ or brainstorm first.
    the final review triages that list, so it is read, not discarded. Fix
    through a worker, not your own edits: manual fixes pollute your
    context and skip review.
-6. Mark the task complete in todos and the ledger; route anything that
-   changed design understanding into the spec's record
-   ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md):
+6. Mark the task complete in todos and the ledger, and tick its milestone
+   in the spec's `Progress` with a timestamp and commit it — the ledger is
+   gitignored, so the committed spec's Progress is what a recovery reader
+   sees; route anything that changed design understanding into the spec's
+   record
+   ([../execspec/references/living-spec.md](../execspec/references/living-spec.md):
    an observation into `Surprises & Discoveries`, a change of course into
    the `Decision Log` with the design section revised to match; for a
    child of a composite spec, advisory content in place and a binding
@@ -118,9 +121,10 @@ or brainstorm first.
 
 `doperpowers:task-executor` is pinned to opus at high reasoning effort;
 the milestone grain is calibrated to that tier, and fixes resume the same
-executor. `doperpowers:task-reviewer` is pinned to sol at high effort, the
-low review rung's tier: the frontier review is a task-scoped gate, and the
-whole-branch review at the spec's named rung is the deep read. A simple
+executor. `doperpowers:task-reviewer` is pinned to sol at xhigh effort —
+the low review rung's model and effort: the frontier review is a
+task-scoped gate, and the whole-branch review at the spec's named rung is
+the deep read. A simple
 task — a doc update, a mechanical rename, a verification walk with every
 command given — can go to sonnet, the tier below opus, by passing
 `model: sonnet` at dispatch, which overrides the executor's pin. Never
@@ -244,4 +248,4 @@ expensive failure observed. The ledger file, not your todos, is the record:
 ## Integration
 
 - [isolated-workspace.md](isolated-workspace.md) — the workspace before the first task and its cleanup after the last
-- **doperpowers:brainstorming** — writes the spec this skill executes and, at its step 9, dispatches this loop through a `doperpowers:plan-executor` subagent
+- **doperpowers:execspec** — writes the spec this skill executes and, at its step 4, dispatches this loop through a `doperpowers:plan-executor` subagent

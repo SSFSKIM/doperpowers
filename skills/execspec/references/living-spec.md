@@ -1,13 +1,14 @@
 # Living Specs
 
-The design spec written at the end of doperpowers:brainstorming
-(`docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`) is not a snapshot of
-an approval — it is the one document an initiative has, for the whole life
-of its feature: the design with its reasoning, the acceptance, the
-execution, and the record of what happened. Discoveries made while building
-flow back into it, and the feature closes with a retrospective. Whoever
-drives the session maintains it: brainstorming writes it, execution routes
-discoveries into its record, finishing writes the retrospective.
+The design spec doperpowers:execspec writes
+(`docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`), from the design
+doperpowers:brainstorming closed and your human partner approved, is not a
+snapshot of an approval — it is the one document an initiative has, for the
+whole life of its feature: the design with its reasoning, the acceptance,
+the execution, and the record of what happened. Discoveries made while
+building flow back into it, and the feature closes with a retrospective.
+Whoever drives the session maintains it: execspec writes it, execution
+routes discoveries into its record, finishing writes the retrospective.
 
 The norms come from Codex's ExecPlan doctrine, PLANS.md. The sections that
 bind are quoted below char-for-char — follow the quoted text, not a
@@ -215,7 +216,10 @@ logged.
 A spec with one milestone is worked directly by its executor; several run
 through doperpowers:subagent-driven-execution — a fresh executor per
 milestone, a review at each dependency frontier — under a
-`doperpowers:plan-executor` subagent (doperpowers:brainstorming step 9).
+`doperpowers:plan-executor` subagent (doperpowers:execspec step 4). On that
+path the controller ticks each milestone in `Progress` as its review comes
+back clean and commits it: the SDE ledger is gitignored, so the committed
+spec's Progress is what a recovery reader sees.
 
 **A child of a composite spec** cannot extend the composite — siblings on
 parallel branches share it — so its execution section is a standalone file
@@ -246,13 +250,12 @@ repaired the document is one line and its commit. Incidental implementation
 noise belongs in commit messages, not here.
 
 **`## Decision Log`** — dated, the record of what moved after the design
-was written. It carries the verification call brainstorming makes when it
-routes the work (which independent reviews the work gets and the branch
-review rung — the one entry written at authoring, so the executor, the
-reviewer, and a recovering session read the same council), every change of
-course after approval, and a dated line for any revision that changed the
-document without changing a decision. A course change, in PLANS.md's
-skeleton format:
+was written. It carries the verification call execspec makes when it writes
+the spec (which independent reviews the work gets and the branch review
+rung — the one entry written at authoring, so the executor, the reviewer,
+and a recovering session read the same council), every change of course
+after approval, and a dated line for any revision that changed the document
+without changing a decision. A course change, in PLANS.md's skeleton format:
 
     - Decision: …
       Rationale: …
@@ -276,14 +279,15 @@ precision); novice-grade self-containment (the bar above); the Idempotence
 and Recovery section (worktree isolation + git); Artifacts and Notes and
 "capture evidence" inside the fence (the record's evidence snippets); "do
 not prompt the user for next steps" at authoring time (the human gates —
-design approval and spec review in doperpowers:brainstorming — come first;
-the rule binds only during execution, as above); "Record all decisions in
-the `Decision Log` section" and the separate bottom-note rule for
-revisions (reasoning lives in the design; the log is the dated record of
-change — measured on the reviewer-fold spec, a 340-line log restating a
-630-line design, 2026-09-26). These rejections carry rationale — read the
-Decision Logs in `docs/doperpowers/specs/2026-07-03-living-specs-design.md`
-and `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`
+design approval in doperpowers:brainstorming and spec review in
+doperpowers:execspec — come first; the rule binds only during execution, as
+above); "Record all decisions in the `Decision Log` section" and the
+separate bottom-note rule for revisions (reasoning lives in the design; the
+log is the dated record of change — measured on the reviewer-fold spec, a
+340-line log restating a 630-line design, 2026-09-26). These rejections
+carry rationale — read the Decision Logs in
+`docs/doperpowers/specs/2026-07-03-living-specs-design.md` and
+`docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`
 before re-proposing one.
 
 ## Front of the spec

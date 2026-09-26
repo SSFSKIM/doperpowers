@@ -643,6 +643,19 @@ texec="$(cat "$TASK_EXECUTOR")"
 assert_contains "$texec" "model: opus" "the task-executor is pinned to opus, the tier the milestone grain is calibrated to"
 assert_contains "$texec" "effort: high" "...at high reasoning effort"
 
+echo "task-reviewer agent (subagent-driven-execution's frontier gate):"
+TASK_REVIEWER="$REPO_ROOT/agents/task-reviewer.md"
+[ -f "$TASK_REVIEWER" ] || { echo "missing $TASK_REVIEWER"; exit 1; }
+trev="$(cat "$TASK_REVIEWER")"
+assert_contains "$trev" "model: sol" "the task-reviewer stays on sol"
+assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the low review rung's model and effort"
+
+# The spec is written, reviewed, and executed through the execspec skill;
+# brainstorming closes the design and routes. The Architect names both, and
+# no live protocol points at a step number inside brainstorming's prose.
+assert_contains "$arch" "doperpowers:execspec" "architect: the spec is written through execspec"
+assert_not_contains "$arch" "brainstorming's step" "architect: no step-number reference into brainstorming"
+
 # ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
 # agent (agents/qa-loop.md) and, on a PR nobody owns, by the review stand-in
 # seat the review dispatcher spawns. The fold left no review lane, no

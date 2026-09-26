@@ -1,7 +1,7 @@
 {
   "name": "doperpowers",
   "version": "7.124.0",
-  "description": "One software-development methodology for coding agents, sized by the work: brainstorm, design, spec, TDD, review, ship — run in order from the spec itself when one agent can own it, or through an execution plan with a fresh subagent per task when it takes more, and the same method unattended on the board loop.",
+  "description": "One software-development methodology for coding agents, sized by the work: brainstorm, design, spec, TDD, review, ship — one spec that carries its plan of work as milestones: one milestone runs in order from the spec, several run a fresh subagent per milestone reviewed at each dependency frontier, and the same method runs unattended on the board loop.",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com",
@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "Doperpowers",
     "shortDescription": "Planning, TDD, debugging, and delivery workflows for coding agents",
-    "longDescription": "Use Doperpowers to guide agent work through brainstorming, execution planning, test-driven development, systematic debugging, parallel execution, code review, and finish-the-branch workflows.",
+    "longDescription": "Use Doperpowers to guide agent work through brainstorming, a living spec that carries its plan of work as milestones, test-driven development, systematic debugging, parallel execution, code review, and finish-the-branch workflows.",
     "developerName": "SSFSKIM",
     "category": "Coding",
     "capabilities": [

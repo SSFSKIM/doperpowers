@@ -48,7 +48,7 @@ approved design carried whole; the children below are derived from it.
 Grade the content: mark **[binding — <joint-view reason>]** on
 decisions the whole picture settled — children never re-litigate
 these. Everything unmarked is advisory inheritance a child may
-overturn with evidence via a dated Revision Note. Empirical unknowns
+overturn with evidence via a dated Decision Log entry on this spec. Empirical unknowns
 the design could not answer are named here as delegated unknowns and
 assigned to the child or spike that will answer them.]
 

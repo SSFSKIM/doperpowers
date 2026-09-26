@@ -21,7 +21,7 @@ Because every skill declares when it applies, you don't invoke any of this by ha
 Every change enforces the same non-negotiables — design before code, tests before implementation, evidence before "done." What varies is the shape, and the shape follows the size.
 
 **One unit** — work one agent can reliably own.
-The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a design you approve — written up as a living spec that carries its own plan of work and progress when someone beyond the session will read it — then builds it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
+The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a design you approve; when the work is complex and sizable enough that reliable execution needs a spec, it writes the design up as a living spec that carries its own plan of work and progress (`execspec`), then builds it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
 
 **Several units, or taste mid-flight** — work that needs more than one agent-ownable milestone, or your judgment while it is built.
 The same grill and the same spec: its plan of work is told as milestones an executor can own from the document and the code — files, interfaces, the decisions already settled, proof; no line numbers, no steps — and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
@@ -65,10 +65,11 @@ inside Codex; Claude's registered agents and companion remain available.
 
 ## The skills
 
-Sixteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
+- `execspec` — after the approved design: write the living spec, review it, and run it — one milestone in order, several through a fresh subagent each
 - `architecture-mapping` — author and maintain ARCHITECTURE.md, the repo's spine map with citable invariants
 - `decomposing` — carve a large goal into a tree of well-scoped tickets
 - `organizing-sprints` — turn a pile of raw observations into the next sprint
@@ -101,9 +102,10 @@ Sixteen skills, grouped by what they're for. Each one auto-triggers from its des
 
 ## How a change flows
 
-1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read, routes the work by who will read the document, and writes the spec: the design with its reasoning, acceptance as observable behavior, and a plan of work told as milestones — files, interfaces, the decisions already settled, proof; code only where the code is a decision. One milestone the agent runs from there; several go to a fresh subagent each.
-2. **subagent-driven-execution** — Sets up an isolated checkout, dispatches a fresh subagent per milestone, reviews at dependency frontiers, and fixes by resuming the executor. After the final review it writes the spec's retrospective and integrates the branch.
-3. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
+1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read, and routes: a well-scoped task is built right there; an initiative complex and sizable enough that reliable execution needs a spec goes to execspec.
+2. **execspec** — Writes the spec from the approved design: the design with its reasoning, acceptance as observable behavior, and a plan of work told as milestones — files, interfaces, the decisions already settled, proof; code only where the code is a decision. Reviews it, then runs it: one milestone in order from the spec; several go to a fresh subagent each.
+3. **subagent-driven-execution** — Sets up an isolated checkout, dispatches a fresh subagent per milestone, reviews at dependency frontiers, and fixes by resuming the executor. After the final review it writes the spec's retrospective and integrates the branch.
+4. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
 
 These are mandatory workflows, not suggestions. The agent checks for a relevant skill before any task.
 

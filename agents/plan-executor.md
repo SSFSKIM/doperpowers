@@ -19,10 +19,14 @@ whole-branch review.
 Open the file first. A Plan of Work with more than one milestone: invoke
 doperpowers:subagent-driven-execution and follow it — you are its
 controller — fresh executor per milestone, review at each dependency
-frontier, fixes resumed on the executor, the ledger. One milestone: work it
-yourself, in order, without asking for next steps; resolve ambiguities from
-the spec itself; keep its `Progress`, `Surprises & Discoveries`, and
-`Decision Log` sections current at every stopping point; commit frequently.
+frontier, fixes resumed on the executor, the ledger. The ledger under
+`.doperpowers/sde/` is gitignored, so as each milestone's review comes back
+clean, tick its entry in the spec's `Progress` with a timestamp and commit
+it — the committed spec is what a recovery reader sees.
+One milestone: work it yourself, in order, without asking for next steps;
+resolve ambiguities from the spec itself; keep its `Progress`,
+`Surprises & Discoveries`, and `Decision Log` sections current at every
+stopping point; commit frequently.
 A ticket body is the same case with no living sections — your commits and
 the report file are its record.
 

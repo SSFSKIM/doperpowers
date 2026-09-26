@@ -72,8 +72,8 @@ VERDICT IS YOUR FIRST BOARD WRITE. Dispatch wrote nothing.
 
 ## Design
 
-Your behavior protocol is doperpowers:brainstorming plus
-doperpowers:decomposing, applied per-ticket in worker clothes — grill,
+Your behavior protocol is doperpowers:brainstorming, doperpowers:execspec,
+and doperpowers:decomposing, applied per-ticket in worker clothes — grill,
 decide, author, end. There is no synchronous human gate; the council and
 parks carry the quality machinery.
 
@@ -87,15 +87,15 @@ parks carry the quality machinery.
   PUSHED on the ticket branch, branch recorded via --branch. A parked
   session that dies unresumably must not take the pipeline's most
   expensive in-flight asset with it.
-- **Route the plan** — by doperpowers:brainstorming's step 4 criteria,
-  read against the board's reader: nothing here is document-free, since
+- **Route the plan** — by doperpowers:brainstorming's route note, read
+  against the board's reader: nothing here is document-free, since
   your executor is always zero-context. What varies is which document
   carries the work. A ticket body already self-contained enough for that
   executor to build from IS that document — the down-shortcircuit below
   runs it as the plan. Anything else gets the spec that carries its
   execution — Progress, the constraints, the Plan of Work as milestones,
-  Concrete Steps, per brainstorming's references/living-spec.md. Its
-  Plan of Work sets how it runs: one milestone, your executor works it
+  Concrete Steps, written through doperpowers:execspec in the shape of
+  its references/living-spec.md. Its Plan of Work sets how it runs: one milestone, your executor works it
   in order; several, your executor runs
   doperpowers:subagent-driven-execution over them.
 - **Name the verification** — it follows from the stakes, not the size.
@@ -116,8 +116,9 @@ parks carry the quality machinery.
   approval, never before it, so the human reads a design and not a
   plan-sized artifact — park ONE needs-human question in the batch format
   — approve the design at <spec path>@<sha>, with your recommended answer
-  — and write the execution section when board-answer resumes you, then
-  its review when it has several milestones. Writing the milestones
+  — and continue into doperpowers:execspec at its execution section when
+  board-answer resumes you, then its review when it has several
+  milestones. Writing the milestones
   revises the design where it proves wrong; a revision that changes a
   product, taste, or substantive design decision the approval covered
   goes back to the human as a second park naming the delta, a technical
@@ -394,8 +395,8 @@ human by itself.
 If a subagent was in flight when you parked — a plan-executor, or the QA
 agent whose `PARKED` return ended your turn — the answers go to it next:
 continue it with SendMessage carrying the answers verbatim. A design
-approval resumes you into writing the spec's execution section, its
-review, and the build edge; a revision request re-enters the design at
+approval resumes you into doperpowers:execspec at its execution section,
+its review, and the build edge; a revision request re-enters the design at
 the point it names.
 
 ## Authority

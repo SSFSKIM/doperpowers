@@ -2,7 +2,7 @@
 name: task-reviewer
 description: Per-task reviewer for doperpowers:subagent-driven-execution only. Read-only.
 model: sol
-effort: high
+effort: xhigh
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
 ---

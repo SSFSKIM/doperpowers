@@ -15,7 +15,7 @@ before handing it here; this skill DIVIDES a goal that fails the gate
 below into child goals one level down, and tends the tree as children
 land; the leaves are executed by their routes. The product of one run is a **composite spec** per
 `references/composite-spec-template.md` — the same species as any
-living spec ([../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md)), not a separate document type:
+living spec ([../execspec/references/living-spec.md](../execspec/references/living-spec.md)), not a separate document type:
 design at the center, with the roadmap topology (children, edges,
 ordering) embedded as sections. Composite carries its
 Composite-pattern sense — a composite's child can itself be a
@@ -68,7 +68,7 @@ answers keep depending on other unanswered forks. **Keep together:**
 splitting would create an invalid intermediate state; parts must land in
 the same transaction or cutover; neither part is meaningful or verifiable
 alone. Below the slice the same signals govern splitting inside one spec —
-the milestone sizing in doperpowers:brainstorming's
+the milestone sizing in doperpowers:execspec's
 references/living-spec.md is this list applied there.
 
 ## The Tree
@@ -109,7 +109,7 @@ the depth it was produced, as advisory inheritance (see the Derivation
 Contract): expected to be revised by the time the branch nears dispatch,
 and cheap to revise precisely because it was written down. A composite
 spec is BINDING near the frontier and advisory in the distance;
-staleness in advisory content costs a Revision Note, while an
+staleness in advisory content costs a Decision Log entry, while an
 uncaptured insight is unrecoverable.
 
 ## Recomposition
@@ -147,7 +147,7 @@ body as the child received it) into the child
 so "what contract did this child execute" is always answerable. A child
 revises its own means freely — and overturning advisory inheritance is
 revising means: the child records the overturn itself as a dated
-Revision Note on the parent (evidence in a line) and moves on, no
+Decision Log entry on the parent (evidence in a line) and moves on, no
 reconciliation. Discovery that touches a parent-owned end — purpose,
 acceptance, a cross-child contract, an edge, a BINDING design decision,
 the division itself — becomes a `[parent-impact]` comment on the child's
@@ -195,7 +195,7 @@ share no design surface, so there was nothing to mature jointly; phases
    piece's purpose and acceptance grilled here.
 4. **Author the composite spec** — per `references/composite-spec-template.md`,
    born landed: v1 already carries the design and the grill's decisions,
-   with the record of [../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md). For matured intake,
+   with the record of [../execspec/references/living-spec.md](../execspec/references/living-spec.md). For matured intake,
    extend the approved design spec in place rather than opening a
    second document.
 5. **Self-review, then the human gate** — scan for placeholders and
@@ -253,7 +253,7 @@ Each child section of the composite spec fixes:
 - **Grain hint** — brief (the section plus a dispatch brief is the
   whole contract; the board's DIRECT mode), plan (a standalone execution
   document at milestone grain — the spec's execution section on its own,
-  per doperpowers:brainstorming's references/living-spec.md; the board's
+  per doperpowers:execspec's references/living-spec.md; the board's
   PLAN-EXECUTION), spike (deliverable is findings, never a merge), or
   another decomposing run at dispatch. Every child's executor is a fresh
   context — a subagent, a daemon, a board worker — so the hint names the
@@ -273,8 +273,8 @@ grades:
   local to one child: approach sketches, sequencing suggestions,
   anticipated pitfalls. The child inherits it as pre-landed grill
   input — it starts there instead of from a blank page — and may
-  overturn it with evidence; the overturn lands as a dated Revision
-  Note on the parent, written by the child, not a reconciliation event.
+  overturn it with evidence; the overturn lands as a dated Decision
+  Log entry on the parent, written by the child, not a reconciliation event.
 
 Advisory is the default grade; content is binding because the composite
 spec marks it so, with the joint-view reason attached. Capture is not
@@ -296,8 +296,8 @@ composite spec instead. The child's artifacts — its brief or plan, its
 ledger, its PR or ticket — open by citing this composite spec (path +
 child id + parent pin); that citation is what keeps the flow-back channel
 alive when there is no board. Children read the parent document's
-*current* state at dispatch, never a frozen snapshot; when a Revision
-Note lands that touches an in-flight child's contract, flag that child.
+*current* state at dispatch, never a frozen snapshot; when a Decision
+Log entry lands that touches an in-flight child's contract, flag that child.
 When a child's work contradicts the parent, the discovery flows back into
 the parent's Decision Log — never silent
 divergence. This is the living-spec discipline one level up.
