@@ -92,36 +92,38 @@ parks carry the quality machinery.
   your executor is always zero-context. What varies is which document
   carries the work. A ticket body already self-contained enough for that
   executor to build from IS that document — the down-shortcircuit below
-  runs it as the plan. One unit whose body is not (big-but-atomic
-  included) gets the spec that carries its own execution — Progress,
-  Plan of Work, Concrete Steps, per brainstorming's
-  references/living-spec.md — and that executor runs it sequentially.
-  Large, novel, taste-heavy, or high-stakes: the spec plus an execution
-  plan through doperpowers:writing-plans.
+  runs it as the plan. Anything else gets the spec that carries its
+  execution — Progress, the constraints, the Plan of Work as milestones,
+  Concrete Steps, per brainstorming's references/living-spec.md. Its
+  Plan of Work sets how it runs: one milestone, your executor works it
+  in order; several, your executor runs
+  doperpowers:subagent-driven-execution over them.
 - **Name the verification** — it follows from the stakes, not the size.
   One independent spec review by default; when the design is novel or
   the cost of being wrong is high, dispatch doperpowers:critique on the
-  matured design and debate to convergence; an execution plan gets the
-  independent review doperpowers:writing-plans prescribes — the
-  `doperpowers:adversarial-reviewer` agent, focused on whether the plan
-  is complete, spec-aligned, well-decomposed, and
-  buildable by an engineer with zero context. Evaluate findings rather
+  matured design and debate to convergence; an execution section of more
+  than one milestone gets the `doperpowers:adversarial-reviewer` agent's
+  review, focused on whether the milestones are complete, aligned with
+  the design, well-decomposed, and buildable by an engineer with zero
+  context beyond the document and the code. Evaluate findings rather
   than accepting them wholesale. Record the call in the spec's Decision
   Log, and run the reviews before the build edge: your executor has no
   context to absorb their findings.
-- **The human's approval, on the spec-plus-execution-plan route** — the
-  board form of brainstorming's gate. That route is chosen for work whose
-  design is large, novel, taste-heavy, or high-stakes, which a live
-  session would not build unapproved; neither do you. After the spec and
-  its reviews, park ONE needs-human question in the batch format —
-  approve the design at <spec path>@<sha>, with your recommended answer —
-  and continue into doperpowers:writing-plans when board-answer resumes
-  you. Planning revises the spec where it proves wrong; a revision that
-  changes a product, taste, or substantive design decision the approval
-  covered goes back to the human as a second park naming the delta, a
-  technical correction within the approved intent is logged and proceeds
-  — the exceptions rule a live session applies with the human present.
-  The other route's criteria exclude taste; it builds without asking.
+- **The human's approval, for large, novel, taste-heavy, or high-stakes
+  work** — the board form of brainstorming's gate. Such a design a live
+  session would not build unapproved; neither do you. After the spec's
+  design and its reviews — the execution section is written after the
+  approval, never before it, so the human reads a design and not a
+  plan-sized artifact — park ONE needs-human question in the batch format
+  — approve the design at <spec path>@<sha>, with your recommended answer
+  — and write the execution section when board-answer resumes you, then
+  its review when it has several milestones. Writing the milestones
+  revises the design where it proves wrong; a revision that changes a
+  product, taste, or substantive design decision the approval covered
+  goes back to the human as a second park naming the delta, a technical
+  correction within the approved intent is logged and proceeds — the
+  exceptions rule a live session applies with the human present. Work
+  outside those criteria builds without asking.
 - **Down-shortcircuit** — the pre-spec is self-contained enough for a
   zero-context executor to build from, so it IS the plan and you build
   it here from the ticket body. Save
@@ -180,13 +182,12 @@ ledger or the spec's `Progress` section, and `sminos attach` shows the
 live session.
 
 Then dispatch ONE `doperpowers:plan-executor` subagent. The brief carries:
-the file to execute — the spec when it carries its own execution, the
-execution plan and its spec, or the saved ticket body for a direct ticket;
-the ticket number and URL; the branch; a report file path under that
-file's directory; and that the review loop owns the whole-branch review,
-so the executor stops at its last frontier review or milestone and opens
-the PR without one. A spec carrying its own execution (or a ticket body)
-runs sequentially; an execution plan makes it the SDE controller, which
+the file to execute — the spec, or the saved ticket body for a direct
+ticket; the ticket number and URL; the branch; a report file path under
+that file's directory; and that the review loop owns the whole-branch
+review, so the executor stops at its last frontier review or milestone and
+opens the PR without one. A Plan of Work of one milestone (or a ticket
+body) runs sequentially; several make it the SDE controller, which
 dispatches its own task executors and reviewers — depth-2 fan-out is
 available and verified.
 
@@ -393,8 +394,9 @@ human by itself.
 If a subagent was in flight when you parked — a plan-executor, or the QA
 agent whose `PARKED` return ended your turn — the answers go to it next:
 continue it with SendMessage carrying the answers verbatim. A design
-approval resumes you into doperpowers:writing-plans; a revision request
-re-enters the design at the point it names.
+approval resumes you into writing the spec's execution section, its
+review, and the build edge; a revision request re-enters the design at
+the point it names.
 
 ## Authority
 

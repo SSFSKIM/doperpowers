@@ -129,6 +129,56 @@ PLAN
         echo "    got: $brief_path"
     fi
 
+    # --- task-brief reads a spec's milestone headings ---
+    cat > "$repo/spec.md" <<'SPEC'
+# Spec
+
+## Plan of Work
+
+### M1 — First thing
+
+Build the first thing.
+
+### M2 — Second thing
+
+Build the second thing.
+
+```
+### M1 — a heading inside a fence is not a milestone
+```
+
+## Concrete Steps
+
+Run the tests.
+SPEC
+    local m2
+    m2="$(cd "$repo" && "$SDD_SCRIPTS/task-brief" spec.md 2 "$TEST_ROOT/m2.md" >/dev/null && cat "$TEST_ROOT/m2.md")"
+    if [[ "$m2" == "### M2 — Second thing"* && "$m2" == *"Build the second thing."* \
+        && "$m2" != *"Build the first thing."* ]]; then
+        pass "task-brief extracts only M2 from a spec's milestones"
+    else
+        fail "task-brief extracts only M2 from a spec's milestones"
+        echo "    got: $m2"
+    fi
+    # The last milestone's brief ends at the next same-level-or-above heading
+    # (here `## Concrete Steps`), and a fenced pseudo-heading inside it is kept.
+    if [[ "$m2" == *"a heading inside a fence is not a milestone"* \
+        && "$m2" != *"Concrete Steps"* && "$m2" != *"Run the tests."* ]]; then
+        pass "task-brief stops the last milestone at the section after the Plan of Work"
+    else
+        fail "task-brief stops the last milestone at the section after the Plan of Work"
+        echo "    got: $m2"
+    fi
+
+    rc=0
+    (cd "$repo" && "$SDD_SCRIPTS/task-brief" spec.md 3 "$TEST_ROOT/m3.md" >/dev/null 2>&1) || rc=$?
+    if [[ "$rc" -eq 3 ]]; then
+        pass "task-brief exits 3 for a milestone the spec lacks"
+    else
+        fail "task-brief exits 3 for a milestone the spec lacks"
+        echo "    exit: $rc"
+    fi
+
     # --- review-package takes the plan first and lands in its directory ---
     local git_id=(-c user.email=t@example.com -c user.name=t -c commit.gpgsign=false)
     ( cd "$repo" \

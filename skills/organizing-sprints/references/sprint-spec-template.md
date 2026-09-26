@@ -14,10 +14,10 @@ A blockquote declaring:
 
 - **Living document** — which sections stay current during the sprint
   (Progress, Decision Log, Surprises, Retrospective) and that every
-  revision lands in Revision Notes with a reason. This is the selective
-  transplant of living-spec discipline (brainstorming's references/living-spec.md) to
-  umbrella scale: acceptance as observable behavior, living tail — but NO
-  Concrete Steps. A delegated epic's Architect derives its plan from this
+  post-v1 revision lands in the Decision Log, dated, with a reason. This
+  is the selective transplant of living-spec discipline (brainstorming's
+  references/living-spec.md) to umbrella scale: acceptance as observable
+  behavior, the record — but NO Concrete Steps. A delegated epic's Architect derives its plan from this
   document.
 - **Evidence sources** — the observation note (origin, date), the grill
   session (date, question range), the code explorations run.
@@ -115,7 +115,8 @@ close, for roll-over.
 
 The global grill record: every decision, its rationale, its rejected
 alternatives and why each lost — auto-landed decisions included. Decisions
-made mid-sprint are appended here, not scattered.
+made mid-sprint and every post-v1 revision are appended here, dated, not
+scattered.
 
 ## §11 Open questions
 
@@ -159,7 +160,3 @@ ticket at materialization time.
 
 "Pending — written at finish." until the sprint closes; then what was
 achieved against §1, gaps, lessons.
-
-## Revision notes
-
-Every post-v1 edit: date, what changed, why.

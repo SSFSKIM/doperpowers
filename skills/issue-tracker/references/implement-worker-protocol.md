@@ -150,11 +150,11 @@ frequently, open the PR.
 - PLAN-EXECUTION: open the plan at its pinned revision and execute it to
   the letter, evidence discipline unchanged. The plan on the branch is a
   LIVING document: when the codebase reveals divergence, absorb it —
-  record what changed and why in the plan's Surprises/Revision Notes on
+  record what changed and why in the plan's Surprises and Decision Log on
   your branch, adapt, and drive to the end. Only a GENUINELY blocked
   plan (not merely divergent) returns to its author — see Mid-build
-  below. You author no plan document, ever: writing-plans,
-  subagent-driven-execution, and spec authoring are other scopes'
+  below. You author no plan document, ever: spec authoring and
+  subagent-driven-execution are other scopes'
   skills — plan AUTHORSHIP belongs to the architect lane (its protocol,
   `architect-worker-protocol.md`, sits beside this file); when work needs
   a plan, escalate, never self-author.

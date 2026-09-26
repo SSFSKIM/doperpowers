@@ -26,8 +26,8 @@ here; what it adds are execution artifacts — its brief or plan, and the
 ledger that records its run — a spike's findings, or its own composite
 spec when it is a composite in turn. The composite spec carries the
 matured design where one exists; children with purpose, observable acceptance, and dependency
-edges; the contracts that cross them; and a living tail that tracks the
-unit to its retrospective.
+edges; the contracts that cross them; and a record — Surprises, Decision
+Log, Outcomes — that tracks the unit to its retrospective.
 
 This is the deliberate sibling of doperpowers:organizing-sprints. That
 skill turns raw *testimony* (an ideadump that may misread the code) into a
@@ -49,7 +49,7 @@ the board's ticket gate (doperpowers:issue-tracker
   needs real work.
 - **WELL-SCOPED** — one agent can reliably own it as one unit. "One
   agent" means one accountable context: an owner may marshal subagent
-  workers (an execution plan's task workers, a sequential executor's milestones) without
+  workers (the milestone workers of doperpowers:subagent-driven-execution) without
   that being decomposition — execution mechanics live below the tree's
   resolution. Fails ⇒ divide into work-children.
 
@@ -67,9 +67,9 @@ only phrase by chaining unrelated behaviors with "and"; grill forks whose
 answers keep depending on other unanswered forks. **Keep together:**
 splitting would create an invalid intermediate state; parts must land in
 the same transaction or cutover; neither part is meaningful or verifiable
-alone. Below the slice the same signals govern splitting inside one plan —
-doperpowers:writing-plans' Conditional Sub-Slicing is this list applied
-there.
+alone. Below the slice the same signals govern splitting inside one spec —
+the milestone sizing in doperpowers:brainstorming's
+references/living-spec.md is this list applied there.
 
 ## The Tree
 
@@ -154,7 +154,7 @@ the division itself — becomes a `[parent-impact]` comment on the child's
 own ticket (evidence + affected clauses; binding content the child
 never edits). The sweep returns the parent to `ready-for-architect`
 (`reconciliation-due`); the reconciling Architect judges materiality,
-updates the parent's living tail, and flags affected in-flight
+updates the parent's record, and flags affected in-flight
 children. Purpose changes and material acceptance reductions go to the
 human. At final recomposition the Architect runs the lineage check:
 every child's pin against the final parent revision — incorporated,
@@ -195,7 +195,7 @@ share no design surface, so there was nothing to mature jointly; phases
    piece's purpose and acceptance grilled here.
 4. **Author the composite spec** — per `references/composite-spec-template.md`,
    born landed: v1 already carries the design and the grill's decisions,
-   with the living tail of [../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md). For matured intake,
+   with the record of [../brainstorming/references/living-spec.md](../brainstorming/references/living-spec.md). For matured intake,
    extend the approved design spec in place rather than opening a
    second document.
 5. **Self-review, then the human gate** — scan for placeholders and
@@ -221,10 +221,11 @@ share no design surface, so there was nothing to mature jointly; phases
    hint, each carrying its section as pre-landed design and writing no
    spec of its own: a brief child implements against its section and a
    dispatch brief, a plan child grills only its residue
-   (doperpowers:brainstorming) and goes to doperpowers:writing-plans, a
+   (doperpowers:brainstorming) and writes its standalone execution
+   document (living-spec.md, "A child of a composite spec"), a
    spike writes findings, and a composite child runs this skill at its
    own dispatch. Every child keeps a LEDGER: a plan child's record is its
-   committed plan and the doperpowers:subagent-driven-execution ledger; a
+   committed execution document and the doperpowers:subagent-driven-execution ledger; a
    brief child opens `docs/doperpowers/ledgers/YYYY-MM-DD-<child-id>.md`
    on its branch at dispatch — it cites this document (path + child id +
    parent pin), carries the brief verbatim, and then Progress as
@@ -250,8 +251,9 @@ Each child section of the composite spec fixes:
 - **Design inheritance** — the parent design content that bears on this
   child, each piece carrying its authority grade;
 - **Grain hint** — brief (the section plus a dispatch brief is the
-  whole contract; the board's DIRECT mode), plan (a
-  doperpowers:writing-plans plan at task grain; the board's
+  whole contract; the board's DIRECT mode), plan (a standalone execution
+  document at milestone grain — the spec's execution section on its own,
+  per doperpowers:brainstorming's references/living-spec.md; the board's
   PLAN-EXECUTION), spike (deliverable is findings, never a merge), or
   another decomposing run at dispatch. Every child's executor is a fresh
   context — a subagent, a daemon, a board worker — so the hint names the
@@ -297,7 +299,7 @@ alive when there is no board. Children read the parent document's
 *current* state at dispatch, never a frozen snapshot; when a Revision
 Note lands that touches an in-flight child's contract, flag that child.
 When a child's work contradicts the parent, the discovery flows back into
-the parent's Revision Notes — never silent
+the parent's Decision Log — never silent
 divergence. This is the living-spec discipline one level up.
 
 ## Common Mistakes
@@ -316,5 +318,5 @@ divergence. This is the living-spec discipline one level up.
 | Closing a parent by bookkeeping | Recomposition is verification against the parent's own acceptance, not a status flip. |
 | Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
-| Child quietly diverging from the parent | Contradictions flow back into the parent's Revision Notes; flagged, not silent. |
+| Child quietly diverging from the parent | Contradictions flow back into the parent's Decision Log; flagged, not silent. |
 | Writing a spec for a leaf child | Its section is its spec — not a spec of its own, and not one carrying its own execution either: the composite is shared by parallel siblings, so the child's record is its brief or plan and its ledger. A leaf whose residue trips the split signals is a composite in disguise — cut it. |

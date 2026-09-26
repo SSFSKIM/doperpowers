@@ -5,6 +5,8 @@ description: Use when a spec needs an execution plan — tasks an executor can o
 
 # Writing Plans
 
+> Retired 2026-09-26 (v7.124.0). The separate execution plan is gone: every spec carries its execution section, told as milestones at design resolution — files without line ranges, interfaces, decisions, the scope's edge, proof; code only where the code is a decision — and doperpowers:subagent-driven-execution reads milestones straight from the spec (`skills/subagent-driven-execution/scripts/task-brief` matches `M<N>` headings as well as `Task <N>`). What survived of this skill — milestone sizing, what a milestone carries, spike milestones, the last milestone that runs acceptance, no placeholders, the buildability review by `doperpowers:adversarial-reviewer` — lives in `skills/brainstorming/references/living-spec.md` and brainstorming's steps 6–9. The per-task executor moved from sol to opus in the same change; the location-level detail below was calibrated to the smaller tier. Kept for reference; not loaded by any harness. Record: the Decision Log of `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`, entry of 2026-09-26.
+
 ## Overview
 
 Write execution plans for an executor who is a skilled engineer, has never seen this codebase, and cannot see the design conversation that produced the spec. The plan carries what that engineer cannot derive from the code alone: which files each task touches, the interfaces between tasks, the behavior each task must exhibit and the tests that prove it, and every decision the design already settled. The executor writes the code and runs its own test-first cycle. DRY. YAGNI. TDD. Frequent commits.

@@ -35,9 +35,9 @@ Classify every fork the implementation will hit:
 ## Check 2 — WELL-SCOPED
 
 The work must fit the ticket as one purpose-unit: roughly ONE plan — a
-spec that carries its own execution, or a spec plus an execution plan
-when the work is several units (the architect lane's output; on a
-plan-less DIRECT ticket the pre-spec itself is the plan) —
+spec that carries its execution, whatever its milestone count (the
+architect lane's output; on a plan-less DIRECT ticket the pre-spec itself
+is the plan) —
 big-but-ATOMIC work that cannot land halfway still counts as
 ONE unit (plan-execution is what lands it whole). Decompose only work whose
 children could land on main independently. Too big? One question decides:

@@ -119,21 +119,21 @@ section. Keep it current as children land; a landed child's row carries
 its closing evidence and points at the ledger whose outcome section is
 the child's retrospective.]
 
-## Decision Log
-
-[Every landed decision with its rejected alternatives and why each lost.]
-
 ## Surprises & Discoveries
 
 [Evidence-backed surprises from grounding and from children's flow-back.]
+
+## Decision Log
+
+[Dated. The verification call, every decision made after v1 with its
+rationale and the alternative rejected then — children's residue rulings
+under their child id included — and a dated line for any revision that
+changed no decision. v1's reasoning lives inline in the sections above,
+each decision naming the alternative it beat. An entry that touches an
+in-flight child's contract flags that child.]
 
 ## Outcomes & Retrospective
 
 Pending — written when the unit closes. Closing is a RECOMPOSITION check:
 verify Parent-Level Acceptance as written — all children landed is not the
 same event — then retrospect.
-
-## Revision Notes
-
-[Dated changes to this document after v1. A note that touches an
-in-flight child's contract flags that child.]

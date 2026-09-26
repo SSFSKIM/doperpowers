@@ -12,8 +12,9 @@ requirements, then whether it is well-built. This is a task-scoped gate,
 not a merge review — a broad whole-branch review happens separately after
 all tasks are complete.
 
-The dispatching brief names the task brief file (what was requested), the
-global constraints from the spec or plan that bind this task, the
+The dispatching brief names the task brief file (what was requested — one
+milestone of the spec's Plan of Work), the constraints from the spec that
+bind every milestone, the
 executor's report file (what they claim they built), and the diff under
 review: its base and head commits and the diff file the controller wrote.
 For a deferred review it also names where the shared checkout sits and
@@ -68,7 +69,7 @@ findings — test output should be pristine.
 
 ## Part 1: Spec Compliance
 
-Compare the diff against the task brief and the global constraints:
+Compare the diff against the task brief and the constraints:
 
 - **Missing:** requirements they skipped, missed, or claimed without
   implementing
@@ -96,7 +97,7 @@ broadening your search.
 **Structure:**
 - Does each file have one clear responsibility with a well-defined interface?
 - Are units decomposed so they can be understood and tested independently?
-- Is the implementation following the file structure from the plan?
+- Is the implementation following the file structure from the spec?
 - Did this change create new files that are already large, or
   significantly grow existing files? (Don't flag pre-existing file
   sizes — focus on what this change contributed.)
@@ -119,10 +120,10 @@ or fragile behavior, a missed requirement, or maintainability damage you
 would block a merge over — verbatim duplication of a logic block,
 swallowed errors, tests that assert nothing. "Coverage could be broader"
 and polish suggestions are Minor.
-If the plan or brief explicitly mandates something this rubric calls a
+If the spec or brief explicitly mandates something this rubric calls a
 defect (a test that asserts nothing, verbatim duplication of a logic
 block), that IS a finding — report it as Important, labeled
-plan-mandated. The plan's authorship does not grade its own work; the
+spec-mandated. The document's authorship does not grade its own work; the
 human decides.
 Acknowledge what was done well before listing issues — accurate praise
 helps the executor trust the rest of the feedback.

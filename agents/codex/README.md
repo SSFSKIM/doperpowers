@@ -57,8 +57,8 @@ Replace any Codex instruction that requires the companion runtime with native
 dispatch: `agent_type = "doperpowers:reviewer-low"`, `reviewer-medium`, or
 `reviewer-high`, using the full `doperpowers:` prefix for each. Specs and plans
 use `doperpowers:adversarial-reviewer`; design debates use `doperpowers:critique`.
-Execution plans and individual tasks use `plan-executor` and `task-executor`,
-and the controller sends task reviews to `task-reviewer`.
+A spec's Plan of Work and its individual milestones use `plan-executor` and
+`task-executor`, and the controller sends task reviews to `task-reviewer`.
 
 When a shared skill says `Agent`, use Codex's native spawn operation with the
 declared role and a fresh context. `SendMessage` means the native message or

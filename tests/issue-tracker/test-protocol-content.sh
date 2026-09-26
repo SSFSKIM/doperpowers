@@ -193,7 +193,7 @@ assert_contains "$proto" "architect-worker-protocol.md" "execution: routes plan 
 assert_not_contains "$proto" ".agents/skills" "execution: no vendored-doctrine pointer (plugin skills resolve natively on the Claude harness)"
 assert_not_contains "$proto" "work ALONE" "execution: no blanket work-alone constraint (subagents are the worker's call)"
 assert_not_contains "$proto" "YOURSELF" "execution: no solo-execution emphasis (delegation inside the thread is the worker's call)"
-assert_contains "$proto" "writing-plans" "execution: names writing-plans as interactive-only"
+assert_contains "$proto" "plan AUTHORSHIP belongs to the architect lane" "execution: plan authorship is the architect lane's, never the executor's"
 assert_contains "$proto" "subagent-driven-execution" "execution: names the forbidden interactive skills"
 assert_contains "$proto" "claim completion on reasoning alone" "execution: no-evidence-no-done clause"
 assert_contains "$proto" "AGENT-answerable" "gate: plan-need names agent-answerable design gaps (the E1 escalation criterion)"
@@ -292,15 +292,16 @@ assert_contains "$arch" "hand off instead" "a refused build edge hands off the s
 # One spec, sized by the gate: the Architect routes the plan by brainstorming's
 # step 4 criteria and names the verification separately, from stakes — the
 # old "track judgment" tied review depth to the artifact shape.
-assert_contains "$arch" "Route the plan" "architect: routes the plan by brainstorming's criteria (the spec carries its execution, or spec + execution plan)"
+assert_contains "$arch" "Route the plan" "architect: routes the plan by brainstorming's criteria (a self-contained ticket body, or the spec carrying its execution)"
 assert_contains "$arch" "Name the verification" "architect: verification is its own call, made from stakes"
 assert_not_contains "$arch" "Track judgment" "architect: no track judgment (council no longer scales with artifact shape)"
-assert_contains "$arch" "carries its own execution" "architect: the build brief names the spec that carries its own execution"
+assert_contains "$arch" "the file to execute — the spec, or the saved ticket body" "architect: the build brief names the spec (which carries its execution) or the ticket body"
+assert_not_contains "$arch" "writing-plans" "architect: no retired writing-plans route (the spec carries its execution)"
 # Board seams (peer review of the fold): the review loop owns the whole-branch
 # review on the board, so the executor is told to stop before it; a small
 # ticket builds here from its body over the pre-spec build edge; the plan
 # route gets the human's design approval, the board form of brainstorming's gate.
-assert_contains "$arch" "review loop owns the whole-branch review" "architect: the brief hands the whole-branch review to the review loop (no double review)"
+assert_contains "$arch" "review loop owns the whole-branch" "architect: the brief hands the whole-branch review to the review loop (no double review)"
 assert_contains "$arch" 'in-progress "direct: pre-spec suffices as the plan"' "architect: a pre-spec ticket takes the build edge and is built here"
 # The reader-drawn boundary (PR #144) and the pre-spec build edge (PR #141) meet
 # here: interactive direct can be document-free, board DIRECT cannot — it runs
@@ -471,14 +472,14 @@ done
 # Recomposition protocol (Architect).
 # The council's plan-review step named doperpowers:plan-reviewer, an agent
 # deleted when plan review moved to the codex adversarial-review route — a
-# live instruction pointing at nothing. It now names the same mechanism
-# writing-plans prescribes, so the two cannot drift apart again.
+# live instruction pointing at nothing. It now names the real mechanism
+# for a multi-milestone execution section, held to the living spec's bar.
 assert_not_contains "$arch" "plan-reviewer" \
     "the council never dispatches the deleted plan-reviewer agent"
 assert_contains "$arch" "\`doperpowers:adversarial-reviewer\` agent" \
-    "the plan gets the independent review writing-plans prescribes, by its real mechanism"
+    "a multi-milestone execution section gets the adversarial-reviewer agent, by its real mechanism"
 assert_contains "$arch" "buildable by an engineer with" \
-    "...focused on the same bar (same voice as writing-plans, not a bespoke variant)"
+    "...focused on the zero-context buildability bar"
 assert_contains "$arch" "recomposition" "architect protocol carries the recomposition claim"
 assert_contains "$arch" "lineage" "recomposition includes the contract-lineage check"
 # T1: the check is only performable if the pin names a revision of the thing
@@ -622,7 +623,7 @@ assert_contains "$pexec" "progressing as intended" "...asking it to confirm the 
 assert_contains "$pexec" "Keep building" "...without stopping for the answer"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
-assert_contains "$pexec" "carries its own execution" "...and its non-SDE mode is a spec that carries its own execution, worked in order"
+assert_contains "$pexec" "One milestone: work it" "...and its non-SDE mode is a one-milestone Plan of Work, worked in order"
 assert_contains "$pexec" "QA agent" "...and the whole-branch review is the brief's to assign (on the board, the owning seat's QA agent)"
 assert_contains "$pexec" "Outcomes & Retrospective" "...and it writes the spec's retrospective before the PR"
 assert_not_contains "$pexec" "final review is clean" "...closing no longer presumes a final review the sequential mode never defined"
@@ -639,7 +640,7 @@ echo "task-executor agent (subagent-driven-execution's hands):"
 TASK_EXECUTOR="$REPO_ROOT/agents/task-executor.md"
 [ -f "$TASK_EXECUTOR" ] || { echo "missing $TASK_EXECUTOR"; exit 1; }
 texec="$(cat "$TASK_EXECUTOR")"
-assert_contains "$texec" "model: sol" "the task-executor stays on the worker tier"
+assert_contains "$texec" "model: opus" "the task-executor is pinned to opus, the tier the milestone grain is calibrated to"
 assert_contains "$texec" "effort: high" "...at high reasoning effort"
 
 # ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
