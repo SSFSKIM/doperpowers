@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
-# Resolve and ensure the working-tree directory SDE uses for one plan's
-# short-lived artifacts: task briefs, executor reports, review packages,
-# and the progress ledger. Print the plan directory's absolute path.
+# Resolve and ensure the working-tree directory SDE uses for one spec's
+# short-lived artifacts: executor reports, review packages, and the
+# progress ledger. Print the spec directory's absolute path.
 #
-# One directory per plan (.doperpowers/sde/<plan-basename>/) so a follow-up
-# plan in the same working tree can never read or overwrite another plan's
+# One directory per spec (.doperpowers/sde/<spec-basename>/) so a follow-up
+# spec in the same working tree can never read or overwrite another spec's
 # artifacts. A stale ledger misread as current progress makes controllers
-# skip whole task sequences — plan-scoping removes that failure structurally.
+# skip whole task sequences — spec-scoping removes that failure structurally.
 #
 # The workspace lives in the working tree (not under .git/) because Claude Code
 # treats .git/ as a protected path and denies agent writes there — which blocks
 # an executor subagent from writing its report file. A self-ignoring
-# .gitignore at .doperpowers/sde/ keeps every plan's workspace out of
+# .gitignore at .doperpowers/sde/ keeps every spec's workspace out of
 # `git status` and out of accidental commits without modifying any tracked file.
 #
-# Single source of truth for the workspace location, so task-brief and
+# Single source of truth for the workspace location, so callers such as
 # review-package cannot drift to different directories.
 #
-# Usage: sde-workspace PLAN_FILE
+# Usage: sde-workspace SPEC_FILE
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
-  echo "usage: sde-workspace PLAN_FILE" >&2
+  echo "usage: sde-workspace SPEC_FILE" >&2
   exit 2
 fi
 
 plan=$1
-[ -f "$plan" ] || { echo "no such plan file: $plan" >&2; exit 2; }
+[ -f "$plan" ] || { echo "no such file: $plan" >&2; exit 2; }
 
 slug=$(basename "$plan" .md)
 [ -n "$slug" ] && [ "$slug" != "." ] && [ "$slug" != ".." ] \

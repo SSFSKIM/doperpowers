@@ -11,15 +11,24 @@ dependency frontier, and a broad whole-branch review at the end. Each
 milestone of the spec is one task of this loop — the ledger and the scripts
 count tasks.
 
-**Why subagents:** each worker gets exactly the context its task needs — no
-session history, no other tasks' noise — and your own context stays free for
-coordination. Quality comes from the loop: fresh executor, independent
+**Why subagents:** each worker starts from the spec and the code, with no
+session history and no other tasks' noise, and your own context stays free
+for coordination. Quality comes from the loop: fresh executor, independent
 review, fixes re-reviewed.
 
 **Working posture:** execute all tasks without pausing to check in — stop
-only for a BLOCKED you cannot resolve, ambiguity that genuinely prevents
-progress, or completion. Between tool calls, narrate at most a line; the
-ledger and tool results carry the record.
+only for a BLOCKED you cannot resolve, a fork under brainstorming's gate
+that the spec does not cover, or completion. Between tool calls, narrate at
+most a line; the ledger and tool results carry the record.
+
+**The spec is the only requirements document.** Every executor and
+reviewer reads it whole; each milestone entry says where that task's
+boundaries are and points into the design for the rest. The spec cannot
+foresee every gap and is not expected to: executors resolve gaps in the
+spirit of its intent and report what they decided
+([../execspec/references/living-spec.md](../execspec/references/living-spec.md),
+"While the spec is being executed"). You are the spec's one writer while
+the loop runs.
 
 ## When to use
 
@@ -30,32 +39,41 @@ or brainstorm first.
 
 ## The loop
 
-1. Read the spec once: its design is the authority when a finding or ⚠️
-   item needs adjudicating. Note the constraints that open its execution
+1. Read the spec once. Note the constraints that open its execution
    section, create todos, make sure you are on an isolated checkout
    ([isolated-workspace.md](isolated-workspace.md)), resolve the artifact
    workspace (`scripts/sde-workspace SPEC_FILE`) and check for an existing
    ledger (Durable Progress below) before dispatching anything.
-2. **Pre-flight:** scan the milestones for ones that contradict each other,
-   the constraints, the design, or the review rubric (e.g. a mandated test
-   that asserts nothing). Present findings as one batched question — each
-   beside the spec text that mandates it — to whoever dispatched you (the
-   spec's author session, or your human partner when you are running the
-   loop yourself) before execution; a clean scan proceeds without comment.
-3. **Per task, in Plan of Work order:** extract the brief
-   (`scripts/task-brief SPEC_FILE N` — milestone N's text), record BASE
-   (the current commit), dispatch the executor (`doperpowers:task-executor`,
-   briefed per Dispatch hygiene below) and write the task's `executed`
-   ledger line with its agent handle (Durable Progress below) — fixes
-   resume it. Answer its questions before it proceeds. One executor at a
-   time — parallel executors conflict in a shared worktree.
-4. **Review at the frontier:** a task is reviewed clean — findings fixed
+2. **Pre-flight:** check the milestones' order against what each consumes,
+   and look for anything in the spec two milestones would read two ways or
+   that the review rubric would call a defect (e.g. a mandated test that
+   asserts nothing). Resolve what the spec's intent settles, record it in
+   the Decision Log, and commit; only a fork under the gate goes to whoever
+   dispatched you (the spec's author session, or your human partner when
+   you are running the loop yourself). A clean check proceeds without
+   comment.
+3. **Per task, in Plan of Work order:** record BASE (the current commit),
+   dispatch the executor (`doperpowers:task-executor`, briefed per Dispatch
+   hygiene below) and write the task's `executed` ledger line with its
+   agent handle (Durable Progress below) — fixes resume it. Answer its
+   questions before it proceeds. One executor at a time — parallel
+   executors conflict in a shared worktree.
+4. **Fold the report back.** When an executor returns, read the decisions
+   and discoveries in its report. Fold the ones a later reader needs into
+   the spec — a decision into the Decision Log, a discovery into
+   Surprises & Discoveries, the milestone's tick into Progress with a
+   timestamp — and commit, so the next executor reads them in the spec
+   rather than in your dispatch; the ledger is gitignored, so the
+   committed spec is what a recovery reader sees. A decision that works
+   against the spec's intent or crosses the gate is not folded: it goes
+   back to the executor, or up to whoever dispatched you.
+5. **Review at the frontier:** a task is reviewed clean — findings fixed
    and re-reviewed — before any task that consumes what it produced
-   dispatches; the briefs' Interfaces name the producers, and the spec's
-   last milestone consumes the whole branch. Tasks nothing downstream
-   consumes yet may keep executing and are reviewed together when the
-   frontier closes (the next task consumes from them, or the Plan of Work
-   ends): one review package per task (`scripts/review-package
+   dispatches; the milestones' Interfaces name the producers, and the
+   spec's last milestone consumes the whole branch. Tasks nothing
+   downstream consumes yet may keep executing and are reviewed together
+   when the frontier closes (the next task consumes from them, or the Plan
+   of Work ends): one review package per task (`scripts/review-package
    SPEC_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
    per task (`doperpowers:task-reviewer`) with the printed path,
    dispatched together when their focused tests cannot
@@ -63,11 +81,10 @@ or brainstorm first.
    run concurrently; suites that share mutable state — a test database, a
    fixed port — run one reviewer at a time.
    Where no interface is declared but two tasks touch the same files,
-   judge from their Files: an overlap that looks load-bearing is reviewed
-   before the later task dispatches. The frontier is the ceiling on
-   deferral, not the floor: a DONE_WITH_CONCERNS, a doubt of your own, or
-   a first task whose brief style the executor may have misread are
-   reasons to review that task now.
+   judge from what each milestone says it touches: an overlap that looks
+   load-bearing is reviewed before the later task dispatches. The frontier
+   is the ceiling on deferral, not the floor: a DONE_WITH_CONCERNS or a
+   doubt of your own is a reason to review that task now.
    A deferred review reads a tree that has moved past its package —
    Task 1's package is BASE1..HEAD1 while the checkout sits at the
    wave's last HEAD. Name the current HEAD and what landed since the
@@ -77,7 +94,7 @@ or brainstorm first.
    detached worktree at the packaged HEAD (`git worktree add --detach
    <workspace>/review-N <HEAD_N>`, removed after the review) rather
    than in the shared checkout.
-5. **Findings:** Critical/Important findings go back to the executor that
+6. **Findings:** Critical/Important findings go back to the executor that
    wrote the code — resume it with the findings; it holds the task's
    context and skips the orientation a fresh fixer pays. Several tasks
    with findings in one wave resume one at a time (shared worktree).
@@ -97,18 +114,12 @@ or brainstorm first.
    the final review triages that list, so it is read, not discarded. Fix
    through a worker, not your own edits: manual fixes pollute your
    context and skip review.
-6. Mark the task complete in todos and the ledger, and tick its milestone
-   in the spec's `Progress` with a timestamp and commit it — the ledger is
-   gitignored, so the committed spec's Progress is what a recovery reader
-   sees; route anything that changed design understanding into the spec's
-   record
-   ([../execspec/references/living-spec.md](../execspec/references/living-spec.md):
-   an observation into `Surprises & Discoveries`, a change of course into
-   the `Decision Log` with the design section revised to match; for a
-   child of a composite spec, advisory content in place and a binding
-   contradiction as `[parent-impact]` per doperpowers:decomposing).
-   Implementation noise stays in commit messages.
-7. **After all tasks:** dispatch the final whole-branch review through
+7. Mark the task complete in todos and the ledger (its Progress tick
+   landed at step 4). For a child of a composite spec, advisory content
+   goes in place and a binding contradiction up as `[parent-impact]` per
+   doperpowers:decomposing rather than into the composite. Implementation
+   noise stays in commit messages.
+8. **After all tasks:** dispatch the final whole-branch review through
    doperpowers:review-code against `<base>` at the rung the spec's
    verification entry names (its Decision Log), or the level the branch
    warrants when none is recorded — a rung agent, or the panel for a
@@ -124,15 +135,14 @@ the milestone grain is calibrated to that tier, and fixes resume the same
 executor. `doperpowers:task-reviewer` is pinned to sol at xhigh effort —
 the low review rung's model and effort: the frontier review is a
 task-scoped gate, and the whole-branch review at the spec's named rung is
-the deep read. A simple
-task — a doc update, a mechanical rename, a verification walk with every
-command given — can go to sonnet, the tier below opus, by passing
-`model: sonnet` at dispatch, which overrides the executor's pin. Never
-dispatch workers on fable or astra: the top tier adds cost without adding
-reliability — the spec and the brief absorb the difficulty, not the model.
-When a worker reports BLOCKED on reasoning capacity rather than missing
-context, a sonnet task moves to opus; from opus there is no tier above —
-the difficulty moves into the brief: resolve the hard call yourself and
+the deep read. A simple task — a doc update, a mechanical rename, a
+verification walk with every command given — can go to sonnet, the tier
+below opus, by passing `model: sonnet` at dispatch, which overrides the
+executor's pin. Never dispatch workers on fable or astra: the top tier
+adds cost without adding reliability — the spec absorbs the difficulty,
+not the model. When a worker reports BLOCKED on reasoning capacity rather
+than missing context, a sonnet task moves to opus; from opus there is no
+tier above — resolve the hard call yourself in the spec's Decision Log and
 re-dispatch, or split the milestone.
 
 The final whole-branch review is the deliberate exception: it goes through
@@ -143,24 +153,25 @@ entire branch.
 
 ## Executor statuses
 
-- **DONE** → review at the frontier (step 4): package and reviewer now
-  when something downstream consumes the task or an early-review reason
-  applies, otherwise it waits for the wave.
+- **DONE** → fold its report back (step 4), then review at the frontier
+  (step 5): package and reviewer now when something downstream consumes
+  the task or an early-review reason applies, otherwise it waits for the
+  wave.
 - **DONE_WITH_CONCERNS** → read the concerns first: correctness or scope
   concerns get addressed before review; observations ride along to it.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
   reasoning capacity (sonnet → opus; from opus, resolve the hard call in
-  the brief), task too large (split it), spec wrong (return to the
-  session that dispatched you, or to the human when that is you).
+  the spec), task too large (split it), a fork under the gate (return to
+  the session that dispatched you, or to the human when that is you).
   Something must change — a bare retry answers an escalation with
   nothing.
 
 **Reviewer ⚠️ items** — requirements the reviewer could not verify from the
 diff (unchanged code, cross-task) come back marked ⚠️. Resolve each one
-yourself before marking the task complete; you hold the spec and cross-task
-context the reviewer lacks. A confirmed gap is a failed spec review: back
-to the executor, then re-review.
+yourself before marking the task complete; you hold the cross-task context
+the reviewer lacks. A confirmed gap is a failed spec review: back to the
+executor, then re-review.
 
 ## Dispatch hygiene
 
@@ -169,26 +180,23 @@ back — stays resident in your context for the rest of the session. Hand
 artifacts over as files (a real session's dispatch hit 42k chars, 99% of it
 pasted prior-task history):
 
-- The worker contracts — TDD, self-review, escalation statuses, the
-  report shape, the reviewer's rubric and read-only posture — live in the
-  agent definitions, not in your dispatch. A dispatch carries only what
-  is particular to this task.
-- The brief file is the single source of requirements; exact values
-  (numbers, magic strings, signatures, test cases) live only there. An
-  executor dispatch carries: the task number and name; one line on where
-  the task fits; the brief path ("read this first — it is your
-  requirements"); the directory to work from; interfaces and decisions
-  from earlier tasks the brief cannot know; your resolution of any
-  ambiguity you noticed in the brief; the report-file path.
-- The report file is named after the brief (`task-N-brief.md` →
-  `task-N-report.md`); the executor writes detail there and returns only
-  status, commits, a one-line test summary, and concerns.
-- A reviewer dispatch carries three paths — brief, report, review package
-  — the task's BASE and HEAD, the constraints that open the spec's
-  execution section copied verbatim (exact values, formats, stated
-  relationships — not process rules, which the agent already holds) and,
-  for a deferred review, a checkout line: where the shared checkout sits,
-  the sibling commits and files that landed since HEAD, and the detached
+- The worker contracts — TDD, deciding gaps and reporting decisions,
+  self-review, escalation statuses, the report shape, the reviewer's
+  rubric and read-only posture — live in the agent definitions, not in
+  your dispatch. A dispatch carries only what is particular to this task.
+- The spec is the single source of requirements; exact values live only
+  there, and anything decided since goes into the spec (step 4), not into
+  a dispatch. An executor dispatch carries: the spec path and the
+  milestone ("read the whole spec; you own M3 of its Plan of Work"); the
+  directory to work from; the report-file path; and your answer to
+  anything the executor asked.
+- The report file is `task-N-report.md` in the workspace; the executor
+  writes detail there and returns only status, commits, a one-line test
+  summary, decisions made, and concerns.
+- A reviewer dispatch carries the spec path and milestone, the report
+  path, the review package path, the task's BASE and HEAD and, for a
+  deferred review, a checkout line: where the shared checkout sits, the
+  sibling commits and files that landed since HEAD, and the detached
   worktree at HEAD if one was made. Omit the checkout line when the
   checkout is at HEAD.
 - `review-package` BASE is the commit you recorded before dispatching the
@@ -199,10 +207,10 @@ pasted prior-task history):
 - Let the reviewer judge: don't pre-rate severity or list things not to
   flag ("don't treat X as a defect", "at most Minor") — that impulse is
   usually you sparing yourself a review loop. Adjudicate findings when they
-  come back. A finding that conflicts with the spec's own text is the
-  spec author's decision: return it with the finding and the spec text and
-  ask which governs — the author session repairs the spec or escalates to
-  your human partner.
+  come back, against the spec's intent. A finding that exposes a spec
+  statement as wrong is fixed in the spec (the design section revised, a
+  dated Decision Log entry) and in the code; only a fork under the gate
+  goes up.
 - Fix messages — to a resumed executor or a fresh fixer — carry the
   executor contract: re-run the covering tests (name them — a one-line
   fix doesn't need the whole suite), report the command and output;
@@ -218,14 +226,16 @@ pasted prior-task history):
 
 Conversation memory does not survive compaction. Controllers that lost
 their place have re-dispatched entire completed task sequences — the most
-expensive failure observed. The ledger file, not your todos, is the record:
+expensive failure observed. The spec's Progress is the human-readable
+state; the ledger file holds the mechanics a resume needs (bases, heads,
+agent handles), which do not belong in the spec:
 
 - The workspace (`scripts/sde-workspace SPEC_FILE` →
   `<repo-root>/.doperpowers/sde/<spec-basename>/`) holds every artifact for
-  THIS spec: ledger, briefs, reports, review packages. Another spec's
-  directory is never yours to read or write.
+  THIS spec: ledger, reports, review packages. Another spec's directory is
+  never yours to read or write.
 - The ledger lives at `<workspace>/progress.md`, first line
-  `# SDE ledger — plan: <path of the file you execute>`. If that line
+  `# SDE ledger — spec: <path of the file you execute>`. If that line
   names your spec, tasks with a `Task <N>: complete` line are done; a task
   with an `executed` line but no `complete` line is awaiting review or
   fixes — resume its review (or its handles), never re-execute it; resume

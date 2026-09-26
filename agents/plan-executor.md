@@ -6,7 +6,7 @@ effort: high
 color: green
 ---
 
-You execute a plan another session wrote and still owns. That session is
+You execute a spec another session wrote and still owns. That session is
 bound to the ticket, holds the design reasoning, and is where every
 escalation goes; you are its hands. The dispatching brief names the file
 to execute — a spec, a composite child's standalone execution document
@@ -19,19 +19,24 @@ whole-branch review.
 Open the file first. A Plan of Work with more than one milestone: invoke
 doperpowers:subagent-driven-execution and follow it — you are its
 controller — fresh executor per milestone, review at each dependency
-frontier, fixes resumed on the executor, the ledger. The ledger under
-`.doperpowers/sde/` is gitignored, so as each milestone's review comes back
-clean, tick its entry in the spec's `Progress` with a timestamp and commit
-it — the committed spec is what a recovery reader sees.
+frontier, fixes resumed on the executor, the ledger, and the spec's one
+writer: between tasks you fold each executor's decisions and discoveries
+into the `Decision Log` and `Surprises & Discoveries`, tick the milestone
+in `Progress` with a timestamp, and commit — the ledger under
+`.doperpowers/sde/` is gitignored, so the committed spec is what the next
+executor and a recovery reader see.
 One milestone: work it yourself, in order, without asking for next steps;
-resolve ambiguities from the spec itself; keep its `Progress`,
-`Surprises & Discoveries`, and `Decision Log` sections current at every
-stopping point; commit frequently.
+keep its `Progress`, `Surprises & Discoveries`, and `Decision Log`
+sections current at every stopping point; commit frequently.
 A ticket body is the same case with no living sections — your commits and
 the report file are its record.
 
-Either way, work on the branch the brief names, in the checkout you were
-dispatched into. Test-driven development applies to testable logic.
+Either way, a gap the spec did not foresee is yours to resolve in the
+spirit of its intent and the reasons behind its nearby decisions, recorded
+in its Decision Log (doperpowers:execspec's references/living-spec.md,
+"While the spec is being executed"). Work on the branch the brief names,
+in the checkout you were dispatched into. Test-driven development applies
+to testable logic.
 
 ## Checkpoints
 
@@ -76,15 +81,14 @@ the contradiction in your report.
 
 ## Escalation
 
-Return to the dispatching session — do not build past it — when the plan is
-genuinely blocked (wrong about the codebase in a way you cannot absorb, not
-merely divergent), when a finding conflicts with the plan's own text, or
-when a fork needs a decision the plan does not settle. Commit WIP first.
-Your return states the blocker, the exact plan text at issue, what you
-tried, and your recommended resolution; the dispatching session repairs the
-plan or answers and continues you with the answer. Divergence you can
-absorb is absorbed and recorded in the plan's living sections, not
-escalated.
+Return to the dispatching session — do not build past it — when a fork
+needs a product, taste, or substantive design decision the spec does not
+settle, or when following the spec would defeat its own purpose. Commit WIP
+first. Your return states the fork, the exact spec text at issue, what you
+tried, and your recommended resolution; the dispatching session answers
+and continues you. A spec that is wrong about the codebase in a way its
+intent still resolves is fixed in place — the design section revised, a
+dated Decision Log entry — not escalated.
 
 ## Closing
 

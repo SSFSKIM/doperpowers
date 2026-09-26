@@ -26,12 +26,12 @@ echo ""
 # case-insensitive: that is assert_contains's deliberate choice (test-helpers.sh).
 #
 # The same anchor decides which option a two-option answer picked: unanchored,
-# "task text pasted into the prompt, not a brief file path" passed as "brief".
-# One leading word is tolerated so "a brief"/"the brief"/"brief" all count,
+# "task text pasted into the prompt, not the spec path" passed as "spec".
+# One leading word is tolerated so "a spec"/"the spec"/"spec" all count,
 # which is far short of reaching the losing option's own mention of it.
 PAT_SELF_REVIEW_REPLACES_NO='Self-review replaces external review:[^a-zA-Z<]*no'
-PAT_REQUIREMENTS_AS_BRIEF='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *brief'
-PAT_EXECUTOR_READS_PLAN_NO='Executor must read the plan file:[^a-zA-Z<]*no'
+PAT_REQUIREMENTS_AS_SPEC='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *spec'
+PAT_EXECUTOR_READS_SPEC_YES='Executor must read the whole spec:[^a-zA-Z<]*yes'
 
 # These patterns are the test, so pin their verdicts on the near-miss phrasings
 # before spending live model time. Fields: want|pattern variable|answer line.
@@ -56,20 +56,19 @@ nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: yes, n
 nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: <yes or no>
 match|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: no
 match|PAT_SELF_REVIEW_REPLACES_NO|**Self-review replaces external review:** No
-match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path
-match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: brief file path
-match|PAT_REQUIREMENTS_AS_BRIEF|**Requirements reach the executor as:** a brief file path - the brief holds the full text of the task
-match|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: a brief file path (not the task text pasted into the prompt)
-nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: task text pasted into the prompt
-nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: task text pasted into the prompt, not a brief file path
-nomatch|PAT_REQUIREMENTS_AS_BRIEF|Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
-nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes, but not directly
-nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes (it cannot be skipped)
-nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes - it has no brief
-nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: yes
-nomatch|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: <yes or no>
-match|PAT_EXECUTOR_READS_PLAN_NO|Executor must read the plan file: no
-match|PAT_EXECUTOR_READS_PLAN_NO|**Executor must read the plan file:** No
+match|PAT_REQUIREMENTS_AS_SPEC|Requirements reach the executor as: the spec path
+match|PAT_REQUIREMENTS_AS_SPEC|Requirements reach the executor as: spec path
+match|PAT_REQUIREMENTS_AS_SPEC|**Requirements reach the executor as:** the spec path - it reads the whole spec and owns one milestone
+match|PAT_REQUIREMENTS_AS_SPEC|Requirements reach the executor as: the spec path (not the task text pasted into the prompt)
+nomatch|PAT_REQUIREMENTS_AS_SPEC|Requirements reach the executor as: task text pasted into the prompt
+nomatch|PAT_REQUIREMENTS_AS_SPEC|Requirements reach the executor as: task text pasted into the prompt, not the spec path
+nomatch|PAT_REQUIREMENTS_AS_SPEC|Requirements reach the executor as: <the spec path or task text pasted into the prompt>
+nomatch|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: no, only its milestone
+nomatch|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: no (it gets a brief)
+nomatch|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: no
+nomatch|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: <yes or no>
+match|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: yes
+match|PAT_EXECUTOR_READS_SPEC_YES|**Executor must read the whole spec:** Yes, and owns one milestone of it
 FIXTURES
 
 echo "  [PASS] Answer-line patterns read the chosen option, not stray letters"
@@ -86,7 +85,7 @@ else
     exit 1
 fi
 
-if assert_contains "$output" "Load Plan\|read.*plan\|extract.*tasks" "Mentions loading plan"; then
+if assert_contains "$output" "read.*spec\|Read the spec\|Plan of Work\|milestone" "Mentions reading the spec"; then
     : # pass
 else
     exit 1
@@ -187,24 +186,24 @@ fi
 
 echo ""
 
-# Test 7: Verify requirements are handed over as a brief file
+# Test 7: Verify requirements are handed over as the spec, read whole
 # Both assertions anchor to their answer line: grep is line-based, so the
 # label and the chosen option must appear together. An unanchored
-# alternation here matched incidental prose ("the brief holds the full text
-# of the task") and passed without reading the answer at all.
+# alternation here matched incidental prose and passed without reading the
+# answer at all.
 echo "Test 7: Task context provision..."
 
-output=$(run_claude "In subagent-driven-execution, the controller dispatches a task-executor subagent to do one task of the plan. Answer using exactly this structure, choosing one option per line:
-Requirements reach the executor as: <a brief file path or task text pasted into the prompt>
-Executor must read the plan file: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
+output=$(run_claude "In subagent-driven-execution, the controller dispatches a task-executor subagent to do one milestone of the spec's Plan of Work. Answer using exactly this structure, choosing one option per line:
+Requirements reach the executor as: <the spec path or task text pasted into the prompt>
+Executor must read the whole spec: <yes or no>" "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "$PAT_REQUIREMENTS_AS_BRIEF" "Requirements handed over as a brief file"; then
+if assert_contains "$output" "$PAT_REQUIREMENTS_AS_SPEC" "Requirements handed over as the spec path"; then
     : # pass
 else
     exit 1
 fi
 
-if assert_contains "$output" "$PAT_EXECUTOR_READS_PLAN_NO" "Executor is not sent to the plan file"; then
+if assert_contains "$output" "$PAT_EXECUTOR_READS_SPEC_YES" "Executor reads the whole spec"; then
     : # pass
 else
     exit 1

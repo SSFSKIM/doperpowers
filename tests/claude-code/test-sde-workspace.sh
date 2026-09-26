@@ -118,68 +118,7 @@ PLAN
         echo "    staged: $staged"
     fi
 
-    # --- task-brief lands in its plan's directory ---
-    local brief_out brief_path
-    brief_out="$(cd "$repo" && "$SDD_SCRIPTS/task-brief" plan-a.md 1)"
-    brief_path="$(printf '%s\n' "$brief_out" | sed -n 's/^wrote \(.*\): [0-9][0-9]* lines$/\1/p')"
-    if [[ "$brief_path" == "$repo/.doperpowers/sde/plan-a/task-1-brief.md" ]]; then
-        pass "task-brief writes its brief under the plan's workspace"
-    else
-        fail "task-brief writes its brief under the plan's workspace"
-        echo "    got: $brief_path"
-    fi
-
-    # --- task-brief reads a spec's milestone headings ---
-    cat > "$repo/spec.md" <<'SPEC'
-# Spec
-
-## Plan of Work
-
-### M1 — First thing
-
-Build the first thing.
-
-### M2 — Second thing
-
-Build the second thing.
-
-```
-### M1 — a heading inside a fence is not a milestone
-```
-
-## Concrete Steps
-
-Run the tests.
-SPEC
-    local m2
-    m2="$(cd "$repo" && "$SDD_SCRIPTS/task-brief" spec.md 2 "$TEST_ROOT/m2.md" >/dev/null && cat "$TEST_ROOT/m2.md")"
-    if [[ "$m2" == "### M2 — Second thing"* && "$m2" == *"Build the second thing."* \
-        && "$m2" != *"Build the first thing."* ]]; then
-        pass "task-brief extracts only M2 from a spec's milestones"
-    else
-        fail "task-brief extracts only M2 from a spec's milestones"
-        echo "    got: $m2"
-    fi
-    # The last milestone's brief ends at the next same-level-or-above heading
-    # (here `## Concrete Steps`), and a fenced pseudo-heading inside it is kept.
-    if [[ "$m2" == *"a heading inside a fence is not a milestone"* \
-        && "$m2" != *"Concrete Steps"* && "$m2" != *"Run the tests."* ]]; then
-        pass "task-brief stops the last milestone at the section after the Plan of Work"
-    else
-        fail "task-brief stops the last milestone at the section after the Plan of Work"
-        echo "    got: $m2"
-    fi
-
-    rc=0
-    (cd "$repo" && "$SDD_SCRIPTS/task-brief" spec.md 3 "$TEST_ROOT/m3.md" >/dev/null 2>&1) || rc=$?
-    if [[ "$rc" -eq 3 ]]; then
-        pass "task-brief exits 3 for a milestone the spec lacks"
-    else
-        fail "task-brief exits 3 for a milestone the spec lacks"
-        echo "    exit: $rc"
-    fi
-
-    # --- review-package takes the plan first and lands in its directory ---
+    # --- review-package takes the spec first and lands in its directory ---
     local git_id=(-c user.email=t@example.com -c user.name=t -c commit.gpgsign=false)
     ( cd "$repo" \
         && git "${git_id[@]}" commit -qm c1 \

@@ -27,13 +27,17 @@ its milestones. Define terms of art; reference repo common knowledge instead
 of duplicating it.
 
 **What the document carries, and what it leaves out.** Intent, constraints,
-decisions with their reasons, the interfaces between parts, and the
+the decisions whose wrong answer is costly — each with its reason, so a gap
+can be resolved in its spirit — the interfaces between parts, and the
 definition of done — everything the executor cannot derive from the code.
 Not procedure: a paragraph that explains code the executor can read, a
 step-by-step it can derive, a location it can find, is cut; a sentence that
 says why is kept. The executor is a frontier model with the codebase in
 view; it compiles design into implementation better and later than the
-author can transcribe it.
+author can transcribe it, and design time cannot foresee every gap — a spec
+that tries to pre-decide everything grows long, goes stale against the
+code, and boxes in a worker who will see more than its author did. Say each
+thing once, in the section that owns it; every other section points to it.
 
 ## What binds
 
@@ -139,40 +143,47 @@ invariants, failure modes, or verification strategies differ
 concurrency-shaped work, fix the event list, the states, the transition
 table, and the linearization points before implementation — a functional
 description alone is how implicit distributed state machines get built one
-ref at a time. Headings run `### M1 — <title>`, `### M2 — …`; the SDE brief
-extractor reads them.
+ref at a time. Headings run `### M1 — <title>`, `### M2 — …`; the execution
+loop and plan-executor find milestones by them.
 
-**What a milestone carries.** The constraints that bind every milestone —
-version floors, dependency limits, naming and copy rules, platform
-requirements, and for a child of a composite spec the binding inheritance
-and cross-child contracts, each citing its id — open the section once, so a
-reviewer's dispatch can copy them verbatim. Then each milestone:
+**What a milestone carries.** Every executor reads the whole spec, so a
+milestone entry restates nothing the spec already says — it points. The
+constraints that bind every milestone — version floors, dependency limits,
+naming and copy rules, platform requirements, and for a child of a
+composite spec the binding inheritance and cross-child contracts, each
+citing its id — open the section once. Then each milestone:
 
 - **What exists at its end** that did not before, as behavior someone can
   observe.
-- **Files**, by repository path. No line ranges: they are stale by the time
-  the milestone runs, and the executor finds the function itself.
+- **What it touches**: the areas or files where the work lives, by
+  repository path. No line ranges: they are stale by the time the
+  milestone runs, and the executor finds the function itself.
 - **Interfaces** it exposes to later milestones and consumes from earlier
-  ones, by name and signature — a milestone's executor sees only its own
-  text, and this is how it learns the names its neighbors use. The
+  ones, by name — defined once, in Interfaces and Dependencies. The
   controller schedules reviews from these.
-- **Decisions** the executor must not make differently: approach, error
-  semantics, naming, ordering, what to reuse from the codebase (by path),
-  the pitfalls seen in the code while designing, and the facts the code
-  does not show — a deploy that follows `main` on its own, a service's real
-  behavior. This slot is what carries the design's intent past the
-  planner–coder gap; a constraint implicit in the requirements never
-  reaches the executor unless it is written here.
+- **Decisions** that belong to this milestone alone and nowhere else in
+  the design: approach, error semantics, naming, ordering, what to reuse
+  from the codebase (by path), the pitfalls seen in the code while
+  designing, and the facts the code does not show — a deploy that follows
+  `main` on its own, a service's real behavior. A decision the design
+  already carries is pointed at, not repeated. This slot and the design
+  are what carry intent past the planner–coder gap; a constraint implicit
+  in the requirements never reaches the executor unless it is written
+  somewhere in the spec.
 - **What it does not touch.** State the scope's edge explicitly; a frontier
   executor widens scope where the edge is not drawn.
-- **Proof**: the behaviors its tests assert, one line each, and the commands
-  that show the milestone working with what to expect (Concrete Steps).
-- **Code** only where the code is itself a decision — a data shape or
-  schema, a public signature, a state or transition table, an algorithm
-  whose subtlety is the point, an exact string, constant, or piece of copy,
-  a test case that pins a contract. Code that only shows how to do what the
-  Decisions already say is transcription: written blind here and stale by
-  the time the milestone runs.
+- **What it proves**: the acceptance items it satisfies, by number, and any
+  behavior its tests must pin that acceptance does not already state, one
+  line each; the commands that show it working, with what to expect, are
+  Concrete Steps.
+
+Code appears in the spec only where the code is itself a decision — a data
+shape or schema, a public signature, a state or transition table, an
+algorithm whose subtlety is the point, an exact string, constant, or piece
+of copy, a test case that pins a contract — and lives in the design or in
+Interfaces and Dependencies, once. Code that only shows how to do what the
+decisions already say is transcription: written blind here and stale by the
+time the milestone runs.
 
 Not carried: commit messages, which test file or line to sit beside, exact
 strings that are not decisions, steps. The executor writes those once, with
@@ -193,11 +204,11 @@ proves the feature. Quote the commands so the executor needs nothing else.
 
 **No placeholders.** A placeholder is a deferred decision: "TBD", "add
 appropriate error handling" (name the errors and what happens on each),
-"write tests for the above" (name the behaviors they assert), "as in M2"
-(repeat the decision; the executor reads only its own milestone), a name no
-milestone's Interfaces or Code defines. Complete means the decisions are
-stated; a test named by the behavior it asserts is complete, and so is an
-implementation described by its contract.
+"write tests for the above" (name the behaviors they assert), a name no
+section of the spec defines. Complete means the decisions are stated; a
+test named by the behavior it asserts is complete, and so is an
+implementation described by its contract. Pointing at a decision the spec
+makes elsewhere is not a placeholder — it is the rule.
 
 **When it is written.** After the design is approved, never before: in an
 interactive session with the rest of the spec, once the presentation is
@@ -213,13 +224,23 @@ logged.
 
 > When implementing an executable specification (ExecPlan), do not prompt the user for "next steps"; simply proceed to the next milestone. Keep all sections up to date, add or split entries in the list at every stopping point to affirmatively state the progress made and next steps. Resolve ambiguities autonomously, and commit frequently.
 
-A spec with one milestone is worked directly by its executor; several run
-through doperpowers:subagent-driven-execution — a fresh executor per
-milestone, a review at each dependency frontier — under a
-`doperpowers:plan-executor` subagent (doperpowers:execspec step 4). On that
-path the controller ticks each milestone in `Progress` as its review comes
-back clean and commits it: the SDE ledger is gitignored, so the committed
-spec's Progress is what a recovery reader sees.
+A gap or a contradiction the spec did not foresee is expected, not a
+failure of the spec: the executor resolves it in the spirit of the stated
+intent and the reasons behind the nearby decisions, records what it chose
+and why, and continues. It goes back to the spec's author only for a fork
+under the gate — a product, taste, or substantive design decision the spec
+does not cover — or when following the spec would defeat its own purpose.
+
+A spec with one milestone is worked directly by its executor, who records
+its decisions in the Decision Log as it goes. Several run through
+doperpowers:subagent-driven-execution — a fresh executor per milestone, a
+review at each dependency frontier — under a `doperpowers:plan-executor`
+subagent (doperpowers:execspec step 4). On that path the controller is the
+spec's one writer: executors report their decisions and discoveries, and
+the controller folds them into the Decision Log, Surprises & Discoveries,
+and Progress between tasks and commits, so each later executor reads them
+in the spec; the SDE ledger is gitignored, so the committed spec is what a
+recovery reader sees.
 
 **A child of a composite spec** cannot extend the composite — siblings on
 parallel branches share it — so its execution section is a standalone file
