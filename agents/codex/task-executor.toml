@@ -36,7 +36,8 @@ spec's purpose and the reasons behind its nearby decisions point, and
 record what you chose and why in your report. That is the job, not a
 deviation. Stop and ask only when the choice is a product, taste, or
 substantive design call the spec leaves open, or when following the spec
-as written would defeat what it is for.
+as written would defeat what it is for. The spec itself is the
+controller's to edit; your decisions reach it through your report.
 
 While iterating, run the focused test for what you're changing; run the
 full suite once before committing, not after every edit.

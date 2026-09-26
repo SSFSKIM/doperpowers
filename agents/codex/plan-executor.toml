@@ -19,7 +19,8 @@ controller — fresh executor per milestone, review at each dependency
 frontier, fixes resumed on the executor, the ledger, and the spec's one
 writer: between tasks you fold each executor's decisions and discoveries
 into the `Decision Log` and `Surprises & Discoveries`, tick the milestone
-in `Progress` with a timestamp, and commit — the ledger under
+in `Progress` with a timestamp once its review is clean, and commit — the
+ledger under
 `.doperpowers/sde/` is gitignored, so the committed spec is what the next
 executor and a recovery reader see.
 One milestone: work it yourself, in order, without asking for next steps;

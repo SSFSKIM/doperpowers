@@ -61,12 +61,11 @@ or brainstorm first.
 4. **Fold the report back.** When an executor returns, read the decisions
    and discoveries in its report. Fold the ones a later reader needs into
    the spec — a decision into the Decision Log, a discovery into
-   Surprises & Discoveries, the milestone's tick into Progress with a
-   timestamp — and commit, so the next executor reads them in the spec
-   rather than in your dispatch; the ledger is gitignored, so the
-   committed spec is what a recovery reader sees. A decision that works
+   Surprises & Discoveries — and commit, so the next executor reads them
+   in the spec rather than in your dispatch. A decision that works
    against the spec's intent or crosses the gate is not folded: it goes
-   back to the executor, or up to whoever dispatched you.
+   back to the executor, or up to whoever dispatched you; one the reviewer
+   later rejects is reversed in the log when the fix lands.
 5. **Review at the frontier:** a task is reviewed clean — findings fixed
    and re-reviewed — before any task that consumes what it produced
    dispatches; the milestones' Interfaces name the producers, and the
@@ -114,11 +113,14 @@ or brainstorm first.
    the final review triages that list, so it is read, not discarded. Fix
    through a worker, not your own edits: manual fixes pollute your
    context and skip review.
-7. Mark the task complete in todos and the ledger (its Progress tick
-   landed at step 4). For a child of a composite spec, advisory content
-   goes in place and a binding contradiction up as `[parent-impact]` per
-   doperpowers:decomposing rather than into the composite. Implementation
-   noise stays in commit messages.
+7. Mark the task complete in todos and the ledger, and tick its milestone
+   in the spec's `Progress` with a timestamp and commit — the tick means
+   reviewed clean, the same as the ledger's `complete`, and the ledger is
+   gitignored, so the committed spec is what a recovery reader sees. For
+   a child of a composite spec, advisory content goes in place and a
+   binding contradiction up as `[parent-impact]` per doperpowers:decomposing
+   rather than into the composite. Implementation noise stays in commit
+   messages.
 8. **After all tasks:** dispatch the final whole-branch review through
    doperpowers:review-code against `<base>` at the rung the spec's
    verification entry names (its Decision Log), or the level the branch
@@ -187,15 +189,18 @@ pasted prior-task history):
 - The spec is the single source of requirements; exact values live only
   there, and anything decided since goes into the spec (step 4), not into
   a dispatch. An executor dispatch carries: the spec path and the
-  milestone ("read the whole spec; you own M3 of its Plan of Work"); the
-  directory to work from; the report-file path; and your answer to
-  anything the executor asked.
+  milestone ("read the whole spec; you own M3 of its Plan of Work"); for
+  a composite child, the composite's path and the child id its execution
+  document cites, since the design lives in that section; the directory
+  to work from; the report-file path; and your answer to anything the
+  executor asked.
 - The report file is `task-N-report.md` in the workspace; the executor
   writes detail there and returns only status, commits, a one-line test
   summary, decisions made, and concerns.
-- A reviewer dispatch carries the spec path and milestone, the report
-  path, the review package path, the task's BASE and HEAD and, for a
-  deferred review, a checkout line: where the shared checkout sits, the
+- A reviewer dispatch carries the spec path and milestone (and, for a
+  composite child, the composite's path and child id), the report path,
+  the review package path, the task's BASE and HEAD and, for a deferred
+  review, a checkout line: where the shared checkout sits, the
   sibling commits and files that landed since HEAD, and the detached
   worktree at HEAD if one was made. Omit the checkout line when the
   checkout is at HEAD.
@@ -208,9 +213,9 @@ pasted prior-task history):
   flag ("don't treat X as a defect", "at most Minor") — that impulse is
   usually you sparing yourself a review loop. Adjudicate findings when they
   come back, against the spec's intent. A finding that exposes a spec
-  statement as wrong is fixed in the spec (the design section revised, a
-  dated Decision Log entry) and in the code; only a fork under the gate
-  goes up.
+  statement as wrong is fixed in the spec by you — the design section
+  revised, a dated Decision Log entry; you are its one writer — and in
+  the code by the worker; only a fork under the gate goes up.
 - Fix messages — to a resumed executor or a fresh fixer — carry the
   executor contract: re-run the covering tests (name them — a one-line
   fix doesn't need the whole suite), report the command and output;

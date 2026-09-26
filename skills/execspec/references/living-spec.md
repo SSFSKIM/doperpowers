@@ -237,10 +237,11 @@ doperpowers:subagent-driven-execution — a fresh executor per milestone, a
 review at each dependency frontier — under a `doperpowers:plan-executor`
 subagent (doperpowers:execspec step 4). On that path the controller is the
 spec's one writer: executors report their decisions and discoveries, and
-the controller folds them into the Decision Log, Surprises & Discoveries,
-and Progress between tasks and commits, so each later executor reads them
-in the spec; the SDE ledger is gitignored, so the committed spec is what a
-recovery reader sees.
+the controller folds them into the Decision Log and Surprises &
+Discoveries between tasks, ticks Progress when a milestone's review is
+clean, and commits, so each later executor reads them in the spec; the SDE
+ledger is gitignored, so the committed spec is what a recovery reader
+sees.
 
 **A child of a composite spec** cannot extend the composite — siblings on
 parallel branches share it — so its execution section is a standalone file
