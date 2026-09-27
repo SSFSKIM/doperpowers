@@ -30,7 +30,7 @@ from the terminal prints that line and every one after it.
 
 ## Progress
 
-- [ ] M1 — `say`, `chat`, the family record, reach, `retire --cascade`, the `blocked` liveness fix; hermetic tests.
+- [x] M1 — `say`, `chat`, the family record, reach, `retire --cascade`, the `blocked` liveness fix; hermetic tests. (2026-09-26, reviewed clean: 4c5cf9c7..61216d45; suite 697 assertions)
 - [ ] M2 — the board, `topology`/`view`/`groups`, `mark`, `join`/`leave`, the retired-verb pointers, and the legacy codex branches leave; the TUI's board panel becomes the chat panel; tests follow.
 - [ ] M3 — the seat protocol: `references/spawn-preamble.md` and `SKILL.md` rewritten around the family; decomposing's one sentence; `_board_api.py`'s docstring; version bump.
 - [ ] M4 — live proof on the real harness: a three-level family, the acceptance section run as written, whole-branch review, retrospective. Run by the session that owns this spec.
@@ -302,7 +302,12 @@ descendants depth-first — a child's own descendants before it, siblings
 in alias order — and then the seat, printing one `retired …` line each in
 that order, and `--purge` with `--cascade` purges them all. A host retiring under live
 children is the one way a family loses its reader silently, so it is
-refused; the case is expected to be rare.
+refused; the case is expected to be rare. From a family seat, reach is
+checked on the seat named, and a cascade additionally covers only seats in
+the caller's reach or in its own subtree: a host retires any part of its
+own tree, but `a` cascading sibling `b` while `b` hosts `b1` is refused
+before anything retires. A family seat's `spawn` of an alias that already
+names a seat re-fills it only when that seat is the caller's own child.
 
 ### A `blocked` row without a process is `stopped`
 
@@ -823,6 +828,18 @@ unknown seat or outside reach.
   returns nothing; `sminos list` shows `status=working live=blocked`.
   Folded into M1 as the `blocked`-without-process fix.
 
+- Observation (2026-09-26, M1): chart's existing blocked fixture had a
+  `blocked` agents row and no answering peer yet expected `blocked`; under
+  the liveness fix it read `stopped`. The fixture gained a live peer to keep
+  its meaning, and a separate dead-blocked fixture pins the new reading.
+  Evidence: M1 focused RED `2 of 63` on the chart fixture before the peer
+  was added.
+- Observation (2026-09-26, M1 fix review): checking reach only on the
+  named target let `a` cascade-retire sibling `b` together with `b1`, which
+  is outside `a`'s reach; the per-descendant check that preceded it refused
+  a host's own self-cascade. Evidence: task review of 0580db7a; the
+  resolution is in the Decision Log.
+
 ## Decision Log
 
 - Decision (2026-09-26, at authoring): verification. The spec is
@@ -905,6 +922,59 @@ unknown seat or outside reach.
   would make a root host's scope depend on how its record was created.
   Date/Author: 2026-09-26, the owning session (answering the M1
   executor), folded by plan-executor.
+
+- Decision (2026-09-26, M1, executor calls folded after a clean task
+  review): where the spec was silent —
+  (1) `seen_advance` takes the provisional `short` the caller was found
+  by; when that record is gone it redirects only to the seat whose
+  `short` matches, so a promotion racing a read keeps the watermark and a
+  call for a removed seat writes nothing.
+  (2) `lock_names`/`lock_seat` take an optional refusal class, so a busy
+  seat lock during `say`'s resume becomes that member's `failed:…` and the
+  fan-out continues; every other caller's exit and message are unchanged
+  (including `resume`'s actionable legacy-codex refusal).
+  (3) A family seat spawning from its startup window waits for its own
+  promotion on `poll_uuid`'s bound and interval (`SMINOS_UUID_POLL`,
+  `DAEMON_UUID_POLL`, 30; `SMINOS_POLL_INTERVAL`) and exits 1 if never
+  confirmed.
+  (4) A dead `blocked` row reconciles once: the reply is written when
+  absent or older than the transcript, and a later `sync` is `noop` with no
+  generation bump, so a sweep does not invalidate `--wait` guards.
+  (5) A message's `from` is the caller's alias, or `human` for the
+  operator; `say` has no `--from`.
+  (6) Operator `@all` records `mode: all`, `to` the host then the
+  children in alias order, and pushes live members only; operator
+  untagged is `mode: operator` with the same `to`.
+  (7) `say` prints `<alias>: <outcome>` per recipient in that order;
+  exit 1 only when the append fails — a failed map rewrite after it warns
+  and exits 0.
+  (8) Cascade collects descendants recursively in alias order and retires
+  them post-order, the target last; `--purge` removes seat files only and
+  keeps the chat files, as retire's purge already kept history. From a
+  family seat the cascade is bounded as the retire section says.
+  Rejected, in review: checking reach on every descendant (it refused a
+  host's own self-cascade, which M3's host guidance teaches), and checking
+  it on the named target alone (it retired a sibling's children); also
+  rejected, restricting cascade to self — it would drop retire's existing
+  reach over children and siblings.
+  (9) From a family seat, `chart`/`tui` refuse before any group
+  validation; an ambiguous bare alias is narrowed to the caller's reach
+  before it is rejected, so a sibling wins over an off-family namesake.
+  (10) `chat -n` is positive, `--since` non-negative, and an explicit
+  `--since` (0 included) replaces the 30-message tail; operator
+  `chat --team` is a usage error; the text view prints `@a` for tagged
+  targets and `all` otherwise.
+  (11) `chat_update` keeps unparseable lines verbatim and replaces only the
+  matching id; failed and uncertain pushes are never retried.
+  (12) A tagged member with a session but no harness row is `gone` and is
+  recorded, not resumed; a retired member is warned about only when tagged.
+  Date/Author: 2026-09-26, M1 executor; folded by plan-executor.
+
+- Decision (2026-09-26, M1): `seat add` is not reach-scoped. A family
+  seat can register a vacant seat in another group; it reaches no session
+  and the verb is listed under "What stays exactly as it is". Left for the
+  whole-branch review to triage.
+  Date/Author: 2026-09-26, plan-executor.
 
 ## Outcomes & Retrospective
 
