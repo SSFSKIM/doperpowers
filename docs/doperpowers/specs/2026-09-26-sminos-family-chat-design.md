@@ -31,7 +31,7 @@ from the terminal prints that line and every one after it.
 ## Progress
 
 - [x] M1 — `say`, `chat`, the family record, reach, `retire --cascade`, the `blocked` liveness fix; hermetic tests. (2026-09-26, reviewed clean: 4c5cf9c7..61216d45; suite 697 assertions)
-- [ ] M2 — the board, `topology`/`view`/`groups`, `mark`, `join`/`leave`, the retired-verb pointers, and the legacy codex branches leave; the TUI's board panel becomes the chat panel; tests follow.
+- [x] M2 — the board, `topology`/`view`/`groups`, `mark`, `join`/`leave`, the retired-verb pointers, and the legacy codex branches leave; the TUI's board panel becomes the chat panel; tests follow. (2026-09-26, reviewed clean: 40f5ae29; suite 685 assertions, seam suites green; the six legacy codex records removed from the real registry beforehand)
 - [ ] M3 — the seat protocol: `references/spawn-preamble.md` and `SKILL.md` rewritten around the family; decomposing's one sentence; `_board_api.py`'s docstring; version bump.
 - [ ] M4 — live proof on the real harness: a three-level family, the acceptance section run as written, whole-branch review, retrospective. Run by the session that owns this spec.
 
@@ -994,6 +994,13 @@ unknown seat or outside reach.
   Rejected: leaving it unscoped for the branch review to triage — it is
   the one remaining verb that lets a family seat write outside its tree.
   Date/Author: 2026-09-26, the owning session; folded by plan-executor.
+
+- Decision (2026-09-26, M2): the TUI's chat panel follows the focused
+  seat — its own chat when it hosts one, else its parent's — and a focused
+  group box has no chat (`chat · - · 0 messages`) rather than borrowing
+  some seat's. `seat add`'s refusal from a family seat exits 2 and writes
+  nothing; the interactive join is asserted unchanged.
+  Date/Author: 2026-09-26, M2 executor; folded by plan-executor.
 
 ## Outcomes & Retrospective
 
