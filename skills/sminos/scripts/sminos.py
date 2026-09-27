@@ -626,12 +626,11 @@ def cmd_chat(a):
             die("a seat's chat takes no <host> argument")
         if a.team:
             host = caller
-            if not family_of(host)[1]:
-                die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
         else:
             host = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None) or caller
-            if host["seat_id"] == caller["seat_id"] and not family_of(host)[1]:
-                die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
+        if host["seat_id"] == caller["seat_id"] and not family_of(host)[1]:
+            print("no family yet: spawn a child, or you were spawned without a parent")
+            return
     else:
         if a.team:
             die("--team is for a seat's own chat")
@@ -1693,6 +1692,9 @@ def render_preamble(group, alias, parent):
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
+    if not parent:
+        t = t.replace(', a member of the\nfamily "{{PARENT}}" hosts.',
+                      ', the root of your\nown family.', 1)
     return (t.replace("{{GROUP}}", group).replace("{{ALIAS}}", alias)
              .replace("{{PARENT}}", parent or "none").replace("{{SMINOS_CLI}}", LAUNCHER))
 

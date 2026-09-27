@@ -1676,6 +1676,25 @@ export SMINOS_HOME="$TEST_ROOT/family-registry"
 mkdir -p "$SMINOS_HOME"
 rm -f "$HOME/.claude/sessions/"*.json
 cd "$WORK"
+run "$SMINOS" spawn root-alone 'ROOT-TASK' --group roots
+assert_rc 0 "$RC" "root family seat spawns"
+ROOT_ID="$(banner_uuid "$OUT")"
+assert_contains "$(field "$ROOT_ID" task)" 'You are seat "root-alone" in sminos group "roots", the root of your' "root task names its own family"
+assert_contains "$(field "$ROOT_ID" task)" 'own family.' "root identity sentence ends without a host"
+assert_not_contains "$(field "$ROOT_ID" task)" '"none"' "root task never invents a none host"
+assert_contains "$(field "$ROOT_ID" task)" 'host (a root has' "root task explains where untagged messages go"
+export CLAUDE_CODE_SESSION_ID="$ROOT_ID"
+run "$SMINOS" chat -n 30
+assert_rc 0 "$RC" "root without children can read its empty chat"
+assert_contains "$OUT" 'no family yet' "empty root chat explains how to gain a family"
+run "$SMINOS" chat --team
+assert_rc 0 "$RC" "root without children can read its empty team chat"
+assert_contains "$OUT" 'no family yet' "empty team chat explains how to gain a family"
+run "$SMINOS" say 'not yet'
+assert_rc 4 "$RC" "root without children still cannot say"
+assert_contains "$OUT" 'no family yet' "say without family keeps actionable refusal"
+unset CLAUDE_CODE_SESSION_ID
+"$SMINOS" remove roots/root-alone >/dev/null
 run "$SMINOS" seat add fam lead --session 11111111-aaaa-4000-8000-000000000001
 LEAD=11111111-aaaa-4000-8000-000000000001
 run "$SMINOS" seat add fam a --parent lead --session 22222222-aaaa-4000-8000-000000000002
@@ -1766,6 +1785,7 @@ C="$(seat_id_of c)"
 assert_equals "$(field "$C" parent)" a "child parent is caller"
 assert_equals "$(field "$C" group)" fam "child inherits caller group"
 assert_contains "$(field "$C" task)" 'family "a" hosts.' "child task names its parent as host"
+assert_contains "$(field "$C" task)" 'host (a root has' "child task also explains root untagged messages"
 assert_contains "$(field "$C" task)" "$SMINOS chat -n 30" "child task begins with family chat instruction"
 run "$SMINOS" say --team 'my team'
 assert_rc 0 "$RC" "middle seat speaks in its own chat"
