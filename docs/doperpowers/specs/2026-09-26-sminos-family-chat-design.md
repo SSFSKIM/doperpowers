@@ -43,8 +43,9 @@ from the terminal prints that line and every one after it.
 - **Chat** — a family's record: one JSONL file, `$SMINOS_HOME/chats/<host-seat-id>.jsonl`, one message per line, ids increasing from 1.
 - **Tag** — a token `@<alias>` in a message's text, where the alias names a member of the family the message goes to, or the literal `@all`.
 - **Frame** — the JSON line sminos writes to a session's inbox socket (`send_frame` in `sminos.py`), delivered by the harness as a peer message. Its text is the message with a first line sminos composes.
-- **Caller** — who is running the CLI. Inside a Claude session `CLAUDE_CODE_SESSION_ID` is set in the Bash tool's environment; when that id is some seat's `current`, the caller is that seat. A subagent of a seat's session carries the same id and is the same caller. Otherwise (a terminal, a pipeline script, an interactive session that holds no seat) the caller is the operator, whose identity `default_from` already derives.
-- **Reach** — the set of seats a seat-caller may name: itself, its parent, its siblings (other children of its parent), and its children.
+- **Caller** — who is running the CLI. Inside a Claude session `CLAUDE_CODE_SESSION_ID` is set in the Bash tool's environment; when that id is some seat's `current`, the caller is that seat. A seat in its startup window — `spawn_fresh` has written its record with an empty `current` and the launch's `short`, and promotes it to the session's uuid only after polling the harness — is found by that `short`: the harness row for the caller's session id names it. A subagent of a seat's session carries the same id and is the same caller. Otherwise (a terminal, a pipeline script, an interactive session that holds no seat) the caller is the operator, whose identity `default_from` already derives.
+- **Family seat** — a seat that was spawned into a family (its record's `preamble` flag is set: `spawn` with an explicit `--group`, `spawn` from a family seat, or `seat add`). A board-pipeline worker is spawned with neither and is not one. The reach rule below binds family seats only.
+- **Reach** — the set of seats a family-seat caller may name: itself, its parent, its siblings (other children of its parent), and its children.
 - **Push** — delivering a message to one member now: a frame to a live member's socket, or a resume of a stopped member. **Recorded** means the message is in the chat but nothing was pushed to that member.
 
 ## Design
@@ -64,20 +65,56 @@ The record is keyed by the host's **seat id**, not its alias, so that a
 host re-filled into a fresh session keeps its family's history, and so
 that two groups using the same alias never share a chat.
 
-### One reach rule for a seat
+### One reach rule for a family seat
 
-When the caller is a seat, every verb that names a target resolves it
-inside the caller's reach: `say`, `chat`, `send`, `wake`, `resume`,
-`reply`, `attach`, `status`, `retire`, `fill`, and the rows of `list`.
-A target outside it fails with exit 4 and this message, which is the
-whole of the escape hatch:
+When the caller is a family seat, every verb that names a target resolves
+it inside the caller's reach: `say`, `send`, `wake`, `resume`, `reply`,
+`attach`, `status`, `retire`, `fill`, and the rows of `list`. A target
+outside it fails with exit 4 and this message, which is the whole of the
+escape hatch:
 
     <target> is outside your family (parent, siblings, children). To reach
     another session use the native ListAgents and SendMessage tools.
 
-`spawn` from a seat takes no `--group` or `--parent`: the child's group is
-the caller's and its parent is the caller; passing either is refused
-("a seat spawns its own children"). The child always gets the preamble.
+The views that show more than a family are the operator's: `chart` and
+`tui` from a family seat exit 4 with "an operator view; your family is
+`sminos list`", and `chat` from a family seat takes no `<host>` argument
+— it reads the caller's own two chats and nothing else (a sibling's or a
+child's family chat is that family's, not the caller's, even though its
+host is in reach).
+
+`spawn` from a family seat takes no `--group` or `--parent`: the child's
+group is the caller's and its parent is the caller; passing either is
+refused ("a seat spawns its own children"). The child always gets the
+preamble. A family seat still in its startup window that spawns waits for
+its own promotion first (bounded by the same poll `spawn_fresh` uses), so
+the child's family is keyed by the host's final seat id, never by the
+provisional one that promotion renames.
+
+Why family seats and not every seat: the board pipeline's workers are
+seats too, and its scripts are already run from inside them — a tick
+launched from a worker session (`_sweep_api.sh`'s `BOARD_NO_SELF_LOCATE`
+path) resumes and spawns other bound seats, and the manual dispatch ritual
+in `skills/issue-tracker/SKILL.md` runs inside gateway-routed seats. Those
+seats have no family, so there is nothing for the rule to scope, and
+scoping them would turn a successor worker into a child of whichever
+worker happened to run the tick. The flag that already records "spawned
+into a family" is the boundary.
+
+Where the check lives: one helper, `require_reach(caller, target)`, and
+every path that turns a name into a destination calls it. `resolve_seat`
+calls it for every verb that takes a seat reference. `cmd_send` has three
+routes — a matched seat, a raw live harness-session name, and a Codex
+thread (`codex:` or a bare thread id) — and for a family-seat caller only
+the first exists: a matched seat goes through `require_reach`, and the
+other two are refused with the reach message before anything is looked
+up, because they are exactly the off-family doors the rule closes.
+`cmd_wake` resolves through `resolve_seat` and is covered there. `say`'s
+tags resolve only against the caller's two families, so a tag can never
+name anything outside reach. The operator, and a seat that is not a family
+seat, keep all three `send` routes. This is what makes a verb added later
+scoped by default: it either resolves through `resolve_seat` or it names
+its own route, and the helper is the one place a route is allowed.
 
 The operator is unrestricted, as today: a terminal, a pipeline script
 (the sweeps run from launchd or a shell, never inside a seat), or an
@@ -98,13 +135,20 @@ brought back because the native tools already are that flag.
     sminos say [--in <host>] [--team] "<text with @tags>"
 
 Tags are the tokens matching `@[A-Za-z0-9._-]+` in the text; they stay in
-the text as written. Resolution picks exactly one chat for the message:
+the text as written. Selecting the chat and expanding the recipients are
+two steps. Selection picks exactly one chat for the message:
 
 1. If any tag names a child of the caller, the chat is the caller's own
    (the one it hosts). If any tag names the caller's parent or a sibling,
    the chat is the parent's. Tags naming members of both families in one
-   message are refused (exit 2: "one message, one family"). A tag naming
-   no member of either is refused with the reach message.
+   message are refused (exit 2: "one message, one family"), and so is
+   `--team` beside a tag that names the parent or a sibling. A tag naming
+   no member of either is refused with the reach message. A tag naming
+   the caller itself is refused (exit 2: "you cannot tag yourself").
+   `@all` stands alone: `@all` beside any other tag is refused (exit 2),
+   because one form must not resume stopped members while the other
+   must. `all` and `human` are reserved: `spawn` and `seat add` refuse
+   them as aliases.
 2. With no tags: `--team` selects the caller's own chat; otherwise the
    parent's chat when the caller has a parent, else its own (a root host
    with no parent speaks to its children). A seat with neither a parent
@@ -141,28 +185,42 @@ What a push is, per member, decided from the same liveness reads
 | Member's state | Tagged | Untagged / `@all` / team |
 |---|---|---|
 | live (a peer socket answers: busy, idle, or blocked with a process) | frame → `sent` | frame → `sent` |
-| stopped (a session, no process) | resumed with the message (`resume_session`, no wait) → `woken` | `recorded` |
+| stopped (a session, no process) | resumed with the message (`resume_session`, no wait) → `woken`; a launch whose session id the harness never confirmed → `woken?` (the record keeps `pending_short`, as `resume` does today) | `recorded` |
 | retired (`status` retired) | `recorded`, and `say` warns "`<alias>` is retired; re-fill it to reach it" | `recorded` |
 | gone / vacant (no session to reach) | `recorded` | `recorded` |
 | frame failed before it was written | `failed:<error>` (no retry, no resume) | `failed:<error>` |
 | frame failed after it was written | `sent?` (delivery uncertain; never re-sent) | `sent?` |
 
 A tag means "I need you", so a tagged stopped member is brought back; a
-broadcast never starts a process. The resume path is `resume_session` as
-it exists: it refuses a copy, holds the per-seat resume lock, and runs the
-seat in its recorded cwd. `say` never waits for a turn; the reply is read
-with `sminos reply` or seen in the chat when the member answers.
+broadcast never starts a process. The resume path is `resume_session`'s:
+it refuses a copy, holds the per-seat resume lock, and runs the seat in
+its recorded cwd. Today that function ends the process (`die`) on each
+refusal — a resume already in flight, a vanished cwd, a launch that
+produced no id, a copy — which is right for `wake` and `resume` but would
+end a fan-out after its first bad member. It therefore raises
+`ResumeRefused(message, code)` instead; `cmd_resume`, `cmd_wake`, and
+`cmd_fill` catch it at their top and `die` with the same message and code
+(their behavior and exit codes are unchanged), and `say` catches it per
+member and records `failed:<message>`, then continues with the next
+member. `say` never waits for a turn; the reply is read with `sminos
+reply` or seen in the chat when the member answers.
 
 The message is recorded before any push: under the per-chat lock it takes
 the next id and is appended with an empty `delivered` map; the lock is
-released; the pushes run; then, under the lock again, the line is rewritten
-with the map complete (`chat_update`). The lock is never held across a
-push, because a tagged stopped member means a resume that can take many
-seconds and the lock's staleness rule would break it. A record is durable
-from the first write, so a CLI that dies mid-push leaves a message whose
-map says nothing was delivered rather than no message; `chat_read` orders
-by id, so a slow `say` appending after a faster one changes nothing a
-reader sees. A failed push is a recorded fact, not an error exit: `say`
+released; the pushes run; then, under the lock again, the file is
+rewritten with that line's map complete (`chat_update`, written to a
+temporary file beside it and moved into place with `os.replace`, so a
+kill mid-rewrite cannot truncate history). The per-chat lock is a
+`fcntl.flock` on `chats/<host-seat-id>.lock`, the registry's own lock
+kind: it is owned by a process and released when that process dies,
+where the board's `mkdir` spinlock broke any lock older than thirty
+seconds and so could be taken from a writer that was merely slow. The
+lock is never held across a push, because a tagged stopped member means a
+resume that can take many seconds. A record is durable from the first
+write, so a CLI that dies mid-push leaves a message whose map says
+nothing was delivered rather than no message; `chat_read` orders by id,
+so a slow `say` appending after a faster one changes nothing a reader
+sees. A failed push is a recorded fact, not an error exit: `say`
 exits 0 when the message is in the record, prints one line per member with
 its outcome, and exits 1 only when nothing could be recorded.
 
@@ -173,19 +231,24 @@ The frame's text is the message with one composed first line:
 
 `<targets>` is `@a @b` for tags, `<host-alias>` for an untagged report,
 `all` for a broadcast or a team message. `| unread <n>` appears only when
-`n > 0`: the number of messages in this chat with an id below this one
-that the recipient has neither been pushed nor read (see `chat`). The
-first line is the marker the human-stream reader and `wake --wait` style
-evidence checks can find in a transcript, and it tells a woken member
-whether to catch up before acting.
+`n > 0`: the exact number of messages in this chat with an id below this
+one that the recipient has neither read (its `chat_seen` watermark, see
+`chat`) nor been pushed (the record's own `delivered` map says `sent` or
+`woken` for it). Both sources exist already, so a member that missed
+message 1, was tagged in 2, and is now pushed 3 is told `unread 1`, not
+0. The first line is the marker the human-stream reader and `wake --wait`
+style evidence checks can find in a transcript, and it tells a woken
+member whether to catch up before acting.
 
 ### `chat` — the record, and what a member has seen
 
     sminos chat [<host>] [-n N] [--since <id>] [--team] [--json]
 
-From a seat: the parent's chat by default, its own with `--team`. From a
-terminal: `<host>` is required. Default `-n 30`, newest last; `--since`
-prints ids above the given one; `--json` prints one record per line.
+From a family seat: the parent's chat by default, its own with `--team`,
+and a `<host>` argument is a usage error (the reach section says why).
+From a terminal: `<host>` is required. Default `-n 30`, newest last;
+`--since` prints ids above the given one; `--json` prints one record per
+line.
 Text form, one message per block, the first line fixed-width so a column
 of them scans:
 
@@ -198,14 +261,24 @@ A text with more than one line prints its remaining lines indented under
 its first.
 
 Each seat record gains one field, `chat_seen`: a map from host seat id to
-the highest message id that seat has been pushed or has read. A push
-(`sent`, `woken`) sets it for the recipient; a `chat` read by a seat sets
-it to the last id printed. `unread` in a frame is computed from it. It is
-written with `meta_set`, under the registry lock like every field; a
-seat that has never seen a chat counts every message as unread. The
-alternative, a per-member cursor file per chat (v1's shape), was torn out
-once for being state nobody else needed; one field on the record the seat
-already owns is enough.
+the highest message id that seat has **read** with `chat` — a watermark,
+set only by a read, to the last id printed. Pushes do not move it: which
+messages a member was pushed is already in each record's `delivered` map,
+and a watermark that pushes advanced would hide the messages a member was
+never pushed (a report to the host, a tag for a sibling) behind the ones
+it was. `unread` for a member is therefore: records with id above the
+watermark whose `delivered` entry for that member is not `sent`/`woken`.
+The field is written by one helper, `seen_advance(seat_id, host_seat_id,
+msg_id)`: under the registry lock it re-reads the record, sets the entry
+to the larger of the stored and the new id, and writes the record back
+without bumping its generation and without creating a record that is gone
+— a nested read-modify-write, which `meta_set`'s top-level field merge is
+not, and which must never invalidate a `--wait` watcher's generation
+guard or resurrect a removed seat. A seat that has never read a chat has
+watermark 0. The alternative,
+a per-member cursor file per chat (v1's shape), was torn out once for
+being state nobody else needed; one field on the record the seat already
+owns is enough.
 
 ### The preamble reads the chat first
 
@@ -257,12 +330,19 @@ question or the harness-prompt marker), so a seat in that shape reaches
   (`sync` already treats them as noop).
 - `join`, `leave` (v2 argument-order aliases) and the `listen`/`log`
   retired-verb pointers: one release of compatibility has passed.
-- The legacy codex-CLI branches (`engine: codex` records: `refuse_codex`,
+- The legacy codex-CLI *process* handling (`engine: codex` records:
   `wait_codex_rc`, `purge_codex_runs`, the codex arm of `stop_session`,
-  the codex retirement in `migrate`'s per-record pass): the six records
-  left are all retired and are removed with `sminos remove` before the
-  code goes (M2's first step, on the real registry). `send` to a Codex
-  *thread* through `codex queue` is a different thing and stays.
+  the scratch purge on `remove`): the six such records on this machine
+  are all retired and are removed with `sminos remove` before the code
+  goes (M2's first step, on the real registry). What stays is the
+  quarantine at the boundary, because `migrate` still imports former
+  roots and a restored or foreign registry can carry such a record:
+  `refuse_codex` on `fill`/`wake`/`resume` and on a `say` push (recorded
+  as `failed:legacy codex record`), `sync`'s `noop` for them, and
+  `migrate`'s per-record step that marks a legacy record `retired`. A
+  legacy record is read-only history that `remove` deletes; it is never
+  treated as a resumable Claude seat. `send` to a Codex *thread* through
+  `codex queue` is a different thing and stays.
 
 The TUI's `b` panel listed the group board; it lists the focused seat's
 chat instead (its own when it hosts one, else its parent's), rows are
@@ -277,8 +357,11 @@ kept them.
 the `--stamp`/`--worktree`/`--settings`/`--effort` spawn options, the
 gateway scrub, the locks, the generation guards, and every board-pipeline
 seam (`$SMINOS_CLI` calls to `spawn`, `sync`, `retire`, `wake --wait`,
-`resume --wait`, `reply`, `meta get`). Pipeline workers have no parent
-and are called from terminals, so the reach rule never applies to them.
+`resume --wait`, `reply`, `meta get`). Pipeline workers are not family
+seats, so the reach rule never binds them, whether a pipeline script runs
+from a terminal or from inside one of them; the issue-tracker suite
+(`tests/issue-tracker/`) is run at each milestone boundary to prove the
+seams unchanged.
 
 ### The human
 
@@ -322,17 +405,22 @@ server); the live checks are M4's, on the real harness.
 3. **Untagged from a root host reaches the team.** With
    `CLAUDE_CODE_SESSION_ID` set to `lead`'s session, `sminos say "merge b
    first"` pushes to `a` and `b` and records `"mode":"team"`.
-4. **Unread is counted and cleared.** After 1–3, from `b`,
+4. **Unread is exact, and a read clears it.** After 1–3 (`b` was not
+   pushed message 1, was pushed 2 and 3), a fourth message from `a` tagged
+   `@b` reaches `b` with `| unread 1` in its first line. Then from `b`,
    `sminos chat` prints the header `chat lead (fam) · members: lead, a, b ·
-   N messages`, every message, and afterwards `b`'s record has
-   `chat_seen[<lead-seat-id>] == N`; the next frame delivered to `b`
+   4 messages` and every message, and afterwards `b`'s record has
+   `chat_seen[<lead-seat-id>] == 4`; the next frame delivered to `b`
    carries no `| unread`.
-5. **Reach.** From `a`, `sminos send other/x "hi"`, `sminos wake other/x
+5. **Reach.** From `a`, `sminos send other/x "hi"`, `sminos send <x's
+   seat id> "hi"`, `sminos send <a live harness session name that is no
+   seat> "hi"`, `sminos send codex:<anything> "hi"`, `sminos wake other/x
    "hi"`, and `sminos say "@x hi"` each exit 4 with a message that names
-   ListAgents and SendMessage; `sminos spawn c "t" --parent x` from `a`
-   exits 2 with "a seat spawns its own children"; `sminos list` from `a`
-   prints exactly `lead`, `a`, `b`; from a terminal it prints the whole
-   fleet.
+   ListAgents and SendMessage, and nothing is delivered or queued; `sminos
+   spawn c "t" --parent x` from `a` exits 2 with "a seat spawns its own
+   children"; `sminos list` from `a` prints exactly `lead`, `a`, `b`; from
+   a terminal every one of those `send` routes works as today and `list`
+   prints the whole fleet.
 6. **Spawn from a seat.** From `lead`, `sminos spawn c "task" --worktree c`
    registers `fam/c` with `parent: lead` and a task that begins with the
    preamble whose first instruction is `sminos chat -n 30`; `--group` or
@@ -356,14 +444,32 @@ server); the live checks are M4's, on the real harness.
     passed`; `tests/skill-links/test-cross-doc-refs.sh` passes;
     `scripts/lint-shell.sh` is clean; the plugin version is bumped in the
     same branch by `scripts/bump-version.sh`.
-12. **Live (M4).** On the real harness: a host spawned from a terminal with
-    `--group fam` spawns two children from its own Bash tool; a child's
-    untagged `say` starts a turn in the idle host whose transcript shows the
-    frame's first line; the host's `say "@a @b …"` reaches both; `sminos
-    chat lead` from the terminal shows all of it; from inside a child,
-    `sminos list` shows the family only and a `say` to an alias outside it
-    is refused with the native pointer; `retire fam/lead --cascade` ends the
-    family and `sminos list` shows all four retired.
+12. **The startup window.** With a stub whose uuid poll is delayed so that
+    `c`'s record still has an empty `current` and a `short`, and
+    `CLAUDE_CODE_SESSION_ID` set to the session id the stub's agents row
+    reports for that `short`: `sminos chat -n 30` prints `lead`'s chat,
+    `sminos say "starting"` records `"from":"c"` and pushes to `lead`, and
+    `sminos spawn c1 "t"` waits for `c`'s promotion and registers `c1` with
+    `parent: c`; after promotion no provisional record remains.
+13. **Pipeline roots are unbound.** A seat spawned without `--group` (as
+    `execute-dispatch.sh` does) with `CLAUDE_CODE_SESSION_ID` set to its
+    session: `sminos send` to an unrelated seat, `sminos resume` of it, and
+    `sminos spawn x "t" --cwd … --worktree x` all behave exactly as from a
+    terminal, and the new seat has no parent.
+14. **Live (M4).** On the real harness: a host `lead` spawned from a
+    terminal with `--group fam` spawns two children `a` and `b` from its
+    own Bash tool, and `a` spawns a grandchild `a1`, so `a` is a member of
+    `lead`'s family and the host of its own. Then: `a`'s untagged `say`
+    starts a turn in the idle `lead` whose transcript shows the frame's
+    first line (the report went up); `a`'s `say --team "…"` reaches `a1`
+    and is recorded in `a`'s chat, not `lead`'s (the team message went
+    down; two records exist, one per host); `lead`'s `say "@a @b …"`
+    reaches both; `sminos chat lead` and `sminos chat a` from the terminal
+    each show their own family's messages only; from inside `a1`,
+    `sminos list` shows `a` and `a1` only, and a `say "@b …"` is refused
+    with the native pointer (`b` is an uncle, not family); `retire
+    fam/lead --cascade` prints `a1`, then `a`, then `b`, then `lead`, and
+    `sminos list` shows all four retired.
 
 ## Execution
 
@@ -388,37 +494,56 @@ a host with live children cannot be retired by accident; a `blocked` row
 without a process reads `stopped`.
 
 Touches `skills/sminos/scripts/sminos.py` (new verbs beside `cmd_send`;
-`live_state` and `sync_one`; `cmd_spawn`, `cmd_list`, `cmd_retire`; the
-parser) and `tests/sminos/run-sminos-tests.sh` (a new section for the
-family, and the `blocked` case in the sync section).
+`live_state` and `sync_one`; `resume_session` and its three callers;
+`cmd_spawn`, `cmd_list`, `cmd_retire`, `cmd_send`, `cmd_chart`,
+`cmd_tui`; the parser) and `tests/sminos/run-sminos-tests.sh` (a new
+section for the family, the `blocked` case in the sync section, and the
+existing cases the reach rule changes — the sender-identity case that
+spawns a parentless `me-agent` and sends to an unrelated `orchestrator`
+is not a family seat and must still pass unchanged, which is itself the
+assertion that the rule binds family seats only; add its family-seat
+twin, which is refused).
 
-Interfaces it exposes: `family_of`, `caller_seat`, `within_reach`,
-`chat_path`, `chat_append`, `chat_read`, `compose_chat_frame` (Interfaces
-and Dependencies). It consumes nothing new.
+Interfaces it exposes: `caller_seat`, `is_family_seat`, `family_of`,
+`reach_of`, `require_reach`, `chat_path`, `chat_lock`, `chat_append`,
+`chat_update`, `chat_read`, `seen_advance`, `unread_for`,
+`compose_chat_frame`, `push_member`, `ResumeRefused` (Interfaces and
+Dependencies). It consumes nothing new.
 
-Decisions for this milestone alone: the reach check is one function
-applied in `resolve_seat`'s callers (a seat-caller resolving a target
-outside its reach dies with the reach message) rather than a flag on each
-verb, so a verb added later is scoped by default. `say`'s tag regex is
-applied to the raw text; an `@` inside a code span or an email address
-that happens to match a member alias is a tag — acceptable, and the
-refusal for a non-member tag makes a stray `@word` loud rather than
-silent. The per-chat lock is the `mkdir` spinlock `board_lock` uses today,
-at `$SMINOS_HOME/locks/chat__<host-seat-id>`; it is reused, not
-reinvented, and `board_lock` itself goes in M2. Delivery uses
-`send_frame` and `resume_session` exactly as `wake` does, including the
-`SendFailed` phases. `say` from a seat with no chat (no parent, no
-children) exits 4 with "no family yet: spawn a child, or you were spawned
-without a parent".
+Decisions for this milestone alone: `say`'s tag regex is applied to the
+raw text; an `@` inside a code span or an email address that happens to
+match a member alias is a tag — acceptable, and the refusal for a
+non-member tag makes a stray `@word` loud rather than silent. `say` from
+a seat with no chat (no parent, no children) exits 4 with "no family yet:
+spawn a child, or you were spawned without a parent". The `blocked` fix
+is applied in `live_state` and, in `sync_one`, before both the `idle`
+branch and the general state switch, so a `working` record and an `idle`
+record in that shape both reconcile. The provisional-caller lookup goes
+through `agent_row(session_id=…)` and matches a record whose `current` is
+empty and whose `short` is that row's id; `seen_advance` and every other
+write from a provisional caller target the record found at write time,
+never a seat id remembered from earlier in the command, so a promotion
+between two reads cannot make `meta_set` recreate the provisional file.
 
 Does not touch: the preamble and `SKILL.md` (M3), any removal (M2), the
-TUI (M2), `migrate`.
+TUI's panel (M2), `migrate`, anything under `skills/issue-tracker`.
 
-Proves acceptance 1–8; its tests additionally pin: ids are one past the
-highest stored id even after a corrupt line; the record file is 0600; two
-concurrent `say`s do not interleave ids; a tag naming members of both
-families is refused; the operator's `say` without `--in` is a usage
-error; a subagent-shaped caller (same session id) is scoped as the seat.
+Proves acceptance 1–5, 6 except its preamble clause, 7, 8, 12, and 13; its
+tests additionally pin: ids are one past the highest stored id even after
+a corrupt line; the record file is 0600; two concurrent `say`s do not
+interleave ids; a writer holding the chat lock for longer than thirty
+seconds (a paused stub) is not overtaken; a `chat_update` killed
+mid-rewrite leaves the previous file intact; a tag naming members of both
+families is refused; `@all` beside a tag, a self-tag, `--team` beside a
+parent tag, and an alias `all` are each refused; the operator's `say`
+without `--in` is a usage error; a subagent-shaped caller (same session
+id) is scoped as the seat; a message tagging two stopped members where
+the first resume is refused (its cwd removed) and the second succeeds
+records `failed:…` and `woken` and exits 0; a resume whose uuid is never
+confirmed records `woken?`; two `seen_advance` calls for one seat's two
+chats do not overwrite each other, and a lower id never regresses the
+watermark; a message pushed to a member does not move its watermark; the
+`tests/issue-tracker/` suite is green.
 
 ### M2 — what leaves, leaves
 
@@ -430,28 +555,42 @@ panel asserted.
 Touches `skills/sminos/scripts/sminos.py` (verbs, `read_board`,
 `board_lock`/`board_unlock`, `cmd_view`/`cmd_topology`/`cmd_groups`,
 `cmd_mark`, `cmd_join`/`cmd_leave`, the retired-verb pointers in the
-parser, the codex functions and branches, the docstring's verb list),
-`skills/sminos/scripts/sminos_tui.py` (`board_group`/`board_posts` become
-the chat equivalents over `chat_read`; the panel header and key hint copy),
-`tests/sminos/run-sminos-tests.sh` (sections 8–10 and the TUI board
-assertions), and the real registry once: `sminos list --json` names six
-`engine: codex` records; `sminos remove` each before the branch's code
-stops understanding them (record their ids in the report).
+parser, the codex process functions and branches named in "What leaves",
+the docstring's verb list), `skills/sminos/scripts/sminos_tui.py`
+(`board_group`/`board_posts` become the chat equivalents over
+`chat_read`; the panel header and key hint copy),
+`tests/sminos/run-sminos-tests.sh`, and the real registry once: `sminos
+list --json` names six `engine: codex` records; `sminos remove` each
+before the branch's code stops purging their scratch (record their ids
+in the report).
+
+The suite's dependent fixtures move with the code, not by deleting
+numbered sections: in section 8 only the `mark` cases go (its `status`,
+`meta`, permission, and `attach` coverage stays); sections 9 and 10 (the
+tree/topology/groups views and the board) go; the aside-merge case in the
+exit-gate wave that proves a merged board through `board` and `groups`
+proves it by reading the merged `board.jsonl` file directly instead
+(`migrate` still merges it); the legacy-codex cases in the migration and
+exit-gate sections keep the assertions that still hold (import marks a
+legacy record retired; `fill`/`wake`/`resume` refuse it) and drop those
+about scratch purging and `.rc` barriers; the TUI board assertions become
+chat-panel assertions.
 
 Interfaces: consumes `chat_read` from M1 for the TUI panel.
 
-Decisions: `migrate`'s per-record codex-retirement step is a codex branch
-and goes with the rest; `migrate`'s former-root and aside logic stays
-untouched. The TUI panel's header copy is `── chat · <host
-alias> · N messages · tab to browse ──` and an empty chat says `(no
-messages)`; the overlay shows `#<id> · <from> → <targets> · <ts>` then the
-text. The `nodes` key `topology` emitted for v2 preambles disappears with
-the verb. `SMINOS_ALIAS` is no longer read anywhere.
+Decisions: `migrate`'s former-root and aside logic, and its per-record
+legacy-retirement step, stay untouched. The TUI panel's header copy is
+`── chat · <host alias> · N messages · tab to browse ──` and an empty
+chat says `(no messages)`; the overlay shows `#<id> · <from> → <targets>
+· <ts>` then the text. The `nodes` key `topology` emitted for v2
+preambles disappears with the verb. `SMINOS_ALIAS` is no longer read
+anywhere.
 
 Does not touch: `chart`, `migrate`'s root handling, anything under
 `skills/issue-tracker`.
 
-Proves acceptance 9 and 10.
+Proves acceptance 9 except its grep clause, and 10; the `tests/issue-tracker/`
+suite is green at its end.
 
 ### M3 — the seat protocol
 
@@ -535,10 +674,11 @@ Proves acceptance 6's preamble clause, 9's grep clause, and 11.
 
 Run by the owning session on the real harness, in this worktree. A
 terminal spawns `lead` with `--group fam` and a task that tells it to
-spawn `a` and `b` with worktrees and wait for their reports; the proof is
-acceptance 12, step by step, with `claude agents --json --all` and
-`sminos chat lead` output captured into this spec's Surprises &
-Discoveries as evidence. Every defect this finds is fixed on the branch
+spawn `a` and `b` with worktrees and wait for their reports; `a`'s task
+tells it to spawn `a1` and to speak to it with `--team`; the proof is
+acceptance 14, step by step, with `claude agents --json --all`, `sminos
+chat lead`, and `sminos chat a` output captured into this spec's
+Surprises & Discoveries as evidence. Every defect this finds is fixed on the branch
 with a regression assertion, per the lesson recorded twice in
 `docs/doperpowers/execplans/2026-09-02-agora-tui.md`: only contact with
 the real thing tests the model. Then the whole-branch review at the rung
@@ -569,9 +709,11 @@ M4's live commands, from the same directory:
     skills/sminos/scripts/sminos retire fam/lead --cascade
 
 with the host task written so that `lead` spawns `a` and `b` (sonnet,
-worktrees `a` and `b`), each child says one untagged report and one tagged
-message, and `lead` answers with one `@a @b` message; expected transcript
-lines are the frame first lines of acceptance 12.
+worktrees `a` and `b`), `a` spawns `a1` (sonnet, worktree `a1`) and says
+one `--team` message to it, each child says one untagged report and one
+tagged message, and `lead` answers with one `@a @b` message; expected
+transcript lines are the frame first lines of acceptance 14, and `sminos
+chat a` shows the team message where `sminos chat lead` does not.
 
 ### Interfaces and Dependencies
 
@@ -579,7 +721,11 @@ In `skills/sminos/scripts/sminos.py`, beside the existing registry and
 harness helpers:
 
     def caller_seat():
-        """The seat whose `current` is CLAUDE_CODE_SESSION_ID, or None (the operator)."""
+        """The seat whose `current` is CLAUDE_CODE_SESSION_ID; failing that, the seat whose
+        `current` is empty and whose `short` is the harness row's id for that session
+        (the startup window); else None (the operator)."""
+
+    def is_family_seat(seat) -> bool             # bool(seat["preamble"])
 
     def family_of(host):
         """(host, [children]) — children are seats in host['group'] with parent == host['alias']."""
@@ -587,21 +733,39 @@ harness helpers:
     def reach_of(seat):
         """{seat ids}: seat, its parent, its siblings, its children."""
 
-    def within_reach(caller, target):
-        """True when caller is None (operator) or target['seat_id'] in reach_of(caller)."""
+    def require_reach(caller, target):
+        """No-op when caller is None or not a family seat; else dies (exit 4, the reach
+        message) unless target['seat_id'] in reach_of(caller)."""
 
     def chat_path(host_seat_id) -> str          # $SMINOS_HOME/chats/<host-seat-id>.jsonl
+
+    def chat_lock(host_seat_id):                 # context manager: fcntl.flock on chats/<host-seat-id>.lock
 
     def chat_read(host_seat_id) -> list[dict]   # every record, in id order; unparseable lines skipped
 
     def chat_append(host_seat_id, record) -> dict
-        """Under the chat lock: id = max stored id + 1, ts = now(), delivered = {}; writes one line; returns the record."""
+        """Under the chat lock: id = max stored id + 1, ts = now(), delivered = {}; appends one line; returns the record."""
 
     def chat_update(host_seat_id, msg_id, delivered) -> None
-        """Under the chat lock: rewrites the file with that record's `delivered` map replaced."""
+        """Under the chat lock: rewrites the file with that record's `delivered` map replaced,
+        via a temporary file and os.replace."""
+
+    def seen_advance(seat_id, host_seat_id, msg_id) -> None
+        """Under .metalock: re-read the record; chat_seen[host] = max(stored, msg_id);
+        write back with no generation bump; no-op when the record is gone."""
+
+    def unread_for(host_seat_id, member_alias, watermark, below_id) -> int
+        """Count of records with watermark < id < below_id whose delivered[member_alias]
+        is not 'sent' or 'woken'."""
 
     def compose_chat_frame(host_alias, msg_id, sender, targets, unread, text) -> str
         """'[sminos chat <host> #<id> from <sender> → <targets>' + (' | unread <n>' if unread) + ']\\n' + text"""
+
+    class ResumeRefused(Exception):              # .message, .code — raised by resume_session instead of die()
+
+    def push_member(member, text, tagged) -> str
+        """One member's push per the delivery table; returns the outcome word
+        ('sent', 'woken', 'woken?', 'recorded', 'failed:<error>', 'sent?'); never exits."""
 
     def cmd_say(a)   # a.text, a.in_, a.team
     def cmd_chat(a)  # a.host, a.n (default 30), a.since, a.team, a.json
@@ -615,8 +779,8 @@ The chat record, one per line:
 `mode` is one of `host` (untagged report), `tagged`, `all`, `team`
 (a host's untagged or `@all` message to its children), `operator`
 (an untagged message from `human`). `to` lists the aliases pushed to or
-recorded for; `delivered` maps each to `sent`, `woken`, `recorded`,
-`failed:<error>`, or `sent?`.
+recorded for; `delivered` maps each to `sent`, `woken`, `woken?`,
+`recorded`, `failed:<error>`, or `sent?`.
 
 The seat record's new field:
 
@@ -630,6 +794,17 @@ unknown seat or outside reach.
 
 ## Surprises & Discoveries
 
+- Observation (2026-09-26, spec review): a seat's first seconds are a
+  window in which its record has no `current`: `spawn_fresh` launches the
+  session, writes the record with `current: ""` and the launch's `short`,
+  and sets `current` only after `poll_uuid` returns and the provisional
+  record is promoted. A child whose first command is `sminos chat -n 30`
+  would run it inside that window and be read as the operator.
+  Evidence: `spawn_fresh` in `skills/sminos/scripts/sminos.py` (the
+  `launch` dict with `"current": ""` and the promotion after `poll_uuid`);
+  `tests/claude-code/board-api/test-run-self-location.sh` already tests
+  the same window for the board's self-location. Folded into the caller
+  definition (a `short` match through the harness row) and acceptance 12.
 - Observation (2026-09-25, while surveying the implementation): `live_state`
   reads `blocked` from the harness row alone, so a session that ended
   blocked and whose process has exited still reads `blocked`; the sweep's
@@ -663,6 +838,30 @@ unknown seat or outside reach.
   scope in the CLI with the native tools as the escape hatch, CLI-written
   record, TUI kept, `--cascade`, human as operator, decomposing as one
   surface).
+
+- Decision (2026-09-26, after the two independent reviews): fourteen
+  findings, all verified against the code, all adopted; the design
+  sections above carry the results. What moved: the reach rule binds
+  family seats only (the pipeline already runs its scripts from inside
+  worker seats, which the first draft's "called from terminals" denied);
+  the caller is also found by `short` in the startup window; `cmd_send`'s
+  raw-name and Codex routes are refused for a family seat rather than
+  left to `resolve_seat`; `chat_seen` is a read watermark and unread is
+  computed with the records' `delivered` maps (the first draft's
+  push-advanced cursor forgot messages a member was never pushed);
+  `resume_session` raises `ResumeRefused` so a fan-out survives one bad
+  member, with `woken?` for an unconfirmed launch; the chat lock is a
+  `flock`, not the board's thirty-second `mkdir` lock, and `chat_update`
+  replaces atomically; `seen_advance` is a nested under-lock update
+  without a generation bump; `chart`/`tui` and `chat <host>` are the
+  operator's; selectors have precedence and `all` is reserved; the codex
+  quarantine at the boundary stays while the process handling goes; the
+  suite's dependent fixtures are assigned to M1/M2 by name; M4 is a real
+  three-level family with a grandchild. Rejected: an environment switch
+  (`SMINOS_CALLER=operator`) that pipeline scripts would export around
+  their sminos calls — it would touch six scripts and their tests to
+  express what the `preamble` flag already records.
+  Date/Author: 2026-09-26, Claude.
 
 ## Outcomes & Retrospective
 
