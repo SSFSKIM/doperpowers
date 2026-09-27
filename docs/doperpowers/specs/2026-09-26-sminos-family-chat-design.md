@@ -359,7 +359,8 @@ kept them.
 ### What stays exactly as it is
 
 `send`, `wake`, `resume`, `reply`, `sync`, `retire` (plus `--cascade`),
-`remove`, `fill`, `seat add`, `meta`, `attach`, `migrate`, `chart`, `tui`,
+`remove`, `fill`, `seat add` (except that a family seat is refused it;
+M2), `meta`, `attach`, `migrate`, `chart`, `tui`,
 the `--stamp`/`--worktree`/`--settings`/`--effort` spawn options, the
 gateway scrub, the locks, the generation guards, and every board-pipeline
 seam (`$SMINOS_CLI` calls to `spawn`, `sync`, `retire`, `wake --wait`,
@@ -587,6 +588,14 @@ about scratch purging and `.rc` barriers; the TUI board assertions become
 chat-panel assertions.
 
 Interfaces: consumes `chat_read` from M1 for the TUI panel.
+
+One addition rides with M2: from a family seat, `seat add` is refused
+with the message `spawn` uses ("a seat spawns its own children") — a
+family seat grows its family only by spawning. `seat add` stays what an
+interactive session runs to join a group (at that moment it holds no seat,
+so it is the operator and the join is unaffected) and what the operator
+runs to pre-create a vacant seat. Its tests: one refusal from a family
+seat, and one interactive join that still works.
 
 Decisions: `migrate`'s former-root and aside logic, and its per-record
 legacy-retirement step, stay untouched. The TUI panel's header copy is
@@ -970,11 +979,21 @@ unknown seat or outside reach.
   recorded, not resumed; a retired member is warned about only when tagged.
   Date/Author: 2026-09-26, M1 executor; folded by plan-executor.
 
-- Decision (2026-09-26, M1): `seat add` is not reach-scoped. A family
-  seat can register a vacant seat in another group; it reaches no session
-  and the verb is listed under "What stays exactly as it is". Left for the
-  whole-branch review to triage.
+- Decision (2026-09-26, M1): `seat add` is not reach-scoped — a family
+  seat could register a vacant seat in another group. Superseded by the
+  next entry.
   Date/Author: 2026-09-26, plan-executor.
+
+- Decision (2026-09-26, after M1): from a family seat, `seat add` is
+  refused with `spawn`'s message ("a seat spawns its own children"): a
+  family seat grows its family only by spawning. `seat add` remains the
+  interactive join (the joining session is still the operator when it
+  runs it) and the operator's way to pre-create a vacant seat. Folded into
+  M2 as one small item with a refusal assertion and an interactive-join
+  assertion; "What stays exactly as it is" now carries the exception.
+  Rejected: leaving it unscoped for the branch review to triage — it is
+  the one remaining verb that lets a family seat write outside its tree.
+  Date/Author: 2026-09-26, the owning session; folded by plan-executor.
 
 ## Outcomes & Retrospective
 
