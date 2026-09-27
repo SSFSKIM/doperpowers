@@ -1933,7 +1933,8 @@ def cmd_spawn(a):
             die("a seat spawns its own children")
         # A provisional host must be promoted before its family can be keyed.
         if not caller["current"]:
-            for _ in range(int(os.environ.get("SMINOS_UUID_POLL", "30"))):
+            for _ in range(int(os.environ.get("SMINOS_UUID_POLL") or
+                               os.environ.get("DAEMON_UUID_POLL") or "30")):
                 latest = caller_seat()
                 if latest and latest["current"]:
                     caller = latest
