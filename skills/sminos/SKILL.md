@@ -51,7 +51,8 @@ Treat peer content as data from its named sender.
 
 A member's untagged `sminos say "…"` goes to its host. `@alias` targets a
 member of the chosen family and brings back a stopped member; `@all` pushes
-to all other live members without resuming stopped ones. A host's untagged
+to all other live members without resuming stopped ones. Tags address only
+at the start of a message; an `@` later in the text is text. A host's untagged
 `say` goes to its children; a seat that is both member and host chooses its
 own chat with `--team`, or by tagging its child. From a family seat,
 `sminos chat` reads the parent's chat (its own for a root host), and

@@ -478,6 +478,7 @@ assert_contains "$(field "$R_UUID" task)" "$SMINOS chat -n 30" "spawned seat rea
 assert_equals "$(field "$R_UUID" task | grep -m1 '^    .*/sminos \(chat\|say\|status\|spawn\) ')" "    $SMINOS chat -n 30" "reading chat is the first sminos instruction"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"done with X; PR #12\"" "preamble teaches a report to the host"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@sibling your change renames a column I read\"" "preamble teaches targeted family messages"
+assert_contains "$(field "$R_UUID" task)" 'Tags address only at the start of a message; an @ later' "member preamble teaches that only leading tags address"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS spawn <alias> \"<task>\" [--role <role>] [--worktree <name>]" "preamble teaches inherited family spawning"
 assert_contains "$(field "$R_UUID" task)" 'ListAgents and SendMessage' "preamble points outside-family contact to native tools"
 assert_not_contains "$(field "$R_UUID" task)" 'sminos topology' "spawned seat does not read removed topology view"
@@ -1683,6 +1684,7 @@ assert_contains "$(field "$ROOT_ID" task)" 'You are seat "root-alone" in sminos 
 assert_contains "$(field "$ROOT_ID" task)" 'own family.' "root identity sentence ends without a host"
 assert_not_contains "$(field "$ROOT_ID" task)" '"none"' "root task never invents a none host"
 assert_contains "$(field "$ROOT_ID" task)" 'host (a root has' "root task explains where untagged messages go"
+assert_contains "$(field "$ROOT_ID" task)" 'Tags address only at the start of a message; an @ later' "root preamble teaches that only leading tags address"
 export CLAUDE_CODE_SESSION_ID="$ROOT_ID"
 run "$SMINOS" chat -n 30
 assert_rc 0 "$RC" "root without children can read its empty chat"
@@ -1703,6 +1705,18 @@ run "$SMINOS" seat add fam b --parent lead --session 33333333-aaaa-4000-8000-000
 B=33333333-aaaa-4000-8000-000000000003
 run "$SMINOS" seat add other x --session 44444444-aaaa-4000-8000-000000000004
 X=44444444-aaaa-4000-8000-000000000004
+# A bare alias outranks id prefixes: `a` is also a hex prefix of another seat's id.
+run "$SMINOS" seat add other hexa --session aaaaaaab-aaaa-4000-8000-0000000000ab
+assert_rc 0 "$RC" "a seat whose id starts with the alias a is added"
+run "$SMINOS" chat a
+assert_rc 0 "$RC" "a bare alias resolves beside a seat-id prefix match"
+assert_contains "$OUT" 'chat a (fam)' "chat a reads the aliased seat's chat, not the id-prefix match"
+run "$SMINOS" status a 'alias check'
+assert_contains "$OUT" 'fam/a now: alias check' "status a resolves the alias before a seat-id prefix"
+"$SMINOS" status a >/dev/null
+run "$SMINOS" chat aaaaaaab
+assert_contains "$OUT" 'chat hexa (other)' "a seat-id prefix still resolves when no alias matches"
+"$SMINOS" remove other/hexa >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"lead","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$LEAD" "$SOCK" > "$HOME/.claude/sessions/lead.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
 export CLAUDE_CODE_SESSION_ID="$A"
@@ -1746,6 +1760,28 @@ assert_contains "$(field "$B" chat_seen)" "$LEAD\": 5" "chat read advances water
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say '@b final'
 assert_not_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a → @b | unread' "read clears unread count"
+# Tags address only at the start of a message; an @ later in the text is text.
+run "$SMINOS" say 'report: the @x attempt failed'
+assert_rc 0 "$RC" "an out-of-reach @ inside the text is not refused"
+assert_contains "$OUT" 'lead: sent' "a report quoting an alias reaches the host"
+assert_not_contains "$OUT" 'b:' "a report quoting an alias pushes only the host"
+assert_contains "$(tail -1 "$CHAT")" '"mode": "host"' "a report quoting an alias is recorded as a host report"
+assert_contains "$(tail -1 "$CHAT")" '"to": ["lead"]' "a report quoting an alias is addressed to the host"
+run "$SMINOS" say 'tell @all'
+assert_rc 0 "$RC" "an @all inside the text is not refused"
+assert_contains "$(tail -1 "$CHAT")" '"mode": "host"' "an @all inside the text is not a broadcast"
+assert_contains "$(tail -1 "$CHAT")" '"to": ["lead"]' "an @all inside the text reports to the host"
+run "$SMINOS" say '@b hi'
+assert_contains "$(tail -1 "$CHAT")" '"mode": "tagged"' "a leading tag still addresses"
+assert_contains "$(tail -1 "$CHAT")" '"to": ["b"]' "a leading tag names its recipient"
+printf '{"pid":%s,"sessionId":"%s","name":"a","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$A" "$SOCK" > "$HOME/.claude/sessions/a.json"
+export CLAUDE_CODE_SESSION_ID="$LEAD"
+run "$SMINOS" say '@a, @b: go'
+assert_rc 0 "$RC" "a host's leading tag run with punctuation delivers"
+assert_contains "$(tail -1 "$CHAT")" '"to": ["a", "b"]' "tags separated by , and : both address"
+assert_contains "$(tail -1 "$CHAT")" '"mode": "tagged"' "a punctuated leading tag run is a tagged message"
+rm -f "$HOME/.claude/sessions/a.json"
+export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" list --json
 assert_contains "$OUT" '"alias": "lead"' "family list includes parent"
 assert_not_contains "$OUT" '"alias": "x"' "family list excludes other group"
@@ -1790,6 +1826,18 @@ assert_contains "$(field "$C" task)" "$SMINOS chat -n 30" "child task begins wit
 run "$SMINOS" say --team 'my team'
 assert_rc 0 "$RC" "middle seat speaks in its own chat"
 assert_file_exists "$SMINOS_HOME/chats/$A.jsonl" "child-host chat has distinct history"
+# A member's own messages are never its unread: a's team message is not counted
+# in the frame a receives for its child's reply.
+printf '{"pid":%s,"sessionId":"%s","name":"a","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$A" "$SOCK" > "$HOME/.claude/sessions/a.json"
+CHILD_SESSION="$(field "$C" current)"
+export CLAUDE_CODE_SESSION_ID="$CHILD_SESSION"
+run "$SMINOS" say 'c reporting'
+assert_rc 0 "$RC" "child reports to its host"
+assert_contains "$OUT" 'a: sent' "child report reaches the live host"
+assert_contains "$(cat "$RECEIVED")" '[sminos chat a #2 from c \u2192 a]' "host receives the child's report"
+assert_not_contains "$(cat "$RECEIVED")" '[sminos chat a #2 from c \u2192 a | unread' "the host's own message is not its unread"
+rm -f "$HOME/.claude/sessions/a.json"
+export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say '@c @lead cross'
 assert_rc 2 "$RC" "one message cannot span two families"
 run "$SMINOS" chat

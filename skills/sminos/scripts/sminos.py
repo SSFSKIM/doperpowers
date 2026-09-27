@@ -353,8 +353,11 @@ def find_seat(q):
     """Resolve a query to a seat WITHOUT printing or exiting.
 
     Returns ("ok", seat) | ("none", None) | ("ambiguous", [seats]). Order:
-    `group/alias`, seat id (or prefix), current turn's short id or session id
-    (or prefix), then a bare alias when exactly one seat has it.
+    `group/alias`; an exact seat id, current turn's short id, or session id;
+    a bare alias when exactly one seat has it; a seat-id prefix; then a
+    short-id or session-id prefix. Exact names come before prefixes, so a
+    short alias such as `a` is not lost to the hex ids that happen to start
+    with it. An alias two seats share stays ambiguous.
     """
     if not q:
         return "none", None
@@ -363,25 +366,40 @@ def find_seat(q):
         g, a = q.split("/", 1)
         hits = [s for s in all_seats if s["group"] == g and s["alias"] == a]
         return ("ok", hits[0]) if len(hits) == 1 else ("none", None)
-    hits = [s for s in all_seats if s["seat_id"] == q or s["seat_id"].startswith(q)]
-    if not hits:
-        hits = [s for s in all_seats
-                if (s["short"] and (s["short"] == q or s["short"].startswith(q)))
-                or (s["current"] and (s["current"] == q or s["current"].startswith(q)))]
-    if not hits:
-        hits = [s for s in all_seats if s["alias"] == q]
-    if len(hits) == 1:
-        return "ok", hits[0]
-    if not hits:
-        return "none", None
-    return "ambiguous", hits
+    stages = (
+        lambda s: q in (s["seat_id"], s["short"], s["current"]),
+        lambda s: s["alias"] == q,
+        lambda s: s["seat_id"].startswith(q),
+        lambda s: (bool(s["short"]) and s["short"].startswith(q))
+        or (bool(s["current"]) and s["current"].startswith(q)),
+    )
+    for match in stages:
+        hits = [s for s in all_seats if match(s)]
+        if len(hits) == 1:
+            return "ok", hits[0]
+        if hits:
+            return "ambiguous", hits
+    return "none", None
 
 
 # ------------------------------------------------------------- family chats
 
 REACH_HINT = ("is outside your family (parent, siblings, children). To reach another session "
               "use the native ListAgents and SendMessage tools.")
-TAGS = re.compile(r"@[A-Za-z0-9._-]+")
+TAG = re.compile(r"@[A-Za-z0-9._-]+")
+
+
+def leading_tags(text):
+    """The `@name` tokens that open a message, trailing `,:;` stripped. Only
+    this leading run addresses anyone: an @ later in the text (a quoted alias,
+    an error message naming a seat) is just text."""
+    tags = []
+    for token in text.split():
+        token = token.rstrip(",:;")
+        if not TAG.fullmatch(token):
+            break
+        tags.append(token)
+    return tags
 
 
 def caller_seat():
@@ -507,8 +525,9 @@ def seen_advance(seat_id, host_seat_id, msg_id, expected_short=None):
 
 
 def unread_for(host_seat_id, member_alias, watermark, below_id):
+    """Messages the member has neither read nor been pushed; its own are never unread."""
     return sum(1 for r in chat_read(host_seat_id)
-               if watermark < r["id"] < below_id and
+               if watermark < r["id"] < below_id and r.get("from") != member_alias and
                r.get("delivered", {}).get(member_alias) not in ("sent", "woken"))
 
 
@@ -556,7 +575,7 @@ def cmd_say(a):
             die("--in is for an operator, not a seat")
         parent = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None)
         own = family_of(caller)[1]
-        tags = TAGS.findall(a.text)
+        tags = leading_tags(a.text)
         if "@all" in tags and len(tags) != 1:
             die("@all stands alone")
         if "@%s" % caller["alias"] in tags:
@@ -589,7 +608,7 @@ def cmd_say(a):
             die("say from an operator requires --in <host>")
         host = resolve_seat(a.in_)
         members = [host] + family_of(host)[1]
-        tags = TAGS.findall(a.text)
+        tags = leading_tags(a.text)
         if "@all" in tags and len(tags) != 1:
             die("@all stands alone")
         selected = set(tags) - {"@all"}
