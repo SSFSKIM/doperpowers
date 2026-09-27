@@ -665,6 +665,13 @@ conflicts were resolved in: `<files>`."
   regardless.
   Date/Author: 2026-09-27 / fable session, review round 1.
 
+- 2026-09-27: execution deferred by SSFSKIM — the spec stays design-only,
+  reviewed and committed on branch `worktree-parallel-milestones`, until a
+  later session executes it. That session starts at SDE's pre-flight from
+  this document (the ledger under `.doperpowers/sde/` holds only this
+  session's pre-flight note), with the version bump in M3 taken against
+  `main` at that time.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
