@@ -290,11 +290,12 @@ what was said, the repository and its specs for what was decided.
 
 ### `list`, `spawn`, `retire` in a family
 
-`list` from a seat prints the caller's families — parent, siblings, self,
-children — in the same table as today, nothing else (a root with no
-children sees one row, itself, which is what the board's worker protocols
-mean by "`sminos list` shows your seat's name"); from a terminal it is the
-fleet, as today. `spawn` from a seat derives group and parent (above).
+`list` from a family seat prints the caller's families — parent,
+siblings, self, children — in the same table as today, nothing else (a
+family root with no children sees one row, itself); from a terminal, and
+from a seat that is not a family seat (a pipeline worker, whose protocols
+rely only on "`sminos list` shows your seat's name"), it is the fleet, as
+today. `spawn` from a seat derives group and parent (above).
 `retire <seat>` refuses when the seat hosts a child whose live state is
 busy, idle, or blocked, naming them; `retire --cascade` retires the
 descendants depth-first — a child's own descendants before it, siblings
@@ -405,12 +406,13 @@ server); the live checks are M4's, on the real harness.
 3. **Untagged from a root host reaches the team.** With
    `CLAUDE_CODE_SESSION_ID` set to `lead`'s session, `sminos say "merge b
    first"` pushes to `a` and `b` and records `"mode":"team"`.
-4. **Unread is exact, and a read clears it.** After 1–3 (`b` was not
-   pushed message 1, was pushed 2 and 3), a fourth message from `a` tagged
-   `@b` reaches `b` with `| unread 1` in its first line. Then from `b`,
-   `sminos chat` prints the header `chat lead (fam) · members: lead, a, b ·
-   4 messages` and every message, and afterwards `b`'s record has
-   `chat_seen[<lead-seat-id>] == 4`; the next frame delivered to `b`
+4. **Unread is exact, and a read clears it.** After 1–3 (four messages:
+   `b` was not pushed #1 or #3, was pushed #2 when woken and #4 once live
+   on the socket server), a fifth message from `a` tagged `@b` reaches `b`
+   with `| unread 2` in its first line. Then from `b`, `sminos chat`
+   prints the header `chat lead (fam) · members: lead, a, b · 5 messages`
+   and every message, and afterwards `b`'s record has
+   `chat_seen[<lead-seat-id>] == 5`; the next frame delivered to `b`
    carries no `| unread`.
 5. **Reach.** From `a`, `sminos send other/x "hi"`, `sminos send <x's
    seat id> "hi"`, `sminos send <a live harness session name that is no
@@ -693,6 +695,8 @@ All commands run from the worktree root,
     tests/sminos/run-sminos-tests.sh            # hermetic suite; ends: all N assertions passed
     tests/skill-links/test-cross-doc-refs.sh    # cross-reference check over skills and docs
     scripts/lint-shell.sh                       # shellcheck baseline
+    for t in tests/issue-tracker/test-*.sh tests/claude-code/board-api/test-*.sh; do bash "$t" || echo "FAIL $t"; done
+                                                # the pipeline seams, at each milestone boundary (no run-*.sh exists there)
     scripts/bump-version.sh <next minor>        # M3's last commit
     skills/sminos/scripts/sminos tui fam --headless --keys "b"   # acceptance 10
 
@@ -862,6 +866,28 @@ unknown seat or outside reach.
   their sminos calls — it would touch six scripts and their tests to
   express what the `preamble` flag already records.
   Date/Author: 2026-09-26, Claude.
+
+- Decision (2026-09-26, execution pre-flight): acceptance 4's counts
+  were written as though acceptance 2 sent one message; it sends two
+  (`@b …` and `@all standup`), so 1–3 leave four messages and `b` misses
+  #1 (a report to the host) and #3 (a broadcast while it was stopped).
+  Acceptance 4 now reads `| unread 2`, `5 messages`, and
+  `chat_seen == 5`; acceptance 3's "pushes to `a` and `b`" means the test
+  puts `b` live on the socket server after it was woken. The rule is
+  unchanged — only the arithmetic of the example.
+  Date/Author: 2026-09-26, plan-executor.
+
+- Decision (2026-09-26, execution pre-flight): `list` is scoped only for
+  a family-seat caller. "`list` from a seat prints the caller's families"
+  and the aside about the board's worker protocols read as though a
+  pipeline root would also see one row; the reach section, acceptance 13,
+  and the second Decision Log entry bind the rule to family seats only
+  and keep every pipeline seam as it is. A non-family seat's `list` is
+  the fleet, as from a terminal (its own name is in it, which is all the
+  worker protocols rely on). Rejected: scoping `list` for every seat
+  caller — a behavior change inside pipeline workers that the rest of
+  the design explicitly avoids.
+  Date/Author: 2026-09-26, plan-executor.
 
 ## Outcomes & Retrospective
 
