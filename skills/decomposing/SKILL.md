@@ -54,10 +54,13 @@ the board's ticket gate (doperpowers:issue-tracker
   resolution. Fails ⇒ divide into work-children.
 
 A goal that passes the gate is a LEAF whatever its size — it dispatches by
-its route, and this skill's reach ends. Reliably-ownable is a moving
-envelope, not a size class: big-but-coherent work that one context can
-carry is one leaf (evidence: an epic-sized phase correctly ran as one
-spec carrying its own execution). Depth is an output of the gate, never a
+its route, and this skill's reach ends. A leaf may also run as a sminos
+child seat — the dispatching session becomes its host and the family chat
+(doperpowers:sminos) is where the child reports and asks — when the
+dispatching agent judges a live, addressable session worth its cost.
+Reliably-ownable is a moving envelope, not a size class: big-but-coherent
+work that one context can carry is one leaf (evidence: an epic-sized phase
+correctly ran as one spec carrying its own execution). Depth is an output of the gate, never a
 target, and it is asymmetric by nature: one branch bottoms out in a single
 one-unit spec while its sibling divides twice more.
 
