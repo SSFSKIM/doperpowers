@@ -1925,6 +1925,19 @@ for path, cwd in ((sys.argv[1], '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3
     with open(path, 'w') as f: json.dump(d, f)
 PY_FIX_CWD
 export CLAUDE_CODE_SESSION_ID="$DUO"
+python3 - "$(lock_file d1)" "$TEST_ROOT/d1-lock-ready" <<'PY_D1_LOCK' & d1_holder=$!
+import fcntl,pathlib,sys,time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f,fcntl.LOCK_EX)
+    pathlib.Path(sys.argv[2]).touch()
+    time.sleep(.7)
+PY_D1_LOCK
+for _ in $(seq 1 50); do [ -f "$TEST_ROOT/d1-lock-ready" ] && break; sleep .02; done
+run "$SMINOS" say '@d1 @d2 lock contention'
+wait "$d1_holder"
+assert_rc 0 "$RC" "one busy lifecycle lock does not abort sibling fan-out"
+assert_contains "$OUT" 'd1: failed:' "busy lifecycle lock is recorded per member"
+assert_contains "$OUT" 'd2: woken' "later member still resumes after lock contention"
 run "$SMINOS" say '@d1 @d2 please respond'
 assert_rc 0 "$RC" "one refused resume does not abort the chat"
 assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"

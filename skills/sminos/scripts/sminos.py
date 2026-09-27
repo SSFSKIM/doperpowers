@@ -731,7 +731,7 @@ def group_for_record(m):
     return str(m.get("agora_group") or "") or derive_group(str(m.get("cwd") or ""))
 
 
-def lock_names(names, label, blocking=False):
+def lock_names(names, label, blocking=False, refusal=None):
     """One lifecycle change per harness NAME at a time: spawn / fill / seat add /
     resume / wake / retire / remove / sync hold these flocks from their
     availability check through the record commit (through process start, for
@@ -755,13 +755,16 @@ def lock_names(names, label, blocking=False):
             for held in locks:
                 held.close()
             lf.close()
-            die("'%s' (%s) is being changed by another sminos process — retry shortly" % (nm, label), EXIT_UNKNOWN)
+            message = "'%s' (%s) is being changed by another sminos process — retry shortly" % (nm, label)
+            if refusal:
+                raise refusal(message, EXIT_UNKNOWN)
+            die(message, EXIT_UNKNOWN)
         locks.append(lf)
     return locks
 
 
-def lock_seat(s, blocking=False):
-    return lock_names([s["alias"], s["addr"]], "%s/%s" % (s["group"], s["alias"]), blocking)
+def lock_seat(s, blocking=False, refusal=None):
+    return lock_names([s["alias"], s["addr"]], "%s/%s" % (s["group"], s["alias"]), blocking, refusal)
 
 
 def unlock(locks):
@@ -2155,7 +2158,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     if s["engine"] == "codex":
         raise ResumeRefused("legacy codex record")
     if locks is None:
-        locks = lock_seat(s)
+        locks = lock_seat(s, refusal=ResumeRefused if quiet else None)
         fresh = reload_seat(s["seat_id"])
         if fresh is None:
             unlock(locks)
