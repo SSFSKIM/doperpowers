@@ -473,9 +473,16 @@ def chat_append(host_seat_id, record):
     with chat_lock(host_seat_id):
         record = {**record, "id": max((r["id"] for r in chat_read(host_seat_id)), default=0) + 1,
                   "ts": now(), "delivered": {}}
-        fd = os.open(chat_path(host_seat_id), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        fd = os.open(chat_path(host_seat_id), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "r+b") as f:
+            # An interrupted append can leave a fragment without its newline;
+            # end it so this record is a line of its own.
+            end = f.seek(0, os.SEEK_END)
+            if end:
+                f.seek(end - 1)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
         return record
 
 
@@ -544,14 +551,21 @@ class ResumeRefused(Exception):
 
 
 def push_member(member, text, tagged):
-    if member["status"] == "retired":
-        if tagged:
-            warn("%s is retired; re-fill it to reach it" % member["alias"])
-        return "recorded"
-    if member["engine"] == "codex":
-        return "failed:legacy codex record"
+    def unreachable(s):
+        # Decided on the record as it is now, never on the fan-out's snapshot:
+        # an earlier member's resume can outlast a later member's retirement.
+        if s is None or s["status"] == "retired":
+            if s is not None and tagged:
+                warn("%s is retired; re-fill it to reach it" % s["alias"])
+            return True
+        return False
+
     fresh = reload_seat(member["seat_id"])
-    if fresh is None or not fresh["current"]:
+    if unreachable(fresh):
+        return "recorded"
+    if fresh["engine"] == "codex":
+        return "failed:legacy codex record"
+    if not fresh["current"]:
         return "recorded"
     peer = peer_for_session(fresh["current"])
     if peer:
@@ -562,10 +576,19 @@ def push_member(member, text, tagged):
             return "sent?" if e.phase == "after" else "failed:%s" % e
     if not tagged or live_state(fresh) != "stopped":
         return "recorded"
+    locks = []
     try:
-        return resume_session(fresh, text, False, quiet=True)
+        # The lifecycle lock spans the recheck and the resume, so a concurrent
+        # retire either finishes first (and is seen) or waits for the resume.
+        locks = lock_seat(fresh, refusal=ResumeRefused)
+        fresh = reload_seat(member["seat_id"])
+        if unreachable(fresh) or not fresh["current"]:
+            return "recorded"
+        return resume_session(fresh, text, False, locks, quiet=True)
     except ResumeRefused as e:
         return "failed:%s" % e.message
+    finally:
+        unlock(locks)
 
 
 def cmd_say(a):
@@ -2619,8 +2642,13 @@ def sync_one(s0):
 def cmd_sync(a):
     if a.all or not a.seat:
         # --all includes idle seats too, to catch natively-woken ones; a seat
-        # that needed no reconciliation (noop) is not printed.
+        # that needed no reconciliation (noop) is not printed. A family seat
+        # reconciles only its reach, as `list` shows it.
+        caller = caller_seat()
+        reach = reach_of(caller) if is_family_seat(caller) else None
         for s in seats():
+            if reach is not None and s["seat_id"] not in reach:
+                continue
             if s["status"] in ("working", "blocked", "idle"):
                 word = sync_one(s)
                 if word != "noop":
@@ -2700,9 +2728,14 @@ def cmd_retire(a):
     caller = caller_seat()
     descendants = []
     reachable = reach_of(caller) if is_family_seat(caller) else None
+    visited = {target["seat_id"]}
 
     def collect(host, own_subtree):
+        # Parents may form a cycle (the registry permits it): visit each seat once.
         for child in family_of(host)[1]:
+            if child["seat_id"] in visited:
+                continue
+            visited.add(child["seat_id"])
             child_is_own = own_subtree or (caller is not None and child["seat_id"] == caller["seat_id"])
             if reachable is not None and child["seat_id"] not in reachable and not child_is_own:
                 require_reach(caller, child)
@@ -2722,7 +2755,8 @@ def cmd_retire(a):
 def _retire_one(s0, purge):
     locks, s = locked_fresh(s0, "retire")
     try:
-        live_children = [c["alias"] for c in family_of(s)[1] if c["status"] != "retired" and live_state(c) in FILLED]
+        live_children = [c["alias"] for c in family_of(s)[1] if c["seat_id"] != s["seat_id"] and
+                         c["status"] != "retired" and live_state(c) in FILLED]
         if live_children:
             die("%s/%s hosts live children: %s — retire them first or use --cascade" % (
                 s["group"], s["alias"], ", ".join(live_children)), EXIT_UNKNOWN)

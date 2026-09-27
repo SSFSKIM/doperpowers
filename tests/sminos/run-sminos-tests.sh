@@ -1759,7 +1759,8 @@ assert_contains "$OUT" '→ @b' "tagged chat entry marks its recipient"
 assert_contains "$(field "$B" chat_seen)" "$LEAD\": 5" "chat read advances watermark"
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say '@b final'
-assert_not_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a → @b | unread' "read clears unread count"
+assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a \u2192 @b]' "the message after a read is pushed"
+assert_not_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a \u2192 @b | unread' "read clears unread count"
 # Tags address only at the start of a message; an @ later in the text is text.
 run "$SMINOS" say 'report: the @x attempt failed'
 assert_rc 0 "$RC" "an out-of-reach @ inside the text is not refused"
@@ -1785,6 +1786,16 @@ export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" list --json
 assert_contains "$OUT" '"alias": "lead"' "family list includes parent"
 assert_not_contains "$OUT" '"alias": "x"' "family list excludes other group"
+# Bulk sync is scoped the same way: an outsider's record is neither printed nor touched.
+printf 'short=xxxx0004\nuuid=%s\nname=x\nstate=done\nstatus=idle\n' "$X" > "$STUB_STATE/agents/xxxx0004"
+env -u CLAUDE_CODE_SESSION_ID "$SMINOS" meta set other/x status working >/dev/null
+X_GEN="$(field "$X" gen)"
+run "$SMINOS" sync --all
+assert_rc 0 "$RC" "family sync --all runs"
+assert_not_contains "$OUT" 'other/x' "family sync --all does not print an outsider"
+assert_equals "$(field "$X" status)" working "family sync --all leaves an outsider's status"
+assert_equals "$(field "$X" gen)" "$X_GEN" "family sync --all leaves an outsider's record"
+rm -f "$STUB_STATE/agents/xxxx0004"
 for target in other/x "$X" rawname codex:thread; do
   run "$SMINOS" send "$target" hi
   assert_rc 4 "$RC" "family send refuses $target"
@@ -1884,6 +1895,17 @@ unset CLAUDE_CODE_SESSION_ID
 assert_rc 0 "$RC" "host seat can cascade through its grandchild"
 assert_contains "$OUT" 'retired fam/lead' "cascade ends with host"
 assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired fam\/\([^ ]*\).*/\1/p' | tr '\n' ' ')" 'c a b1 b lead ' "cascade retires depth-first then siblings in alias order"
+# The registry permits cyclic parents; a cascade visits each seat once.
+run "$SMINOS" seat add cyc loop --parent loop
+run "$SMINOS" retire cyc/loop --cascade
+assert_rc 0 "$RC" "cascade over a self-parent retires"
+assert_equals "$(printf '%s\n' "$OUT" | grep -c '^retired cyc/loop ')" 1 "a self-parent seat is retired once"
+run "$SMINOS" seat add cyc p1 --parent p2
+run "$SMINOS" seat add cyc p2 --parent p1
+run "$SMINOS" retire cyc/p1 --cascade
+assert_rc 0 "$RC" "cascade over a two-seat parent cycle retires"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired cyc\/\([^ ]*\).*/\1/p' | tr '\n' ' ')" 'p2 p1 ' "a two-seat cycle retires each seat once, child first"
+for cyc in loop p1 p2; do "$SMINOS" remove "cyc/$cyc" >/dev/null; done
 rm -f "$HOME/.claude/sessions/b.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
 export CLAUDE_CODE_SESSION_ID="$A"
@@ -2079,6 +2101,43 @@ PY_ATOMIC
 )"
 assert_equals "$RESULT" '-9' "chat updater was killed before replacement"
 assert_equals "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" "$BEFORE_CHAT" "killed update preserves complete chat"
+# An interrupted append left a fragment with no newline: the next record is a line of its own.
+printf '%s' '{"id":2,"text":"interrupted' >> "$SMINOS_HOME/chats/$DUO.jsonl"
+run "$SMINOS" say --in duo 'after a torn append'
+assert_rc 0 "$RC" "say after a torn append records"
+run "$SMINOS" chat duo --json
+assert_contains "$OUT" '"text": "after a torn append"' "a message after a torn append is readable"
+assert_equals "$(python3 - "$SMINOS_HOME/chats/$DUO.jsonl" <<'PY_TORN'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get("text") == "after a torn append":
+        print(bool(d["delivered"]))
+PY_TORN
+)" True "delivery outcomes land on a message after a torn append"
+# A member retired while an earlier member's push ran is not resumed from a stale snapshot.
+run "$SMINOS" seat add fam stale --session eeeeeeee-aaaa-4000-8000-00000000000e
+STALE=eeeeeeee-aaaa-4000-8000-00000000000e
+printf 'short=eeee000e\nuuid=%s\nname=stale\nstate=stopped\ncwd=%s\n' "$STALE" "$WORK" > "$STUB_STATE/agents/eeee000e"
+"$SMINOS" meta set fam/stale cwd "$WORK" >/dev/null
+run "$SMINOS" retire fam/stale
+PUSHED="$(python3 - "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$STALE" 2>&1 <<'PY_STALE'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1])
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+member = {**mod.reload_seat(sys.argv[2]), "status": "idle"}
+print(mod.push_member(member, "[sminos chat duo #99 from human \u2192 @stale]\nhi", True))
+PY_STALE
+)"
+assert_contains "$PUSHED" 'recorded' "a push decides retirement on the reloaded record"
+assert_contains "$PUSHED" 'is retired; re-fill it to reach it' "a tagged retired member still warns"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $STALE" "a retired member is never resumed"
+assert_equals "$(field "$STALE" status)" retired "a stale push leaves the member retired"
+"$SMINOS" remove fam/stale >/dev/null
+rm -f "$STUB_STATE/agents/eeee000e"
 # A long-held flock is not a timed lease: no second writer overtakes it at 30 s.
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
   python3 - "$SMINOS_HOME/chats/$DUO.lock" "$TEST_ROOT/lock-ready" <<'PY_LOCK_HOLDER' & holder=$!
