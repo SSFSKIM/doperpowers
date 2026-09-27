@@ -277,10 +277,15 @@ concurrently and a bare continuation line would not say whose it is. After
 compaction, or in a new controller, for each executed member without a
 `complete` line:
 
-- A `landed` line is present, or its latest head is already an ancestor of
-  the execution branch (`git merge-base --is-ancestor <sha> HEAD`): the
-  landing happened. Finish the cleanup — a worktree or branch already gone
-  is done — and write `complete`.
+- A `landed` line is present, or — the landing phase open, the coverage
+  rule in the next bullet satisfied for its head, and that head past the
+  fork (`git rev-list --count <fork>..<head>` above zero) — its head is
+  already an ancestor of the execution branch
+  (`git merge-base --is-ancestor <sha> HEAD`): the landing happened,
+  interrupted before its ledger line. Finish the cleanup — a worktree or
+  branch already gone is done — and write `complete`. A head at the fork
+  commit is an ancestor by construction and says nothing; ancestry alone
+  never outranks a pending fix or a closed phase.
 - Otherwise its branch exists, since a branch is deleted only after
   `landed`. Recreate the worktree if it is gone
   (`git worktree add <workspace>/wt-<N> sde/<spec-slug>/M<N>`) and resume
@@ -453,7 +458,8 @@ landed, and the milestone after the group waits for the whole group;
 "Durable progress" gains the group lines, the `Task N:` prefix on every
 member line, the `approved`, `rebased … onto … clean|resolved`, and
 `landed` lines, and the recovery rules of the Recovery section — the
-ancestor check for a landing interrupted before its ledger line, and the
+ancestor check for a landing interrupted before its ledger line (gated on
+an open phase, a valid approval, and a head past the fork), and the
 approval-coverage rule that never infers an unchanged patch from a rebase
 that succeeds now; "Dispatch hygiene" gains the member's two lines and the
 reviewer's worktree checkout line. The design's reasoning is not restated in the
@@ -702,12 +708,17 @@ conflicts were resolved in: `<files>`."
   landed side that is wrong.
   Date/Author: 2026-09-27 / fable session, review round 2.
 
+- 2026-09-27: review round 3 — the ancestry check in Recovery is gated on
+  an open phase, a valid approval, and a head past the fork; a member at
+  the fork commit (returned BLOCKED before committing) was otherwise read
+  as landed. Round 3 produced this one refinement and nothing of a new
+  kind; the review is closed.
+
 - 2026-09-27: execution deferred by SSFSKIM — the spec stays design-only,
-  reviewed and committed on branch `worktree-parallel-milestones`, until a
-  later session executes it. That session starts at SDE's pre-flight from
-  this document (the ledger under `.doperpowers/sde/` holds only this
-  session's pre-flight note), with the version bump in M3 taken against
-  `main` at that time.
+  reviewed and merged to `main` as its spec commits alone, until a later
+  session executes it. That session starts a branch from `main`, runs
+  SDE's pre-flight from this document (no ledger exists yet), and takes
+  the version bump in M3 against `main` at that time.
 
 ## Outcomes & Retrospective
 
