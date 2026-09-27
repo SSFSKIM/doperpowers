@@ -32,7 +32,7 @@ from the terminal prints that line and every one after it.
 
 - [x] M1 — `say`, `chat`, the family record, reach, `retire --cascade`, the `blocked` liveness fix; hermetic tests. (2026-09-26, reviewed clean: 4c5cf9c7..61216d45; suite 697 assertions)
 - [x] M2 — the board, `topology`/`view`/`groups`, `mark`, `join`/`leave`, the retired-verb pointers, and the legacy codex branches leave; the TUI's board panel becomes the chat panel; tests follow. (2026-09-26, reviewed clean: 40f5ae29; suite 685 assertions, seam suites green; the six legacy codex records removed from the real registry beforehand)
-- [ ] M3 — the seat protocol: `references/spawn-preamble.md` and `SKILL.md` rewritten around the family; decomposing's one sentence; `_board_api.py`'s docstring; version bump.
+- [x] M3 — the seat protocol: `references/spawn-preamble.md` and `SKILL.md` rewritten around the family; decomposing's one sentence; `_board_api.py`'s docstring; version bump. (2026-09-26, reviewed clean: 5906b209..d66d4ef0; suite 706 assertions; bumped to 7.125.0)
 - [ ] M4 — live proof on the real harness: a three-level family, the acceptance section run as written, whole-branch review, retrospective. Run by the session that owns this spec.
 
 ## Terms
