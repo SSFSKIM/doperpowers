@@ -6,8 +6,8 @@ Code session fills. A seat outlives the process that fills it: when the session
 stops or dies the seat stays, with its role, brief, and history, and can be
 filled again (`fill --resume` continues the same session id; `fill` spawns a
 fresh one). Every background session spawned through sminos is a seat, board
-pipeline workers included, so `list` is the whole fleet and `view <group>` is
-one group's organisation chart with live state on every node.
+pipeline workers included, so `list` is the fleet for an operator and a
+family seat's family for that seat.
 
     sminos spawn    <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
                    [--cwd C] [--worktree W] [--model M] [--settings S] [--effort E]
@@ -22,20 +22,16 @@ one group's organisation chart with live state on every node.
                    to change them.
     sminos send     <seat|addr|codex thread> <msg> [--from F]  # live sessions; a codex thread (its id, or
                                                           # codex:<id|exact name>) goes through codex's queue
+    sminos say      [--in <host>] [--team] <text>
+    sminos chat     [<host>] [-n N] [--since ID] [--team] [--json]
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
-    sminos mark     <seat> <status> [note]                # orchestrator judgment state
     sminos status   <seat> <one line>                     # the agent's own "now" line
-    sminos retire   <seat> [--purge]                      # stop; keep (or purge) the record
+    sminos retire   <seat> [--purge] [--cascade]           # stop; keep (or purge) the record
     sminos remove   <seat>                                # stop and delete the record
     sminos list     [group] [--status S] [--json]
-    sminos view     <group>                               # tree with role · live · now
-    sminos topology <group>                               # JSON: seats + edges
     sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
     sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
-    sminos groups
-    sminos post     <group> [--from F] [--title T] [text...]   # stdin if no text
-    sminos board    <group> [-n N|--id I] [--json]
     sminos attach   <seat>                                # claude attach <short>
     sminos migrate  [--quiet]                             # (also runs implicitly)
     sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
@@ -54,9 +50,8 @@ continuation the board pipeline relays through: a fresh `claude --bg
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
-writes them directly under the shared flock file .metalock. Group boards live
-at groups/<group>/board.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the
-reserved operator identity: never a seat, but may post to any board.
+writes them directly under the shared flock file .metalock. Family chats live
+at chats/<host-seat-id>.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the reserved operator identity.
 
 Exit codes: 0 ok, 1 harness failure, 2 usage, 4 unknown seat/group, target not
 live, or a seat/name that is already taken.
@@ -73,7 +68,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -109,7 +103,7 @@ SECRET_RE = re.compile(r"bearer|token|secret", re.I)
 
 def public_seat(s):
     """A seat dict with the task body and any secret-shaped field removed —
-    for every model-facing surface (list, list --json, view, topology)."""
+    for every model-facing surface (list, list --json, chart)."""
     return {k: v for k, v in s.items() if k != "task" and not SECRET_RE.search(k)}
 
 
@@ -198,12 +192,12 @@ def meta_set(seat_id, fields, remove=(), bump=True, create=True):
     lock, so concurrent stamps never clobber each other's fields.
 
     `gen` is the record's lifecycle generation: every lifecycle write (spawn,
-    fill, resume, wake, retire, mark, seat add, sync's own finalize) bumps it,
+    fill, resume, wake, retire, seat add, sync's own finalize) bumps it,
     so a finalizer or sync that took its snapshot before, say, a retire can see
     the record moved on and stand down. The agent's own `now` line and raw
     `meta set` are NOT lifecycle writes (bump=False): an agent updating its
     status mid-turn must not make the turn's watcher refuse to record the reply.
-    create=False (status / mark / meta set) refuses to resurrect a record that
+    create=False (status / meta set) refuses to resurrect a record that
     a concurrent remove just deleted. Returns True iff it wrote.
     """
     path = meta_path(seat_id)
@@ -1813,7 +1807,6 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     board-bind matches it against filenames, so on a re-fill it is the seat id,
     never the new session's uuid. Returns nothing (prints; may exit)."""
     prev = reload_seat(seat_id) if seat_id else None
-    prev_event_log = str(prev.get("event_log") or "") if prev and prev["engine"] == "codex" else ""
     preamble = render_preamble(group, alias, parent or "") if preamble_flag else ""
     task_text = compose_task(task, brief or "", preamble)
     short, banner = run_claude_bg(claude_args(addr, model, settings, effort, worktree) + [task_text], cwd, settings)
@@ -1900,10 +1893,6 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     else:
         meta_set(rec_id, {"current": uuid, "cwd": runcwd or cwd, "host": host_name(),
                           "boot_id": boot_id(), "updated": now()})
-        if prev_event_log:
-            # The launch succeeded and the record is promoted: only now is the
-            # predecessor's codex scratch safe to drop.
-            purge_codex_runs(prev_event_log)
     status = "working"
     if state in TERMINAL:
         # Don't blindly claim working — a fast first turn may already be over.
@@ -2006,6 +1995,8 @@ def cmd_spawn(a):
 
 
 def cmd_seat_add(a):
+    if is_family_seat(caller_seat()):
+        die("a seat spawns its own children")
     if not valid_name(a.group):
         die("bad group name: %s" % a.group)
     if not valid_name(a.alias):
@@ -2076,12 +2067,6 @@ def cmd_seat_add(a):
     print("seat %s/%s %s (parent: %s, addr: %s%s)" % (
         a.group, a.alias, "updated" if existing else "added", a.parent or "none", addr,
         (", session: " + session) if session else ", vacant"))
-
-
-def cmd_join(a):
-    # v2 argument order, kept because long-lived sessions still carry v2 preambles.
-    a.brief = a.desc
-    cmd_seat_add(a)
 
 
 def legacy_codex_refusal(s):
@@ -2514,7 +2499,7 @@ def cmd_send(a):
     die("%s matching '%s'" % (what, a.target), EXIT_UNKNOWN)
 
 
-# ------------------------------------------------ reply / sync / mark / status
+# ------------------------------------------------ reply / sync / status
 
 
 def cmd_reply(a):
@@ -2623,14 +2608,6 @@ def cmd_sync(a):
     print(sync_one(resolve_seat(a.seat)))
 
 
-def cmd_mark(a):
-    s = resolve_seat(a.seat)
-    note = " ".join(a.note)
-    if not meta_set(s["seat_id"], {"status": a.status, "updated": now(), "note": note}, create=False):
-        die("seat %s/%s was removed before the mark could land" % (s["group"], s["alias"]), EXIT_UNKNOWN)
-    print("marked %s/%s [%s] -> %s%s" % (s["group"], s["alias"], s["seat_id"], a.status, ("  (%s)" % note) if note else ""))
-
-
 def cmd_status(a):
     s = resolve_seat(a.seat)
     line = " ".join(a.line).strip()
@@ -2645,43 +2622,15 @@ def cmd_status(a):
 # ------------------------------------------------------------ retire / remove
 
 
-def wait_codex_rc(event_log, timeout=10.0):
-    """Block until a signalled legacy codex worker has actually finished.
-
-    The wrapper's finalizer writes `<run>.rc` as the last thing it does, so
-    between the SIGTERM and that file it can still create or rewrite the run's
-    scratch — and a retire or remove that returned earlier would find its purge
-    undone. Absent an event log, or if the rc never lands, the wait expires and
-    the caller proceeds. Returns True iff the barrier was observed."""
-    el = str(event_log or "")
-    if not el.endswith(".events.jsonl"):
-        return False
-    rc = el[: -len(".events.jsonl")] + ".rc"
-    deadline = time.time() + timeout
-    while not os.path.exists(rc) and time.time() < deadline:
-        time.sleep(0.5)
-    return os.path.exists(rc)
-
-
 def stop_session(s):
     """Stop the seat's current turn. The short to stop is the CURRENT session's
     harness row when there is one (a `seat add --session` seat recorded none,
     and a recorded short goes stale after a native resume); a row is host-local
     by construction. Only the fallback to the RECORDED short is gated on the
     record's host identity — shorts are host-local and reusable, so a foreign
-    one may name an unrelated local session. A legacy codex worker is a
-    detached process we own: signalled by its recorded pid, as the old retire
-    did, when its identity is local, then waited out to its finalizer's `.rc`
-    barrier so nothing it writes lands after a caller's purge."""
+    one may name an unrelated local session. Legacy codex records have no
+    Claude process to stop and remain read-only until removed."""
     if s["engine"] == "codex":
-        pid = meta_get(s["seat_id"], "pid")
-        if s["status"] in ("working", "blocked") and identity_local(s["host"], s["boot_id"]) and pid_alive(pid):
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-            except (ProcessLookupError, ValueError, TypeError, PermissionError):
-                pass
-            else:
-                wait_codex_rc(meta_get(s["seat_id"], "event_log"))
         return
     agents_refresh()
     row = harness_row(s) if s["current"] else None
@@ -2689,19 +2638,6 @@ def stop_session(s):
         claude_stop(row["id"])
     elif s["short"] and identity_local(s["host"], s["boot_id"]):
         claude_stop(s["short"])
-
-
-def purge_codex_runs(event_log):
-    """A codex worker's turn scratch (the event log and its siblings) lives
-    outside the record; drop the whole set once nothing references it any more
-    (the record is purged, or a fresh occupant has replaced the codex worker)."""
-    el = str(event_log or "")
-    if el.endswith(".events.jsonl"):
-        for p in glob.glob(el[:-len(".events.jsonl")] + ".*"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
 
 
 def worktree_note(s):
@@ -2773,12 +2709,10 @@ def _retire_one(s0, purge):
         if s["engine"] == "codex":
             hint = "legacy codex-CLI worker — no resume path; remove with: sminos remove %s/%s" % (s["group"], s["alias"])
         elif s["current"]:
-            hint = "sminos fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])
+            hint = 'sminos fill %s/%s --resume "<task>"' % (s["group"], s["alias"])
         else:
-            hint = "sminos fill %s/%s \"<task>\"" % (s["group"], s["alias"])
+            hint = 'sminos fill %s/%s "<task>"' % (s["group"], s["alias"])
         if purge:
-            if s["engine"] == "codex":
-                purge_codex_runs(meta_get(s["seat_id"], "event_log"))
             unlink_seat_files(s["seat_id"])
             print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
                 s["group"], s["alias"], s["seat_id"], worktree_note(s)))
@@ -2794,17 +2728,10 @@ def cmd_remove(a):
     locks, s = locked_fresh(resolve_seat(a.seat), "remove")
     try:
         stop_session(s)
-        if s["engine"] == "codex":
-            purge_codex_runs(meta_get(s["seat_id"], "event_log"))
         unlink_seat_files(s["seat_id"])
-        print("removed %s/%s [%s] (board history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
+        print("removed %s/%s [%s] (chat history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
         unlock(locks)
-
-
-def cmd_leave(a):
-    a.seat = "%s/%s" % (a.group, a.alias)
-    cmd_remove(a)
 
 
 # --------------------------------------------------------------------- views
@@ -2841,103 +2768,6 @@ def cmd_list(a):
     for s in rows:
         print(fmt % (s["alias"][:18], s["group"][:14], (s["role"] or "-")[:12], s["status"][:14], live_state(s),
                      (s["short"] or s["seat_id"][:8])[:8], s["addr"][:18], now_or_reply(s)[:46]))
-
-
-def children_of(group_seats, alias):
-    return [s for s in group_seats if s["parent"] == alias]
-
-
-def tree(group):
-    """(depth, seat) rows in render order; orphans (parent unknown) are roots too."""
-    gs = sorted(seats(group), key=lambda s: s["alias"])
-    aliases = {s["alias"] for s in gs}
-    out = []
-
-    def walk(s, depth):
-        out.append((depth, s))
-        for c in children_of(gs, s["alias"]):
-            walk(c, depth + 1)
-    for s in gs:
-        if not s["parent"] or s["parent"] not in aliases:
-            walk(s, 0)
-    return out
-
-
-def seat_row(s):
-    head = s["alias"] + (" [%s]" % s["role"] if s["role"] else "")
-    bits = [head, live_state(s)]
-    if s["now"]:
-        bits.append(s["now"])
-    return " · ".join(bits)
-
-
-def render_tree(gs, s, line_prefix, child_prefix, out):
-    # line_prefix draws THIS row, child_prefix is what every descendant row
-    # inherits — so depth accumulates instead of resetting.
-    out.append(line_prefix + seat_row(s))
-    kids = children_of(gs, s["alias"])
-    for i, k in enumerate(kids):
-        last = i == len(kids) - 1
-        render_tree(gs, k, child_prefix + ("└── " if last else "├── "), child_prefix + ("    " if last else "│   "), out)
-
-
-def cmd_view(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s" % g, EXIT_UNKNOWN)
-    gs = sorted(seats(g), key=lambda s: s["alias"])
-    aliases = {s["alias"] for s in gs}
-    print("sminos group: %s" % g)
-    out = []
-    for s in gs:
-        if not s["parent"]:
-            render_tree(gs, s, "", "", out)
-    if not gs:
-        out.append("(no seats)")
-    for s in [s for s in gs if s["parent"] and s["parent"] not in aliases]:
-        out.append("(dangling — parent '%s' unknown)" % s["parent"])
-        render_tree(gs, s, "    ", "    ", out)
-    print("\n".join(out))
-    posts = read_board(g)
-    if posts:
-        last = posts[-1]
-        print("board: %d post(s) — latest: #%s%s by %s @ %s" % (
-            len(posts), last.get("id"), (' "%s"' % last["title"]) if last.get("title") else "", last.get("from"), last.get("ts")))
-
-
-def cmd_topology(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s" % g, EXIT_UNKNOWN)
-    gs = sorted(seats(g), key=lambda s: s["alias"])
-    nodes = []
-    for s in gs:
-        d = public_seat(s)
-        d["live"] = live_state(s)
-        nodes.append(d)
-    edges = [{"from": s["parent"], "to": s["alias"]} for s in gs if s["parent"]]
-    # `nodes` is the v2 key; kept for one release so v2 preambles keep parsing.
-    print(json.dumps({"group": g, "seats": nodes, "nodes": nodes, "edges": edges}, indent=2))
-
-
-def cmd_groups(a):
-    names = {s["group"] for s in seats()}
-    for gp in glob.glob(os.path.join(root(), "groups", "*")):
-        if os.path.isdir(gp):
-            names.add(os.path.basename(gp))
-    if not names:
-        print("(no groups)")
-        return
-    for g in sorted(names):
-        gs = seats(g)
-        live = sum(1 for s in gs if live_state(s) in FILLED)
-        posts = read_board(g)
-        last = posts[-1].get("ts", "-") if posts else "-"
-        print("%-24s %3d seats (%d live)   last post: %s" % (g, len(gs), live, last))
 
 
 def cmd_attach(a):
@@ -3015,158 +2845,6 @@ def cmd_tui(a):
     sibling_module("sminos_tui").cmd_tui(a)
 
 
-# --------------------------------------------------------------------- board
-
-# The board is the group's communal surface: durable long-form posts, JSONL
-# on disk, rendered as markdown inside XML envelopes on read. Delivery is the
-# poster's job: after writing, nudge the seats who should read it now with a
-# one-line native SendMessage naming the post id (the command prints their
-# addrs). A seat that is never nudged still finds the post — the board is the
-# durable record and `view` summarizes it.
-
-
-def board_lock(g):
-    """mkdir spinlock: portable, no flock semantics needed. A lock dir that
-    stays for >30s is presumed leaked by a killed process and is broken."""
-    lk = os.path.join(group_dir(g), "locks", "board.lock")
-    os.makedirs(os.path.dirname(lk), exist_ok=True)
-    tries = 0
-    while True:
-        try:
-            os.mkdir(lk)
-            return lk
-        except FileExistsError:
-            tries += 1
-            if tries > 200:
-                try:
-                    if time.time() - os.stat(lk).st_mtime > 30:
-                        os.rmdir(lk)
-                except OSError:
-                    pass
-                tries = 0
-            time.sleep(0.05)
-
-
-def board_unlock(lk):
-    try:
-        os.rmdir(lk)
-    except OSError:
-        pass
-
-
-def read_board(g):
-    out = []
-    try:
-        with open(os.path.join(group_dir(g), "board.jsonl")) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        out.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    except OSError:
-        pass
-    return out
-
-
-def git_branch(cwd):
-    try:
-        return subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True,
-                              text=True, timeout=10).stdout.strip()
-    except Exception:
-        return ""
-
-
-def cmd_post(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s (a group is created by its first seat)" % g, EXIT_UNKNOWN)
-    frm = default_from(a.frm or os.environ.get("SMINOS_ALIAS") or "")
-    text = " ".join(a.text).strip() if a.text else sys.stdin.read()
-    if not text.strip():
-        die("post: empty body")
-    if not valid_name(frm):
-        die("bad --from alias: %s" % frm)
-    gs = seats(g)
-    if frm != "human" and not any(s["alias"] == frm for s in gs):
-        die("poster %s is not a seat in %s (run: sminos seat add %s %s)" % (frm, g, g, frm), EXIT_UNKNOWN)
-    cwd = os.getcwd()
-    # cwd/branch are snapshotted at post time — the seat's registry values
-    # describe where it started, not where this post was written.
-    body = {"ts": now(), "from": frm, "title": a.title or "", "cwd": cwd, "branch": git_branch(cwd), "text": text}
-    lk = board_lock(g)
-    try:
-        bf = os.path.join(group_dir(g), "board.jsonl")
-        # One past the HIGHEST id ever stored, not one past the count:
-        # `read_board` skips lines it cannot parse, so a single corrupt line
-        # would otherwise hand the new post an id a live post already holds,
-        # and every `board --id N` after it would be ambiguous.
-        ids = [p["id"] for p in read_board(g) if isinstance(p, dict) and isinstance(p.get("id"), int)]
-        rec = {"id": (max(ids) + 1) if ids else 1, **body}
-        with open(bf, "a") as f:
-            f.write(json.dumps(rec) + "\n")
-    finally:
-        board_unlock(lk)
-    others = ["%s/%s" % (g, s["alias"]) for s in gs if s["alias"] != frm and s["status"] != "retired"]
-    print("posted #%d to %s board" % (rec["id"], g))
-    if others:
-        print("  nudge readers — sminos send <seat> \"…\" to: %s" % ", ".join(others))
-        print("  e.g.: sminos board post #%d by %s%s · read with: sminos board %s --id %d" % (
-            rec["id"], frm, (' — "%s"' % a.title) if a.title else "", g, rec["id"]))
-
-
-def html_attr(v):
-    return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def esc_body(v):
-    # Only the envelope's own grammar is neutralized: a body carrying
-    # '</sminos-post>' would otherwise close the frame early and forge an
-    # apparent next post with fake provenance. Everything else stays raw;
-    # readable markdown is the whole point of the board.
-    return str(v).replace("<sminos-post", "&lt;sminos-post").replace("</sminos-post", "&lt;/sminos-post")
-
-
-def cmd_board(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s" % g, EXIT_UNKNOWN)
-    posts = read_board(g)
-    if not posts:
-        if not a.json:
-            print("(no posts)")
-        return
-    if a.id is not None:
-        # --id is what a nudge names: a post number, fetchable individually —
-        # a seat with several nudges queued reads each one, not just the latest.
-        sel = [p for p in posts if p.get("id") == a.id]
-        if not sel:
-            die("no such post on the %s board: #%d" % (g, a.id), EXIT_UNKNOWN)
-    elif a.n and a.n > 0:
-        sel = posts[-a.n:]
-    else:
-        sel = posts
-    if a.json:
-        for p in sel:
-            print(json.dumps(p))
-        return
-    for p in sel:
-        head = '<sminos-post id="%s" from="%s" ts="%s"' % (p.get("id"), html_attr(p.get("from", "")), html_attr(p.get("ts", "")))
-        if p.get("branch"):
-            head += ' branch="%s"' % html_attr(p["branch"])
-        head += ' cwd="%s">' % html_attr(p.get("cwd", ""))
-        body = ""
-        if p.get("title"):
-            body += "\n## " + esc_body(p["title"])
-        body += "\n" + esc_body(p.get("text", "")) + "\n</sminos-post>\n"
-        print(head + body)
-
-
 # ---------------------------------------------------------------------- meta
 
 
@@ -3239,16 +2917,6 @@ def build_parser():
     sa.add_argument("--session", default="")
     sa.set_defaults(fn=cmd_seat_add)
 
-    j = sub.add_parser("join", add_help=False)
-    j.add_argument("group")
-    j.add_argument("alias")
-    j.add_argument("--parent", default=None)
-    j.add_argument("--desc", default=None)
-    j.add_argument("--role", default=None)
-    j.add_argument("--session", default="")
-    j.add_argument("--addr", default="")
-    j.set_defaults(fn=cmd_join)
-
     f = sub.add_parser("fill", add_help=False)
     f.add_argument("seat")
     f.add_argument("task")
@@ -3298,12 +2966,6 @@ def build_parser():
     sy.add_argument("--all", action="store_true")
     sy.set_defaults(fn=cmd_sync)
 
-    m = sub.add_parser("mark", add_help=False)
-    m.add_argument("seat")
-    m.add_argument("status")
-    m.add_argument("note", nargs="*")
-    m.set_defaults(fn=cmd_mark)
-
     st = sub.add_parser("status", add_help=False)
     st.add_argument("seat")
     st.add_argument("line", nargs="*")
@@ -3319,25 +2981,11 @@ def build_parser():
     rm.add_argument("seat")
     rm.set_defaults(fn=cmd_remove)
 
-    lv = sub.add_parser("leave", add_help=False)
-    lv.add_argument("group")
-    lv.add_argument("alias")
-    lv.set_defaults(fn=cmd_leave)
-
     ls = sub.add_parser("list", add_help=False)
     ls.add_argument("group", nargs="?", default=None)
     ls.add_argument("--status", default="")
     ls.add_argument("--json", action="store_true")
     ls.set_defaults(fn=cmd_list)
-
-    v = sub.add_parser("view", add_help=False)
-    v.add_argument("group")
-    v.set_defaults(fn=cmd_view)
-
-    t = sub.add_parser("topology", add_help=False)
-    t.add_argument("group")
-    t.add_argument("--json", action="store_true")
-    t.set_defaults(fn=cmd_topology)
 
     ch = sub.add_parser("chart", add_help=False)
     ch.add_argument("group", nargs="?", default=None)
@@ -3354,23 +3002,6 @@ def build_parser():
     tu.add_argument("--height", type=int, default=0)
     tu.add_argument("--no-tmux", dest="no_tmux", action="store_true")
     tu.set_defaults(fn=cmd_tui)
-
-    g = sub.add_parser("groups", add_help=False)
-    g.set_defaults(fn=cmd_groups)
-
-    po = sub.add_parser("post", add_help=False)
-    po.add_argument("group")
-    po.add_argument("--from", dest="frm", default="")
-    po.add_argument("--title", default="")
-    po.add_argument("text", nargs="*")
-    po.set_defaults(fn=cmd_post)
-
-    b = sub.add_parser("board", add_help=False)
-    b.add_argument("group")
-    b.add_argument("-n", type=int, default=0)
-    b.add_argument("--id", type=int, default=None)
-    b.add_argument("--json", action="store_true")
-    b.set_defaults(fn=cmd_board)
 
     at = sub.add_parser("attach", add_help=False)
     at.add_argument("seat")
@@ -3389,49 +3020,11 @@ def build_parser():
     return p
 
 
-def parse_post(argv):
-    """`post <group> [--from F] [--title T] [text...]` by hand: argparse cannot
-    take free text after options once a zero-or-more positional has matched."""
-    ns = argparse.Namespace(cmd="post", frm="", title="", text=[], group=None, fn=cmd_post)
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--":
-            ns.text.extend(argv[i + 1:])
-            break
-        if a in ("--from", "--title"):
-            if i + 1 >= len(argv):
-                die("post: %s needs a value" % a)
-            setattr(ns, "frm" if a == "--from" else "title", argv[i + 1])
-            i += 2
-            continue
-        if a.startswith("--from="):
-            ns.frm = a.split("=", 1)[1]
-        elif a.startswith("--title="):
-            ns.title = a.split("=", 1)[1]
-        elif ns.group is None:
-            ns.group = a
-        else:
-            ns.text.append(a)
-        i += 1
-    if ns.group is None:
-        die("usage: sminos post <group> [--from F] [--title T] [text...]")
-    return ns
-
-
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
         usage()
         sys.exit(0 if argv else EXIT_USAGE)
-    if argv[0] in ("listen", "log"):
-        die("'%s' is gone — messaging is 'sminos send' (a live seat) or 'sminos wake' (a stopped one), riding "
-            "the harness's inbox socket; the board (sminos post/board) is the durable record" % argv[0])
-    if argv[0] == "post":
-        a = parse_post(argv[1:])
-        migrate()
-        cmd_post(a)
-        return
     parser = build_parser()
     try:
         a = parser.parse_args(argv)

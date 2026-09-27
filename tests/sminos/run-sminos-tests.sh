@@ -277,7 +277,15 @@ if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 echo "usage:"
 run "$SMINOS"; assert_rc 2 "$RC" "no arguments is a usage error (exit 2)"
 run "$SMINOS" help; assert_rc 0 "$RC" "help exits 0"; assert_contains "$OUT" "sminos spawn" "help lists the verbs"
-run "$SMINOS" listen grp x; assert_rc 2 "$RC" "listen is refused"; assert_contains "$OUT" "sminos send" "listen refusal points at sminos send"
+for verb in post board topology view groups mark join leave listen log; do
+  run "$SMINOS" "$verb"
+  assert_rc 2 "$RC" "removed $verb is a usage error"
+  assert_contains "$OUT" 'usage: sminos' "removed $verb shows usage"
+done
+run "$SMINOS" --help
+for verb in post board topology view groups mark join leave listen log; do
+  assert_not_contains "$OUT" "sminos $verb" "--help omits removed $verb"
+done
 run "$SMINOS" bogus; assert_rc 2 "$RC" "unknown command is a usage error"
 run "$SMINOS" seat; assert_rc 2 "$RC" "bare 'seat' is a usage error"
 
@@ -347,10 +355,10 @@ assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))
 assert_contains "$(cat "$NEW/$DUP_CX.json")" '"alias": "review-pr-470@cccc3333"' "a codex record never wins an alias over a claude record"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$CX_LIVE.json")" "working" "a working codex record with a live pid is left as is"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$DUP_NEW.json")" "idle" "the newest duplicate keeps its status"
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" view other
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list other
 assert_contains "$OUT" "scout2" "a second group's node sharing a session id still converts"
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" view demo
-assert_contains "$OUT" "scout" "the first group's node keeps its seat"
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list demo --json
+assert_contains "$OUT" '"alias": "scout"' "the first group's node keeps its seat"
 assert_equals "$(mode_of "$NEW")" "0700" "migration tightens a 0755 root to 0700"
 assert_equals "$(mode_of "$NEW/$OLD_UUID.json")" "0600" "migration tightens a 0644 record to 0600"
 rm "$MH/.claude/orchestrating-daemons"
@@ -419,12 +427,11 @@ assert_rc 2 "$RC" "a stale AGORA_HOME is refused (exit 2)"
 assert_contains "$OUT" "SMINOS_HOME" "the refusal names the knob that replaced it"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list
 assert_rc 0 "$RC" "migration is idempotent (second run exits 0)"
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" view demo
-assert_not_contains "$OUT" "null" "view never prints null for a converted node"
-assert_contains "$OUT" "dangling — parent 'orchestrator' unknown" "converted node with unknown parent renders in the dangling section"
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" topology work
-assert_not_contains "$OUT" "null" "topology never prints null for a v1-shaped record"
-assert_contains "$OUT" '"addr": "old-worker"' "topology falls back addr → alias → name"
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list demo --json
+assert_not_contains "$OUT" "null" "list never prints null for a converted node"
+assert_contains "$OUT" '"parent": "orchestrator"' "converted node retains its parent"
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list work --json
+assert_contains "$OUT" '"addr": "old-worker"' "list falls back addr → alias → name"
 
 # ---- 3) seats: validation and vacant/registered seats ------------------------
 echo "seat add:"
@@ -447,13 +454,6 @@ assert_contains "$OUT" "vacant" "vacant seat reported"
 run "$SMINOS" list grp
 assert_contains "$OUT" "vacant" "list shows the vacant seat's live state"
 assert_contains "$OUT" "writer" "list shows the role"
-run "$SMINOS" join grp joiner --parent orchestrator --desc "v2 style"
-assert_rc 0 "$RC" "v2 'join' still works as an alias of seat add"
-run "$SMINOS" list --json grp
-assert_contains "$OUT" '"brief": "v2 style"' "join's --desc lands in brief"
-run "$SMINOS" leave grp joiner
-assert_rc 0 "$RC" "v2 'leave' removes the seat"
-
 # ---- 4) spawn ----------------------------------------------------------------
 echo "spawn:"
 cd "$WORK"
@@ -665,7 +665,7 @@ run "$SMINOS" sync slow; assert_equals "$OUT" "idle" "lingering working+idle sha
 assert_equals "$(field "$S_UUID" status)" "idle" "sync wrote status idle"
 assert_file_exists "$SMINOS_HOME/$S_UUID.reply.txt" "sync recorded the reply"
 # absent: a working seat whose row is gone.
-"$SMINOS" mark slow working >/dev/null
+"$SMINOS" meta set slow status working >/dev/null
 rm -f "$STUB_STATE/agents/$SLOW_SHORT"
 run "$SMINOS" sync slow; assert_equals "$OUT" "absent" "sync with no harness row is absent"
 assert_equals "$(field "$S_UUID" status)" "working" "absent leaves the record untouched"
@@ -689,7 +689,7 @@ row = {"type": "assistant", "message": {"content": [
 open(sys.argv[1], "w").write(json.dumps(row) + "\n")
 PY
 "$SMINOS" seat add grp asker --session "$ASKQ_UUID" >/dev/null
-"$SMINOS" mark asker blocked >/dev/null
+"$SMINOS" meta set asker status blocked >/dev/null
 { echo "short=aaaa0001"; echo "uuid=$ASKQ_UUID"; echo "name=asker"; echo "state=blocked"; echo "status=idle"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/aaaa0001"
 run "$SMINOS" sync asker; assert_equals "$OUT" "idle" "an ended blocked-shape turn finalizes as idle"
 ASK_REPLY="$(cat "$SMINOS_HOME/$ASKQ_UUID.reply.txt")"
@@ -705,7 +705,7 @@ open(sys.argv[1], "w").write(json.dumps(
     {"type": "assistant", "message": {"content": [{"type": "text", "text": "About to ask something."}]}}) + "\n")
 PY
 "$SMINOS" seat add grp permer --session "$PERM_UUID" >/dev/null
-"$SMINOS" mark permer blocked >/dev/null
+"$SMINOS" meta set permer status blocked >/dev/null
 { echo "short=aaaa0002"; echo "uuid=$PERM_UUID"; echo "name=permer"; echo "state=blocked"; echo "status=idle"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/aaaa0002"
 run "$SMINOS" sync permer; assert_equals "$OUT" "idle" "blocked-without-question also finalizes idle"
 assert_contains "$(cat "$SMINOS_HOME/$PERM_UUID.reply.txt")" "blocked on a harness prompt" "blocked-without-question reply carries the harness-prompt marker"
@@ -847,7 +847,7 @@ sleep 0.2
 assert_contains "$(cat "$RECEIVED")" '[sminos wake from boss id=' "wake frame carries the wake prefix, sender, and a message id"
 assert_contains "$(cat "$RECEIVED")" ']\nwake up' "wake frame carries the message after the first line"
 assert_equals "$(field "$ORCH_UUID" status)" "working" "wake stamps status working"
-"$SMINOS" mark orchestrator idle >/dev/null
+"$SMINOS" meta set orchestrator status idle >/dev/null
 
 # wake --wait needs EVIDENCE the message landed (the frame's id in the
 # target's transcript, or a busy row) before it waits for a reply.
@@ -855,7 +855,7 @@ assert_equals "$(field "$ORCH_UUID" status)" "working" "wake stamps status worki
 SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" wake orchestrator "ACK-0" --wait
 assert_rc 1 "$RC" "wake --wait without evidence of receipt exits 1"
 assert_not_contains "$OUT" "--- reply ---" "no reply block is printed without evidence"
-"$SMINOS" mark orchestrator idle >/dev/null
+"$SMINOS" meta set orchestrator status idle >/dev/null
 ( SMINOS_ACK_TIMEOUT=5 "$SMINOS" wake orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
 ACKW=$!
 sleep 0.5
@@ -972,12 +972,8 @@ assert_file_absent "$SMINOS_HOME/$W_UUID.reply.txt" "purge removes the reply"
 run "$SMINOS" retire wtworker
 assert_contains "$OUT" "branch worktree-feat-x" "retiring a worktree'd seat notes the branch"
 
-# ---- 8) mark / status / meta / attach ----------------------------------------
-echo "mark / status / meta / attach:"
-run "$SMINOS" mark plainworker awaiting-human tone is a user call
-assert_rc 0 "$RC" "mark exits 0"
-assert_equals "$(field "$P_UUID" status)" "awaiting-human" "mark sets the judgment status"
-assert_equals "$(field "$P_UUID" note)" "tone is a user call" "mark records the note"
+# ---- 8) status / meta / attach ----------------------------------------
+echo "status / meta / attach:"
 run "$SMINOS" status plainworker "drafting the outline"
 assert_equals "$(field "$P_UUID" now)" "drafting the outline" "status writes the now line"
 run "$SMINOS" list work
@@ -990,99 +986,26 @@ printf '{"uuid":"%s","name":"bearer-one","group":"grp","status":"working","run_b
 chmod 600 "$SMINOS_HOME/66666666-ffff-4000-8000-000000000006.json"
 chmod 640 "$SMINOS_HOME/$P_UUID.json"
 chmod 755 "$SMINOS_HOME"
-"$SMINOS" mark bearer-one blocked >/dev/null
-"$SMINOS" mark plainworker blocked >/dev/null
+"$SMINOS" meta set bearer-one status blocked >/dev/null
+"$SMINOS" meta set plainworker status blocked >/dev/null
 assert_equals "$(mode_of "$SMINOS_HOME/66666666-ffff-4000-8000-000000000006.json")" "0600" "a bearer-carrying record stays 0600 across writes"
 assert_equals "$(mode_of "$SMINOS_HOME/$P_UUID.json")" "0600" "a record left wider than 0600 is tightened on the next run"
 assert_equals "$(mode_of "$SMINOS_HOME")" "0700" "a root left wider than 0700 is tightened on the next run"
 "$SMINOS" remove bearer-one >/dev/null
 run "$SMINOS" attach plainworker
 assert_contains "$OUT" "claude attach $(field "$P_UUID" short)" "attach prints the harness command when not a TTY"
-run "$SMINOS" mark nope idle
+run "$SMINOS" status nope idle
 assert_rc 4 "$RC" "an unknown seat exits 4"
-run "$SMINOS" mark "$(printf '%s' "$P_UUID" | cut -c1-8)" idle
+run "$SMINOS" status "$(printf '%s' "$P_UUID" | cut -c1-8)" idle
 assert_rc 0 "$RC" "a seat id prefix resolves"
-run "$SMINOS" mark "$(field "$P_UUID" short)" idle
+run "$SMINOS" status "$(field "$P_UUID" short)" idle
 assert_rc 0 "$RC" "a current short id resolves"
 
-# ---- 9) views: tree, dangling, topology, groups ------------------------------
-echo "views:"
-"$SMINOS" seat add tree a --role root >/dev/null
-"$SMINOS" seat add tree b --parent a >/dev/null
-"$SMINOS" seat add tree c --parent b --role leaf >/dev/null
-"$SMINOS" seat add tree d --parent zzz >/dev/null
-run "$SMINOS" view tree
-assert_contains "$OUT" "sminos group: tree" "view names the group"
-assert_contains "$OUT" "a [root] · vacant" "view rows carry role and live state"
-assert_contains "$OUT" "└── b · vacant" "child rendered under its parent"
-assert_contains "$OUT" "    └── c [leaf] · vacant" "grandchild indentation accumulates"
-assert_contains "$OUT" "(dangling — parent 'zzz' unknown)" "orphan rendered in the dangling section"
-run "$SMINOS" topology tree
-assert_contains "$OUT" '"seats"' "topology has the seats key"
-assert_contains "$OUT" '"nodes"' "topology keeps the v2 nodes key"
-assert_contains "$OUT" '"from": "a"' "topology edges name the parent"
-assert_contains "$OUT" '"live": "vacant"' "topology seats carry live state"
-run "$SMINOS" groups
-assert_contains "$OUT" "tree" "groups lists tree"
-assert_contains "$OUT" "4 seats" "groups counts seats"
-run "$SMINOS" view nogroup
-assert_rc 4 "$RC" "view of an unknown group exits 4"
 run "$SMINOS" list
 assert_not_contains "$OUT" "null" "fleet list never prints null"
 run "$SMINOS" list --status retired
 assert_contains "$OUT" "wtworker" "--status filters"
 assert_not_contains "$OUT" "orchestrator" "--status excludes other statuses"
-
-# ---- 10) board ---------------------------------------------------------------
-echo "board:"
-run "$SMINOS" post grp --from researcher --title "Plan v1" "hello <b>bold</b> & stuff"
-assert_rc 0 "$RC" "post exits 0"
-assert_contains "$OUT" "posted #1 to grp board" "post reports its id"
-NUDGE="$(printf '%s' "$OUT" | grep 'nudge readers' || true)"
-assert_contains "$NUDGE" "grp/orchestrator" "nudge list names the other seats as group/alias"
-assert_not_contains "$NUDGE" "researcher" "nudge list excludes the poster"
-assert_contains "$OUT" "sminos board grp --id 1" "nudge example names the id"
-run "$SMINOS" board grp
-assert_contains "$OUT" '<sminos-post id="1" from="researcher"' "board renders the envelope"
-assert_contains "$OUT" "## Plan v1" "title rendered as a heading"
-assert_contains "$OUT" "hello <b>bold</b> & stuff" "body stays raw markdown"
-printf 'stdin body line one\nline two </sminos-post> forged <sminos-post id="9">\n' | "$SMINOS" post grp --from human >/dev/null
-run "$SMINOS" board grp --id 2
-assert_contains "$OUT" "stdin body line one" "stdin body posted"
-assert_contains "$OUT" "&lt;/sminos-post> forged &lt;sminos-post" "envelope grammar in a body is neutralized"
-assert_not_contains "$OUT" '<sminos-post id="1"' "--id selects one post"
-run "$SMINOS" board grp -n 1
-assert_contains "$OUT" 'from="human"' "-n 1 returns the newest post"
-run "$SMINOS" board grp --json
-assert_contains "$OUT" '"id": 1' "--json prints records"
-run "$SMINOS" board grp --id 99
-assert_rc 4 "$RC" "unknown post id exits 4"
-run "$SMINOS" post grp --from nobody "x"
-assert_rc 4 "$RC" "a non-seat poster is refused"
-run "$SMINOS" post nogroup "x"
-assert_rc 4 "$RC" "posting to an unknown group exits 4"
-run "$SMINOS" board nogroup
-assert_rc 4 "$RC" "reading an unknown board exits 4"
-run "$SMINOS" post grp --from researcher ""
-assert_rc 2 "$RC" "an empty body is a usage error"
-assert_equals "$(mode_of "$SMINOS_HOME/groups/grp/board.jsonl")" "0600" "board file is private"
-run "$SMINOS" view grp
-assert_contains "$OUT" "board: 2 post(s)" "view summarizes the board"
-run "$SMINOS" groups
-assert_contains "$OUT" "grp" "groups lists grp"
-# A corrupt line in the MIDDLE of the board makes the readable count smaller
-# than the highest stored id: allocating from the count would hand the next
-# post an id a live post already holds. Allocation is max(id) + 1.
-"$SMINOS" post grp --from researcher "third post" >/dev/null
-python3 -c 'import sys
-p = sys.argv[1]
-lines = open(p).read().splitlines()
-lines[1] = "{ truncated write"
-open(p, "w").write("\n".join(lines) + "\n")' "$SMINOS_HOME/groups/grp/board.jsonl"
-run "$SMINOS" post grp --from researcher "after the corrupt line"
-assert_contains "$OUT" "posted #4 to grp board" "a post id is one past the HIGHEST stored id, not the readable count"
-run "$SMINOS" board grp --id 3
-assert_contains "$OUT" "third post" "the surviving post keeps its id"
 
 # ---- 11) exit-gate wave ------------------------------------------------------
 echo "exit-gate wave:"
@@ -1094,9 +1017,6 @@ printf '{"uuid":"%s","name":"secretary","alias":"secretary","group":"grp","statu
 run "$SMINOS" list --json grp
 assert_not_contains "$OUT" "SEKRIT" "list --json never emits run_bearer"
 assert_not_contains "$OUT" "NOPE" "list --json never emits a *_token field"
-run "$SMINOS" topology grp
-assert_not_contains "$OUT" "SEKRIT" "topology never emits run_bearer"
-assert_not_contains "$OUT" "NOPE" "topology never emits a token field"
 run "$SMINOS" list grp
 assert_not_contains "$OUT" "SEKRIT" "list never emits run_bearer"
 run "$SMINOS" meta get secretary run_bearer
@@ -1149,37 +1069,17 @@ rm -f "$HOME/.claude/sessions/flaky.json"; "$SMINOS" remove grp/flaky >/dev/null
 python3 "$TEST_ROOT/sockserver.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
 
-# codex purge deletes the run-scratch set alongside the record.
+# Legacy records remain read-only history: remove drops the record, not its
+# unrelated historical scratch file.
 CX_UUID="cccc3333-abab-4000-8000-0000000c3333"
-mkdir -p "$TEST_ROOT/codexruns"
-EL="$TEST_ROOT/codexruns/run-xyz.events.jsonl"
-: > "$EL"; : > "$TEST_ROOT/codexruns/run-xyz.rc"; : > "$TEST_ROOT/codexruns/run-xyz.meta"
+EL="$TEST_ROOT/legacy.events.jsonl"
+: > "$EL"
 printf '{"uuid":"%s","name":"cx","alias":"cx","group":"grp","status":"retired","engine":"codex","event_log":"%s"}' \
   "$CX_UUID" "$EL" > "$SMINOS_HOME/$CX_UUID.json"
-run "$SMINOS" retire grp/cx --purge
-assert_rc 0 "$RC" "purging a codex seat exits 0"
-assert_file_absent "$EL" "codex purge deletes the event log"
-assert_file_absent "$TEST_ROOT/codexruns/run-xyz.rc" "codex purge deletes the run-scratch siblings"
-assert_file_absent "$SMINOS_HOME/$CX_UUID.json" "codex purge removes the record"
-
-# Stopping a LIVE legacy codex worker blocks on the wrapper's `.rc` barrier:
-# until that file lands the finalizer can still rewrite the run scratch a
-# retire or remove is about to purge. Here the barrier lands after ~1s.
-CXB_UUID="2c2c1111-abab-4000-8000-00000002c2c1"
-CXB_EL="$TEST_ROOT/codexruns/barrier.events.jsonl"
-: > "$CXB_EL"; rm -f "$TEST_ROOT/codexruns/barrier.rc"
-sleep 30 & CXB_PID=$!; disown "$CXB_PID"
-( sleep 1; : > "$TEST_ROOT/codexruns/barrier.rc" ) & disown $!
-printf '{"uuid":"%s","name":"cxb","alias":"cxb","group":"grp","status":"working","current":"%s","engine":"codex","pid":"%s","event_log":"%s","host":"testhost","boot_id":"boot-current"}' \
-  "$CXB_UUID" "$CXB_UUID" "$CXB_PID" "$CXB_EL" > "$SMINOS_HOME/$CXB_UUID.json"
-CXB_T0="$(python3 -c 'import time; print(time.time())')"
-run "$SMINOS" retire grp/cxb
-CXB_T1="$(python3 -c 'import time; print(time.time())')"
-assert_rc 0 "$RC" "retiring a live legacy codex seat exits 0"
-assert_file_exists "$TEST_ROOT/codexruns/barrier.rc" "the wrapper's .rc barrier is what released the retire"
-assert_equals "$(python3 -c 'import sys; print("waited" if float(sys.argv[2]) - float(sys.argv[1]) >= 0.8 else "returned early")' "$CXB_T0" "$CXB_T1")" "waited" "the retire blocked until the .rc barrier appeared"
-kill "$CXB_PID" 2>/dev/null || true
-"$SMINOS" remove grp/cxb >/dev/null
+run "$SMINOS" remove grp/cx
+assert_rc 0 "$RC" "removing a legacy record succeeds"
+assert_file_absent "$SMINOS_HOME/$CX_UUID.json" "remove deletes legacy record"
+assert_file_exists "$EL" "remove leaves legacy history alone"
 
 # derive_group uses the OWNING repository, not a linked worktree's dir name.
 REPO="$TEST_ROOT/myrepo"
@@ -1211,7 +1111,7 @@ RESP_FIRST="$(field "$RESP" current)"
 # it, and retire then writes status=retired over the failure — so the stamp and
 # its note are the only surviving evidence that this occupant failed. History
 # must carry both, or the outage streak forgets every retired failure.
-"$SMINOS" mark resp error "worker died mid-run" >/dev/null
+"$SMINOS" meta set resp status error note "worker died mid-run" >/dev/null
 "$SMINOS" meta set resp retired_from failure >/dev/null
 run "$SMINOS" retire resp
 assert_rc 0 "$RC" "retire exits 0"
@@ -1226,9 +1126,10 @@ assert_equals "$(field "$RESP" retired_from)" "" "the re-filled record itself dr
 assert_equals "$(field "$RESP" role)" "reviewer" "re-spawn without --role keeps the role"
 "$SMINOS" remove grp/resp >/dev/null
 
-# Re-fill of a legacy codex record clears its engine fields (the new occupant
-# is a claude session) and drops the run scratch.
+# Re-fill of a retired legacy record clears its engine fields for the new
+# Claude occupant; old scratch is historical and not deleted.
 CXR_UUID="dddd4444-abab-4000-8000-0000000d4444"
+mkdir -p "$TEST_ROOT/codexruns"
 : > "$TEST_ROOT/codexruns/cxr.events.jsonl"; : > "$TEST_ROOT/codexruns/cxr.rc"
 printf '{"uuid":"%s","name":"cxr","alias":"cxr","group":"grp","status":"idle","current":"","engine":"codex","pid":"99999","event_log":"%s/codexruns/cxr.events.jsonl","cwd":"%s"}' \
   "$CXR_UUID" "$TEST_ROOT" "$WORK" > "$SMINOS_HOME/$CXR_UUID.json"
@@ -1237,7 +1138,7 @@ assert_rc 0 "$RC" "re-spawning a retired codex seat exits 0"
 assert_equals "$(field "$CXR_UUID" engine)" "" "re-fill clears engine"
 assert_equals "$(field "$CXR_UUID" pid)" "" "re-fill clears pid"
 assert_equals "$(field "$CXR_UUID" event_log)" "" "re-fill clears event_log"
-assert_file_absent "$TEST_ROOT/codexruns/cxr.rc" "re-fill drops the codex run scratch"
+assert_file_exists "$TEST_ROOT/codexruns/cxr.rc" "re-fill leaves legacy scratch alone"
 "$SMINOS" remove grp/cxr >/dev/null
 
 # A vanished cwd refuses a resume (exit 2) without launching anything.
@@ -1376,12 +1277,6 @@ sleep 0.2
 assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent]' "an agent's default --from is its seat alias"
 CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" send orchestrator "impostor" --from human
 assert_rc 4 "$RC" "--from human inside a Claude session is refused"
-CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" post grp "agent note"
-assert_rc 0 "$RC" "post from an agent session defaults --from to its alias"
-run "$SMINOS" board grp -n 1
-assert_contains "$OUT" 'from="me-agent"' "the post is stamped with the agent's alias"
-CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" post grp "impostor" --from human
-assert_rc 4 "$RC" "post --from human inside a Claude session is refused"
 "$SMINOS" remove grp/me-agent >/dev/null
 run "$SMINOS" spawn me-agent "NON-FAMILY-IDENTITY"  # no explicit group, no preamble
 PLAIN_ME="$(banner_uuid "$OUT")"
@@ -1404,7 +1299,7 @@ assert_equals "$(field "$(seat_id_of unk)" status)" "working" "a harness failure
 # A previous occupant that still answers blocks a fresh re-fill.
 PO_UUID="0c0c9999-abab-4000-8000-0000000c9999"
 "$SMINOS" seat add grp prevocc --session "$PO_UUID" >/dev/null
-"$SMINOS" mark prevocc retired >/dev/null
+"$SMINOS" meta set prevocc status retired >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"prevocc","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$PO_UUID" "$SOCK" > "$HOME/.claude/sessions/prevocc.json"
 run "$SMINOS" spawn prevocc "again" --group grp
@@ -1462,7 +1357,7 @@ run "$SMINOS" spawn recycled "R" --group grp
 assert_rc 4 "$RC" "a peer record whose procStart matches the live pid is live and blocks the name"
 rm -f "$HOME/.claude/sessions/recycled.json"
 
-# status / mark / meta set never resurrect a removed seat (unit level).
+# status / meta set never resurrect a removed seat (unit level).
 RES_OUT="$(python3 - "$REPO_ROOT/skills/sminos/scripts" <<'PY'
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -1515,12 +1410,13 @@ printf '{"id":1,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":
 printf 'root notes\n' > "$AM/.claude/sminos/groups/g1/notes.txt"   # a colliding non-board entry
 printf 'aside notes\n' > "$AM/.claude/sminos.v2-20260101T000000Z/groups/g1/notes.txt"
 rmdir "$AM/.claude/sminos.v2-20260101T000000Z/groups/g1/nodes"
-run env -u SMINOS_HOME HOME="$AM" "$SMINOS" board g1 --json
-assert_equals "$(printf '%s' "$OUT" | grep -c '"id"')" "3" "aside board posts are appended to the root board"
-assert_contains "$OUT" '"id": 3' "appended posts are renumbered after the root's last id"
-assert_contains "$OUT" "aside two" "the aside's posts survive the merge"
+run env -u SMINOS_HOME HOME="$AM" "$SMINOS" list
+MERGED_BOARD="$AM/.claude/sminos/groups/g1/board.jsonl"
+assert_equals "$(python3 -c 'import json,sys; print(len([json.loads(line) for line in open(sys.argv[1])]))' "$MERGED_BOARD")" "3" "aside board posts are appended to the root board"
+assert_contains "$(cat "$MERGED_BOARD")" '"id": 3' "appended posts are renumbered after the root's last id"
+assert_contains "$(cat "$MERGED_BOARD")" "aside two" "the aside's posts survive the merge"
 assert_contains "$OUT" "unmerged aside entry left in place" "a non-board collision is warned about"
-run env -u SMINOS_HOME HOME="$AM" "$SMINOS" groups
+run env -u SMINOS_HOME HOME="$AM" "$SMINOS" list
 assert_contains "$OUT" "unmerged aside entry left in place" "the warning repeats on every run until resolved"
 
 # lib.sh creates the root 0700 and tightens a wide one.
@@ -1563,7 +1459,7 @@ printf '{"pid":%s,"sessionId":"%s","name":"qa","kind":"background","status":"bus
 "$SMINOS" seat add org intern --parent scribe >/dev/null
 "$SMINOS" seat add org qa --role QA --parent lead --session "$QA_UUID" >/dev/null
 "$SMINOS" seat add org old-worker --parent lead >/dev/null
-"$SMINOS" mark org/old-worker retired >/dev/null
+"$SMINOS" meta set org/old-worker status retired >/dev/null
 "$SMINOS" status org/scribe "notes → board" >/dev/null
 "$SMINOS" status org/scout "스펙 읽는 중 어쩌구저쩌구 매우 긴 문장입니다" >/dev/null
 
@@ -1646,7 +1542,7 @@ assert_contains "$OUT" "sminos · org · 6 seats · 4 live · 1 hidden · a" "th
 assert_contains "$OUT" "── detail ──" "the detail panel is shown by default"
 assert_contains "$OUT" "org/lead · LEAD · seat cccc0001 · session cccc0001" "the detail panel names the focused seat, role, seat and session"
 assert_contains "$OUT" "● busy · status idle · short cc000001" "the detail panel shows live state, recorded status and the short id"
-assert_contains "$OUT" "enter attach · s send · b board" "the footer lists the keys"
+assert_contains "$OUT" "enter attach · s send · b chat" "the footer lists the keys"
 run $TUI --keys right
 assert_contains "$OUT" "--- focus: org/qa" "right enters the first (topmost) child"
 run $TUI --keys "right,down"
@@ -1686,21 +1582,30 @@ run $TUI --keys "right,down,s,text:ping-from-tui here,enter"
 assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout (scout)" "enter on the send line delivers through the real launcher and records the result"
 assert_contains "$(cat "$RECEIVED")" "[sminos message from human]\nping-from-tui here" "the frame reached the seat's inbox socket with the human sender line"
 run $TUI --keys b
-assert_contains "$OUT" "── board · org · 0 posts · tab to browse ──" "b switches the panel to the group board"
-assert_contains "$OUT" "(no posts)" "an empty board says so"
-"$SMINOS" post org --title "Kickoff" "hello board from the tui test" >/dev/null
+assert_contains "$OUT" "── chat · lead · 0 messages · tab to browse ──" "b shows focused host's chat"
+assert_contains "$OUT" "(no messages)" "empty chat has a message-free placeholder"
+"$SMINOS" say --in lead 'hello chat from the tui test' >/dev/null
 run $TUI --keys b
-assert_contains "$OUT" "board · org · 1 post ·" "the board panel counts posts"
-assert_contains "$OUT" "#1    " "the board panel lists the post id"
-assert_contains "$OUT" "Kickoff" "and its title"
+assert_contains "$OUT" "chat · lead · 1 messages ·" "chat panel counts messages"
+assert_contains "$OUT" "#1    " "chat panel lists the message id"
+assert_contains "$OUT" "hello chat from the tui test" "chat panel shows the first line"
 run $TUI --keys "b,tab"
-assert_contains "$OUT" "↑↓ enter opens · tab back" "tab moves the keys into the board list"
+assert_contains "$OUT" "↑↓ enter opens · tab back" "tab moves the keys into the chat list"
 run $TUI --keys "b,tab,enter"
-assert_contains "$OUT" "#1 · human · " "enter on a board row opens the post overlay with its header"
-assert_contains "$OUT" "hello board from the tui test" "the overlay shows the post body"
+assert_contains "$OUT" "#1 · human → all · " "enter opens the message overlay with sender, targets and time"
+assert_contains "$OUT" "hello chat from the tui test" "message overlay shows the text"
 assert_contains "$OUT" "esc closes" "the overlay says how to close"
 run $TUI --keys "b,tab,enter,esc"
 assert_not_contains "$OUT" "esc closes" "esc closes the overlay"
+# A child with no hosted family shows its parent's chat.
+run $TUI --keys "right,b"
+assert_contains "$OUT" "chat · lead · 1 messages" "child panel follows its parent's chat"
+"$SMINOS" say --in scribe 'nested family update' >/dev/null
+run $TUI --keys "right,down,down,b"
+assert_contains "$OUT" "chat · scribe · 1 messages" "host seat shows its own chat instead of its parent's"
+assert_contains "$OUT" "nested family update" "nested host message is in its own panel"
+run $TUI --keys "right,down,down,right,b"
+assert_contains "$OUT" "chat · scribe · 1 messages" "grandchild reads its parent's chat"
 run $TUI --keys "b,tab,tab,right"
 assert_contains "$OUT" "--- focus: org/qa" "tab again hands the keys back to the chart"
 run $TUI --keys "?"
@@ -1742,7 +1647,7 @@ assert_contains "$OUT" "send → org/lead ▏x" "the send line names the capture
 # A dead seat under a dead seat: the parent's note must count the whole folded
 # subtree, not just its direct child, or the box and the summary disagree.
 "$SMINOS" seat add org old-helper --parent old-worker >/dev/null
-"$SMINOS" mark org/old-helper retired >/dev/null
+"$SMINOS" meta set org/old-helper status retired >/dev/null
 run "$SMINOS" chart org --width 120
 assert_contains "$OUT" "+2 retired" "a folded subtree counts every seat in it"
 assert_contains "$OUT" "7 seats · 4 live · 2 hidden" "and the summary agrees with the box"
@@ -1783,6 +1688,10 @@ assert_equals "$(mode_of "$CHAT")" 0600 "chat record is private"
 assert_contains "$(cat "$CHAT")" '"mode": "host"' "report mode is host"
 assert_contains "$(cat "$CHAT")" '"lead": "sent"' "report delivery is stored"
 assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #1 from a \u2192 lead]' "host receives framed report"
+run env -u CLAUDE_CODE_SESSION_ID "$SMINOS" tui fam --headless --keys "b,tab,enter"
+assert_contains "$OUT" "#1 · a → lead ·" "chat overlay names the recipient of a report"
+run env -u CLAUDE_CODE_SESSION_ID "$SMINOS" tui --headless --keys "!focus:fam,b"
+assert_contains "$OUT" "chat · - · 0 messages" "group box has no focused seat and selects no family chat"
 run "$SMINOS" say '@b your migration renames my column'
 assert_rc 0 "$RC" "tag to stopped sibling is recorded"
 assert_contains "$OUT" 'b: woken' "tag resumes stopped sibling"
@@ -1831,6 +1740,16 @@ run "$SMINOS" say --team '@lead hi'
 assert_rc 2 "$RC" "team cannot name parent"
 run "$SMINOS" say --in lead hi
 assert_rc 2 "$RC" "family seat cannot select arbitrary chat"
+run "$SMINOS" seat add other intruder --session 55555555-aaaa-4000-8000-000000000005
+assert_rc 2 "$RC" "family seat cannot add a seat outside its family"
+assert_contains "$OUT" 'a seat spawns its own children' "seat add points a family seat to spawn"
+assert_file_absent "$SMINOS_HOME/55555555-aaaa-4000-8000-000000000005.json" "refused seat add writes nothing"
+unset CLAUDE_CODE_SESSION_ID
+CLAUDE_CODE_SESSION_ID=55555555-aaaa-4000-8000-000000000005 run "$SMINOS" seat add fam interactive --parent lead --session 55555555-aaaa-4000-8000-000000000005
+assert_rc 0 "$RC" "interactive session joins through seat add"
+assert_equals "$(field 55555555-aaaa-4000-8000-000000000005 parent)" lead "interactive join keeps parent"
+"$SMINOS" remove fam/interactive >/dev/null
+export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" spawn c t --parent x
 assert_rc 2 "$RC" "seat cannot override parent when spawning"
 assert_contains "$OUT" 'a seat spawns its own children' "spawn refusal explains constraint"
@@ -1970,7 +1889,9 @@ assert_rc 0 "$RC" "one refused resume does not abort the chat"
 assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"
 assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
 assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d2": "woken"' "fan-out retains successful outcome"
+unset CLAUDE_CODE_SESSION_ID
 run "$SMINOS" seat add fam d3 --parent duo --session 99999999-aaaa-4000-8000-000000000009
+export CLAUDE_CODE_SESSION_ID="$D1"
 D3=99999999-aaaa-4000-8000-000000000009
 printf 'short=dddd0003\nuuid=%s\nname=d3\nstate=stopped\n' "$D3" > "$STUB_STATE/agents/dddd0003"
 python3 - "$SMINOS_HOME/$D3.json" "$WORK" <<'PY_FIX_CWD2'

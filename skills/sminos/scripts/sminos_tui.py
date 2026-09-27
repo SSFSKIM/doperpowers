@@ -3,7 +3,7 @@
 
 The chart (sminos_chart) is drawn in the middle of the screen; a header carries
 the fleet counts and refresh time, a panel under the chart describes the
-focused seat (or lists the group's board), and a footer shows the keys, the
+focused seat (or lists its family chat), and a footer shows the keys, the
 send line being typed, or a short flash message.
 
 Everything that decides is a pure function over one `state` dict:
@@ -29,7 +29,7 @@ import sminos_chart as chart  # noqa: E402
 PANEL_H = 7  # one separator row + six content rows
 MIN_ROWS_FOR_PANEL = 16
 FLASH_SECONDS = 5
-KEY_HINTS = "↑↓←→ move · enter attach · s send · b board · a all · r refresh · ? help · q quit"
+KEY_HINTS = "↑↓←→ move · enter attach · s send · b chat · a all · r refresh · ? help · q quit"
 HELP_LINES = [
     "keys",
     "",
@@ -39,8 +39,8 @@ HELP_LINES = [
     "enter — on a seat: open its conversation (claude attach) in a new tmux window, or switch to that window if it is open",
     "enter — on a group: collapse / expand its seats",
     "s — type a message for the focused seat; enter sends it over the seat's inbox socket (sminos send), esc cancels",
-    "b — toggle the bottom panel: seat detail ↔ group board",
-    "tab — move the keys into the board list (enter opens a post, tab back)",
+    "b — toggle the bottom panel: seat detail ↔ family chat",
+    "tab — move the keys into the chat list (enter opens a message, tab back)",
     "a — show / hide retired, failed and gone seats",
     "r — refresh from the harness now (it also refreshes every few seconds)",
     "? — this help · q — quit (tmux windows opened by enter stay open)",
@@ -60,7 +60,7 @@ def new_state(group=None, show_all=False, width=120, height=40, no_tmux=False):
         "roots": [], "meta": {"groups": 0, "seats": 0, "live": 0, "hidden": 0, "hidden_roots": 0, "hidden_groups": 0},
         "lay": {"boxes": [], "by_id": {}, "edges": [], "width": 0, "height": 0}, "parent": {},
         "collapsed": set(), "focus": None, "ox": 0, "oy": 0,
-        "panel": "detail", "panel_focus": False, "board_cursor": 0,
+        "panel": "detail", "panel_focus": False, "chat_cursor": 0,
         "overlay": None, "overlay_scroll": 0, "input": None, "input_target": None,
         "flash": None, "clock": time.time, "refreshed_at": 0.0, "refreshing": False, "loaded": False,
         "attached": {}, "actions": [], "quit": False, "styles": {}, "events": None, "refresher": None,
@@ -161,16 +161,22 @@ def ensure_visible(state, center=False):
     state["oy"] = max(0, state["oy"])
 
 
-def board_group(state):
-    n = focused_node(state)
-    if n is None:
-        return state["group"]
-    return n["seat"]["group"] if n["kind"] == "seat" else n["label"]
+def chat_host(state):
+    node = focused_node(state)
+    if node is None or node["kind"] != "seat":
+        return None
+    seat = node["seat"]
+    if sminos.family_of(seat)[1]:
+        return seat
+    if seat["parent"]:
+        return next((candidate for candidate in sminos.seats(seat["group"])
+                     if candidate["alias"] == seat["parent"]), None)
+    return None
 
 
-def board_posts(state):
-    g = board_group(state)
-    return list(reversed(sminos.read_board(g))) if g else []
+def chat_messages(state):
+    host = chat_host(state)
+    return list(reversed(sminos.chat_read(host["seat_id"]))) if host else []
 
 
 # ------------------------------------------------------------------- keymap
@@ -255,14 +261,14 @@ def handle_key(state, key, actions):
         state["overlay"], state["overlay_scroll"] = "help", 0
         return
     if state["panel_focus"]:
-        posts = board_posts(state)
-        cur = min(state["board_cursor"], max(0, len(posts) - 1))
+        messages = chat_messages(state)
+        cur = min(state["chat_cursor"], max(0, len(messages) - 1))
         if key in ("up", "k"):
-            state["board_cursor"] = max(0, cur - 1)
+            state["chat_cursor"] = max(0, cur - 1)
         elif key in ("down", "j"):
-            state["board_cursor"] = min(max(0, len(posts) - 1), cur + 1)
-        elif key == "enter" and posts:
-            state["overlay"], state["overlay_scroll"] = ("post", posts[cur]), 0
+            state["chat_cursor"] = min(max(0, len(messages) - 1), cur + 1)
+        elif key == "enter" and messages:
+            state["overlay"], state["overlay_scroll"] = ("message", messages[cur]), 0
         elif key in ("tab", "esc", "left", "h"):
             state["panel_focus"] = False
         elif key == "b":
@@ -294,10 +300,10 @@ def handle_key(state, key, actions):
         state["show_all"] = not state["show_all"]
         resnapshot(state)
     elif key == "b":
-        state["panel"] = "board" if state["panel"] == "detail" else "detail"
-        state["board_cursor"], state["panel_focus"] = 0, False
+        state["panel"] = "chat" if state["panel"] == "detail" else "detail"
+        state["chat_cursor"], state["panel_focus"] = 0, False
     elif key == "tab":
-        if state["panel"] == "board" and regions(state)["panel_h"]:
+        if state["panel"] == "chat" and regions(state)["panel_h"]:
             state["panel_focus"] = True
     elif key == "r":
         actions.refresh()
@@ -499,15 +505,10 @@ def detail_lines(state, node, w):
                  (" · %d retired" % node["hidden"]) if node["hidden"] else "")]
         roots = ", ".join(c["label"] for c in node["children"])
         lines.append("roots: " + (roots or "(none visible)"))
-        posts = sminos.read_board(g)
-        if posts:
-            last = posts[-1]
-            lines.append("board: %d post(s) — latest #%s%s by %s @ %s" % (
-                len(posts), last.get("id"), (' "%s"' % last["title"]) if last.get("title") else "",
-                last.get("from"), last.get("ts")))
-        else:
-            lines.append("board: (no posts)")
-        lines.append("enter collapses / expands · b shows the board")
+        host = chat_host(state)
+        if host:
+            lines.append("chat: %d messages · host %s" % (len(sminos.chat_read(host["seat_id"])), host["alias"]))
+        lines.append("enter collapses / expands · b shows the chat")
         return lines
     s = node["seat"]
     head = "%s/%s" % (s["group"], s["alias"])
@@ -564,26 +565,29 @@ def paint(state, screen):
 
     if r["panel_h"]:
         node = focused_node(state)
-        if state["panel"] == "board":
-            g = board_group(state) or "-"
-            posts = board_posts(state)
-            label = " board · %s · %d post%s · %s " % (g, len(posts), "" if len(posts) == 1 else "s",
-                                                       "↑↓ enter opens · tab back" if state["panel_focus"] else "tab to browse")
+        if state["panel"] == "chat":
+            host = chat_host(state)
+            messages = chat_messages(state)
+            label = " chat · %s · %d messages · %s " % (
+                host["alias"] if host else "-", len(messages),
+                "↑↓ enter opens · tab back" if state["panel_focus"] else "tab to browse")
         else:
             label = " detail "
         sep = "─" * 2 + label + "─" * max(0, w - 2 - chart.dwidth(label))
         screen.put(r["panel_y"], 0, chart.fit(sep, w).rstrip(), st.get("edge", 0))
         rows = r["panel_h"] - 1
-        if state["panel"] == "board":
-            posts = board_posts(state)
-            if not posts:
-                screen.put(r["panel_y"] + 1, 1, "(no posts)", st.get("dim", 0))
+        if state["panel"] == "chat":
+            messages = chat_messages(state)
+            if not messages:
+                screen.put(r["panel_y"] + 1, 1, "(no messages)", st.get("dim", 0))
             else:
-                cur = min(state["board_cursor"], len(posts) - 1)
-                top = max(0, min(cur - rows + 1, len(posts) - rows)) if cur >= rows else 0
-                for i, p in enumerate(posts[top:top + rows]):
-                    text = p.get("title") or " ".join(str(p.get("text", "")).split())
-                    line = "#%-4s %-20s %-14s %s" % (p.get("id"), str(p.get("ts", ""))[:20], str(p.get("from", ""))[:14], text)
+                cur = min(state["chat_cursor"], len(messages) - 1)
+                top = max(0, min(cur - rows + 1, len(messages) - rows)) if cur >= rows else 0
+                for i, message in enumerate(messages[top:top + rows]):
+                    text = " ".join(str(message.get("text", "")).split())
+                    line = "#%-4s %-20s %-14s %s" % (
+                        message.get("id"), str(message.get("ts", ""))[:20],
+                        str(message.get("from", ""))[:14], text)
                     attr = st.get("sel", 0) if (state["panel_focus"] and top + i == cur) else 0
                     screen.put(r["panel_y"] + 1 + i, 1, chart.fit(line, w - 2, collapse=False), attr)
         else:
@@ -612,12 +616,11 @@ def overlay_lines(state, inner_w):
     if ov == "help":
         return HELP_LINES
     _, p = ov
-    head = "#%s · %s · %s" % (p.get("id"), p.get("from", ""), p.get("ts", ""))
-    if p.get("branch"):
-        head += " · " + str(p["branch"])
+    targets = (" ".join("@" + alias for alias in p.get("to", [])) if p.get("mode") == "tagged"
+               else "all" if p.get("mode") in ("team", "all", "operator")
+               else " ".join(p.get("to", [])))
+    head = "#%s · %s → %s · %s" % (p.get("id"), p.get("from", ""), targets, p.get("ts", ""))
     lines = [head]
-    if p.get("title"):
-        lines += [str(p["title"]), ""]
     lines += wrap(p.get("text", ""), inner_w)
     return lines
 
