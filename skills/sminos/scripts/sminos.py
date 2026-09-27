@@ -77,8 +77,10 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid as uuidlib
+from contextlib import contextmanager
 from typing import NoReturn
 
 # Fleet state is private to the agent fleet: everything this CLI creates is
@@ -381,10 +383,304 @@ def find_seat(q):
     return "ambiguous", hits
 
 
+# ------------------------------------------------------------- family chats
+
+REACH_HINT = ("is outside your family (parent, siblings, children). To reach another session "
+              "use the native ListAgents and SendMessage tools.")
+TAGS = re.compile(r"@[A-Za-z0-9._-]+")
+
+
+def caller_seat():
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not sid:
+        return None
+    all_seats = seats()
+    for s in all_seats:
+        if s["current"] == sid:
+            return s
+    row = agent_row(session_id=sid)
+    if row:
+        return next((s for s in all_seats if not s["current"] and s["short"] and s["short"] == row.get("id")), None)
+    return None
+
+
+def is_family_seat(seat):
+    return bool(seat and seat["preamble"])
+
+
+def family_of(host):
+    return host, sorted((s for s in seats(host["group"]) if s["parent"] == host["alias"]),
+                        key=lambda s: s["alias"])
+
+
+def reach_of(seat):
+    group = seats(seat["group"])
+    return {s["seat_id"] for s in group if s["seat_id"] == seat["seat_id"] or
+            s["parent"] == seat["alias"] or
+            (seat["parent"] and (s["alias"] == seat["parent"] or s["parent"] == seat["parent"]))}
+
+
+def require_reach(caller, target, name=None):
+    if is_family_seat(caller) and target["seat_id"] not in reach_of(caller):
+        die("%s %s" % (name or target["alias"], REACH_HINT), EXIT_UNKNOWN)
+
+
+def chat_path(host_seat_id):
+    return os.path.join(root(), "chats", host_seat_id + ".jsonl")
+
+
+@contextmanager
+def chat_lock(host_seat_id):
+    directory = os.path.join(root(), "chats")
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    with open(os.path.join(directory, host_seat_id + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def chat_read(host_seat_id):
+    try:
+        with open(chat_path(host_seat_id)) as f:
+            records = []
+            for line in f:
+                try:
+                    record = json.loads(line)
+                    if isinstance(record, dict) and isinstance(record.get("id"), int):
+                        records.append(record)
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        return []
+    return sorted(records, key=lambda record: record["id"])
+
+
+def chat_append(host_seat_id, record):
+    with chat_lock(host_seat_id):
+        record = {**record, "id": max((r["id"] for r in chat_read(host_seat_id)), default=0) + 1,
+                  "ts": now(), "delivered": {}}
+        fd = os.open(chat_path(host_seat_id), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return record
+
+
+def chat_update(host_seat_id, msg_id, delivered):
+    with chat_lock(host_seat_id):
+        path = chat_path(host_seat_id)
+        # Preserve corrupt lines while rewriting: they are skipped by chat_read,
+        # but neither a slow writer nor a malformed line should erase history.
+        with open(path) as f:
+            lines = f.readlines()
+        updated = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+                if item.get("id") == msg_id:
+                    item["delivered"] = delivered
+                    line = json.dumps(item, ensure_ascii=False) + "\n"
+            except (ValueError, AttributeError):
+                pass
+            updated.append(line)
+        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".chat-", text=True)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.writelines(updated)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+def seen_advance(seat_id, host_seat_id, msg_id):
+    os.makedirs(root(), exist_ok=True)
+    with open(os.path.join(root(), ".metalock"), "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        # Promotion renames the provisional file under this same lock. Match
+        # the caller again while locked, never create a vanished provisional.
+        s = reload_seat(seat_id)
+        if s is None:
+            caller = caller_seat()
+            s = caller if caller and is_family_seat(caller) else None
+        if s:
+            seen = s.get("chat_seen") if isinstance(s.get("chat_seen"), dict) else {}
+            seen[host_seat_id] = max(int(seen.get(host_seat_id, 0)), msg_id)
+            _write_record(meta_path(s["seat_id"]), {**s, "chat_seen": seen})
+
+
+def unread_for(host_seat_id, member_alias, watermark, below_id):
+    return sum(1 for r in chat_read(host_seat_id)
+               if watermark < r["id"] < below_id and
+               r.get("delivered", {}).get(member_alias) not in ("sent", "woken"))
+
+
+def compose_chat_frame(host_alias, msg_id, sender, targets, unread, text):
+    return "[sminos chat %s #%d from %s → %s%s]\n%s" % (
+        host_alias, msg_id, sender, targets, (" | unread %d" % unread) if unread else "", text)
+
+
+class ResumeRefused(Exception):
+    def __init__(self, message, code=EXIT_UNKNOWN):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+
+def push_member(member, text, tagged):
+    if member["status"] == "retired":
+        if tagged:
+            warn("%s is retired; re-fill it to reach it" % member["alias"])
+        return "recorded"
+    if member["engine"] == "codex":
+        return "failed:legacy codex record"
+    fresh = reload_seat(member["seat_id"])
+    if fresh is None or not fresh["current"]:
+        return "recorded"
+    peer = peer_for_session(fresh["current"])
+    if peer:
+        try:
+            send_frame(socket_path_of(peer), text)
+            return "sent"
+        except SendFailed as e:
+            return "sent?" if e.phase == "after" else "failed:%s" % e
+    if not tagged or live_state(fresh) != "stopped":
+        return "recorded"
+    try:
+        return resume_session(fresh, text, False, quiet=True)
+    except ResumeRefused as e:
+        return "failed:%s" % e.message
+
+
+def cmd_say(a):
+    caller = caller_seat()
+    if caller:
+        if a.in_:
+            die("--in is for an operator, not a seat")
+        parent = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None)
+        own = family_of(caller)[1]
+        tags = TAGS.findall(a.text)
+        if "@all" in tags and len(tags) != 1:
+            die("@all stands alone")
+        if "@%s" % caller["alias"] in tags:
+            die("you cannot tag yourself")
+        parent_members = ([parent] + family_of(parent)[1]) if parent else []
+        selected = set(tags) - {"@all"}
+        up = {"@" + s["alias"] for s in parent_members if s["seat_id"] != caller["seat_id"]}
+        down = {"@" + s["alias"] for s in own if s["seat_id"] != caller["seat_id"]}
+        if selected - up - down:
+            die("%s %s" % (next(iter(sorted(selected - up - down))), REACH_HINT), EXIT_UNKNOWN)
+        if selected & up and selected & down:
+            die("one message, one family")
+        if a.team and selected & up:
+            die("--team cannot name a parent or sibling: one message, one family")
+        host = caller if (selected & down or a.team or not parent) else parent
+        if not host or (host["seat_id"] == caller["seat_id"] and not own):
+            die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
+        members = [host] + family_of(host)[1]
+        targets = [s for s in members if s["seat_id"] != caller["seat_id"] and
+                   ("@all" in tags or "@" + s["alias"] in selected or
+                    (not selected and (host["seat_id"] == caller["seat_id"] or
+                                       s["seat_id"] == host["seat_id"])))]
+        mode = ("tagged" if selected else "team" if host["seat_id"] == caller["seat_id"] else
+                "all" if tags else "host")
+        explicit = bool(selected)
+        target_label = " ".join(sorted(selected)) if explicit else host["alias"] if mode == "host" else "all"
+        sender = caller["alias"]
+    else:
+        if not a.in_:
+            die("say from an operator requires --in <host>")
+        host = resolve_seat(a.in_)
+        members = [host] + family_of(host)[1]
+        tags = TAGS.findall(a.text)
+        if "@all" in tags and len(tags) != 1:
+            die("@all stands alone")
+        selected = set(tags) - {"@all"}
+        if selected - {"@" + s["alias"] for s in members}:
+            die("%s %s" % (next(iter(sorted(selected - {"@" + s["alias"] for s in members}))), REACH_HINT), EXIT_UNKNOWN)
+        targets = [s for s in members if not selected or "@" + s["alias"] in selected]
+        mode, sender, explicit = ("tagged" if selected else "all" if tags else "operator"), "human", bool(selected)
+        target_label = " ".join(sorted(selected)) if selected else "all"
+    try:
+        record = chat_append(host["seat_id"], {"from": sender, "to": [s["alias"] for s in targets],
+                                               "mode": mode, "text": a.text})
+    except OSError as e:
+        die("chat could not be recorded: %s" % e, 1)
+    delivered = {}
+    for member in targets:
+        current = reload_seat(member["seat_id"]) or member
+        watermark = (current.get("chat_seen") or {}).get(host["seat_id"], 0)
+        unread = unread_for(host["seat_id"], member["alias"], int(watermark), record["id"])
+        frame = compose_chat_frame(host["alias"], record["id"], sender, target_label, unread, a.text)
+        delivered[member["alias"]] = push_member(member, frame, explicit)
+        print("%s: %s" % (member["alias"], delivered[member["alias"]]))
+    try:
+        chat_update(host["seat_id"], record["id"], delivered)
+    except OSError as e:
+        warn("chat message #%d was recorded but delivery outcomes could not be saved: %s" % (record["id"], e))
+
+
+def cmd_chat(a):
+    if a.n < 1 or a.since < 0:
+        die("chat -n must be positive and --since must not be negative")
+    caller = caller_seat()
+    if caller:
+        if a.host:
+            die("a seat's chat takes no <host> argument")
+        if a.team:
+            host = caller
+            if not family_of(host)[1]:
+                die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
+        else:
+            host = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None) or caller
+            if host["seat_id"] == caller["seat_id"] and not family_of(host)[1]:
+                die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
+    else:
+        if a.team:
+            die("--team is for a seat's own chat")
+        if not a.host:
+            die("chat from an operator requires <host>")
+        host = resolve_seat(a.host)
+    members = [host] + family_of(host)[1]
+    records = chat_read(host["seat_id"])
+    selected = [r for r in records if r["id"] > a.since]
+    if a.since == 0:
+        selected = selected[-a.n:]
+    if a.json:
+        for r in selected:
+            print(json.dumps(r, ensure_ascii=False))
+    else:
+        print("chat %s (%s) · members: %s · %d messages" % (
+            host["alias"], host["group"], ", ".join(s["alias"] for s in members), len(records)))
+        for r in selected:
+            lines = r.get("text", "").split("\n")
+            target = (" ".join("@" + alias for alias in r.get("to", [])) if r.get("mode") == "tagged"
+                      else "all" if r.get("mode") in ("all", "team", "operator")
+                      else " ".join(r.get("to", [])))
+            print("#%-3d %s %-6s → %-7s %s" % (r["id"], r.get("ts", "")[11:19] + "Z",
+                                             r.get("from", ""), target, lines[0]))
+            for line in lines[1:]:
+                print("    " + line)
+    if caller and selected:
+        seen_advance(caller["seat_id"], host["seat_id"], selected[-1]["id"])
+
+
 def resolve_seat(q):
     kind, res = find_seat(q)
+    caller = caller_seat()
+    if is_family_seat(caller) and kind == "ambiguous":
+        reachable = [s for s in res if s["seat_id"] in reach_of(caller)]
+        if len(reachable) == 1:
+            return reachable[0]
+        if not reachable:
+            die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
+        res = reachable
     if kind == "ok":
+        require_reach(caller, res, q)
         return res
+    if is_family_seat(caller) and kind == "none":
+        die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
     if kind == "ambiguous":
         die("ambiguous seat '%s' matches: %s" % (
             q, ", ".join("%s/%s [%s]" % (s["group"], s["alias"], s["seat_id"][:8]) for s in res)), EXIT_UNKNOWN)
@@ -771,7 +1067,7 @@ def live_state(seat):
         if st == "working":
             return "busy"
         if st == "blocked":
-            return "blocked"
+            return "blocked" if peer else "stopped"
         if st in ("done", "done-blocked"):
             return "idle" if peer else "stopped"
         if st in ("stopped", "failed", "error"):
@@ -1626,11 +1922,26 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
 
 
 def cmd_spawn(a):
+    caller = caller_seat()
+    if is_family_seat(caller):
+        if a.group is not None or a.parent is not None:
+            die("a seat spawns its own children")
+        # A provisional host must be promoted before its family can be keyed.
+        if not caller["current"]:
+            for _ in range(int(os.environ.get("SMINOS_UUID_POLL", "30"))):
+                latest = caller_seat()
+                if latest and latest["current"]:
+                    caller = latest
+                    break
+                time.sleep(poll_interval())
+            else:
+                die("parent seat has not completed promotion", 1)
+        a.group, a.parent = caller["group"], caller["alias"]
     alias = a.alias
     if not valid_name(alias):
         die("bad alias: %s" % alias)
-    if alias == "human":
-        die("the alias 'human' is reserved for the operator")
+    if alias in ("human", "all"):
+        die("the alias '%s' is reserved" % alias)
     if a.parent and not valid_name(a.parent):
         die("bad parent alias: %s" % a.parent)
     cwd = cwd_or_die(a.cwd, "spawn")
@@ -1678,9 +1989,9 @@ def cmd_spawn(a):
         parent = a.parent if a.parent is not None else existing["parent"]
         role = a.role if a.role is not None else existing["role"]
         brief = a.brief if a.brief is not None else existing["brief"]
-        preamble_flag = explicit_group or bool(existing["preamble"])
+        preamble_flag = explicit_group or is_family_seat(caller) or bool(existing["preamble"])
     else:
-        parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group
+        parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group or is_family_seat(caller)
     spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, parent, role, brief,
                 a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned",
                 stamp=parse_stamps(a.stamp))
@@ -1691,8 +2002,8 @@ def cmd_seat_add(a):
         die("bad group name: %s" % a.group)
     if not valid_name(a.alias):
         die("bad alias: %s" % a.alias)
-    if a.alias == "human":
-        die("the alias 'human' is reserved for the operator")
+    if a.alias in ("human", "all"):
+        die("the alias '%s' is reserved" % a.alias)
     if a.parent and not valid_name(a.parent):
         die("bad parent alias: %s" % a.parent)
     session = a.session or ""
@@ -1790,7 +2101,10 @@ def cmd_fill(a):
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
         refuse_live_name(s["alias"], s["addr"], allow_session=s["current"])  # resume continues that very session
         warn_resume_flags(a)
-        resume_session(s, a.task, a.wait, locks, verb="filled")
+        try:
+            resume_session(s, a.task, a.wait, locks, verb="filled")
+        except ResumeRefused as e:
+            die(e.message, e.code)
         return
     if peer_for_session(s["current"]):
         die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or stop it "
@@ -1815,7 +2129,7 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, locks=None, verb="resumed"):
+def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     """Process-level continuation of a seat's session.
 
     A live current turn is stopped first (`claude stop`, then a bounded wait
@@ -1836,19 +2150,24 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     different session id, the copy is stopped, the record is left untouched,
     and the command fails loudly.
     """
-    refuse_codex(s)
+    if s["engine"] == "codex":
+        raise ResumeRefused("legacy codex record")
     if locks is None:
         locks = lock_seat(s)
         fresh = reload_seat(s["seat_id"])
         if fresh is None:
             unlock(locks)
-            die("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+            raise ResumeRefused("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]))
         s = fresh
-        refuse_codex(s)
+        if s["engine"] == "codex":
+            raise ResumeRefused("legacy codex record")
     if not s["current"]:
-        die("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
+        raise ResumeRefused("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
-    cwd = cwd_or_die(s["cwd"], "resume of %s/%s" % (s["group"], s["alias"]))  # before any side effect
+    cwd = os.path.abspath(os.path.expanduser(s["cwd"]))
+    if not os.path.isdir(cwd):
+        raise ResumeRefused("resume of %s/%s: cwd does not exist or is not a directory: %s" % (
+            s["group"], s["alias"], cwd), EXIT_USAGE)
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
     lf = open(lock_path, "a+")
     try:
@@ -1856,7 +2175,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     except OSError:
         lf.seek(0)
         holder = lf.read().strip()
-        die("a wake/resume of %s/%s is already in flight%s — not starting a twin" % (
+        raise ResumeRefused("a wake/resume of %s/%s is already in flight%s — not starting a twin" % (
             s["group"], s["alias"], (" (%s)" % holder) if holder else ""), 1)
     lf.seek(0)
     lf.truncate()
@@ -1875,23 +2194,22 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
         stop_short = s["short"]
     if stop_short:
         if not claude_stop(stop_short):
-            die("claude stop %s failed for %s/%s — not resuming over a turn that may still be running" % (
+            raise ResumeRefused("claude stop %s failed for %s/%s — not resuming over a turn that may still be running" % (
                 stop_short, s["group"], s["alias"]), 1)
         if not wait_stopped(s, stop_short, cur):
-            die("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
+            raise ResumeRefused("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
                 "resume (it would start a copy)" % (s["group"], s["alias"], stop_short,
                                                     os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)
     prev_status = s["status"]
     short, banner = run_claude_bg(["--bg", "--resume", cur, msg], cwd, s["settings"])
     if not short:
         meta_set(s["seat_id"], {"status": "error", "updated": now()})
-        sys.stderr.write("sminos: resume failed — did not launch or produced no background id:\n%s\n" % banner)
-        sys.exit(1)
+        raise ResumeRefused("resume failed — did not launch or produced no background id: %s" % banner, 1)
 
     def copy_started(copy_id):
         claude_stop(short)
         meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
-        die("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
+        raise ResumeRefused("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
             "to continue it; the copy was stopped and the record left untouched. Use sminos wake/send for a "
             "live seat." % (s["group"], s["alias"], copy_id[:8], cur[:8]), 1)
 
@@ -1901,9 +2219,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     polled = poll_uuid(short)
     if not polled:
         meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
-        sys.stderr.write("sminos: resume: session %s produced no usable session uuid; kept previous "
-                         "current (recover via pending_short)\n" % short)
-        sys.exit(1)
+        if quiet:
+            unlock(locks)
+            return "woken?"
+        raise ResumeRefused("resume: session %s produced no usable session uuid; kept previous current (recover via pending_short)" % short, 1)
     uuid, state, _cwd = polled
     if uuid != cur:
         copy_started(uuid)
@@ -1923,6 +2242,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     unlock(locks)
     if wait:
         status = finish_turn(s["seat_id"], short, s["alias"], uuid, guard)
+    if quiet:
+        return "woken"
     print("%s %s/%s  [%s / %s]  via --bg --resume  status=%s  turns=%d" % (
         verb, s["group"], s["alias"], short, s["seat_id"], status, turns))
     if wait:
@@ -1932,7 +2253,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
 def cmd_resume(a):
     s = resolve_seat(a.seat)
     warn_resume_flags(a)
-    resume_session(s, a.msg, a.wait)
+    try:
+        resume_session(s, a.msg, a.wait)
+    except ResumeRefused as e:
+        die(e.message, e.code)
 
 
 def default_from(explicit):
@@ -1996,6 +2320,13 @@ def wait_socket_turn(s, marker, was_idle, guard):
 
 
 def cmd_wake(a):
+    try:
+        return _wake(a)
+    except ResumeRefused as e:
+        die(e.message, e.code)
+
+
+def _wake(a):
     s0 = resolve_seat(a.seat)
     refuse_codex(s0)
     # The lifecycle lock covers target selection, the socket delivery, and the
@@ -2094,6 +2425,9 @@ def report_codex_queued(tid, qid):
 
 
 def cmd_send(a):
+    caller = caller_seat()
+    if is_family_seat(caller) and a.target.startswith(CODEX_PREFIX):
+        die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     frm = default_from(a.frm)
     text = "[sminos message from %s]\n%s" % (frm, a.msg)
     if a.target.startswith(CODEX_PREFIX):
@@ -2107,6 +2441,14 @@ def cmd_send(a):
         report_codex_queued(tid, qid)
         return
     kind, res = find_seat(a.target)
+    if kind == "ambiguous" and is_family_seat(caller):
+        reachable = [s for s in res if s["seat_id"] in reach_of(caller)]
+        if len(reachable) == 1:
+            kind, res = "ok", reachable[0]
+        elif not reachable:
+            die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
+        else:
+            res = reachable
     if kind == "ambiguous":
         # A genuine seat match that is ambiguous must NOT silently fall through
         # to a raw name lookup — that would hide the ambiguity.
@@ -2114,6 +2456,7 @@ def cmd_send(a):
             a.target, ", ".join("%s/%s" % (s["group"], s["alias"]) for s in res)), EXIT_UNKNOWN)
     if kind == "ok":
         s = res
+        require_reach(caller, s, a.target)
         peer = peer_for_session(s["current"]) if s["current"] else None
         sock = socket_path_of(peer) if peer else ""
         if peer and socket_ok(sock):
@@ -2129,6 +2472,8 @@ def cmd_send(a):
             return
         die("%s/%s is not live (%s) — use: sminos wake %s/%s \"<msg>\"" % (
             s["group"], s["alias"], live_state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
+    if is_family_seat(caller):
+        die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     # Only when NO seat matched: fall back to a raw live harness-session name.
     peers = live_name_holders(a.target)  # live already means the socket answers
     if len(peers) == 1:
@@ -2211,24 +2556,30 @@ def sync_one(s0):
         if not harness_ok():
             return "live"  # the harness could not be asked: claim nothing
         row = harness_row(s)
+        blocked_ended = bool(row and normalize_state(row) == "blocked" and not peer_for_session(cur))
+        state = "done-blocked" if blocked_ended else normalize_state(row) if row else ""
         if s["status"] == "idle":
             # An idle seat the harness shows as running NOW was woken natively
             # (SendMessage) with no sminos write. Promote it.
-            if row and normalize_state(row) in ("working", "blocked"):
+            if row and state in ("working", "blocked"):
                 meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
                 return "live"
             # A natively-woken turn can also have STARTED AND ENDED between two
             # syncs: the record never left idle and the reply file still
             # describes the previous turn. The transcript is the only witness.
-            if row and normalize_state(row) in ("done", "done-blocked", "failed", "stopped") \
+            if row and state in ("done", "done-blocked", "failed", "stopped") \
                     and reply_stale(s["seat_id"], cur):
                 if meta_set_if(s["seat_id"], {"updated": now()}, guard,
-                               reply=(cur, normalize_state(row), s["alias"])):
+                               reply=(cur, "blocked" if state == "done-blocked" else state, s["alias"])):
                     return "idle"
+            if blocked_ended and (not os.path.exists(reply_path(s["seat_id"])) or
+                                  reply_stale(s["seat_id"], cur)):
+                return "idle" if meta_set_if(s["seat_id"], {"updated": now()}, guard,
+                                              reply=(cur, "blocked", s["alias"])) else "live"
             return "noop"
         if row is None:
             return "absent"
-        state = normalize_state(row)
+        state = "done-blocked" if blocked_ended else normalize_state(row)
         if state in ("working", "blocked"):
             return "live"
         if state == "done":
@@ -2376,8 +2727,31 @@ def locked_fresh(s0, verb):
 
 
 def cmd_retire(a):
-    locks, s = locked_fresh(resolve_seat(a.seat), "retire")
+    target = resolve_seat(a.seat)
+    caller = caller_seat()
+    descendants = []
+
+    def collect(host):
+        for child in family_of(host)[1]:
+            require_reach(caller, child)
+            collect(child)
+            descendants.append(child)
+
+    if a.cascade:
+        # A family seat may retire its direct children but cannot use cascade
+        # to reach grandchildren outside its own family.
+        collect(target)
+    for child in descendants + [target]:
+        _retire_one(child, a.purge)
+
+
+def _retire_one(s0, purge):
+    locks, s = locked_fresh(s0, "retire")
     try:
+        live_children = [c["alias"] for c in family_of(s)[1] if c["status"] != "retired" and live_state(c) in FILLED]
+        if live_children:
+            die("%s/%s hosts live children: %s — retire them first or use --cascade" % (
+                s["group"], s["alias"], ", ".join(live_children)), EXIT_UNKNOWN)
         stop_session(s)
         if s["engine"] == "codex":
             hint = "legacy codex-CLI worker — no resume path; remove with: sminos remove %s/%s" % (s["group"], s["alias"])
@@ -2385,7 +2759,7 @@ def cmd_retire(a):
             hint = "sminos fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])
         else:
             hint = "sminos fill %s/%s \"<task>\"" % (s["group"], s["alias"])
-        if a.purge:
+        if purge:
             if s["engine"] == "codex":
                 purge_codex_runs(meta_get(s["seat_id"], "event_log"))
             unlink_seat_files(s["seat_id"])
@@ -2426,7 +2800,11 @@ def now_or_reply(s):
 
 
 def cmd_list(a):
+    caller = caller_seat()
     rows = seats(a.group)
+    if is_family_seat(caller):
+        reach = reach_of(caller)
+        rows = [s for s in rows if s["seat_id"] in reach]
     if a.status:
         rows = [s for s in rows if s["status"] == a.status]
     rows.sort(key=lambda s: s["updated"], reverse=True)
@@ -2583,6 +2961,8 @@ def chart_group_or_die(g):
 def cmd_chart(a):
     """The organisation chart as text: boxes left-to-right, dead seats folded
     into '+N retired' unless --all, then one summary line."""
+    if is_family_seat(caller_seat()):
+        die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
     g = a.group
     chart_group_or_die(g)
     chart = chart_module()
@@ -2612,6 +2992,8 @@ def cmd_chart(a):
 def cmd_tui(a):
     """The chart as an interactive screen (sminos_tui): headless when asked,
     otherwise a real terminal inside tmux."""
+    if is_family_seat(caller_seat()):
+        die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
     chart_group_or_die(a.group)
     sibling_module("sminos_tui").cmd_tui(a)
 
@@ -2876,6 +3258,20 @@ def build_parser():
     s.add_argument("--from", dest="frm", default="")
     s.set_defaults(fn=cmd_send)
 
+    say = sub.add_parser("say", add_help=False)
+    say.add_argument("text")
+    say.add_argument("--in", dest="in_", default="")
+    say.add_argument("--team", action="store_true")
+    say.set_defaults(fn=cmd_say)
+
+    chat = sub.add_parser("chat", add_help=False)
+    chat.add_argument("host", nargs="?", default="")
+    chat.add_argument("-n", type=int, default=30)
+    chat.add_argument("--since", type=int, default=0)
+    chat.add_argument("--team", action="store_true")
+    chat.add_argument("--json", action="store_true")
+    chat.set_defaults(fn=cmd_chat)
+
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")
     r.set_defaults(fn=cmd_reply)
@@ -2899,6 +3295,7 @@ def build_parser():
     rt = sub.add_parser("retire", add_help=False)
     rt.add_argument("seat")
     rt.add_argument("--purge", action="store_true")
+    rt.add_argument("--cascade", action="store_true")
     rt.set_defaults(fn=cmd_retire)
 
     rm = sub.add_parser("remove", add_help=False)

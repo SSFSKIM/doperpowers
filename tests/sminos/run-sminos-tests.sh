@@ -272,6 +272,7 @@ run() { # capture stdout+stderr and rc without aborting the suite
   set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e
 }
 
+if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 # ---- 1) usage ----------------------------------------------------------------
 echo "usage:"
 run "$SMINOS"; assert_rc 2 "$RC" "no arguments is a usage error (exit 2)"
@@ -1368,7 +1369,7 @@ assert_rc 0 "$RC" "send without a session id in the environment exits 0"
 sleep 0.2
 assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from human]' "no session id in the environment → human"
 ID_UUID="0b0b8888-abab-4000-8000-0000000b8888"
-"$SMINOS" seat add grp me-agent --session "$ID_UUID" >/dev/null
+"$SMINOS" seat add grp me-agent --parent orchestrator --session "$ID_UUID" >/dev/null
 CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" send orchestrator "from an agent"
 assert_rc 0 "$RC" "send from a registered agent session exits 0"
 sleep 0.2
@@ -1382,6 +1383,13 @@ assert_contains "$OUT" 'from="me-agent"' "the post is stamped with the agent's a
 CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" post grp "impostor" --from human
 assert_rc 4 "$RC" "post --from human inside a Claude session is refused"
 "$SMINOS" remove grp/me-agent >/dev/null
+run "$SMINOS" spawn me-agent "NON-FAMILY-IDENTITY"  # no explicit group, no preamble
+PLAIN_ME="$(banner_uuid "$OUT")"
+CLAUDE_CODE_SESSION_ID="$PLAIN_ME" run "$SMINOS" send orchestrator "from a pipeline root"
+assert_rc 0 "$RC" "a non-family seat still sends to an unrelated seat"
+sleep 0.2
+assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent]' "a non-family seat still derives sender alias"
+"$SMINOS" remove work/me-agent >/dev/null
 
 # A harness failure is 'unknown', never an empty fleet.
 STUB_AGENTS_FAIL=1 run "$SMINOS" list grp
@@ -1546,6 +1554,9 @@ QA_UUID=cccc0004-0000-4000-8000-00000000c004
 # scout is idle: a finished row plus a live peer record whose socket answers.
 printf '{"pid":%s,"sessionId":"%s","name":"scout","kind":"background","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$SCOUT_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-scout.json"
+# Blocked counts as live only while a peer process answers its socket.
+printf '{"pid":%s,"sessionId":"%s","name":"qa","kind":"background","status":"busy","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$QA_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-qa.json"
 "$SMINOS" seat add org lead --role LEAD --session "$LEAD_UUID" >/dev/null
 "$SMINOS" seat add org scout --role RES --parent lead --session "$SCOUT_UUID" >/dev/null
 "$SMINOS" seat add org scribe --role DOC --parent lead --session "$SCRIBE_UUID" >/dev/null
@@ -1745,6 +1756,302 @@ run "$SMINOS" tui org
 assert_rc 2 "$RC" "tui without a terminal exits 2"
 assert_contains "$OUT" "sminos tui needs a terminal — for text use: sminos chart org" "and points at chart"
 
+fi # existing fleet tests; family-only runs skip to the focused section
+
+# ---- family chat --------------------------------------------------------------
+echo "family chat:"
+export SMINOS_HOME="$TEST_ROOT/family-registry"
+mkdir -p "$SMINOS_HOME"
+rm -f "$HOME/.claude/sessions/"*.json
+cd "$WORK"
+run "$SMINOS" seat add fam lead --session 11111111-aaaa-4000-8000-000000000001
+LEAD=11111111-aaaa-4000-8000-000000000001
+run "$SMINOS" seat add fam a --parent lead --session 22222222-aaaa-4000-8000-000000000002
+A=22222222-aaaa-4000-8000-000000000002
+run "$SMINOS" seat add fam b --parent lead --session 33333333-aaaa-4000-8000-000000000003
+B=33333333-aaaa-4000-8000-000000000003
+run "$SMINOS" seat add other x --session 44444444-aaaa-4000-8000-000000000004
+X=44444444-aaaa-4000-8000-000000000004
+printf '{"pid":%s,"sessionId":"%s","name":"lead","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$LEAD" "$SOCK" > "$HOME/.claude/sessions/lead.json"
+printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
+export CLAUDE_CODE_SESSION_ID="$A"
+run "$SMINOS" say 'schema done'
+assert_rc 0 "$RC" "untagged family report records"
+assert_contains "$OUT" 'lead: sent' "report pushes to host"
+CHAT="$SMINOS_HOME/chats/$LEAD.jsonl"
+assert_equals "$(mode_of "$CHAT")" 0600 "chat record is private"
+assert_contains "$(cat "$CHAT")" '"mode": "host"' "report mode is host"
+assert_contains "$(cat "$CHAT")" '"lead": "sent"' "report delivery is stored"
+assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #1 from a \u2192 lead]' "host receives framed report"
+run "$SMINOS" say '@b your migration renames my column'
+assert_rc 0 "$RC" "tag to stopped sibling is recorded"
+assert_contains "$OUT" 'b: woken' "tag resumes stopped sibling"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $B" "resume uses saved session"
+run "$SMINOS" say '@all standup'
+assert_rc 0 "$RC" "broadcast is recorded"
+assert_contains "$OUT" 'b: recorded' "stopped sibling stays stopped on broadcast"
+assert_equals "$(python3 -c 'import json,sys; print([json.loads(x)["id"] for x in open(sys.argv[1])])' "$CHAT")" '[1, 2, 3]' "chat ids increase"
+# A live socket for b makes the host's untagged team message and a later tag push.
+printf '{"pid":%s,"sessionId":"%s","name":"b","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$B" "$SOCK" > "$HOME/.claude/sessions/b.json"
+export CLAUDE_CODE_SESSION_ID="$LEAD"
+run "$SMINOS" say 'merge b first'
+assert_rc 0 "$RC" "root host speaks to team"
+assert_contains "$OUT" 'b: sent' "team reaches live child"
+assert_contains "$(tail -1 "$CHAT")" '"mode": "team"' "team mode recorded"
+export CLAUDE_CODE_SESSION_ID="$A"
+run "$SMINOS" say '@b check again'
+assert_rc 0 "$RC" "tagged sibling message delivers"
+assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #5 from a \u2192 @b | unread 2]' "unread excludes previously pushed messages"
+assert_equals "$(field "$B" chat_seen)" '' "a pushed message does not mark history read"
+export CLAUDE_CODE_SESSION_ID="$B"
+run "$SMINOS" chat -n 30
+assert_contains "$OUT" 'chat lead (fam) · members: lead, a, b · 5 messages' "chat reads complete history"
+assert_contains "$OUT" '→ @b' "tagged chat entry marks its recipient"
+assert_contains "$(field "$B" chat_seen)" "$LEAD\": 5" "chat read advances watermark"
+export CLAUDE_CODE_SESSION_ID="$A"
+run "$SMINOS" say '@b final'
+assert_not_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a → @b | unread' "read clears unread count"
+run "$SMINOS" list --json
+assert_contains "$OUT" '"alias": "lead"' "family list includes parent"
+assert_not_contains "$OUT" '"alias": "x"' "family list excludes other group"
+for target in other/x "$X" rawname codex:thread; do
+  run "$SMINOS" send "$target" hi
+  assert_rc 4 "$RC" "family send refuses $target"
+  assert_contains "$OUT" 'ListAgents and SendMessage' "family refusal suggests native tools"
+done
+run "$SMINOS" wake other/x hi
+assert_rc 4 "$RC" "family wake refuses outside seat"
+run "$SMINOS" say '@x hi'
+assert_rc 4 "$RC" "outside-family tag refused"
+run "$SMINOS" say '@all @b hi'
+assert_rc 2 "$RC" "all cannot mix with tags"
+run "$SMINOS" say '@a hi'
+assert_rc 2 "$RC" "self-tag refused"
+run "$SMINOS" say --team '@lead hi'
+assert_rc 2 "$RC" "team cannot name parent"
+run "$SMINOS" say --in lead hi
+assert_rc 2 "$RC" "family seat cannot select arbitrary chat"
+run "$SMINOS" spawn c t --parent x
+assert_rc 2 "$RC" "seat cannot override parent when spawning"
+assert_contains "$OUT" 'a seat spawns its own children' "spawn refusal explains constraint"
+run "$SMINOS" spawn c t --worktree c
+assert_rc 0 "$RC" "family seat spawns child"
+C="$(seat_id_of c)"
+assert_equals "$(field "$C" parent)" a "child parent is caller"
+assert_equals "$(field "$C" group)" fam "child inherits caller group"
+run "$SMINOS" say --team 'my team'
+assert_rc 0 "$RC" "middle seat speaks in its own chat"
+assert_file_exists "$SMINOS_HOME/chats/$A.jsonl" "child-host chat has distinct history"
+run "$SMINOS" say '@c @lead cross'
+assert_rc 2 "$RC" "one message cannot span two families"
+run "$SMINOS" chat
+assert_rc 0 "$RC" "member can read parent chat"
+run "$SMINOS" chat --team
+assert_contains "$OUT" 'chat a (fam)' "team chat selects child's family"
+assert_contains "$(field "$A" chat_seen)" "$LEAD\"" "parent chat cursor remains when own chat read"
+assert_contains "$(field "$A" chat_seen)" "$A\"" "own chat cursor saved independently"
+unset CLAUDE_CODE_SESSION_ID
+run "$SMINOS" say hi
+assert_rc 2 "$RC" "operator must select a chat"
+run "$SMINOS" chat
+assert_rc 2 "$RC" "operator must name the chat host"
+run "$SMINOS" say --in lead 'hello team'
+assert_rc 0 "$RC" "operator speaks as human"
+assert_contains "$(tail -1 "$CHAT")" '"from": "human"' "operator identity recorded"
+run "$SMINOS" say --in lead '@all operator broadcast'
+assert_rc 0 "$RC" "operator can broadcast to a named family"
+assert_contains "$(tail -1 "$CHAT")" '"mode": "all"' "explicit operator @all records broadcast mode"
+run "$SMINOS" chat lead --since 6 --json
+assert_rc 0 "$RC" "operator can read selected messages as JSONL"
+assert_contains "$OUT" '"text": "@all operator broadcast"' "JSONL since prints messages after watermark"
+assert_not_contains "$OUT" 'schema done' "since skips earlier messages"
+run "$SMINOS" retire fam/lead
+assert_rc 4 "$RC" "host cannot retire over live children"
+assert_contains "$OUT" 'b' "retirement names live child"
+run "$SMINOS" retire fam/lead --cascade
+assert_rc 0 "$RC" "cascade retires descendants"
+assert_contains "$OUT" 'retired fam/lead' "cascade ends with host"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired fam\/\([^ ]*\).*/\1/p' | tr '\n' ' ')" 'c a b lead ' "cascade retires depth-first then siblings in alias order"
+run "$SMINOS" seat add fam all
+assert_rc 2 "$RC" "all alias is reserved"
+# Pipeline roots carry no preamble flag and retain the unrestricted operator surface.
+run "$SMINOS" spawn pipeline-root t
+PIPE="$(seat_id_of pipeline-root)"
+CLAUDE_CODE_SESSION_ID="$(field "$PIPE" current)"
+export CLAUDE_CODE_SESSION_ID
+run "$SMINOS" list --json
+assert_contains "$OUT" '"alias": "x"' "pipeline root still lists the fleet"
+run "$SMINOS" spawn pipeline-child t
+assert_rc 0 "$RC" "pipeline root spawns unrestricted"
+assert_equals "$(field "$(seat_id_of pipeline-child)" parent)" '' "pipeline child does not inherit parent"
+run "$SMINOS" resume other/x 'pipeline resume'
+assert_rc 0 "$RC" "pipeline root can resume an unrelated seat"
+unset CLAUDE_CODE_SESSION_ID
+# A blocked row with no process must reconcile even if the record was already idle.
+run "$SMINOS" seat add fam blocked-one --session 55555555-aaaa-4000-8000-000000000005
+BLOCK=55555555-aaaa-4000-8000-000000000005
+printf 'short=abcde012\nuuid=%s\nname=blocked-one\nstate=blocked\nstatus=\n' "$BLOCK" > "$STUB_STATE/agents/abcde012"
+run "$SMINOS" list fam
+assert_contains "$OUT" 'stopped' "blocked row without peer is stopped"
+run "$SMINOS" sync fam/blocked-one
+assert_rc 0 "$RC" "blocked row sync succeeds"
+assert_contains "$OUT" 'idle' "idle blocked row is reconciled"
+assert_contains "$(cat "$SMINOS_HOME/$BLOCK.reply.txt")" 'blocked on a harness prompt' "blocked reply carries prompt marker"
+BLOCK_GEN="$(field "$BLOCK" gen)"
+run "$SMINOS" sync fam/blocked-one
+assert_contains "$OUT" 'noop' "repeated blocked sync has nothing new to reconcile"
+assert_equals "$(field "$BLOCK" gen)" "$BLOCK_GEN" "repeated sync does not bump lifecycle generation"
+run "$SMINOS" seat add fam blocked-working --session bbbbbbbb-aaaa-4000-8000-00000000000b
+BW=bbbbbbbb-aaaa-4000-8000-00000000000b
+printf 'short=abcde013\nuuid=%s\nname=blocked-working\nstate=blocked\nstatus=\n' "$BW" > "$STUB_STATE/agents/abcde013"
+"$SMINOS" meta set blocked-working status working >/dev/null
+run "$SMINOS" sync fam/blocked-working
+assert_contains "$OUT" idle "working record with dead blocked row reconciles to idle"
+assert_contains "$(cat "$SMINOS_HOME/$BW.reply.txt")" 'blocked on a harness prompt' "working blocked row records pending question"
+
+# Fan-out continues after a stopped member's resume is refused.
+run "$SMINOS" seat add fam duo --session 66666666-aaaa-4000-8000-000000000006
+DUO=66666666-aaaa-4000-8000-000000000006
+run "$SMINOS" seat add fam d1 --parent duo --session 77777777-aaaa-4000-8000-000000000007
+D1=77777777-aaaa-4000-8000-000000000007
+run "$SMINOS" seat add fam d2 --parent duo --session 88888888-aaaa-4000-8000-000000000008
+D2=88888888-aaaa-4000-8000-000000000008
+printf 'short=dddd0001\nuuid=%s\nname=d1\nstate=stopped\n' "$D1" > "$STUB_STATE/agents/dddd0001"
+printf 'short=dddd0002\nuuid=%s\nname=d2\nstate=stopped\n' "$D2" > "$STUB_STATE/agents/dddd0002"
+python3 - "$SMINOS_HOME/$D1.json" "$SMINOS_HOME/$D2.json" "$WORK" <<'PY_FIX_CWD'
+import json, sys
+for path, cwd in ((sys.argv[1], '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3])):
+    d = json.load(open(path)); d['cwd'] = cwd
+    with open(path, 'w') as f: json.dump(d, f)
+PY_FIX_CWD
+export CLAUDE_CODE_SESSION_ID="$DUO"
+run "$SMINOS" say '@d1 @d2 please respond'
+assert_rc 0 "$RC" "one refused resume does not abort the chat"
+assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"
+assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
+assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d2": "woken"' "fan-out retains successful outcome"
+run "$SMINOS" seat add fam d3 --parent duo --session 99999999-aaaa-4000-8000-000000000009
+D3=99999999-aaaa-4000-8000-000000000009
+printf 'short=dddd0003\nuuid=%s\nname=d3\nstate=stopped\n' "$D3" > "$STUB_STATE/agents/dddd0003"
+python3 - "$SMINOS_HOME/$D3.json" "$WORK" <<'PY_FIX_CWD2'
+import json, sys
+p=sys.argv[1]; d=json.load(open(p)); d['cwd']=sys.argv[2]
+with open(p, 'w') as f: json.dump(d, f)
+PY_FIX_CWD2
+STUB_NO_UUID=1 run "$SMINOS" say '@d3 check'
+assert_rc 0 "$RC" "unconfirmed resume does not erase message"
+assert_contains "$OUT" 'd3: woken?' "unconfirmed uuid is reported as uncertain wake"
+assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d3": "woken?"' "uncertain wake is recorded"
+assert_contains "$(field "$D3" pending_short)" 'dddd0003' "unconfirmed resume keeps recovery short"
+unset CLAUDE_CODE_SESSION_ID
+run "$SMINOS" seat add fam solo --session aaaaaaaa-aaaa-4000-8000-00000000000a
+export CLAUDE_CODE_SESSION_ID=aaaaaaaa-aaaa-4000-8000-00000000000a
+run "$SMINOS" say 'no family'
+assert_rc 4 "$RC" "isolated family seat has no chat"
+assert_contains "$OUT" 'no family yet' "isolated seat explains how to gain a family"
+run "$SMINOS" chart fam
+assert_rc 4 "$RC" "family cannot use operator chart"
+run "$SMINOS" tui fam --headless
+assert_rc 4 "$RC" "family cannot use operator tui"
+unset CLAUDE_CODE_SESSION_ID
+# Corrupt history is ignored on reads, while the highest valid id wins.
+printf '%s\n' 'not JSON at all' '{"id": 40, "from": "old", "delivered": {}}' >> "$SMINOS_HOME/chats/$DUO.jsonl"
+run "$SMINOS" say --in duo 'after corrupt line'
+assert_rc 0 "$RC" "a corrupt line does not block recording"
+assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"id": 41' "next id follows highest valid record"
+"$SMINOS" say --in duo 'parallel one' > "$TEST_ROOT/parallel-one.log" & p1=$!
+"$SMINOS" say --in duo 'parallel two' > "$TEST_ROOT/parallel-two.log" & p2=$!
+wait "$p1"; wait "$p2"
+IDS="$(python3 - "$SMINOS_HOME/chats/$DUO.jsonl" <<'PY_IDS'
+import json,sys
+ids=[]
+for line in open(sys.argv[1]):
+    try: ids.append(json.loads(line)['id'])
+    except (ValueError,KeyError): pass
+print(ids[-2:])
+PY_IDS
+)"
+assert_equals "$IDS" '[42, 43]' "two writers obtain unique sequential ids"
+# The startup window: no current, harness row matches provisional short.
+run "$SMINOS" seat add fam starter --parent duo --session aaaaaaaa-bbbb-4000-8000-00000000000a
+START=aaaaaaaa-bbbb-4000-8000-00000000000a
+PROVISIONAL=bbbbbbbb-bbbb-4000-8000-00000000000b
+python3 - "$SMINOS_HOME/$START.json" "$SMINOS_HOME/$PROVISIONAL.json" <<'PY_PROVISIONAL'
+import json,os,sys
+d=json.load(open(sys.argv[1])); d['current']=''; d['short']='aaaa000a'
+with open(sys.argv[2], 'w') as f: json.dump(d,f)
+os.unlink(sys.argv[1])
+PY_PROVISIONAL
+printf 'short=aaaa000a\nuuid=%s\nname=starter\nstate=working\nstatus=busy\n' "$START" > "$STUB_STATE/agents/aaaa000a"
+export CLAUDE_CODE_SESSION_ID="$START"
+run "$SMINOS" chat -n 30
+assert_rc 0 "$RC" "provisional caller reads its parent chat"
+assert_contains "$OUT" 'chat duo (fam)' "provisional caller finds family by short"
+run "$SMINOS" say 'starting'
+assert_rc 0 "$RC" "provisional caller records a report"
+assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"from": "starter"' "startup report has seat identity"
+assert_file_absent "$SMINOS_HOME/$START.json" "startup chat read does not create promoted record"
+# Promotion occurs while spawn waits; its child inherits the final tree.
+python3 - "$SMINOS_HOME/$PROVISIONAL.json" "$SMINOS_HOME/$START.json" "$WORK" <<'PY_PROMOTE' & promoter=$!
+import json,os,sys,time
+time.sleep(.2)
+d=json.load(open(sys.argv[1])); d['current']='aaaaaaaa-bbbb-4000-8000-00000000000a'
+d['short']='aaaa000a'; d['cwd']=sys.argv[3]
+with open(sys.argv[2], 'w') as f: json.dump(d,f)
+os.unlink(sys.argv[1])
+PY_PROMOTE
+run "$SMINOS" spawn starter-child t
+wait "$promoter"
+assert_rc 0 "$RC" "spawn waits for parent's promotion"
+assert_equals "$(field "$(seat_id_of starter-child)" parent)" starter "startup child belongs to promoted parent"
+assert_file_absent "$SMINOS_HOME/$PROVISIONAL.json" "provisional record is gone after promotion"
+assert_contains "$(field "$START" chat_seen)" "$DUO" "promotion preserves startup read watermark"
+BEFORE_GEN="$(field "$START" gen)"
+run "$SMINOS" chat
+assert_equals "$(field "$START" gen)" "$BEFORE_GEN" "chat read does not invalidate lifecycle watcher"
+unset CLAUDE_CODE_SESSION_ID
+
+# The update is transactional: a kill just before replace leaves all old bytes.
+BEFORE_CHAT="$(cat "$SMINOS_HOME/chats/$DUO.jsonl")"
+RESULT="$(python3 - "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$DUO" <<'PY_ATOMIC'
+import subprocess, sys
+script = '''import importlib.util, os, signal, sys
+spec=importlib.util.spec_from_file_location("sminos",sys.argv[1]); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+def interrupt(*args): os.kill(os.getpid(), signal.SIGKILL)
+mod.os.replace=interrupt
+mod.chat_update(sys.argv[2],1,{"lead":"sent"})'''
+p=subprocess.run([sys.executable, '-c', script, *sys.argv[1:]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+print(p.returncode)
+PY_ATOMIC
+)"
+assert_equals "$RESULT" '-9' "chat updater was killed before replacement"
+assert_equals "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" "$BEFORE_CHAT" "killed update preserves complete chat"
+# A long-held flock is not a timed lease: no second writer overtakes it at 30 s.
+if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
+  python3 - "$SMINOS_HOME/chats/$DUO.lock" "$TEST_ROOT/lock-ready" <<'PY_LOCK_HOLDER' & holder=$!
+import fcntl, pathlib, sys, time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    pathlib.Path(sys.argv[2]).touch()
+    time.sleep(31)
+PY_LOCK_HOLDER
+  for _ in $(seq 1 100); do [ -f "$TEST_ROOT/lock-ready" ] && break; sleep .05; done
+  "$SMINOS" say --in duo 'wait behind lock' > "$TEST_ROOT/waited-say.log" & waiter=$!
+  sleep 30.25
+  assert_not_contains "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" 'wait behind lock' "writer held beyond thirty seconds is not overtaken"
+  wait "$holder"; wait "$waiter"
+  assert_contains "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" 'wait behind lock' "waiting writer records after flock releases"
+fi
+
+
+START_CHILD="$(seat_id_of starter-child)"
+run "$SMINOS" retire fam/duo --cascade --purge
+assert_rc 0 "$RC" "cascade purge succeeds"
+assert_file_absent "$SMINOS_HOME/$DUO.json" "cascade purges host"
+assert_file_absent "$SMINOS_HOME/$D1.json" "cascade purges first child"
+assert_file_absent "$SMINOS_HOME/$D2.json" "cascade purges second child"
+assert_file_absent "$SMINOS_HOME/$START.json" "cascade purges nested host"
+assert_file_absent "$SMINOS_HOME/$START_CHILD.json" "cascade purges grandchild"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
