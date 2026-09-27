@@ -500,11 +500,14 @@ Touches `skills/sminos/scripts/sminos.py` (new verbs beside `cmd_send`;
 `cmd_spawn`, `cmd_list`, `cmd_retire`, `cmd_send`, `cmd_chart`,
 `cmd_tui`; the parser) and `tests/sminos/run-sminos-tests.sh` (a new
 section for the family, the `blocked` case in the sync section, and the
-existing cases the reach rule changes — the sender-identity case that
-spawns a parentless `me-agent` and sends to an unrelated `orchestrator`
-is not a family seat and must still pass unchanged, which is itself the
-assertion that the rule binds family seats only; add its family-seat
-twin, which is refused).
+existing cases the reach rule changes — the sender-identity case
+registers `me-agent` with `seat add`, which makes it a family seat, so
+that case now sends within `me-agent`'s reach (give it a parent or a
+child) and still proves its alias is the sender; its non-family twin is a
+seat spawned without `--group` (empty `preamble`) that sends to an
+unrelated seat with its alias as sender, which is itself the assertion
+that the rule binds family seats only; and a family-seat send to an
+unrelated seat is refused).
 
 Interfaces it exposes: `caller_seat`, `is_family_seat`, `family_of`,
 `reach_of`, `require_reach`, `chat_path`, `chat_lock`, `chat_append`,
@@ -888,6 +891,20 @@ unknown seat or outside reach.
   caller — a behavior change inside pipeline workers that the rest of
   the design explicitly avoids.
   Date/Author: 2026-09-26, plan-executor.
+
+- Decision (2026-09-26, during M1): the suite's sender-identity fixture
+  registers `me-agent` with `seat add`, which sets `preamble`, so it is a
+  family seat and the M1 paragraph's "is not a family seat and must still
+  pass unchanged" was wrong about the fixture. The definition stands:
+  every `seat add` is a family seat, parentless or not, so a root host is
+  scoped the same way however it came to exist. The fixture changes
+  instead: the identity case sends within `me-agent`'s reach, and the
+  non-family twin is a seat spawned without `--group` that still sends to
+  an unrelated seat with its alias as sender. Rejected: carving
+  parentless `seat add` records out of the family-seat definition — it
+  would make a root host's scope depend on how its record was created.
+  Date/Author: 2026-09-26, the owning session (answering the M1
+  executor), folded by plan-executor.
 
 ## Outcomes & Retrospective
 
