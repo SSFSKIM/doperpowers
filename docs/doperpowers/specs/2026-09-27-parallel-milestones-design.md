@@ -165,13 +165,14 @@ unchanged: whole spec read, decide and log, self-review, report.
 As each member returns, the controller folds its decisions and discoveries
 into the spec as SDE's step 4 says. Two members that resolved the same
 unforeseen gap differently — one error semantics decided two ways, a name
-chosen twice — are reconciled in the Decision Log once every member has
-returned and before the landing phase opens (Landing, below), and the
-member on the losing side is resumed with the fix. Disjoint files do not
-prevent this case, which is why no member lands before every sibling's
-decisions are in view. The controller being the spec's one writer is what
-makes the reconciliation safe: no member edits the spec, so the document
-itself never conflicts.
+chosen twice — are reconciled in the Decision Log, and the member on the
+losing side is resumed with the fix. Reconciliation runs whenever a
+member's decisions change: at its return, and after a review, since a
+reviewer may reject a decision and the fix reverses it (SDE step 4). No
+member lands before every sibling is clean and reconciled (Landing,
+below); disjoint files do not prevent this case. The controller being the
+spec's one writer is what makes the reconciliation safe: no member edits
+the spec, so the document itself never conflicts.
 
 Each member is reviewed as it returns, in its own worktree. The review
 package is `scripts/review-package SPEC_FILE <fork> <member HEAD>` —
@@ -184,26 +185,36 @@ hermetic. Findings resume the member's executor in its worktree, as today.
 
 ## Landing
 
-Landing is a phase of the group. It opens when every member has returned
-and the controller has folded and reconciled their decisions; until then a
-clean member waits. The milestone after the group cannot dispatch before
-the last landing anyway, so opening the phase at the last return costs no
-wall-clock, and it is what makes "reconciled before any member lands" a
-rule the controller can keep. Within the phase, members land one at a time,
-each as soon as its review is clean — a member still in a fix loop lands
-when its verdict comes clean; the group is order-independent by
-construction, and a declared landing order would idle a finished member
-behind an unfinished one. One landing at a time also means no two rebases
-ever race against a moving tip.
+Landing is a phase of the group. It opens when every member is clean —
+its review approved, its fixes in — and the controller has folded and
+reconciled their decisions; until then a clean member waits. The milestone
+after the group cannot dispatch before the last landing anyway, so opening
+the phase at the last approval costs only the serial landing time of the
+members that came clean earlier, minutes; and it is what makes "reconciled
+before any member lands" hold across the fix loop too, where a reviewer's
+rejection of a decision can change a contract a sibling relied on. Within
+the phase, members land one at a time, in the order they came clean; the
+group is order-independent by construction. One landing at a time also
+means no two rebases ever race against a moving tip.
+
+A decision an executor must make during a landing — a conflict it resolved
+— is read by the re-review. Where it would change a sibling already landed,
+the member landing conforms to what has landed: the landed decision is by
+then the spec's. Only when the landed side is the one that is wrong does a
+repair follow the group, as a fix task on the execution branch reviewed
+like any fix, before the next milestone dispatches.
 
 A clean verdict is bound to the head it reviewed: the ledger records
 `approved <sha7>`. A member lands only when its branch head is that
 approved head or reached it through rebases recorded `clean` (the patch
 did not change); any other head — a rebase that resolved conflicts, a
 commit the ledger does not name — is reviewed on `<onto>..<head>` before it
-lands. A recovering controller applies the same rule and never infers an
-unchanged patch from a rebase that succeeds now: a conflict resolved
-earlier is still unreviewed code.
+lands. A fix dispatched after an approval voids it — the ledger's
+`fix-base` line follows the `approved` line — until a new clean verdict
+writes a new `approved`. A recovering controller applies the same rules
+and never infers an unchanged patch from a rebase that succeeds now: a
+conflict resolved earlier is still unreviewed code, and a fix still
+running is still a rejection.
 
 | Tip since the fork | What happens |
 |---|---|
@@ -246,9 +257,9 @@ Member states, for the record a recovering controller reads:
 | executing | executor returns DONE or DONE_WITH_CONCERNS | returned | fold decisions and discoveries; reconcile against siblings |
 | executing | BLOCKED or NEEDS_CONTEXT | executing | SDE's executor statuses, unchanged |
 | returned | fold committed | reviewing | package `<fork>..<HEAD>`; dispatch the reviewer with the worktree as its checkout line |
-| reviewing | needs fixes | reviewing | resume the executor in its worktree; re-review the fix range |
-| reviewing | approved | clean | ledger `approved <head>` |
-| clean | landing phase not open (a sibling has not returned, or decisions are not yet reconciled) | clean | wait; a reconciliation that goes against this member resumes its executor with the fix → reviewing |
+| reviewing | needs fixes | reviewing | ledger `fix-base` (voids any `approved` above it); resume the executor in its worktree; re-review the fix range |
+| reviewing | approved | clean | ledger `approved <head>`; reconcile its decisions against siblings |
+| clean | landing phase not open (a sibling is not yet clean, or decisions are not yet reconciled) | clean | wait; a reconciliation that goes against this member resumes its executor with the fix → reviewing |
 | clean | phase open; tip is the fork commit or the commit this member was last rebased onto | landed | fast-forward; ledger `landed`; remove worktree and branch; ledger `complete`; tick Progress |
 | clean | phase open; tip moved | landing | resume the executor: rebase onto `<tip>`, full suite, report |
 | landing | rebase clean, suite green | clean | ledger `rebased <head> onto <tip> clean`; the approval still covers the patch |
@@ -274,12 +285,15 @@ compaction, or in a new controller, for each executed member without a
   `landed`. Recreate the worktree if it is gone
   (`git worktree add <workspace>/wt-<N> sde/<spec-slug>/M<N>`) and resume
   at the state the lines imply: no `reviewer`, dispatch the review;
-  `reviewer` and no `approved`, resume it; an `approved` head that is the
-  branch head, or joined to it only by `rebased … clean` lines, is clean
-  and lands when the phase is open; any other head — a `rebased … resolved`
-  with no later `approved`, or a head the ledger does not name — is
-  reviewed on `<onto>..<head>` first. A rebase that succeeds now says
-  nothing about whether the patch changed earlier.
+  `reviewer` and no `approved`, resume it; an `approved` head with no
+  `fix-base` or `rebased … resolved` after it, that is the branch head or
+  joined to it only by `rebased … clean` lines, is clean and lands when the
+  phase is open; anything else — a `fix-base` after the last `approved`
+  (the fixer may still be running: resume it, or re-dispatch the fix when
+  it cannot be resumed, then review), a `rebased … resolved` with no later
+  `approved`, or a head the ledger does not name — is reviewed on
+  `<onto>..<head>` first. A rebase that succeeds now says nothing about
+  whether the patch changed earlier.
 
 The committed spec's Progress is the human-readable state, as today.
 
@@ -424,12 +438,16 @@ Decision Log entry; step 3 keeps "One executor at a time" for the shared
 checkout and adds the group wave — fork commit, worktrees under the
 workspace with the branch name, dispatch at once, the two extra dispatch
 lines; step 4 adds the reconciliation of members that contradict each
-other, run once every member has returned; step 5 adds review in the
-member's worktree as it returns, with the clean verdict recorded as
-`approved <head>`; a new step between today's 6 and 7, **Land**, carries
-the landing phase (opens at the last return, after reconciliation; one
-landing at a time), the approval-covers-the-head rule, the landing table's
-four rows in prose, and the order fast-forward → `landed` line → cleanup
+other, run whenever a member's decisions change — at its return and after
+a review reverses one; step 5 adds review in the member's worktree as it
+returns, with the clean verdict recorded as `approved <head>`; step 6
+records a member's fix dispatch as `fix-base`, which voids the approval
+above it; a new step between today's 6 and 7, **Land**, carries the
+landing phase (opens when every member is approved and reconciled; one
+landing at a time), the approval-covers-the-head rule with its two voiding
+lines, the landing table's four rows in prose, the rule that a landing-time
+decision conforms to what has landed (a wrong landed side is a fix task
+after the group), and the order fast-forward → `landed` line → cleanup
 → `complete` → tick; step 7 says a member's tick means reviewed clean and
 landed, and the milestone after the group waits for the whole group;
 "Durable progress" gains the group lines, the `Task N:` prefix on every
@@ -572,7 +590,9 @@ progress":
     Task N: head <sha7>
     Task N: reviewer <handle>
     Task N: approved <sha7>                         — the head the clean verdict covers
-    Group {M2, M3, M4}: landing open                — every member returned; decisions reconciled
+    Task N: fix-base <sha7>                         — as today, prefixed; voids the approved line above it
+    Task N: fix-head <sha7>                         — as today, prefixed
+    Group {M2, M3, M4}: landing open                — every member approved; decisions reconciled
     Task N: rebased <sha7> onto <sha7> clean        — or: rebased <sha7> onto <sha7> resolved <files>
     Task N: landed <onto7>..<head7>                 — written right after the fast-forward, before cleanup
     Task N: complete (commits <onto7>..<head7>, review clean, landed)
@@ -580,8 +600,9 @@ progress":
 Every member line starts with `Task N:` (members return concurrently); a
 serial task's lines keep today's format. `<onto7>` is the tip the member
 was fast-forwarded from: the fork commit for the first to land, the
-previous landing for the rest. Fix lines (`fix-base`, `fix-head`) are as
-today, prefixed.
+previous landing for the rest. The lines are read in order: the latest of
+`approved`, `fix-base`, and `rebased … resolved` says whether the branch
+head is covered by a verdict.
 
 **Dispatch lines.** Executor, a member: "Your worktree: `<absolute path of
 wt-N>` — run the repository's setup there first. Your branch:
@@ -664,6 +685,22 @@ conflicts were resolved in: `<files>`."
   that costs no wall-clock, since the consumer waits for the last landing
   regardless.
   Date/Author: 2026-09-27 / fable session, review round 1.
+
+- Decision: the landing phase opens only when every member is approved
+  and reconciled, not merely returned; a `fix-base` line voids the
+  `approved` above it until a new verdict; a decision forced during a
+  landing conforms to what has landed, and a landed side found wrong is a
+  fix task after the group.
+  Rationale: review round 2 (2026-09-27) showed the ordinary fix loop
+  reaches the contradiction round 1 closed — a reviewer may reverse a
+  member's decision after a sibling relying on it has landed — and that a
+  recovering controller would read an approval as still valid while its
+  corrective fix was pending. Opening at the last approval costs the
+  serial landing time of the earlier members, minutes, against a repair
+  transition for landed members. Rejected again: the post-landing repair
+  transition as the general rule; it survives only as the narrow case of a
+  landed side that is wrong.
+  Date/Author: 2026-09-27 / fable session, review round 2.
 
 - 2026-09-27: execution deferred by SSFSKIM — the spec stays design-only,
   reviewed and committed on branch `worktree-parallel-milestones`, until a
