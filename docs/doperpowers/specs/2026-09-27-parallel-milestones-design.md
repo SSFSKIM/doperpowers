@@ -93,7 +93,10 @@ pre-flight one target.
 
 1. No member consumes an interface another member produces. Interfaces and
    Dependencies names producers; a member's interfaces come from milestones
-   before the group.
+   before the group. A contract the spec's Interfaces section already fixes
+   is the spec's, not the first milestone's that implements it: two members
+   may implement the same spec-owned contract independently, each from the
+   document.
 2. Members' "what it touches" sets are disjoint — no path appears under two
    members.
 3. Each member can be verified in a checkout of its own: the repository's
@@ -162,10 +165,13 @@ unchanged: whole spec read, decide and log, self-review, report.
 As each member returns, the controller folds its decisions and discoveries
 into the spec as SDE's step 4 says. Two members that resolved the same
 unforeseen gap differently — one error semantics decided two ways, a name
-chosen twice — are reconciled in the Decision Log before either lands, and
-the member on the losing side is resumed with the fix. The controller
-being the spec's one writer is what makes this safe: no member edits the
-spec, so the document itself never conflicts.
+chosen twice — are reconciled in the Decision Log once every member has
+returned and before the landing phase opens (Landing, below), and the
+member on the losing side is resumed with the fix. Disjoint files do not
+prevent this case, which is why no member lands before every sibling's
+decisions are in view. The controller being the spec's one writer is what
+makes the reconciliation safe: no member edits the spec, so the document
+itself never conflicts.
 
 Each member is reviewed as it returns, in its own worktree. The review
 package is `scripts/review-package SPEC_FILE <fork> <member HEAD>` —
@@ -178,15 +184,32 @@ hermetic. Findings resume the member's executor in its worktree, as today.
 
 ## Landing
 
-A member lands when its review is clean, in the order members come clean —
-the group is order-independent by construction, and a declared landing
-order would idle a finished member behind an unfinished one.
+Landing is a phase of the group. It opens when every member has returned
+and the controller has folded and reconciled their decisions; until then a
+clean member waits. The milestone after the group cannot dispatch before
+the last landing anyway, so opening the phase at the last return costs no
+wall-clock, and it is what makes "reconciled before any member lands" a
+rule the controller can keep. Within the phase, members land one at a time,
+each as soon as its review is clean — a member still in a fix loop lands
+when its verdict comes clean; the group is order-independent by
+construction, and a declared landing order would idle a finished member
+behind an unfinished one. One landing at a time also means no two rebases
+ever race against a moving tip.
+
+A clean verdict is bound to the head it reviewed: the ledger records
+`approved <sha7>`. A member lands only when its branch head is that
+approved head or reached it through rebases recorded `clean` (the patch
+did not change); any other head — a rebase that resolved conflicts, a
+commit the ledger does not name — is reviewed on `<onto>..<head>` before it
+lands. A recovering controller applies the same rule and never infers an
+unchanged patch from a rebase that succeeds now: a conflict resolved
+earlier is still unreviewed code.
 
 | Tip since the fork | What happens |
 |---|---|
 | Unmoved (the first to land) | The controller fast-forwards: `git merge --ff-only sde/<spec-slug>/M<N>` in the checkout. |
-| Moved; rebase clean, suite green | The controller resumes the member's executor to rebase its branch onto the tip in its worktree and run the full suite; it reports the rebased range. The existing verdict stands — the diff did not change — and the controller fast-forwards. |
-| Moved; conflicts resolved, or code changed to make the suite pass | The executor rebases, resolves each conflict the way the spec's intent and the siblings' Decision Log entries point, runs the full suite, and reports the rebased range and every file it resolved. The reviewer is resumed on the rebased range (`review-package SPEC_FILE <tip> <rebased HEAD>`, told it is the same task rebased and which files carried conflicts). On a clean verdict the controller fast-forwards. |
+| Moved; rebase clean, suite green | The controller resumes the member's executor to rebase its branch onto the tip in its worktree and run the full suite; it reports the rebased range. The ledger records `rebased <head> onto <tip> clean`; the approved verdict still covers the patch, and the controller fast-forwards. |
+| Moved; conflicts resolved, or code changed to make the suite pass | The executor rebases, resolves each conflict the way the spec's intent and the siblings' Decision Log entries point, runs the full suite, and reports the rebased range and every file it resolved. The ledger records `rebased <head> onto <tip> resolved <files>`. The reviewer is resumed on the rebased range (`review-package SPEC_FILE <tip> <rebased HEAD>`, told it is the same task rebased and which files carried conflicts); its clean verdict is a new `approved` line, and then the controller fast-forwards. |
 | The rebase needs a decision the spec leaves open | The executor stops with BLOCKED; it is a fork under brainstorming's gate like any other and goes to whoever dispatched the controller. |
 
 The executor's full suite on the rebased tree is the run a merge queue
@@ -206,15 +229,15 @@ deferred-review bookkeeping work unchanged; a merge commit would keep the
 report's commit SHAs valid, but a task's range would no longer be a
 straight line.
 
-After the fast-forward the controller removes the member's worktree and
-branch — its own to remove, once the landing is confirmed
-(`skills/subagent-driven-execution/isolated-workspace.md`, "At finish") —
-appends the member's `complete` line to the ledger with the landed range,
-and ticks its milestone in Progress: a tick on a member means reviewed
-clean and landed. The milestone after the group dispatches when every
-member has landed. The tip may move again while a member is rebasing; a
-member whose rebase completed against a stale tip is rebased again, the
-same way.
+Right after the fast-forward, before any cleanup, the controller appends
+the member's `landed <onto>..<head>` line: from then on the ledger says
+the landing happened, whatever is interrupted next. Then it removes the
+member's worktree and branch — its own to remove, once the landing is
+recorded (`skills/subagent-driven-execution/isolated-workspace.md`, "At
+finish"); both removals are retryable cleanup, and one that finds nothing
+to remove is done — appends the `complete` line, and ticks the milestone
+in Progress: a tick on a member means reviewed clean and landed. The
+milestone after the group dispatches when every member has landed.
 
 Member states, for the record a recovering controller reads:
 
@@ -224,26 +247,41 @@ Member states, for the record a recovering controller reads:
 | executing | BLOCKED or NEEDS_CONTEXT | executing | SDE's executor statuses, unchanged |
 | returned | fold committed | reviewing | package `<fork>..<HEAD>`; dispatch the reviewer with the worktree as its checkout line |
 | reviewing | needs fixes | reviewing | resume the executor in its worktree; re-review the fix range |
-| reviewing | approved | clean | — |
-| clean | tip is the fork commit, or the commit this member was last rebased onto | landed | fast-forward; remove worktree and branch; ledger `complete`; tick Progress |
-| clean | tip moved | landing | resume the executor: rebase onto `<tip>`, full suite, report |
-| landing | rebase clean, suite green | clean | re-check the tip; lands unless it moved again |
-| landing | conflicts resolved, or code changed | reviewing | resume the reviewer on `<tip>..<rebased HEAD>` |
+| reviewing | approved | clean | ledger `approved <head>` |
+| clean | landing phase not open (a sibling has not returned, or decisions are not yet reconciled) | clean | wait; a reconciliation that goes against this member resumes its executor with the fix → reviewing |
+| clean | phase open; tip is the fork commit or the commit this member was last rebased onto | landed | fast-forward; ledger `landed`; remove worktree and branch; ledger `complete`; tick Progress |
+| clean | phase open; tip moved | landing | resume the executor: rebase onto `<tip>`, full suite, report |
+| landing | rebase clean, suite green | clean | ledger `rebased <head> onto <tip> clean`; the approval still covers the patch |
+| landing | conflicts resolved, or code changed | reviewing | ledger `rebased <head> onto <tip> resolved <files>`; resume the reviewer on `<tip>..<rebased HEAD>` |
 | landing | needs an open decision | stopped | the gate fork goes up |
 | landing | suite red | landing | the executor fixes on its rebased branch; then as "code changed" |
 
 ## Recovery
 
-The ledger's `executed` line for a member carries its branch and worktree,
-and its `complete` line the landed range (Interfaces and Dependencies,
-"Ledger lines"). After compaction, or in a new controller, an executed
-member without a `complete` line is a branch in git whatever happened to
-its directory: the controller recreates the worktree from the branch
-(`git worktree add <workspace>/wt-<N> sde/<spec-slug>/M<N>`) and resumes at
-the state the ledger's lines imply — `head` present and no `reviewer`,
-dispatch the review; `reviewer` present, resume it; a `rebased` line with
-no verdict after it, re-request the landing. The committed spec's Progress
-is the human-readable state, as today.
+The ledger binds each member's state to commits (Interfaces and
+Dependencies, "Ledger lines"): its branch and worktree, its `head`, the
+`approved` head, every `rebased … onto … clean|resolved` line, and
+`landed`. Every member line starts with `Task N:`, because members return
+concurrently and a bare continuation line would not say whose it is. After
+compaction, or in a new controller, for each executed member without a
+`complete` line:
+
+- A `landed` line is present, or its latest head is already an ancestor of
+  the execution branch (`git merge-base --is-ancestor <sha> HEAD`): the
+  landing happened. Finish the cleanup — a worktree or branch already gone
+  is done — and write `complete`.
+- Otherwise its branch exists, since a branch is deleted only after
+  `landed`. Recreate the worktree if it is gone
+  (`git worktree add <workspace>/wt-<N> sde/<spec-slug>/M<N>`) and resume
+  at the state the lines imply: no `reviewer`, dispatch the review;
+  `reviewer` and no `approved`, resume it; an `approved` head that is the
+  branch head, or joined to it only by `rebased … clean` lines, is clean
+  and lands when the phase is open; any other head — a `rebased … resolved`
+  with no later `approved`, or a head the ledger does not name — is
+  reviewed on `<onto>..<head>` first. A rebase that succeeds now says
+  nothing about whether the patch changed earlier.
+
+The committed spec's Progress is the human-readable state, as today.
 
 ## What does not change
 
@@ -264,18 +302,21 @@ own run:
 
 1. **A group runs as a group.** After this spec's M1 and M2 have been
    executed, the ledger for this spec (`<workspace>/progress.md` in the
-   controller's checkout) contains one
-   `Group {M1, M2}: fork <sha7>` line; a `Task 1: executed (…, branch
-   sde/2026-09-27-parallel-milestones-design/M1, worktree wt-1)` line and
-   the same for Task 2 with `M2` and `wt-2`; and `Task 1: complete (…)` and
-   `Task 2: complete (…)` lines each ending `landed)`.
+   controller's checkout) contains one `Group {M1, M2}: fork <sha7>` line
+   and one `Group {M1, M2}: landing open` line; a `Task 1: executed (…,
+   branch sde/2026-09-27-parallel-milestones-design/M1, worktree wt-1)`
+   line and the same for Task 2 with `M2` and `wt-2`; `Task 1: approved`
+   and `Task 2: approved` lines; `Task 1: landed` and `Task 2: landed`
+   lines; and `Task 1: complete (…)` and `Task 2: complete (…)` lines each
+   ending `landed)`.
    `git log --oneline --merges <fork>..HEAD` prints nothing;
    `git log --oneline <fork>..HEAD` shows M1's and M2's commits in one line
    of history; `git worktree list` shows no `wt-1` or `wt-2`;
    `git branch --list 'sde/*'` prints nothing.
 2. **The second landing rebased.** Whichever member landed second has a
-   `rebased <sha7>` line in the ledger, and Surprises & Discoveries records
-   which member it was and that the rebase was clean. This spec's members
+   `Task N: rebased <sha7> onto <sha7> clean` line in the ledger, and
+   Surprises & Discoveries records which member it was and that the rebase
+   was clean. This spec's members
    touch disjoint files, so the landing table's conflict rows are not
    exercised here (Decision Log, verification entry).
 3. **A spec without an Order line reads unchanged.**
@@ -333,8 +374,9 @@ execspec's self-review tells them to check it.
 Touches: `skills/execspec/references/living-spec.md`;
 `skills/execspec/SKILL.md`.
 
-Interfaces: exposes the Order line grammar and the group conditions
-(Interfaces and Dependencies), under those names.
+Interfaces: implements the Order line grammar and the group conditions —
+contracts this spec owns (Interfaces and Dependencies) — in the doctrine.
+It produces nothing M2 reads; M3's tests consume its text.
 
 Decisions for this milestone. The paragraph is **"Ordering the
 milestones."**, placed directly after "Sizing a milestone" and before "What
@@ -370,9 +412,10 @@ Touches: `skills/subagent-driven-execution/SKILL.md`;
 `agents/task-executor.md`; `agents/codex/task-executor.toml`;
 `agents/task-reviewer.md`; `agents/codex/task-reviewer.toml`.
 
-Interfaces: consumes the Order line grammar and the group conditions by
-name; exposes the ledger lines and the dispatch lines (Interfaces and
-Dependencies).
+Interfaces: implements the same spec-owned contracts — the Order line
+grammar and the group conditions, cited by name — and the ledger lines and
+dispatch lines (Interfaces and Dependencies), in the loop's text. It
+produces nothing M1 reads; M3's tests consume its text.
 
 Decisions for this milestone. In the SDE skill: step 1 reads the Order line
 when present; step 2's pre-flight checks a declared group against the group
@@ -381,14 +424,21 @@ Decision Log entry; step 3 keeps "One executor at a time" for the shared
 checkout and adds the group wave — fork commit, worktrees under the
 workspace with the branch name, dispatch at once, the two extra dispatch
 lines; step 4 adds the reconciliation of members that contradict each
-other; step 5 adds review in the member's worktree as it returns; a new
-step between today's 6 and 7, **Land**, carries the landing table's four
-rows in prose and the tip-moved-again case; step 7 says a member's tick
-means reviewed clean and landed, and the milestone after the group waits
-for the whole group; "Durable progress" gains the group line, the branch
-and worktree fields, the `rebased` line, and the recovery paragraph;
-"Dispatch hygiene" gains the member's two lines and the reviewer's
-worktree checkout line. The design's reasoning is not restated in the
+other, run once every member has returned; step 5 adds review in the
+member's worktree as it returns, with the clean verdict recorded as
+`approved <head>`; a new step between today's 6 and 7, **Land**, carries
+the landing phase (opens at the last return, after reconciliation; one
+landing at a time), the approval-covers-the-head rule, the landing table's
+four rows in prose, and the order fast-forward → `landed` line → cleanup
+→ `complete` → tick; step 7 says a member's tick means reviewed clean and
+landed, and the milestone after the group waits for the whole group;
+"Durable progress" gains the group lines, the `Task N:` prefix on every
+member line, the `approved`, `rebased … onto … clean|resolved`, and
+`landed` lines, and the recovery rules of the Recovery section — the
+ancestor check for a landing interrupted before its ledger line, and the
+approval-coverage rule that never infers an unchanged patch from a rebase
+that succeeds now; "Dispatch hygiene" gains the member's two lines and the
+reviewer's worktree checkout line. The design's reasoning is not restated in the
 skill — one clause each on why the worktree is manual and nested, why the
 executor rebases and the controller fast-forwards, and why linear. The
 group wave is a variant of the loop, not a second loop: the skill grows by
@@ -451,6 +501,9 @@ in the return, not a body edit made here. Docs: one clause per line, no
 new section.
 
 Does not touch: skill and agent bodies.
+
+Interfaces: consumes M1's and M2's text — the artifacts, landed on the
+branch before this milestone dispatches.
 
 Proves: acceptance 6 and 7, and runs items 1–5 as the acceptance walk,
 recording each command and its output in the report. Items 1 and 2 read
@@ -516,13 +569,19 @@ progress":
 
     Group {M2, M3, M4}: fork <sha7>
     Task N: executed (base <fork7>, executor <handle>, branch sde/<spec-slug>/M<N>, worktree wt-<N>)
-    head <sha7>                — as today
-    reviewer <handle>          — as today
-    rebased <sha7>             — the member's HEAD after a landing rebase; repeated if rebased again
-    Task N: complete (commits <onto7>..<landed7>, review clean, landed)
+    Task N: head <sha7>
+    Task N: reviewer <handle>
+    Task N: approved <sha7>                         — the head the clean verdict covers
+    Group {M2, M3, M4}: landing open                — every member returned; decisions reconciled
+    Task N: rebased <sha7> onto <sha7> clean        — or: rebased <sha7> onto <sha7> resolved <files>
+    Task N: landed <onto7>..<head7>                 — written right after the fast-forward, before cleanup
+    Task N: complete (commits <onto7>..<head7>, review clean, landed)
 
-`<onto7>` is the tip the member was fast-forwarded from: the fork commit
-for the first to land, the previous landing for the rest.
+Every member line starts with `Task N:` (members return concurrently); a
+serial task's lines keep today's format. `<onto7>` is the tip the member
+was fast-forwarded from: the fork commit for the first to land, the
+previous landing for the rest. Fix lines (`fix-base`, `fix-head`) are as
+today, prefixed.
 
 **Dispatch lines.** Executor, a member: "Your worktree: `<absolute path of
 wt-N>` — run the repository's setup there first. Your branch:
@@ -585,6 +644,26 @@ conflicts were resolved in: `<files>`."
   one this run cannot exercise, so the readout carries it.
   Date/Author: 2026-09-27 / fable session; design approved by SSFSKIM in
   brainstorming.
+
+- Decision: the landing phase opens only when every member has returned
+  and their decisions are reconciled; a clean verdict is bound to the head
+  it covers (`approved <sha7>`) and a rebase records whether it changed
+  the patch, so a conflict resolution can never land on an earlier
+  approval; the `landed` line is written before any cleanup, and recovery
+  recognizes a landing by ancestry; every member ledger line carries its
+  `Task N:`; a spec-owned contract is not a member-produced interface
+  (group condition 1).
+  Rationale: the independent reviews (adversarial design and buildability,
+  2026-09-27) showed the first draft promised reconciliation "before
+  either lands" while landing members as they came clean, let a recovering
+  controller reuse a pre-conflict approval, deleted the recovery branch
+  before recording the landing, and declared M1 and M2 as producer and
+  consumer of contracts this document itself fixes. Rejected: a
+  post-landing repair transition (reopening a landed member through a
+  reviewed fix on the execution branch) — more machinery than a barrier
+  that costs no wall-clock, since the consumer waits for the last landing
+  regardless.
+  Date/Author: 2026-09-27 / fable session, review round 1.
 
 ## Outcomes & Retrospective
 
