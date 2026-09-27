@@ -33,7 +33,7 @@ from the terminal prints that line and every one after it.
 - [x] M1 — `say`, `chat`, the family record, reach, `retire --cascade`, the `blocked` liveness fix; hermetic tests. (2026-09-26, reviewed clean: 4c5cf9c7..61216d45; suite 697 assertions)
 - [x] M2 — the board, `topology`/`view`/`groups`, `mark`, `join`/`leave`, the retired-verb pointers, and the legacy codex branches leave; the TUI's board panel becomes the chat panel; tests follow. (2026-09-26, reviewed clean: 40f5ae29; suite 685 assertions, seam suites green; the six legacy codex records removed from the real registry beforehand)
 - [x] M3 — the seat protocol: `references/spawn-preamble.md` and `SKILL.md` rewritten around the family; decomposing's one sentence; `_board_api.py`'s docstring; version bump. (2026-09-26, reviewed clean: 5906b209..d66d4ef0; suite 706 assertions; bumped to 7.125.0)
-- [ ] M4 — live proof on the real harness: a three-level family, the acceptance section run as written, whole-branch review, retrospective. Run by the session that owns this spec. (Live proof run 2026-09-27 04:14–04:27Z: acceptance 14 held except `chat a` from the terminal; three defects found and fixed with assertions in 2a5fa97f; suite 730 assertions. Branch review pending.)
+- [x] M4 — live proof on the real harness: a three-level family, the acceptance section run as written, whole-branch review, retrospective. Run by the session that owns this spec. (2026-09-27: live proof 04:14–04:27Z, acceptance 14 held except `chat a` from the terminal; three defects fixed with assertions in 2a5fa97f; whole-branch review at `reviewer-high` found five items, fixed in 36feaacc; the re-review's two items are TECH-DEBT 28 and 29; suite 746 assertions)
 
 ## Terms
 
@@ -1139,6 +1139,97 @@ unknown seat or outside reach.
   none. The suite's one uncaptured UNCERTAIN warning predates the branch.
   Date/Author: 2026-09-27, the owning session.
 
+- Decision (2026-09-27, whole-branch review at `reviewer-high`): five
+  findings, all adopted, none against a recorded decision. (1) `push_member`
+  decided retirement on the member snapshot taken before the fan-out, so a
+  seat retired while an earlier recipient's resume ran could be resumed and
+  set `working`; retirement is now decided on the reloaded record. (2) An
+  interrupted append could leave an unterminated last line, and the next
+  `chat_append` wrote its record onto that fragment — a message `say` had
+  pushed that `chat` could not print and `chat_update` could not find; the
+  append now terminates a dangling fragment first. (3) Bare `sync` and
+  `sync --all` from a family seat reconciled and printed the whole fleet;
+  the bulk path is now bounded by the caller's reach, as `list` is. (4) The
+  cascade collector recursed without end on a parent cycle the registry
+  permits (`seat add fam loop --parent loop`); it now visits each seat
+  once. (5) A negative assertion looked for a raw `→` in captured frames
+  that `json.dumps` escapes, and could not fail. The reviewer confirmed the
+  record-before-push order, purge keeping chat files, the cascade reach
+  bound, alias precedence, and leading-run tags as decisions, and found the
+  remaining references to removed verbs to be comments and negative tests.
+  Fixed in 36feaacc: the push takes the seat's lifecycle lock across the
+  reload, the recheck, and the resume (`resume_session` accepts a held
+  lock, as `wake` uses it); a seat is no longer its own live child.
+  Date/Author: 2026-09-27, the owning session.
+
+- Decision (2026-09-27, re-review of 36feaacc at `reviewer-medium`): two
+  findings, both logged as debt rather than fixed, and the review loop
+  closed there. (1) A parent cycle whose seats are all live cannot be
+  cascade-retired: the collector orders it, but each seat's live-child
+  check sees the other. A cycle is not a spawn tree — `spawn` derives
+  `parent` from the caller, so only `seat add --parent` can build one —
+  and the refusal is clean and names the child; `docs/doperpowers/TECH-DEBT.md`
+  row 28 carries the two fixes. (2) The stale-push assertion retires the
+  seat before `push_member` runs, so it exercises the reloaded-record
+  recheck and not the lock; the lock's path runs on every tagged push to a
+  stopped seat and in the contention case, and removing it would reopen
+  only the window between the liveness read and the lock. Row 29 asks for
+  the interleaving probe. Rejected: a third fix round — a round that
+  yields only logged debt is the loop's stopping signal.
+  Date/Author: 2026-09-27, the owning session.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Achieved.** Every family has a group chat, and a seat's sminos surface is
+its families. `say` routes by the leading tags and pushes over the inbox
+socket a busy or idle session already reads; `chat` prints the record and
+moves the reader's watermark; a spawned seat reads its family's chat before
+its task; `retire` refuses a host with live children unless `--cascade`;
+a `blocked` row without a process reads `stopped`. On the real harness a
+three-level family (`lead` → `a`, `b` → `a1`) ran acceptance 14 end to end:
+the report up woke the idle host, the team message stayed in the child's
+chat, the tagged answer reached both children, the grandchild saw only its
+family and was refused an uncle, and the cascade retired the tree in order.
+The board verbs, `topology`/`view`/`groups`, `mark`, `join`/`leave`,
+`listen`/`log`, and the legacy codex process handling are gone: the CLI has
+19 verbs where it had 25, `SKILL.md` and the preamble are shorter, and the
+six legacy codex records left the real registry. `sminos.py` itself is not
+smaller (3040 → 3068 lines): the chat, the reach rule, and the cascade cost
+about what the board and codex paths gave back. The hermetic suite grew
+from 561 to 746 assertions. The whole-branch review at `reviewer-high`
+found four defects the suite and the live run had both missed — a push
+that could resume a seat retired mid fan-out, a torn last line swallowing
+the next message, a family seat's `sync --all` reaching the fleet, a
+cascade recursing on a parent cycle — and one assertion that could not
+fail; all five were fixed with RED-then-GREEN assertions in 36feaacc, and
+the re-review of that commit returned two items that are now TECH-DEBT
+rows 28 and 29, which closed the loop.
+
+**What remains.** Deferred by design: the human as a seat (a future custom
+harness app), families across machines. Left as found: the status mirror
+(`list` shows a seat's last self-reported `status` beside a fresh `live`,
+so a host that never ran `sminos status` reads `working` while idle). Not
+exercised live: `--worktree` children, and the tagged push that resumes a
+stopped member (hermetic only). Skill-text evidence is the hermetic text
+assertions plus this one live run; no eval-harness pass. A purged host's
+chat file stays on disk with nothing pointing at it, by the decision that
+purge keeps history.
+
+**Lessons.** The lesson the execplans recorded twice held a third time:
+only contact with the real thing tests the model. The suite's fixtures
+never held a one-letter alias beside real hex ids, an agent that quotes an
+alias in a report, or a host counting its own message as unread; a live
+run of under a dollar found all three inside fifteen minutes. Two
+assumptions became evidence: the harness absorbs a frame into a running
+turn (`absorbed_mid_turn`) rather than dropping or deferring it, and a
+seat's first command inside its startup window is still read as the seat.
+A refusal should say what to do instead — the reach message did, and `a1`
+still spent a minute in the source when the tag rule had no message at
+all; the preamble now states the rule in one sentence. On process: the
+plan-executor as SDE controller over three milestones, with an independent
+task-reviewer per milestone, needed the owner four times, each at a spec
+gap a worker surfaced (`seat add` in a family, the cascade's reach bound,
+the root's preamble, `chat` on an empty family) — the living-spec loop
+doing what it is for. Friction worth fixing elsewhere: executors declined
+to write the report files the dispatch named, and the issue-tracker seam
+suites take over ten minutes per boundary.
