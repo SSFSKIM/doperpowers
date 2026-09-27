@@ -494,16 +494,18 @@ def chat_update(host_seat_id, msg_id, delivered):
                 os.unlink(temporary)
 
 
-def seen_advance(seat_id, host_seat_id, msg_id):
+def seen_advance(seat_id, host_seat_id, msg_id, expected_short=None):
     os.makedirs(root(), exist_ok=True)
     with open(os.path.join(root(), ".metalock"), "a") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         # Promotion renames the provisional file under this same lock. Match
         # the caller again while locked, never create a vanished provisional.
         s = reload_seat(seat_id)
-        if s is None:
+        if s is None and expected_short:
             caller = caller_seat()
-            s = caller if caller and is_family_seat(caller) else None
+            # Only a promotion of this caller's provisional short can redirect
+            # the write; an arbitrary missing id must remain a no-op.
+            s = caller if caller and caller["short"] == expected_short and is_family_seat(caller) else None
         if s:
             seen = s.get("chat_seen") if isinstance(s.get("chat_seen"), dict) else {}
             seen[host_seat_id] = max(int(seen.get(host_seat_id, 0)), msg_id)
@@ -663,7 +665,7 @@ def cmd_chat(a):
             for line in lines[1:]:
                 print("    " + line)
     if caller and selected:
-        seen_advance(caller["seat_id"], host["seat_id"], selected[-1]["id"])
+        seen_advance(caller["seat_id"], host["seat_id"], selected[-1]["id"], caller["short"])
 
 
 def resolve_seat(q):

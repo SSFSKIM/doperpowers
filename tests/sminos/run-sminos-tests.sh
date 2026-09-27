@@ -2009,6 +2009,21 @@ assert_contains "$(field "$START" chat_seen)" "$DUO" "promotion preserves startu
 BEFORE_GEN="$(field "$START" gen)"
 run "$SMINOS" chat
 assert_equals "$(field "$START" gen)" "$BEFORE_GEN" "chat read does not invalidate lifecycle watcher"
+# A promotion racing the watermark write redirects only the caller's own short.
+unset CLAUDE_CODE_SESSION_ID
+run "$SMINOS" say --in duo 'later message'
+assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"id": 45' "later chat message is available to a racing reader"
+export CLAUDE_CODE_SESSION_ID="$START"
+python3 - "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$START" "$PROVISIONAL" "$DUO" <<'PY_SEEN'
+import importlib.util, sys
+spec=importlib.util.spec_from_file_location('sminos',sys.argv[1])
+mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+mod.seen_advance(sys.argv[3],sys.argv[4],45,'aaaa000a')
+mod.seen_advance(sys.argv[2],sys.argv[4],1)
+mod.seen_advance('missing-seat-id',sys.argv[4],99)
+PY_SEEN
+assert_contains "$(field "$START" chat_seen)" "$DUO\": 45" "promotion redirects read and lower id cannot regress watermark"
+assert_file_absent "$SMINOS_HOME/missing-seat-id.json" "seen advance never resurrects removed seat"
 unset CLAUDE_CODE_SESSION_ID
 
 # The update is transactional: a kill just before replace leaves all old bytes.
