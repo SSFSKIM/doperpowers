@@ -1865,6 +1865,20 @@ run "$SMINOS" chat lead --since 6 --json
 assert_rc 0 "$RC" "operator can read selected messages as JSONL"
 assert_contains "$OUT" '"text": "@all operator broadcast"' "JSONL since prints messages after watermark"
 assert_not_contains "$OUT" 'schema done' "since skips earlier messages"
+run "$SMINOS" seat add fam b1 --parent b
+B1="$(seat_id_of b1)"
+export CLAUDE_CODE_SESSION_ID="$A"
+run "$SMINOS" retire fam/b --cascade
+unset CLAUDE_CODE_SESSION_ID
+assert_rc 4 "$RC" "a sibling cannot cascade through another sibling's child"
+assert_contains "$OUT" 'ListAgents and SendMessage' "cascade refusal points to native cross-family tools"
+assert_not_contains "$(field "$B" status)" retired "refused cascade leaves sibling intact"
+assert_not_contains "$(field "$B1" status)" retired "refused cascade leaves grandchild intact"
+export CLAUDE_CODE_SESSION_ID="$A"
+run "$SMINOS" retire fam/lead --cascade
+unset CLAUDE_CODE_SESSION_ID
+assert_rc 4 "$RC" "member cannot cascade parent through sibling's grandchild"
+assert_not_contains "$(field "$LEAD" status)" retired "refused parent cascade leaves host intact"
 run "$SMINOS" retire fam/lead
 assert_rc 4 "$RC" "host cannot retire over live children"
 assert_contains "$OUT" 'b' "retirement names live child"
@@ -1873,7 +1887,7 @@ run "$SMINOS" retire fam/lead --cascade
 unset CLAUDE_CODE_SESSION_ID
 assert_rc 0 "$RC" "host seat can cascade through its grandchild"
 assert_contains "$OUT" 'retired fam/lead' "cascade ends with host"
-assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired fam\/\([^ ]*\).*/\1/p' | tr '\n' ' ')" 'c a b lead ' "cascade retires depth-first then siblings in alias order"
+assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired fam\/\([^ ]*\).*/\1/p' | tr '\n' ' ')" 'c a b1 b lead ' "cascade retires depth-first then siblings in alias order"
 rm -f "$HOME/.claude/sessions/b.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
 export CLAUDE_CODE_SESSION_ID="$A"

@@ -2740,17 +2740,24 @@ def locked_fresh(s0, verb):
 
 def cmd_retire(a):
     target = resolve_seat(a.seat)
+    caller = caller_seat()
     descendants = []
+    reachable = reach_of(caller) if is_family_seat(caller) else None
 
-    def collect(host):
+    def collect(host, own_subtree):
         for child in family_of(host)[1]:
-            collect(child)
+            child_is_own = own_subtree or (caller is not None and child["seat_id"] == caller["seat_id"])
+            if reachable is not None and child["seat_id"] not in reachable and not child_is_own:
+                require_reach(caller, child)
+            collect(child, child_is_own)
             descendants.append(child)
 
     if a.cascade:
-        # The named target is reach-checked by resolve_seat; a cascade includes
-        # its whole subtree, even descendants outside the caller's own reach.
-        collect(target)
+        # Preflight the entire subtree before retiring anyone: descendants of
+        # our own seat are ours, but a sibling's descendants are not.
+        own_subtree = (caller is not None and
+                       (target["seat_id"] == caller["seat_id"] or target["parent"] == caller["alias"]))
+        collect(target, own_subtree)
     for child in descendants + [target]:
         _retire_one(child, a.purge)
 
