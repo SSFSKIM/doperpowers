@@ -1868,10 +1868,23 @@ assert_not_contains "$OUT" 'schema done' "since skips earlier messages"
 run "$SMINOS" retire fam/lead
 assert_rc 4 "$RC" "host cannot retire over live children"
 assert_contains "$OUT" 'b' "retirement names live child"
+export CLAUDE_CODE_SESSION_ID="$LEAD"
 run "$SMINOS" retire fam/lead --cascade
-assert_rc 0 "$RC" "cascade retires descendants"
+unset CLAUDE_CODE_SESSION_ID
+assert_rc 0 "$RC" "host seat can cascade through its grandchild"
 assert_contains "$OUT" 'retired fam/lead' "cascade ends with host"
 assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired fam\/\([^ ]*\).*/\1/p' | tr '\n' ' ')" 'c a b lead ' "cascade retires depth-first then siblings in alias order"
+rm -f "$HOME/.claude/sessions/b.json"
+printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
+export CLAUDE_CODE_SESSION_ID="$A"
+run "$SMINOS" spawn b 'steal sibling'
+assert_rc 4 "$RC" "family seat cannot refill its stopped sibling"
+assert_contains "$OUT" 'belongs to another seat' "sibling refill refusal names the owner conflict"
+assert_equals "$(field "$B" parent)" lead "sibling retains its original parent"
+run "$SMINOS" spawn c 'restore own child'
+assert_rc 0 "$RC" "host can refill its own stopped child"
+assert_equals "$(field "$C" parent)" a "own-child refill retains caller parent"
+unset CLAUDE_CODE_SESSION_ID
 run "$SMINOS" seat add fam all
 assert_rc 2 "$RC" "all alias is reserved"
 # Pipeline roots carry no preamble flag and retain the unrestricted operator surface.
@@ -2080,6 +2093,30 @@ assert_file_absent "$SMINOS_HOME/$D1.json" "cascade purges first child"
 assert_file_absent "$SMINOS_HOME/$D2.json" "cascade purges second child"
 assert_file_absent "$SMINOS_HOME/$START.json" "cascade purges nested host"
 assert_file_absent "$SMINOS_HOME/$START_CHILD.json" "cascade purges grandchild"
+
+
+run "$SMINOS" seat add fam legacy --session dddddddd-aaaa-4000-8000-00000000000d
+"$SMINOS" meta set fam/legacy engine codex >/dev/null
+"$SMINOS" list fam >/dev/null 2>&1  # migrate retires the legacy record once
+run "$SMINOS" resume fam/legacy 'try legacy'
+assert_rc 4 "$RC" "resume refuses legacy codex seat"
+assert_contains "$OUT" 'its resume path was retired — retire or remove the seat' "resume keeps actionable legacy codex refusal"
+run "$SMINOS" seat add fam history --session cccccccc-aaaa-4000-8000-00000000000c
+HISTORY=cccccccc-aaaa-4000-8000-00000000000c
+python3 - "$SMINOS_HOME/chats/$HISTORY.jsonl" <<'PY_HISTORY'
+import json,os,sys
+os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)
+with open(sys.argv[1],'w') as f:
+    for n in range(1,36):
+        f.write(json.dumps({'id':n,'ts':'2026-09-26T05:00:00Z','from':'human',
+                            'to':['history'],'mode':'operator','text':f'entry {n}',
+                            'delivered':{'history':'recorded'}})+'\n')
+PY_HISTORY
+run "$SMINOS" chat history --json
+assert_equals "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" 30 "default chat JSONL tails thirty messages"
+run "$SMINOS" chat history --since 0 --json
+assert_equals "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" 35 "explicit --since 0 prints complete history"
+assert_contains "$OUT" '"text": "entry 1"' "explicit zero includes earliest message"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

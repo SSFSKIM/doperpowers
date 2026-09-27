@@ -624,7 +624,7 @@ def cmd_say(a):
 
 
 def cmd_chat(a):
-    if a.n < 1 or a.since < 0:
+    if a.n < 1 or (a.since is not None and a.since < 0):
         die("chat -n must be positive and --since must not be negative")
     caller = caller_seat()
     if caller:
@@ -646,9 +646,8 @@ def cmd_chat(a):
         host = resolve_seat(a.host)
     members = [host] + family_of(host)[1]
     records = chat_read(host["seat_id"])
-    selected = [r for r in records if r["id"] > a.since]
-    if a.since == 0:
-        selected = selected[-a.n:]
+    selected = ([r for r in records if r["id"] > a.since] if a.since is not None
+                else records[-a.n:])
     if a.json:
         for r in selected:
             print(json.dumps(r, ensure_ascii=False))
@@ -1972,6 +1971,9 @@ def cmd_spawn(a):
         names = [alias, a.addr or "", addr]
         locks = lock_names(names, label)
     if existing:
+        if is_family_seat(caller) and existing["parent"] != caller["alias"]:
+            die("alias %s/%s belongs to another seat; a seat re-fills only its own children" % (
+                group, alias), EXIT_UNKNOWN)
         if peer_for_session(existing["current"]):
             die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or "
                 "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
@@ -2082,10 +2084,14 @@ def cmd_join(a):
     cmd_seat_add(a)
 
 
+def legacy_codex_refusal(s):
+    return ("seat %s/%s is a legacy codex-CLI worker; its resume path was retired — "
+            "retire or remove the seat" % (s["group"], s["alias"]))
+
+
 def refuse_codex(s):
     if s["engine"] == "codex":
-        die("seat %s/%s is a legacy codex-CLI worker; its resume path was retired — "
-            "retire or remove the seat" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+        die(legacy_codex_refusal(s), EXIT_UNKNOWN)
 
 
 def cmd_fill(a):
@@ -2157,7 +2163,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     and the command fails loudly.
     """
     if s["engine"] == "codex":
-        raise ResumeRefused("legacy codex record")
+        raise ResumeRefused(legacy_codex_refusal(s))
     if locks is None:
         locks = lock_seat(s, refusal=ResumeRefused if quiet else None)
         fresh = reload_seat(s["seat_id"])
@@ -2166,7 +2172,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
             raise ResumeRefused("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]))
         s = fresh
         if s["engine"] == "codex":
-            raise ResumeRefused("legacy codex record")
+            raise ResumeRefused(legacy_codex_refusal(s))
     if not s["current"]:
         raise ResumeRefused("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
@@ -2734,18 +2740,16 @@ def locked_fresh(s0, verb):
 
 def cmd_retire(a):
     target = resolve_seat(a.seat)
-    caller = caller_seat()
     descendants = []
 
     def collect(host):
         for child in family_of(host)[1]:
-            require_reach(caller, child)
             collect(child)
             descendants.append(child)
 
     if a.cascade:
-        # A family seat may retire its direct children but cannot use cascade
-        # to reach grandchildren outside its own family.
+        # The named target is reach-checked by resolve_seat; a cascade includes
+        # its whole subtree, even descendants outside the caller's own reach.
         collect(target)
     for child in descendants + [target]:
         _retire_one(child, a.purge)
@@ -3273,7 +3277,7 @@ def build_parser():
     chat = sub.add_parser("chat", add_help=False)
     chat.add_argument("host", nargs="?", default="")
     chat.add_argument("-n", type=int, default=30)
-    chat.add_argument("--since", type=int, default=0)
+    chat.add_argument("--since", type=int, default=None)
     chat.add_argument("--team", action="store_true")
     chat.add_argument("--json", action="store_true")
     chat.set_defaults(fn=cmd_chat)
