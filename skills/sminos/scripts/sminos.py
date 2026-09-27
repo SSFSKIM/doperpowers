@@ -6,8 +6,8 @@ Code session fills. A seat outlives the process that fills it: when the session
 stops or dies the seat stays, with its role, brief, and history, and can be
 filled again (`fill --resume` continues the same session id; `fill` spawns a
 fresh one). Every background session spawned through sminos is a seat, board
-pipeline workers included, so `list` is the whole fleet and `view <group>` is
-one group's organisation chart with live state on every node.
+pipeline workers included, so `list` is the fleet for an operator and a
+family seat's family for that seat.
 
     sminos spawn    <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
                    [--cwd C] [--worktree W] [--model M] [--settings S] [--effort E]
@@ -22,20 +22,16 @@ one group's organisation chart with live state on every node.
                    to change them.
     sminos send     <seat|addr|codex thread> <msg> [--from F]  # live sessions; a codex thread (its id, or
                                                           # codex:<id|exact name>) goes through codex's queue
+    sminos say      [--in <host>] [--team] <text>
+    sminos chat     [<host>] [-n N] [--since ID] [--team] [--json]
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
-    sminos mark     <seat> <status> [note]                # orchestrator judgment state
     sminos status   <seat> <one line>                     # the agent's own "now" line
-    sminos retire   <seat> [--purge]                      # stop; keep (or purge) the record
+    sminos retire   <seat> [--purge] [--cascade]           # stop; keep (or purge) the record
     sminos remove   <seat>                                # stop and delete the record
     sminos list     [group] [--status S] [--json]
-    sminos view     <group>                               # tree with role · live · now
-    sminos topology <group>                               # JSON: seats + edges
     sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
     sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
-    sminos groups
-    sminos post     <group> [--from F] [--title T] [text...]   # stdin if no text
-    sminos board    <group> [-n N|--id I] [--json]
     sminos attach   <seat>                                # claude attach <short>
     sminos migrate  [--quiet]                             # (also runs implicitly)
     sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
@@ -54,9 +50,8 @@ continuation the board pipeline relays through: a fresh `claude --bg
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
-writes them directly under the shared flock file .metalock. Group boards live
-at groups/<group>/board.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the
-reserved operator identity: never a seat, but may post to any board.
+writes them directly under the shared flock file .metalock. Family chats live
+at chats/<host-seat-id>.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the reserved operator identity.
 
 Exit codes: 0 ok, 1 harness failure, 2 usage, 4 unknown seat/group, target not
 live, or a seat/name that is already taken.
@@ -73,12 +68,13 @@ import json
 import os
 import re
 import shutil
-import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid as uuidlib
+from contextlib import contextmanager
 from typing import NoReturn
 
 # Fleet state is private to the agent fleet: everything this CLI creates is
@@ -107,7 +103,7 @@ SECRET_RE = re.compile(r"bearer|token|secret", re.I)
 
 def public_seat(s):
     """A seat dict with the task body and any secret-shaped field removed —
-    for every model-facing surface (list, list --json, view, topology)."""
+    for every model-facing surface (list, list --json, chart)."""
     return {k: v for k, v in s.items() if k != "task" and not SECRET_RE.search(k)}
 
 
@@ -196,12 +192,12 @@ def meta_set(seat_id, fields, remove=(), bump=True, create=True):
     lock, so concurrent stamps never clobber each other's fields.
 
     `gen` is the record's lifecycle generation: every lifecycle write (spawn,
-    fill, resume, wake, retire, mark, seat add, sync's own finalize) bumps it,
+    fill, resume, wake, retire, seat add, sync's own finalize) bumps it,
     so a finalizer or sync that took its snapshot before, say, a retire can see
     the record moved on and stand down. The agent's own `now` line and raw
     `meta set` are NOT lifecycle writes (bump=False): an agent updating its
     status mid-turn must not make the turn's watcher refuse to record the reply.
-    create=False (status / mark / meta set) refuses to resurrect a record that
+    create=False (status / meta set) refuses to resurrect a record that
     a concurrent remove just deleted. Returns True iff it wrote.
     """
     path = meta_path(seat_id)
@@ -357,8 +353,11 @@ def find_seat(q):
     """Resolve a query to a seat WITHOUT printing or exiting.
 
     Returns ("ok", seat) | ("none", None) | ("ambiguous", [seats]). Order:
-    `group/alias`, seat id (or prefix), current turn's short id or session id
-    (or prefix), then a bare alias when exactly one seat has it.
+    `group/alias`; an exact seat id, current turn's short id, or session id;
+    a bare alias when exactly one seat has it; a seat-id prefix; then a
+    short-id or session-id prefix. Exact names come before prefixes, so a
+    short alias such as `a` is not lost to the hex ids that happen to start
+    with it. An alias two seats share stays ambiguous.
     """
     if not q:
         return "none", None
@@ -367,24 +366,357 @@ def find_seat(q):
         g, a = q.split("/", 1)
         hits = [s for s in all_seats if s["group"] == g and s["alias"] == a]
         return ("ok", hits[0]) if len(hits) == 1 else ("none", None)
-    hits = [s for s in all_seats if s["seat_id"] == q or s["seat_id"].startswith(q)]
-    if not hits:
-        hits = [s for s in all_seats
-                if (s["short"] and (s["short"] == q or s["short"].startswith(q)))
-                or (s["current"] and (s["current"] == q or s["current"].startswith(q)))]
-    if not hits:
-        hits = [s for s in all_seats if s["alias"] == q]
-    if len(hits) == 1:
-        return "ok", hits[0]
-    if not hits:
-        return "none", None
-    return "ambiguous", hits
+    stages = (
+        lambda s: q in (s["seat_id"], s["short"], s["current"]),
+        lambda s: s["alias"] == q,
+        lambda s: s["seat_id"].startswith(q),
+        lambda s: (bool(s["short"]) and s["short"].startswith(q))
+        or (bool(s["current"]) and s["current"].startswith(q)),
+    )
+    for match in stages:
+        hits = [s for s in all_seats if match(s)]
+        if len(hits) == 1:
+            return "ok", hits[0]
+        if hits:
+            return "ambiguous", hits
+    return "none", None
+
+
+# ------------------------------------------------------------- family chats
+
+REACH_HINT = ("is outside your family (parent, siblings, children). To reach another session "
+              "use the native ListAgents and SendMessage tools.")
+TAG = re.compile(r"@[A-Za-z0-9._-]+")
+
+
+def leading_tags(text):
+    """The `@name` tokens that open a message, trailing `,:;` stripped. Only
+    this leading run addresses anyone: an @ later in the text (a quoted alias,
+    an error message naming a seat) is just text."""
+    tags = []
+    for token in text.split():
+        token = token.rstrip(",:;")
+        if not TAG.fullmatch(token):
+            break
+        tags.append(token)
+    return tags
+
+
+def caller_seat():
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not sid:
+        return None
+    all_seats = seats()
+    for s in all_seats:
+        if s["current"] == sid:
+            return s
+    row = agent_row(session_id=sid)
+    if row:
+        return next((s for s in all_seats if not s["current"] and s["short"] and s["short"] == row.get("id")), None)
+    return None
+
+
+def is_family_seat(seat):
+    return bool(seat and seat["preamble"])
+
+
+def family_of(host):
+    return host, sorted((s for s in seats(host["group"]) if s["parent"] == host["alias"]),
+                        key=lambda s: s["alias"])
+
+
+def reach_of(seat):
+    group = seats(seat["group"])
+    return {s["seat_id"] for s in group if s["seat_id"] == seat["seat_id"] or
+            s["parent"] == seat["alias"] or
+            (seat["parent"] and (s["alias"] == seat["parent"] or s["parent"] == seat["parent"]))}
+
+
+def require_reach(caller, target, name=None):
+    if is_family_seat(caller) and target["seat_id"] not in reach_of(caller):
+        die("%s %s" % (name or target["alias"], REACH_HINT), EXIT_UNKNOWN)
+
+
+def chat_path(host_seat_id):
+    return os.path.join(root(), "chats", host_seat_id + ".jsonl")
+
+
+@contextmanager
+def chat_lock(host_seat_id):
+    directory = os.path.join(root(), "chats")
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    with open(os.path.join(directory, host_seat_id + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def chat_read(host_seat_id):
+    try:
+        with open(chat_path(host_seat_id)) as f:
+            records = []
+            for line in f:
+                try:
+                    record = json.loads(line)
+                    if isinstance(record, dict) and isinstance(record.get("id"), int):
+                        records.append(record)
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        return []
+    return sorted(records, key=lambda record: record["id"])
+
+
+def chat_append(host_seat_id, record):
+    with chat_lock(host_seat_id):
+        record = {**record, "id": max((r["id"] for r in chat_read(host_seat_id)), default=0) + 1,
+                  "ts": now(), "delivered": {}}
+        fd = os.open(chat_path(host_seat_id), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "r+b") as f:
+            # An interrupted append can leave a fragment without its newline;
+            # end it so this record is a line of its own.
+            end = f.seek(0, os.SEEK_END)
+            if end:
+                f.seek(end - 1)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
+        return record
+
+
+def chat_update(host_seat_id, msg_id, delivered):
+    with chat_lock(host_seat_id):
+        path = chat_path(host_seat_id)
+        # Preserve corrupt lines while rewriting: they are skipped by chat_read,
+        # but neither a slow writer nor a malformed line should erase history.
+        with open(path) as f:
+            lines = f.readlines()
+        updated = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+                if item.get("id") == msg_id:
+                    item["delivered"] = delivered
+                    line = json.dumps(item, ensure_ascii=False) + "\n"
+            except (ValueError, AttributeError):
+                pass
+            updated.append(line)
+        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".chat-", text=True)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.writelines(updated)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+def seen_advance(seat_id, host_seat_id, msg_id, expected_short=None):
+    os.makedirs(root(), exist_ok=True)
+    with open(os.path.join(root(), ".metalock"), "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        # Promotion renames the provisional file under this same lock. Match
+        # the caller again while locked, never create a vanished provisional.
+        s = reload_seat(seat_id)
+        if s is None and expected_short:
+            caller = caller_seat()
+            # Only a promotion of this caller's provisional short can redirect
+            # the write; an arbitrary missing id must remain a no-op.
+            s = caller if caller and caller["short"] == expected_short and is_family_seat(caller) else None
+        if s:
+            seen = s.get("chat_seen") if isinstance(s.get("chat_seen"), dict) else {}
+            seen[host_seat_id] = max(int(seen.get(host_seat_id, 0)), msg_id)
+            _write_record(meta_path(s["seat_id"]), {**s, "chat_seen": seen})
+
+
+def unread_for(host_seat_id, member_alias, watermark, below_id):
+    """Messages the member has neither read nor been pushed; its own are never unread."""
+    return sum(1 for r in chat_read(host_seat_id)
+               if watermark < r["id"] < below_id and r.get("from") != member_alias and
+               r.get("delivered", {}).get(member_alias) not in ("sent", "woken"))
+
+
+def compose_chat_frame(host_alias, msg_id, sender, targets, unread, text):
+    return "[sminos chat %s #%d from %s → %s%s]\n%s" % (
+        host_alias, msg_id, sender, targets, (" | unread %d" % unread) if unread else "", text)
+
+
+class ResumeRefused(Exception):
+    def __init__(self, message, code=EXIT_UNKNOWN):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+
+def push_member(member, text, tagged):
+    def unreachable(s):
+        # Decided on the record as it is now, never on the fan-out's snapshot:
+        # an earlier member's resume can outlast a later member's retirement.
+        if s is None or s["status"] == "retired":
+            if s is not None and tagged:
+                warn("%s is retired; re-fill it to reach it" % s["alias"])
+            return True
+        return False
+
+    fresh = reload_seat(member["seat_id"])
+    if unreachable(fresh):
+        return "recorded"
+    if fresh["engine"] == "codex":
+        return "failed:legacy codex record"
+    if not fresh["current"]:
+        return "recorded"
+    peer = peer_for_session(fresh["current"])
+    if peer:
+        try:
+            send_frame(socket_path_of(peer), text)
+            return "sent"
+        except SendFailed as e:
+            return "sent?" if e.phase == "after" else "failed:%s" % e
+    if not tagged or live_state(fresh) != "stopped":
+        return "recorded"
+    locks = []
+    try:
+        # The lifecycle lock spans the recheck and the resume, so a concurrent
+        # retire either finishes first (and is seen) or waits for the resume.
+        locks = lock_seat(fresh, refusal=ResumeRefused)
+        fresh = reload_seat(member["seat_id"])
+        if unreachable(fresh) or not fresh["current"]:
+            return "recorded"
+        return resume_session(fresh, text, False, locks, quiet=True)
+    except ResumeRefused as e:
+        return "failed:%s" % e.message
+    finally:
+        unlock(locks)
+
+
+def cmd_say(a):
+    caller = caller_seat()
+    if caller:
+        if a.in_:
+            die("--in is for an operator, not a seat")
+        parent = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None)
+        own = family_of(caller)[1]
+        tags = leading_tags(a.text)
+        if "@all" in tags and len(tags) != 1:
+            die("@all stands alone")
+        if "@%s" % caller["alias"] in tags:
+            die("you cannot tag yourself")
+        parent_members = ([parent] + family_of(parent)[1]) if parent else []
+        selected = set(tags) - {"@all"}
+        up = {"@" + s["alias"] for s in parent_members if s["seat_id"] != caller["seat_id"]}
+        down = {"@" + s["alias"] for s in own if s["seat_id"] != caller["seat_id"]}
+        if selected - up - down:
+            die("%s %s" % (next(iter(sorted(selected - up - down))), REACH_HINT), EXIT_UNKNOWN)
+        if selected & up and selected & down:
+            die("one message, one family")
+        if a.team and selected & up:
+            die("--team cannot name a parent or sibling: one message, one family")
+        host = caller if (selected & down or a.team or not parent) else parent
+        if not host or (host["seat_id"] == caller["seat_id"] and not own):
+            die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
+        members = [host] + family_of(host)[1]
+        targets = [s for s in members if s["seat_id"] != caller["seat_id"] and
+                   ("@all" in tags or "@" + s["alias"] in selected or
+                    (not selected and (host["seat_id"] == caller["seat_id"] or
+                                       s["seat_id"] == host["seat_id"])))]
+        mode = ("tagged" if selected else "team" if host["seat_id"] == caller["seat_id"] else
+                "all" if tags else "host")
+        explicit = bool(selected)
+        target_label = " ".join(sorted(selected)) if explicit else host["alias"] if mode == "host" else "all"
+        sender = caller["alias"]
+    else:
+        if not a.in_:
+            die("say from an operator requires --in <host>")
+        host = resolve_seat(a.in_)
+        members = [host] + family_of(host)[1]
+        tags = leading_tags(a.text)
+        if "@all" in tags and len(tags) != 1:
+            die("@all stands alone")
+        selected = set(tags) - {"@all"}
+        if selected - {"@" + s["alias"] for s in members}:
+            die("%s %s" % (next(iter(sorted(selected - {"@" + s["alias"] for s in members}))), REACH_HINT), EXIT_UNKNOWN)
+        targets = [s for s in members if not selected or "@" + s["alias"] in selected]
+        mode, sender, explicit = ("tagged" if selected else "all" if tags else "operator"), "human", bool(selected)
+        target_label = " ".join(sorted(selected)) if selected else "all"
+    try:
+        record = chat_append(host["seat_id"], {"from": sender, "to": [s["alias"] for s in targets],
+                                               "mode": mode, "text": a.text})
+    except OSError as e:
+        die("chat could not be recorded: %s" % e, 1)
+    delivered = {}
+    for member in targets:
+        current = reload_seat(member["seat_id"]) or member
+        watermark = (current.get("chat_seen") or {}).get(host["seat_id"], 0)
+        unread = unread_for(host["seat_id"], member["alias"], int(watermark), record["id"])
+        frame = compose_chat_frame(host["alias"], record["id"], sender, target_label, unread, a.text)
+        delivered[member["alias"]] = push_member(member, frame, explicit)
+        print("%s: %s" % (member["alias"], delivered[member["alias"]]))
+    try:
+        chat_update(host["seat_id"], record["id"], delivered)
+    except OSError as e:
+        warn("chat message #%d was recorded but delivery outcomes could not be saved: %s" % (record["id"], e))
+
+
+def cmd_chat(a):
+    if a.n < 1 or (a.since is not None and a.since < 0):
+        die("chat -n must be positive and --since must not be negative")
+    caller = caller_seat()
+    if caller:
+        if a.host:
+            die("a seat's chat takes no <host> argument")
+        if a.team:
+            host = caller
+        else:
+            host = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None) or caller
+        if host["seat_id"] == caller["seat_id"] and not family_of(host)[1]:
+            print("no family yet: spawn a child, or you were spawned without a parent")
+            return
+    else:
+        if a.team:
+            die("--team is for a seat's own chat")
+        if not a.host:
+            die("chat from an operator requires <host>")
+        host = resolve_seat(a.host)
+    members = [host] + family_of(host)[1]
+    records = chat_read(host["seat_id"])
+    selected = ([r for r in records if r["id"] > a.since] if a.since is not None
+                else records[-a.n:])
+    if a.json:
+        for r in selected:
+            print(json.dumps(r, ensure_ascii=False))
+    else:
+        print("chat %s (%s) · members: %s · %d messages" % (
+            host["alias"], host["group"], ", ".join(s["alias"] for s in members), len(records)))
+        for r in selected:
+            lines = r.get("text", "").split("\n")
+            target = (" ".join("@" + alias for alias in r.get("to", [])) if r.get("mode") == "tagged"
+                      else "all" if r.get("mode") in ("all", "team", "operator")
+                      else " ".join(r.get("to", [])))
+            print("#%-3d %s %-6s → %-7s %s" % (r["id"], r.get("ts", "")[11:19] + "Z",
+                                             r.get("from", ""), target, lines[0]))
+            for line in lines[1:]:
+                print("    " + line)
+    if caller and selected:
+        seen_advance(caller["seat_id"], host["seat_id"], selected[-1]["id"], caller["short"])
 
 
 def resolve_seat(q):
     kind, res = find_seat(q)
+    caller = caller_seat()
+    if is_family_seat(caller) and kind == "ambiguous":
+        reachable = [s for s in res if s["seat_id"] in reach_of(caller)]
+        if len(reachable) == 1:
+            return reachable[0]
+        if not reachable:
+            die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
+        res = reachable
     if kind == "ok":
+        require_reach(caller, res, q)
         return res
+    if is_family_seat(caller) and kind == "none":
+        die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
     if kind == "ambiguous":
         die("ambiguous seat '%s' matches: %s" % (
             q, ", ".join("%s/%s [%s]" % (s["group"], s["alias"], s["seat_id"][:8]) for s in res)), EXIT_UNKNOWN)
@@ -433,7 +765,7 @@ def group_for_record(m):
     return str(m.get("agora_group") or "") or derive_group(str(m.get("cwd") or ""))
 
 
-def lock_names(names, label, blocking=False):
+def lock_names(names, label, blocking=False, refusal=None):
     """One lifecycle change per harness NAME at a time: spawn / fill / seat add /
     resume / wake / retire / remove / sync hold these flocks from their
     availability check through the record commit (through process start, for
@@ -457,13 +789,16 @@ def lock_names(names, label, blocking=False):
             for held in locks:
                 held.close()
             lf.close()
-            die("'%s' (%s) is being changed by another sminos process — retry shortly" % (nm, label), EXIT_UNKNOWN)
+            message = "'%s' (%s) is being changed by another sminos process — retry shortly" % (nm, label)
+            if refusal:
+                raise refusal(message, EXIT_UNKNOWN)
+            die(message, EXIT_UNKNOWN)
         locks.append(lf)
     return locks
 
 
-def lock_seat(s, blocking=False):
-    return lock_names([s["alias"], s["addr"]], "%s/%s" % (s["group"], s["alias"]), blocking)
+def lock_seat(s, blocking=False, refusal=None):
+    return lock_names([s["alias"], s["addr"]], "%s/%s" % (s["group"], s["alias"]), blocking, refusal)
 
 
 def unlock(locks):
@@ -771,7 +1106,7 @@ def live_state(seat):
         if st == "working":
             return "busy"
         if st == "blocked":
-            return "blocked"
+            return "blocked" if peer else "stopped"
         if st in ("done", "done-blocked"):
             return "idle" if peer else "stopped"
         if st in ("stopped", "failed", "error"):
@@ -1399,6 +1734,9 @@ def render_preamble(group, alias, parent):
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
+    if not parent:
+        t = t.replace(', a member of the\nfamily "{{PARENT}}" hosts.',
+                      ', the root of your\nown family.', 1)
     return (t.replace("{{GROUP}}", group).replace("{{ALIAS}}", alias)
              .replace("{{PARENT}}", parent or "none").replace("{{SMINOS_CLI}}", LAUNCHER))
 
@@ -1513,7 +1851,6 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     board-bind matches it against filenames, so on a re-fill it is the seat id,
     never the new session's uuid. Returns nothing (prints; may exit)."""
     prev = reload_seat(seat_id) if seat_id else None
-    prev_event_log = str(prev.get("event_log") or "") if prev and prev["engine"] == "codex" else ""
     preamble = render_preamble(group, alias, parent or "") if preamble_flag else ""
     task_text = compose_task(task, brief or "", preamble)
     short, banner = run_claude_bg(claude_args(addr, model, settings, effort, worktree) + [task_text], cwd, settings)
@@ -1600,10 +1937,6 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     else:
         meta_set(rec_id, {"current": uuid, "cwd": runcwd or cwd, "host": host_name(),
                           "boot_id": boot_id(), "updated": now()})
-        if prev_event_log:
-            # The launch succeeded and the record is promoted: only now is the
-            # predecessor's codex scratch safe to drop.
-            purge_codex_runs(prev_event_log)
     status = "working"
     if state in TERMINAL:
         # Don't blindly claim working — a fast first turn may already be over.
@@ -1626,11 +1959,27 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
 
 
 def cmd_spawn(a):
+    caller = caller_seat()
+    if is_family_seat(caller):
+        if a.group is not None or a.parent is not None:
+            die("a seat spawns its own children")
+        # A provisional host must be promoted before its family can be keyed.
+        if not caller["current"]:
+            for _ in range(int(os.environ.get("SMINOS_UUID_POLL") or
+                               os.environ.get("DAEMON_UUID_POLL") or "30")):
+                latest = caller_seat()
+                if latest and latest["current"]:
+                    caller = latest
+                    break
+                time.sleep(poll_interval())
+            else:
+                die("parent seat has not completed promotion", 1)
+        a.group, a.parent = caller["group"], caller["alias"]
     alias = a.alias
     if not valid_name(alias):
         die("bad alias: %s" % alias)
-    if alias == "human":
-        die("the alias 'human' is reserved for the operator")
+    if alias in ("human", "all"):
+        die("the alias '%s' is reserved" % alias)
     if a.parent and not valid_name(a.parent):
         die("bad parent alias: %s" % a.parent)
     cwd = cwd_or_die(a.cwd, "spawn")
@@ -1655,6 +2004,9 @@ def cmd_spawn(a):
         names = [alias, a.addr or "", addr]
         locks = lock_names(names, label)
     if existing:
+        if is_family_seat(caller) and existing["parent"] != caller["alias"]:
+            die("alias %s/%s belongs to another seat; a seat re-fills only its own children" % (
+                group, alias), EXIT_UNKNOWN)
         if peer_for_session(existing["current"]):
             die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or "
                 "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
@@ -1678,21 +2030,23 @@ def cmd_spawn(a):
         parent = a.parent if a.parent is not None else existing["parent"]
         role = a.role if a.role is not None else existing["role"]
         brief = a.brief if a.brief is not None else existing["brief"]
-        preamble_flag = explicit_group or bool(existing["preamble"])
+        preamble_flag = explicit_group or is_family_seat(caller) or bool(existing["preamble"])
     else:
-        parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group
+        parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group or is_family_seat(caller)
     spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, parent, role, brief,
                 a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned",
                 stamp=parse_stamps(a.stamp))
 
 
 def cmd_seat_add(a):
+    if is_family_seat(caller_seat()):
+        die("a seat spawns its own children")
     if not valid_name(a.group):
         die("bad group name: %s" % a.group)
     if not valid_name(a.alias):
         die("bad alias: %s" % a.alias)
-    if a.alias == "human":
-        die("the alias 'human' is reserved for the operator")
+    if a.alias in ("human", "all"):
+        die("the alias '%s' is reserved" % a.alias)
     if a.parent and not valid_name(a.parent):
         die("bad parent alias: %s" % a.parent)
     session = a.session or ""
@@ -1759,16 +2113,14 @@ def cmd_seat_add(a):
         (", session: " + session) if session else ", vacant"))
 
 
-def cmd_join(a):
-    # v2 argument order, kept because long-lived sessions still carry v2 preambles.
-    a.brief = a.desc
-    cmd_seat_add(a)
+def legacy_codex_refusal(s):
+    return ("seat %s/%s is a legacy codex-CLI worker; its resume path was retired — "
+            "retire or remove the seat" % (s["group"], s["alias"]))
 
 
 def refuse_codex(s):
     if s["engine"] == "codex":
-        die("seat %s/%s is a legacy codex-CLI worker; its resume path was retired — "
-            "retire or remove the seat" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+        die(legacy_codex_refusal(s), EXIT_UNKNOWN)
 
 
 def cmd_fill(a):
@@ -1790,7 +2142,10 @@ def cmd_fill(a):
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
         refuse_live_name(s["alias"], s["addr"], allow_session=s["current"])  # resume continues that very session
         warn_resume_flags(a)
-        resume_session(s, a.task, a.wait, locks, verb="filled")
+        try:
+            resume_session(s, a.task, a.wait, locks, verb="filled")
+        except ResumeRefused as e:
+            die(e.message, e.code)
         return
     if peer_for_session(s["current"]):
         die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or stop it "
@@ -1815,7 +2170,7 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, locks=None, verb="resumed"):
+def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     """Process-level continuation of a seat's session.
 
     A live current turn is stopped first (`claude stop`, then a bounded wait
@@ -1836,19 +2191,24 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     different session id, the copy is stopped, the record is left untouched,
     and the command fails loudly.
     """
-    refuse_codex(s)
+    if s["engine"] == "codex":
+        raise ResumeRefused(legacy_codex_refusal(s))
     if locks is None:
-        locks = lock_seat(s)
+        locks = lock_seat(s, refusal=ResumeRefused if quiet else None)
         fresh = reload_seat(s["seat_id"])
         if fresh is None:
             unlock(locks)
-            die("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+            raise ResumeRefused("seat %s/%s vanished before the resume could start" % (s["group"], s["alias"]))
         s = fresh
-        refuse_codex(s)
+        if s["engine"] == "codex":
+            raise ResumeRefused(legacy_codex_refusal(s))
     if not s["current"]:
-        die("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
+        raise ResumeRefused("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
-    cwd = cwd_or_die(s["cwd"], "resume of %s/%s" % (s["group"], s["alias"]))  # before any side effect
+    cwd = os.path.abspath(os.path.expanduser(s["cwd"]))
+    if not os.path.isdir(cwd):
+        raise ResumeRefused("resume of %s/%s: cwd does not exist or is not a directory: %s" % (
+            s["group"], s["alias"], cwd), EXIT_USAGE)
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
     lf = open(lock_path, "a+")
     try:
@@ -1856,7 +2216,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     except OSError:
         lf.seek(0)
         holder = lf.read().strip()
-        die("a wake/resume of %s/%s is already in flight%s — not starting a twin" % (
+        raise ResumeRefused("a wake/resume of %s/%s is already in flight%s — not starting a twin" % (
             s["group"], s["alias"], (" (%s)" % holder) if holder else ""), 1)
     lf.seek(0)
     lf.truncate()
@@ -1875,23 +2235,22 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
         stop_short = s["short"]
     if stop_short:
         if not claude_stop(stop_short):
-            die("claude stop %s failed for %s/%s — not resuming over a turn that may still be running" % (
+            raise ResumeRefused("claude stop %s failed for %s/%s — not resuming over a turn that may still be running" % (
                 stop_short, s["group"], s["alias"]), 1)
         if not wait_stopped(s, stop_short, cur):
-            die("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
+            raise ResumeRefused("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
                 "resume (it would start a copy)" % (s["group"], s["alias"], stop_short,
                                                     os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)
     prev_status = s["status"]
     short, banner = run_claude_bg(["--bg", "--resume", cur, msg], cwd, s["settings"])
     if not short:
         meta_set(s["seat_id"], {"status": "error", "updated": now()})
-        sys.stderr.write("sminos: resume failed — did not launch or produced no background id:\n%s\n" % banner)
-        sys.exit(1)
+        raise ResumeRefused("resume failed — did not launch or produced no background id: %s" % banner, 1)
 
     def copy_started(copy_id):
         claude_stop(short)
         meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
-        die("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
+        raise ResumeRefused("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
             "to continue it; the copy was stopped and the record left untouched. Use sminos wake/send for a "
             "live seat." % (s["group"], s["alias"], copy_id[:8], cur[:8]), 1)
 
@@ -1901,9 +2260,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     polled = poll_uuid(short)
     if not polled:
         meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
-        sys.stderr.write("sminos: resume: session %s produced no usable session uuid; kept previous "
-                         "current (recover via pending_short)\n" % short)
-        sys.exit(1)
+        if quiet:
+            unlock(locks)
+            return "woken?"
+        raise ResumeRefused("resume: session %s produced no usable session uuid; kept previous current (recover via pending_short)" % short, 1)
     uuid, state, _cwd = polled
     if uuid != cur:
         copy_started(uuid)
@@ -1923,6 +2283,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
     unlock(locks)
     if wait:
         status = finish_turn(s["seat_id"], short, s["alias"], uuid, guard)
+    if quiet:
+        return "woken"
     print("%s %s/%s  [%s / %s]  via --bg --resume  status=%s  turns=%d" % (
         verb, s["group"], s["alias"], short, s["seat_id"], status, turns))
     if wait:
@@ -1932,7 +2294,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed"):
 def cmd_resume(a):
     s = resolve_seat(a.seat)
     warn_resume_flags(a)
-    resume_session(s, a.msg, a.wait)
+    try:
+        resume_session(s, a.msg, a.wait)
+    except ResumeRefused as e:
+        die(e.message, e.code)
 
 
 def default_from(explicit):
@@ -1996,6 +2361,13 @@ def wait_socket_turn(s, marker, was_idle, guard):
 
 
 def cmd_wake(a):
+    try:
+        return _wake(a)
+    except ResumeRefused as e:
+        die(e.message, e.code)
+
+
+def _wake(a):
     s0 = resolve_seat(a.seat)
     refuse_codex(s0)
     # The lifecycle lock covers target selection, the socket delivery, and the
@@ -2094,6 +2466,9 @@ def report_codex_queued(tid, qid):
 
 
 def cmd_send(a):
+    caller = caller_seat()
+    if is_family_seat(caller) and a.target.startswith(CODEX_PREFIX):
+        die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     frm = default_from(a.frm)
     text = "[sminos message from %s]\n%s" % (frm, a.msg)
     if a.target.startswith(CODEX_PREFIX):
@@ -2107,6 +2482,14 @@ def cmd_send(a):
         report_codex_queued(tid, qid)
         return
     kind, res = find_seat(a.target)
+    if kind == "ambiguous" and is_family_seat(caller):
+        reachable = [s for s in res if s["seat_id"] in reach_of(caller)]
+        if len(reachable) == 1:
+            kind, res = "ok", reachable[0]
+        elif not reachable:
+            die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
+        else:
+            res = reachable
     if kind == "ambiguous":
         # A genuine seat match that is ambiguous must NOT silently fall through
         # to a raw name lookup — that would hide the ambiguity.
@@ -2114,6 +2497,7 @@ def cmd_send(a):
             a.target, ", ".join("%s/%s" % (s["group"], s["alias"]) for s in res)), EXIT_UNKNOWN)
     if kind == "ok":
         s = res
+        require_reach(caller, s, a.target)
         peer = peer_for_session(s["current"]) if s["current"] else None
         sock = socket_path_of(peer) if peer else ""
         if peer and socket_ok(sock):
@@ -2129,6 +2513,8 @@ def cmd_send(a):
             return
         die("%s/%s is not live (%s) — use: sminos wake %s/%s \"<msg>\"" % (
             s["group"], s["alias"], live_state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
+    if is_family_seat(caller):
+        die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     # Only when NO seat matched: fall back to a raw live harness-session name.
     peers = live_name_holders(a.target)  # live already means the socket answers
     if len(peers) == 1:
@@ -2157,7 +2543,7 @@ def cmd_send(a):
     die("%s matching '%s'" % (what, a.target), EXIT_UNKNOWN)
 
 
-# ------------------------------------------------ reply / sync / mark / status
+# ------------------------------------------------ reply / sync / status
 
 
 def cmd_reply(a):
@@ -2211,24 +2597,30 @@ def sync_one(s0):
         if not harness_ok():
             return "live"  # the harness could not be asked: claim nothing
         row = harness_row(s)
+        blocked_ended = bool(row and normalize_state(row) == "blocked" and not peer_for_session(cur))
+        state = "done-blocked" if blocked_ended else normalize_state(row) if row else ""
         if s["status"] == "idle":
             # An idle seat the harness shows as running NOW was woken natively
             # (SendMessage) with no sminos write. Promote it.
-            if row and normalize_state(row) in ("working", "blocked"):
+            if row and state in ("working", "blocked"):
                 meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
                 return "live"
             # A natively-woken turn can also have STARTED AND ENDED between two
             # syncs: the record never left idle and the reply file still
             # describes the previous turn. The transcript is the only witness.
-            if row and normalize_state(row) in ("done", "done-blocked", "failed", "stopped") \
+            if row and state in ("done", "done-blocked", "failed", "stopped") \
                     and reply_stale(s["seat_id"], cur):
                 if meta_set_if(s["seat_id"], {"updated": now()}, guard,
-                               reply=(cur, normalize_state(row), s["alias"])):
+                               reply=(cur, "blocked" if state == "done-blocked" else state, s["alias"])):
                     return "idle"
+            if blocked_ended and (not os.path.exists(reply_path(s["seat_id"])) or
+                                  reply_stale(s["seat_id"], cur)):
+                return "idle" if meta_set_if(s["seat_id"], {"updated": now()}, guard,
+                                              reply=(cur, "blocked", s["alias"])) else "live"
             return "noop"
         if row is None:
             return "absent"
-        state = normalize_state(row)
+        state = "done-blocked" if blocked_ended else normalize_state(row)
         if state in ("working", "blocked"):
             return "live"
         if state == "done":
@@ -2250,22 +2642,19 @@ def sync_one(s0):
 def cmd_sync(a):
     if a.all or not a.seat:
         # --all includes idle seats too, to catch natively-woken ones; a seat
-        # that needed no reconciliation (noop) is not printed.
+        # that needed no reconciliation (noop) is not printed. A family seat
+        # reconciles only its reach, as `list` shows it.
+        caller = caller_seat()
+        reach = reach_of(caller) if is_family_seat(caller) else None
         for s in seats():
+            if reach is not None and s["seat_id"] not in reach:
+                continue
             if s["status"] in ("working", "blocked", "idle"):
                 word = sync_one(s)
                 if word != "noop":
                     print("%s/%s %s" % (s["group"], s["alias"], word))
         return
     print(sync_one(resolve_seat(a.seat)))
-
-
-def cmd_mark(a):
-    s = resolve_seat(a.seat)
-    note = " ".join(a.note)
-    if not meta_set(s["seat_id"], {"status": a.status, "updated": now(), "note": note}, create=False):
-        die("seat %s/%s was removed before the mark could land" % (s["group"], s["alias"]), EXIT_UNKNOWN)
-    print("marked %s/%s [%s] -> %s%s" % (s["group"], s["alias"], s["seat_id"], a.status, ("  (%s)" % note) if note else ""))
 
 
 def cmd_status(a):
@@ -2282,43 +2671,15 @@ def cmd_status(a):
 # ------------------------------------------------------------ retire / remove
 
 
-def wait_codex_rc(event_log, timeout=10.0):
-    """Block until a signalled legacy codex worker has actually finished.
-
-    The wrapper's finalizer writes `<run>.rc` as the last thing it does, so
-    between the SIGTERM and that file it can still create or rewrite the run's
-    scratch — and a retire or remove that returned earlier would find its purge
-    undone. Absent an event log, or if the rc never lands, the wait expires and
-    the caller proceeds. Returns True iff the barrier was observed."""
-    el = str(event_log or "")
-    if not el.endswith(".events.jsonl"):
-        return False
-    rc = el[: -len(".events.jsonl")] + ".rc"
-    deadline = time.time() + timeout
-    while not os.path.exists(rc) and time.time() < deadline:
-        time.sleep(0.5)
-    return os.path.exists(rc)
-
-
 def stop_session(s):
     """Stop the seat's current turn. The short to stop is the CURRENT session's
     harness row when there is one (a `seat add --session` seat recorded none,
     and a recorded short goes stale after a native resume); a row is host-local
     by construction. Only the fallback to the RECORDED short is gated on the
     record's host identity — shorts are host-local and reusable, so a foreign
-    one may name an unrelated local session. A legacy codex worker is a
-    detached process we own: signalled by its recorded pid, as the old retire
-    did, when its identity is local, then waited out to its finalizer's `.rc`
-    barrier so nothing it writes lands after a caller's purge."""
+    one may name an unrelated local session. Legacy codex records have no
+    Claude process to stop and remain read-only until removed."""
     if s["engine"] == "codex":
-        pid = meta_get(s["seat_id"], "pid")
-        if s["status"] in ("working", "blocked") and identity_local(s["host"], s["boot_id"]) and pid_alive(pid):
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-            except (ProcessLookupError, ValueError, TypeError, PermissionError):
-                pass
-            else:
-                wait_codex_rc(meta_get(s["seat_id"], "event_log"))
         return
     agents_refresh()
     row = harness_row(s) if s["current"] else None
@@ -2326,19 +2687,6 @@ def stop_session(s):
         claude_stop(row["id"])
     elif s["short"] and identity_local(s["host"], s["boot_id"]):
         claude_stop(s["short"])
-
-
-def purge_codex_runs(event_log):
-    """A codex worker's turn scratch (the event log and its siblings) lives
-    outside the record; drop the whole set once nothing references it any more
-    (the record is purged, or a fresh occupant has replaced the codex worker)."""
-    el = str(event_log or "")
-    if el.endswith(".events.jsonl"):
-        for p in glob.glob(el[:-len(".events.jsonl")] + ".*"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
 
 
 def worktree_note(s):
@@ -2376,18 +2724,50 @@ def locked_fresh(s0, verb):
 
 
 def cmd_retire(a):
-    locks, s = locked_fresh(resolve_seat(a.seat), "retire")
+    target = resolve_seat(a.seat)
+    caller = caller_seat()
+    descendants = []
+    reachable = reach_of(caller) if is_family_seat(caller) else None
+    visited = {target["seat_id"]}
+
+    def collect(host, own_subtree):
+        # Parents may form a cycle (the registry permits it): visit each seat once.
+        for child in family_of(host)[1]:
+            if child["seat_id"] in visited:
+                continue
+            visited.add(child["seat_id"])
+            child_is_own = own_subtree or (caller is not None and child["seat_id"] == caller["seat_id"])
+            if reachable is not None and child["seat_id"] not in reachable and not child_is_own:
+                require_reach(caller, child)
+            collect(child, child_is_own)
+            descendants.append(child)
+
+    if a.cascade:
+        # Preflight the entire subtree before retiring anyone: descendants of
+        # our own seat are ours, but a sibling's descendants are not.
+        own_subtree = (caller is not None and
+                       (target["seat_id"] == caller["seat_id"] or target["parent"] == caller["alias"]))
+        collect(target, own_subtree)
+    for child in descendants + [target]:
+        _retire_one(child, a.purge)
+
+
+def _retire_one(s0, purge):
+    locks, s = locked_fresh(s0, "retire")
     try:
+        live_children = [c["alias"] for c in family_of(s)[1] if c["seat_id"] != s["seat_id"] and
+                         c["status"] != "retired" and live_state(c) in FILLED]
+        if live_children:
+            die("%s/%s hosts live children: %s — retire them first or use --cascade" % (
+                s["group"], s["alias"], ", ".join(live_children)), EXIT_UNKNOWN)
         stop_session(s)
         if s["engine"] == "codex":
             hint = "legacy codex-CLI worker — no resume path; remove with: sminos remove %s/%s" % (s["group"], s["alias"])
         elif s["current"]:
-            hint = "sminos fill %s/%s --resume \"<task>\"" % (s["group"], s["alias"])
+            hint = 'sminos fill %s/%s --resume "<task>"' % (s["group"], s["alias"])
         else:
-            hint = "sminos fill %s/%s \"<task>\"" % (s["group"], s["alias"])
-        if a.purge:
-            if s["engine"] == "codex":
-                purge_codex_runs(meta_get(s["seat_id"], "event_log"))
+            hint = 'sminos fill %s/%s "<task>"' % (s["group"], s["alias"])
+        if purge:
             unlink_seat_files(s["seat_id"])
             print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
                 s["group"], s["alias"], s["seat_id"], worktree_note(s)))
@@ -2403,17 +2783,10 @@ def cmd_remove(a):
     locks, s = locked_fresh(resolve_seat(a.seat), "remove")
     try:
         stop_session(s)
-        if s["engine"] == "codex":
-            purge_codex_runs(meta_get(s["seat_id"], "event_log"))
         unlink_seat_files(s["seat_id"])
-        print("removed %s/%s [%s] (board history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
+        print("removed %s/%s [%s] (chat history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
         unlock(locks)
-
-
-def cmd_leave(a):
-    a.seat = "%s/%s" % (a.group, a.alias)
-    cmd_remove(a)
 
 
 # --------------------------------------------------------------------- views
@@ -2426,7 +2799,11 @@ def now_or_reply(s):
 
 
 def cmd_list(a):
+    caller = caller_seat()
     rows = seats(a.group)
+    if is_family_seat(caller):
+        reach = reach_of(caller)
+        rows = [s for s in rows if s["seat_id"] in reach]
     if a.status:
         rows = [s for s in rows if s["status"] == a.status]
     rows.sort(key=lambda s: s["updated"], reverse=True)
@@ -2446,103 +2823,6 @@ def cmd_list(a):
     for s in rows:
         print(fmt % (s["alias"][:18], s["group"][:14], (s["role"] or "-")[:12], s["status"][:14], live_state(s),
                      (s["short"] or s["seat_id"][:8])[:8], s["addr"][:18], now_or_reply(s)[:46]))
-
-
-def children_of(group_seats, alias):
-    return [s for s in group_seats if s["parent"] == alias]
-
-
-def tree(group):
-    """(depth, seat) rows in render order; orphans (parent unknown) are roots too."""
-    gs = sorted(seats(group), key=lambda s: s["alias"])
-    aliases = {s["alias"] for s in gs}
-    out = []
-
-    def walk(s, depth):
-        out.append((depth, s))
-        for c in children_of(gs, s["alias"]):
-            walk(c, depth + 1)
-    for s in gs:
-        if not s["parent"] or s["parent"] not in aliases:
-            walk(s, 0)
-    return out
-
-
-def seat_row(s):
-    head = s["alias"] + (" [%s]" % s["role"] if s["role"] else "")
-    bits = [head, live_state(s)]
-    if s["now"]:
-        bits.append(s["now"])
-    return " · ".join(bits)
-
-
-def render_tree(gs, s, line_prefix, child_prefix, out):
-    # line_prefix draws THIS row, child_prefix is what every descendant row
-    # inherits — so depth accumulates instead of resetting.
-    out.append(line_prefix + seat_row(s))
-    kids = children_of(gs, s["alias"])
-    for i, k in enumerate(kids):
-        last = i == len(kids) - 1
-        render_tree(gs, k, child_prefix + ("└── " if last else "├── "), child_prefix + ("    " if last else "│   "), out)
-
-
-def cmd_view(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s" % g, EXIT_UNKNOWN)
-    gs = sorted(seats(g), key=lambda s: s["alias"])
-    aliases = {s["alias"] for s in gs}
-    print("sminos group: %s" % g)
-    out = []
-    for s in gs:
-        if not s["parent"]:
-            render_tree(gs, s, "", "", out)
-    if not gs:
-        out.append("(no seats)")
-    for s in [s for s in gs if s["parent"] and s["parent"] not in aliases]:
-        out.append("(dangling — parent '%s' unknown)" % s["parent"])
-        render_tree(gs, s, "    ", "    ", out)
-    print("\n".join(out))
-    posts = read_board(g)
-    if posts:
-        last = posts[-1]
-        print("board: %d post(s) — latest: #%s%s by %s @ %s" % (
-            len(posts), last.get("id"), (' "%s"' % last["title"]) if last.get("title") else "", last.get("from"), last.get("ts")))
-
-
-def cmd_topology(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s" % g, EXIT_UNKNOWN)
-    gs = sorted(seats(g), key=lambda s: s["alias"])
-    nodes = []
-    for s in gs:
-        d = public_seat(s)
-        d["live"] = live_state(s)
-        nodes.append(d)
-    edges = [{"from": s["parent"], "to": s["alias"]} for s in gs if s["parent"]]
-    # `nodes` is the v2 key; kept for one release so v2 preambles keep parsing.
-    print(json.dumps({"group": g, "seats": nodes, "nodes": nodes, "edges": edges}, indent=2))
-
-
-def cmd_groups(a):
-    names = {s["group"] for s in seats()}
-    for gp in glob.glob(os.path.join(root(), "groups", "*")):
-        if os.path.isdir(gp):
-            names.add(os.path.basename(gp))
-    if not names:
-        print("(no groups)")
-        return
-    for g in sorted(names):
-        gs = seats(g)
-        live = sum(1 for s in gs if live_state(s) in FILLED)
-        posts = read_board(g)
-        last = posts[-1].get("ts", "-") if posts else "-"
-        print("%-24s %3d seats (%d live)   last post: %s" % (g, len(gs), live, last))
 
 
 def cmd_attach(a):
@@ -2583,6 +2863,8 @@ def chart_group_or_die(g):
 def cmd_chart(a):
     """The organisation chart as text: boxes left-to-right, dead seats folded
     into '+N retired' unless --all, then one summary line."""
+    if is_family_seat(caller_seat()):
+        die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
     g = a.group
     chart_group_or_die(g)
     chart = chart_module()
@@ -2612,160 +2894,10 @@ def cmd_chart(a):
 def cmd_tui(a):
     """The chart as an interactive screen (sminos_tui): headless when asked,
     otherwise a real terminal inside tmux."""
+    if is_family_seat(caller_seat()):
+        die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
     chart_group_or_die(a.group)
     sibling_module("sminos_tui").cmd_tui(a)
-
-
-# --------------------------------------------------------------------- board
-
-# The board is the group's communal surface: durable long-form posts, JSONL
-# on disk, rendered as markdown inside XML envelopes on read. Delivery is the
-# poster's job: after writing, nudge the seats who should read it now with a
-# one-line native SendMessage naming the post id (the command prints their
-# addrs). A seat that is never nudged still finds the post — the board is the
-# durable record and `view` summarizes it.
-
-
-def board_lock(g):
-    """mkdir spinlock: portable, no flock semantics needed. A lock dir that
-    stays for >30s is presumed leaked by a killed process and is broken."""
-    lk = os.path.join(group_dir(g), "locks", "board.lock")
-    os.makedirs(os.path.dirname(lk), exist_ok=True)
-    tries = 0
-    while True:
-        try:
-            os.mkdir(lk)
-            return lk
-        except FileExistsError:
-            tries += 1
-            if tries > 200:
-                try:
-                    if time.time() - os.stat(lk).st_mtime > 30:
-                        os.rmdir(lk)
-                except OSError:
-                    pass
-                tries = 0
-            time.sleep(0.05)
-
-
-def board_unlock(lk):
-    try:
-        os.rmdir(lk)
-    except OSError:
-        pass
-
-
-def read_board(g):
-    out = []
-    try:
-        with open(os.path.join(group_dir(g), "board.jsonl")) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        out.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    except OSError:
-        pass
-    return out
-
-
-def git_branch(cwd):
-    try:
-        return subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True,
-                              text=True, timeout=10).stdout.strip()
-    except Exception:
-        return ""
-
-
-def cmd_post(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s (a group is created by its first seat)" % g, EXIT_UNKNOWN)
-    frm = default_from(a.frm or os.environ.get("SMINOS_ALIAS") or "")
-    text = " ".join(a.text).strip() if a.text else sys.stdin.read()
-    if not text.strip():
-        die("post: empty body")
-    if not valid_name(frm):
-        die("bad --from alias: %s" % frm)
-    gs = seats(g)
-    if frm != "human" and not any(s["alias"] == frm for s in gs):
-        die("poster %s is not a seat in %s (run: sminos seat add %s %s)" % (frm, g, g, frm), EXIT_UNKNOWN)
-    cwd = os.getcwd()
-    # cwd/branch are snapshotted at post time — the seat's registry values
-    # describe where it started, not where this post was written.
-    body = {"ts": now(), "from": frm, "title": a.title or "", "cwd": cwd, "branch": git_branch(cwd), "text": text}
-    lk = board_lock(g)
-    try:
-        bf = os.path.join(group_dir(g), "board.jsonl")
-        # One past the HIGHEST id ever stored, not one past the count:
-        # `read_board` skips lines it cannot parse, so a single corrupt line
-        # would otherwise hand the new post an id a live post already holds,
-        # and every `board --id N` after it would be ambiguous.
-        ids = [p["id"] for p in read_board(g) if isinstance(p, dict) and isinstance(p.get("id"), int)]
-        rec = {"id": (max(ids) + 1) if ids else 1, **body}
-        with open(bf, "a") as f:
-            f.write(json.dumps(rec) + "\n")
-    finally:
-        board_unlock(lk)
-    others = ["%s/%s" % (g, s["alias"]) for s in gs if s["alias"] != frm and s["status"] != "retired"]
-    print("posted #%d to %s board" % (rec["id"], g))
-    if others:
-        print("  nudge readers — sminos send <seat> \"…\" to: %s" % ", ".join(others))
-        print("  e.g.: sminos board post #%d by %s%s · read with: sminos board %s --id %d" % (
-            rec["id"], frm, (' — "%s"' % a.title) if a.title else "", g, rec["id"]))
-
-
-def html_attr(v):
-    return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def esc_body(v):
-    # Only the envelope's own grammar is neutralized: a body carrying
-    # '</sminos-post>' would otherwise close the frame early and forge an
-    # apparent next post with fake provenance. Everything else stays raw;
-    # readable markdown is the whole point of the board.
-    return str(v).replace("<sminos-post", "&lt;sminos-post").replace("</sminos-post", "&lt;/sminos-post")
-
-
-def cmd_board(a):
-    g = a.group
-    if not valid_name(g):
-        die("bad group name: %s" % g)
-    if not group_exists(g):
-        die("no such group: %s" % g, EXIT_UNKNOWN)
-    posts = read_board(g)
-    if not posts:
-        if not a.json:
-            print("(no posts)")
-        return
-    if a.id is not None:
-        # --id is what a nudge names: a post number, fetchable individually —
-        # a seat with several nudges queued reads each one, not just the latest.
-        sel = [p for p in posts if p.get("id") == a.id]
-        if not sel:
-            die("no such post on the %s board: #%d" % (g, a.id), EXIT_UNKNOWN)
-    elif a.n and a.n > 0:
-        sel = posts[-a.n:]
-    else:
-        sel = posts
-    if a.json:
-        for p in sel:
-            print(json.dumps(p))
-        return
-    for p in sel:
-        head = '<sminos-post id="%s" from="%s" ts="%s"' % (p.get("id"), html_attr(p.get("from", "")), html_attr(p.get("ts", "")))
-        if p.get("branch"):
-            head += ' branch="%s"' % html_attr(p["branch"])
-        head += ' cwd="%s">' % html_attr(p.get("cwd", ""))
-        body = ""
-        if p.get("title"):
-            body += "\n## " + esc_body(p["title"])
-        body += "\n" + esc_body(p.get("text", "")) + "\n</sminos-post>\n"
-        print(head + body)
 
 
 # ---------------------------------------------------------------------- meta
@@ -2840,16 +2972,6 @@ def build_parser():
     sa.add_argument("--session", default="")
     sa.set_defaults(fn=cmd_seat_add)
 
-    j = sub.add_parser("join", add_help=False)
-    j.add_argument("group")
-    j.add_argument("alias")
-    j.add_argument("--parent", default=None)
-    j.add_argument("--desc", default=None)
-    j.add_argument("--role", default=None)
-    j.add_argument("--session", default="")
-    j.add_argument("--addr", default="")
-    j.set_defaults(fn=cmd_join)
-
     f = sub.add_parser("fill", add_help=False)
     f.add_argument("seat")
     f.add_argument("task")
@@ -2876,6 +2998,20 @@ def build_parser():
     s.add_argument("--from", dest="frm", default="")
     s.set_defaults(fn=cmd_send)
 
+    say = sub.add_parser("say", add_help=False)
+    say.add_argument("text")
+    say.add_argument("--in", dest="in_", default="")
+    say.add_argument("--team", action="store_true")
+    say.set_defaults(fn=cmd_say)
+
+    chat = sub.add_parser("chat", add_help=False)
+    chat.add_argument("host", nargs="?", default="")
+    chat.add_argument("-n", type=int, default=30)
+    chat.add_argument("--since", type=int, default=None)
+    chat.add_argument("--team", action="store_true")
+    chat.add_argument("--json", action="store_true")
+    chat.set_defaults(fn=cmd_chat)
+
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")
     r.set_defaults(fn=cmd_reply)
@@ -2885,12 +3021,6 @@ def build_parser():
     sy.add_argument("--all", action="store_true")
     sy.set_defaults(fn=cmd_sync)
 
-    m = sub.add_parser("mark", add_help=False)
-    m.add_argument("seat")
-    m.add_argument("status")
-    m.add_argument("note", nargs="*")
-    m.set_defaults(fn=cmd_mark)
-
     st = sub.add_parser("status", add_help=False)
     st.add_argument("seat")
     st.add_argument("line", nargs="*")
@@ -2899,31 +3029,18 @@ def build_parser():
     rt = sub.add_parser("retire", add_help=False)
     rt.add_argument("seat")
     rt.add_argument("--purge", action="store_true")
+    rt.add_argument("--cascade", action="store_true")
     rt.set_defaults(fn=cmd_retire)
 
     rm = sub.add_parser("remove", add_help=False)
     rm.add_argument("seat")
     rm.set_defaults(fn=cmd_remove)
 
-    lv = sub.add_parser("leave", add_help=False)
-    lv.add_argument("group")
-    lv.add_argument("alias")
-    lv.set_defaults(fn=cmd_leave)
-
     ls = sub.add_parser("list", add_help=False)
     ls.add_argument("group", nargs="?", default=None)
     ls.add_argument("--status", default="")
     ls.add_argument("--json", action="store_true")
     ls.set_defaults(fn=cmd_list)
-
-    v = sub.add_parser("view", add_help=False)
-    v.add_argument("group")
-    v.set_defaults(fn=cmd_view)
-
-    t = sub.add_parser("topology", add_help=False)
-    t.add_argument("group")
-    t.add_argument("--json", action="store_true")
-    t.set_defaults(fn=cmd_topology)
 
     ch = sub.add_parser("chart", add_help=False)
     ch.add_argument("group", nargs="?", default=None)
@@ -2940,23 +3057,6 @@ def build_parser():
     tu.add_argument("--height", type=int, default=0)
     tu.add_argument("--no-tmux", dest="no_tmux", action="store_true")
     tu.set_defaults(fn=cmd_tui)
-
-    g = sub.add_parser("groups", add_help=False)
-    g.set_defaults(fn=cmd_groups)
-
-    po = sub.add_parser("post", add_help=False)
-    po.add_argument("group")
-    po.add_argument("--from", dest="frm", default="")
-    po.add_argument("--title", default="")
-    po.add_argument("text", nargs="*")
-    po.set_defaults(fn=cmd_post)
-
-    b = sub.add_parser("board", add_help=False)
-    b.add_argument("group")
-    b.add_argument("-n", type=int, default=0)
-    b.add_argument("--id", type=int, default=None)
-    b.add_argument("--json", action="store_true")
-    b.set_defaults(fn=cmd_board)
 
     at = sub.add_parser("attach", add_help=False)
     at.add_argument("seat")
@@ -2975,49 +3075,11 @@ def build_parser():
     return p
 
 
-def parse_post(argv):
-    """`post <group> [--from F] [--title T] [text...]` by hand: argparse cannot
-    take free text after options once a zero-or-more positional has matched."""
-    ns = argparse.Namespace(cmd="post", frm="", title="", text=[], group=None, fn=cmd_post)
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--":
-            ns.text.extend(argv[i + 1:])
-            break
-        if a in ("--from", "--title"):
-            if i + 1 >= len(argv):
-                die("post: %s needs a value" % a)
-            setattr(ns, "frm" if a == "--from" else "title", argv[i + 1])
-            i += 2
-            continue
-        if a.startswith("--from="):
-            ns.frm = a.split("=", 1)[1]
-        elif a.startswith("--title="):
-            ns.title = a.split("=", 1)[1]
-        elif ns.group is None:
-            ns.group = a
-        else:
-            ns.text.append(a)
-        i += 1
-    if ns.group is None:
-        die("usage: sminos post <group> [--from F] [--title T] [text...]")
-    return ns
-
-
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
         usage()
         sys.exit(0 if argv else EXIT_USAGE)
-    if argv[0] in ("listen", "log"):
-        die("'%s' is gone — messaging is 'sminos send' (a live seat) or 'sminos wake' (a stopped one), riding "
-            "the harness's inbox socket; the board (sminos post/board) is the durable record" % argv[0])
-    if argv[0] == "post":
-        a = parse_post(argv[1:])
-        migrate()
-        cmd_post(a)
-        return
     parser = build_parser()
     try:
         a = parser.parse_args(argv)

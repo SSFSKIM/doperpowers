@@ -208,9 +208,9 @@ def _registry_root():
 
     A root overridden only in a dispatcher's own process never reaches the
     worker it spawns, so the worker reads the default one — which is sminos's
-    own standing assumption, not a new exposure this adds: the spawn preamble
-    has every worker run `sminos topology`/`post`/`status` from its own shell,
-    and those resolve the root by this same rule. An override has to be
+    own standing assumption, not a new exposure this adds: a family seat's
+    spawn preamble gives it `sminos chat`/`say`/`status` to run from its own
+    shell, and those resolve the root by this same rule. An override has to be
     machine-wide (a shell profile, a launchd environment) for the fleet to work
     at all, and where it is, self-location reads exactly what sminos wrote.
     """
