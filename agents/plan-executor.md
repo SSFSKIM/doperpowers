@@ -38,6 +38,12 @@ in `Progress` with a timestamp once its review is clean, and commit — the
 ledger under
 `.doperpowers/sde/` is gitignored, so the committed spec is what the next
 executor and a recovery reader see.
+Dispatch `doperpowers:task-executor` and `doperpowers:task-reviewer` at
+their pins — opus at high effort, sol at xhigh — whatever model wrote the
+spec, and leave the pins alone unless your brief says otherwise (the
+loop's Model selection allows sonnet for a simple task, nothing above
+opus): the frontier intelligence went into the design and the spec;
+running the plan and building its milestones is close-frontier work.
 One milestone: work it yourself, in order, without asking for next steps;
 keep its `Progress`, `Surprises & Discoveries`, and `Decision Log`
 sections current at every stopping point; commit frequently.

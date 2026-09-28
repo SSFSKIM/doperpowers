@@ -142,7 +142,7 @@ verification walk with every command given — can go to sonnet, the tier
 below opus, by passing `model: sonnet` at dispatch, which overrides the
 executor's pin. Never dispatch workers on fable or astra: the top tier
 adds cost without adding reliability — the spec absorbs the difficulty,
-not the model. When a worker reports BLOCKED on reasoning capacity rather
+not the model, whatever model wrote the spec. When a worker reports BLOCKED on reasoning capacity rather
 than missing context, a sonnet task moves to opus; from opus there is no
 tier above — resolve the hard call yourself in the spec's Decision Log and
 re-dispatch, or split the milestone.

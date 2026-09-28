@@ -619,6 +619,7 @@ pexec="$(cat "$PLAN_EXECUTOR")"
 assert_contains "$pexec" "model: opus" "the plan-executor is pinned to opus"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "disallowedTools: AskUserQuestion" "...and it runs detached from the human: no AskUserQuestion"
+assert_contains "$pexec" "opus at high effort, sol at xhigh" "...and it dispatches its workers at their pins whatever model wrote the spec: execution is close-frontier work"
 assert_contains "$pexec" "escalated to that session" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the session that dispatched it"
 assert_contains "$pexec" "## Checkpoints" "...and it messages its dispatcher at the checkpoints it judges meaningful"
 assert_contains "$pexec" "progressing as intended" "...asking it to confirm the execution is progressing as intended"
@@ -658,6 +659,8 @@ assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the low review rung
 # brainstorming closes the design and routes. The Architect names both, and
 # no live protocol points at a step number inside brainstorming's prose.
 assert_contains "$arch" "doperpowers:execspec" "architect: the spec is written through execspec"
+execspec="$(cat "$REPO_ROOT/skills/execspec/SKILL.md")"
+assert_contains "$execspec" "leave its workers' pins to it" "execspec: the main session dispatches the plan-executor at its pin and leaves the workers' pins alone, whatever model wrote the spec"
 assert_not_contains "$arch" "brainstorming's step" "architect: no step-number reference into brainstorming"
 
 # ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
