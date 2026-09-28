@@ -1,5 +1,5 @@
 {
-  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the to-human view of the transcript and the kairos button in the prompt footer. to-human-stream.sh (MessageDisplay) draws the same marks while a message streams. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. experimental-context: keyed <revisit> entries re-injected after compaction — on with EXPERIMENTAL_CONTEXT=1 or /experimental-context; /experimental-context off ends it",
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the to-human view of the transcript and the kairos button in the prompt footer. to-human-stream.sh (MessageDisplay) draws the same marks while a message streams. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. experimental-context: keyed <revisit> entries re-injected after compaction — on with EXPERIMENTAL_CONTEXT=1 or /experimental-context; /experimental-context off ends it. compact-instructions.md: PreCompact prints it, so every compaction's summary is written as the note a memory-reset self resumes from",
   "modules": ["./mods/register.tsx"],
   "hooks": {
     "SessionStart": [
@@ -18,6 +18,16 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/experimental-context.sh\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-instructions.md\""
           }
         ]
       }
