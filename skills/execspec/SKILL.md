@@ -14,7 +14,7 @@ You arrive with an approved design: doperpowers:brainstorming explored the purpo
 3. Independent review
 4. Execute
 
-A goal that arrives as a child of a composite spec carries its section as its design, and the composite's approval covers it: you write only its standalone execution document (living-spec.md, "A child of a composite spec"), record residue decisions in the parent's Decision Log under the child's id, and skip step 3 — its route's own review covers the residue.
+A goal that arrives as a child of a composite spec carries its section as its design, and the composite's approval covers it: you write only its standalone execution document (living-spec.md, "A child of a composite spec") and record residue decisions in the parent's Decision Log under the child's id.
 
 ## 1. Write the spec
 
