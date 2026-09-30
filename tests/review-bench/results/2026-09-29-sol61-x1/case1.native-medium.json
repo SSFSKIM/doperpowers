@@ -1,0 +1,62 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Subtract allowed lateness from the tenant watermark",
+   "comment": "With any positive `allowed_lateness`, adding the grace period moves the cutoff ahead of the watermark instead of behind it. For example, after timestamp 100 with lateness 30, both timestamp 90 (within the permitted grace period) and timestamp 110 (in order) are discarded. This loses valid readings and inflates `dropped_late` in both single-file and multi-file reports. Use `watermark - self.allowed_lateness` so only readings further behind than the configured allowance are rejected.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.5sc0Kh/windows.py",
+   "lines": "70-71",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Clear pending windows after taking the flush snapshot",
+   "comment": "`flush()` now returns a snapshot without retiring any windows, although `summarize_files()` reuses the aggregator and calls it after every batch. With readings at timestamps 10 and 70 in separate files, the second batch incorrectly contains both the first batch's window and its own; readings in a shared window likewise produce cumulative rather than per-batch statistics. This also retains all aggregation state and repeatedly emits old windows throughout a backfill. Save the snapshot, clear `_pending`, and then return the saved rows.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.5sc0Kh/aggregate.py",
+   "lines": "85-87",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Reuse tenant limits instead of reloading them for every reading",
+   "comment": "This call is inside the per-reading loop, and `load_tenant_limits()` opens and parses the entire configuration file on every invocation. Large telemetry batches therefore perform one configuration-file read per record, even when all records belong to the same tenant. A local check with 50,000 readings took 1.84 seconds here versus 0.21 seconds when tenant-limit lookups were cached, with identical reports. Load the configuration once per summarization or cache tenant limits for the duration of the call to avoid this ingest-throughput regression.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.5sc0Kh/pipeline.py",
+   "lines": "39-40",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "7c4234aaa1baf85aaa9070227be6de730dcec2a0",
+  "headCommit": "67d2f892214c86164de1edcd40a28e41c5e1a34d",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.5sc0Kh"
+ },
+ "level": "medium",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 3
+  }
+ ],
+ "explanation": "incorrect \u2014 Targeted Python checks reproduce valid readings being dropped with positive lateness, prior windows being repeated across batches, and substantial overhead from per-record configuration loading. Tenant isolation, configured clipping, default fallback, and the intentional numeric-value validation passed the checks performed.",
+ "run_id": "wf_9fe1bf4c-9ad",
+ "logs": [
+  "review (medium: sol/xhigh) against main @ 7c4234aaa1 (HEAD 67d2f89221)",
+  "review verdict: incorrect \u2014 incorrect \u2014 Targeted Python checks reproduce valid readings being dropped with positive lateness, prior windows being repeated across batches, and substantial overhead from per-record configuration loading. Tenant isolation, configured clipping, default fallback, and the intentional numeric-value validation passed the checks performed."
+ ],
+ "tokens": 21965,
+ "secs": 132
+}

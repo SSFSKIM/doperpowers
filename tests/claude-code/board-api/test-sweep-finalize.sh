@@ -196,7 +196,7 @@ if sys.argv[2] == "u-90" and m["status"] == "idle" and pr90_read():
 print("live" if m["status"] in ("working", "blocked") else "noop")
 PY
     ;;
-  resume|wake) echo "WAKE uuid=${1:-}" >> "$NUDGE_LOG" ;;
+  resume|send) echo "SEND uuid=${1:-}" >> "$NUDGE_LOG" ;;
   *) echo "stub sminos: unexpected verb '$verb'" >&2; exit 2 ;;
 esac
 STUB

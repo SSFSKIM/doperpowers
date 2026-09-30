@@ -1,0 +1,62 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Require admin authorization for the bulk export",
+   "comment": "`GET /exports/all` is registered to this handler, but `@authenticated` permits ordinary members and the handler reads every tenant's documents. A request using `tok-ana` returns the contents of a document belonging to `globex`, violating the documented admin-only access and tenant isolation. Apply `@admin_only` so members receive 403 before any cross-tenant data is read.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qKvI0q/app.py",
+   "lines": "211-212",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Return the saved revision rather than the row count",
+   "comment": "`handle_put_document` still treats this return value as the new revision and uses it for both `revision` and `etag` in its response. Creating a document with three rows therefore reports revision 3 although the persisted revision is 1; a subsequent conditional PUT using the reported revision incorrectly receives 409. Return `current + 1`, or update the handler to retrieve the actual saved revision before constructing its response.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qKvI0q/store.py",
+   "lines": "122",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Use an exclusive upper bound for the document page",
+   "comment": "`last` is already `first + limit`, so adding one in the slice returns up to `limit + 1` names and overlaps adjacent pages. With names `a` through `e` and `limit=2`, page 1 returns `a,b,c` and page 2 returns `c,d,e`, duplicating `c` and exceeding the requested limit. Slice to `last` without the extra increment.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.qKvI0q/app.py",
+   "lines": "103",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "7800cf9a62034a9c8789c792e4b8ea997f1c278a",
+  "headCommit": "1eb59af12446dc7ba99327b357a834f591d0e6d3",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.qKvI0q"
+ },
+ "level": "medium",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 3
+  }
+ ],
+ "explanation": "incorrect \u2014 Focused request-level probes confirmed cross-tenant disclosure through the bulk export, incorrect revision metadata that breaks conditional writes, and overlapping pagination. Empty-document rendering and explicit-null revision rejection behaved as documented; the working tree was left unchanged.",
+ "run_id": "wf_116a64de-fb6",
+ "logs": [
+  "review (medium: sol/xhigh) against main @ 7800cf9a62 (HEAD 1eb59af124)",
+  "review verdict: incorrect \u2014 incorrect \u2014 Focused request-level probes confirmed cross-tenant disclosure through the bulk export, incorrect revision metadata that breaks conditional writes, and overlapping pagination. Empty-document rendering and explicit-null revision rejection behaved as documented; the working tree was left unchanged."
+ ],
+ "tokens": 20640,
+ "secs": 89
+}

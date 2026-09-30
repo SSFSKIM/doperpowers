@@ -1,0 +1,95 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Update prune.sh to consume the v2 manifest",
+   "comment": "Every successful snapshot now emits four fields, but prune.sh still reads three with `read -r epoch bytes path`. Its `path` therefore contains the byte count, a tab, and the archive path; the file check fails and rotation is silently skipped. An end-to-end run with BACKUP_KEEP=1 retained all four archives and reported success. Update the consumer to read all four columns and use the supplied label rather than recovering it from the filename.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/snapshot.sh",
+   "lines": "114",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Shell-escape the remote directory and archive filename",
+   "comment": "BACKUP_REMOTE_DIR and the label-derived filename are interpolated into shell source sent to SSH. Surrounding them with single quotes does not escape embedded apostrophes: a directory containing `'; touch /tmp/marker; #` executes the injected command remotely, and an ordinary apostrophe in a directory or label also breaks replication. Escape both values for the remote shell or transfer them through a mechanism that does not interpolate them into executable shell source.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "97-99",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Publish remote archives only after a complete transfer",
+   "comment": "The remote redirection opens the archive's final name before receiving any data. If SSH disconnects partway through, that name remains with a truncated payload even though the local run fails; a simulated interrupted transfer left a 16-byte .tar.gz under the final name. This contradicts the stated replication guarantee and makes incomplete files indistinguishable from completed replicas by name. Write to a remote staging file and rename it to the final name only after the transfer succeeds.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "98",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#4",
+   "title": "Treat a zero force value as disabled",
+   "comment": "snapshot.sh initializes FORCE to `0` when BACKUP_FORCE is absent, but this condition tests whether the string is nonempty, so both `0` and `1` enable the override. Consequently, every ordinary run continues when either filesystem has insufficient space; a mocked df reporting zero available space reproduced successful archive creation without --force. Compare the value explicitly with `1`, or use an empty default consistently, so the documented fatal check operates unless requested otherwise.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "81-83",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#5",
+   "title": "Restore exit and signal cleanup for the staging directory",
+   "comment": "The previous cleanup trap has been removed, and the staging directory is now deleted only after replication and publication succeed. A tar, SSH, or mv failure\u2014or termination during those operations\u2014leaves the partial or complete archive under TMPDIR. A failed replication reproduced a leftover directory containing the entire staged archive; recurring failures can accumulate full backups and exhaust the staging filesystem. Install cleanup immediately after make_stage succeeds and retain it for error and signal exits.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/snapshot.sh",
+   "lines": "90",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#6",
+   "title": "Apply restrictive permissions on the replica host",
+   "comment": "The local `umask 077` is not propagated through SSH, so the remote mkdir and redirection use the remote account's default umask. With the common default of 022 and a newly created replica directory, archives are created as 0644 in a 0755 directory, exposing their contents to other users on the replica host despite local archives being private. Set a restrictive umask in the remote command and ensure the destination file remains private when replacing an existing archive.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "98",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "ba7b110d89355ff143e8d511757c9dde0ac63c41",
+  "headCommit": "8ebfbd6d186cd24ea425a1912d76964ea4556823",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.Zetzaa"
+ },
+ "level": "medium",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 6
+  }
+ ],
+ "explanation": "incorrect \u2014 End-to-end checks reproduced disabled retention and low-space checks continuing without an override. Simulated SSH transfers also reproduced command injection, truncated published replicas, permissive remote file modes, and staging files left behind after failure; no live remote service was used.",
+ "run_id": "wf_0627d9b1-3f3",
+ "logs": [
+  "review (medium: sol/xhigh) against main @ ba7b110d89 (HEAD 8ebfbd6d18)",
+  "review verdict: incorrect \u2014 incorrect \u2014 End-to-end checks reproduced disabled retention and low-space checks continuing without an override. Simulated SSH transfers also reproduced command injection, truncated published replicas, permissive remote file modes, and staging files left behind after failure; no live remote service was used."
+ ],
+ "tokens": 23628,
+ "secs": 229
+}

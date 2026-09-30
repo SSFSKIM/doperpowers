@@ -253,7 +253,7 @@ except Exception:
 print("live" if m.get("status") in ("working", "blocked") else "noop")
 PY
   exit 0 ;;
-resume|wake)
+resume|send)
   # Records the VERB, and its ENVIRONMENT as well as its argv: the run
   # credentials ride the nudge that way and are observable nowhere else.
   w=""; [ "\${1:-}" != "--wait" ] || { w=" --wait"; shift; }
@@ -274,8 +274,8 @@ SW() {  # one _sweep_api.sh invocation against this fixture world
 }
 RECOVER() { SW "${@:2}" "$SCRIPTS/_sweep_api.sh" review-recover > "$1" 2>&1 || true; }
 
-wakes()       { grep -c '^WAKE uuid=' "$NUDGES" || true; }
-wakes_for()   { grep -c "^WAKE uuid=$1\$" "$NUDGES" || true; }
+wakes()       { grep -c '^SEND uuid=' "$NUDGES" || true; }
+wakes_for()   { grep -c "^SEND uuid=$1\$" "$NUDGES" || true; }
 # The value, BRACKETED. `t` is a substring match, so a bare `review` needle is
 # satisfied by `review-parked` — which is precisely the two values the repair
 # drills have to tell apart.
@@ -290,11 +290,11 @@ posts()       { grep -c "\"path\": \"$1\"" "$FIX.log" || true; }
 # =========================================================================
 O1="$TDIR/t1.out"; RECOVER "$O1"
 
-t  "idle owner with phase review and stale transcript → woken" "WAKE uuid=u-rev" cat "$NUDGES"
+t  "idle owner with phase review and stale transcript → woken" "SEND uuid=u-rev" cat "$NUDGES"
 # The candidate is IDLE by this phase's own predicate — a live seat whose turn
 # ended. `sminos resume` on it has no turn to stop and the harness starts a
-# copy; `wake` delivers over the seat's socket (and resumes a dead one itself).
-t  "...by wake --wait"                           "VERB: wake --wait"        cat "$NUDGES"
+# copy; `send` delivers over the seat's socket (and resumes a dead one itself).
+t  "...by send --wait"                           "VERB: send --wait"        cat "$NUDGES"
 nt "...never by resume"                          "VERB: resume"             cat "$NUDGES"
 t  "...signed by the sweep"                      "FROM: sweep"              cat "$NUDGES"
 t  "the nudge names the review, not the build"  "SWEEP RECOVERY: your review of ticket #60's pull request has no live QA agent" cat "$NUDGES"
@@ -309,7 +309,7 @@ t  "...and its count is never opened"            "<absent>"                 mfie
 t  "phase review-parked → untouched"             "0"                        wakes_for u-parked
 t  "...its ticket still parked, so its mark stands" "[review-parked]"       mfieldq u-parked phase
 t  "review-parked on a ticket back in review → restamped review" "[review]" mfieldq u-late phase
-t  "...and considered from then on: nudged like any stalled owner" "WAKE uuid=u-late" cat "$NUDGES"
+t  "...and considered from then on: nudged like any stalled owner" "SEND uuid=u-late" cat "$NUDGES"
 t  "...and the tick says why"                    "#73 is in review while its seat read"  cat "$O1"
 t  "an owner whose QA subagent is still writing is untouched, its own transcript stale" "0" wakes_for u-sub
 t  "an owner still writing is inside the threshold" "0"                     wakes_for u-fresh
@@ -322,7 +322,7 @@ t  "ticket done with phase review → no nudge"    "0"                        wa
 t  "...and the stale phase is removed"           "[<absent>]"               mfieldq u-done phase
 
 # Progress is a review artifact, not seat activity.
-t  "a new review-trail event resets the count"   "WAKE uuid=u-trail"        cat "$NUDGES"
+t  "a new review-trail event resets the count"   "SEND uuid=u-trail"        cat "$NUDGES"
 t  "...so the attempt counts from zero again"    "1"                        mfield u-trail review_recoveries
 t  "...and the trail it reset on is recorded"    "1"                        mfield u-trail review_trail_seen
 
@@ -343,7 +343,7 @@ t  "...and the tick says so"                     "the meta write failed"    cat 
 # nothing, so the stamp board-answer just made is the one that stands.
 t  "a ticket answered mid-repair keeps the answer's mark" "[review]"        mfieldq u-race phase
 t  "...and the tick says the ticket moved under it" "left needs-human while its seat's mark was being repaired" cat "$O1"
-nt "...and nothing was nudged on that pass"      "WAKE uuid=u-race"         cat "$O1"
+nt "...and nothing was nudged on that pass"      "SEND uuid=u-race"         cat "$O1"
 
 t  "a suppressed ticket freezes this ladder too"  "0"                       wakes_for u-supp
 t  "...and the tick says why"                     "suppressed"               cat "$O1"
@@ -359,7 +359,7 @@ O2="$TDIR/t2.out"; RECOVER "$O2"
 t  "a second tick nudges the same owner once more" "2"                      wakes_for u-rev
 t  "and the ladder advances by one"              "2"                        mfield u-rev review_recoveries
 t  "a seat whose mark was repaired is no longer a candidate" "0"            wakes_for u-server-park
-t  "...while the one the answer returned to review is nudged on the next tick" "WAKE uuid=u-race" cat "$NUDGES"
+t  "...while the one the answer returned to review is nudged on the next tick" "SEND uuid=u-race" cat "$NUDGES"
 t  "nor is one whose mark was cleared"           "0"                        wakes_for u-done
 
 # =========================================================================
@@ -382,7 +382,7 @@ OALL="$TDIR/all.out"
     NUDGE_LOG="$NUDGES2" BOARD_SUPPRESS_DIR="$SUPD" BOARD_CREDENTIALS_FILE="$CREDS" \
     BOARD_SWEEP_TICK_BUDGET=900 "$SCRIPTS/_sweep_api.sh" all ) > "$OALL" 2>&1 || true
 t  "the whole-tick run reaches the review-recover phase" "review-recover: #72" cat "$OALL"
-t  "...and nudges its candidate"                 "WAKE uuid=u-all"        cat "$NUDGES2"
+t  "...and nudges its candidate"                 "SEND uuid=u-all"        cat "$NUDGES2"
 t  "...having renewed that run first"            '"path": "/runs/72/renew"' cat "$FIX.log"
 
 # =========================================================================
