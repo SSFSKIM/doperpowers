@@ -236,7 +236,8 @@ share no design surface, so there was nothing to mature jointly; phases
    and the flow-back raised; its outcome section, written at close, is
    the child's retrospective and the Tracking Map points at it. On a board
    the ticket timeline and the PR body are that ledger. Residue rulings a
-   leaf makes land in this Decision Log under the child's id. As children
+   leaf makes land in this Decision Log under the child's id — by the
+   parent's one writer when siblings run at once (below). As children
    land, the tracking map, Decision Log, and Surprises stay current; when
    the children are all in, close the parent by RECOMPOSITION — verify the
    parent's own acceptance, then write the retrospective; the Deferred
@@ -304,6 +305,18 @@ Log entry lands that touches an in-flight child's contract, flag that child.
 When a child's work contradicts the parent, the discovery flows back into
 the parent's Decision Log — never silent
 divergence. This is the living-spec discipline one level up.
+
+Siblings authored or executed at the same time share this document, so it
+has one writer — the session running this skill. A child's author records
+its residue in the child's own document, and that writer folds it into
+the child's section and the Decision Log under the child's id; parallel
+authors editing one file drop each other's commits. When more than one
+child extends a contract before any of them lands, open an interface
+ledger beside the execution documents — every added name with its owner
+and consumers, the shared files and the order they land in — reconciled
+before the first executor starts and kept current as children land, so
+the interim contract siblings code against is one document rather than
+several that disagree.
 
 ## Common Mistakes
 

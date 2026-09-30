@@ -23,7 +23,16 @@ can and carries the rest to the human.
 
 ## Mode
 
-Open the file first. A Plan of Work with more than one milestone: invoke
+Open the file first. A document written before the code it consumes had
+landed — a composite child authored while its siblings were still
+executing — starts with a refresh pass: reconcile every interface it
+consumes against what is on the branch's base now, follow the names that
+landed renamed or dropped, re-pin the parent it cites with a dated
+Decision Log line, and commit that before the first milestone is
+dispatched; a milestone built against a stale name is a fix wave you can
+see coming.
+
+A Plan of Work with more than one milestone: invoke
 doperpowers:subagent-driven-execution and follow it — you are its
 controller — fresh executor per milestone, review at each dependency
 frontier, fixes resumed on the executor, the ledger, and the spec's one
