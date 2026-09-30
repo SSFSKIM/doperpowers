@@ -9,12 +9,12 @@
 # meta whose bind the server never confirmed is repaired through board-bind.
 #
 # RELAY pins: the answer reaches the parked worker — a live, idle seat — through
-# `sminos wake --wait` (a resume on a live idle seat starts a copy), with the run
-# credentials re-injected from the meta (ENV, never argv — a wake that finds the
+# `sminos send --wait` (a resume on a live idle seat starts a copy), with the run
+# credentials re-injected from the meta (ENV, never argv — a send that finds the
 # seat dead resumes it, forking a fresh process from the caller's environment);
 # the blocking wait is BOUNDED, because the whole tick holds the lock while it
 # runs; the ack fires only on PROVEN delivery — the sentinel already in the
-# transcript, or a wake that returned success; a dead-session or failed
+# transcript, or a send that returned success; a dead-session or failed
 # delivery acks NOTHING and breaks the drain loop instead of spinning on the
 # same page.
 #
@@ -190,7 +190,7 @@ except Exception:
 print("live" if m.get("status") in ("working", "blocked") else "noop")
 PY
   exit 0 ;;
-resume|wake) ;;
+resume|send) ;;
 *) echo "stub sminos: unexpected verb '\$verb'" >&2; exit 2 ;;
 esac
 w=""; if [ "\${1:-}" = "--wait" ]; then w=" --wait"; shift; fi
@@ -413,20 +413,20 @@ OUT2="$TDIR/relay.out"
 SW relay > "$OUT2" 2>&1 || true
 
 t "a sentinel quoted as tool-result data is not delivery proof" \
-  "WAKE uuid=u-3"                                                          cat "$RELAY_LOG"
+  "SEND uuid=u-3"                                                          cat "$RELAY_LOG"
 nt "so the answer is not acked undelivered"  "already delivered (sentinel)" cat "$OUT2"
 t "the sentinel reaches the worker"    "[board-relay answer:118]"          cat "$TX"
 t "so does the protocol instruction"   "Re-state your gate verdict"        cat "$TX"
 t "and the answers, verbatim"          "---- answers (verbatim) ----"      cat "$TX"
 t "every reply line is carried"        "and squash the fixups"             cat "$TX"
 t "the answer is acked after delivery" '"path": "/answers/118/ack"'        cat "$FIX.log"
-t "the wake names the bound session"   "WAKE uuid=u-3"                     cat "$RELAY_LOG"
+t "the send names the bound session"   "SEND uuid=u-3"                     cat "$RELAY_LOG"
 # The parked owner is a LIVE, IDLE seat: `sminos resume` on it has no turn to
 # stop and the harness starts a copy that delivers nothing (observed live).
-t  "the relay wakes it, and waits"     "VERB: wake --wait"                 cat "$RELAY_LOG"
+t  "the relay sends to it, and waits"  "VERB: send --wait"                 cat "$RELAY_LOG"
 nt "it never resumes it"               "VERB: resume"                      cat "$RELAY_LOG"
 t  "and signs the delivery as the sweep" "FROM: sweep"                     cat "$RELAY_LOG"
-# A wake that finds the seat dead resumes it, forking a fresh process from the
+# A send that finds the seat dead resumes it, forking a fresh process from the
 # CALLER's env, so the run credentials are re-injected from the meta on every
 # delivery.
 t  "the run bearer is re-injected"     "BOARD_RUN_TOKEN=tok-w3"            cat "$RELAY_LOG"
@@ -477,7 +477,7 @@ t "the delivered prompt is byte-exact" "prompt=exact" prompt_is_exact
 # ---- replay: the same answer served again, sentinel already present --------
 # This is also the degrade path for a delivery whose bounded wait expires:
 # the sentinel-bearing prompt lands BEFORE the wait blocks, so a timed-out
-# wake exits nonzero and acks nothing this tick — and the NEXT
+# send exits nonzero and acks nothing this tick — and the NEXT
 # tick lands exactly here, finding the sentinel and acking without
 # re-delivering. Run hostile: the ack must speak automation too.
 : > "$FIX.log"
@@ -511,8 +511,8 @@ nt "and does not hang"                   "TIMEOUT"                   cat "$OUTAC
 : > "$FIX.log"
 OUT3="$TDIR/relay3.out"
 DELIVERY_MUST_FAIL=1 SWB relay > "$OUT3" 2>&1 || true
-t  "a wake that reported no delivery is not called a failure" \
-   "the wake returned no delivery"                              cat "$OUT3"
+t  "a send that reported no delivery is not called a failure" \
+   "the send returned no delivery"                              cat "$OUT3"
 nt "a failed delivery acks nothing"     "/answers/121/ack"       cat "$FIX.log"
 nt "and the pass does not hang"         "TIMEOUT"                cat "$OUT3"
 

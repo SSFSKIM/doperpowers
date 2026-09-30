@@ -318,13 +318,13 @@ EOF
   printf '%s' "$newest"
 }
 
-# <ticket> <uuid> <recoveries> <why> <build|review> <wake|resume>
+# <ticket> <uuid> <recoveries> <why> <build|review> <send|resume>
 #
 # The sixth argument is the verb that reaches the seat, and the caller picks it
 # from the sync verdict it already holds. An IDLE seat is live and waiting: it
-# is woken — `sminos resume` stops a live turn and restarts the process, and on
-# an idle seat there is no turn to stop, so the harness starts a copy and
-# nothing is delivered. A seat that is gone, errored, or live but silent
+# gets a `send` — `sminos resume` stops a live turn and restarts the process,
+# and on an idle seat there is no turn to stop, so the harness starts a copy
+# and nothing is delivered. A seat that is gone, errored, or live but silent
 # mid-turn is resumed: for the last, the stop-and-restart IS the recovery.
 #
 # The fifth argument selects the REVIEW ladder: its own counter
@@ -342,7 +342,7 @@ _recover() {
     note="auto-recovery exhausted: the owner $uuid was nudged $RECOVERY_CAP times about its review of this ticket's pull request and no new [review-trail] comment appeared between them ($why); review the PR by hand, or answer here to put the owner back on it"
     prompt="SWEEP RECOVERY: your review of ticket #$tk's pull request has no live QA agent ($why). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it."
   else
-    note="auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; wake it by hand (sminos wake, or board-answer.sh with the answer) or re-cut to its ready-for-* lane for a fresh dispatch"
+    note="auto-recovery exhausted: bound worker $uuid $why $RECOVERY_CAP times; nudge it by hand (sminos send, or board-answer.sh with the answer) or re-cut to its ready-for-* lane for a fresh dispatch"
     prompt="SWEEP RECOVERY: your previous turn on ticket #$tk ended abnormally ($why). Re-read the ticket and the board state, restate your gate verdict against them in one paragraph (PLAN-EXECUTION, which ran no gate, restates plan-execution status instead), then continue your protocol from where the work actually stands. If the scope has shifted, park honestly instead."
   fi
   if [ "$recov" -ge "$RECOVERY_CAP" ]; then
@@ -360,10 +360,10 @@ _recover() {
   _meta_put "$uuid" "$key" "$((recov + 1))" \
     || { log "[sweep] RECOVER: #$tk meta update failed — skipping the nudge"; return; }
   log "[sweep] RECOVER: #$tk $role $uuid $why — $verb attempt $((recov + 1))/$RECOVERY_CAP"
-  # A wake is signed: without --from, a sender with no session id reads as
+  # A send is signed: without --from, a sender with no session id reads as
   # `human` to the worker.
-  if [ "$verb" = wake ]; then
-    nohup "$SMINOS_CLI" wake --wait "$uuid" "$prompt" --from sweep >>"$SWEEP_LOG" 2>&1 &
+  if [ "$verb" = send ]; then
+    nohup "$SMINOS_CLI" send --wait "$uuid" "$prompt" --from sweep >>"$SWEEP_LOG" 2>&1 &
   else
     nohup "$SMINOS_CLI" resume --wait "$uuid" "$prompt" >>"$SWEEP_LOG" 2>&1 &
   fi
@@ -401,7 +401,7 @@ pass_recover() {
         case "$fin" in
           absent) _recover "$tk" "$uuid" "$recov" "died mid-turn (session gone)" build resume; acted=$((acted+1)) ;;
           error)  _recover "$tk" "$uuid" "$recov" "turn errored" build resume; acted=$((acted+1)) ;;
-          idle)   _recover "$tk" "$uuid" "$recov" "finished without a board transition" build wake; acted=$((acted+1)) ;;
+          idle)   _recover "$tk" "$uuid" "$recov" "finished without a board transition" build send; acted=$((acted+1)) ;;
           live)
             # Silence measured across the whole transcript tree: an Architect
             # past the build edge has ended its turn and is silent in its own
@@ -479,7 +479,7 @@ pass_recover() {
         case "$fin" in
           absent) _recover "$tk" "$uuid" "$rrecov" "the session is gone" review resume; acted=$((acted+1)) ;;
           error)  _recover "$tk" "$uuid" "$rrecov" "the turn errored" review resume; acted=$((acted+1)) ;;
-          idle)   _recover "$tk" "$uuid" "$rrecov" "its turn ended with nothing running under it" review wake; acted=$((acted+1)) ;;
+          idle)   _recover "$tk" "$uuid" "$rrecov" "its turn ended with nothing running under it" review send; acted=$((acted+1)) ;;
           live)
             # Same tree-wide silence signal as the in-flight arm: the QA agent
             # writes under the seat's session directory, so a review in

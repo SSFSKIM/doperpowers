@@ -30,8 +30,8 @@
 # → comment the answers, then `board-transition.sh <n> ready-for-implementer
 # (or ready-for-architect per the park discriminant)`.
 #
-# NEVER RUN IN THE FOREGROUND — the wake blocks for the worker's whole turn
-# (same rule as `sminos wake --wait`): Monitor or background shell.
+# NEVER RUN IN THE FOREGROUND — the send blocks for the worker's whole turn
+# (same rule as `sminos send --wait`): Monitor or background shell.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
@@ -322,9 +322,9 @@ answer that changed the work's shape.
 ---- answers (verbatim from the ticket) ----
 $block"
 
-# WAKE, not resume: a parked owner ended its turn and is waiting — a live,
+# SEND, not resume: a parked owner ended its turn and is waiting — a live,
 # idle seat. `sminos resume` stops a live turn and restarts the process; on an
 # idle seat there is no turn to stop, the harness starts a copy, and nothing is
-# delivered. `wake` reaches a live seat over its inbox socket and resumes a
+# delivered. `send` reaches a live seat over its inbox socket and resumes a
 # dead one itself.
-exec "$SMINOS_CLI" wake --wait "$uuid" "$relay"
+exec "$SMINOS_CLI" send --wait "$uuid" "$relay"

@@ -141,7 +141,7 @@ case "\$verb" in
 migrate) exit 0 ;;
 sync)    echo noop ;;
 meta)    exit 0 ;;
-resume|wake)
+resume|send)
   w=""; if [ "\${1:-}" = "--wait" ]; then w=" --wait"; shift; fi
   printf '%s%s\n' "\$verb" "\$w" >> "$TDIR/relay-verbs"
   printf '%s\n' "\$2" >> "$TX"   # delivery IS the transcript write
@@ -206,7 +206,7 @@ t  "one walk suffices when it serves the park" "qreads=[1]" qreads
 # The relay ran INLINE — the worker is awake before this command returned.
 # A parked owner is a LIVE, IDLE seat: a resume on it has no turn to stop and
 # the harness starts a copy that delivers nothing, so the relay wakes it.
-t  "the parked owner is woken, and waited on" "wake --wait"         cat "$TDIR/relay-verbs"
+t  "the parked owner is sent the answer, and waited on" "send --wait"         cat "$TDIR/relay-verbs"
 nt "never resumed"                        "resume"                   cat "$TDIR/relay-verbs"
 t "the sentinel reached the bound worker" "[board-relay answer:118]" cat "$TX"
 t "with the answer verbatim"              "ship it"                  cat "$TX"
@@ -411,7 +411,7 @@ case "\$verb" in
 migrate) exit 0 ;;
 sync)    echo noop ;;
 meta)    exit 0 ;;
-resume|wake)
+resume|send)
   if [ "\${1:-}" = "--wait" ]; then shift; fi
   python3 -c "import json;print('phase=[%s]' % (json.load(open('$DH3/u-21.json')).get('phase') or '<absent>'))" \
     > "$TDIR/phase-at-delivery"
