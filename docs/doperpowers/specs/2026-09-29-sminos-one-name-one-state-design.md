@@ -490,6 +490,15 @@ In `skills/sminos/scripts/sminos.py`:
         for `current`, else stopped when the session's transcript is on
         this machine (transcript_path), else gone. Replaces live_state."""
 
+    def needs_probe(seat) -> bool:
+        """False for a retired or vacant seat — its word needs no peer."""
+
+    def seat_state(seat, peer) -> str:
+        """The word from ONE already-made probe (`peer` is the live peer
+        record or None). state() is needs_probe + one peer_for_session +
+        seat_state; send and push_member route on the same probe they
+        classify with."""
+
 The frame header, everywhere a message is delivered:
 
     [sminos message from <sender> id=<8 hex>]
@@ -509,8 +518,17 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   `org_peer` helpers in `tests/sminos/run-sminos-tests.sh` are the shape
   M2 and M3 tests use for a `busy` or `idle` seat.
 - (M1) `harness_row` keeps callers after M1 — `attach`, the TUI's
-  `attach_short`, the chart's hide rule, `resume_session`, `sync`;
-  `harness_ok` is used only by `sync` and the hide rule.
+  `attach_short`, `resume_session`, `sync` (after the predicate revision
+  the hide rule reads the word only); `harness_ok` is used only by `sync`.
+- (M3 fix wave) `transcript_path` globbed `projects/**/<sid>.jsonl`
+  recursively: 0.61 s per call on the real machine, 4.61 s for the 22
+  peerless seats a `list` classifies. It now globs one level,
+  `projects/*/<sid>.jsonl` (0.004 s per call; the same 3 transcripts
+  found), and returns the newest copy when a session's transcript sits
+  under two project dirs (3b8a42d7 does, under Developer/ and Documents/).
+  The one-level glob also no longer matches subagent-depth files. `sminos
+  list` on the real registry: 0.65/0.35/0.35 s before, 0.48/0.40/0.41 s
+  after.
 - (M1) Between M1 and M3 the TUI's `s` on a stopped seat opens the send
   line and the send is refused (`not live — use sminos wake`); M3's fold
   closes it.
@@ -691,6 +709,19 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   tagged-member warning names the transcript, not the harness.
   Date/Author: 2026-09-29, the owning session's harness evidence;
   written in by the controller.
+- Decision (2026-09-30, M3 fix wave): a send classifies and routes on one
+  peer probe. The M3 task review found `send_to_seat` routing on its own
+  probe but classifying through `state()`'s second one, so a failed-first,
+  live-second probe resumed a live seat (a stop and relaunch of its turn)
+  instead of writing to its socket. `needs_probe(seat)` and
+  `seat_state(seat, peer)` (Interfaces) carry the single probe; `state()`
+  is built on them, and `push_member` passes its earlier no-peer result.
+  Pinned: `live-first:1:socket dead-first:1:resume`. The spawn and fill
+  "previous occupant still answers" hints read `use sminos resume, or stop
+  it first` (`send` refuses a retired seat). No per-invocation transcript
+  cache: the one-level glob is cheap enough. The family fixtures keep
+  their harness rows, which the resume path and `pending_short` read.
+  Date/Author: 2026-09-30, M3 task-executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
