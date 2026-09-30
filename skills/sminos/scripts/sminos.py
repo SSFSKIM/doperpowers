@@ -579,11 +579,11 @@ def push_member(member, text, tagged):
             return "sent?" if e.phase == "after" else "failed:%s" % e
     if not tagged:
         return "recorded"
-    st = state(fresh)
+    st = seat_state(fresh, None)  # the probe above found no live peer
     if st == "gone":
-        # A resume of a session the harness no longer lists cannot work: say
-        # so, as for a retired member, rather than attempt it.
-        warn("%s is gone from the harness; fill it to reach it" % fresh["alias"])
+        # A resume of a session with no transcript here cannot work: say so,
+        # as for a retired member, rather than attempt it.
+        warn("%s is gone — no transcript for its session on this machine; fill it to reach it" % fresh["alias"])
         return "recorded"
     if st != "stopped":
         return "recorded"
@@ -1103,25 +1103,34 @@ def peer_state(rec):
     return st if st in ("idle", "waiting") else "busy"
 
 
-def state(seat):
-    """A seat's one state word, one of STATES, read in this order: retired
-    (the recorded status), vacant (no `current`), then the live peer for
-    `current` — the session record the harness's own ListAgents reads.
-    Only a seat with no live peer asks the harness listing (cached, one
-    `claude agents` per invocation): stopped when it lists the session or
-    cannot be read — `send` may try a resume — else gone, a session id no
-    resume can reach."""
+def needs_probe(seat):
+    """Whether a seat's word depends on a liveness probe of its session: a
+    retired or vacant seat's word is settled by its record alone."""
+    return bool(seat.get("current")) and seat.get("status") != "retired"
+
+
+def seat_state(seat, peer):
+    """A seat's one state word, one of STATES, given the result of ONE
+    liveness probe of its `current` session (`peer_for_session`, or None when
+    it found no live peer or `needs_probe` said not to probe). Read in this
+    order: retired (the recorded status), vacant (no `current`), then the
+    live peer — the session record the harness's own ListAgents reads —
+    then stopped when the session's transcript is on this machine (what a
+    `claude --bg --resume` needs), else gone. The harness listing is never
+    asked. A caller that probes once and routes on the same probe passes it
+    here, so the word and the route cannot disagree."""
     if seat.get("status") == "retired":
         return "retired"
-    cur = seat.get("current") or ""
-    if not cur:
+    if not seat.get("current"):
         return "vacant"
-    peer = peer_for_session(cur)
     if peer:
         return peer_state(peer)
-    if harness_ok() and harness_row(seat) is None:
-        return "gone"
-    return "stopped"
+    return "stopped" if transcript_path(seat["current"]) else "gone"
+
+
+def state(seat):
+    """A seat's one state word — seat_state after one probe of its session."""
+    return seat_state(seat, peer_for_session(seat["current"]) if needs_probe(seat) else None)
 
 
 def host_name():
@@ -1308,12 +1317,17 @@ def status_for_state(state):
 
 def transcript_path(session_id):
     """Munging-agnostic: the harness mangles the cwd into the project-dir name,
-    so glob for the transcript by its unique session id instead."""
+    so glob for the transcript by its unique session id instead. A session's
+    transcript sits directly in its project dir (projects/<dir>/<id>.jsonl;
+    only subagent files nest deeper), so one level is searched — a recursive
+    glob walks every subagent file on the machine, ~0.6 s a call on a busy
+    one, and state() asks this for every seat without a live peer. A session
+    found under two project dirs (a repository that moved) answers with the
+    one written last."""
     if not session_id:
         return ""
-    hits = glob.glob(os.path.join(home_dir(), ".claude", "projects", "**", session_id + ".jsonl"),
-                     recursive=True)
-    return hits[0] if hits else ""
+    hits = glob.glob(os.path.join(home_dir(), ".claude", "projects", "*", session_id + ".jsonl"))
+    return max(hits, key=_mtime) if hits else ""
 
 
 def transcript_rows(session_id):
@@ -2007,7 +2021,7 @@ def cmd_spawn(a):
         if live in FILLED:
             die("seat %s/%s is filled (%s) — message it with sminos send" % (group, alias, live), EXIT_UNKNOWN)
         if peer_for_session(existing["current"]):  # a retired seat whose session still runs
-            die("seat %s/%s: the previous occupant (session %s) still answers — use sminos send/resume, or "
+            die("seat %s/%s: the previous occupant (session %s) still answers — use sminos resume, or "
                 "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
         if existing["engine"] == "codex" and existing["status"] in ("working", "blocked"):
             die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
@@ -2120,7 +2134,7 @@ def cmd_fill(a):
     if live in FILLED:
         die("seat %s/%s is filled (%s) — use sminos send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
     if peer_for_session(s["current"]):  # a retired seat whose session still runs
-        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos send/resume, or stop it "
+        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos resume, or stop it "
             "first" % (s["group"], s["alias"], s["current"][:8]), EXIT_UNKNOWN)
     if a.resume:
         if not s["current"]:
@@ -2368,14 +2382,15 @@ def send_to_seat(s0, text, msg_id, wait):
         die("seat %s/%s vanished before the send could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
     refuse_codex(s)
     ref = "%s/%s" % (s["group"], s["alias"])
-    # One liveness probe (pid alive AND socket answers) serves both the state
-    # word and the delivery; a seat with no live peer takes state()'s word.
-    peer = peer_for_session(s["current"]) if s["current"] and s["status"] != "retired" else None
-    st = peer_state(peer) if peer else state(s)
+    # ONE liveness probe (pid alive AND socket answers) decides both the word
+    # and the route: a second probe could see a session come up and send a
+    # live seat to a resume, which stops and relaunches its turn.
+    peer = peer_for_session(s["current"]) if needs_probe(s) else None
+    st = seat_state(s, peer)
     if st in ("vacant", "retired"):
         die('seat %s is %s — fill it with: sminos fill %s "<task>"' % (ref, st, ref), EXIT_UNKNOWN)
     if st == "gone":
-        die('seat %s is gone from the harness — no resume reaches its session; sminos fill %s "<task>" '
+        die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
             "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
     if not peer:
         resume_session(s, text, wait, locks, verb="sent to")

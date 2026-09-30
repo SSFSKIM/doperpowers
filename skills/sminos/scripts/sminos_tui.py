@@ -293,7 +293,7 @@ def handle_key(state, key, actions):
             flash(state, "move to a seat to send it a message")
         elif node["state"] == "gone":
             ref = "%s/%s" % (node["seat"]["group"], node["seat"]["alias"])
-            flash(state, "%s is gone from the harness — no resume reaches it; sminos fill %s \"<task>\" or "
+            flash(state, "%s is gone — no transcript for its session on this machine; sminos fill %s \"<task>\" or "
                   "sminos retire %s" % (node["label"], ref, ref))
         elif node["state"] in ("vacant", "retired"):
             flash(state, "%s is %s — nothing to send to; sminos fill %s/%s \"<task>\" fills it" % (

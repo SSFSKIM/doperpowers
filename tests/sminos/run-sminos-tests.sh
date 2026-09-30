@@ -903,7 +903,7 @@ assert_contains "$OUT" "idle" "and the seat still reads idle rather than stopped
 peer_with_procstart "Mon Jan  1 00:00:00 2001"
 run "$SMINOS" send orchestrator "procstart bogus"
 assert_rc 4 "$RC" "an unrelated procStart reads as a recycled pid and send refuses"
-assert_contains "$OUT" "is gone from the harness" "a seat with no live peer and no harness row is refused as gone"
+assert_contains "$OUT" "is gone — no transcript for its session on this machine" "a seat with no live peer and no transcript is refused as gone"
 assert_contains "$OUT" 'sminos fill grp/orchestrator "<task>"' "the gone refusal points at a fresh fill"
 assert_contains "$OUT" "sminos retire grp/orchestrator" "and at retire"
 assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "the gone refusal is one line"
@@ -1150,12 +1150,12 @@ FAIL_UUID="bbbb2222-abab-4000-8000-0000000b2222"
 "$SMINOS" seat add grp flaky --session "$FAIL_UUID" >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"flaky","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
   "$$" "$FAIL_UUID" "$SOCK" > "$HOME/.claude/sessions/flaky.json"
-{ echo "short=f1a00001"; echo "uuid=$FAIL_UUID"; echo "name=flaky"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/f1a00001"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$FAIL_UUID.jsonl"   # resumable: its transcript is here
 kill "$SOCK_PID" 2>/dev/null || true; wait "$SOCK_PID" 2>/dev/null || true; rm -f "$SOCK"   # socket_ok now fails
 run "$SMINOS" send grp/flaky "PLEASE"
 assert_rc 0 "$RC" "send whose live socket vanished still exits 0 via the resume fallback"
 assert_contains "$OUT" "via --bg --resume" "the vanished-socket send fell through to resume"
-rm -f "$HOME/.claude/sessions/flaky.json" "$STUB_STATE/agents/f1a00001"; "$SMINOS" remove grp/flaky >/dev/null
+rm -f "$HOME/.claude/sessions/flaky.json"; "$SMINOS" remove grp/flaky >/dev/null
 # restart the socket server for any later use / clean teardown
 python3 "$TEST_ROOT/sockserver.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
@@ -1303,6 +1303,56 @@ rm -f "$STUB_STATE/agents/sa000001"
 assert_equals "$(field "$SA_UUID" short)" "" "seat add --session clears a short the harness no longer shows"
 "$SMINOS" remove grp/sadd >/dev/null
 
+# One liveness probe both classifies a send and routes it. A second probe could
+# disagree with the first (the session came up, or went away, in between) and
+# route a live seat to a resume, which stops and relaunches its turn.
+PROBE_UUID="0f0f1212-abab-4000-8000-0000000f1212"
+"$SMINOS" seat add grp probed --session "$PROBE_UUID" >/dev/null
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$PROBE_UUID.jsonl"
+PROBE_OUT="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$PROBE_UUID" "$SOCK" <<'PY'
+import contextlib, io, sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+sid, sock = sys.argv[2], sys.argv[3]
+live = {"pid": 1, "sessionId": sid, "status": "idle", "messagingSocketPath": sock}
+out = []
+for first_live in (True, False):
+    probes, actions = [], []
+    def probe(cur, first_live=first_live):
+        probes.append(cur)
+        return live if (len(probes) == 1) == first_live else None
+    sminos.peer_for_session = probe
+    sminos.send_frame = lambda path, text: actions.append("socket")
+    sminos.resume_session = lambda *a, **k: actions.append("resume")
+    sminos.harness_row = lambda s: None
+    with contextlib.redirect_stdout(io.StringIO()):
+        sminos.send_to_seat(sminos.resolve_seat("grp/probed"), "frame", "abcd1234", False)
+    out.append("%s:%d:%s" % ("live-first" if first_live else "dead-first", len(probes), ",".join(actions)))
+print(" ".join(out))
+PY
+)"
+assert_equals "$PROBE_OUT" "live-first:1:socket dead-first:1:resume" "a send probes its seat once and routes on that probe"
+rm -f "$HOME/.claude/projects/fake-proj/$PROBE_UUID.jsonl"; "$SMINOS" remove grp/probed >/dev/null
+
+# A session's transcript sits directly in a project dir; the newest copy wins
+# when a moved repository left one under two dirs, and a file nested deeper
+# (where subagent transcripts live) is not a session transcript.
+TP_UUID="0f0f3434-abab-4000-8000-0000000f3434"
+mkdir -p "$HOME/.claude/projects/old-dir" "$HOME/.claude/projects/new-dir" "$HOME/.claude/projects/deep/x/subagents"
+: > "$HOME/.claude/projects/old-dir/$TP_UUID.jsonl"; : > "$HOME/.claude/projects/new-dir/$TP_UUID.jsonl"
+python3 -c 'import os, sys, time; t = time.time(); os.utime(sys.argv[1], (t - 60, t - 60))' "$HOME/.claude/projects/old-dir/$TP_UUID.jsonl"
+: > "$HOME/.claude/projects/deep/x/subagents/0f0f5656-abab-4000-8000-0000000f5656.jsonl"
+TP_OUT="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$TP_UUID" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+print(os.path.basename(os.path.dirname(sminos.transcript_path(sys.argv[2]))),
+      repr(sminos.transcript_path("0f0f5656-abab-4000-8000-0000000f5656")))
+PY
+)"
+assert_equals "$TP_OUT" "new-dir ''" "transcript_path finds the newest one-level copy and nothing nested"
+rm -rf "$HOME/.claude/projects/old-dir" "$HOME/.claude/projects/new-dir" "$HOME/.claude/projects/deep"
+
 # Socket delivery that fails BEFORE the frame is written falls through to a
 # resume; a failure AFTER the frame is written is 'uncertain' and never resumes.
 cat > "$TEST_ROOT/oneshot.py" <<'PY'
@@ -1393,8 +1443,12 @@ printf '{"pid":%s,"sessionId":"%s","name":"prevocc","kind":"bg","status":"idle",
 run "$SMINOS" spawn prevocc "again" --group grp
 assert_rc 4 "$RC" "re-spawn is refused while the previous occupant still answers"
 assert_contains "$OUT" "previous occupant" "the live previous occupant is named"
+assert_contains "$OUT" "use sminos resume, or stop it first" "the hint names resume"
+assert_not_contains "$OUT" "sminos send" "and not send, which refuses a retired seat"
 run "$SMINOS" fill grp/prevocc "again"
 assert_rc 4 "$RC" "fresh fill is refused while the previous occupant still answers"
+assert_contains "$OUT" "use sminos resume, or stop it" "fill's hint names resume"
+assert_not_contains "$OUT" "sminos send" "and not send"
 rm -f "$HOME/.claude/sessions/prevocc.json"; "$SMINOS" remove grp/prevocc >/dev/null
 
 # Repointing a seat whose occupant is STILL LIVE would leave that process
@@ -1565,9 +1619,12 @@ st_peer "$ST_LONG" lone-seat-with-a-long-name-past-24 ',"status":"busy"'
 "$SMINOS" seat add st s-idle --role scout --session "$ST_IDLE" >/dev/null
 "$SMINOS" seat add st s-wait --session "$ST_WAIT" >/dev/null
 "$SMINOS" seat add st s-stop --session "$ST_STOP" >/dev/null
-# s-stop's session is still listed by the harness; s-gone's (no peer record
-# either) is not.
-{ echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
+# s-stop's transcript is on this machine and the harness does not list it;
+# s-gone's session is listed by the harness but has no transcript here. The
+# transcript decides: it is what a `claude --bg --resume` needs.
+mkdir -p "$HOME/.claude/projects/fake-proj"
+printf '{"type":"user","message":{"role":"user","content":"start"}}\n' > "$HOME/.claude/projects/fake-proj/$ST_STOP.jsonl"
+{ echo "short=5a5a000a"; echo "uuid=$ST_GONE"; echo "name=s-gone"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a000a"
 "$SMINOS" seat add st s-gone --session "$ST_GONE" >/dev/null
 "$SMINOS" seat add st s-ret --session "$ST_RET" >/dev/null
 "$SMINOS" meta set st/s-ret status retired >/dev/null
@@ -1584,9 +1641,9 @@ assert_equals "$(st_state s-shell)" "busy" "a live peer whose status is shell re
 assert_equals "$(st_state s-bare)" "busy" "a live peer with no status reads busy"
 assert_equals "$(st_state s-idle)" "idle" "a live peer whose status is idle reads idle (the recorded working says nothing)"
 assert_equals "$(st_state s-wait)" "waiting" "a live peer whose status is waiting reads waiting"
-assert_equals "$(st_state s-stop)" "stopped" "a dead pid with a socket file, its session listed by the harness, reads stopped"
-assert_equals "$(st_state s-gone)" "gone" "a session id with no live peer and no harness row reads gone"
-assert_equals "$(STUB_AGENTS_FAIL=1 st_state s-gone)" "stopped" "the same seat reads stopped when the harness cannot be asked"
+assert_equals "$(st_state s-stop)" "stopped" "a dead pid with a socket file, its transcript here and no harness row, reads stopped"
+assert_equals "$(st_state s-gone)" "gone" "a session id with no live peer and no transcript here reads gone, though the harness lists it"
+assert_equals "$(STUB_AGENTS_FAIL=1 st_state s-gone)" "gone" "the harness is not asked: a failing listing changes no word"
 assert_equals "$(st_state s-ret)" "retired" "a retired record reads retired even while its session answers"
 assert_equals "$(st_state s-vac)" "vacant" "a seat with no current session reads vacant"
 run "$SMINOS" list st --json
@@ -1645,18 +1702,16 @@ run "$SMINOS" list st --status retired
 assert_rc 2 "$RC" "--status is gone, not aliased"
 run "$SMINOS" list nosuchgroup
 assert_equals "$OUT" "(no seats)" "list of an empty selection says so"
-# The harness listing is read at most once per invocation, and only when some
-# seat has no live peer: live, vacant, and retired seats never ask it.
+# The word never asks the harness listing: list runs no `claude agents`, even
+# for a group whose seats have no live peer.
 : > "$STUB_STATE/log/calls.log"
 "$SMINOS" list st --json >/dev/null
-assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "1" "list asks claude agents once for a group with seats that have no live peer"
-: > "$STUB_STATE/log/calls.log"
-"$SMINOS" list st2 >/dev/null
-assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list never asks claude agents when every seat is live or vacant"
+"$SMINOS" list st >/dev/null
+assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list runs no claude agents, even for seats with no live peer"
 STUB_AGENTS_FAIL=1 run "$SMINOS" list st
 assert_rc 0 "$RC" "list is unaffected by a failing harness"
 assert_contains "$OUT" "s-idle    idle" "and still reads the live word"
-assert_contains "$OUT" "s-gone    stopped" "and reads a seat it cannot place as stopped"
+assert_contains "$OUT" "s-gone    gone" "and a gone seat stays gone"
 # The chart's hide rule is the word: retired or gone.
 run "$SMINOS" chart st --width 200
 assert_contains "$OUT" "■ stopped" "a stopped seat is charted with its glyph"
@@ -1665,7 +1720,7 @@ assert_not_contains "$OUT" "s-ret" "a retired seat is hidden by default"
 assert_not_contains "$OUT" "s-gone" "a gone seat is hidden by default"
 assert_contains "$OUT" "9 seats · 5 live · 2 hidden" "live counts busy, idle and waiting; hidden counts retired and gone"
 STUB_AGENTS_FAIL=1 run "$SMINOS" chart st --width 200
-assert_contains "$OUT" "s-gone" "a seat the harness cannot place reads stopped and stays on the chart"
+assert_not_contains "$OUT" "s-gone" "a failing harness listing does not bring a gone seat back onto the chart"
 run "$SMINOS" chart st --all --width 200
 assert_contains "$OUT" "⊘ retired" "--all shows the retired seat with its glyph"
 assert_contains "$OUT" "✕ gone" "--all shows the gone seat with its glyph"
@@ -1679,7 +1734,7 @@ run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop
 assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
 run "$SMINOS" send st/s-gone "hi"
 assert_rc 4 "$RC" "send to a gone seat is refused (exit 4)"
-assert_equals "$OUT" 'sminos: seat st/s-gone is gone from the harness — no resume reaches its session; sminos fill st/s-gone "<task>" or sminos retire st/s-gone' "the gone refusal is one line pointing at fill and retire"
+assert_equals "$OUT" 'sminos: seat st/s-gone is gone — no transcript for its session on this machine; sminos fill st/s-gone "<task>" or sminos retire st/s-gone' "the gone refusal is one line pointing at fill and retire"
 run "$SMINOS" send st/s-ret "hi"
 assert_rc 4 "$RC" "send to a retired seat is refused even while its session answers"
 assert_contains "$OUT" "sminos fill st/s-ret" "pointing at fill"
@@ -1693,11 +1748,11 @@ assert_not_contains "$OUT" "send → st/s-ret" "s on a retired seat opens no sen
 assert_contains "$OUT" "s-ret is retired" "and says why"
 run "$SMINOS" tui st --headless --all --width 140 --height 40 --keys "!focus:st/s-gone,s"
 assert_not_contains "$OUT" "send → st/s-gone" "s on a gone seat opens no send line"
-assert_contains "$OUT" "s-gone is gone from the harness" "and says why"
+assert_contains "$OUT" "s-gone is gone — no transcript for its session on this machine" "and says why"
 assert_contains "$OUT" "sminos fill st/s-gone" "pointing at fill"
 run "$SMINOS" reply st/s-idle
 assert_contains "$OUT" "st/s-idle  [$ST_IDLE]  state=idle  turns=" "reply's summary line carries the state word, not the recorded status"
-rm -f "$STUB_STATE/agents/5a5a0006" "$HOME/.claude/sessions/"st-*.json
+rm -f "$STUB_STATE/agents/5a5a000a" "$HOME/.claude/sessions/"st-*.json
 for a in s-busy s-shell s-bare s-idle s-wait s-stop s-gone s-ret s-vac; do "$SMINOS" remove "st/$a" >/dev/null; done
 "$SMINOS" remove st2/lone-seat-with-a-long-name-past-24 >/dev/null
 "$SMINOS" remove st2/z >/dev/null
@@ -1986,6 +2041,7 @@ assert_contains "$OUT" 'chat hexa (other)' "the full seat id resolves"
 "$SMINOS" remove other/hexa >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"lead","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$LEAD" "$SOCK" > "$HOME/.claude/sessions/lead.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$B.jsonl"   # stopped, not gone: its transcript is here
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say 'schema done'
 assert_rc 0 "$RC" "untagged family report records"
@@ -2176,6 +2232,7 @@ assert_equals "$(printf '%s\n' "$OUT" | sed -n 's/^retired cyc\/\([^ ]*\).*/\1/p
 for cyc in loop p1 p2; do "$SMINOS" remove "cyc/$cyc" >/dev/null; done
 rm -f "$HOME/.claude/sessions/b.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$B.jsonl"   # stopped, not gone: its transcript is here
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" spawn b 'steal sibling'
 assert_rc 4 "$RC" "family seat cannot refill its stopped sibling"
@@ -2231,6 +2288,8 @@ run "$SMINOS" seat add fam d2 --parent duo --session 88888888-aaaa-4000-8000-000
 D2=88888888-aaaa-4000-8000-000000000008
 printf 'short=dddd0001\nuuid=%s\nname=d1\nstate=stopped\n' "$D1" > "$STUB_STATE/agents/dddd0001"
 printf 'short=dddd0002\nuuid=%s\nname=d2\nstate=stopped\n' "$D2" > "$STUB_STATE/agents/dddd0002"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D1.jsonl"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D2.jsonl"
 python3 - "$SMINOS_HOME/$D1.json" "$SMINOS_HOME/$D2.json" "$WORK" <<'PY_FIX_CWD'
 import json, sys
 for path, cwd in ((sys.argv[1], '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3])):
@@ -2257,7 +2316,7 @@ assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"
 assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
 assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d2": "woken"' "fan-out retains successful outcome"
 unset CLAUDE_CODE_SESSION_ID
-# A tagged member the harness no longer lists (no row, no process) is gone: a
+# A tagged member with no transcript on this machine (and no process) is gone: a
 # resume cannot work, so none is attempted — the message is recorded, the
 # sender is told to fill it, and the live member still gets the message.
 D4=4d4d4d4d-aaaa-4000-8000-0000000000d4
@@ -2269,7 +2328,7 @@ printf '{"pid":%s,"sessionId":"%s","name":"d2","kind":"background","status":"idl
 CLAUDE_CODE_SESSION_ID="$DUO" run "$SMINOS" say '@d4 @d2 anyone there'
 assert_rc 0 "$RC" "a tagged gone member does not abort the chat"
 assert_contains "$OUT" 'd4: recorded' "a tagged gone member's message is recorded"
-assert_contains "$OUT" 'd4 is gone from the harness; fill it to reach it' "and the sender is told to fill it"
+assert_contains "$OUT" 'd4 is gone — no transcript for its session on this machine; fill it to reach it' "and the sender is told to fill it"
 assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $D4" "no resume of a gone member is attempted"
 assert_contains "$OUT" 'd2: sent' "and the fan-out still reaches the live member"
 rm -f "$HOME/.claude/sessions/fam-d2.json"
@@ -2278,6 +2337,7 @@ run "$SMINOS" seat add fam d3 --parent duo --session 99999999-aaaa-4000-8000-000
 export CLAUDE_CODE_SESSION_ID="$D1"
 D3=99999999-aaaa-4000-8000-000000000009
 printf 'short=dddd0003\nuuid=%s\nname=d3\nstate=stopped\n' "$D3" > "$STUB_STATE/agents/dddd0003"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D3.jsonl"
 python3 - "$SMINOS_HOME/$D3.json" "$WORK" <<'PY_FIX_CWD2'
 import json, sys
 p=sys.argv[1]; d=json.load(open(p)); d['cwd']=sys.argv[2]
