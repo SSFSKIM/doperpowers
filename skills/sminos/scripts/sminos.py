@@ -37,9 +37,11 @@ family seat's family for that seat.
     sminos migrate  [--quiet]                             # (also runs implicitly)
     sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
 
-A seat's one name is its alias, which is also the harness name its session
-runs under. Aliases are unique within a group, not across groups: a seat is
-addressed by `group/alias`, or by a bare alias when exactly one seat has it.
+A seat's one name is its alias. A seat sminos spawns runs under it as its
+harness name; a session joined with `seat add --session` keeps the harness
+name it already had, which sminos never delivers by. Aliases are unique
+within a group, not across groups: a seat is addressed by `group/alias`, or
+by a bare alias when exactly one seat has it.
 Scripts may also pass a full seat id or a full session id.
 
 Messaging is one verb, `send`: to a live seat it writes a frame to the
@@ -56,8 +58,9 @@ root — seat id = the first session's uuid — and the board pipeline reads and
 writes them directly under the shared flock file .metalock. Family chats live
 at chats/<host-seat-id>.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the reserved operator identity.
 
-Exit codes: 0 ok, 1 harness failure, 2 usage, 4 unknown seat/group, target not
-live, or a seat that is already filled.
+Exit codes: 0 ok, 1 harness failure, 2 usage (including `wake`, folded into
+`send`), 4 unknown seat/group, a target `send` cannot reach (not live, or a
+vacant, retired, or gone seat), or a seat that is already filled.
 """
 
 import argparse
