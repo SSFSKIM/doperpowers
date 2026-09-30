@@ -334,7 +334,10 @@ per invocation at most, and only when some seat has no live peer);
 "cannot be read" is `harness_ok()` false. A `retired`, `vacant`, or live
 seat never consults it. `push_member`'s tagged resume skips a `gone`
 member as `recorded`, not `failed:` — a resume that cannot work is not
-attempted (this replaces M1's forgotten-member-resume test).
+attempted, which is also what the pre-branch code did — and, when the
+member was tagged, warns as a retired one is warned: `<alias> is gone
+from the harness; fill it to reach it` (this replaces M1's
+forgotten-member-resume test).
 
 **Proves.** Acceptance 11's `list` and `chart` halves. Tests pin: `gone`
 from a record with a session id, no peer, and no harness row; `stopped`
