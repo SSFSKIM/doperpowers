@@ -14,14 +14,15 @@ family seat's family for that seat.
                    [--wait]
     sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--session S]
     sminos fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
-    sminos wake     <seat> <msg> [--wait] [--from F]     # live: inbox socket; stopped: resume
     sminos resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
                    A resumed background session keeps its SAVED options (name, permission
                    mode, model, settings, effort): --model/--settings/--effort are accepted
                    on resume for argv compatibility but ignored — use fill without --resume
                    to change them.
-    sminos send     <seat|session name|codex thread> <msg> [--from F]  # live sessions; a codex thread (its id, or
-                                                          # codex:<id|exact name>) goes through codex's queue
+    sminos send     <seat|session name|codex thread> <msg> [--wait] [--from F]
+                   # a live seat: inbox socket; a stopped one: resumed. A live session by
+                   # name, or a codex thread (its id, or codex:<id|exact name>, through
+                   # codex's queue); --wait needs a seat.
     sminos say      [--in <host>] [--team] <text>
     sminos chat     [<host>] [-n N] [--since ID] [--team] [--json]
     sminos reply    <seat>                                # latest reply text
@@ -41,13 +42,13 @@ runs under. Aliases are unique within a group, not across groups: a seat is
 addressed by `group/alias`, or by a bare alias when exactly one seat has it.
 Scripts may also pass a full seat id or a full session id.
 
-Messaging between seats is `send` (live targets) and `wake` (stopped ones
-too): both write a frame to the target session's inbox socket — the socket
-the harness's native cross-session SendMessage tool also rides — which the
-harness delivers as a peer message (an idle session starts a new turn, a busy
-one reads it at its next tool round). `resume` is the process-level
-continuation the board pipeline relays through: a fresh `claude --bg
---resume` carrying the invoking environment.
+Messaging is one verb, `send`: to a live seat it writes a frame to the
+session's inbox socket — the socket the harness's native cross-session
+SendMessage tool also rides — which the harness delivers as a peer message
+(an idle session starts a new turn, a busy one reads it at its next tool
+round); a stopped seat is resumed with the frame as its message. `resume` is
+the process-level continuation the board pipeline relays through: a fresh
+`claude --bg --resume` carrying the invoking environment.
 
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
@@ -196,7 +197,7 @@ def meta_set(seat_id, fields, remove=(), bump=True, create=True):
     lock, so concurrent stamps never clobber each other's fields.
 
     `gen` is the record's lifecycle generation: every lifecycle write (spawn,
-    fill, resume, wake, retire, seat add, sync's own finalize) bumps it,
+    fill, resume, send, retire, seat add, sync's own finalize) bumps it,
     so a finalizer or sync that took its snapshot before, say, a retire can see
     the record moved on and stand down. The agent's own `now` line and raw
     `meta set` are NOT lifecycle writes (bump=False): an agent updating its
@@ -783,7 +784,7 @@ def group_for_record(m):
 
 def lock_names(names, blocking=False, refusal=None):
     """One lifecycle change per SEAT at a time: spawn / fill / seat add /
-    resume / wake / retire / remove / sync hold these flocks from their
+    resume / send / retire / remove / sync hold these flocks from their
     availability check through the record commit (through process start, for
     resume). The name locked is the seat key `group/alias` (`seat_key`):
     aliases are unique per group, so a same-alias seat in another group is a
@@ -1376,7 +1377,7 @@ def transcript_reply(session_id, seat_ref="<seat>"):
     out = text
     if pending:
         out += ('\n[pending AskUserQuestion — the seat is blocked on it; answer with '
-                'sminos wake %s "<answer>"]\n' % seat_ref) + "\n".join(pending)
+                'sminos send %s "<answer>"]\n' % seat_ref) + "\n".join(pending)
     return out.strip()
 
 
@@ -1390,7 +1391,7 @@ def record_reply(turn_id, seat_id, state, seat_ref="<seat>"):
     if state in ("blocked", "done-blocked") and "[pending AskUserQuestion" not in out:
         out += ("\n[blocked on a harness prompt — no pending AskUserQuestion in the transcript, "
                 "most likely a permission prompt holding a tool call. Resume with an answer/"
-                "instruction via sminos wake (the pending call is interrupted), or 'claude attach' "
+                "instruction via sminos send (the pending call is interrupted), or 'claude attach' "
                 "the session to approve it interactively.]")
     os.makedirs(root(), exist_ok=True)
     with open(reply_path(seat_id), "w") as f:
@@ -2004,9 +2005,9 @@ def cmd_spawn(a):
                 group, alias), EXIT_UNKNOWN)
         live = state(existing)
         if live in FILLED:
-            die("seat %s/%s is filled (%s) — message it with sminos send/wake" % (group, alias, live), EXIT_UNKNOWN)
+            die("seat %s/%s is filled (%s) — message it with sminos send" % (group, alias, live), EXIT_UNKNOWN)
         if peer_for_session(existing["current"]):  # a retired seat whose session still runs
-            die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or "
+            die("seat %s/%s: the previous occupant (session %s) still answers — use sminos send/resume, or "
                 "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
         if existing["engine"] == "codex" and existing["status"] in ("working", "blocked"):
             die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
@@ -2117,9 +2118,9 @@ def cmd_fill(a):
     refuse_codex(s)
     live = state(s)
     if live in FILLED:
-        die("seat %s/%s is filled (%s) — use sminos wake or sminos send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
+        die("seat %s/%s is filled (%s) — use sminos send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
     if peer_for_session(s["current"]):  # a retired seat whose session still runs
-        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or stop it "
+        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos send/resume, or stop it "
             "first" % (s["group"], s["alias"], s["current"][:8]), EXIT_UNKNOWN)
     if a.resume:
         if not s["current"]:
@@ -2140,7 +2141,7 @@ def cmd_fill(a):
                 a.task, cwd, "", model, settings, effort, bool(s["preamble"]), a.wait, locks, "filled")
 
 
-# ------------------------------------------------------- resume / wake / send
+# ------------------------------------------------------------ resume / send
 
 
 def warn_resume_flags(a):
@@ -2195,7 +2196,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     except OSError:
         lf.seek(0)
         holder = lf.read().strip()
-        raise ResumeRefused("a wake/resume of %s/%s is already in flight%s — not starting a twin" % (
+        raise ResumeRefused("a send/resume of %s/%s is already in flight%s — not starting a twin" % (
             s["group"], s["alias"], (" (%s)" % holder) if holder else ""), 1)
     lf.seek(0)
     lf.truncate()
@@ -2230,7 +2231,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
         claude_stop(short)
         meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
         raise ResumeRefused("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
-            "to continue it; the copy was stopped and the record left untouched. Use sminos wake/send for a "
+            "to continue it; the copy was stopped and the record left untouched. Use sminos send for a "
             "live seat." % (s["group"], s["alias"], copy_id[:8], cur[:8]), 1)
 
     m = re.search(r"started a copy as ([0-9a-f]+)", banner)
@@ -2280,7 +2281,7 @@ def cmd_resume(a):
 
 
 def default_from(explicit):
-    """The sender identity for send/wake/post.
+    """The sender identity for send and say.
 
     The harness exports CLAUDE_CODE_SESSION_ID to Bash tools, so an AGENT is
     identified by it: the alias of the seat whose `current` is that session,
@@ -2339,67 +2340,75 @@ def wait_socket_turn(s, marker, was_idle, guard):
     return finish_turn(s["seat_id"], short, s["alias"], cur, guard)
 
 
-def cmd_wake(a):
-    try:
-        return _wake(a)
-    except ResumeRefused as e:
-        die(e.message, e.code)
+WAKE_POINTER = 'wake was folded into send — sminos send <seat> "<msg>" [--wait] [--from F]'
 
 
-def _wake(a):
-    s0 = resolve_seat(a.seat)
+def cmd_wake(_a):
+    die(WAKE_POINTER)
+
+
+def compose_frame(sender, msg_id, msg):
+    """Every delivery — socket, resume, codex queue — opens with this line; the
+    id is what `--wait` looks for in the target's transcript."""
+    return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
+
+
+def send_to_seat(s0, text, msg_id, wait):
+    """Deliver a frame to one seat under its lifecycle lock. The lock covers
+    target selection, the socket delivery, and the status write, so a
+    concurrent fill/resume/retire cannot slip between them. A live seat takes
+    the frame on its inbox socket and is recorded `working`; a stopped one is
+    resumed with the frame as its message; vacant, retired, and gone seats
+    are refused, pointing at the verb that can reach them."""
     refuse_codex(s0)
-    # The lifecycle lock covers target selection, the socket delivery, and the
-    # status write, so a concurrent fill/resume/retire cannot slip between them.
     locks = lock_seat(s0)
     s = reload_seat(s0["seat_id"])
     if s is None:
         unlock(locks)
-        die("seat %s/%s vanished before the wake could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
+        die("seat %s/%s vanished before the send could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
     refuse_codex(s)
-    if not s["current"]:
-        die("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
-            s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
-    frm = default_from(a.frm)
-    msg_id = uuidlib.uuid4().hex[:8]
-    text = "[sminos wake from %s id=%s]\n%s" % (frm, msg_id, a.msg)
-    peer = peer_for_session(s["current"])  # live = pid alive AND socket answers
-    if peer:
-        sock = socket_path_of(peer)
-        row = harness_row(s)
-        # Idle-at-send: from the harness row when there is one; with no row, from
-        # the peer record's own status — never from normalising an empty state.
-        was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
-        try:
-            send_frame(sock, text)
-        except SendFailed as e:
-            if e.phase == "before":
-                # Nothing reached the peer (the session exited between the
-                # liveness check and the write): fall through to the resume path.
-                warn("inbox socket delivery to %s/%s failed before the frame was written (%s); resuming instead" % (
-                    s["group"], s["alias"], e))
-                resume_session(s, text, a.wait, locks, verb="woke")
-                return
-            unlock(locks)
-            die("delivery to %s/%s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
-                "resuming and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
-                    s["group"], s["alias"], e, msg_id), 1)
-        wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
-        # The watcher's guard: the generation right after our write, read while
-        # the lifecycle lock is still held.
-        guard = same_gen(current_gen(s["seat_id"]))
-        unlock(locks)
-        if not wrote:
-            warn("record of %s/%s changed during delivery; status left as is" % (s["group"], s["alias"]))
-        status = "working"
-        if a.wait:
-            status = wait_socket_turn(s, msg_id, was_idle, guard)
-        print("woke %s/%s  [%s / %s]  via inbox socket  status=%s" % (
-            s["group"], s["alias"], s["short"] or "-", s["seat_id"], status))
-        if a.wait:
-            print_reply_block(s["seat_id"])
+    ref = "%s/%s" % (s["group"], s["alias"])
+    # One liveness probe (pid alive AND socket answers) serves both the state
+    # word and the delivery; a seat with no live peer takes state()'s word.
+    peer = peer_for_session(s["current"]) if s["current"] and s["status"] != "retired" else None
+    st = peer_state(peer) if peer else state(s)
+    if st in ("vacant", "retired"):
+        die('seat %s is %s — fill it with: sminos fill %s "<task>"' % (ref, st, ref), EXIT_UNKNOWN)
+    if st == "gone":
+        die('seat %s is gone from the harness — no resume reaches its session; sminos fill %s "<task>" '
+            "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
+    if not peer:
+        resume_session(s, text, wait, locks, verb="sent to")
         return
-    resume_session(s, text, a.wait, locks, verb="woke")
+    sock = socket_path_of(peer)
+    row = harness_row(s)
+    # Idle-at-send: from the harness row when there is one; with no row, from
+    # the peer record's own status — never from normalising an empty state.
+    was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
+    try:
+        send_frame(sock, text)
+    except SendFailed as e:
+        if e.phase == "before":
+            # Nothing reached the peer (the session exited between the
+            # liveness check and the write): fall through to the resume path.
+            warn("inbox socket delivery to %s failed before the frame was written (%s); resuming instead" % (ref, e))
+            resume_session(s, text, wait, locks, verb="sent to")
+            return
+        unlock(locks)
+        die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
+            "resuming and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
+                ref, e, msg_id), 1)
+    wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
+    # The watcher's guard: the generation right after our write, read while
+    # the lifecycle lock is still held.
+    guard = same_gen(current_gen(s["seat_id"]))
+    unlock(locks)
+    if not wrote:
+        warn("record of %s changed during delivery; status left as is" % ref)
+    print("sent to %s" % ref, flush=True)
+    if wait:
+        wait_socket_turn(s, msg_id, was_idle, guard)
+        print_reply_block(s["seat_id"])
 
 
 CODEX_PREFIX = "codex:"
@@ -2445,12 +2454,26 @@ def report_codex_queued(tid, qid):
 
 
 def cmd_send(a):
+    try:
+        _send(a)
+    except ResumeRefused as e:
+        die(e.message, e.code)
+
+
+def refuse_wait(target):
+    die("--wait needs a seat: '%s' is not one, so there is no record to watch — send without --wait" % target)
+
+
+def _send(a):
     caller = caller_seat()
     if is_family_seat(caller) and a.target.startswith(CODEX_PREFIX):
         die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     frm = default_from(a.frm)
-    text = "[sminos message from %s]\n%s" % (frm, a.msg)
+    msg_id = uuidlib.uuid4().hex[:8]
+    text = compose_frame(frm, msg_id, a.msg)
     if a.target.startswith(CODEX_PREFIX):
+        if a.wait:
+            refuse_wait(a.target)
         # `codex:<id|name>` skips the seat and harness lookups — for a Codex
         # thread whose name happens to collide with an alias.
         raw = a.target[len(CODEX_PREFIX):]
@@ -2474,25 +2497,13 @@ def cmd_send(a):
         # to a raw name lookup — that would hide the ambiguity.
         die(ambiguous_seat(a.target, res), EXIT_UNKNOWN)
     if kind == "ok":
-        s = res
-        require_reach(caller, s, a.target)
-        peer = peer_for_session(s["current"]) if s["current"] else None
-        sock = socket_path_of(peer) if peer else ""
-        if peer and socket_ok(sock):
-            try:
-                send_frame(sock, text)
-            except SendFailed as e:
-                if e.phase == "after":
-                    die("delivery to %s/%s is UNCERTAIN — the frame was written but the close-out failed (%s); "
-                        "do not blindly re-send" % (s["group"], s["alias"], e), 1)
-                die("%s/%s went away mid-send (%s) — use: sminos wake %s/%s \"<msg>\"" % (
-                    s["group"], s["alias"], e, s["group"], s["alias"]), EXIT_UNKNOWN)
-            print("sent to %s/%s" % (s["group"], s["alias"]))
-            return
-        die("%s/%s is not live (%s) — use: sminos wake %s/%s \"<msg>\"" % (
-            s["group"], s["alias"], state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
+        require_reach(caller, res, a.target)
+        send_to_seat(res, text, msg_id, a.wait)
+        return
     if is_family_seat(caller):
         die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
+    if a.wait:
+        refuse_wait(a.target)
     # Only when NO seat matched: fall back to a raw live harness-session name.
     peers = live_name_holders(a.target)  # live already means the socket answers
     if len(peers) == 1:
@@ -2974,11 +2985,11 @@ def build_parser():
     route_flags(f)
     f.set_defaults(fn=cmd_fill)
 
-    w = sub.add_parser("wake", add_help=False)
-    w.add_argument("seat")
-    w.add_argument("msg")
-    w.add_argument("--wait", action="store_true")
-    w.add_argument("--from", dest="frm", default="")
+    # `wake` was folded into `send`. Its parser takes any argv — a NUL prefix
+    # char never occurs in one, so even `--wait` is a plain word here — and its
+    # handler prints the pointer, so no old-shape call reaches a seat lookup.
+    w = sub.add_parser("wake", add_help=False, prefix_chars="\0")
+    w.add_argument("rest", nargs="*")
     w.set_defaults(fn=cmd_wake)
 
     rs = sub.add_parser("resume", add_help=False)
@@ -2990,6 +3001,7 @@ def build_parser():
     s = sub.add_parser("send", add_help=False)
     s.add_argument("target")
     s.add_argument("msg")
+    s.add_argument("--wait", action="store_true")
     s.add_argument("--from", dest="frm", default="")
     s.set_defaults(fn=cmd_send)
 

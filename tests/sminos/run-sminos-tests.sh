@@ -32,12 +32,14 @@ assert_equals() {
   if [[ "$1" == "$2" ]]; then pass "$3"; else
     fail "$3"; echo "    expected: $2"; echo "    actual:   $1"; fi
 }
+# A here-string, not `printf | grep -q`: under pipefail an early grep exit
+# SIGPIPEs printf, failing a match (or passing a negative check) on long text.
 assert_contains() {
-  if printf '%s' "$1" | grep -Fq -- "$2"; then pass "$3"; else
+  if grep -Fq -- "$2" <<<"$1"; then pass "$3"; else
     fail "$3"; echo "    expected to find: $2"; echo "    in: ${1:0:600}"; fi
 }
 assert_not_contains() {
-  if printf '%s' "$1" | grep -Fq -- "$2"; then
+  if grep -Fq -- "$2" <<<"$1"; then
     fail "$3"; echo "    expected NOT to find: $2"; echo "    in: ${1:0:600}"
   else pass "$3"; fi
 }
@@ -369,8 +371,9 @@ run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list
 if [ -L "$MH/.claude/orchestrating-daemons" ]; then pass "a missing legacy symlink is recreated on the next run"; else fail "a missing legacy symlink is recreated on the next run"; fi
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list
 assert_contains "$(cat "$NEW/$DUP_OLD.json")" '"alias": "review-pr-470@aaaa1111"' "dedupe is idempotent (no alias@short@short)"
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" wake codexy "x"
-assert_rc 4 "$RC" "wake refuses a legacy codex record"
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" send codexy "x"
+assert_rc 4 "$RC" "send refuses a legacy codex record"
+assert_contains "$OUT" "legacy codex" "and says it is a legacy codex record"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" resume codexy "x"
 assert_rc 4 "$RC" "resume refuses a legacy codex record"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" fill codexy "x"
@@ -527,7 +530,7 @@ printf '{"pid":%s,"sessionId":"%s","name":"nowaiter","kind":"background","status
   "$SOCK_PID" "$NW_UUID" "$SOCK" > "$HOME/.claude/sessions/nowaiter.json"
 run "$SMINOS" spawn nowaiter "x" --group grp
 assert_rc 4 "$RC" "spawning a filled seat is refused"
-assert_contains "$OUT" "is filled (busy) — message it with sminos send/wake" "filled refusal names the state word and points at send/wake"
+assert_contains "$OUT" "is filled (busy) — message it with sminos send" "filled refusal names the state word and points at send"
 rm -f "$HOME/.claude/sessions/nowaiter.json"
 run "$SMINOS" spawn refillme "FIRST" --group grp --role r1 --brief b1
 assert_rc 0 "$RC" "first spawn of refillme exits 0"
@@ -741,7 +744,7 @@ ASK_REPLY="$(cat "$SMINOS_HOME/$ASKQ_UUID.reply.txt")"
 assert_contains "$ASK_REPLY" "Which color should the widget be?" "pending AskUserQuestion surfaced in the reply"
 assert_contains "$ASK_REPLY" "Red / Blue" "pending question options rendered"
 assert_contains "$ASK_REPLY" "Before I pick, one question." "turn text still printed alongside the question"
-assert_contains "$ASK_REPLY" "sminos wake asker" "reply points at the answer path"
+assert_contains "$ASK_REPLY" 'sminos send asker "<answer>"' "reply points at the answer path"
 assert_not_contains "$ASK_REPLY" "blocked on a harness prompt" "a rendered question gets no harness-prompt marker"
 PERM_UUID="55555555-eeee-4000-8000-000000000005"
 python3 - "$HOME/.claude/projects/fake-proj/$PERM_UUID.jsonl" <<'PY'
@@ -785,25 +788,39 @@ assert_rc 0 "$RC" "sync --all runs"
 run "$SMINOS" sync
 assert_rc 0 "$RC" "bare sync = --all"
 
-# ---- 6) wake / send over the inbox socket -----------------------------------
-echo "wake / send:"
+# ---- 6) send: the one delivery verb ------------------------------------------
+echo "send:"
 # A live peer record for the orchestrator seat: the socket server's pid is
 # alive, its socket accepts connections.
 printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
 run "$SMINOS" send orchestrator "hello there"
 assert_rc 0 "$RC" "send to a live seat exits 0"
-assert_contains "$OUT" "sent to grp/orchestrator" "send reports the target"
+assert_equals "$OUT" "sent to grp/orchestrator" "send reports the target by its one name"
 sleep 0.2
 assert_contains "$(cat "$RECEIVED")" '"type": "user"' "frame is the documented user-message shape"
-assert_contains "$(cat "$RECEIVED")" '[sminos message from human]\nhello there' "sender identity travels in the text's first line"
+assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from human id=' "the frame's first line names the sender and carries a message id"
+assert_contains "$(tail -c 400 "$RECEIVED")" ']\nhello there' "the message follows the frame's first line"
+if grep -q 'sminos message from human id=[0-9a-f]\{8\}\]' "$RECEIVED"; then pass "the frame id is eight hex digits"; else fail "the frame id is eight hex digits"; fi
+assert_equals "$(field "$ORCH_UUID" status)" "working" "a send to a live seat records its turn as working"
+"$SMINOS" meta set orchestrator status idle >/dev/null
 run "$SMINOS" send scribe "x"
 assert_rc 4 "$RC" "send to a vacant seat is refused (exit 4)"
-assert_contains "$OUT" "sminos wake" "send refusal points at wake"
+assert_contains "$OUT" 'sminos fill grp/scribe "<task>"' "the vacant refusal points at fill"
 run "$SMINOS" send "my session" "by name" --from ops
 assert_rc 0 "$RC" "send resolves a live harness session name when no seat matches"
 sleep 0.2
-assert_contains "$(cat "$RECEIVED")" '[sminos message from ops]\nby name' "--from is honored"
+assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from ops id=' "--from is honored"
+assert_contains "$(tail -c 400 "$RECEIVED")" ']\nby name' "the raw-name frame carries the message"
+# --wait needs a seat record to watch: a session name or a codex thread is
+# refused before anything is delivered.
+RECV_BEFORE="$(wc -c < "$RECEIVED")"
+run "$SMINOS" send "my session" "not delivered" --wait
+assert_rc 2 "$RC" "send --wait to a raw session name is refused"
+assert_contains "$OUT" "--wait needs a seat" "the refusal says why"
+assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "the refusal is one line"
+sleep 0.2
+assert_equals "$(wc -c < "$RECEIVED")" "$RECV_BEFORE" "nothing reached the session before the refusal"
 run "$SMINOS" send nobody-here "x"
 assert_rc 4 "$RC" "send to an unknown target exits 4"
 
@@ -824,19 +841,23 @@ assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "queue --thread nobody-
 run "$SMINOS" send 01a0aaaa-0000-7000-8000-00000000dead "x"
 assert_rc 4 "$RC" "an unknown thread id exits 4"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "queue --thread 01a0aaaa-0000-7000-8000-00000000dead" "a bare thread id IS tried with codex before giving up"
+run "$SMINOS" send codex:01a07a8a-569e-7923-b476-8a7d7d6271c3 "held back" --wait
+assert_rc 2 "$RC" "send --wait to a codex thread is refused"
+assert_contains "$OUT" "--wait needs a seat" "the codex refusal says why"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "queue --thread 01a07a8a" "nothing was queued before the refusal"
 run "$SMINOS" send 01a07a8a-569e-7923-b476-8a7d7d6271c3 "ping codex"
 assert_rc 0 "$RC" "a codex thread id is accepted"
 assert_contains "$OUT" "queued for codex thread 01a07a8a-569e-7923-b476-8a7d7d6271c3 (01a0aaaa-0000-7000-8000-000000000001)" "send reports the thread and the queued submission"
 assert_contains "$OUT" "read between turns" "the report says when codex reads it"
 assert_not_contains "$OUT" "sent to" "a queued message is not reported as sent"
-assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "[sminos message from human]" "sender identity travels in the queued text"
+assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "[sminos message from human id=" "the queued text opens with the same frame header"
 assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "ping codex" "the message body is queued"
 run "$SMINOS" send "spike thread" "by name"
 assert_rc 4 "$RC" "a bare codex thread NAME is not resolved"
 run "$SMINOS" send "codex:spike thread" "by name" --from ops
 assert_rc 0 "$RC" "codex:<name> resolves an exact codex thread name"
 assert_contains "$OUT" "queued for codex thread 01a07a8a" "the name is reported as its thread id"
-assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "[sminos message from ops]" "--from is honored for codex targets"
+assert_contains "$(cat "$STUB_STATE/log/codex-queue.log")" "[sminos message from ops id=" "--from is honored for codex targets"
 run "$SMINOS" send orchestrator "to the seat"
 assert_rc 0 "$RC" "a seat alias that a codex thread also carries reaches the seat"
 assert_contains "$OUT" "sent to grp/orchestrator" "the seat wins over the codex thread of the same name"
@@ -882,26 +903,31 @@ assert_contains "$OUT" "idle" "and the seat still reads idle rather than stopped
 peer_with_procstart "Mon Jan  1 00:00:00 2001"
 run "$SMINOS" send orchestrator "procstart bogus"
 assert_rc 4 "$RC" "an unrelated procStart reads as a recycled pid and send refuses"
+assert_contains "$OUT" "is gone from the harness" "a seat with no live peer and no harness row is refused as gone"
+assert_contains "$OUT" 'sminos fill grp/orchestrator "<task>"' "the gone refusal points at a fresh fill"
+assert_contains "$OUT" "sminos retire grp/orchestrator" "and at retire"
+assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "the gone refusal is one line"
+assert_not_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "procstart bogus" "no resume of a gone seat is attempted"
 printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
 
 run "$SMINOS" wake orchestrator "wake up" --from boss
-assert_rc 0 "$RC" "wake of a live seat exits 0"
-assert_contains "$OUT" "via inbox socket" "live wake goes through the socket"
-sleep 0.2
-assert_contains "$(cat "$RECEIVED")" '[sminos wake from boss id=' "wake frame carries the wake prefix, sender, and a message id"
-assert_contains "$(cat "$RECEIVED")" ']\nwake up' "wake frame carries the message after the first line"
-assert_equals "$(field "$ORCH_UUID" status)" "working" "wake stamps status working"
-"$SMINOS" meta set orchestrator status idle >/dev/null
+assert_rc 2 "$RC" "wake exits 2"
+assert_equals "$OUT" 'sminos: wake was folded into send — sminos send <seat> "<msg>" [--wait] [--from F]' "wake answers with the pointer to send, one line"
+run "$SMINOS" wake --wait nobody-at-all "x" --from boss
+assert_rc 2 "$RC" "wake with its old flags first still exits 2"
+assert_contains "$OUT" "wake was folded into send" "and prints the pointer, never looking the seat up"
+run "$SMINOS" wake
+assert_contains "$OUT" "wake was folded into send" "a bare wake prints the pointer too"
 
-# wake --wait needs EVIDENCE the message landed (the frame's id in the
+# send --wait needs EVIDENCE the message landed (the frame's id in the
 # target's transcript, or a busy row) before it waits for a reply.
 { echo "short=orch0001"; echo "uuid=$ORCH_UUID"; echo "name=my session"; echo "kind=interactive"; echo "state="; echo "status=idle"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/orch0001"
-SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" wake orchestrator "ACK-0" --wait
-assert_rc 1 "$RC" "wake --wait without evidence of receipt exits 1"
+SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" send orchestrator "ACK-0" --wait
+assert_rc 1 "$RC" "send --wait without evidence of receipt exits 1"
 assert_not_contains "$OUT" "--- reply ---" "no reply block is printed without evidence"
 "$SMINOS" meta set orchestrator status idle >/dev/null
-( SMINOS_ACK_TIMEOUT=5 "$SMINOS" wake orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
+( SMINOS_ACK_TIMEOUT=5 "$SMINOS" send orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
 ACKW=$!
 sleep 0.5
 ACK_ID="$(grep -o 'id=[0-9a-f]\{8\}' "$RECEIVED" | tail -1 | cut -d= -f2)"
@@ -909,37 +935,39 @@ mkdir -p "$HOME/.claude/projects/fake-proj"
 python3 - "$HOME/.claude/projects/fake-proj/$ORCH_UUID.jsonl" "$ACK_ID" <<'PY'
 import json, sys
 with open(sys.argv[1], "a") as f:
-    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "[sminos wake from human id=%s]\nACK-1" % sys.argv[2]}}) + "\n")
+    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "[sminos message from human id=%s]\nACK-1" % sys.argv[2]}}) + "\n")
     f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "ACKED " + sys.argv[2]}]}}) + "\n")
 PY
 wait "$ACKW" || true
-assert_equals "$(cat "$TEST_ROOT/ack.rc")" "0" "wake --wait exits 0 once the marker appears in the transcript"
-assert_contains "$(cat "$TEST_ROOT/ack.out")" "--- reply ---" "acknowledged wake --wait prints the reply block"
-assert_contains "$(cat "$TEST_ROOT/ack.out")" "ACKED $ACK_ID" "acknowledged wake --wait prints the turn's reply"
+assert_equals "$(cat "$TEST_ROOT/ack.rc")" "0" "send --wait exits 0 once the marker appears in the transcript"
+assert_contains "$(cat "$TEST_ROOT/ack.out")" "sent to grp/orchestrator" "acknowledged send --wait names the seat"
+assert_contains "$(cat "$TEST_ROOT/ack.out")" "--- reply ---" "acknowledged send --wait prints the reply block"
+assert_contains "$(cat "$TEST_ROOT/ack.out")" "ACKED $ACK_ID" "acknowledged send --wait prints the turn's reply"
 
 # Resume branch: 'researcher' has a session but no live peer → --bg --resume.
-run "$SMINOS" wake researcher "again please"
-assert_rc 0 "$RC" "wake of a stopped seat exits 0"
-assert_contains "$OUT" "via --bg --resume" "stopped wake resumes the session"
+run "$SMINOS" send researcher "again please"
+assert_rc 0 "$RC" "send to a stopped seat exits 0"
+assert_contains "$OUT" "via --bg --resume" "a send to a stopped seat resumes the session"
+assert_contains "$OUT" "sent to grp/researcher" "the resume banner opens with the delivery"
 RESUME_LINE="$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)"
-assert_contains "$RESUME_LINE" "--bg --resume $R_UUID [sminos wake from human id=" "resume argv is exactly --bg --resume <id> <msg>"
+assert_contains "$RESUME_LINE" "--bg --resume $R_UUID [sminos message from human id=" "resume argv is exactly --bg --resume <id> <frame>"
 assert_not_contains "$RESUME_LINE" "--permission-mode" "no permission-mode flag rides a resume (it would start a copy)"
 assert_not_contains "$RESUME_LINE" "-n " "no name flag rides a resume"
 assert_equals "$(field "$R_UUID" current)" "$R_UUID" "same-id resume keeps current"
 assert_equals "$(field "$R_UUID" turns)" "2" "resume increments turns"
 assert_equals "$(field "$R_UUID" short)" "$R_SHORT" "a same-id resume keeps the session's short"
 assert_equals "$(field "$R_UUID" status)" "idle" "a resume whose turn already ended records idle"
-run "$SMINOS" wake researcher "with reply" --wait
-assert_contains "$OUT" "--- reply ---" "wake --wait prints the reply block"
-assert_contains "$OUT" "RESUMED:$R_UUID" "wake --wait prints the resumed turn's reply"
-STUB_RESUME_COPY=1 run "$SMINOS" wake researcher "copy?"
+run "$SMINOS" send researcher "with reply" --wait
+assert_contains "$OUT" "--- reply ---" "send --wait prints the reply block"
+assert_contains "$OUT" "RESUMED:$R_UUID" "send --wait prints the resumed turn's reply"
+STUB_RESUME_COPY=1 run "$SMINOS" send researcher "copy?"
 assert_rc 1 "$RC" "a resume whose banner says a copy started fails loudly"
 assert_contains "$OUT" "started a COPY" "copy detection is explained"
 assert_equals "$(field "$R_UUID" current)" "$R_UUID" "the record is left untouched after a copy"
 assert_equals "$(field "$R_UUID" status)" "idle" "status is restored after a copy"
 COPY_SHORT="$(printf '%08x' "$(cat "$STUB_STATE/counter")")"
 assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the announced copy is stopped"
-STUB_RESUME_COPY=2 run "$SMINOS" wake researcher "silent copy?"
+STUB_RESUME_COPY=2 run "$SMINOS" send researcher "silent copy?"
 assert_rc 1 "$RC" "a silent copy (different session id after polling) also fails loudly"
 COPY_SHORT="$(printf '%08x' "$(cat "$STUB_STATE/counter")")"
 assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the silent copy is stopped"
@@ -968,9 +996,6 @@ run "$SMINOS" resume plainworker "RES-4" --wait
 assert_rc 0 "$RC" "resume --wait exits 0"
 assert_contains "$OUT" "--- reply ---" "resume --wait prints the reply block"
 assert_contains "$OUT" "RESUMED:$P_UUID:ANSWER:RES-4" "resume --wait prints the resumed turn's reply"
-run "$SMINOS" wake scribe "x"
-assert_rc 4 "$RC" "waking a vacant seat exits 4"
-assert_contains "$OUT" "sminos fill" "vacant wake points at fill"
 # Resume lock: a resume already in flight refuses a twin.
 python3 - "$SMINOS_HOME/$R_UUID.resume.lock" <<'PY' &
 import fcntl, sys, time
@@ -980,7 +1005,7 @@ time.sleep(3)
 PY
 LOCKER=$!
 sleep 0.4
-run "$SMINOS" wake researcher "twin"
+run "$SMINOS" send researcher "twin"
 assert_rc 1 "$RC" "a second resume while one is in flight is refused"
 assert_contains "$OUT" "already in flight" "twin refusal is explained"
 kill "$LOCKER" 2>/dev/null || true; wait "$LOCKER" 2>/dev/null || true
@@ -992,6 +1017,12 @@ assert_rc 0 "$RC" "retire exits 0"
 assert_equals "$(field "$R_UUID" status)" "retired" "retire marks the seat retired"
 assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $(field "$R_UUID" short)" "retire stops the current turn"
 assert_contains "$OUT" "sminos fill grp/researcher --resume" "retire hints at re-filling"
+nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
+run "$SMINOS" send researcher "are you there"
+assert_rc 4 "$RC" "send to a retired seat is refused (exit 4)"
+assert_contains "$OUT" "grp/researcher is retired" "the refusal names the state"
+assert_contains "$OUT" 'sminos fill grp/researcher' "and points at fill"
+assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no session is resumed for a retired seat"
 run "$SMINOS" fill researcher "FRESH-START"
 assert_rc 0 "$RC" "fresh fill exits 0"
 assert_contains "$OUT" "seat filled: grp/researcher" "fill reports the seat"
@@ -1114,16 +1145,17 @@ assert_equals "$OUT" "live" "sync reports a natively-woken idle seat as live"
 assert_equals "$(field "$NAT_UUID" status)" "working" "sync promotes the idle-but-running seat to working"
 rm -f "$STUB_STATE/agents/nat00001"; "$SMINOS" remove grp/native >/dev/null
 
-# wake socket-send failure falls through to the resume path (never raises).
+# send's socket-send failure falls through to the resume path (never raises).
 FAIL_UUID="bbbb2222-abab-4000-8000-0000000b2222"
 "$SMINOS" seat add grp flaky --session "$FAIL_UUID" >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"flaky","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
   "$$" "$FAIL_UUID" "$SOCK" > "$HOME/.claude/sessions/flaky.json"
+{ echo "short=f1a00001"; echo "uuid=$FAIL_UUID"; echo "name=flaky"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/f1a00001"
 kill "$SOCK_PID" 2>/dev/null || true; wait "$SOCK_PID" 2>/dev/null || true; rm -f "$SOCK"   # socket_ok now fails
-run "$SMINOS" wake grp/flaky "PLEASE"
-assert_rc 0 "$RC" "wake whose live socket vanished still exits 0 via the resume fallback"
-assert_contains "$OUT" "via --bg --resume" "the vanished-socket wake fell through to resume"
-rm -f "$HOME/.claude/sessions/flaky.json"; "$SMINOS" remove grp/flaky >/dev/null
+run "$SMINOS" send grp/flaky "PLEASE"
+assert_rc 0 "$RC" "send whose live socket vanished still exits 0 via the resume fallback"
+assert_contains "$OUT" "via --bg --resume" "the vanished-socket send fell through to resume"
+rm -f "$HOME/.claude/sessions/flaky.json" "$STUB_STATE/agents/f1a00001"; "$SMINOS" remove grp/flaky >/dev/null
 # restart the socket server for any later use / clean teardown
 python3 "$TEST_ROOT/sockserver.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
@@ -1207,8 +1239,8 @@ nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
 run "$SMINOS" resume nocwd "x"
 assert_rc 2 "$RC" "resume with a vanished cwd exits 2"
 assert_contains "$OUT" "cwd does not exist" "the vanished cwd is named"
-run "$SMINOS" wake nocwd "x"
-assert_rc 2 "$RC" "wake-resume with a vanished cwd exits 2"
+run "$SMINOS" send nocwd "x"
+assert_rc 2 "$RC" "a send that resumes, with a vanished cwd, exits 2"
 assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "nothing is launched for a vanished cwd"
 "$SMINOS" meta set nocwd cwd "$WORK" >/dev/null; "$SMINOS" remove grp/nocwd >/dev/null
 
@@ -1237,7 +1269,7 @@ assert_contains "$OUT" "still running" "the still-running turn is reported"
 assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no resume is launched over a running turn"
 "$SMINOS" remove grp/stopper >/dev/null
 
-# wake respects the lifecycle lock.
+# send respects the lifecycle lock.
 python3 - "$(lock_file work/plainworker)" <<'PY' &
 import fcntl, os, sys, time
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
@@ -1247,8 +1279,8 @@ time.sleep(3)
 PY
 HOLDER=$!
 sleep 0.4
-run "$SMINOS" wake plainworker "x"
-assert_rc 4 "$RC" "wake while the seat's lifecycle lock is held is refused"
+run "$SMINOS" send plainworker "x"
+assert_rc 4 "$RC" "send while the seat's lifecycle lock is held is refused"
 kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
 
 # Peer liveness needs a listener: a socket FILE with nobody behind it is dead.
@@ -1292,10 +1324,10 @@ python3 "$TEST_ROOT/oneshot.py" "$TEST_ROOT/oneshot.sock" & OS_PID=$!; disown "$
 for _ in $(seq 1 50); do [ -S "$TEST_ROOT/oneshot.sock" ] && break; sleep 0.05; done
 printf '{"pid":%s,"sessionId":"%s","name":"oneshot","kind":"bg","status":"idle","messagingSocketPath":"%s/oneshot.sock"}\n' \
   "$OS_PID" "$OS_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/oneshot.json"
-run "$SMINOS" wake grp/oneshot "HELLO"
+run "$SMINOS" send grp/oneshot "HELLO"
 assert_rc 0 "$RC" "a socket that vanishes before the frame is written falls through to resume (exit 0)"
 assert_contains "$OUT" "failed before the frame was written" "the pre-write failure is explained"
-assert_contains "$OUT" "via --bg --resume" "the wake completed via resume"
+assert_contains "$OUT" "via --bg --resume" "the send completed via resume"
 rm -f "$HOME/.claude/sessions/oneshot.json"; "$SMINOS" remove grp/oneshot >/dev/null
 AFTER_PHASE="$(python3 - "$REPO_ROOT/skills/sminos/scripts" <<'PY'
 import sys
@@ -1327,13 +1359,13 @@ printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","sta
 run "$SMINOS" send orchestrator "from a terminal"
 assert_rc 0 "$RC" "send without a session id in the environment exits 0"
 sleep 0.2
-assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from human]' "no session id in the environment → human"
+assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from human id=' "no session id in the environment → human"
 ID_UUID="0b0b8888-abab-4000-8000-0000000b8888"
 "$SMINOS" seat add grp me-agent --parent orchestrator --session "$ID_UUID" >/dev/null
 CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" send orchestrator "from an agent"
 assert_rc 0 "$RC" "send from a registered agent session exits 0"
 sleep 0.2
-assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent]' "an agent's default --from is its seat alias"
+assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent id=' "an agent's default --from is its seat alias"
 CLAUDE_CODE_SESSION_ID="$ID_UUID" run "$SMINOS" send orchestrator "impostor" --from human
 assert_rc 4 "$RC" "--from human inside a Claude session is refused"
 "$SMINOS" remove grp/me-agent >/dev/null
@@ -1342,7 +1374,7 @@ PLAIN_ME="$(banner_uuid "$OUT")"
 CLAUDE_CODE_SESSION_ID="$PLAIN_ME" run "$SMINOS" send orchestrator "from a pipeline root"
 assert_rc 0 "$RC" "a non-family seat still sends to an unrelated seat"
 sleep 0.2
-assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent]' "a non-family seat still derives sender alias"
+assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent id=' "a non-family seat still derives sender alias"
 "$SMINOS" remove work/me-agent >/dev/null
 
 # A harness failure is never read as an empty fleet.
@@ -1447,7 +1479,7 @@ for phase in ("before", "after"):
         raise sminos.SendFailed(phase, OSError("injected"))
     sminos.send_frame = boom
     try:
-        sminos.cmd_send(argparse.Namespace(target="rawname", msg="x", frm=""))
+        sminos.cmd_send(argparse.Namespace(target="rawname", msg="x", frm="", wait=False))
         codes.append("0")
     except SystemExit as e:
         codes.append(str(e.code))
@@ -1645,6 +1677,17 @@ for w in blocked unknown working "done" error failed; do
 done
 run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop,s"
 assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
+run "$SMINOS" send st/s-gone "hi"
+assert_rc 4 "$RC" "send to a gone seat is refused (exit 4)"
+assert_equals "$OUT" 'sminos: seat st/s-gone is gone from the harness — no resume reaches its session; sminos fill st/s-gone "<task>" or sminos retire st/s-gone' "the gone refusal is one line pointing at fill and retire"
+run "$SMINOS" send st/s-ret "hi"
+assert_rc 4 "$RC" "send to a retired seat is refused even while its session answers"
+assert_contains "$OUT" "sminos fill st/s-ret" "pointing at fill"
+nb=$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)
+run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop,s,text:back to work,enter"
+assert_contains "$OUT" "send s-stop back to work → rc=0 sent to st/s-stop" "the TUI's send to a stopped seat resumes it"
+assert_equals "$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)" "$((nb + 1))" "through one --bg --resume"
+assert_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $ST_STOP [sminos message from human id=" "carrying the frame"
 run "$SMINOS" tui st --headless --all --width 140 --height 40 --keys "!focus:st/s-ret,s"
 assert_not_contains "$OUT" "send → st/s-ret" "s on a retired seat opens no send line"
 assert_contains "$OUT" "s-ret is retired" "and says why"
@@ -1808,7 +1851,8 @@ assert_contains "$OUT" 'intern is vacant — nothing to send to; sminos fill org
 assert_not_contains "$OUT" "send →" "and opens no send line"
 run $TUI --keys "right,down,s,text:ping-from-tui here,enter"
 assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout" "enter on the send line delivers through the real launcher and records the result"
-assert_contains "$(cat "$RECEIVED")" "[sminos message from human]\nping-from-tui here" "the frame reached the seat's inbox socket with the human sender line"
+assert_contains "$(tail -c 400 "$RECEIVED")" "[sminos message from human id=" "the frame reached the seat's inbox socket with the human sender line"
+assert_contains "$(tail -c 400 "$RECEIVED")" "]\nping-from-tui here" "carrying the typed message"
 run $TUI --keys b
 assert_contains "$OUT" "── chat · lead · 0 messages · tab to browse ──" "b shows focused host's chat"
 assert_contains "$OUT" "(no messages)" "empty chat has a message-free placeholder"
@@ -2024,8 +2068,9 @@ for target in other/x "$X" rawname codex:thread; do
   assert_rc 4 "$RC" "family send refuses $target"
   assert_contains "$OUT" 'ListAgents and SendMessage' "family refusal suggests native tools"
 done
-run "$SMINOS" wake other/x hi
-assert_rc 4 "$RC" "family wake refuses outside seat"
+run "$SMINOS" send --wait other/x hi
+assert_rc 4 "$RC" "family send --wait refuses an outside seat"
+assert_contains "$OUT" 'ListAgents and SendMessage' "with the reach hint"
 run "$SMINOS" say '@x hi'
 assert_rc 4 "$RC" "outside-family tag refused"
 run "$SMINOS" say '@all @b hi'

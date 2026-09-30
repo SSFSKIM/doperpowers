@@ -38,7 +38,7 @@ HELP_LINES = [
     "home / end — first / last root box",
     "enter — on a seat: open its conversation (claude attach) in a new tmux window, or switch to that window if it is open",
     "enter — on a group: collapse / expand its seats",
-    "s — type a message for the focused seat; enter sends it over the seat's inbox socket (sminos send), esc cancels",
+    "s — type a message for the focused seat; enter sends it (sminos send: a live seat over its inbox socket, a stopped one resumed), esc cancels",
     "b — toggle the bottom panel: seat detail ↔ family chat",
     "tab — move the keys into the chat list (enter opens a message, tab back)",
     "a — show / hide retired and gone seats",

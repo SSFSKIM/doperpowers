@@ -882,7 +882,7 @@ _tick_renew() { phase_renew interleaved || true; }
 # /runs/needing-resume, and the resume phase never sees it. Every phase behaves
 # exactly as designed and the ticket stays pinned to a worker that will never
 # write again. Observed 2026-09-13: nine hours on a 429, broken only by a
-# hand-run `sminos wake` (dp#58).
+# hand-run `sminos send` (then called `wake`; dp#58).
 #
 # The recovery is the gh tick's RECOVER ladder in the shape this binding
 # allows — bounded nudges, then hand the run to machinery that already exists.
@@ -967,7 +967,7 @@ EOF
 # STAMPED BEFORE — BUT ONLY WHERE A NUDGE IS ACTUALLY ATTEMPTED. That trade
 # buys safety against a delivery whose outcome is unknown; it buys nothing on
 # the two branches where the caller already knows it will not call `sminos
-# wake` at all. A meta that is repeatedly bearerless, or repeatedly reached
+# send` at all. A meta that is repeatedly bearerless, or repeatedly reached
 # after the tick budget is gone, burned its whole ladder on nudges that never
 # existed and was handed off for it. Eligibility is therefore decided BEFORE
 # the increment and arrives as T_MAY_WAKE. Marking, clearing and the hand-off
@@ -1300,7 +1300,7 @@ phase_stall() {
         # spent. The budget half already said its one line above; this is the
         # other gate, and it says why the meta is stuck rather than nudged.
         # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay
-        # refuses one: `sminos wake` falls through to a resume when no socket
+        # refuses one: `sminos send` falls through to a resume when no socket
         # answers, and a resume with an empty BOARD_RUN_TOKEN hands the worker
         # the configured human/automation credentials instead of its own fence.
         # Phase 1's bind repair is the route that gives such a meta its bearer.
@@ -1319,7 +1319,7 @@ phase_stall() {
         if BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
            BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
            DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-           "$SMINOS_CLI" wake "$uuid" "$(_stall_prompt "$err")" --from sweep; then
+           "$SMINOS_CLI" send "$uuid" "$(_stall_prompt "$err")" --from sweep; then
           echo "stall: #$ticket run $run — nudged $uuid after a harness error (attempt $attempts of $STALL_CAP): \"$err\""
         else
           # The attempt is spent either way; that is the direction stamping
@@ -1558,7 +1558,7 @@ phase_review_recover() {
         continue ;;
     esac
     # A NUDGE WITHOUT A BEARER IS NOT A NUDGE, for the reason the relay refuses
-    # one: a wake that finds the seat dead resumes it, and a resume with an
+    # one: a send that finds the seat dead resumes it, and a resume with an
     # empty BOARD_RUN_TOKEN hands the worker the configured human/automation
     # credentials instead of its own fence. Phase
     # 1's bind repair is the route that gives such a meta its bearer back, and
@@ -1602,12 +1602,12 @@ phase_review_recover() {
     if _meta_write "$path" review_recoveries "$((recov + 1))" review_trail_seen "$seen"; then
       echo "review-recover: #$ticket — $uuid is idle ${age}m into a review with no agent under it; nudge $((recov + 1)) of $REVIEW_RECOVERY_CAP"
       # Backgrounded: the nudged turn is the worker's, not this tick's, and
-      # the tick holds the lock every other phase needs. A WAKE, because the
+      # the tick holds the lock every other phase needs. A SEND, because the
       # candidate is live and idle by this phase's own filter: `sminos resume`
       # stops a live turn and restarts the process, and on an idle seat there
       # is no turn to stop — the harness starts a copy and nothing arrives.
       BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
-        nohup "$SMINOS_CLI" wake --wait "$uuid" \
+        nohup "$SMINOS_CLI" send --wait "$uuid" \
         "SWEEP RECOVERY: your review of ticket #$ticket's pull request has no live QA agent (idle for ${age}m with nothing running under it). Re-read the ticket and the PR, and if no review is running, dispatch doperpowers:qa-loop again per your protocol's Closing Artifact; if the review already reached a park or a verdict, restate it." \
         --from sweep >/dev/null 2>&1 &
     else
@@ -1986,15 +1986,15 @@ phase_relay() {
       fi
       transcript="$(_transcript_for_uuid "$uuid")"
       # The ack is gated on PROVEN delivery (Codex review F1): the sentinel is
-      # already in the transcript, or a wake returned success. A failed wake
+      # already in the transcript, or a send returned success. A failed send
       # acks nothing — the answer stays on the feed for the next tick.
       if _delivered "$transcript" "$(_sentinel "$aid")"; then
         echo "relay: #$tid answer $aid already delivered (sentinel) — acking"
-      # WAKE, not resume: the parked worker ended its turn and waits — a live,
+      # SEND, not resume: the parked worker ended its turn and waits — a live,
       # idle seat. `sminos resume` stops a live turn and restarts the process;
       # on an idle seat there is no turn to stop, the harness starts a copy,
-      # and nothing is delivered. `wake` writes to the seat's inbox socket, and
-      # a seat that died since the liveness check is resumed by wake itself —
+      # and nothing is delivered. `send` writes to the seat's inbox socket, and
+      # a seat that died since the liveness check is resumed by send itself —
       # which is why the run credentials still ride in the env.
       #
       # DAEMON_TIMEOUT is bounded here on purpose. The --wait default is 18000
@@ -2003,24 +2003,24 @@ phase_relay() {
       # reclaim runs that are very much alive. Bounding it is safe because the
       # prompt lands BEFORE the wait blocks (the socket frame is written, or
       # the resume fallback advances `current` and injects it): a timed-out
-      # wake exits nonzero, so nothing is acked this tick, and the next tick's
+      # send exits nonzero, so nothing is acked this tick, and the next tick's
       # sentinel grep finds the marker in the transcript and acks WITHOUT
       # re-delivering (the replay case the test pins on u-3/u-3-cur). The
       # delivery gate holds; only the ack is late.
       elif BOARD_RUN_TOKEN="$bearer" BOARD_RUN_ID="$run" BOARD_RUN_FENCE="$fence" \
         BOARD_API_URL="$BOARD_API_URL" BOARD_REPO="$BOARD_REPO" \
         DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-        "$SMINOS_CLI" wake --wait "$uuid" "$(_relay_prompt "$aid" "$replies")" --from sweep; then
+        "$SMINOS_CLI" send --wait "$uuid" "$(_relay_prompt "$aid" "$replies")" --from sweep; then
         echo "relay: #$tid answer $aid delivered to $uuid"
       else
-        # NOT NECESSARILY A FAILURE. `sminos wake` also exits nonzero when its
+        # NOT NECESSARILY A FAILURE. `sminos send` also exits nonzero when its
         # bounded watcher expires on a turn it already delivered the prompt into
         # — the ORDINARY outcome for a long worker turn, since the bound exists
         # to keep this tick from starving lease renewal. Either way nothing is
         # acked, and the next tick's sentinel check settles which it was without
         # re-delivering. Calling it FAILED trained the reader to expect a broken
         # relay on every long turn.
-        echo "relay: #$tid answer $aid — the wake returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
+        echo "relay: #$tid answer $aid — the send returned no delivery (a long turn whose bounded wait expired looks the same here); not acked, settled next tick by the sentinel"
         continue
       fi
       # PROGRESS IS A SUCCESSFUL ACK, and the ack has to be checked explicitly.

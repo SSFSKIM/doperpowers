@@ -12,7 +12,7 @@
 # error — a busy seat, a gone seat, and a worker merely QUOTING an error are
 # all left alone; the marker is stamped in the meta and keyed by RUN; a stated
 # reset already in the past is due immediately while an unstated one waits the
-# window; a nudge carries the run's OWN credentials (a `sminos wake` with no
+# window; a nudge carries the run's OWN credentials (a `sminos send` with no
 # live socket falls through to a resume, and an empty bearer would hand the
 # worker the configured human credentials instead of its fence); the ladder is
 # three lifetime attempts and the fourth is never issued; and recovery — the
@@ -144,7 +144,7 @@ meta u-busy '{"uuid":"u-busy","current":"u-busy","status":"working","run_id":74,
               "run_bearer":"tok-74"}'
 say u-busy "API Error: Request rejected (429) · This account is out of plan usage until 2020-01-01T00:00:00Z."
 
-# Stalled on a harness error, but the meta holds NO BEARER. `sminos wake` falls
+# Stalled on a harness error, but the meta holds NO BEARER. `sminos send` falls
 # through to a resume when no socket answers, and a resume with an empty
 # BOARD_RUN_TOKEN hands the worker the configured human/automation credentials
 # instead of its own fence. Phase 1's bind repair owns this meta, not the nudge.
@@ -242,10 +242,10 @@ reply)
   echo "--- latest reply ---"
   cat "$REPLIES/\$1.txt" 2>/dev/null || true
   exit 0 ;;
-wake)
+send)
   # Records its ENVIRONMENT as well as its argv: the run credentials ride the
   # nudge that way and are observable nowhere else.
-  { echo "WAKE uuid=\$1"
+  { echo "SEND uuid=\$1"
     echo "ARGV: \$*"
     env | grep '^BOARD_RUN_' | sort || true; } >> "$WAKE"
   [ -z "\${WAKE_MUST_FAIL:-}" ] || exit 1
@@ -261,8 +261,8 @@ SW() {  # one _sweep_api.sh invocation against this fixture world
 }
 STALL() { SW "${@:2}" "$SCRIPTS/_sweep_api.sh" stall > "$1" 2>&1 || true; }
 
-wakes()      { grep -c '^WAKE uuid=' "$WAKE" || true; }       # total nudges so far
-wakes_for()  { grep -c "^WAKE uuid=$1\$" "$WAKE" || true; }
+wakes()      { grep -c '^SEND uuid=' "$WAKE" || true; }       # total nudges so far
+wakes_for()  { grep -c "^SEND uuid=$1\$" "$WAKE" || true; }
 mfield()     { python3 -c 'import json,sys
 m = json.load(open(sys.argv[1]))
 print(m.get(sys.argv[2], "<absent>"))' "$DH/$1.json" "$2"; }
@@ -293,20 +293,20 @@ t  "and that the ladder is counting"     "hand the ticket on"            cat "$W
 
 # The population that must be left alone.
 t  "an idle worker whose turn was ordinary prose is not marked" "<absent>" mfield u-ok stall_run
-nt "and is never nudged"                 "WAKE uuid=u-ok"                cat "$WAKE"
+nt "and is never nudged"                 "SEND uuid=u-ok"                cat "$WAKE"
 t  "a worker QUOTING an error is not marked"  "<absent>"                 mfield u-quote stall_run
-nt "and is never nudged"                 "WAKE uuid=u-quote"             cat "$WAKE"
+nt "and is never nudged"                 "SEND uuid=u-quote"             cat "$WAKE"
 t  "a worker mid-turn is not marked"     "<absent>"                      mfield u-busy stall_run
-nt "and is never nudged"                 "WAKE uuid=u-busy"              cat "$WAKE"
+nt "and is never nudged"                 "SEND uuid=u-busy"              cat "$WAKE"
 t  "a session gone from the harness is not marked" "<absent>"            mfield u-gone stall_run
-nt "and is never nudged (its lease already expires)" "WAKE uuid=u-gone"  cat "$WAKE"
+nt "and is never nudged (its lease already expires)" "SEND uuid=u-gone"  cat "$WAKE"
 
 # Marked, but held back.
 t  "an error stating no reset waits the window" "0"                      mfield u-window stall_attempts
 t  "and says so once"                    "marker stamped"                cat "$O1"
-nt "and is not nudged yet"               "WAKE uuid=u-window"            cat "$WAKE"
+nt "and is not nudged yet"               "SEND uuid=u-window"            cat "$WAKE"
 t  "a bearerless meta is refused"        "holds no run bearer"           cat "$O1"
-nt "and is never nudged"                 "WAKE uuid=u-nobearer"          cat "$WAKE"
+nt "and is never nudged"                 "SEND uuid=u-nobearer"          cat "$WAKE"
 # AN ATTEMPT IS SPENT WHERE A NUDGE IS ATTEMPTED, nowhere else. Stamping before
 # the nudge is right where delivery is genuinely tried and its outcome unknown;
 # this branch tries nothing, and a meta that is repeatedly bearerless burned its
@@ -319,9 +319,9 @@ t  "so is the per-model limit"           "85"                            mfield 
 t  "and the exhausted-credits one"       "86"                            mfield u-credits stall_run
 # ...and prose that merely OPENS like one does not.
 t  "a worker parked on a gate is not marked"    "<absent>"               mfield u-gate stall_run
-nt "and is never nudged"                 "WAKE uuid=u-gate"              cat "$WAKE"
+nt "and is never nudged"                 "SEND uuid=u-gate"              cat "$WAKE"
 t  "nor is one reporting its own auth failure"  "<absent>"               mfield u-authprose stall_run
-nt "and it is never nudged either"       "WAKE uuid=u-authprose"         cat "$WAKE"
+nt "and it is never nudged either"       "SEND uuid=u-authprose"         cat "$WAKE"
 t  "but the harness's own auth failure still is" "92"                    mfield u-authreal stall_run
 
 # =========================================================================
@@ -501,7 +501,7 @@ O11="$TDIR/t11.out"; STALL "$O11"
 t  "a reset dated by the dead turn has already passed" "nudged u-prose"  cat "$O11"
 t  "so the nudge goes out on the first sighting" "1"                     wakes_for u-prose
 t  "with no transcript the scan clock governs"  "0"                      mfield u-prose-nt stall_attempts
-nt "and that one only waits the window"  "WAKE uuid=u-prose-nt"          cat "$WAKE"
+nt "and that one only waits the window"  "SEND uuid=u-prose-nt"          cat "$WAKE"
 
 # =========================================================================
 # THE BUDGET GATE SPENDS NOTHING EITHER. A tick past its budget attempts no
