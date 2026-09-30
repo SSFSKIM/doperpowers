@@ -127,8 +127,9 @@ what it waits for, else its latest reply), led by its role:
 `list --json` carries each seat's ids and `state`, for scripts. `chart` and
 `tui` draw the same words (`●` busy, `○` idle, `◐` waiting, `■` stopped, `✕`
 gone, `◌` vacant, `⊘` retired) and hide retired and gone seats until `--all`
-or the `a` key. `send` refuses a vacant, retired, or gone seat, pointing at the verb that
-reaches it. `send --wait` waits for evidence the message landed, then for
+or the `a` key — except one with a visible descendant, which stays drawn as
+the edge its children hang from. `send` refuses a vacant, retired, or gone
+seat, pointing at the verb that reaches it. `send --wait` waits for evidence the message landed, then for
 the turn's end, and prints the reply; it needs a seat. `resume` interrupts a
 live turn and inherits this process's environment (the board pipeline's
 credentials ride it), so prefer `send` for a working seat. Retiring a host
