@@ -42,7 +42,8 @@ where `sminos send two/a "x"` delivers.
 - [x] (2026-09-29, reviewed clean) M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
 - [x] (2026-09-30, reviewed clean) M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's five call sites (Decision Log) and their test stubs move; the TUI's `s` key follows; tests, board suites green.
 - [x] (2026-09-30, reviewed clean, 51c6947d + 850e1115) M4, the words — `SKILL.md`, the module docstring (the preamble names nothing that moved); version bump to 7.130.0; acceptance 10's grep empty.
-- [ ] M4, the proof — live proof on the real harness; whole-branch review; retrospective (the owning session's).
+- [x] (2026-09-30, the owning session) M4, the proof — live proof on the real harness: acceptance 1–6, 8 and 11 held as written (Surprises); 7 is a by-hand item and was not run.
+- [x] (2026-09-30) M4, the close — whole-branch review at reviewer-medium: no material findings, verdict correct; retrospective written.
 
 ## Terms
 
@@ -557,6 +558,28 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
 - (M3) The sminos suite's `grep -c` on an empty `calls.log` exits 1 under
   `set -e`; those counts use `|| true`. The assert helpers read a
   here-string now (a `printf | grep -q` under `pipefail` could SIGPIPE).
+- (live proof, 2026-09-30) Acceptance 1–6, 8 and 11 held as written on
+  the real harness with three haiku seats and a temporary `SMINOS_HOME`.
+  Evidence: `one/lead` read `busy` then `idle`; `two/a` spawned while
+  `one/a` was live (`rc=0`), `send a "x"` answered `ambiguous seat 'a'
+  matches: one/a, two/a` (`rc=4`), `send two/a "x"` printed `sent to two/a`;
+  `send two/a "reply DONE" --wait` printed the reply block with `DONE`, and
+  the transcript's frame read `[sminos message from sminos id=86388163]`
+  (the sender is this session's harness name, as `default_from` says);
+  after `kill <pid>` the row read `stopped` and `send two/a "back" --wait`
+  printed `sent to two/a [99ff00a5 / …] via --bg --resume status=idle
+  turns=2` and the reply; `wake` exited 2 with the pointer; `--addr`
+  exited 2 as an unrecognized argument; `list --json` keys held `state`
+  and neither `addr` nor `live`; the 8-character prefix answered `no seat,
+  live session, or codex thread matching` (`rc=4`) and the full id
+  delivered; `seat add two ghost --session <made-up uuid>` listed as
+  `gone`, `send` on it exited 4 with the transcript wording, `chart`
+  showed it 0 times and `chart --all` once; after `retire` all three rows
+  read `retired`, `chart` printed the fold note and `chart --all` drew
+  `⊘ retired`. Two cosmetic observations: argparse's own usage line, on an
+  unrecognized-argument error, still lists `wake` among the commands
+  because the pointer is a subparser; and the chart's group box reads
+  `1 seats` (pre-existing). `sminos list` on the real registry: 0.45 s.
 
 ## Decision Log
 
@@ -736,4 +759,33 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Achieved, against the purpose: a seat is one alias, one state word, and
+one delivery verb. `list` on the real registry prints every group as a
+heading over rows of `alias  state  now` in 0.45 s, reading the
+harness's per-session record, one socket probe, and the transcript's
+presence, and never `claude agents`; the same seven words draw the
+chart and the TUI; `send` delivers or resumes and refuses what it
+cannot reach in one line; `wake` and `addr` are gone from the CLI, the
+record, the flags, and the skill; the board's five relays call `send`
+with their arguments unchanged. Suite 746 → 856 assertions; board
+suites green; live proof held on acceptance 1–6, 8, 11; the
+whole-branch review at reviewer-medium found nothing material.
+
+What remains: acceptance 7 (a joined interactive session) was not run
+live; the argparse usage line lists `wake` among the commands because
+the pointer is a subparser (cosmetic; an argv intercept before parsing
+would hide it); the chart's `1 seats` grammar predates this branch;
+existing stderr noise in the raw-name failure-injection test and
+`test-sweep-renew-relay.sh`'s teardown line stay as they were.
+
+Lessons: the word was chosen before its predicate was tested — `gone`
+was reinstated on the right argument (a word must not promise a
+resume that fails) and then defined by the wrong observable (the
+harness listing), and two live resume attempts settled it in five
+minutes, which the design discussion had not. Test the predicate
+behind a state word on the real system before it names anything. The
+one-probe defect in `send` came from composing a classifier and a
+router that each probed liveness; when a verb both decides and acts,
+it reads the world once. And a hide rule that still computed a
+distinction the vocabulary had dropped was the sign the vocabulary was
+short a word.
