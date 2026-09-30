@@ -24,7 +24,7 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 
-GLYPH = {"busy": "●", "idle": "○", "waiting": "◐", "stopped": "■", "vacant": "◌", "retired": "✕"}
+GLYPH = {"busy": "●", "idle": "○", "waiting": "◐", "stopped": "■", "gone": "✕", "vacant": "◌", "retired": "⊘"}
 BOX_LINES = 3
 
 # ------------------------------------------------------------- display width
@@ -68,20 +68,15 @@ def fit(s, n, collapse=True):
 # ------------------------------------------------------------------ snapshot
 
 
-def is_dead(seat, st):
-    """Hidden by default (shown with --all): a retired seat, and a stopped seat
-    whose session the harness no longer lists — one only a `fill` can act on.
-    A stopped seat the harness still lists stays: a send resumes it. When the
-    harness cannot be asked, nothing is hidden on its account. This is the one
-    place a view asks `claude agents` about a seat's state."""
-    if st == "retired":
-        return True
-    return st == "stopped" and sminos.harness_ok() and sminos.harness_row(seat) is None
+def is_dead(st):
+    """Hidden by default (shown with --all): a retired or gone seat — one only
+    a `fill` can act on. The word decides; the hide rule asks nothing more."""
+    return st in ("retired", "gone")
 
 
 def seat_node(s, st, node_id):
     return {"kind": "seat", "id": node_id, "label": s["alias"], "role": s["role"], "state": st,
-            "now": sminos.now_or_reply(s, st), "dead": is_dead(s, st),
+            "now": sminos.now_or_reply(s, st), "dead": is_dead(st),
             "children": [], "hidden": 0, "seat": sminos.public_seat(s)}
 
 

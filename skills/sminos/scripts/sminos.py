@@ -29,7 +29,7 @@ family seat's family for that seat.
     sminos status   <seat> <one line>                     # the agent's own "now" line
     sminos retire   <seat> [--purge] [--cascade]           # stop; keep (or purge) the record
     sminos remove   <seat>                                # stop and delete the record
-    sminos list     [group] [--state W] [--json]         # W: busy idle waiting stopped vacant retired
+    sminos list     [group] [--state W] [--json]         # W: busy idle waiting stopped gone vacant retired
     sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
     sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -96,9 +96,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 # A seat's one state word — see state(). FILLED: a live session holds the
 # seat. REFILLABLE: no live turn is attached, so a fresh fill may take it.
-STATES = ("busy", "idle", "waiting", "stopped", "vacant", "retired")
+STATES = ("busy", "idle", "waiting", "stopped", "gone", "vacant", "retired")
 FILLED = ("busy", "idle", "waiting")
-REFILLABLE = ("vacant", "stopped")
+REFILLABLE = ("vacant", "stopped", "gone")
 TERMINAL = ("done", "done-blocked", "blocked", "failed", "stopped", "error")
 # Model-visible surfaces never carry a credential: the pipeline colonizes the
 # record with run_bearer and friends, and a seat's JSON is read by agents.
@@ -576,7 +576,15 @@ def push_member(member, text, tagged):
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
-    if not tagged or state(fresh) != "stopped":
+    if not tagged:
+        return "recorded"
+    st = state(fresh)
+    if st == "gone":
+        # A resume of a session the harness no longer lists cannot work: say
+        # so, as for a retired member, rather than attempt it.
+        warn("%s is gone from the harness; fill it to reach it" % fresh["alias"])
+        return "recorded"
+    if st != "stopped":
         return "recorded"
     locks = []
     try:
@@ -1097,16 +1105,22 @@ def peer_state(rec):
 def state(seat):
     """A seat's one state word, one of STATES, read in this order: retired
     (the recorded status), vacant (no `current`), then the live peer for
-    `current` — the session record the harness's own ListAgents reads —
-    else stopped. `claude agents` is never asked: a seat the harness has
-    forgotten reads stopped, and `send` learns the rest."""
+    `current` — the session record the harness's own ListAgents reads.
+    Only a seat with no live peer asks the harness listing (cached, one
+    `claude agents` per invocation): stopped when it lists the session or
+    cannot be read — `send` may try a resume — else gone, a session id no
+    resume can reach."""
     if seat.get("status") == "retired":
         return "retired"
     cur = seat.get("current") or ""
     if not cur:
         return "vacant"
     peer = peer_for_session(cur)
-    return peer_state(peer) if peer else "stopped"
+    if peer:
+        return peer_state(peer)
+    if harness_ok() and harness_row(seat) is None:
+        return "gone"
+    return "stopped"
 
 
 def host_name():
@@ -1997,7 +2011,7 @@ def cmd_spawn(a):
         if existing["engine"] == "codex" and existing["status"] in ("working", "blocked"):
             die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
                 group, alias, existing["status"]), EXIT_UNKNOWN)
-        # vacant / stopped / retired → re-fill this very seat, keeping its
+        # vacant / stopped / gone / retired → re-fill this very seat, keeping its
         # id and the seat-describing pipeline fields. The board pipeline's
         # retire-then-respawn of a deterministic alias (review-pr-<n>) lands
         # here instead of erroring.

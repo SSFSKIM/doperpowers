@@ -1498,9 +1498,11 @@ run "$SMINOS" list grp
 assert_not_contains "$OUT" "scribe" "removed seat is gone"
 
 # ---- 12b) the state word: one word per seat, from the session record ---------
-# The source is ~/.claude/sessions/<pid>.json plus one socket connect, never
-# `claude agents`. Each case constructs a seat record and (where live) a peer
-# record on the suite's socket server, whose pid is alive.
+# A live seat's word comes from ~/.claude/sessions/<pid>.json plus one socket
+# connect; only a seat with no live peer asks `claude agents` (stopped when it
+# lists the session or cannot be asked, else gone). Each case constructs a seat
+# record, (where live) a peer record on the suite's socket server, whose pid is
+# alive, and (where listed) a harness row.
 echo "state word:"
 ST_BUSY=5a5a0001-0000-4000-8000-00000000a001
 ST_SHELL=5a5a0002-0000-4000-8000-00000000a002
@@ -1510,6 +1512,7 @@ ST_WAIT=5a5a0005-0000-4000-8000-00000000a005
 ST_STOP=5a5a0006-0000-4000-8000-00000000a006
 ST_RET=5a5a0007-0000-4000-8000-00000000a007
 ST_LONG=5a5a0008-0000-4000-8000-00000000a008
+ST_GONE=5a5a000a-0000-4000-8000-00000000a00a
 st_peer() { # session-id alias extra-json [pid]
   printf '{"pid":%s,"sessionId":"%s","name":"%s","kind":"background"%s,"messagingSocketPath":"%s"}\n' \
     "${4:-$SOCK_PID}" "$1" "$2" "$3" "$SOCK" > "$HOME/.claude/sessions/st-$2.json"
@@ -1530,6 +1533,10 @@ st_peer "$ST_LONG" lone-seat-with-a-long-name-past-24 ',"status":"busy"'
 "$SMINOS" seat add st s-idle --role scout --session "$ST_IDLE" >/dev/null
 "$SMINOS" seat add st s-wait --session "$ST_WAIT" >/dev/null
 "$SMINOS" seat add st s-stop --session "$ST_STOP" >/dev/null
+# s-stop's session is still listed by the harness; s-gone's (no peer record
+# either) is not.
+{ echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
+"$SMINOS" seat add st s-gone --session "$ST_GONE" >/dev/null
 "$SMINOS" seat add st s-ret --session "$ST_RET" >/dev/null
 "$SMINOS" meta set st/s-ret status retired >/dev/null
 "$SMINOS" seat add st s-vac >/dev/null
@@ -1545,14 +1552,16 @@ assert_equals "$(st_state s-shell)" "busy" "a live peer whose status is shell re
 assert_equals "$(st_state s-bare)" "busy" "a live peer with no status reads busy"
 assert_equals "$(st_state s-idle)" "idle" "a live peer whose status is idle reads idle (the recorded working says nothing)"
 assert_equals "$(st_state s-wait)" "waiting" "a live peer whose status is waiting reads waiting"
-assert_equals "$(st_state s-stop)" "stopped" "a dead pid with a socket file reads stopped"
+assert_equals "$(st_state s-stop)" "stopped" "a dead pid with a socket file, its session listed by the harness, reads stopped"
+assert_equals "$(st_state s-gone)" "gone" "a session id with no live peer and no harness row reads gone"
+assert_equals "$(STUB_AGENTS_FAIL=1 st_state s-gone)" "stopped" "the same seat reads stopped when the harness cannot be asked"
 assert_equals "$(st_state s-ret)" "retired" "a retired record reads retired even while its session answers"
 assert_equals "$(st_state s-vac)" "vacant" "a seat with no current session reads vacant"
 run "$SMINOS" list st --json
 assert_rc 0 "$RC" "list --json exits 0"
 assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys
 rows = json.load(sys.stdin)
-print(len(rows) == 8 and all("state" in d and "live" not in d and "addr" not in d and
+print(len(rows) == 9 and all("state" in d and "live" not in d and "addr" not in d and
                              all(k in d for k in ("seat_id", "current", "short", "status")) for d in rows))')" \
   "True" "list --json rows carry state and the ids, never live or addr"
 # A record written before the one name keeps its stale addr (and a name that
@@ -1567,7 +1576,7 @@ assert_contains "$OUT" '"name": "s-old"' "the record's name reads as its alias"
 # Deterministic recency (far-future stamps put these groups first in the fleet):
 # groups by their newest seat, seats newest first.
 n=9
-for a in s-wait s-idle s-busy s-shell s-bare s-stop s-ret s-vac; do
+for a in s-wait s-idle s-busy s-shell s-bare s-stop s-gone s-ret s-vac; do
   "$SMINOS" meta set "st/$a" updated "2099-01-01T00:00:0${n}Z" >/dev/null
   n=$((n - 1))
 done
@@ -1586,6 +1595,7 @@ EXPECTED_ST="$(printf '%s\n' \
   '  s-shell   busy' \
   '  s-bare    busy' \
   '  s-stop    stopped' \
+  '  s-gone    gone' \
   '  s-ret     retired' \
   '  s-vac     vacant')"
 assert_equals "$OUT" "$EXPECTED_ST" "list is the group heading, then alias, state word and now column — no header, ids, or recorded status"
@@ -1596,53 +1606,56 @@ assert_not_contains "$OUT" "ALIAS" "list prints no header line"
 run "$SMINOS" list st --state busy
 assert_equals "$(printf '%s\n' "$OUT" | sed 1d | awk '{print $1}' | tr '\n' ' ')" "s-busy s-shell s-bare " "--state keeps only the rows with that word"
 run "$SMINOS" list st --state gone
-assert_rc 2 "$RC" "--state accepts only the six words"
+assert_equals "$OUT" "$(printf 'st\n  s-gone   gone')" "--state gone keeps only the gone rows"
+run "$SMINOS" list st --state blocked
+assert_rc 2 "$RC" "--state accepts only the seven words"
 run "$SMINOS" list st --status retired
 assert_rc 2 "$RC" "--status is gone, not aliased"
 run "$SMINOS" list nosuchgroup
 assert_equals "$OUT" "(no seats)" "list of an empty selection says so"
-# No view asks the harness to describe a seat.
+# The harness listing is read at most once per invocation, and only when some
+# seat has no live peer: live, vacant, and retired seats never ask it.
 : > "$STUB_STATE/log/calls.log"
-"$SMINOS" list >/dev/null
 "$SMINOS" list st --json >/dev/null
-assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list never runs claude agents"
+assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "1" "list asks claude agents once for a group with seats that have no live peer"
+: > "$STUB_STATE/log/calls.log"
+"$SMINOS" list st2 >/dev/null
+assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list never asks claude agents when every seat is live or vacant"
 STUB_AGENTS_FAIL=1 run "$SMINOS" list st
 assert_rc 0 "$RC" "list is unaffected by a failing harness"
 assert_contains "$OUT" "s-idle    idle" "and still reads the live word"
-# The chart's hide rule: a retired seat, and a stopped seat the harness no
-# longer lists. A stopped seat the harness still lists stays on the chart; so
-# does one when the harness cannot be asked.
-{ echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
+assert_contains "$OUT" "s-gone    stopped" "and reads a seat it cannot place as stopped"
+# The chart's hide rule is the word: retired or gone.
 run "$SMINOS" chart st --width 200
-assert_contains "$OUT" "■ stopped" "a stopped seat the harness still lists is charted with its glyph"
+assert_contains "$OUT" "■ stopped" "a stopped seat is charted with its glyph"
 assert_contains "$OUT" "◐ waiting" "a waiting seat is charted with the half glyph"
 assert_not_contains "$OUT" "s-ret" "a retired seat is hidden by default"
-assert_contains "$OUT" "8 seats · 5 live · 1 hidden" "live counts busy, idle and waiting"
-rm -f "$STUB_STATE/agents/5a5a0006"
-run "$SMINOS" chart st --width 200
-assert_not_contains "$OUT" "s-stop" "a stopped seat the harness no longer lists is hidden by default"
-assert_contains "$OUT" "8 seats · 5 live · 2 hidden" "and counted in the hidden tail"
+assert_not_contains "$OUT" "s-gone" "a gone seat is hidden by default"
+assert_contains "$OUT" "9 seats · 5 live · 2 hidden" "live counts busy, idle and waiting; hidden counts retired and gone"
 STUB_AGENTS_FAIL=1 run "$SMINOS" chart st --width 200
-assert_contains "$OUT" "s-stop" "a stopped seat stays on the chart when the harness cannot be asked"
+assert_contains "$OUT" "s-gone" "a seat the harness cannot place reads stopped and stays on the chart"
 run "$SMINOS" chart st --all --width 200
-assert_contains "$OUT" "✕ retired" "--all shows the retired seat with its glyph"
-assert_contains "$OUT" "s-stop" "--all shows the forgotten stopped seat"
+assert_contains "$OUT" "⊘ retired" "--all shows the retired seat with its glyph"
+assert_contains "$OUT" "✕ gone" "--all shows the gone seat with its glyph"
 VIEWS="$(cat <<<"$OUT")
 $("$SMINOS" list st)
 $("$SMINOS" tui st --headless --all --width 140 --height 40)"
-for w in blocked gone unknown working "done" error failed; do
+for w in blocked unknown working "done" error failed; do
   assert_not_contains "$VIEWS" " $w" "no view draws the retired word '$w'"
 done
-{ echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
 run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop,s"
 assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
 run "$SMINOS" tui st --headless --all --width 140 --height 40 --keys "!focus:st/s-ret,s"
 assert_not_contains "$OUT" "send → st/s-ret" "s on a retired seat opens no send line"
 assert_contains "$OUT" "s-ret is retired" "and says why"
+run "$SMINOS" tui st --headless --all --width 140 --height 40 --keys "!focus:st/s-gone,s"
+assert_not_contains "$OUT" "send → st/s-gone" "s on a gone seat opens no send line"
+assert_contains "$OUT" "s-gone is gone from the harness" "and says why"
+assert_contains "$OUT" "sminos fill st/s-gone" "pointing at fill"
 run "$SMINOS" reply st/s-idle
 assert_contains "$OUT" "st/s-idle  [$ST_IDLE]  state=idle  turns=" "reply's summary line carries the state word, not the recorded status"
 rm -f "$STUB_STATE/agents/5a5a0006" "$HOME/.claude/sessions/"st-*.json
-for a in s-busy s-shell s-bare s-idle s-wait s-stop s-ret s-vac; do "$SMINOS" remove "st/$a" >/dev/null; done
+for a in s-busy s-shell s-bare s-idle s-wait s-stop s-gone s-ret s-vac; do "$SMINOS" remove "st/$a" >/dev/null; done
 "$SMINOS" remove st2/lone-seat-with-a-long-name-past-24 >/dev/null
 "$SMINOS" remove st2/z >/dev/null
 
@@ -1825,7 +1838,8 @@ run $TUI --keys "b,tab,tab,right"
 assert_contains "$OUT" "--- focus: org/qa" "tab again hands the keys back to the chart"
 run $TUI --keys "?"
 assert_contains "$OUT" "┃ keys" "? opens the help overlay"
-assert_contains "$OUT" "a — show / hide retired seats and stopped seats the harness no longer lists" "the help lists the keys"
+assert_contains "$OUT" "a — show / hide retired and gone seats" "the help lists the keys"
+assert_contains "$OUT" "■ stopped · ✕ gone · ◌ vacant · ⊘ retired" "the help's glyph line names all seven words"
 run $TUI --keys "?,q,right"
 assert_contains "$OUT" "--- focus: org/qa" "q inside the overlay only closes it"
 run $TUI --keys q
@@ -2198,17 +2212,20 @@ assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"
 assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
 assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d2": "woken"' "fan-out retains successful outcome"
 unset CLAUDE_CODE_SESSION_ID
-# A tagged member the harness has forgotten (no row, no process) reads stopped
-# like any other: its resume is attempted, the harness refuses it, and that is
-# the member's own failed outcome — the live member still gets the message.
+# A tagged member the harness no longer lists (no row, no process) is gone: a
+# resume cannot work, so none is attempted — the message is recorded, the
+# sender is told to fill it, and the live member still gets the message.
 D4=4d4d4d4d-aaaa-4000-8000-0000000000d4
 "$SMINOS" seat add fam d4 --parent duo --session "$D4" >/dev/null
 "$SMINOS" meta set fam/d4 cwd "$WORK" >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"d2","kind":"background","status":"idle","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$D2" "$SOCK" > "$HOME/.claude/sessions/fam-d2.json"
-CLAUDE_CODE_SESSION_ID="$DUO" STUB_FAIL_BG=1 run "$SMINOS" say '@d4 @d2 anyone there'
-assert_rc 0 "$RC" "a forgotten member's refused resume does not abort the chat"
-assert_contains "$OUT" 'd4: failed:' "a forgotten member's refused resume is its own failed outcome"
+: > "$STUB_STATE/log/calls.log"
+CLAUDE_CODE_SESSION_ID="$DUO" run "$SMINOS" say '@d4 @d2 anyone there'
+assert_rc 0 "$RC" "a tagged gone member does not abort the chat"
+assert_contains "$OUT" 'd4: recorded' "a tagged gone member's message is recorded"
+assert_contains "$OUT" 'd4 is gone from the harness; fill it to reach it' "and the sender is told to fill it"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $D4" "no resume of a gone member is attempted"
 assert_contains "$OUT" 'd2: sent' "and the fan-out still reaches the live member"
 rm -f "$HOME/.claude/sessions/fam-d2.json"
 "$SMINOS" remove fam/d4 >/dev/null
