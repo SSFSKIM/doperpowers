@@ -36,7 +36,7 @@ where `sminos send two/a "x"` delivers.
 
 ## Progress
 
-- [ ] M1 — one state word: `state()` from the session record and the seat record; `list` grouped, `STATE` column, `--state`; `--json` carries `state`; chart and TUI vocabulary, glyphs, and hide rule; tests.
+- [x] (2026-09-29, reviewed clean) M1 — one state word: `state()` from the session record and the seat record; `list` grouped, `STATE` column, `--state`; `--json` carries `state`; chart and TUI vocabulary, glyphs, and hide rule; tests.
 - [ ] M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
 - [ ] M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's four call sites and their test stubs move; the TUI's `s` key follows; tests, board suites green.
 - [ ] M4 — the words and the proof: `SKILL.md`, the module docstring, the preamble if it names anything that moved; version bump; live proof on the real harness; whole-branch review; retrospective.
@@ -512,6 +512,14 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   banner's shape, and acceptance 4 only pins `via --bg --resume`. The line
   M3 writes for `send`'s socket delivery is `sent to <group>/<alias>`,
   alias-first with no ids or status (acceptance 2).
+  Date/Author: 2026-09-29, plan-executor (SDE controller).
+- Decision (2026-09-29, M1 review): the chart's `prune` keeps a hidden
+  seat that still has a visible descendant, drawn with its own word (`✕`,
+  `■`), as it did before this spec — the chart is a tree, and a hidden
+  parent is the edge its visible children hang from; promoting them would
+  draw them as roots they are not. "Hidden by default" means a hidden
+  seat is not drawn *for itself*. The M1 task review raised it; dismissed
+  as the existing tree-drawing intent, unchanged.
   Date/Author: 2026-09-29, plan-executor (SDE controller).
 
 ## Outcomes & Retrospective
