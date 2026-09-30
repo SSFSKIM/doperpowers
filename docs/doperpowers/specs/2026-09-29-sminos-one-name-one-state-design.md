@@ -38,9 +38,9 @@ where `sminos send two/a "x"` delivers.
 
 - [x] (2026-09-29, reviewed clean) M1 — one state word: `state()` from the session record and the seat record; `list` grouped, `STATE` column, `--state`; `--json` carries `state`; chart and TUI vocabulary, glyphs, and hide rule; tests.
 - [x] (2026-09-29, reviewed clean) M1 follow-up — `gone` reinstated as a seventh word (Decision Log, 2026-09-29): `state()` reads the harness listing for a seat with no live peer; `REFILLABLE` gains it; glyphs (`✕` gone, a distinct `retired` glyph); the hide rule becomes retired-or-gone; tests.
-- [ ] M1 follow-up, predicate revised — `gone` is "no transcript on this machine", not "no harness row"; `claude agents` leaves `state()`; tests.
+- [x] (2026-09-30, reviewed clean with M3's fix wave, 979b51e4) M1 follow-up, predicate revised — `gone` is "no transcript on this machine", not "no harness row"; `claude agents` leaves `state()`; tests.
 - [x] (2026-09-29, reviewed clean) M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
-- [ ] M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's four call sites and their test stubs move; the TUI's `s` key follows; tests, board suites green.
+- [x] (2026-09-30, reviewed clean) M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's five call sites (Decision Log) and their test stubs move; the TUI's `s` key follows; tests, board suites green.
 - [ ] M4 — the words and the proof: `SKILL.md`, the module docstring, the preamble if it names anything that moved; version bump; live proof on the real harness; whole-branch review; retrospective.
 
 ## Terms
