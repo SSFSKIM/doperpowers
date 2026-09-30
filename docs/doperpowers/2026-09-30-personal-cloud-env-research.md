@@ -292,6 +292,24 @@ gateway forward and the sync fragile; they fit a per-session throwaway computer,
 carries the person's identity. A home box has no marginal cost at all and only the home-dependence
 already accepted for the mini.
 
+**Why the body is a VM and not a container.** "VM" is not a principle here; it is what a
+session host needs and what is cheapest for it. A session host must hold 32 GB or more for hours
+to days, mount a persistent POSIX volume as `/Users/new` (transcripts are appended per message,
+so object-backed FUSE mounts that rewrite whole objects on close are out), run sshd, mosh and
+Tailscale with a tun device, have no lifetime cap, and cost little while idle. Container products
+fail one of these each: Lambda (15 min), Vercel and E2B (24 h continuous), Cloud Run (no block
+volume; Filestore's 1 TB minimum), Cloudflare (small instances, no persistent disk, in-container
+work does not count as activity), and the sandbox APIs (Modal, Daytona, E2B) price per
+GiB-second for bursty jobs, which for a 32 GB box held for hours comes to roughly $0.9–1.3 per
+hour against about €0.05 for a Hetzner ARM VM — a 15–25× difference at the same RAM. Fly
+Machines are the container-shaped exception: a Docker image run as a microVM with a volume,
+stopped and started in seconds, billed only while running, at 2–3× Hetzner per hour. Inside the
+host, sessions remain processes (P5); Docker on the host is available for projects that need it.
+One shared volume also decides the topology: a block volume attaches to one body, so "one
+container per session" would need a network filesystem from the hub, which the storage research
+found fragile at WAN distance — hence one on-demand host per person, not one container per
+session.
+
 ## 8. Plan of work (proposed milestones)
 
 | # | Milestone | Depends on |
