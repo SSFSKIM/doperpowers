@@ -38,7 +38,7 @@ where `sminos send two/a "x"` delivers.
 
 - [x] (2026-09-29, reviewed clean) M1 — one state word: `state()` from the session record and the seat record; `list` grouped, `STATE` column, `--state`; `--json` carries `state`; chart and TUI vocabulary, glyphs, and hide rule; tests.
 - [ ] M1 follow-up — `gone` reinstated as a seventh word (Decision Log, 2026-09-29): `state()` reads the harness listing for a seat with no live peer; `REFILLABLE` gains it; glyphs (`✕` gone, a distinct `retired` glyph); the hide rule becomes retired-or-gone; tests.
-- [ ] M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
+- [x] (2026-09-29, reviewed clean) M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
 - [ ] M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's four call sites and their test stubs move; the TUI's `s` key follows; tests, board suites green.
 - [ ] M4 — the words and the proof: `SKILL.md`, the module docstring, the preamble if it names anything that moved; version bump; live proof on the real harness; whole-branch review; retrospective.
 
@@ -592,6 +592,19 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   not attempted. Landed as an M1 follow-up after M2, before M3.
   Date/Author: 2026-09-29, the human partner's decision, relayed by the
   owning session; written in by the controller.
+- Decision (2026-09-29, M2): the gaps M2 resolved. Both ambiguity paths
+  share one `ambiguous_seat()` helper printing sorted `group/alias` names,
+  no ids. A seat send prints exactly `sent to <group>/<alias>`.
+  `load_seat` reads `name` as the alias and drops a stale `addr` in memory
+  (the file is untouched), so an old record's custom addr never shows as
+  a second name. `lock_names` lost its `label` (every caller locks one
+  key, built by `seat_key()`; the refusal reads `'g/a' is being changed by
+  another sminos process`). `find_seat` keeps ids before the unique alias,
+  per the milestone's stage list — with prefixes gone the two orders
+  differ only for an alias that is itself a full uuid. migrate's v2
+  conversion stops writing `addr` too. The strand guard's message drops
+  `at addr '…'`; its logic is verbatim.
+  Date/Author: 2026-09-29, M2 task-executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
