@@ -1,0 +1,84 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Release the map guard before running the held-lock body",
+   "comment": "The `yield` remains inside `async with self._guard`, so the global guard is held throughout the caller's computation. Consequently, `JobQueue` workers computing different keys serialize behind one another, and a stalled handler blocks all other cache misses. A factory that computes another key through the same cache also deadlocks. Keep the guard scoped to reference-map updates and run lock acquisition and the caller's body outside it.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/keylock.py",
+   "lines": "56-57",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Clear and signal in-flight computations on every exit",
+   "comment": "If `factory()` raises or is cancelled, execution skips both removal of the in-flight entry and signaling its event. Existing waiters and every later request for that key then wait forever. This also breaks the default retry path: a handler that fails once hangs on its second attempt without being called again, so `drain()` and shutdown cannot finish. Put event cleanup and signaling in a `finally` block covering the computation.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "130-133",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Check expiry before extending a hot entry's deadline",
+   "comment": "Once an entry has enough hits\u2014or an expired read brings it to the threshold\u2014this code replaces its deadline before checking whether it has already expired. A read after an arbitrarily long idle period therefore revives and serves the old value instead of recomputing it. An injected-clock check confirmed that a previously hot entry remained unchanged long after its deadline. Check the original deadline before counting the read or sliding expiry.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "75-80",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#4",
+   "title": "Keep cache counter names aligned with the hit-rate reader",
+   "comment": "The cache now emits `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`, but `JobQueue.cache_hit_rate()` still reads their old names. With the default shared counters, its total consequently stays zero and it reports a hit rate of 1.0 regardless of actual traffic. This also makes `warm_stale_keys()` always skip its work; a check with one observed miss reported 1.0 and refreshed no keys. Update the reader together with the renamed counters, or retain the existing names.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "129",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#5",
+   "title": "Apply the waiting timeout to in-flight joins",
+   "comment": "When another computation already owns the key, this unbounded event wait bypasses both the per-call `timeout` and the configured `lock_timeout`, which are only applied later to lock acquisition. Thus the same-key contention these options are meant to bound can still hold a caller indefinitely. A waiter with a 10 ms timeout remained pending beyond 30 ms while its producer was running. Resolve the effective timeout before this branch and apply it to the event wait as well.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "110-111",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "f1048f10e79d786759ccbcc1567273d391608f04",
+  "headCommit": "bbf7c0f8fabc652c8273baf5847f0c8108bec54b",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.2BWNAk"
+ },
+ "level": "medium",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 5
+  }
+ ],
+ "explanation": "incorrect \u2014 Targeted checks reproduced serialization of unrelated keys, hung retries, stale-value resurrection, ignored join timeouts, and disabled warm-up after an observed cache miss. These regressions affect the cache and worker pool's documented behavior; the working tree was left unchanged.",
+ "run_id": "wf_c01726cb-5e4",
+ "logs": [
+  "review (medium: sol/xhigh) against main @ f1048f10e7 (HEAD bbf7c0f8fa)",
+  "review verdict: incorrect \u2014 incorrect \u2014 Targeted checks reproduced serialization of unrelated keys, hung retries, stale-value resurrection, ignored join timeouts, and disabled warm-up after an observed cache miss. These regressions affect the cache and worker pool's documented behavior; the working tree was left unchanged."
+ ],
+ "tokens": 27511,
+ "secs": 287
+}

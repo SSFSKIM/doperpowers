@@ -1,0 +1,229 @@
+{
+  "run_id": "2026-09-29-sol61-x1",
+  "engine": {
+    "name": "doperpowers:review-code (Claude-native lane, GPT via the local gateway)",
+    "invocation": "skills/review-code/workflows/code-review.js (identical to doperpowers 279842f9, 7.128.0 're-pin to GPT-6.1 Sol'; run from a copy at claude-usage-menubar/.doperpowers/bench/code-review.js) through the harness Workflow tool from an interactive session against materialized scratch repos (repo arg, isolation off); all ten runs concurrent on one Codex account",
+    "ladder": {
+      "low": "one reviewer-agent, sol/high (sol = GPT-6.1 Sol)",
+      "medium": "one reviewer-agent, sol/xhigh (sol = GPT-6.1 Sol)"
+    },
+    "agent_body": "doperpowers:reviewer-medium for both levels, model/effort overridden per call by the workflow's ladder",
+    "date": "2026-09-29"
+  },
+  "baseline": {
+    "run_id": "2026-07-26-c2-codex-r3",
+    "engine": "single codex review through review-engine.sh, gpt-5.6-sol xhigh",
+    "seeded": {
+      "recall": 17,
+      "fp": 0
+    },
+    "promoted": 3,
+    "also": {
+      "run_id": "2026-08-03-panel-x1",
+      "engine": "codex review panel (workflow verb), sol/xhigh finders, sol/high verifier",
+      "seeded": {
+        "recall": 17,
+        "fp": 1
+      },
+      "promoted": 3
+    }
+  },
+  "prior_native": {
+    "run_id": "2026-09-09-native-x1",
+    "engine": "same workflow at medium: one reviewer, sol/xhigh (sol = GPT-5.6 Sol)",
+    "seeded": {
+      "recall": 17,
+      "fp": 0
+    },
+    "promoted": 3,
+    "secs_per_case": {
+      "case1": 482,
+      "case2": 465,
+      "case3": 480,
+      "case4": 671,
+      "case5": 435
+    },
+    "secs_note": "09-09 secs are run-case.sh wall around a headless session (case4: interactive), not the workflow's own duration; today's secs are the workflow duration"
+  },
+  "bar": {
+    "rule": "seeded recall >= baseline seeded recall AND total seeded-set FP <= baseline FP + 1",
+    "required": "recall >= 17 and FP <= 1"
+  },
+  "totals": {
+    "low": {
+      "seeded": {
+        "denominator": 17,
+        "recall": 17,
+        "fp": 0
+      },
+      "promoted": {
+        "denominator": 3,
+        "recall": 3
+      },
+      "full_denominator": "20/20",
+      "secs_total": 522,
+      "verdict": "PASS \u2014 equals the codex baseline exactly; findings are exactly the truth set"
+    },
+    "medium": {
+      "seeded": {
+        "denominator": 17,
+        "recall": 17,
+        "fp": 0
+      },
+      "promoted": {
+        "denominator": 3,
+        "recall": 3
+      },
+      "full_denominator": "20/20",
+      "secs_total": 851,
+      "verdict": "PASS \u2014 equals the codex baseline and the 09-09 native medium exactly; findings are exactly the truth set"
+    }
+  },
+  "per_case": {
+    "case1": {
+      "low": {
+        "secs": 92,
+        "tokens": 20619,
+        "seeded": "3/3",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case1-b1",
+          "reviewer#2": "case1-b2",
+          "reviewer#3": "case1-b3"
+        }
+      },
+      "medium": {
+        "secs": 132,
+        "tokens": 21965,
+        "seeded": "3/3",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case1-b1",
+          "reviewer#2": "case1-b2",
+          "reviewer#3": "case1-b3"
+        }
+      }
+    },
+    "case2": {
+      "low": {
+        "secs": 93,
+        "tokens": 19079,
+        "seeded": "3/3",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case2-b3",
+          "reviewer#2": "case2-b2",
+          "reviewer#3": "case2-b1"
+        },
+        "off_file_anchor": "case2-b2 anchored at rates.ts:50-51 (baseRateFor, the producer); the comment names quickEstimate in api.ts treating cents as dollars \u2014 mechanism match"
+      },
+      "medium": {
+        "secs": 114,
+        "tokens": 18501,
+        "seeded": "3/3",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case2-b2",
+          "reviewer#2": "case2-b3",
+          "reviewer#3": "case2-b1"
+        },
+        "off_file_anchor": "case2-b2 anchored at rates.ts:50-51 (baseRateFor, the producer); the comment names quickEstimate in api.ts treating cents as dollars \u2014 mechanism match"
+      }
+    },
+    "case3": {
+      "low": {
+        "secs": 79,
+        "tokens": 21091,
+        "seeded": "3/3",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case3-b1",
+          "reviewer#2": "case3-b2",
+          "reviewer#3": "case3-b3"
+        },
+        "off_file_anchor": "case3-b2 anchored at store.py:122 (return len(rows)); the comment names handle_put_document binding it as revision/ETag \u2014 mechanism match, same anchor the 09-09 medium was credited with"
+      },
+      "medium": {
+        "secs": 89,
+        "tokens": 20640,
+        "seeded": "3/3",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case3-b1",
+          "reviewer#2": "case3-b2",
+          "reviewer#3": "case3-b3"
+        },
+        "off_file_anchor": "case3-b2 anchored at store.py:122 (return len(rows)); the comment names handle_put_document binding it as revision/ETag \u2014 mechanism match, same anchor the 09-09 medium was credited with"
+      }
+    },
+    "case4": {
+      "low": {
+        "secs": 128,
+        "tokens": 21780,
+        "seeded": "4/4",
+        "promoted": "2/2",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case4-b4",
+          "reviewer#2": "case4-b3",
+          "reviewer#3": "case4-b1",
+          "reviewer#4": "case4-b2",
+          "reviewer#5": "case4-u1",
+          "reviewer#6": "case4-u2"
+        },
+        "off_file_anchor": "case4-b4 anchored at snapshot.sh:114 (the v2 manifest producer); the comment names prune.sh's three-field read \u2014 mechanism match, same anchor as 09-09 medium",
+        "note": "the reviewer's one end-to-end reproduction command was denied by the Claude Code auto-mode classifier; it did not retry and concluded from the patch and callers. Same six mechanisms as medium (b1-b4, u1, u2); only u1's severity differs (P2 vs P1)"
+      },
+      "medium": {
+        "secs": 229,
+        "tokens": 23628,
+        "seeded": "4/4",
+        "promoted": "2/2",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case4-b4",
+          "reviewer#2": "case4-b3",
+          "reviewer#3": "case4-u1",
+          "reviewer#4": "case4-b1",
+          "reviewer#5": "case4-b2",
+          "reviewer#6": "case4-u2"
+        },
+        "off_file_anchor": "case4-b4 anchored at snapshot.sh:114 (the v2 manifest producer); the comment names prune.sh's three-field read \u2014 mechanism match, same anchor as 09-09 medium"
+      }
+    },
+    "case5": {
+      "low": {
+        "secs": 130,
+        "tokens": 23199,
+        "seeded": "4/4",
+        "promoted": "1/1",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case5-b3",
+          "reviewer#2": "case5-b2",
+          "reviewer#3": "case5-b1",
+          "reviewer#4": "case5-u1",
+          "reviewer#5": "case5-b4"
+        },
+        "off_file_anchor": "case5-b4 anchored at cache.py:129 (the renamed counter); the comment names JobQueue.cache_hit_rate() reading the old names \u2014 mechanism match"
+      },
+      "medium": {
+        "secs": 287,
+        "tokens": 27511,
+        "seeded": "4/4",
+        "promoted": "1/1",
+        "fp": 0,
+        "mapping": {
+          "reviewer#1": "case5-b3",
+          "reviewer#2": "case5-b2",
+          "reviewer#3": "case5-b1",
+          "reviewer#4": "case5-b4",
+          "reviewer#5": "case5-u1"
+        },
+        "off_file_anchor": "case5-b4 anchored at cache.py:129 (the renamed counter); the comment names JobQueue.cache_hit_rate() reading the old names \u2014 mechanism match"
+      }
+    }
+  },
+  "adjudication_rules": "X1 README: mechanism match against truth.json; a flagged bait is an FP by construction; a genuine unseeded defect is credited to neither side and excluded from FP. Promoted entries (case4-u1, case4-u2, case5-u1) are counted as in 2026-09-09-native-x1: a separate 3-entry promoted recall outside the 17-entry seeded denominator the bar gates on, never FPs when matched, and summed into the full-20 figure. No unseeded candidate was raised at either level, so the strict reading (every non-truth finding an FP) is also low 0, medium 0.",
+  "notes": "notes.md"
+}

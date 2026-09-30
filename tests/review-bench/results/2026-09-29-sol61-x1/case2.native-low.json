@@ -1,0 +1,62 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Restore positive finite weight validation before pricing",
+   "comment": "Removing the guard from `quoteShipment` leaves only the `typeof` check in `parseQuoteRequest`, so `handleQuote` now returns 200 for zero and negative weights instead of the documented 400. For example, a domestic request with `weightKg: -1` returns $1.30, and sufficiently negative weights produce negative charges. NaN and Infinity also reach the pricing code when supplied directly to the handler. Restore the positive-finite check at the request boundary, or restore the guard and its RangeError-to-400 handling.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3PJcpH/quote.ts",
+   "lines": "82-83",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Convert the legacy estimate from cents to dollars",
+   "comment": "`baseRateFor` now returns cents, but `quickEstimate` still passes its result to `roundDollars` and renders it directly with `toFixed(2)`. The README identifies this as an endpoint still used by the marketing widget, which displays the string next to a dollar sign. A domestic 2 kg parcel therefore displays $590.00 rather than $5.90. Update that caller to use `centsToDollars` before formatting so the unit migration does not inflate every widget estimate by 100 times.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3PJcpH/rates.ts",
+   "lines": "50-51",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Preserve inclusive weight-tier upper bounds",
+   "comment": "Changing the tier comparison from `<=` to `<` moves parcels weighing exactly 1, 5, or 20 kg into the next tier, contrary to both the `WeightTier` comment and the README's inclusive-bound contract. Domestic base charges at those boundaries become $4.95, $11.50, and $25.00 instead of $3.70, $8.75, and $23.50. Use `<=` in the lookup to preserve the existing pricing behavior at each tier boundary.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3PJcpH/rates.ts",
+   "lines": "42",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "73081d16298a40b05e555df23fa5b75446afe32e",
+  "headCommit": "9300bae2b691b9c6c2dc1e8575930779b8ba3e1d",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.3PJcpH"
+ },
+ "level": "low",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 3
+  }
+ ],
+ "explanation": "incorrect \u2014 The cents migration breaks the legacy estimate endpoint, removes required weight validation, and changes inclusive tier boundaries. These regressions were reproduced with runtime checks; TypeScript checks pass, and the working tree was left unchanged.",
+ "run_id": "wf_7ffc6c89-a9d",
+ "logs": [
+  "review (low: sol/high) against main @ 73081d1629 (HEAD 9300bae2b6)",
+  "review verdict: incorrect \u2014 incorrect \u2014 The cents migration breaks the legacy estimate endpoint, removes required weight validation, and changes inclusive tier boundaries. These regressions were reproduced with runtime checks; TypeScript checks pass, and the working tree was left unchanged."
+ ],
+ "tokens": 19079,
+ "secs": 93
+}

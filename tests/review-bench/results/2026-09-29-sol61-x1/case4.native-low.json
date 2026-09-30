@@ -1,0 +1,95 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Update prune.sh to consume the v2 manifest",
+   "comment": "Every successful snapshot now emits four fields, but prune.sh still reads `epoch bytes path` at line 70. Bash assigns the remaining fields to `path`, making it `<bytes>\\t<archive-path>` rather than an existing archive pathname. prune.sh therefore skips the record as missing, and run-backup.sh reports success without rotating anything. Update the consumer to read the label field and use it instead of recovering the label from the filename; otherwise archives accumulate indefinitely, including for ordinary labels.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/snapshot.sh",
+   "lines": "114",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Escape values interpolated into the remote shell command",
+   "comment": "BACKUP_REMOTE_DIR and the archive basename are inserted into a command interpreted by the remote shell. Neither config values nor labels are constrained to exclude single quotes, so a quote can terminate the purported quoting and inject additional commands under the remote backup account. Even a benign directory or label containing an apostrophe can break replication. Use shell-safe escaping for both interpolated values rather than surrounding their raw contents with single quotes.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "97-99",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Test the force flag's value rather than its nonemptiness",
+   "comment": "snapshot.sh defaults FORCE to the string `0`, but this condition treats any nonempty string as enabled. Consequently, when either filesystem has insufficient space, a normal invocation without --force logs a warning and continues instead of refusing the backup. Compare the flag to `1`, or make its disabled representation empty, so the new preflight check is actually enforced by default.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "81-83",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#4",
+   "title": "Restore cleanup of staging directories on failed runs",
+   "comment": "The previous EXIT/INT/TERM cleanup trap has been removed, and rmdir now runs only after tar, replication, and publication succeed. A tar error, interrupted run, or failed SSH transfer leaves the staging directory and its partial or complete archive behind. Repeated scheduled failures can therefore fill the temporary filesystem, particularly because a replication failure leaves the entire archive there. Install a cleanup trap immediately after creating STAGE while retaining the success-path publication behavior.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/snapshot.sh",
+   "lines": "90",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#5",
+   "title": "Publish the remote archive only after transfer completes",
+   "comment": "The remote cat writes directly to the final archive name, contrary to the stated partial-transfer protection. If SSH disconnects or the remote filesystem fills midway through replication, that name remains present with truncated contents; a retry using the same name can also truncate an existing replica. Failing before local publication does not remove or repair the remote file. Transfer to a temporary remote pathname and rename it only after the stream has completed successfully.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "98-99",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#6",
+   "title": "Apply private permissions on the remote host",
+   "comment": "The local umask of 077 does not propagate through SSH. On a remote account with the common umask of 022, mkdir and cat create a traversable backup directory and a world-readable archive, exposing source-tree contents to other users on that host even though the local copy is private. Set restrictive permissions in the remote command, including handling an already-existing destination file, rather than relying on the local process's umask.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.Zetzaa/lib/common.sh",
+   "lines": "97-99",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "ba7b110d89355ff143e8d511757c9dde0ac63c41",
+  "headCommit": "8ebfbd6d186cd24ea425a1912d76964ea4556823",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.Zetzaa"
+ },
+ "level": "low",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 6
+  }
+ ],
+ "explanation": "incorrect \u2014 The manifest producer and retention consumer are incompatible, the default force value bypasses space enforcement, and failure handling leaves staging data and incomplete remote replicas behind. Static inspection also identifies remote command injection and permission exposure; behavioral checks were attempted but blocked by the execution permission system, so these conclusions are based on the patch and its callers.",
+ "run_id": "wf_f007e844-476",
+ "logs": [
+  "review (low: sol/high) against main @ ba7b110d89 (HEAD 8ebfbd6d18)",
+  "review verdict: incorrect \u2014 incorrect \u2014 The manifest producer and retention consumer are incompatible, the default force value bypasses space enforcement, and failure handling leaves staging data and incomplete remote replicas behind. Static inspection also identifies remote command injection and permission exposure; behavioral checks were attempted but blocked by the execution permission system, so these conclusions are based on the patch and its callers."
+ ],
+ "tokens": 21780,
+ "secs": 128
+}

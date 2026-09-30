@@ -1,0 +1,62 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Convert cents to dollars in the legacy estimate handler",
+   "comment": "`baseRateFor` now returns cents, but `quickEstimate` in `api.ts` still passes its result to `roundDollars(...).toFixed(2)`, which treats it as dollars. Every marketing-widget estimate is therefore 100 times too high: a domestic 0.5 kg parcel renders `310.00` next to the dollar sign while `handleQuote` returns $3.10. Update that caller to use `centsToDollars` before formatting.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3PJcpH/rates.ts",
+   "lines": "50-51",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Restore positive, finite weight validation before pricing",
+   "comment": "The old `quoteShipment` guard was removed, while `parseQuoteRequest` still checks only that the weight has type `number`. Consequently, `handleQuote` now returns 200 for zero and negative weights instead of the documented 400; a domestic weight of -10 even produces a zero-dollar total with a negative subtotal. Non-finite numeric inputs also produce successful replies containing non-finite prices. Restore the validation at the API boundary, or retain the guard together with the handler's former RangeError-to-400 conversion.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3PJcpH/quote.ts",
+   "lines": "82-83",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Preserve inclusive upper bounds when selecting weight tiers",
+   "comment": "Using `<` instead of the previous `<=` sends parcels weighing exactly 1, 5, or 20 kg into the next tier, contrary to both the `WeightTier` contract and README. For example, a domestic 1 kg parcel now costs $4.95 instead of $3.70, and a 5 kg parcel costs $11.50 instead of $8.75. Restore the inclusive comparison so the cents conversion does not change boundary pricing.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.3PJcpH/rates.ts",
+   "lines": "42",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "73081d16298a40b05e555df23fa5b75446afe32e",
+  "headCommit": "9300bae2b691b9c6c2dc1e8575930779b8ba3e1d",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.3PJcpH"
+ },
+ "level": "medium",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 3
+  }
+ ],
+ "explanation": "incorrect \u2014 The change breaks legacy estimate units, removes invalid-weight rejection, and changes documented tier-boundary pricing. TypeScript compilation passed, but targeted runtime checks reproduced all three regressions.",
+ "run_id": "wf_79e2b230-14f",
+ "logs": [
+  "review (medium: sol/xhigh) against main @ 73081d1629 (HEAD 9300bae2b6)",
+  "review verdict: incorrect \u2014 incorrect \u2014 The change breaks legacy estimate units, removes invalid-weight rejection, and changes documented tier-boundary pricing. TypeScript compilation passed, but targeted runtime checks reproduced all three regressions."
+ ],
+ "tokens": 18501,
+ "secs": 114
+}

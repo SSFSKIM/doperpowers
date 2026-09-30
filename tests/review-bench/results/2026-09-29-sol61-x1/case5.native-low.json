@@ -1,0 +1,84 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Release the map guard before acquiring and yielding the key lock",
+   "comment": "The `yield` now remains inside `async with self._guard`, so the global guard is held throughout the caller's work. A slow computation for key A therefore blocks every other key, reducing the worker pool to serial cache-miss processing; nested acquisitions for different keys deadlock. In addition, those blocked callers wait on the guard before their timeout is applied, so they can wait indefinitely despite supplying a timeout. Keep the guard scoped to map/refcount mutations and acquire and yield the per-key lock outside it.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/keylock.py",
+   "lines": "56-61",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Clear and signal in-flight computations on unsuccessful exits",
+   "comment": "If `factory()` raises or is cancelled, execution skips both deletion of `_inflight[key]` and `done.set()`. Every subsequent request for that key then waits on an event that will never fire. This also breaks the default job retry path: after the first handler failure, the second attempt hangs instead of retrying, and `drain()` and shutdown can never finish. Remove the in-flight entry and signal its event in a `finally` block so unsuccessful computations release their joiners.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "130-133",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Check expiration before sliding the entry deadline",
+   "comment": "The hit count and deadline are updated before the expiration check. With the default threshold, an entry read twice while fresh and then read after its deadline gets its third hit, receives a new deadline, and returns the expired value without invoking the factory. Once the threshold has been reached, even arbitrarily long idle periods cannot expire that entry on its next read. Check and remove expired entries before updating hit counts or refreshing the deadline.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "75-80",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#4",
+   "title": "Apply the requested timeout to in-flight joins",
+   "comment": "A request arriving while the same key is computing takes this event-wait path and never reaches the timeout handling below it. Consequently, both an explicit `timeout` and the cache's configured `lock_timeout` are ignored in the main contention scenario: a stuck upstream computation leaves its joiners waiting indefinitely. Resolve the effective timeout before this branch and apply it to the event wait as well.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "110-111",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#5",
+   "title": "Update the hit-rate consumer when renaming cache counters",
+   "comment": "The cache now records `cache.get.hit`, `cache.get.hit_after_wait`, and `cache.get.miss`, but `JobQueue.cache_hit_rate()` still reads `cache.hit`, `cache.hit_after_wait`, and `cache.miss`. With the queue's default shared counters, the reader therefore sees no observations and always returns 1.0, even after exclusively missed requests. This makes reported statistics incorrect and permanently prevents `warm_stale_keys()` from running. Update the consumer to the new names or preserve the existing counter names.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.2BWNAk/cache.py",
+   "lines": "129",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "f1048f10e79d786759ccbcc1567273d391608f04",
+  "headCommit": "bbf7c0f8fabc652c8273baf5847f0c8108bec54b",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.2BWNAk"
+ },
+ "level": "low",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 5
+  }
+ ],
+ "explanation": "incorrect \u2014 Inspection of all four changed files and focused Python reproductions confirmed cross-key serialization, stranded computations after failure, expired-value resurrection, ignored join timeouts, and a counter-name mismatch that disables warm-up. These defects affect the cache and worker pool's documented behavior.",
+ "run_id": "wf_d645b057-feb",
+ "logs": [
+  "review (low: sol/high) against main @ f1048f10e7 (HEAD bbf7c0f8fa)",
+  "review verdict: incorrect \u2014 incorrect \u2014 Inspection of all four changed files and focused Python reproductions confirmed cross-key serialization, stranded computations after failure, expired-value resurrection, ignored join timeouts, and a counter-name mismatch that disables warm-up. These defects affect the cache and worker pool's documented behavior."
+ ],
+ "tokens": 23199,
+ "secs": 130
+}

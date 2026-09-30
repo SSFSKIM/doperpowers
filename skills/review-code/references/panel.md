@@ -36,10 +36,13 @@ Optional:
 
 Sol at xhigh — medium when scored, low from 2026-09-25, medium again since
 2026-09-29 — reproduced the codex baseline exactly on the X1 seeded set (17/17,
-FP 0; `tests/review-bench/results/2026-09-09-native-x1`). That score is GPT-5.6
-Sol's; GPT-6.1 Sol, which `sol` resolves to since 2026-09-29, is unscored on
-the bench, as is sol at high. Known tendency of the panel on Sol finders and a
-Sol verifier (at xhigh until 2026-09-25, at high since 2026-09-29): it raises
+FP 0; `tests/review-bench/results/2026-09-09-native-x1`, on GPT-5.6 Sol).
+GPT-6.1 Sol, which `sol` resolves to since 2026-09-29, scored the same at both
+single sol rungs — high and xhigh each 17/17, FP 0, the findings exactly the
+truth set (`tests/review-bench/results/2026-09-29-sol61-x1`); the seeded set is
+saturated and no longer separates the two. Known tendency of the panel on Sol
+finders and a Sol verifier (at xhigh until 2026-09-25, at high since
+2026-09-29; observed on GPT-5.6 Sol, not yet re-measured on GPT-6.1): it raises
 intent-documented design choices and confirms them (two such FPs on the seeded
 set; max raised none) — weigh a panel finding against the change's stated
 intent.

@@ -1,0 +1,62 @@
+{
+ "verdict": "incorrect",
+ "findings": [
+  {
+   "id": "reviewer#1",
+   "title": "Subtract allowed lateness from the tenant watermark",
+   "comment": "With a positive `allowed_lateness`, adding it to the watermark rejects both readings within the grace period and ordinary in-order readings whose timestamps advance by less than that amount. For example, after timestamp 100 with a 30-second allowance, both 90 and 110 are dropped, although both should be accepted. This silently removes valid readings from summaries and inflates `dropped_late`. Compute the cutoff as `watermark - self.allowed_lateness`.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.5sc0Kh/windows.py",
+   "lines": "70-71",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#2",
+   "title": "Clear pending windows after taking the flush snapshot",
+   "comment": "`flush()` no longer retires accumulated windows, although `summarize_files()` calls it at every batch boundary expecting retirement. Consequently, the second batch includes the first batch's windows, even an empty subsequent batch emits old rows, and later readings in the same window produce cumulative rather than per-batch statistics. Retaining all pending windows also defeats the documented backfill memory behavior. Save the snapshot, clear `_pending`, and return the saved rows.",
+   "priority": "P1",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.5sc0Kh/aggregate.py",
+   "lines": "85-87",
+   "sources": [
+    "reviewer"
+   ]
+  },
+  {
+   "id": "reviewer#3",
+   "title": "Reuse tenant configuration within a summarization run",
+   "comment": "Every reading calls `load_tenant_limits()`, which opens and parses the entire configuration file even when all readings belong to the same tenant. This adds filesystem I/O and JSON decoding proportional to the number of records rather than the number of tenants, materially slowing large telemetry batches. A local 20,000-reading check made 20,000 configuration loads and took about 0.68 seconds versus 0.11 seconds with preloaded limits. Load the configuration once per run or cache resolved limits for that run.",
+   "priority": "P2",
+   "file": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T/review-bench.5sc0Kh/pipeline.py",
+   "lines": "39-40",
+   "sources": [
+    "reviewer"
+   ]
+  }
+ ],
+ "lenses": [],
+ "target": {
+  "base": "main",
+  "baseCommit": "7c4234aaa1baf85aaa9070227be6de730dcec2a0",
+  "headCommit": "67d2f892214c86164de1edcd40a28e41c5e1a34d",
+  "repo": "/var/folders/c1/l4z5k02n2779byvnymzxsvth0000gn/T//review-bench.5sc0Kh"
+ },
+ "level": "low",
+ "coverage": [
+  {
+   "finder": "reviewer",
+   "lens": null,
+   "status": "ok",
+   "candidates": 3
+  }
+ ],
+ "explanation": "incorrect \u2014 Inspection and executable checks confirmed valid readings being dropped, previously emitted windows leaking into later batches, and repeated configuration I/O. The intentional numeric-input rejection behaved as documented in the cases checked; no test suite is included in this repository.",
+ "run_id": "wf_009fc5ff-118",
+ "logs": [
+  "review (low: sol/high) against main @ 7c4234aaa1 (HEAD 67d2f89221)",
+  "review verdict: incorrect \u2014 incorrect \u2014 Inspection and executable checks confirmed valid readings being dropped, previously emitted windows leaking into later batches, and repeated configuration I/O. The intentional numeric-input rejection behaved as documented in the cases checked; no test suite is included in this repository."
+ ],
+ "tokens": 20619,
+ "secs": 92
+}
