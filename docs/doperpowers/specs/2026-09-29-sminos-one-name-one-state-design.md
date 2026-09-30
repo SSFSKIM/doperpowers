@@ -9,7 +9,7 @@ harness-derived one) name the same fact in different words and disagree on
 most rows of the real fleet (`working stopped`, `idle gone`). Two verbs
 deliver a message to a seat, `send` (live only) and `wake` (live or
 stopped). After this change a seat has **one name**, its alias, which is
-also the name the harness knows it by; **one state word** out of six, read
+also the name the harness knows it by; **one state word** out of seven, read
 live from the same file the harness's own ListAgents reads; and **one
 delivery verb**, `send`, which reaches a live seat over its socket and
 resumes a stopped one. The socket is the machine's route to a seat and is
@@ -37,6 +37,7 @@ where `sminos send two/a "x"` delivers.
 ## Progress
 
 - [x] (2026-09-29, reviewed clean) M1 — one state word: `state()` from the session record and the seat record; `list` grouped, `STATE` column, `--state`; `--json` carries `state`; chart and TUI vocabulary, glyphs, and hide rule; tests.
+- [ ] M1 follow-up — `gone` reinstated as a seventh word (Decision Log, 2026-09-29): `state()` reads the harness listing for a seat with no live peer; `REFILLABLE` gains it; glyphs (`✕` gone, a distinct `retired` glyph); the hide rule becomes retired-or-gone; tests.
 - [ ] M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
 - [ ] M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's four call sites and their test stubs move; the TUI's `s` key follows; tests, board suites green.
 - [ ] M4 — the words and the proof: `SKILL.md`, the module docstring, the preamble if it names anything that moved; version bump; live proof on the real harness; whole-branch review; retrospective.
@@ -99,23 +100,29 @@ survives for `--session` alone.
 | `busy` | its turn is running | a live peer for `current` whose `status` is neither `idle` nor `waiting` (`busy`, `shell`, absent) |
 | `idle` | live, between turns | a live peer whose `status` is `idle` |
 | `waiting` | live, stopped on a question or a permission | a live peer whose `status` is `waiting` |
-| `stopped` | a saved session and no process; `send` resumes it | `current` set, no live peer |
+| `stopped` | a saved session and no process; `send` resumes it | `current` set, no live peer, and the harness lists the session (a row in `claude agents --json --all`), or the listing cannot be read |
+| `gone` | a saved session id the harness no longer lists; `send` cannot resume it — `fill` it fresh or `retire` it | `current` set, no live peer, the listing read, and no row for the session |
 
-Read in that order; the first row that holds is the word. The source is
-the session record and one socket connect, the same file the harness's
-ListAgents reads; `claude agents --json --all` is no longer consulted to
-describe a seat (it stays where the `--wait` watcher, `attach`, and `sync`
-need a harness row). Gone from every human surface: `working` and `done`
+Read in that order; the first row that holds is the word. A live seat's
+word comes from the session record and one socket connect, the same file
+the harness's ListAgents reads; only a seat with no live peer consults
+`claude agents --json --all`, once per invocation (it also stays where the
+`--wait` watcher, `attach`, and `sync` need a harness row). When the
+listing itself cannot be read, the word is `stopped`: the safe assumption
+is to let `send` try. Gone from every human surface: `working` and `done`
 (the live word says it), `blocked` (the harness's word is `waiting`, and
-it says what for), `gone`, `error`, `failed`, and `unknown` (the harness
-can no longer fail to be asked). `FILLED` is `(busy, idle, waiting)`;
-`REFILLABLE` is `(vacant, stopped)`; both keep their callers.
+it says what for), `error`, `failed`, and `unknown` (a harness that cannot
+be asked reads `stopped`). `FILLED` is `(busy, idle, waiting)`;
+`REFILLABLE` is `(vacant, stopped, gone)`; both keep their callers.
 
-`gone` folds into `stopped` on purpose: whether a resume will work is
-learned on `send`, and a seat whose session the harness has forgotten
-answers `send` with the harness's own refusal. The alternative, a seventh
-word for it, put a harness lookup back into every view for a distinction
-the operator acts on the same way (retire it, or fill it fresh).
+`gone` is its own word, not folded into `stopped`, because `stopped` means
+"`send` resumes it", and that is false for a seat whose session the
+harness no longer lists — about thirty in the real registry when this was
+decided. The operator's moves differ (`send` for one; `fill` or `retire`
+for the other), and the chart's hide rule already computed the
+distinction, so it carries its name. The alternative, folding it into
+`stopped` and letting `send` learn it from the harness's refusal, was the
+first draft of this spec; see the Decision Log.
 
 **The now column.** The seat's own status line (`sminos status <seat>
 "…"`) when it has one; for a `waiting` seat without one, the session
@@ -148,15 +155,14 @@ seat's public record with a `state` key and without `live` or `addr`; ids
 ### `chart` and `tui`
 
 The state word replaces the live word in every box, glyph line, flash, and
-count: `●` busy, `○` idle, `◐` waiting, `■` stopped, `◌` vacant, `✕`
-retired. The TUI's `N live` counts `FILLED`. **Hidden by default**, shown
-with `--all` / the `a` key and counted in the `+N` tail: a `retired` seat,
-and a `stopped` seat whose session the harness no longer lists (no row in
-`claude agents --json --all`) — the old `gone` test kept as a hide rule,
-not a word, so the default chart stays the seats one can act on without a
+count: `●` busy, `○` idle, `◐` waiting, `■` stopped, `✕` gone, `◌` vacant,
+`⊘` retired. The TUI's `N live` counts `FILLED`. **Hidden by default**,
+shown with `--all` / the `a` key and counted in the `+N` tail: a `retired`
+or `gone` seat — the word decides, with no harness test of the hide rule's
+own — so the default chart stays the seats one can act on without a
 `fill`. The TUI's `s` key opens the send line for any seat that is not
-`vacant` or `retired` (a `stopped` one is resumed by the send); Enter
-attaches as today, and a seat with no short id says so.
+`vacant`, `retired`, or `gone` (a `stopped` one is resumed by the send);
+Enter attaches as today, and a seat with no short id says so.
 
 ## The one delivery verb
 
@@ -164,10 +170,11 @@ attaches as today, and a seat with no short id says so.
 
 - **A seat** — resolved as above; under the seat's lifecycle lock. A live
   peer: the frame goes on its socket and the recorded status is set
-  `working` (what `wake` did; the old `send` wrote nothing). No live peer:
+  `working` (what `wake` did; the old `send` wrote nothing). `stopped`:
   the seat is resumed with the frame as its message (`claude --bg --resume
   <session id> <frame>`, `resume_session`), as `wake` did. `vacant`:
   refused, pointing at `fill`. `retired`: refused, pointing at `fill`.
+  `gone`: refused in one line pointing at `fill` (fresh) or `retire`.
   `--wait` waits for evidence the frame landed and then for the turn's end
   and prints the reply (`wait_socket_turn`, `finish_turn`, unchanged).
 - **A live harness session by name**, when no seat matched and the caller
@@ -211,7 +218,7 @@ and `SMINOS_HOME` pointing at an empty directory. "Prints" means stdout.
 1. `$S spawn lead "say hello, then wait" --group one`; `$S list` prints a
    `one` heading and one row, `lead` `busy`, no header line and no
    `ADDR`, `SHORT`, `LIVE`, or `STATUS` column; when the turn ends the row
-   reads `idle`. No word other than the six appears in any `list`, `chart`,
+   reads `idle`. No word other than the seven appears in any `list`, `chart`,
    or `tui` output during this section.
 2. `$S spawn a "wait" --group one`, then `$S spawn a "wait" --group two`
    while `one/a` is live: the second exits 0. `$S send a "x"` exits 4 with
@@ -235,13 +242,17 @@ and `SMINOS_HOME` pointing at an empty directory. "Prints" means stdout.
    reads `me` with this session's live word.
 8. `$S retire one/lead`, `$S retire one/a`, `$S retire two/a`; `$S list`
    reads all three `retired`; `$S chart` shows none of them, `$S chart
-   --all` shows them with `✕`.
+   --all` shows them with `⊘`.
 9. `tests/sminos/run-sminos-tests.sh` passes; `tests/issue-tracker/test-board-sweep.sh`
    passes; `tests/claude-code/run-skill-tests.sh` passes (it drives the
    `board-api/test-*.sh` suites); `tests/skill-links/test-cross-doc-refs.sh`
    passes; `scripts/lint-shell.sh` is at its baseline.
 10. `grep -rn "sminos wake\|--addr" skills agents CLAUDE.md` prints nothing
     outside `docs/doperpowers/specs/`.
+11. `$S seat add one x --session <a uuid the harness does not know>`; `$S
+    list` reads `x` as `gone`; `$S send one/x "hi"` exits 4 with one line
+    pointing at `fill`; `$S chart` does not show `x` and `$S chart --all`
+    shows it with `✕`.
 
 ## Plan of Work
 
@@ -296,6 +307,41 @@ a socket file → `stopped`); the row shape and group order; `--state`;
 `--json` keys; the hide rule with and without a harness row; the TUI's
 `s` on a stopped seat opening the send line (headless).
 
+### M1 follow-up — `gone` reinstated
+
+Added after M1 landed (Decision Log, 2026-09-29, the human partner's
+course change); it supersedes M1's "no view consults `claude agents`" and
+"the chart's hide rule is the only place the old `gone` test remains".
+
+**What exists at its end.** `state()` returns `gone` for a seat with a
+`current`, no live peer, a readable harness listing, and no row for the
+session; `stopped` when the listing has a row or cannot be read.
+`REFILLABLE` is `(vacant, stopped, gone)`. `list --state gone` filters
+like the others. The chart and TUI draw `✕` for `gone` and a distinct
+`⊘` for `retired`, hide retired-or-gone by the word alone (the hide rule's
+own `harness_ok()`/`harness_row` test goes), and the TUI's `s` refuses a
+`gone` seat pointing at `fill`/`retire`.
+
+**Touches.** `sminos.py` (`STATES`, `REFILLABLE`, `state()`, and any
+caller whose branch on `stopped` must now also see `gone` — spawn's and
+fill's refill checks, `push_member`'s tagged-resume guard, the old
+`send`'s refusal text), `sminos_chart.py` (`GLYPH`, `is_dead`),
+`sminos_tui.py` (the `s` rule, styles), `tests/sminos/run-sminos-tests.sh`.
+
+**Decisions.** The listing is read through the existing cached
+`agents_json()` / `harness_row(seat)` (one `claude agents --json --all`
+per invocation at most, and only when some seat has no live peer);
+"cannot be read" is `harness_ok()` false. A `retired`, `vacant`, or live
+seat never consults it. `push_member`'s tagged resume skips a `gone`
+member as `recorded`, not `failed:` — a resume that cannot work is not
+attempted (this replaces M1's forgotten-member-resume test).
+
+**Proves.** Acceptance 11's `list` and `chart` halves. Tests pin: `gone`
+from a record with a session id, no peer, and no harness row; `stopped`
+from the same record with a harness row; `stopped` when the harness cannot
+be asked (`STUB_AGENTS_FAIL=1`); `list --state gone`; `chart` hides and
+`chart --all` shows a gone seat with `✕`, a retired one with `⊘`.
+
 ### M2 — one name
 
 **What exists at its end.** A spawn or `seat add` succeeds while another
@@ -345,7 +391,8 @@ sites and their stubs call `send`; every frame opens with the one header.
 `tests/sminos/run-sminos-tests.sh`.
 
 **Decisions.** The seat path is `_wake`'s body under `send`'s name: lock,
-reload, refuse codex, vacant → `fill` pointer, live → frame + `working`,
+reload, refuse codex, vacant → `fill` pointer, `gone` → one line pointing
+at `fill`/`retire` (exit 4), live → frame + `working`,
 else `resume_session`. The old `send`'s seat branch (no lock, no status
 write) is deleted. `--wait` with a non-seat target dies before any
 delivery. The frame id is minted for every path. The pointer for `wake`
@@ -359,7 +406,7 @@ messages name `send` where they named `wake`.
 **Does not touch.** `resume`, `say`'s push, the reach rule, the codex
 queue, `board-answer.sh`'s relay logic beyond the verb.
 
-**Proves.** Acceptance 2 (the send half), 3, 4, 5 (the `wake` line), and
+**Proves.** Acceptance 2 (the send half), 3, 4, 5 (the `wake` line), 11 (the `send` half), and
 9's board suites. Tests pin: a `send` to a live seat marks `working` and
 carries `id=`; a `send` to a stopped seat resumes with the frame as its
 message; `send --wait` on a session name and on `codex:x` refused before
@@ -370,7 +417,8 @@ delivery; `wake` exits 2 with the pointer; the board stubs' logs read
 
 **What exists at its end.** `skills/sminos/SKILL.md` describes the one
 name, the state table, the grouped `list`, and `send` as the delivery
-verb, and names none of `wake`, `addr`, `live`, `gone`, `blocked`; the
+verb, and names none of `wake`, `addr`, `live`, `blocked` (`gone` is one
+of the seven words, Decision Log 2026-09-29); the
 module docstring's usage block and address sentence match; the version is
 bumped; the acceptance section has been run on the real harness and the
 record written.
@@ -416,9 +464,9 @@ Working directory: the repository root (this worktree).
 
 In `skills/sminos/scripts/sminos.py`:
 
-    STATES = ("busy", "idle", "waiting", "stopped", "vacant", "retired")
+    STATES = ("busy", "idle", "waiting", "stopped", "gone", "vacant", "retired")
     FILLED = ("busy", "idle", "waiting")
-    REFILLABLE = ("vacant", "stopped")
+    REFILLABLE = ("vacant", "stopped", "gone")
 
     def peer_state(rec) -> str:
         """busy | idle | waiting from a LIVE peer record's `status`
@@ -427,7 +475,8 @@ In `skills/sminos/scripts/sminos.py`:
     def state(seat) -> str:
         """One of STATES, read in the table's order: retired (recorded
         status), vacant (no `current`), then peer_state of the live peer
-        for `current`, else stopped. Replaces live_state."""
+        for `current`, else stopped when the harness lists the session or
+        its listing cannot be read, else gone. Replaces live_state."""
 
 The frame header, everywhere a message is delivered:
 
@@ -521,6 +570,25 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   seat is not drawn *for itself*. The M1 task review raised it; dismissed
   as the existing tree-drawing intent, unchanged.
   Date/Author: 2026-09-29, plan-executor (SDE controller).
+- Decision (2026-09-29, course change after M1): `gone` is reinstated as a
+  seventh state word — a saved session id the harness no longer lists (no
+  row in `claude agents --json --all`, no live peer). Read order: retired,
+  vacant, live peer (busy/idle/waiting), then `stopped` if the harness
+  lists the session or the listing cannot be read, else `gone`.
+  `REFILLABLE` is `(vacant, stopped, gone)`; `FILLED` unchanged. The
+  chart/TUI hide rule becomes retired-or-gone by the word, with no harness
+  test of its own; `gone` keeps its old `✕` and `retired` takes `⊘`.
+  `send` on a gone seat refuses in one line pointing at `fill`/`retire`
+  (M3); acceptance 11 pins it. Rejected alternative: the first draft's
+  fold of `gone` into `stopped`, letting `send` learn from the harness's
+  refusal — `stopped` is defined as "`send` resumes it", which is false
+  for about thirty seats in the real registry, and the hide rule already
+  computed the distinction. This supersedes M1's hide-rule entry above
+  (`stopped and harness_ok() and no harness row`) and M1's
+  forgotten-member resume in `push_member`: a gone member is `recorded`,
+  not attempted. Landed as an M1 follow-up after M2, before M3.
+  Date/Author: 2026-09-29, the human partner's decision, relayed by the
+  owning session; written in by the controller.
 
 ## Outcomes & Retrospective
 
