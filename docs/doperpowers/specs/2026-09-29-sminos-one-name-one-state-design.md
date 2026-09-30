@@ -505,6 +505,22 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
 - (M1) Between M1 and M3 the TUI's `s` on a stopped seat opens the send
   line and the send is refused (`not live — use sminos wake`); M3's fold
   closes it.
+- (M3) The stall nudge's no-`--wait` call never runs under
+  `test-board-sweep.sh`'s stub (which refuses a call without `--wait`):
+  that suite runs the gh binding only (`board-sweep.sh` execs
+  `_sweep_api.sh` only under `BOARD_BINDING=api`); the nudge runs under
+  `test-sweep-stall.sh`'s own stub, which never checks `--wait`.
+- (M3) The board scripts did not change, but what they reach through
+  `send` is stricter than `wake` was: `wake` attempted a resume of any
+  seat with a `current` and no live peer, retired and harness-forgotten
+  ones included; `send` refuses `retired` and `gone` with exit 4. The
+  relays already read a nonzero exit as "not delivered, settled next
+  tick", and `_liveness` classes retired seats dead before relaying, so no
+  board path relays to a retired seat; a relay to a `gone` seat now fails
+  fast each tick instead of attempting a resume.
+- (M3) The sminos suite's `grep -c` on an empty `calls.log` exits 1 under
+  `set -e`; those counts use `|| true`. The assert helpers read a
+  here-string now (a `printf | grep -q` under `pipefail` could SIGPIPE).
 
 ## Decision Log
 
