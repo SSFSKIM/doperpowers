@@ -630,6 +630,24 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   all-live-or-vacant group. On the real registry `list --state gone`
   showed 21 seats that day.
   Date/Author: 2026-09-29, M1 task-executor, folded by the controller.
+- Decision (2026-09-29, M3): the gaps M3 resolved. A `retired` seat is
+  refused (pointing at `fill`) even while its session answers — the design
+  section's rule; the milestone's Decisions list had left it out. A send
+  probes the peer once and derives the word from that probe (a second
+  probe used up the suite's one-shot socket and hid the pre-write
+  fallback). `resume_session`'s verb for a send is `sent to`, so every
+  seat delivery opens `sent to g/a` (the resume banner keeps its bracket
+  and tail). With `--wait` the socket path prints `sent to g/a` before it
+  waits, then the reply block. `--wait` on a non-seat exits 2 (`--wait
+  needs a seat: … no record to watch`), after the family reach check.
+  `wake` takes every argv shape (NUL `prefix_chars`) so old forms like
+  `wake --wait x y` get the pointer, never argparse's error.
+  `board-sweep.sh`'s `_recover` verb argument is `send` too, so its log
+  reads `send attempt 1/3`. `tests/issue-tracker/test-board-scripts.sh`
+  also pinned `wake --wait` and moved with the others. In the board-api
+  tests only the logged verb changed; `$WAKE`/`wakes()` name the nudge
+  and stay.
+  Date/Author: 2026-09-29, M3 task-executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
