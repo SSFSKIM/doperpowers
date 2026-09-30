@@ -217,19 +217,21 @@ export function parse(text: string): Parsed {
 }
 
 /**
- * What one row of the transcript is: the person's prompt, a row they read
- * (an assistant message carrying marks, a question they answered), or
- * working record (an unmarked message, a tool call and its result).
+ * What one row of the transcript is: the person's prompt; a row they read
+ * (an assistant message carrying marks, a question they answered, an
+ * agent's dispatch, a message an agent sent, an agent's finish); or working
+ * record (an unmarked message, a tool call and its result, a notification
+ * of the model's own background work).
  */
 export type RowKind = 'user' | 'marked' | 'record'
 
 /**
  * The origins of a prompt row that is a delivery to the session and not the
- * person's own words: a subagent's or another session's message, a
- * background task's notification, a schedule firing, a coordinator's
- * hand-off, an observer's report, a plugin's submission. Such a row is
- * working record. Any other origin, and any the engine names later, is
- * taken as the person's: hiding their own prompt is the worse mistake.
+ * person's own words: a task's notification, a schedule firing, another
+ * session's or a coordinator's message, an observer's report, a plugin's
+ * submission. Such a row is working record unless `promptRow` reads it as
+ * an agent's. Any other origin, and any the engine names later, is taken as
+ * the person's: hiding their own prompt is the worse mistake.
  */
 const DELIVERED: ReadonlySet<string> = new Set([
   'task-notification',
@@ -243,9 +245,36 @@ const DELIVERED: ReadonlySet<string> = new Set([
   'plugin',
 ])
 
-/** What a prompt row is by where it came from: the person's, or working record. */
-export function promptRow(origin: Pick<PromptOrigin, 'kind'> | undefined): RowKind {
-  return origin !== undefined && DELIVERED.has(origin.kind) ? 'record' : 'user'
+/**
+ * The background task a notification row reports on, as its `task` prop
+ * names it: the task's id (a subagent's is the one `agent.spawn` returned)
+ * and the call that started it.
+ */
+export type Task = { id?: string; toolUseId?: string }
+
+/** The props of a prompt row that say what it is. */
+export type PromptRowProps = {
+  origin?: Pick<PromptOrigin, 'kind'>
+  /** Present when someone other than the person sent it: an agent, a teammate, another session, a channel. */
+  from?: { name: string }
+  /** Present on a notification row: the task it reports on. */
+  task?: Task
+}
+
+/**
+ * What a prompt row is: the person's own words; a row they read (a message
+ * someone else sent, the finish of an agent, which `isAgents` tells from
+ * the model's own background work: a command, a monitor); or working
+ * record (any other delivery).
+ */
+export function promptRow(props: PromptRowProps, isAgents: (task: Task) => boolean): RowKind {
+  if (props.from !== undefined) {
+    return 'marked'
+  }
+  if (props.task !== undefined) {
+    return isAgents(props.task) ? 'marked' : 'record'
+  }
+  return props.origin !== undefined && DELIVERED.has(props.origin.kind) ? 'record' : 'user'
 }
 
 /**
@@ -331,18 +360,49 @@ export function answerText(head: string, answer: string): string {
 }
 
 /**
- * The answer's line, wherever it stands in the prompt; what the person
- * wrote after it on further lines is theirs and not echoed. A head carries
- * no double quote, so the first `":` closes it and the answer may hold anything.
+ * An answer's line, wherever it stands in the prompt, one per question
+ * answered; what the person wrote on other lines is theirs and not echoed.
+ * A head carries no double quote, so the first `":` closes it and the
+ * answer may hold anything.
  */
-const ANSWER = /^Answering "([^"\n]*)": ?(.*)$/m
+const ANSWER = /^Answering "([^"\n]*)": ?(.*)$/gm
 
-export function answerOf(text: string): { head: string; answer: string } | undefined {
-  const match = ANSWER.exec(text)
-  if (!match) {
-    return undefined
+export type Answer = { head: string; answer: string }
+
+/** Every answer a prompt carries, in the order of its lines. */
+export function answersOf(text: string): Answer[] {
+  return Array.from(text.matchAll(ANSWER), (match) => ({
+    head: match[1] as string,
+    answer: (match[2] as string).trim(),
+  }))
+}
+
+/**
+ * The prompt box after a press, so the answers to several questions go in
+ * one prompt: each question has at most one line. Every line answering
+ * `head` (a duplicate the person pasted or edited in included, which would
+ * otherwise settle the question by the later line) gives way to one: the
+ * choice pressed, where the first of them stood, or, when the press is
+ * `reply` (no `answer`), the answer's opening at the end, where the cursor
+ * is for the person to finish it; a question with no line yet gets one at
+ * the end. Every other line, the other answers and whatever the person
+ * typed, stays as it is.
+ */
+export function withAnswer(box: string, head: string, answer?: string): string {
+  const line = answerText(head, answer ?? '')
+  const lines = box.trim() === '' ? [] : box.split('\n')
+  const answers = (l: string) => answersOf(l)[0]?.head === head
+  const at = lines.findIndex(answers)
+  const kept = lines.filter((l) => !answers(l))
+  if (answer !== undefined && at >= 0) {
+    kept.splice(at, 0, line)
+    return kept.join('\n')
   }
-  return { head: match[1] as string, answer: (match[2] as string).trim() }
+  if (kept[kept.length - 1] === '') {
+    kept.pop()
+  }
+  kept.push(line)
+  return kept.join('\n')
 }
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
@@ -363,10 +423,17 @@ const ASK = 'need-input:'
 type Press = { kind: 'answer'; question: Question; answer: string } | { kind: 'reply'; question: Question }
 
 /**
- * The question dialog's tool: its row in the transcript is the person's own
- * answer, which they read as they read a mark.
+ * The tools that reach the session's agents: a dispatch (`Agent`, and a
+ * `Workflow` of agents), and a message to one, which is also how a
+ * finished agent is resumed (`SendMessage`).
  */
-const isAnswered = (tool: string) => tool === 'AskUserQuestion'
+const AGENT_TOOLS: ReadonlySet<string> = new Set(['Agent', 'SendMessage', 'Workflow'])
+
+/**
+ * A tool call whose row the person reads as they read a mark: the question
+ * dialog's (its row is the person's own answer) and the agent tools'.
+ */
+export const isRead = (tool: string) => tool === 'AskUserQuestion' || AGENT_TOOLS.has(tool)
 
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked
@@ -468,15 +535,24 @@ async function recordRow<E extends RenderInput>(
   )
 }
 
+/** Adds the ids of the session's agents, as the engine lists them now, to `into`. */
+async function listAgents($: EngineInterface, into: Set<string>) {
+  for (const agent of await $.agent.list()) {
+    into.add(agent.id)
+  }
+}
+
 /**
  * Reads the answers the transcript holds into `answered`: every prompt of
- * the person's that names its question, the latest per question.
+ * the person's that names its questions, the latest per question.
  */
 async function readAnswers($: EngineInterface, answered: Map<string, string>) {
   for (const message of await $.session.messages()) {
-    const found = message.role === 'user' ? answerOf(message.text) : undefined
-    if (found) {
-      answered.set(found.head, found.answer)
+    if (message.role !== 'user') {
+      continue
+    }
+    for (const { head, answer } of answersOf(message.text)) {
+      answered.set(head, answer)
     }
   }
 }
@@ -487,8 +563,10 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
  * the engine does; from then on, assistant messages fold to their marks and
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
- * transcript by the band above the prompt. A `need-input` span draws its
- * choices as buttons under the question, in the message itself.
+ * transcript by the band above the prompt. The session's agents stay in the
+ * report: their dispatch, the messages they send, their finish. A
+ * `need-input` span draws its choices as buttons under the question, in the
+ * message itself.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
@@ -515,13 +593,56 @@ export function registerToHuman(on: On) {
     return key
   }
 
+  // The session's agents, by id, and the tool each call's row drew. A
+  // notification row is an agent's when its task is one of them, or was
+  // started by an agent tool's call (the notification names the call); an
+  // id neither knows is looked for once in the engine's list, which keeps a
+  // finished agent for a while after it ends, so a notification drawn as it
+  // arrives finds its agent there. The lookup waits, and the row's place in
+  // the order is taken before it (see the hook below). (A resumed session's
+  // earlier agents are not listed: their finish is known by the call's row,
+  // drawn before it.)
+  const agentIds = new Set<string>()
+  const toolOf = new Map<string, string>()
+  const looked = new Set<string>()
+  const isAgents = (task: Task) => {
+    const known =
+      (task.id !== undefined && agentIds.has(task.id)) ||
+      (task.toolUseId !== undefined && AGENT_TOOLS.has(toolOf.get(task.toolUseId) ?? ''))
+    if (known && task.id !== undefined) {
+      agentIds.add(task.id)
+    }
+    return known
+  }
+
   // The person's prompt breaks a run: the record before it and the record
-  // after it are two, as the person reads them. A prompt row that is a
-  // delivery (a subagent's message, a task's notification) is working
-  // record, and stands in the run it falls in.
-  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
-    const kind = promptRow(e.props.origin)
+  // after it are two, as the person reads them. So does a row they read: a
+  // message from an agent, a teammate or another session, and the finish of
+  // an agent. A delivery that is the model's own business (a command's or a
+  // monitor's notification, a schedule firing) is working record, and
+  // stands in the run it falls in.
+  //
+  // The row takes its place in the order as it first draws, before any
+  // wait: the rows after it draw meanwhile, and a place taken after them
+  // would be after them for good, no redraw putting it back. A notification
+  // whose task no one knows yet is then looked for in the engine's list,
+  // once per task; found to be an agent's, the row is read again as one and
+  // every drawing is asked for again, since the rows drawn meanwhile took it
+  // for record.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    let kind = promptRow(e.props, isAgents)
     see($, view, e.requestId, kind)
+    const task = e.props.task
+    if (kind === 'record' && task?.id !== undefined && !looked.has(task.id)) {
+      looked.add(task.id)
+      await listAgents($, agentIds)
+      const found = promptRow(e.props, isAgents)
+      if (found !== kind) {
+        kind = found
+        see($, view, e.requestId, kind)
+        $.ui.invalidate('ui.render')
+      }
+    }
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
   })
 
@@ -656,20 +777,22 @@ export function registerToHuman(on: On) {
   })
 
   // A tool call is working record too, and stands in the run it falls in,
-  // except the question dialog's: the answer the person gave is theirs to
-  // read, and it breaks the run as a marked message does. A standalone
-  // call's result is a row of its own beneath it once the call resolves, so
-  // until then (no output, and no abort, which leaves one) the call's row
-  // is the last of the two. A row of a group the engine expanded draws its
-  // output inline and is whole: it stands in the group's run, and the
-  // group's last call draws the run's end where the group would.
+  // except one the person reads: the question dialog's, whose row is the
+  // answer they gave, and an agent tool's, the dispatch or the message it
+  // is; each breaks the run as a marked message does. A standalone call's
+  // result is a row of its own beneath it once the call resolves, so until
+  // then (no output, and no abort, which leaves one) the call's row is the
+  // last of the two. A row of a group the engine expanded draws its output
+  // inline and is whole: it stands in the group's run, and the group's last
+  // call draws the run's end where the group would.
   on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
-    const answered = isAnswered(e.props.tool)
+    toolOf.set(e.requestId, e.props.tool)
+    const read = isRead(e.props.tool)
     const group = groupOf.get(e.requestId)
     if (group === undefined) {
-      see($, view, e.requestId, answered ? 'marked' : 'record')
+      see($, view, e.requestId, read ? 'marked' : 'record')
     }
-    if (!isFolding() || answered) {
+    if (!isFolding() || read) {
       return next(e)
     }
     if (group !== undefined) {
@@ -713,9 +836,9 @@ export function registerToHuman(on: On) {
   // the run's button and this one draws nothing; unfolded, it is the last
   // of the two, and carries the run's end.
   on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
-    const answered = isAnswered(e.props.tool)
-    see($, view, e.requestId, answered ? 'marked' : 'record')
-    return isFolding() && !answered ? recordRow($, e, next, view, { opens: false }) : next(e)
+    const read = isRead(e.props.tool)
+    see($, view, e.requestId, read ? 'marked' : 'record')
+    return isFolding() && !read ? recordRow($, e, next, view, { opens: false }) : next(e)
   })
 
   // The band above the prompt names the view and switches it: the whole
@@ -759,17 +882,19 @@ export function registerToHuman(on: On) {
   // A question's buttons need the engine, which their closures cannot reach:
   // the press is answered here, by what the key was drawn to do. A choice
   // and `reply` both write the person's box, the choice as the whole answer
-  // and `reply` as its opening; Enter sends it as the person's own prompt.
-  // (A prompt a plugin submits enters under the plugin's name, framed as
-  // the plugin's message to the model and labelled so in the transcript, by
-  // an origin no hook may change; so nothing here submits.)
+  // and `reply` as its opening, each on a line of its own beside the
+  // answers already there, so one Enter sends them all as the person's own
+  // prompt. (A prompt a plugin submits enters under the plugin's name,
+  // framed as the plugin's message to the model and labelled so in the
+  // transcript, by an origin no hook may change; so nothing here submits.)
   on('ui.press', async ($, e, next) => {
     const press = e.element.startsWith(ASK) ? presses.get(e.element) : undefined
     if (!press) {
       return next(e)
     }
     const result = await next(e)
-    const text = answerText(press.question.head, press.kind === 'answer' ? press.answer : '')
+    const box = await $.prompt.read()
+    const text = withAnswer(box.text, press.question.head, press.kind === 'answer' ? press.answer : undefined)
     const { isFilled } = await $.prompt.fill({ text })
     if (!isFilled) {
       $.ui.toast('The answer could not be put in the prompt')
@@ -777,17 +902,19 @@ export function registerToHuman(on: On) {
     return result
   })
 
-  // An answer is a prompt that names its question, as a choice or `reply`
-  // wrote it in the box, or as the person typed it; the question is settled
-  // once the prompt enters.
+  // An answer is a prompt that names its question, one line per question,
+  // as a choice or `reply` wrote them in the box, or as the person typed
+  // them; each question is settled once the prompt enters.
   on('prompt.submit', async ($, e, next) => {
-    const found = answerOf(e.text)
-    if (!found) {
+    const found = answersOf(e.text)
+    if (found.length === 0) {
       return next(e)
     }
     const result = await next(e)
     if (result.drop === undefined) {
-      answered.set(found.head, found.answer)
+      for (const { head, answer } of found) {
+        answered.set(head, answer)
+      }
       $.ui.invalidate('ui.render')
     }
     return result
