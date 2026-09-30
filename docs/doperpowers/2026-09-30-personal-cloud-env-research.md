@@ -253,6 +253,45 @@ full macOS desktop ("beyond a dev environment").
 architecture and no sync; it wins if the target is under ~40 sessions and no off-site standby is
 wanted. Above that, or if the home going dark must not stop work, the session-host design wins.
 
+## 7a. Cost: the session host runs only while sessions are busy
+
+An always-on 32 GB VM is the wrong default for one person: at Hetzner's 2026 prices a CAX41-class
+ARM box is roughly €30–35/month whether or not a session is running, and Hetzner bills a *created*
+server hourly even while it is powered off. The body/soul split already in `infra/worker-host`
+makes scale-to-zero cheap instead: keep the volume (the soul, €5.72/month for 100 GB), and create
+and delete the body on demand.
+
+- **Create on demand.** `sminos spawn --host cloud` (M4) creates the server from a pre-baked
+  Hetzner snapshot image (≈€0.01/GB-month; boots in well under a minute versus 2–5 minutes from
+  raw cloud-init), attaches the volume, joins the tailnet, and spawns the seat. Cold start is one
+  to two minutes end to end. The SSH host key lives on the volume and is restored at boot so the
+  mini's Mutagen and SSH sessions see the same host every time.
+- **Delete when nothing is busy.** Seats are already designed to be stopped and resumed from
+  their transcript (`sminos wake`, `fill --resume`). A reaper on the host retires seats idle for
+  N minutes and, when no seat is busy, deletes the server (a project-scoped API token on the
+  volume). A message to a retired seat recreates the host and resumes it; the 1–2 minute wait is
+  the price of scale-to-zero and lands on the person who sent the message, not mid-turn.
+- **The mini initiates every sync.** Mutagen sessions are created from the mini toward each peer
+  (`mutagen sync create ~/.claude/projects new@host:/Users/new/.claude/projects`), so a peer needs
+  only sshd and the volume; a recreated body resumes the same Mutagen session.
+
+Approximate monthly cost of a 32 GB session host (compute figures ±30%, Hetzner repriced in
+2026-06; volume €5.72 included):
+
+| Usage pattern | Hetzner on-demand body | Hetzner always-on | Fly Machine, stopped when idle | Home 64 GB box |
+|---|---|---|---|---|
+| ~4 busy hours/day | ≈ €12 | ≈ €36–41 | volume ≈ $15 + running hours (higher per-hour rate) | electricity ≈ ₩5k |
+| ~12 busy hours/day | ≈ €24 | ≈ €36–41 | same, ×3 hours | same |
+| 24/7 | ≈ €36–41 | ≈ €36–41 | ≈ Hetzner ×2–3 | same |
+
+Fly Machines stop and start in seconds and a stopped machine bills only its volume, so Fly wins
+when the 1–2 minute Hetzner recreate is too slow; it loses on per-hour price and on the January
+2026 management-plane outages recorded in the July research. Sprites are cheaper still per busy
+hour (≈ $0.11) but their Tailscale and keep-alive semantics (`product-landscape.md` §1) make the
+gateway forward and the sync fragile; they fit a per-session throwaway computer, not a peer that
+carries the person's identity. A home box has no marginal cost at all and only the home-dependence
+already accepted for the mini.
+
 ## 8. Plan of work (proposed milestones)
 
 | # | Milestone | Depends on |
