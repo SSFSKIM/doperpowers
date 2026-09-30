@@ -37,7 +37,7 @@ where `sminos send two/a "x"` delivers.
 ## Progress
 
 - [x] (2026-09-29, reviewed clean) M1 — one state word: `state()` from the session record and the seat record; `list` grouped, `STATE` column, `--state`; `--json` carries `state`; chart and TUI vocabulary, glyphs, and hide rule; tests.
-- [ ] M1 follow-up — `gone` reinstated as a seventh word (Decision Log, 2026-09-29): `state()` reads the harness listing for a seat with no live peer; `REFILLABLE` gains it; glyphs (`✕` gone, a distinct `retired` glyph); the hide rule becomes retired-or-gone; tests.
+- [x] (2026-09-29, reviewed clean) M1 follow-up — `gone` reinstated as a seventh word (Decision Log, 2026-09-29): `state()` reads the harness listing for a seat with no live peer; `REFILLABLE` gains it; glyphs (`✕` gone, a distinct `retired` glyph); the hide rule becomes retired-or-gone; tests.
 - [x] (2026-09-29, reviewed clean) M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
 - [ ] M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's four call sites and their test stubs move; the TUI's `s` key follows; tests, board suites green.
 - [ ] M4 — the words and the proof: `SKILL.md`, the module docstring, the preamble if it names anything that moved; version bump; live proof on the real harness; whole-branch review; retrospective.
@@ -605,6 +605,15 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   conversion stops writing `addr` too. The strand guard's message drops
   `at addr '…'`; its logic is verbatim.
   Date/Author: 2026-09-29, M2 task-executor, folded by the controller.
+- Decision (2026-09-29, M1 follow-up): the TUI's refusal for a `gone`
+  seat names both moves (`sminos fill <g>/<a> "<task>" or sminos retire
+  <g>/<a>`). `push_member` returns `recorded` for an untagged member before
+  it reads the state, so an untagged message never reads the listing and
+  only a tagged member is warned. The listing read is pinned: exactly one
+  `claude agents` call for a group with peerless seats, none for an
+  all-live-or-vacant group. On the real registry `list --state gone`
+  showed 21 seats that day.
+  Date/Author: 2026-09-29, M1 task-executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
