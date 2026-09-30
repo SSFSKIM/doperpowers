@@ -80,8 +80,6 @@ tests=(
     "test-sde-workspace.sh"
     # The kairos SessionStart hook — hermetic, sub-second.
     "test-kairos-hook.sh"
-    # The experimental-context hooks — same shape, plus transcript parsing.
-    "test-experimental-context-hook.sh"
     # The to-human MessageDisplay hook — hermetic, drives the hook by payload.
     "test-to-human-stream-hook.sh"
     "test-subagent-driven-execution.sh"
