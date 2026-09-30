@@ -193,7 +193,8 @@ the invoking environment, which the board's relay needs and `send` must
 not do.
 
 **The board's call sites move with it.** `skills/issue-tracker/scripts/board-answer.sh`
-(one `wake --wait`) and `_sweep_api.sh` (three) call `send` with the same
+(one `wake --wait`), `_sweep_api.sh` (three), and `board-sweep.sh` (one;
+see the Decision Log) call `send` with the same
 arguments; their comments that explain "wake, not resume" keep the
 reasoning under the new name. Their test stubs, which log
 `wake:<uuid>:<head>` and `from:wake:<uuid>:<from>` and accept the verb in a
@@ -335,7 +336,7 @@ sites and their stubs call `send`; every frame opens with the one header.
 `_wake`; `cmd_wake` becomes the pointer; the parser; the frame text;
 `compose` of the codex text), `skills/sminos/scripts/sminos_tui.py`
 (`send_argv` unchanged; the flash text), `skills/issue-tracker/scripts/board-answer.sh`,
-`skills/issue-tracker/scripts/_sweep_api.sh`, the stubs and assertions in
+`skills/issue-tracker/scripts/_sweep_api.sh`, `skills/issue-tracker/scripts/board-sweep.sh`, the stubs and assertions in
 `tests/issue-tracker/test-board-sweep.sh` and
 `tests/claude-code/board-api/test-answer.sh`, `test-sweep-stall.sh`,
 `test-sweep-finalize.sh`, `test-sweep-renew-relay.sh`,
@@ -459,6 +460,21 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   `doperpowers:plan-executor`; M4's docs are the executor's and its live
   proof is the owning session's.
   Date/Author: 2026-09-29, Claude with the human partner's answers.
+- Decision (2026-09-29, pre-flight, execution controller): the board's
+  `wake` call sites are five, not four, and not all carry `--wait` —
+  `board-answer.sh:330` (`wake --wait`), `_sweep_api.sh` at the stall
+  nudge (`wake`, no `--wait`), the renew relay and the review-recover relay
+  (`wake --wait`), and `board-sweep.sh`'s auto-recovery relay (`nohup …
+  wake --wait`), which the design section's count missed. All five move to
+  `send` with their arguments unchanged; the no-`--wait` site keeps no
+  `--wait` (a `send` without it resumes a stopped seat exactly as `wake`
+  did). Acceptance 10's grep covers `skills/`, so the comments and
+  operator notes in those three scripts that spell `sminos wake` (and
+  `board-sweep.sh`'s exhausted-recovery note) name `send` too — text only.
+  The issue-tracker's "wake ritual" and "wake queue" are the human's and
+  stay. Reason: the intent is one delivery verb; a call site left on the
+  pointer verb would exit 2 at runtime.
+  Date/Author: 2026-09-29, plan-executor (SDE controller).
 
 ## Outcomes & Retrospective
 
