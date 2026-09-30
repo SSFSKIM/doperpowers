@@ -1,7 +1,17 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import type { RowKind } from '../../hooks/mods/to-human'
-import { answerOf, answerText, parse, promptRow, questionHead, runEnd, runStart } from '../../hooks/mods/to-human'
+import type { RowKind, Task } from '../../hooks/mods/to-human'
+import {
+  answerText,
+  answersOf,
+  isRead,
+  parse,
+  promptRow,
+  questionHead,
+  runEnd,
+  runStart,
+  withAnswer,
+} from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -195,34 +205,88 @@ describe('answers', () => {
     expect(questionHead('x'.repeat(118) + '\ud83d\ude00y')).toBe('x'.repeat(118) + '\ud83d\ude00\u2026')
   })
 
-  test('answerText names the question and the choice, and answerOf reads it back', async () => {
+  test('answerText names the question and the choice, and answersOf reads it back', async () => {
     const text = answerText('Which backend?', 'Postgres')
 
     expect(text).toBe('Answering "Which backend?": Postgres')
-    expect(answerOf(text)).toEqual({ head: 'Which backend?', answer: 'Postgres' })
-    expect(answerOf('Answering "Which backend?": ')).toEqual({ head: 'Which backend?', answer: '' })
-    expect(answerOf(answerText('Which format?', 'Use "fast": mode'))).toEqual({ head: 'Which format?', answer: 'Use "fast": mode' })
-    expect(answerOf('Just a prompt.')).toBeUndefined()
+    expect(answersOf(text)).toEqual([{ head: 'Which backend?', answer: 'Postgres' }])
+    expect(answersOf('Answering "Which backend?": ')).toEqual([{ head: 'Which backend?', answer: '' }])
+    expect(answersOf(answerText('Which format?', 'Use "fast": mode'))).toEqual([{ head: 'Which format?', answer: 'Use "fast": mode' }])
+    expect(answersOf('Just a prompt.')).toEqual([])
     // The engine frames a prompt a plugin submitted; the transcript keeps the frame.
     expect(
-      answerOf('The doperpowers plugin sent a message:\nAnswering "Which backend?": Postgres\n\nThis is how Claude Code surfaces a prompt.'),
-    ).toEqual({ head: 'Which backend?', answer: 'Postgres' })
+      answersOf('The doperpowers plugin sent a message:\nAnswering "Which backend?": Postgres\n\nThis is how Claude Code surfaces a prompt.'),
+    ).toEqual([{ head: 'Which backend?', answer: 'Postgres' }])
   })
 
+  test('answersOf reads every answer of a prompt, one per line, and leaves the other lines alone', async () => {
+    const text = 'Answering "Which backend?": Postgres\nAnswering "Which region?": eu-west\nAlso: keep the old data.'
+
+    expect(answersOf(text)).toEqual([
+      { head: 'Which backend?', answer: 'Postgres' },
+      { head: 'Which region?', answer: 'eu-west' },
+    ])
+  })
+
+  test('withAnswer gives each question one line of the box, so two answers go in one prompt', async () => {
+    const one = withAnswer('', 'Which backend?', 'Postgres')
+    const two = withAnswer(one, 'Which region?', 'eu-west')
+
+    expect(one).toBe('Answering "Which backend?": Postgres')
+    expect(two).toBe('Answering "Which backend?": Postgres\nAnswering "Which region?": eu-west')
+    // A second press on a question replaces its line where it stands.
+    expect(withAnswer(two, 'Which backend?', 'SQLite')).toBe(
+      'Answering "Which backend?": SQLite\nAnswering "Which region?": eu-west',
+    )
+  })
+
+  test('withAnswer puts a reply last, where the cursor is, and keeps what the person typed', async () => {
+    const typed = 'Answering "Which backend?": Postgres\nAnswering "Which region?": eu-west\nPlease keep the old data.'
+
+    // `reply` on an answered question moves its line to the end as the opening.
+    expect(withAnswer(typed, 'Which backend?', undefined)).toBe(
+      'Answering "Which region?": eu-west\nPlease keep the old data.\nAnswering "Which backend?": ',
+    )
+    // A choice pressed after a reply was typed leaves the typed reply as it is.
+    expect(withAnswer('Answering "Which backend?": my own', 'Which region?', 'eu-west')).toBe(
+      'Answering "Which backend?": my own\nAnswering "Which region?": eu-west',
+    )
+    // A box ending in a newline takes the line without a blank one before it.
+    expect(withAnswer('note to self\n', 'Which region?', 'eu-west')).toBe('note to self\nAnswering "Which region?": eu-west')
+    expect(withAnswer('  ', 'Which region?', 'eu-west')).toBe('Answering "Which region?": eu-west')
+  })
 })
 
 describe('promptRow', () => {
+  const agents = new Set(['a5d804ff68753fdeb'])
+  const isAgents = (task: Task) => task.id !== undefined && agents.has(task.id)
+
   test('a prompt the person typed, or one of unknown origin, is theirs', async () => {
-    expect(promptRow({ kind: 'composer' })).toBe('user')
-    expect(promptRow({ kind: 'bridge' })).toBe('user')
-    expect(promptRow({ kind: 'unclassified' })).toBe('user')
-    expect(promptRow(undefined)).toBe('user')
+    expect(promptRow({ origin: { kind: 'composer' } }, isAgents)).toBe('user')
+    expect(promptRow({ origin: { kind: 'bridge' } }, isAgents)).toBe('user')
+    expect(promptRow({ origin: { kind: 'unclassified' } }, isAgents)).toBe('user')
+    expect(promptRow({}, isAgents)).toBe('user')
   })
 
-  test('a delivery to the session is working record', async () => {
-    expect(promptRow({ kind: 'peer' })).toBe('record')
-    expect(promptRow({ kind: 'peer-send-message' })).toBe('record')
-    expect(promptRow({ kind: 'task-notification' })).toBe('record')
-    expect(promptRow({ kind: 'coordinator' })).toBe('record')
+  test('a delivery of the model\'s own business is working record', async () => {
+    expect(promptRow({ origin: { kind: 'scheduled-trigger' } }, isAgents)).toBe('record')
+    expect(promptRow({ origin: { kind: 'coordinator' } }, isAgents)).toBe('record')
+    // A background command's notification: a task no agent of the session ran.
+    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'br5d455do', toolUseId: 'toolu_1' } }, isAgents)).toBe(
+      'record',
+    )
+  })
+
+  test('a message someone else sent, and the finish of an agent, are rows the person reads', async () => {
+    expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } }, isAgents)).toBe('marked')
+    expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } }, isAgents)).toBe('marked')
+    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a5d804ff68753fdeb' } }, isAgents)).toBe('marked')
+  })
+})
+
+describe('isRead', () => {
+  test('the question dialog and the agent tools draw as the person reads them; the rest is record', async () => {
+    expect(['AskUserQuestion', 'Agent', 'SendMessage', 'Workflow'].map(isRead)).toEqual([true, true, true, true])
+    expect(['Bash', 'Read', 'Monitor', 'TaskOutput'].map(isRead)).toEqual([false, false, false, false])
   })
 })

@@ -25,13 +25,13 @@ a mark, so a session without the output style is left alone. From then on:
   working record beside its spans gets a dim `[ working record ]` button that
   unfolds the engine's drawing of the whole block.
 - Messages with no marks at all, tool calls with their results, and prompt
-  rows that are deliveries rather than the person's words (a subagent's or
-  another session's message, a background task's notification, a schedule
-  firing) are working record, and a run of it draws one `[ working record ]`
-  button rather than one button per row: the run breaks at the person's own
-  prompt, at a message that carries marks, or at a question the human
-  answered, so what stands between two things they read opens and closes as
-  a unit. The button is
+  rows that are deliveries of the model's own business rather than the
+  person's words (a background command's or a monitor's notification, a
+  schedule firing) are working record, and a run of it draws one
+  `[ working record ]` button rather than one button per row: the run breaks
+  at the person's own prompt, at a message that carries marks, and at every
+  row of the next two bullets, so what stands between two things they read
+  opens and closes as a unit. The button is
   drawn by the row the run starts at and the rest of the run draw nothing;
   unfolded, the run shows the engine's own rows as the transcript draws them
   (a group of reads keeps its count line: each call in its place would be
@@ -48,6 +48,16 @@ a mark, so a session without the output style is left alone. From then on:
 - A question answered through `AskUserQuestion` draws as the engine draws it
   (the question and the answer given) in the report itself: the answer is the
   human's own words, and they read it as they read a mark.
+- The session's agents stay in the report, as the engine draws them: an
+  `Agent` call (a dispatch) and a `Workflow` of agents, a `SendMessage` call
+  (a message to an agent, which is also how a finished one is resumed), a
+  message another agent, teammate or session sent, and the notification that
+  an agent finished. An agent is known by the engine's own list of the
+  session's agents (looked up once per task, as the notification arrives;
+  the list keeps a finished agent for a while) or by the `Agent` call that
+  started it (the notification names the call), which is how a resumed
+  session's earlier agents are known; a background command's or a monitor's
+  notification is working record as before.
 - A `need-input` span is a question the human answers from the terminal. The
   options the model wrote as `<choice>…</choice>` lines (one of them
   `<choice recommended>`) draw as buttons under the question, `★` on the
@@ -55,11 +65,15 @@ a mark, so a session without the output style is left alone. From then on:
   `[ reply… ]` alone. A press writes the person's box: a choice as the whole
   answer, `reply` as its opening, both in the form `Answering "<the
   question's first line>": <answer>`, and Enter sends it as the person's own
-  prompt. (Nothing here submits: a prompt a plugin submits enters under the
-  plugin's name, framed as the plugin's message to the model and labelled so
-  in the transcript, by an origin no hook may change.) Once a prompt in that
-  form enters, the span reads `need input · answered: <answer>` and its
-  buttons go; a resumed session reads its answers back from the transcript.
+  prompt. The answers to several questions go in one prompt: each question
+  has one line in the box, a second press on a question replaces its line,
+  `reply` moves the question's line to the end, where the cursor is, and
+  whatever else the person typed stays. (Nothing here submits: a prompt a
+  plugin submits enters under the plugin's name, framed as the plugin's
+  message to the model and labelled so in the transcript, by an origin no
+  hook may change.) Once a prompt in that form enters, each span it answers
+  reads `need input · answered: <answer>` and its buttons go; a resumed
+  session reads its answers back from the transcript.
 - Above the prompt, `to-human view · [ full transcript ]` switches the whole
   transcript to the engine's drawing; the same button then reads
   `[ report only ]`.
@@ -93,7 +107,9 @@ lives in the module and resets on reload or a new session (answers do not:
 they are read from the transcript); a question is known by its first line, so
 two questions that open alike are answered together; a run's rows are known
 by the order they first drew in, so a resumed session that redraws history
-out of order can put a button on the wrong row until the next redraw.
+out of order can put a button on the wrong row until the next redraw, and
+an agent's finish drawn before the `Agent` call that started it reads as
+working record until then.
 
 ## agents (`agents.tsx`)
 
