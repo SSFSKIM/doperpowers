@@ -11,8 +11,8 @@ family seat's family for that seat.
 
     sminos spawn    <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
                    [--cwd C] [--worktree W] [--model M] [--settings S] [--effort E]
-                   [--addr A] [--wait]
-    sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]
+                   [--wait]
+    sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--session S]
     sminos fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
     sminos wake     <seat> <msg> [--wait] [--from F]     # live: inbox socket; stopped: resume
     sminos resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
@@ -20,7 +20,7 @@ family seat's family for that seat.
                    mode, model, settings, effort): --model/--settings/--effort are accepted
                    on resume for argv compatibility but ignored — use fill without --resume
                    to change them.
-    sminos send     <seat|addr|codex thread> <msg> [--from F]  # live sessions; a codex thread (its id, or
+    sminos send     <seat|session name|codex thread> <msg> [--from F]  # live sessions; a codex thread (its id, or
                                                           # codex:<id|exact name>) goes through codex's queue
     sminos say      [--in <host>] [--team] <text>
     sminos chat     [<host>] [-n N] [--since ID] [--team] [--json]
@@ -36,8 +36,10 @@ family seat's family for that seat.
     sminos migrate  [--quiet]                             # (also runs implicitly)
     sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
 
-A seat is addressed by `group/alias`, by a bare alias when it is unique, by its
-seat id (or a prefix), or by the current session's short or full id.
+A seat's one name is its alias, which is also the harness name its session
+runs under. Aliases are unique within a group, not across groups: a seat is
+addressed by `group/alias`, or by a bare alias when exactly one seat has it.
+Scripts may also pass a full seat id or a full session id.
 
 Messaging between seats is `send` (live targets) and `wake` (stopped ones
 too): both write a frame to the target session's inbox socket — the socket
@@ -54,7 +56,7 @@ writes them directly under the shared flock file .metalock. Family chats live
 at chats/<host-seat-id>.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the reserved operator identity.
 
 Exit codes: 0 ok, 1 harness failure, 2 usage, 4 unknown seat/group, target not
-live, or a seat/name that is already taken.
+live, or a seat that is already filled.
 """
 
 import argparse
@@ -302,17 +304,18 @@ def load_seat(path):
 
     The state root is persistent and machine-global: records written before a
     field existed (pre-seat daemon metas, v2 nodes) carry none of alias/group/
-    addr/role, so every read site goes through here.
+    role, so every read site goes through here. A seat has one name, its alias:
+    `name` reads as the alias, and the `addr` an older record may still carry
+    (a second, harness-facing name) is dropped unread.
     """
     with open(path) as f:
         m = json.load(f)
     seat_id = os.path.basename(path)[:-5]
     m["uuid"] = str(m.get("uuid") or seat_id)
     m["seat_id"] = seat_id
-    name = str(m.get("name") or m.get("alias") or "")
-    m["name"] = name
-    m["alias"] = str(m.get("alias") or name)
-    m["addr"] = str(m.get("addr") or m["alias"])
+    m["alias"] = str(m.get("alias") or m.get("name") or "")
+    m["name"] = m["alias"]
+    m.pop("addr", None)
     m["group"] = str(m.get("group") or "fleet")
     # A legacy daemon record has NO `current` key: the old resume fallback used
     # the record's own uuid as the session to continue. A v2 converted node has
@@ -355,11 +358,11 @@ def find_seat(q):
     """Resolve a query to a seat WITHOUT printing or exiting.
 
     Returns ("ok", seat) | ("none", None) | ("ambiguous", [seats]). Order:
-    `group/alias`; an exact seat id, current turn's short id, or session id;
-    a bare alias when exactly one seat has it; a seat-id prefix; then a
-    short-id or session-id prefix. Exact names come before prefixes, so a
-    short alias such as `a` is not lost to the hex ids that happen to start
-    with it. An alias two seats share stays ambiguous.
+    `group/alias`; an exact seat id or session id (how scripts address a
+    seat); a bare alias when exactly one seat has it. Nothing is matched by
+    prefix and the harness short id names no seat, so a short alias such as
+    `a` is never lost to an id that happens to start with it. An alias two
+    groups share stays ambiguous.
     """
     if not q:
         return "none", None
@@ -369,11 +372,8 @@ def find_seat(q):
         hits = [s for s in all_seats if s["group"] == g and s["alias"] == a]
         return ("ok", hits[0]) if len(hits) == 1 else ("none", None)
     stages = (
-        lambda s: q in (s["seat_id"], s["short"], s["current"]),
+        lambda s: q in (s["seat_id"], s["current"]),
         lambda s: s["alias"] == q,
-        lambda s: s["seat_id"].startswith(q),
-        lambda s: (bool(s["short"]) and s["short"].startswith(q))
-        or (bool(s["current"]) and s["current"].startswith(q)),
     )
     for match in stages:
         hits = [s for s in all_seats if match(s)]
@@ -720,9 +720,15 @@ def resolve_seat(q):
     if is_family_seat(caller) and kind == "none":
         die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
     if kind == "ambiguous":
-        die("ambiguous seat '%s' matches: %s" % (
-            q, ", ".join("%s/%s [%s]" % (s["group"], s["alias"], s["seat_id"][:8]) for s in res)), EXIT_UNKNOWN)
+        die(ambiguous_seat(q, res), EXIT_UNKNOWN)
     die("no seat matching '%s'" % q, EXIT_UNKNOWN)
+
+
+def ambiguous_seat(q, hits):
+    """The refusal for a name several seats answer to: each by the name that
+    tells it apart (`group/alias`), never by an id."""
+    return "ambiguous seat '%s' matches: %s" % (
+        q, ", ".join(sorted("%s/%s" % (s["group"], s["alias"]) for s in hits)))
 
 
 def group_dir(g):
@@ -767,22 +773,21 @@ def group_for_record(m):
     return str(m.get("agora_group") or "") or derive_group(str(m.get("cwd") or ""))
 
 
-def lock_names(names, label, blocking=False, refusal=None):
-    """One lifecycle change per harness NAME at a time: spawn / fill / seat add /
+def lock_names(names, blocking=False, refusal=None):
+    """One lifecycle change per SEAT at a time: spawn / fill / seat add /
     resume / wake / retire / remove / sync hold these flocks from their
     availability check through the record commit (through process start, for
-    resume). The key is the harness address (addr, default alias) — never
-    group__alias: an addr is the machine-wide SendMessage name, so two seats
-    that share an explicit --addr, or a same-alias spawn in another group, must
-    serialize or two live sessions would answer to one address. Names are
-    locked in the given order (alias first, then addr) so no two callers can
-    deadlock. The kernel releases every lock the moment the holder exits."""
+    resume). The name locked is the seat key `group/alias` (`seat_key`):
+    aliases are unique per group, so a same-alias seat in another group is a
+    different seat and does not wait. Names are taken in sorted order so no
+    two callers can deadlock. The kernel releases every lock the moment the
+    holder exits."""
     d = os.path.join(root(), "locks")
     os.makedirs(d, exist_ok=True)
     locks = []
     # sha1 of the exact name: no lossy sanitization can alias two names onto one
     # lock file. Sorted acquisition: every caller takes its set in the same
-    # order, so an alias/addr pair can never deadlock against another caller.
+    # order, so no set can deadlock against another caller's.
     for nm in sorted(dict.fromkeys(n for n in names if n)):
         lf = open(os.path.join(d, "name__%s.lock" % hashlib.sha1(nm.encode()).hexdigest()), "a+")
         try:
@@ -791,7 +796,7 @@ def lock_names(names, label, blocking=False, refusal=None):
             for held in locks:
                 held.close()
             lf.close()
-            message = "'%s' (%s) is being changed by another sminos process — retry shortly" % (nm, label)
+            message = "'%s' is being changed by another sminos process — retry shortly" % nm
             if refusal:
                 raise refusal(message, EXIT_UNKNOWN)
             die(message, EXIT_UNKNOWN)
@@ -799,8 +804,12 @@ def lock_names(names, label, blocking=False, refusal=None):
     return locks
 
 
+def seat_key(group, alias):
+    return "%s/%s" % (group, alias)
+
+
 def lock_seat(s, blocking=False, refusal=None):
-    return lock_names([s["alias"], s["addr"]], "%s/%s" % (s["group"], s["alias"]), blocking, refusal)
+    return lock_names([seat_key(s["group"], s["alias"])], blocking, refusal)
 
 
 def unlock(locks):
@@ -972,21 +981,6 @@ def peer_for_session(session_id):
 
 def live_name_holders(name):
     return [r for r in peer_records() if r.get("name") == name and peer_live(r)]
-
-
-def refuse_live_name(alias, addr, allow_session=""):
-    """A seat's alias is its session's harness name and SendMessage address,
-    and those names are machine-wide: a live session already answering to it
-    would make every send ambiguous. Refuse before any side effect — unless the
-    caller is registering that very session as the seat."""
-    for nm in dict.fromkeys([alias, addr]):
-        for r in live_name_holders(nm):
-            if allow_session and r.get("sessionId") == allow_session:
-                continue
-            die("a live session already answers to '%s' (pid %s, session %s) — SendMessage names are "
-                "machine-wide; pick another alias, or pass --session %s to register that session as this seat"
-                % (nm, r.get("pid"), str(r.get("sessionId") or "")[:8], str(r.get("sessionId") or "<id>")),
-                EXIT_UNKNOWN)
 
 
 def socket_path_of(rec):
@@ -1460,12 +1454,12 @@ def convert_v2_nodes(r):
                     existing = None if not os.path.exists(meta_path(det_id)) else {}
             if existing is not None:
                 meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
-                                   "addr": str(n.get("addr") or alias), "brief": str(n.get("desc") or "")})
+                                   "brief": str(n.get("desc") or "")})
             else:
                 meta_set(seat_id, {
                     "uuid": seat_id, "current": sess, "short": "", "name": alias, "alias": alias,
                     "group": g, "parent": str(n.get("parent") or ""),
-                    "addr": str(n.get("addr") or alias), "role": "", "brief": str(n.get("desc") or ""),
+                    "role": "", "brief": str(n.get("desc") or ""),
                     "task": "", "now": "", "note": "", "cwd": str(n.get("cwd") or ""), "worktree": "",
                     "model": "", "settings": "", "effort": "", "status": "retired",
                     "host": "", "boot_id": "", "created": str(n.get("joined") or now()),
@@ -1833,7 +1827,7 @@ def parse_stamps(items):
     return out
 
 
-def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, worktree,
+def spawn_fresh(seat_id, alias, group, parent, role, brief, task, cwd, worktree,
                 model, settings, effort, preamble_flag, wait, locks, verb, stamp=None):
     """Launch a fresh background session for a seat and register it.
 
@@ -1843,21 +1837,22 @@ def spawn_fresh(seat_id, alias, addr, group, parent, role, brief, task, cwd, wor
     record keeps its id, `note`/`created`, and every pipeline-owned field; the
     launch + definition fields are overwritten, `attempts` is bumped and the
     previous occupant is appended to `history` (last 10) for the pipeline's
-    outage-streak logic. The session launches under -n <addr> so the seat's
-    advertised address is its live SendMessage name. The banner's bracket is
-    always `[<short> / <RECORD FILENAME>]` — the pipeline parses that value and
-    board-bind matches it against filenames, so on a re-fill it is the seat id,
-    never the new session's uuid. Returns nothing (prints; may exit)."""
+    outage-streak logic. The session launches under -n <alias>: the seat's one
+    name is also the harness name the native SendMessage reaches it by. The
+    banner's bracket is always `[<short> / <RECORD FILENAME>]` — the pipeline
+    parses that value and board-bind matches it against filenames, so on a
+    re-fill it is the seat id, never the new session's uuid. Returns nothing
+    (prints; may exit)."""
     prev = reload_seat(seat_id) if seat_id else None
     preamble = render_preamble(group, alias, parent or "") if preamble_flag else ""
     task_text = compose_task(task, brief or "", preamble)
-    short, banner = run_claude_bg(claude_args(addr, model, settings, effort, worktree) + [task_text], cwd, settings)
+    short, banner = run_claude_bg(claude_args(alias, model, settings, effort, worktree) + [task_text], cwd, settings)
     if not short:
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
     launch = {
-        "current": "", "short": short, "name": addr, "alias": alias, "group": group,
-        "parent": parent or "", "addr": addr, "role": role or "", "brief": brief or "",
+        "current": "", "short": short, "name": alias, "alias": alias, "group": group,
+        "parent": parent or "", "role": role or "", "brief": brief or "",
         "task": task_text, "cwd": cwd, "worktree": worktree or "", "model": model or "",
         "settings": settings, "effort": effort, "status": "working", "host": host_name(),
         "boot_id": boot_id(), "updated": now(), "turns": "1", "preamble": "1" if preamble_flag else "",
@@ -1985,22 +1980,10 @@ def cmd_spawn(a):
     group = a.group if explicit_group else derive_group(cwd)
     if not valid_name(group):
         die("bad group name: %s" % group)
-    label = "%s/%s" % (group, alias)
-    names = [alias, a.addr or ""]
-    locks = lock_names(names, label)
+    locks = lock_names([seat_key(group, alias)])
     # Read under the lock: whether the seat is filled/refillable is only true as
-    # of now, not as of any earlier read. If the seat's recorded addr is a name
-    # we did not lock, release and re-take the whole (sorted) set, then re-read.
-    addr = a.addr or alias
-    existing = None
-    for _ in range(3):
-        existing = next((s for s in seats(group) if s["alias"] == alias), None)
-        addr = a.addr or (existing["addr"] if existing else alias)
-        if addr in names or not existing:
-            break
-        unlock(locks)
-        names = [alias, a.addr or "", addr]
-        locks = lock_names(names, label)
+    # of now, not as of any earlier read.
+    existing = next((s for s in seats(group) if s["alias"] == alias), None)
     if existing:
         if is_family_seat(caller) and existing["parent"] != caller["alias"]:
             die("alias %s/%s belongs to another seat; a seat re-fills only its own children" % (
@@ -2018,7 +2001,6 @@ def cmd_spawn(a):
         # id and the seat-describing pipeline fields. The board pipeline's
         # retire-then-respawn of a deterministic alias (review-pr-<n>) lands
         # here instead of erroring.
-    refuse_live_name(alias, addr)  # the previous occupant is NOT an allowed holder
     settings = env_default(a.settings, "DAEMON_CLAUDE_SETTINGS")
     effort = env_default(a.effort, "DAEMON_CLAUDE_EFFORT")
     if existing:
@@ -2031,7 +2013,7 @@ def cmd_spawn(a):
         preamble_flag = explicit_group or is_family_seat(caller) or bool(existing["preamble"])
     else:
         parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group or is_family_seat(caller)
-    spawn_fresh(existing["seat_id"] if existing else None, alias, addr, group, parent, role, brief,
+    spawn_fresh(existing["seat_id"] if existing else None, alias, group, parent, role, brief,
                 a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned",
                 stamp=parse_stamps(a.stamp))
 
@@ -2050,33 +2032,20 @@ def cmd_seat_add(a):
     session = a.session or ""
     if session and not UUID_RE.match(session):
         die("--session must be a session uuid (8-4-4-4-12 hex): %s" % session)
-    label = "%s/%s" % (a.group, a.alias)
-    names = [a.alias, a.addr or ""]
-    locks = lock_names(names, label)
-    existing = []
-    addr = a.addr or a.alias
-    for _ in range(3):
-        existing = [s for s in seats(a.group) if s["alias"] == a.alias]
-        addr = a.addr or (existing[0]["addr"] if existing else a.alias)
-        if addr in names or not existing:
-            break
-        unlock(locks)  # re-take the whole sorted set including the recorded addr
-        names = [a.alias, a.addr or "", addr]
-        locks = lock_names(names, label)
-    if existing and ((a.addr and a.addr != existing[0]["addr"])
-                     or (session and session != existing[0]["current"])):
+    locks = lock_names([seat_key(a.group, a.alias)])
+    existing = [s for s in seats(a.group) if s["alias"] == a.alias]
+    if existing and session and session != existing[0]["current"]:
         # Repointing a seat is how a record forgets which process it describes.
-        # If the current occupant is still live under the OLD address, that
-        # process would keep running with nothing in the fleet naming it —
-        # unstoppable by retire/remove and invisible to every view.
+        # If the current occupant is still live, that process would keep
+        # running with nothing in the fleet naming it — unstoppable by
+        # retire/remove and invisible to every view.
         peer = peer_for_session(existing[0]["current"])
         if peer:
             unlock(locks)
-            die("seat %s/%s still holds a live session (%s, pid %s) at addr '%s' — repointing it would strand "
+            die("seat %s/%s still holds a live session (%s, pid %s) — repointing it would strand "
                 "that process outside the fleet; retire or remove the seat first"
-                % (a.group, a.alias, existing[0]["current"][:8], peer.get("pid"), existing[0]["addr"]),
+                % (a.group, a.alias, existing[0]["current"][:8], peer.get("pid")),
                 EXIT_UNKNOWN)
-    refuse_live_name(a.alias, addr, allow_session=session or (existing[0]["current"] if existing else ""))
     # A registered session's short is whatever the harness shows for it right
     # now (a `seat add --session` seat was never spawned by sminos, so nothing
     # else records it); absent a row it is cleared, never left stale.
@@ -2086,7 +2055,7 @@ def cmd_seat_add(a):
         s = existing[0]
         seat_id = s["seat_id"]
         fields = {"parent": a.parent if a.parent is not None else s["parent"],
-                  "addr": addr, "role": a.role if a.role is not None else s["role"],
+                  "role": a.role if a.role is not None else s["role"],
                   "brief": a.brief if a.brief is not None else s["brief"], "updated": now()}
         if session:
             fields.update({"current": session, "short": short, "status": "idle",
@@ -2099,15 +2068,15 @@ def cmd_seat_add(a):
                 session, meta_get(seat_id, "group"), meta_get(seat_id, "alias") or meta_get(seat_id, "name")), EXIT_UNKNOWN)
         meta_set(seat_id, {
             "uuid": seat_id, "current": session, "short": short, "name": a.alias, "alias": a.alias,
-            "group": a.group, "parent": a.parent or "", "addr": addr, "role": a.role or "",
+            "group": a.group, "parent": a.parent or "", "role": a.role or "",
             "brief": a.brief or "", "task": "", "now": "", "note": "", "cwd": os.getcwd(), "worktree": "",
             "model": "", "settings": "", "effort": "", "status": "idle" if session else "vacant",
             "host": host_name() if session else "", "boot_id": boot_id() if session else "",
             "created": now(), "updated": now(), "turns": "0", "preamble": "1", "attempts": 1, "history": []})
     os.makedirs(os.path.join(group_dir(a.group), "locks"), exist_ok=True)
     unlock(locks)
-    print("seat %s/%s %s (parent: %s, addr: %s%s)" % (
-        a.group, a.alias, "updated" if existing else "added", a.parent or "none", addr,
+    print("seat %s/%s %s (parent: %s%s)" % (
+        a.group, a.alias, "updated" if existing else "added", a.parent or "none",
         (", session: " + session) if session else ", vacant"))
 
 
@@ -2141,21 +2110,19 @@ def cmd_fill(a):
     if a.resume:
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
-        refuse_live_name(s["alias"], s["addr"], allow_session=s["current"])  # resume continues that very session
         warn_resume_flags(a)
         try:
             resume_session(s, a.task, a.wait, locks, verb="filled")
         except ResumeRefused as e:
             die(e.message, e.code)
         return
-    refuse_live_name(s["alias"], s["addr"])  # a fresh fill: the previous occupant is NOT an allowed holder
     settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
     effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
     model = a.model if a.model is not None else s["model"]
     # The seat's cwd is already the worktree path when it had one, so no
     # --worktree on a re-fill: the fresh session runs where the seat lives.
     cwd = cwd_or_die(s["cwd"], "fill")
-    spawn_fresh(s["seat_id"], s["alias"], s["addr"], s["group"], s["parent"], s["role"], s["brief"],
+    spawn_fresh(s["seat_id"], s["alias"], s["group"], s["parent"], s["role"], s["brief"],
                 a.task, cwd, "", model, settings, effort, bool(s["preamble"]), a.wait, locks, "filled")
 
 
@@ -2491,8 +2458,7 @@ def cmd_send(a):
     if kind == "ambiguous":
         # A genuine seat match that is ambiguous must NOT silently fall through
         # to a raw name lookup — that would hide the ambiguity.
-        die("ambiguous seat '%s' matches: %s" % (
-            a.target, ", ".join("%s/%s" % (s["group"], s["alias"]) for s in res)), EXIT_UNKNOWN)
+        die(ambiguous_seat(a.target, res), EXIT_UNKNOWN)
     if kind == "ok":
         s = res
         require_reach(caller, s, a.target)
@@ -2507,7 +2473,7 @@ def cmd_send(a):
                         "do not blindly re-send" % (s["group"], s["alias"], e), 1)
                 die("%s/%s went away mid-send (%s) — use: sminos wake %s/%s \"<msg>\"" % (
                     s["group"], s["alias"], e, s["group"], s["alias"]), EXIT_UNKNOWN)
-            print("sent to %s/%s (%s)" % (s["group"], s["alias"], peer.get("name") or s["addr"]))
+            print("sent to %s/%s" % (s["group"], s["alias"]))
             return
         die("%s/%s is not live (%s) — use: sminos wake %s/%s \"<msg>\"" % (
             s["group"], s["alias"], state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
@@ -2823,7 +2789,6 @@ def cmd_list(a):
         out = []
         for s, st in rows:
             d = public_seat(s)
-            d.pop("addr", None)
             d["state"] = st
             out.append(d)
         print(json.dumps(out, indent=2))
@@ -2971,7 +2936,6 @@ def build_parser():
     sp.add_argument("--brief", default=None)
     sp.add_argument("--cwd", default="")
     sp.add_argument("--worktree", default="")
-    sp.add_argument("--addr", default=None)
     sp.add_argument("--stamp", action="append", default=None,
                     metavar="FIELD=VALUE", help="merge a field into the launch record (repeatable)")
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
@@ -2986,7 +2950,6 @@ def build_parser():
     sa.add_argument("--role", default=None)
     sa.add_argument("--brief", default=None)
     sa.add_argument("--parent", default=None)
-    sa.add_argument("--addr", default="")
     sa.add_argument("--session", default="")
     sa.set_defaults(fn=cmd_seat_add)
 
@@ -3110,7 +3073,7 @@ def main(argv=None):
         return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":
-            die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--addr A] [--session S]")
+            die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--session S]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
     a.fn(a)

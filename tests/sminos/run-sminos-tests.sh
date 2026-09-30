@@ -50,6 +50,9 @@ mode_of() { python3 -c 'import os, sys; print("%04o" % (os.stat(sys.argv[1]).st_
 field() { # seat-id field  → value (via python, never jq)
   python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); v = d.get(sys.argv[2], ""); print(v if isinstance(v, str) else json.dumps(v))' "$SMINOS_HOME/$1.json" "$2"
 }
+has_key() { # seat-id key → True | False: whether the record on disk carries the key at all
+  python3 -c 'import json, sys; print(sys.argv[2] in json.load(open(sys.argv[1])))' "$SMINOS_HOME/$1.json" "$2"
+}
 seat_id_of() { # alias → seat id of the first record carrying it
   python3 -c 'import glob, json, os, sys
 for p in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
@@ -440,10 +443,15 @@ run "$SMINOS" seat add grp ".."; assert_rc 2 "$RC" "'..' is rejected as an alias
 run "$SMINOS" seat add grp human; assert_rc 2 "$RC" "'human' is reserved"
 run "$SMINOS" seat add "../grp" x; assert_rc 2 "$RC" "group name with traversal is rejected"
 ORCH_UUID="33333333-cccc-4000-8000-000000000003"
-run "$SMINOS" seat add grp orchestrator --role lead --session "$ORCH_UUID" --addr "my session"
+run "$SMINOS" seat add grp orchestrator --role lead --session "$ORCH_UUID"
 assert_rc 0 "$RC" "registering an existing session as a seat"
+assert_equals "$OUT" "seat grp/orchestrator added (parent: none, session: $ORCH_UUID)" "the confirmation line names the seat and session, no addr"
 assert_file_exists "$SMINOS_HOME/$ORCH_UUID.json" "a registered session's seat is keyed by its session id"
-assert_equals "$(field "$ORCH_UUID" addr)" "my session" "--addr is stored (not name-validated)"
+assert_equals "$(has_key "$ORCH_UUID" addr)" "False" "a seat record carries no addr"
+assert_equals "$(field "$ORCH_UUID" name)" "orchestrator" "a seat record's name is its alias"
+run "$SMINOS" seat add grp q --addr q
+assert_rc 2 "$RC" "seat add --addr is an unknown argument"
+assert_equals "$(seat_id_of q)" "" "the refused seat add wrote no record"
 assert_equals "$(field "$ORCH_UUID" role)" "lead" "--role is stored"
 assert_equals "$(field "$ORCH_UUID" status)" "idle" "a registered session starts idle"
 assert_equals "$(mode_of "$SMINOS_HOME/$ORCH_UUID.json")" "0600" "seat records are private (umask 077)"
@@ -464,6 +472,7 @@ R_UUID="$(banner_uuid "$OUT")"; R_SHORT="$(banner_short "$OUT")"
 assert_file_exists "$SMINOS_HOME/$R_UUID.json" "record is named after the first session's uuid (banner bracket form)"
 assert_equals "$(field "$R_UUID" alias)" "researcher" "alias recorded"
 assert_equals "$(field "$R_UUID" name)" "researcher" "harness display name = alias"
+assert_equals "$(has_key "$R_UUID" addr)" "False" "a spawned seat's record carries no addr"
 assert_equals "$(field "$R_UUID" group)" "grp" "explicit group recorded"
 assert_equals "$(field "$R_UUID" parent)" "orchestrator" "parent recorded"
 assert_equals "$(field "$R_UUID" role)" "researcher" "role recorded"
@@ -497,15 +506,11 @@ assert_equals "$(field "$P_UUID" group)" "work" "group derived from the cwd when
 assert_not_contains "$(field "$P_UUID" task)" "You are seat" "no preamble without an explicit --group"
 assert_equals "$(field "$P_UUID" preamble)" "" "implicit-group seat records no preamble flag"
 
-# Launch under the advertised address (--addr): the harness -n name and the
-# record's name are the addr, so a custom addr is the live SendMessage name.
-run "$SMINOS" spawn worker-a "ADDR-1" --group grp --addr "custom addr"
-assert_rc 0 "$RC" "spawn with --addr exits 0"
-WA_UUID="$(banner_uuid "$OUT")"
-assert_equals "$(field "$WA_UUID" addr)" "custom addr" "custom addr recorded"
-assert_equals "$(field "$WA_UUID" name)" "custom addr" "harness display name is the addr"
-assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" '-n custom addr' "launch runs under -n <addr>"
-"$SMINOS" remove grp/worker-a >/dev/null
+# One name: the alias is the harness name, so there is no second address to give.
+nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
+run "$SMINOS" spawn z "t" --group grp --addr q
+assert_rc 2 "$RC" "spawn --addr is an unknown argument"
+assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no session is launched for the refused --addr"
 
 STUB_BG_STATE=working run "$SMINOS" spawn nowaiter "LONG-TASK-7" --no-wait --group grp
 assert_rc 0 "$RC" "--no-wait is accepted"
@@ -630,26 +635,51 @@ assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--wor
 assert_equals "$(field "$WT_UUID" cwd)" "$WORK/.claude/worktrees/feat-x" "cwd is the worktree path the harness reports"
 assert_contains "$OUT" "worktree=" "banner notes the worktree"
 
-# Live-name refusal: a live harness session already answering to the alias
-# would make every SendMessage to it ambiguous — refuse before any side effect.
+# Uniqueness is per group: a live harness session outside the fleet that
+# already answers to the alias does not block the alias (the harness tells two
+# sessions of one name apart itself).
 printf '{"pid":%s,"sessionId":"77777777-aaaa-4000-8000-000000000007","name":"taken","kind":"interactive","status":"idle","messagingSocketPath":"%s"}\n' "$$" "$SOCK" > "$HOME/.claude/sessions/$$.json"
-nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
-run "$SMINOS" spawn taken "T" --group grp
-assert_rc 4 "$RC" "spawn refuses an alias a live session already answers to"
-assert_contains "$OUT" "live session already answers to 'taken'" "live-name refusal is explained"
-assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no session is launched when the name is taken"
 run "$SMINOS" seat add grp taken
-assert_rc 4 "$RC" "seat add refuses a live-held alias without --session"
+assert_rc 0 "$RC" "seat add takes an alias a live session outside the fleet answers to"
 run "$SMINOS" seat add grp taken --session 77777777-aaaa-4000-8000-000000000007
 assert_rc 0 "$RC" "seat add registers the very session that holds the name"
+"$SMINOS" remove grp/taken >/dev/null
+run "$SMINOS" spawn taken "T" --group grp
+assert_rc 0 "$RC" "spawn takes an alias a live session outside the fleet answers to"
 rm -f "$HOME/.claude/sessions/$$.json"
-run "$SMINOS" spawn researcher "OTHER" --group other
-assert_rc 0 "$RC" "the same alias in another group is allowed when no live session holds it"
-"$SMINOS" remove other/researcher >/dev/null
+"$SMINOS" remove grp/taken >/dev/null
+
+# Two live groups may both hold an alias; a bare alias is then ambiguous and
+# `group/alias` names each.
+run "$SMINOS" spawn a "wait" --group one
+assert_rc 0 "$RC" "spawn one/a exits 0"
+ONE_A="$(banner_uuid "$OUT")"
+printf '{"pid":%s,"sessionId":"%s","name":"a","kind":"background","status":"busy","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$ONE_A" "$SOCK" > "$HOME/.claude/sessions/one-a.json"
+run "$SMINOS" spawn a "wait" --group two
+assert_rc 0 "$RC" "spawn two/a exits 0 while one/a is live"
+TWO_A="$(banner_uuid "$OUT")"
+printf '{"pid":%s,"sessionId":"%s","name":"a","kind":"background","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$TWO_A" "$SOCK" > "$HOME/.claude/sessions/two-a.json"
+run "$SMINOS" list --json
+assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys
+print(sorted((d["group"], d["state"]) for d in json.load(sys.stdin) if d["alias"] == "a"))')" \
+  "[('one', 'busy'), ('two', 'idle')]" "both groups hold a live seat named a"
+assert_equals "$(field "$TWO_A" name)" "a" "the second seat's name is its alias too"
+assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "-n a " "the second seat launches under its alias"
+run "$SMINOS" send a "x"
+assert_rc 4 "$RC" "send to an alias two groups hold exits 4"
+assert_equals "$OUT" "sminos: ambiguous seat 'a' matches: one/a, two/a" "the ambiguity lists group/alias, no ids"
+run "$SMINOS" status a "x"
+assert_equals "$OUT" "sminos: ambiguous seat 'a' matches: one/a, two/a" "every seat verb lists the ambiguity the same way"
+: > "$RECEIVED"
+run "$SMINOS" send two/a "x"
+assert_rc 0 "$RC" "send to group/alias delivers"
+assert_equals "$OUT" "sent to two/a" "the delivery names the seat by its one name, no harness name beside it"
+rm -f "$HOME/.claude/sessions/one-a.json" "$HOME/.claude/sessions/two-a.json"
+"$SMINOS" remove one/a >/dev/null; "$SMINOS" remove two/a >/dev/null
 
 # Lifecycle lock: a spawn of a seat whose lock another sminos process holds is
 # refused, never duplicated.
-python3 - "$(lock_file locked)" <<'PY' &
+python3 - "$(lock_file grp/locked)" <<'PY' &
 import fcntl, os, sys, time
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
 f = open(sys.argv[1], "a+")
@@ -663,7 +693,10 @@ run "$SMINOS" spawn locked "L" --group grp
 assert_rc 4 "$RC" "a spawn while the seat's lifecycle lock is held is refused"
 assert_contains "$OUT" "being changed by another sminos process" "lock refusal is explained"
 assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no session is launched while the lock is held"
+run "$SMINOS" spawn locked "L" --group other
+assert_rc 0 "$RC" "the lock is the seat's (group/alias): the same alias in another group spawns meanwhile"
 kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
+"$SMINOS" remove other/locked >/dev/null
 
 # ---- 5) sync (finalize) and blocked shapes -----------------------------------
 echo "sync:"
@@ -1009,9 +1042,23 @@ assert_contains "$OUT" "claude attach $(field "$P_UUID" short)" "attach prints t
 run "$SMINOS" status nope idle
 assert_rc 4 "$RC" "an unknown seat exits 4"
 run "$SMINOS" status "$(printf '%s' "$P_UUID" | cut -c1-8)" idle
-assert_rc 0 "$RC" "a seat id prefix resolves"
+assert_rc 4 "$RC" "a seat id prefix no longer names a seat"
+assert_contains "$OUT" "no seat matching" "the prefix is reported as no seat"
 run "$SMINOS" status "$(field "$P_UUID" short)" idle
-assert_rc 0 "$RC" "a current short id resolves"
+assert_rc 4 "$RC" "a harness short id no longer names a seat"
+run "$SMINOS" status "$P_UUID" idle
+assert_rc 0 "$RC" "a full seat id resolves"
+# A seat re-filled into a new session: its session id differs from its seat id.
+RS_SEAT="0a0a1111-abab-4000-8000-0000000a1111"; RS_SESS="0a0a2222-abab-4000-8000-0000000a2222"
+printf '{"uuid":"%s","alias":"refilled","group":"grp","status":"idle","current":"%s","short":"rs000001"}' \
+  "$RS_SEAT" "$RS_SESS" > "$SMINOS_HOME/$RS_SEAT.json"
+run "$SMINOS" status "$RS_SESS" idle
+assert_contains "$OUT" "grp/refilled" "a full session id resolves to its seat"
+run "$SMINOS" status "$(printf '%s' "$RS_SESS" | cut -c1-13)" idle
+assert_rc 4 "$RC" "a session id prefix no longer names a seat"
+run "$SMINOS" status rs000001 idle
+assert_rc 4 "$RC" "nor does the short id the record carries"
+"$SMINOS" remove grp/refilled >/dev/null
 
 run "$SMINOS" list
 assert_not_contains "$OUT" "null" "fleet list never prints null"
@@ -1044,7 +1091,7 @@ assert_equals "$OUT" "idle" "meta get still reads ordinary fields"
 "$SMINOS" seat add gb dup >/dev/null
 run "$SMINOS" send dup "hi"
 assert_rc 4 "$RC" "send to an ambiguous seat name exits 4"
-assert_contains "$OUT" "ambiguous seat 'dup'" "the ambiguity is named, not hidden by a name fallback"
+assert_equals "$OUT" "sminos: ambiguous seat 'dup' matches: ga/dup, gb/dup" "the ambiguity is named, not hidden by a name fallback"
 "$SMINOS" remove ga/dup >/dev/null; "$SMINOS" remove gb/dup >/dev/null
 
 # Recycled-pid peer: a peer record whose pid is alive but whose socket file is
@@ -1191,7 +1238,7 @@ assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "no resum
 "$SMINOS" remove grp/stopper >/dev/null
 
 # wake respects the lifecycle lock.
-python3 - "$(lock_file plainworker)" <<'PY' &
+python3 - "$(lock_file work/plainworker)" <<'PY' &
 import fcntl, os, sys, time
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
 f = open(sys.argv[1], "a+")
@@ -1319,27 +1366,33 @@ assert_rc 4 "$RC" "fresh fill is refused while the previous occupant still answe
 rm -f "$HOME/.claude/sessions/prevocc.json"; "$SMINOS" remove grp/prevocc >/dev/null
 
 # Repointing a seat whose occupant is STILL LIVE would leave that process
-# running with nothing in the fleet naming it: refused for a new --addr and for
-# a new --session alike, and the record is left exactly as it was.
+# running with nothing in the fleet naming it: refused, and the record is left
+# exactly as it was.
 RPT_UUID="0e0ebbbb-abab-4000-8000-0000000ebbbb"
 "$SMINOS" seat add grp pinned --session "$RPT_UUID" >/dev/null
 # The live session answers to the harness name it already had (a `seat add
-# --session` seat was never named by sminos), so the machine-wide name check
-# cannot see it — only the record ties the process to the fleet.
+# --session` seat was never named by sminos) — only the record ties the
+# process to the fleet.
 printf '{"pid":%s,"sessionId":"%s","name":"a name sminos never chose","kind":"interactive","status":"idle","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$RPT_UUID" "$SOCK" > "$HOME/.claude/sessions/pinned.json"
-run "$SMINOS" seat add grp pinned --addr "pinned elsewhere"
-assert_rc 4 "$RC" "re-addressing a seat whose session is still live is refused"
-assert_contains "$OUT" "still holds a live session" "the refusal names the live session"
-assert_equals "$(printf '%s' "$OUT" | grep -c .)" "1" "the refusal is one stderr line"
-assert_equals "$(field "$RPT_UUID" addr)" "pinned" "the refused re-address left the addr untouched"
 run "$SMINOS" seat add grp pinned --session "0e0ecccc-abab-4000-8000-0000000ecccc"
-assert_rc 4 "$RC" "re-pointing a live seat at another session is refused too"
+assert_rc 4 "$RC" "re-pointing a seat whose session is still live is refused"
+assert_contains "$OUT" "still holds a live session" "the refusal names the live session"
+assert_not_contains "$OUT" "addr" "the refusal names no addr"
+assert_equals "$(printf '%s' "$OUT" | grep -c .)" "1" "the refusal is one stderr line"
 assert_equals "$(field "$RPT_UUID" current)" "$RPT_UUID" "the refused re-point left the session untouched"
+run "$SMINOS" seat add grp pinned --role keeper
+assert_rc 0 "$RC" "a seat add that re-points nothing succeeds while the occupant is live"
+run "$SMINOS" list grp --json
+assert_contains "$OUT" '"alias": "pinned"' "a joined session lists under its alias"
+assert_not_contains "$OUT" "a name sminos never chose" "never under the harness name it kept"
+run "$SMINOS" list grp
+assert_contains "$OUT" "pinned" "the joined seat's row reads its alias"
+assert_contains "$(printf '%s\n' "$OUT" | grep pinned)" "idle" "with its session's live word"
 rm -f "$HOME/.claude/sessions/pinned.json"
-run "$SMINOS" seat add grp pinned --addr "pinned elsewhere"
-assert_rc 0 "$RC" "once the occupant is gone the same re-address succeeds"
-assert_equals "$(field "$RPT_UUID" addr)" "pinned elsewhere" "and the new addr is recorded"
+run "$SMINOS" seat add grp pinned --session "0e0ecccc-abab-4000-8000-0000000ecccc"
+assert_rc 0 "$RC" "once the occupant is gone the same re-point succeeds"
+assert_equals "$(field "$RPT_UUID" current)" "0e0ecccc-abab-4000-8000-0000000ecccc" "and the new session is recorded"
 "$SMINOS" remove grp/pinned >/dev/null
 
 # harness_row prefers a RUNNING row for the session over the recorded short
@@ -1357,14 +1410,14 @@ rm -f "$STUB_STATE/agents/hr000001" "$STUB_STATE/agents/hr000002"; "$SMINOS" rem
 RP_UUID="0e0ebbbb-abab-4000-8000-0000000ebbbb"
 printf '{"pid":%s,"sessionId":"%s","name":"recycled","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 1990","messagingSocketPath":"%s"}\n' \
   "$$" "$RP_UUID" "$SOCK" > "$HOME/.claude/sessions/recycled.json"
-run "$SMINOS" spawn recycled "R" --group grp
-assert_rc 0 "$RC" "a peer record whose procStart does not match the live pid does not block the name"
-"$SMINOS" remove grp/recycled >/dev/null
+run "$SMINOS" send recycled "R"
+assert_rc 4 "$RC" "a peer record whose procStart does not match the live pid is not a live session to send to"
 LSTART="$(LC_ALL=C ps -o lstart= -p $$ | sed 's/  */ /g;s/^ //;s/ $//')"
 printf '{"pid":%s,"sessionId":"%s","name":"recycled","kind":"bg","status":"idle","procStart":"%s","messagingSocketPath":"%s"}\n' \
   "$$" "$RP_UUID" "$LSTART" "$SOCK" > "$HOME/.claude/sessions/recycled.json"
-run "$SMINOS" spawn recycled "R" --group grp
-assert_rc 4 "$RC" "a peer record whose procStart matches the live pid is live and blocks the name"
+run "$SMINOS" send recycled "R"
+assert_rc 0 "$RC" "a peer record whose procStart matches the live pid is live"
+assert_contains "$OUT" "sent to session recycled" "and the raw-name send reaches it"
 rm -f "$HOME/.claude/sessions/recycled.json"
 
 # status / meta set never resurrect a removed seat (unit level).
@@ -1502,6 +1555,15 @@ rows = json.load(sys.stdin)
 print(len(rows) == 8 and all("state" in d and "live" not in d and "addr" not in d and
                              all(k in d for k in ("seat_id", "current", "short", "status")) for d in rows))')" \
   "True" "list --json rows carry state and the ids, never live or addr"
+# A record written before the one name keeps its stale addr (and a name that
+# held it) on disk; nothing reads either, so neither surfaces.
+ST_OLD=5a5a0009-0000-4000-8000-00000000a009
+printf '{"uuid":"%s","alias":"s-old","name":"old harness name","addr":"old harness name","group":"st3","status":"retired","current":""}' \
+  "$ST_OLD" > "$SMINOS_HOME/$ST_OLD.json"
+run "$SMINOS" list st3 --json
+assert_not_contains "$OUT" "old harness name" "a stale addr or name on disk never reaches list --json"
+assert_contains "$OUT" '"name": "s-old"' "the record's name reads as its alias"
+"$SMINOS" remove st3/s-old >/dev/null
 # Deterministic recency (far-future stamps put these groups first in the fleet):
 # groups by their newest seat, seats newest first.
 n=9
@@ -1568,7 +1630,7 @@ assert_contains "$OUT" "s-stop" "--all shows the forgotten stopped seat"
 VIEWS="$(cat <<<"$OUT")
 $("$SMINOS" list st)
 $("$SMINOS" tui st --headless --all --width 140 --height 40)"
-for w in blocked gone unknown working done error failed; do
+for w in blocked gone unknown working "done" error failed; do
   assert_not_contains "$VIEWS" " $w" "no view draws the retired word '$w'"
 done
 { echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
@@ -1732,7 +1794,7 @@ run $TUI --keys "right,down,down,right,s"
 assert_contains "$OUT" 'intern is vacant — nothing to send to; sminos fill org/intern "<task>" fills it' "s on a vacant seat refuses with the reason"
 assert_not_contains "$OUT" "send →" "and opens no send line"
 run $TUI --keys "right,down,s,text:ping-from-tui here,enter"
-assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout (scout)" "enter on the send line delivers through the real launcher and records the result"
+assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout" "enter on the send line delivers through the real launcher and records the result"
 assert_contains "$(cat "$RECEIVED")" "[sminos message from human]\nping-from-tui here" "the frame reached the seat's inbox socket with the human sender line"
 run $TUI --keys b
 assert_contains "$OUT" "── chat · lead · 0 messages · tab to browse ──" "b shows focused host's chat"
@@ -1860,7 +1922,9 @@ run "$SMINOS" status a 'alias check'
 assert_contains "$OUT" 'fam/a now: alias check' "status a resolves the alias before a seat-id prefix"
 "$SMINOS" status a >/dev/null
 run "$SMINOS" chat aaaaaaab
-assert_contains "$OUT" 'chat hexa (other)' "a seat-id prefix still resolves when no alias matches"
+assert_rc 4 "$RC" "a seat-id prefix does not resolve even when no alias matches"
+run "$SMINOS" chat aaaaaaab-aaaa-4000-8000-0000000000ab
+assert_contains "$OUT" 'chat hexa (other)' "the full seat id resolves"
 "$SMINOS" remove other/hexa >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"lead","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$LEAD" "$SOCK" > "$HOME/.claude/sessions/lead.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
