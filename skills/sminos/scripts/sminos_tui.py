@@ -41,11 +41,11 @@ HELP_LINES = [
     "s — type a message for the focused seat; enter sends it over the seat's inbox socket (sminos send), esc cancels",
     "b — toggle the bottom panel: seat detail ↔ family chat",
     "tab — move the keys into the chat list (enter opens a message, tab back)",
-    "a — show / hide retired, failed and gone seats",
+    "a — show / hide retired seats and stopped seats the harness no longer lists",
     "r — refresh from the harness now (it also refreshes every few seconds)",
     "? — this help · q — quit (tmux windows opened by enter stay open)",
     "",
-    "glyphs: ● busy · ○ idle · ◐ blocked (needs input) · ■ stopped · ◌ vacant · ✕ gone",
+    "glyphs: ● busy · ○ idle · ◐ waiting (needs input) · ■ stopped · ◌ vacant · ✕ retired",
 ]
 SPECIAL = {"enter", "esc", "tab", "backspace", "space", "up", "down", "left", "right",
            "home", "end", "pgup", "pgdn", "resize"}
@@ -88,8 +88,8 @@ def attach_short(seat):
 
 def take_snapshot(group, show_all):
     """sminos_chart.snapshot plus, on every seat node, the short id Enter would
-    attach to — resolved here so it comes from the same harness read as the
-    live state."""
+    attach to — resolved here, from the one harness read the chart's hide
+    rule also uses."""
     roots, meta = chart.snapshot(group, show_all)
 
     def walk(n):
@@ -291,11 +291,12 @@ def handle_key(state, key, actions):
     elif key == "s":
         if node is None or node["kind"] == "group":
             flash(state, "move to a seat to send it a message")
-        elif node["live"] in sminos.FILLED:
-            state["input"], state["input_target"] = "", node["id"]
+        elif node["state"] in ("vacant", "retired"):
+            flash(state, "%s is %s — nothing to send to; sminos fill %s/%s \"<task>\" fills it" % (
+                node["label"], node["state"], node["seat"]["group"], node["seat"]["alias"]))
         else:
-            flash(state, "%s is %s — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs sminos fill"
-                  % (node["label"], node["live"]))
+            # A stopped seat too: the send resumes it.
+            state["input"], state["input_target"] = "", node["id"]
     elif key == "a":
         state["show_all"] = not state["show_all"]
         resnapshot(state)
@@ -318,10 +319,10 @@ def attach_target(node):
         return "", "move to a seat to open its conversation"
     seat = node["seat"]
     ref = "%s/%s" % (seat["group"], seat["alias"])
-    if node["live"] == "gone":
-        return "", "%s is gone from the harness — sminos fill --resume %s \"<msg>\" may revive its session" % (node["label"], ref)
-    if node["live"] == "vacant" or not node.get("short"):
+    if node["state"] == "vacant":
         return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], ref)
+    if not node.get("short"):
+        return "", "%s has no short id to attach to — the harness no longer lists its session" % node["label"]
     return node["short"], ""
 
 
@@ -486,23 +487,19 @@ def wrap(text, w):
     return out
 
 
-def glyph_line(node):
-    live = node["live"] or "unknown"
-    return "%s %s" % (chart.GLYPH.get(live, "?"), live)
-
-
 def detail_lines(state, node, w):
     if node is None:
         m = state["meta"]
         if not state["loaded"]:
             return ["loading the fleet from the harness…"]
         if m["hidden"] and not state["show_all"]:
-            return ["nothing to show — %d seat(s) are retired, failed or gone" % m["hidden"], "press a to show them"]
+            return ["nothing to show — %d seat(s) are hidden (retired, or stopped and no longer listed by the "
+                    "harness)" % m["hidden"], "press a to show them"]
         return ["no seats yet — sminos spawn <alias> \"<task>\" --group <group> creates the first"]
     if node["kind"] == "group":
         g = node["label"]
         lines = ["group %s · %d seats · %d live%s" % (g, node["seats"], node["alive"],
-                 (" · %d retired" % node["hidden"]) if node["hidden"] else "")]
+                 (" · %d hidden" % node["hidden"]) if node["hidden"] else "")]
         roots = ", ".join(c["label"] for c in node["children"])
         lines.append("roots: " + (roots or "(none visible)"))
         host = chat_host(state)
@@ -519,7 +516,7 @@ def detail_lines(state, node, w):
         head += " · session %s" % s["current"][:8]
     if s.get("parent"):
         head += " · under %s" % s["parent"]
-    state_line = "%s · status %s" % (glyph_line(node), s.get("status") or "?")
+    state_line = chart.glyph_line(node)
     if node.get("short"):
         state_line += " · short %s" % node["short"]
     if s.get("updated"):
@@ -746,13 +743,13 @@ class CursesScreen(chart.Screen):
 
 def init_styles(curses):
     st = {"focus": curses.A_BOLD, "dim": curses.A_DIM, "title": curses.A_BOLD, "sel": curses.A_REVERSE,
-          "flash": curses.A_BOLD, "vacant": curses.A_DIM, "gone": curses.A_DIM}
+          "flash": curses.A_BOLD, "vacant": curses.A_DIM, "retired": curses.A_DIM}
     if not curses.has_colors():
         return st
     try:
         curses.use_default_colors()
-        colours = [("busy", curses.COLOR_GREEN), ("idle", curses.COLOR_CYAN), ("blocked", curses.COLOR_YELLOW),
-                   ("stopped", curses.COLOR_WHITE), ("unknown", curses.COLOR_MAGENTA), ("group", curses.COLOR_BLUE),
+        colours = [("busy", curses.COLOR_GREEN), ("idle", curses.COLOR_CYAN), ("waiting", curses.COLOR_YELLOW),
+                   ("stopped", curses.COLOR_WHITE), ("group", curses.COLOR_BLUE),
                    ("flash", curses.COLOR_YELLOW)]
         for i, (name, col) in enumerate(colours, 1):
             curses.init_pair(i, col, -1)

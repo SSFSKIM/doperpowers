@@ -431,7 +431,7 @@ run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list demo --json
 assert_not_contains "$OUT" "null" "list never prints null for a converted node"
 assert_contains "$OUT" '"parent": "orchestrator"' "converted node retains its parent"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list work --json
-assert_contains "$OUT" '"addr": "old-worker"' "list falls back addr → alias → name"
+assert_contains "$OUT" '"alias": "old-worker"' "list falls back alias → name"
 
 # ---- 3) seats: validation and vacant/registered seats ------------------------
 echo "seat add:"
@@ -452,8 +452,8 @@ run "$SMINOS" seat add grp scribe --role writer --parent orchestrator --brief "k
 assert_rc 0 "$RC" "adding a vacant seat"
 assert_contains "$OUT" "vacant" "vacant seat reported"
 run "$SMINOS" list grp
-assert_contains "$OUT" "vacant" "list shows the vacant seat's live state"
-assert_contains "$OUT" "writer" "list shows the role"
+assert_contains "$OUT" "vacant" "list shows the vacant seat's state word"
+assert_contains "$OUT" "WRITER" "list shows the role, upper case, opening the now column"
 # ---- 4) spawn ----------------------------------------------------------------
 echo "spawn:"
 cd "$WORK"
@@ -516,10 +516,14 @@ run "$SMINOS" reply nowaiter
 assert_contains "$OUT" "ANSWER:" "reply reads the running turn's transcript"
 assert_contains "$OUT" "--- latest reply ---" "reply prints its header"
 
-# spawn refuses a FILLED seat (nowaiter is busy) but RE-FILLS a stopped one.
+# spawn refuses a FILLED seat (nowaiter's session answers, busy) but RE-FILLS a
+# stopped one.
+printf '{"pid":%s,"sessionId":"%s","name":"nowaiter","kind":"background","status":"busy","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$NW_UUID" "$SOCK" > "$HOME/.claude/sessions/nowaiter.json"
 run "$SMINOS" spawn nowaiter "x" --group grp
 assert_rc 4 "$RC" "spawning a filled seat is refused"
-assert_contains "$OUT" "message it with sminos send/wake" "filled refusal points at send/wake"
+assert_contains "$OUT" "is filled (busy) — message it with sminos send/wake" "filled refusal names the state word and points at send/wake"
+rm -f "$HOME/.claude/sessions/nowaiter.json"
 run "$SMINOS" spawn refillme "FIRST" --group grp --role r1 --brief b1
 assert_rc 0 "$RC" "first spawn of refillme exits 0"
 RF="$(seat_id_of refillme)"
@@ -1011,9 +1015,9 @@ assert_rc 0 "$RC" "a current short id resolves"
 
 run "$SMINOS" list
 assert_not_contains "$OUT" "null" "fleet list never prints null"
-run "$SMINOS" list --status retired
-assert_contains "$OUT" "wtworker" "--status filters"
-assert_not_contains "$OUT" "orchestrator" "--status excludes other statuses"
+run "$SMINOS" list --state retired
+assert_contains "$OUT" "wtworker" "--state filters"
+assert_not_contains "$OUT" "orchestrator" "--state excludes other words"
 
 # ---- 11) exit-gate wave ------------------------------------------------------
 echo "exit-gate wave:"
@@ -1294,10 +1298,7 @@ sleep 0.2
 assert_contains "$(tail -c 400 "$RECEIVED")" '[sminos message from me-agent]' "a non-family seat still derives sender alias"
 "$SMINOS" remove work/me-agent >/dev/null
 
-# A harness failure is 'unknown', never an empty fleet.
-STUB_AGENTS_FAIL=1 run "$SMINOS" list grp
-assert_rc 0 "$RC" "list still runs when the harness fails"
-assert_contains "$OUT" "unknown" "list shows unknown liveness when claude agents fails"
+# A harness failure is never read as an empty fleet.
 STUB_BG_STATE=working run "$SMINOS" spawn unk "U" --group grp
 STUB_AGENTS_FAIL=1 run "$SMINOS" sync unk
 assert_equals "$OUT" "live" "sync claims nothing (live) when the harness fails"
@@ -1341,14 +1342,15 @@ assert_rc 0 "$RC" "once the occupant is gone the same re-address succeeds"
 assert_equals "$(field "$RPT_UUID" addr)" "pinned elsewhere" "and the new addr is recorded"
 "$SMINOS" remove grp/pinned >/dev/null
 
-# harness_row prefers a RUNNING row for the session over the recorded short.
+# harness_row prefers a RUNNING row for the session over the recorded short
+# (attach reads it for the short id to attach to).
 HR_UUID="0d0daaaa-abab-4000-8000-0000000daaaa"
 "$SMINOS" seat add grp revived --session "$HR_UUID" >/dev/null
 "$SMINOS" meta set revived short hr000001 >/dev/null
 { echo "short=hr000001"; echo "uuid=$HR_UUID"; echo "name=revived"; echo "state=stopped"; echo "status="; echo "cwd=$WORK"; } > "$STUB_STATE/agents/hr000001"
 { echo "short=hr000002"; echo "uuid=$HR_UUID"; echo "name=revived"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/hr000002"
-run "$SMINOS" list grp
-assert_contains "$(printf '%s' "$OUT" | grep '^revived')" "busy" "an out-of-band revival's running row wins over the stale recorded short"
+run "$SMINOS" attach grp/revived
+assert_equals "$OUT" "claude attach hr000002" "an out-of-band revival's running row wins over the stale recorded short"
 rm -f "$STUB_STATE/agents/hr000001" "$STUB_STATE/agents/hr000002"; "$SMINOS" remove grp/revived >/dev/null
 
 # peer liveness: a recycled pid (procStart differs from the live process) is dead.
@@ -1442,10 +1444,151 @@ assert_rc 0 "$RC" "remove exits 0"
 run "$SMINOS" list grp
 assert_not_contains "$OUT" "scribe" "removed seat is gone"
 
+# ---- 12b) the state word: one word per seat, from the session record ---------
+# The source is ~/.claude/sessions/<pid>.json plus one socket connect, never
+# `claude agents`. Each case constructs a seat record and (where live) a peer
+# record on the suite's socket server, whose pid is alive.
+echo "state word:"
+ST_BUSY=5a5a0001-0000-4000-8000-00000000a001
+ST_SHELL=5a5a0002-0000-4000-8000-00000000a002
+ST_BARE=5a5a0003-0000-4000-8000-00000000a003
+ST_IDLE=5a5a0004-0000-4000-8000-00000000a004
+ST_WAIT=5a5a0005-0000-4000-8000-00000000a005
+ST_STOP=5a5a0006-0000-4000-8000-00000000a006
+ST_RET=5a5a0007-0000-4000-8000-00000000a007
+ST_LONG=5a5a0008-0000-4000-8000-00000000a008
+st_peer() { # session-id alias extra-json [pid]
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","kind":"background"%s,"messagingSocketPath":"%s"}\n' \
+    "${4:-$SOCK_PID}" "$1" "$2" "$3" "$SOCK" > "$HOME/.claude/sessions/st-$2.json"
+}
+( exit 0 ) & DEAD_PID=$!
+wait "$DEAD_PID" || true
+st_peer "$ST_BUSY" s-busy ',"status":"busy"'
+st_peer "$ST_SHELL" s-shell ',"status":"shell"'
+st_peer "$ST_BARE" s-bare ''
+st_peer "$ST_IDLE" s-idle ',"status":"idle"'
+st_peer "$ST_WAIT" s-wait ',"status":"waiting","waitingFor":"permission to run rm"'
+st_peer "$ST_STOP" s-stop ',"status":"busy"' "$DEAD_PID"   # a dead pid whose socket FILE still answers
+st_peer "$ST_RET" s-ret ',"status":"idle"'                  # retired wins over a session that answers
+st_peer "$ST_LONG" lone-seat-with-a-long-name-past-24 ',"status":"busy"'
+"$SMINOS" seat add st s-busy --session "$ST_BUSY" >/dev/null
+"$SMINOS" seat add st s-shell --session "$ST_SHELL" >/dev/null
+"$SMINOS" seat add st s-bare --session "$ST_BARE" >/dev/null
+"$SMINOS" seat add st s-idle --role scout --session "$ST_IDLE" >/dev/null
+"$SMINOS" seat add st s-wait --session "$ST_WAIT" >/dev/null
+"$SMINOS" seat add st s-stop --session "$ST_STOP" >/dev/null
+"$SMINOS" seat add st s-ret --session "$ST_RET" >/dev/null
+"$SMINOS" meta set st/s-ret status retired >/dev/null
+"$SMINOS" seat add st s-vac >/dev/null
+# The recorded status never speaks for the word: a `working` record whose
+# session is idle reads idle.
+"$SMINOS" meta set st/s-idle status working >/dev/null
+st_state() { # alias → the state key of its list --json row
+  "$SMINOS" list st --json | python3 -c 'import json, sys
+print(next(d["state"] for d in json.load(sys.stdin) if d["alias"] == sys.argv[1]))' "$1"
+}
+assert_equals "$(st_state s-busy)" "busy" "a live peer whose status is busy reads busy"
+assert_equals "$(st_state s-shell)" "busy" "a live peer whose status is shell reads busy"
+assert_equals "$(st_state s-bare)" "busy" "a live peer with no status reads busy"
+assert_equals "$(st_state s-idle)" "idle" "a live peer whose status is idle reads idle (the recorded working says nothing)"
+assert_equals "$(st_state s-wait)" "waiting" "a live peer whose status is waiting reads waiting"
+assert_equals "$(st_state s-stop)" "stopped" "a dead pid with a socket file reads stopped"
+assert_equals "$(st_state s-ret)" "retired" "a retired record reads retired even while its session answers"
+assert_equals "$(st_state s-vac)" "vacant" "a seat with no current session reads vacant"
+run "$SMINOS" list st --json
+assert_rc 0 "$RC" "list --json exits 0"
+assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys
+rows = json.load(sys.stdin)
+print(len(rows) == 8 and all("state" in d and "live" not in d and "addr" not in d and
+                             all(k in d for k in ("seat_id", "current", "short", "status")) for d in rows))')" \
+  "True" "list --json rows carry state and the ids, never live or addr"
+# Deterministic recency (far-future stamps put these groups first in the fleet):
+# groups by their newest seat, seats newest first.
+n=9
+for a in s-wait s-idle s-busy s-shell s-bare s-stop s-ret s-vac; do
+  "$SMINOS" meta set "st/$a" updated "2099-01-01T00:00:0${n}Z" >/dev/null
+  n=$((n - 1))
+done
+"$SMINOS" meta set st/s-busy now "parsing the schema" >/dev/null
+"$SMINOS" seat add st2 lone-seat-with-a-long-name-past-24 --session "$ST_LONG" >/dev/null
+"$SMINOS" meta set st2/lone-seat-with-a-long-name-past-24 updated 2099-01-01T00:01:00Z >/dev/null
+"$SMINOS" seat add st2 z --role reviewer >/dev/null
+"$SMINOS" meta set st2/z updated 2099-01-01T00:00:59Z >/dev/null
+run "$SMINOS" list st
+assert_rc 0 "$RC" "list of a group exits 0"
+EXPECTED_ST="$(printf '%s\n' \
+  'st' \
+  '  s-wait    waiting   permission to run rm' \
+  '  s-idle    idle      SCOUT' \
+  '  s-busy    busy      parsing the schema' \
+  '  s-shell   busy' \
+  '  s-bare    busy' \
+  '  s-stop    stopped' \
+  '  s-ret     retired' \
+  '  s-vac     vacant')"
+assert_equals "$OUT" "$EXPECTED_ST" "list is the group heading, then alias, state word and now column — no header, ids, or recorded status"
+run "$SMINOS" list
+EXPECTED_ST2="$(printf 'st2\n  %s   busy\n  %-24s   vacant    REVIEWER\nst\n  s-wait' lone-seat-with-a-long-name-past-24 z)"
+assert_contains "$OUT" "$EXPECTED_ST2" "groups are ordered by their newest seat; an alias pads to at most 24 cells and is never cut"
+assert_not_contains "$OUT" "ALIAS" "list prints no header line"
+run "$SMINOS" list st --state busy
+assert_equals "$(printf '%s\n' "$OUT" | sed 1d | awk '{print $1}' | tr '\n' ' ')" "s-busy s-shell s-bare " "--state keeps only the rows with that word"
+run "$SMINOS" list st --state gone
+assert_rc 2 "$RC" "--state accepts only the six words"
+run "$SMINOS" list st --status retired
+assert_rc 2 "$RC" "--status is gone, not aliased"
+run "$SMINOS" list nosuchgroup
+assert_equals "$OUT" "(no seats)" "list of an empty selection says so"
+# No view asks the harness to describe a seat.
+: > "$STUB_STATE/log/calls.log"
+"$SMINOS" list >/dev/null
+"$SMINOS" list st --json >/dev/null
+assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list never runs claude agents"
+STUB_AGENTS_FAIL=1 run "$SMINOS" list st
+assert_rc 0 "$RC" "list is unaffected by a failing harness"
+assert_contains "$OUT" "s-idle    idle" "and still reads the live word"
+# The chart's hide rule: a retired seat, and a stopped seat the harness no
+# longer lists. A stopped seat the harness still lists stays on the chart; so
+# does one when the harness cannot be asked.
+{ echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
+run "$SMINOS" chart st --width 200
+assert_contains "$OUT" "■ stopped" "a stopped seat the harness still lists is charted with its glyph"
+assert_contains "$OUT" "◐ waiting" "a waiting seat is charted with the half glyph"
+assert_not_contains "$OUT" "s-ret" "a retired seat is hidden by default"
+assert_contains "$OUT" "8 seats · 5 live · 1 hidden" "live counts busy, idle and waiting"
+rm -f "$STUB_STATE/agents/5a5a0006"
+run "$SMINOS" chart st --width 200
+assert_not_contains "$OUT" "s-stop" "a stopped seat the harness no longer lists is hidden by default"
+assert_contains "$OUT" "8 seats · 5 live · 2 hidden" "and counted in the hidden tail"
+STUB_AGENTS_FAIL=1 run "$SMINOS" chart st --width 200
+assert_contains "$OUT" "s-stop" "a stopped seat stays on the chart when the harness cannot be asked"
+run "$SMINOS" chart st --all --width 200
+assert_contains "$OUT" "✕ retired" "--all shows the retired seat with its glyph"
+assert_contains "$OUT" "s-stop" "--all shows the forgotten stopped seat"
+VIEWS="$(cat <<<"$OUT")
+$("$SMINOS" list st)
+$("$SMINOS" tui st --headless --all --width 140 --height 40)"
+for w in blocked gone unknown working done error failed; do
+  assert_not_contains "$VIEWS" " $w" "no view draws the retired word '$w'"
+done
+{ echo "short=5a5a0006"; echo "uuid=$ST_STOP"; echo "name=s-stop"; echo "state=stopped"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/5a5a0006"
+run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop,s"
+assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
+run "$SMINOS" tui st --headless --all --width 140 --height 40 --keys "!focus:st/s-ret,s"
+assert_not_contains "$OUT" "send → st/s-ret" "s on a retired seat opens no send line"
+assert_contains "$OUT" "s-ret is retired" "and says why"
+run "$SMINOS" reply st/s-idle
+assert_contains "$OUT" "st/s-idle  [$ST_IDLE]  state=idle  turns=" "reply's summary line carries the state word, not the recorded status"
+rm -f "$STUB_STATE/agents/5a5a0006" "$HOME/.claude/sessions/"st-*.json
+for a in s-busy s-shell s-bare s-idle s-wait s-stop s-ret s-vac; do "$SMINOS" remove "st/$a" >/dev/null; done
+"$SMINOS" remove st2/lone-seat-with-a-long-name-past-24 >/dev/null
+"$SMINOS" remove st2/z >/dev/null
+
 # ---- 13) chart: the box organisation chart ----------------------------------
 # The `org` fixture below is shared with the tui tests that follow it: a lead
-# (busy) with three children — scout (idle, live peer), scribe (busy) with a
-# vacant intern under it, qa (blocked) — and a retired old-worker folded away.
+# (busy) with three children — scout (idle), scribe (busy) with a vacant intern
+# under it, qa (waiting) — and a retired old-worker folded away. Every state
+# word comes from a peer record on the suite's socket server.
 echo "chart:"
 LEAD_UUID=cccc0001-0000-4000-8000-00000000c001
 SCOUT_UUID=cccc0002-0000-4000-8000-00000000c002
@@ -1455,12 +1598,14 @@ QA_UUID=cccc0004-0000-4000-8000-00000000c004
 { echo "short=cc000002"; echo "uuid=$SCOUT_UUID"; echo "name=scout"; echo "state=done"; echo "status="; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000002"
 { echo "short=cc000003"; echo "uuid=$SCRIBE_UUID"; echo "name=scribe"; echo "state=working"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000003"
 { echo "short=cc000004"; echo "uuid=$QA_UUID"; echo "name=qa"; echo "state=blocked"; echo "status=busy"; echo "cwd=$WORK"; } > "$STUB_STATE/agents/cc000004"
-# scout is idle: a finished row plus a live peer record whose socket answers.
-printf '{"pid":%s,"sessionId":"%s","name":"scout","kind":"background","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
-  "$SOCK_PID" "$SCOUT_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-scout.json"
-# Blocked counts as live only while a peer process answers its socket.
-printf '{"pid":%s,"sessionId":"%s","name":"qa","kind":"background","status":"busy","cwd":"%s","messagingSocketPath":"%s"}\n' \
-  "$SOCK_PID" "$QA_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-qa.json"
+org_peer() { # alias session-id status
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","kind":"background","status":"%s","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "$WORK" "$SOCK" > "$HOME/.claude/sessions/org-$1.json"
+}
+org_peer lead "$LEAD_UUID" busy
+org_peer scout "$SCOUT_UUID" idle
+org_peer scribe "$SCRIBE_UUID" busy
+org_peer qa "$QA_UUID" waiting
 "$SMINOS" seat add org lead --role LEAD --session "$LEAD_UUID" >/dev/null
 "$SMINOS" seat add org scout --role RES --parent lead --session "$SCOUT_UUID" >/dev/null
 "$SMINOS" seat add org scribe --role DOC --parent lead --session "$SCRIBE_UUID" >/dev/null
@@ -1501,11 +1646,11 @@ CHART="$OUT"
 assert_contains "$(printf '%s\n' "$CHART" | grep -c 'lead .*LEAD')" "1" "alias left and ROLE right share the first box line"
 assert_contains "$CHART" "● busy" "busy seat shows the filled glyph"
 assert_contains "$CHART" "○ idle" "idle seat (live peer) shows the hollow glyph"
-assert_contains "$CHART" "◐ blocked" "blocked seat shows the half glyph"
+assert_contains "$CHART" "◐ waiting" "waiting seat shows the half glyph"
 assert_contains "$CHART" "◌ vacant" "vacant seat shows the dotted glyph"
 assert_not_contains "$CHART" "old-worker" "a retired seat is folded away by default"
-assert_contains "$CHART" "+1 retired" "the parent notes its folded children"
-assert_equals "$(( $(printf '%s\n' "$CHART" | grep -n '+1 retired' | cut -d: -f1) - $(printf '%s\n' "$CHART" | grep -n 'lead .*LEAD' | cut -d: -f1) ))" "2" "the retired note sits on the lead box's third line"
+assert_contains "$CHART" "+1 hidden" "the parent notes its folded children"
+assert_equals "$(( $(printf '%s\n' "$CHART" | grep -n '+1 hidden' | cut -d: -f1) - $(printf '%s\n' "$CHART" | grep -n 'lead .*LEAD' | cut -d: -f1) ))" "2" "the hidden note sits on the lead box's third line"
 assert_contains "$CHART" "notes → board" "a seat's now line is drawn on its third line"
 assert_contains "$CHART" "│─┼──│" "a parent centred on three children meets the bus at the middle child"
 assert_contains "$CHART" "┌──│" "the first child opens the bus"
@@ -1549,7 +1694,7 @@ assert_contains "$OUT" "┏━━" "the focused box has heavy borders"
 assert_contains "$OUT" "sminos · org · 6 seats · 4 live · 1 hidden · a" "the header carries the counts and the hidden hint"
 assert_contains "$OUT" "── detail ──" "the detail panel is shown by default"
 assert_contains "$OUT" "org/lead · LEAD · seat cccc0001 · session cccc0001" "the detail panel names the focused seat, role, seat and session"
-assert_contains "$OUT" "● busy · status idle · short cc000001" "the detail panel shows live state, recorded status and the short id"
+assert_contains "$OUT" "● busy · short cc000001 · updated" "the detail panel shows the state word and the short id, not the recorded status"
 assert_contains "$OUT" "enter attach · s send · b chat" "the footer lists the keys"
 run $TUI --keys right
 assert_contains "$OUT" "--- focus: org/qa" "right enters the first (topmost) child"
@@ -1584,7 +1729,7 @@ run $TUI --keys "s,text:abc,esc"
 assert_not_contains "$OUT" "send → org/lead" "esc cancels the send line"
 assert_contains "$OUT" "enter attach · s send" "and the footer shows the keys again"
 run $TUI --keys "right,down,down,right,s"
-assert_contains "$OUT" "intern is vacant — enter attaches (and wakes) a stopped seat; a vacant or gone seat needs sminos fill" "s on a vacant seat refuses with the reason"
+assert_contains "$OUT" 'intern is vacant — nothing to send to; sminos fill org/intern "<task>" fills it' "s on a vacant seat refuses with the reason"
 assert_not_contains "$OUT" "send →" "and opens no send line"
 run $TUI --keys "right,down,s,text:ping-from-tui here,enter"
 assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout (scout)" "enter on the send line delivers through the real launcher and records the result"
@@ -1618,7 +1763,7 @@ run $TUI --keys "b,tab,tab,right"
 assert_contains "$OUT" "--- focus: org/qa" "tab again hands the keys back to the chart"
 run $TUI --keys "?"
 assert_contains "$OUT" "┃ keys" "? opens the help overlay"
-assert_contains "$OUT" "a — show / hide retired, failed and gone seats" "the help lists the keys"
+assert_contains "$OUT" "a — show / hide retired seats and stopped seats the harness no longer lists" "the help lists the keys"
 run $TUI --keys "?,q,right"
 assert_contains "$OUT" "--- focus: org/qa" "q inside the overlay only closes it"
 run $TUI --keys q
@@ -1657,7 +1802,7 @@ assert_contains "$OUT" "send → org/lead ▏x" "the send line names the capture
 "$SMINOS" seat add org old-helper --parent old-worker >/dev/null
 "$SMINOS" meta set org/old-helper status retired >/dev/null
 run "$SMINOS" chart org --width 120
-assert_contains "$OUT" "+2 retired" "a folded subtree counts every seat in it"
+assert_contains "$OUT" "+2 hidden" "a folded subtree counts every seat in it"
 assert_contains "$OUT" "7 seats · 4 live · 2 hidden" "and the summary agrees with the box"
 "$SMINOS" remove org/old-helper >/dev/null
 
@@ -1989,6 +2134,20 @@ assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"
 assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
 assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d2": "woken"' "fan-out retains successful outcome"
 unset CLAUDE_CODE_SESSION_ID
+# A tagged member the harness has forgotten (no row, no process) reads stopped
+# like any other: its resume is attempted, the harness refuses it, and that is
+# the member's own failed outcome — the live member still gets the message.
+D4=4d4d4d4d-aaaa-4000-8000-0000000000d4
+"$SMINOS" seat add fam d4 --parent duo --session "$D4" >/dev/null
+"$SMINOS" meta set fam/d4 cwd "$WORK" >/dev/null
+printf '{"pid":%s,"sessionId":"%s","name":"d2","kind":"background","status":"idle","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$D2" "$SOCK" > "$HOME/.claude/sessions/fam-d2.json"
+CLAUDE_CODE_SESSION_ID="$DUO" STUB_FAIL_BG=1 run "$SMINOS" say '@d4 @d2 anyone there'
+assert_rc 0 "$RC" "a forgotten member's refused resume does not abort the chat"
+assert_contains "$OUT" 'd4: failed:' "a forgotten member's refused resume is its own failed outcome"
+assert_contains "$OUT" 'd2: sent' "and the fan-out still reaches the live member"
+rm -f "$HOME/.claude/sessions/fam-d2.json"
+"$SMINOS" remove fam/d4 >/dev/null
 run "$SMINOS" seat add fam d3 --parent duo --session 99999999-aaaa-4000-8000-000000000009
 export CLAUDE_CODE_SESSION_ID="$D1"
 D3=99999999-aaaa-4000-8000-000000000009

@@ -29,7 +29,7 @@ family seat's family for that seat.
     sminos status   <seat> <one line>                     # the agent's own "now" line
     sminos retire   <seat> [--purge] [--cascade]           # stop; keep (or purge) the record
     sminos remove   <seat>                                # stop and delete the record
-    sminos list     [group] [--status S] [--json]
+    sminos list     [group] [--state W] [--json]         # W: busy idle waiting stopped vacant retired
     sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
     sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -92,9 +92,11 @@ NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 # A real session uuid, 8-4-4-4-12 hex — used to decide whether a --session value
 # names a seat's on-disk identity (and transcript filename) or is junk.
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-FILLED = ("busy", "idle", "blocked")
-# A seat whose session can be re-filled fresh: no live turn is attached.
-REFILLABLE = ("vacant", "stopped", "gone")
+# A seat's one state word — see state(). FILLED: a live session holds the
+# seat. REFILLABLE: no live turn is attached, so a fresh fill may take it.
+STATES = ("busy", "idle", "waiting", "stopped", "vacant", "retired")
+FILLED = ("busy", "idle", "waiting")
+REFILLABLE = ("vacant", "stopped")
 TERMINAL = ("done", "done-blocked", "blocked", "failed", "stopped", "error")
 # Model-visible surfaces never carry a credential: the pipeline colonizes the
 # record with run_bearer and friends, and a seat's JSON is read by agents.
@@ -574,7 +576,7 @@ def push_member(member, text, tagged):
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
-    if not tagged or live_state(fresh) != "stopped":
+    if not tagged or state(fresh) != "stopped":
         return "recorded"
     locks = []
     try:
@@ -1091,30 +1093,26 @@ def normalize_state(row):
     return st
 
 
-def live_state(seat):
-    """Harness-derived liveness: busy, idle, blocked, stopped, gone, vacant —
-    or unknown when the harness itself could not be asked."""
+def peer_state(rec):
+    """busy | idle | waiting from a LIVE peer record's `status` (idle and
+    waiting exact; anything else, including absent or `shell`, is busy)."""
+    st = rec.get("status")
+    return st if st in ("idle", "waiting") else "busy"
+
+
+def state(seat):
+    """A seat's one state word, one of STATES, read in this order: retired
+    (the recorded status), vacant (no `current`), then the live peer for
+    `current` — the session record the harness's own ListAgents reads —
+    else stopped. `claude agents` is never asked: a seat the harness has
+    forgotten reads stopped, and `send` learns the rest."""
+    if seat.get("status") == "retired":
+        return "retired"
     cur = seat.get("current") or ""
     if not cur:
         return "vacant"
-    if not harness_ok():
-        return "unknown"
-    row = harness_row(seat)
     peer = peer_for_session(cur)
-    if row:
-        st = normalize_state(row)
-        if st == "working":
-            return "busy"
-        if st == "blocked":
-            return "blocked" if peer else "stopped"
-        if st in ("done", "done-blocked"):
-            return "idle" if peer else "stopped"
-        if st in ("stopped", "failed", "error"):
-            return "stopped"
-        return "idle" if peer else "stopped"
-    if peer:
-        return "busy" if peer.get("status") == "busy" else "idle"
-    return "gone"
+    return peer_state(peer) if peer else "stopped"
 
 
 def host_name():
@@ -2007,16 +2005,16 @@ def cmd_spawn(a):
         if is_family_seat(caller) and existing["parent"] != caller["alias"]:
             die("alias %s/%s belongs to another seat; a seat re-fills only its own children" % (
                 group, alias), EXIT_UNKNOWN)
-        if peer_for_session(existing["current"]):
+        live = state(existing)
+        if live in FILLED:
+            die("seat %s/%s is filled (%s) — message it with sminos send/wake" % (group, alias, live), EXIT_UNKNOWN)
+        if peer_for_session(existing["current"]):  # a retired seat whose session still runs
             die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or "
                 "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
-        live = live_state(existing)
-        if live in FILLED or live == "unknown":
-            die("seat %s/%s is filled (live: %s) — message it with sminos send/wake" % (group, alias, live), EXIT_UNKNOWN)
         if existing["engine"] == "codex" and existing["status"] in ("working", "blocked"):
             die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
                 group, alias, existing["status"]), EXIT_UNKNOWN)
-        # vacant / stopped / gone / retired → re-fill this very seat, keeping its
+        # vacant / stopped / retired → re-fill this very seat, keeping its
         # id and the seat-describing pipeline fields. The board pipeline's
         # retire-then-respawn of a deterministic alias (review-pr-<n>) lands
         # here instead of erroring.
@@ -2134,9 +2132,12 @@ def cmd_fill(a):
         unlock(locks)
         die("seat %s/%s vanished before the fill could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
     refuse_codex(s)
-    live = live_state(s)
-    if live in FILLED or live == "unknown":
-        die("seat %s/%s is filled (live: %s) — use sminos wake or sminos send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
+    live = state(s)
+    if live in FILLED:
+        die("seat %s/%s is filled (%s) — use sminos wake or sminos send" % (s["group"], s["alias"], live), EXIT_UNKNOWN)
+    if peer_for_session(s["current"]):  # a retired seat whose session still runs
+        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or stop it "
+            "first" % (s["group"], s["alias"], s["current"][:8]), EXIT_UNKNOWN)
     if a.resume:
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
@@ -2147,9 +2148,6 @@ def cmd_fill(a):
         except ResumeRefused as e:
             die(e.message, e.code)
         return
-    if peer_for_session(s["current"]):
-        die("seat %s/%s: the previous occupant (session %s) still answers — use sminos wake/resume, or stop it "
-            "first" % (s["group"], s["alias"], s["current"][:8]), EXIT_UNKNOWN)
     refuse_live_name(s["alias"], s["addr"])  # a fresh fill: the previous occupant is NOT an allowed holder
     settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
     effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
@@ -2512,7 +2510,7 @@ def cmd_send(a):
             print("sent to %s/%s (%s)" % (s["group"], s["alias"], peer.get("name") or s["addr"]))
             return
         die("%s/%s is not live (%s) — use: sminos wake %s/%s \"<msg>\"" % (
-            s["group"], s["alias"], live_state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
+            s["group"], s["alias"], state(s), s["group"], s["alias"]), EXIT_UNKNOWN)
     if is_family_seat(caller):
         die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     # Only when NO seat matched: fall back to a raw live harness-session name.
@@ -2548,8 +2546,7 @@ def cmd_send(a):
 
 def cmd_reply(a):
     s = resolve_seat(a.seat)
-    print("%s/%s  [%s]  status=%s  turns=%s  live=%s" % (
-        s["group"], s["alias"], s["seat_id"], s["status"], s["turns"], live_state(s)))
+    print("%s/%s  [%s]  state=%s  turns=%s" % (s["group"], s["alias"], s["seat_id"], state(s), s["turns"]))
     first = (s["task"].strip().splitlines() or [""])[0]
     print("task: %s" % first)
     print("--- latest reply ---")
@@ -2756,7 +2753,7 @@ def _retire_one(s0, purge):
     locks, s = locked_fresh(s0, "retire")
     try:
         live_children = [c["alias"] for c in family_of(s)[1] if c["seat_id"] != s["seat_id"] and
-                         c["status"] != "retired" and live_state(c) in FILLED]
+                         state(c) in FILLED]
         if live_children:
             die("%s/%s hosts live children: %s — retire them first or use --cascade" % (
                 s["group"], s["alias"], ", ".join(live_children)), EXIT_UNKNOWN)
@@ -2792,10 +2789,24 @@ def cmd_remove(a):
 # --------------------------------------------------------------------- views
 
 
-def now_or_reply(s):
+def now_or_reply(s, st):
+    """What a seat is doing, for a view that already read its state word `st`:
+    its own status line; for a waiting seat without one, what the session
+    waits for; else the first words of its latest reply."""
     if s["now"]:
         return s["now"]
+    if st == "waiting":
+        waiting_for = " ".join(str((peer_for_session(s["current"]) or {}).get("waitingFor") or "").split())
+        if waiting_for:
+            return waiting_for
     return " ".join(reply_text(s["seat_id"]).split())[:46]
+
+
+def list_row(s, st, width):
+    now_col = now_or_reply(s, st)[:46]
+    if s["role"]:
+        now_col = s["role"].upper() + (" · " + now_col if now_col else "")
+    return ("  %-*s   %-8s  %s" % (width, s["alias"], st, now_col)).rstrip()
 
 
 def cmd_list(a):
@@ -2804,30 +2815,37 @@ def cmd_list(a):
     if is_family_seat(caller):
         reach = reach_of(caller)
         rows = [s for s in rows if s["seat_id"] in reach]
-    if a.status:
-        rows = [s for s in rows if s["status"] == a.status]
-    rows.sort(key=lambda s: s["updated"], reverse=True)
+    rows = [(s, state(s)) for s in rows]
+    if a.state:
+        rows = [(s, st) for s, st in rows if st == a.state]
+    rows.sort(key=lambda r: r[0]["updated"], reverse=True)
     if a.json:
         out = []
-        for s in rows:
+        for s, st in rows:
             d = public_seat(s)
-            d["live"] = live_state(s)
+            d.pop("addr", None)
+            d["state"] = st
             out.append(d)
         print(json.dumps(out, indent=2))
         return
     if not rows:
         print("(no seats)")
         return
-    fmt = "%-18s %-14s %-12s %-14s %-8s %-9s %-18s %s"
-    print(fmt % ("ALIAS", "GROUP", "ROLE", "STATUS", "LIVE", "SHORT", "ADDR", "NOW"))
-    for s in rows:
-        print(fmt % (s["alias"][:18], s["group"][:14], (s["role"] or "-")[:12], s["status"][:14], live_state(s),
-                     (s["short"] or s["seat_id"][:8])[:8], s["addr"][:18], now_or_reply(s)[:46]))
+    # Groups in order of their most recently updated seat: rows are already
+    # newest first, so a group's first appearance is its place.
+    groups = {}
+    for s, st in rows:
+        groups.setdefault(s["group"], []).append((s, st))
+    for g, members in groups.items():
+        width = min(max(len(s["alias"]) for s, _ in members), 24)
+        print(g)
+        for s, st in members:
+            print(list_row(s, st, width))
 
 
 def cmd_attach(a):
     s = resolve_seat(a.seat)
-    live = live_state(s)
+    live = state(s)
     row = harness_row(s) if s["current"] else None
     short = (row or {}).get("id") or s["short"]
     if not short:
@@ -2861,8 +2879,8 @@ def chart_group_or_die(g):
 
 
 def cmd_chart(a):
-    """The organisation chart as text: boxes left-to-right, dead seats folded
-    into '+N retired' unless --all, then one summary line."""
+    """The organisation chart as text: boxes left-to-right, hidden seats folded
+    into '+N hidden' unless --all, then one summary line."""
     if is_family_seat(caller_seat()):
         die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
     g = a.group
@@ -2876,7 +2894,7 @@ def cmd_chart(a):
         chart.paint_chart(scr, lay)
         print(scr.text())
     else:
-        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are retired; sminos chart --all" % meta["hidden"]))
+        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are hidden; sminos chart --all" % meta["hidden"]))
     bits = []
     if g is None:
         bits.append("%d groups" % meta["groups"])
@@ -3038,7 +3056,7 @@ def build_parser():
 
     ls = sub.add_parser("list", add_help=False)
     ls.add_argument("group", nargs="?", default=None)
-    ls.add_argument("--status", default="")
+    ls.add_argument("--state", default="", choices=STATES)
     ls.add_argument("--json", action="store_true")
     ls.set_defaults(fn=cmd_list)
 

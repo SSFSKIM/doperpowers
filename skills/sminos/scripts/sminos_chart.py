@@ -3,8 +3,9 @@
 
 Three pure layers over the registry that `sminos.py` exposes:
 
-  snapshot()     reads seats + live state into a tree of NODES and applies the
-                 hide rule (dead seats fold into a "+N retired" note);
+  snapshot()     reads seats + their state words into a tree of NODES and
+                 applies the hide rule (hidden seats fold into a "+N hidden"
+                 note);
   layout()       places one box per node left-to-right — roots in the first
                  column, children one column to the right, siblings stacked
                  vertically, a parent centred on its children — and computes
@@ -23,8 +24,7 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 
-GLYPH = {"busy": "●", "idle": "○", "blocked": "◐", "stopped": "■", "vacant": "◌", "gone": "✕", "unknown": "?"}
-DEAD_STATUSES = ("retired", "failed", "error")
+GLYPH = {"busy": "●", "idle": "○", "waiting": "◐", "stopped": "■", "vacant": "◌", "retired": "✕"}
 BOX_LINES = 3
 
 # ------------------------------------------------------------- display width
@@ -68,16 +68,20 @@ def fit(s, n, collapse=True):
 # ------------------------------------------------------------------ snapshot
 
 
-def is_dead(seat, live):
-    """A dead seat is history: retired/failed/errored on record, or a seat whose
-    session the harness no longer knows (gone). `stopped` is NOT dead — attach
-    wakes it. `vacant` is a position waiting to be filled."""
-    return seat.get("status") in DEAD_STATUSES or live == "gone"
+def is_dead(seat, st):
+    """Hidden by default (shown with --all): a retired seat, and a stopped seat
+    whose session the harness no longer lists — one only a `fill` can act on.
+    A stopped seat the harness still lists stays: a send resumes it. When the
+    harness cannot be asked, nothing is hidden on its account. This is the one
+    place a view asks `claude agents` about a seat's state."""
+    if st == "retired":
+        return True
+    return st == "stopped" and sminos.harness_ok() and sminos.harness_row(seat) is None
 
 
-def seat_node(s, live, node_id):
-    return {"kind": "seat", "id": node_id, "label": s["alias"], "role": s["role"], "live": live,
-            "status": s["status"], "now": sminos.now_or_reply(s), "dead": is_dead(s, live),
+def seat_node(s, st, node_id):
+    return {"kind": "seat", "id": node_id, "label": s["alias"], "role": s["role"], "state": st,
+            "now": sminos.now_or_reply(s, st), "dead": is_dead(s, st),
             "children": [], "hidden": 0, "seat": sminos.public_seat(s)}
 
 
@@ -90,7 +94,7 @@ def group_tree(group, show_all=False):
 
     Returns (roots, hidden, n_seats, n_live). `hidden` is how many seats were
     folded away in total; each kept node's own `hidden` counts the folded seats
-    beneath it (whole subtrees, so "+N retired" is the full count).
+    beneath it (whole subtrees, so "+N hidden" is the full count).
     """
     gs = sorted(sminos.seats(group), key=lambda s: (s["alias"], s["seat_id"]))
     aliases = {s["alias"] for s in gs}
@@ -100,8 +104,8 @@ def group_tree(group, show_all=False):
         if nid in ids:  # a duplicate alias in one group still gets its own box
             nid += "#" + s["seat_id"][:8]
         ids.add(nid)
-        nodes[s["seat_id"]] = seat_node(s, sminos.live_state(s), nid)
-    n_live = sum(1 for n in nodes.values() if n["live"] in sminos.FILLED)
+        nodes[s["seat_id"]] = seat_node(s, sminos.state(s), nid)
+    n_live = sum(1 for n in nodes.values() if n["state"] in sminos.FILLED)
     visited = set()
 
     def walk(s):
@@ -130,7 +134,7 @@ def group_tree(group, show_all=False):
             else:
                 # c is folded away: it, whatever is still hanging off it, and
                 # everything prune() already folded away beneath it — else a
-                # parent says "+1 retired" over a whole dead subtree while the
+                # parent says "+1 hidden" over a whole hidden subtree while the
                 # summary counts every seat in it.
                 node["hidden"] += 1 + count_nodes(c["children"]) + c["hidden"]
         node["children"] = kept
@@ -168,7 +172,7 @@ def snapshot(group=None, show_all=False):
         if not gr and not show_all:
             meta["hidden_groups"] += 1
             continue
-        roots.append({"kind": "group", "id": g, "label": g, "role": "", "live": "", "status": "", "now": "",
+        roots.append({"kind": "group", "id": g, "label": g, "role": "", "state": "", "now": "",
                       "dead": False, "children": gr, "hidden": hidden, "seats": n, "alive": live})
     meta["hidden_roots"] = meta["hidden"]
     return roots, meta
@@ -184,11 +188,13 @@ def node_lines(node, collapsed=()):
         counts = "%d seats · %d live" % (node["seats"], node["alive"])
         if node["id"] in collapsed and node["children"]:
             counts = "▸ " + counts
-        return [(node["label"], ""), (counts, ""), (("+%d retired" % node["hidden"]) if node["hidden"] else "", "")]
-    live = node["live"] or "unknown"
-    state = "%s %s" % (GLYPH.get(live, "?"), live)
-    tail = node["now"] or (("+%d retired" % node["hidden"]) if node["hidden"] else "")
-    return [(node["label"], (node["role"] or "").upper()), (state, ""), (tail, "")]
+        return [(node["label"], ""), (counts, ""), (("+%d hidden" % node["hidden"]) if node["hidden"] else "", "")]
+    tail = node["now"] or (("+%d hidden" % node["hidden"]) if node["hidden"] else "")
+    return [(node["label"], (node["role"] or "").upper()), (glyph_line(node), ""), (tail, "")]
+
+
+def glyph_line(node):
+    return "%s %s" % (GLYPH[node["state"]], node["state"])
 
 
 def line_need(left, right):
@@ -348,7 +354,7 @@ HEAVY = ("┏", "┓", "┗", "┛", "━", "┃")
 
 def paint_chart(screen, lay, focus_id=None, ox=0, oy=0, styles=None, collapsed=()):
     """Draw connectors, then boxes, shifted by the viewport offsets (ox, oy).
-    `styles` maps names — focus, dim, group, edge, and the live-state words —
+    `styles` maps names — focus, dim, group, edge, and the state words —
     to screen attributes; missing names draw plain."""
     st = styles or {}
     for y, x, text in lay["edges"]:
@@ -371,7 +377,7 @@ def paint_chart(screen, lay, focus_id=None, ox=0, oy=0, styles=None, collapsed=(
         for i, (left, right) in enumerate(node_lines(n, collapsed)):
             line_attr = attr
             if i == 1 and n["kind"] == "seat" and not n["dead"]:
-                line_attr = attr | st.get(n["live"] or "unknown", 0)
+                line_attr = attr | st.get(n["state"], 0)
             screen.put(y0 + 1 + i, x0, vt + " ", attr)
             screen.put(y0 + 1 + i, x0 + 2, render_line(left, right, inner), line_attr)
             screen.put(y0 + 1 + i, x0 + b["w"] - 2, " " + vt, attr)
