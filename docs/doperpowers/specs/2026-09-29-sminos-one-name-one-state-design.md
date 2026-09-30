@@ -41,7 +41,8 @@ where `sminos send two/a "x"` delivers.
 - [x] (2026-09-30, reviewed clean with M3's fix wave, 979b51e4) M1 follow-up, predicate revised — `gone` is "no transcript on this machine", not "no harness row"; `claude agents` leaves `state()`; tests.
 - [x] (2026-09-29, reviewed clean) M2 — one name: `addr` leaves the record, the flags, the prints, and the locks; uniqueness is per group; a target is an alias, `group/alias`, or a full id; tests.
 - [x] (2026-09-30, reviewed clean) M3 — one delivery verb: `send` absorbs `wake` (resume, `--wait`, the lifecycle lock, the frame id); `wake` answers with a pointer; the board's five call sites (Decision Log) and their test stubs move; the TUI's `s` key follows; tests, board suites green.
-- [ ] M4 — the words and the proof: `SKILL.md`, the module docstring, the preamble if it names anything that moved; version bump; live proof on the real harness; whole-branch review; retrospective.
+- [x] (2026-09-30, reviewed clean, 51c6947d + 850e1115) M4, the words — `SKILL.md`, the module docstring (the preamble names nothing that moved); version bump to 7.130.0; acceptance 10's grep empty.
+- [ ] M4, the proof — live proof on the real harness; whole-branch review; retrospective (the owning session's).
 
 ## Terms
 
@@ -722,6 +723,16 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   cache: the one-level glob is cheap enough. The family fixtures keep
   their harness rows, which the resume path and `pending_short` read.
   Date/Author: 2026-09-30, M3 task-executor, folded by the controller.
+- Decision (2026-09-30, M4 words): `SKILL.md` keeps the literal
+  `[blocked on a harness prompt …]` marker the reply prints (only the verb
+  beside it moved, to `send`), and "live" as an adjective (only the column
+  and field went). It says `list --json` carries the ids for scripts, not
+  that ids are hidden — the TUI's detail panel still shows them. The
+  hide-rule sentence names the visible-descendant exception (the M4 task
+  review's Minor). The docstring's exit-codes line names `send`'s exit-4
+  refusals and `wake`'s exit-2 pointer. The version is 7.130.0: origin/main
+  moved to 7.129.1 during execution, and the next minor is the same.
+  Date/Author: 2026-09-30, M4 task-executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
