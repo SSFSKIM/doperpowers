@@ -442,7 +442,17 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
 
 ## Surprises & Discoveries
 
-(none yet)
+- (M1) The suite's stub `claude --bg` writes a harness row but never a
+  session record, so under the new rule every stub-spawned seat reads
+  `stopped` unless the test writes a peer record; the `st_peer` and
+  `org_peer` helpers in `tests/sminos/run-sminos-tests.sh` are the shape
+  M2 and M3 tests use for a `busy` or `idle` seat.
+- (M1) `harness_row` keeps callers after M1 — `attach`, the TUI's
+  `attach_short`, the chart's hide rule, `resume_session`, `sync`;
+  `harness_ok` is used only by `sync` and the hide rule.
+- (M1) Between M1 and M3 the TUI's `s` on a stopped seat opens the send
+  line and the send is refused (`not live — use sminos wake`); M3's fold
+  closes it.
 
 ## Decision Log
 
@@ -474,6 +484,34 @@ pointer: exit 2, stderr `sminos: wake was folded into send — sminos send
   The issue-tracker's "wake ritual" and "wake queue" are the human's and
   stay. Reason: the intent is one delivery verb; a call site left on the
   pointer verb would exit 2 at runtime.
+  Date/Author: 2026-09-29, plan-executor (SDE controller).
+- Decision (2026-09-29, M1): the gaps M1 resolved. `now_or_reply(s, st)`
+  takes the state word and reads the session record only for a `waiting`
+  seat with no status line. An alias longer than 24 cells overflows its
+  row rather than being cut — it is the name the operator types. The
+  chart's fold note and the TUI's group detail read `+N hidden` / `N
+  hidden`, since the hidden count now includes stopped seats the harness
+  forgot, which `list` calls `stopped`. The TUI detail line drops the
+  recorded status. The hide rule is `stopped and harness_ok() and no
+  harness row` — a harness that cannot be asked shows the seat — and a
+  recorded `failed`/`error` no longer hides one. spawn and fill refuse
+  `state in FILLED` naming the word, and both keep the "previous occupant
+  still answers" refusal for a retired seat whose session runs; fill
+  checks it before its `--resume` branch so such a seat is not stopped and
+  resumed. The TUI's `s` on a vacant or retired seat refuses and points at
+  `fill`. `push_member` keeps its `state(fresh) != "stopped"` guard; a
+  tagged member the harness forgot now gets a resume attempt, and its
+  refusal is that member's `failed:` outcome while the fan-out delivers
+  to the rest (pinned).
+  Date/Author: 2026-09-29, M1 task-executor, folded by the controller.
+- Decision (2026-09-29, controller): the recorded status leaves the
+  *views* — `list`, `chart`, `tui`, `reply`'s summary — not the one-shot
+  launch banners of `spawn`, `fill`, and `resume_session` (`… status=working`,
+  `via --bg --resume  status=…  turns=…`). Those are the lifecycle verbs
+  this spec does not touch, `execute-dispatch.sh` documents the spawn
+  banner's shape, and acceptance 4 only pins `via --bg --resume`. The line
+  M3 writes for `send`'s socket delivery is `sent to <group>/<alias>`,
+  alias-first with no ids or status (acceptance 2).
   Date/Author: 2026-09-29, plan-executor (SDE controller).
 
 ## Outcomes & Retrospective
