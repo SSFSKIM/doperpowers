@@ -66,9 +66,10 @@ a mark, so a session without the output style is left alone. From then on:
   answer, `reply` as its opening, both in the form `Answering "<the
   question's first line>": <answer>`, and Enter sends it as the person's own
   prompt. The answers to several questions go in one prompt: each question
-  has one line in the box, a second press on a question replaces its line,
-  `reply` moves the question's line to the end, where the cursor is, and
-  whatever else the person typed stays. (Nothing here submits: a prompt a
+  has one line in the box (a duplicate the person pasted in is collapsed
+  into it), a second press on a question replaces its line, `reply` moves
+  the question's line to the end, where the cursor is, and whatever else
+  the person typed stays. (Nothing here submits: a prompt a
   plugin submits enters under the plugin's name, framed as the plugin's
   message to the model and labelled so in the transcript, by an origin no
   hook may change.) Once a prompt in that form enters, each span it answers

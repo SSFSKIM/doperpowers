@@ -379,29 +379,30 @@ export function answersOf(text: string): Answer[] {
 
 /**
  * The prompt box after a press, so the answers to several questions go in
- * one prompt: each question has at most one line. The line for `head` is
- * replaced by the choice pressed, or, when the press is `reply` (no
- * `answer`), moved to the end as the answer's opening, where the cursor is
- * for the person to finish it; a question with no line yet gets one at the
- * end. Every other line, the other answers and whatever the person typed,
- * stays as it is.
+ * one prompt: each question has at most one line. Every line answering
+ * `head` (a duplicate the person pasted or edited in included, which would
+ * otherwise settle the question by the later line) gives way to one: the
+ * choice pressed, where the first of them stood, or, when the press is
+ * `reply` (no `answer`), the answer's opening at the end, where the cursor
+ * is for the person to finish it; a question with no line yet gets one at
+ * the end. Every other line, the other answers and whatever the person
+ * typed, stays as it is.
  */
 export function withAnswer(box: string, head: string, answer?: string): string {
   const line = answerText(head, answer ?? '')
   const lines = box.trim() === '' ? [] : box.split('\n')
-  const at = lines.findIndex((l) => answersOf(l)[0]?.head === head)
+  const answers = (l: string) => answersOf(l)[0]?.head === head
+  const at = lines.findIndex(answers)
+  const kept = lines.filter((l) => !answers(l))
   if (answer !== undefined && at >= 0) {
-    lines[at] = line
-    return lines.join('\n')
+    kept.splice(at, 0, line)
+    return kept.join('\n')
   }
-  if (at >= 0) {
-    lines.splice(at, 1)
+  if (kept[kept.length - 1] === '') {
+    kept.pop()
   }
-  if (lines[lines.length - 1] === '') {
-    lines.pop()
-  }
-  lines.push(line)
-  return lines.join('\n')
+  kept.push(line)
+  return kept.join('\n')
 }
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
@@ -597,8 +598,10 @@ export function registerToHuman(on: On) {
   // started by an agent tool's call (the notification names the call); an
   // id neither knows is looked for once in the engine's list, which keeps a
   // finished agent for a while after it ends, so a notification drawn as it
-  // arrives finds its agent there. (A resumed session's earlier agents are
-  // not listed: their finish is known by the call's row, drawn before it.)
+  // arrives finds its agent there. The lookup waits, and the row's place in
+  // the order is taken before it (see the hook below). (A resumed session's
+  // earlier agents are not listed: their finish is known by the call's row,
+  // drawn before it.)
   const agentIds = new Set<string>()
   const toolOf = new Map<string, string>()
   const looked = new Set<string>()
@@ -618,14 +621,28 @@ export function registerToHuman(on: On) {
   // an agent. A delivery that is the model's own business (a command's or a
   // monitor's notification, a schedule firing) is working record, and
   // stands in the run it falls in.
+  //
+  // The row takes its place in the order as it first draws, before any
+  // wait: the rows after it draw meanwhile, and a place taken after them
+  // would be after them for good, no redraw putting it back. A notification
+  // whose task no one knows yet is then looked for in the engine's list,
+  // once per task; found to be an agent's, the row is read again as one and
+  // every drawing is asked for again, since the rows drawn meanwhile took it
+  // for record.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    let kind = promptRow(e.props, isAgents)
+    see($, view, e.requestId, kind)
     const task = e.props.task
-    if (task?.id !== undefined && !looked.has(task.id) && !isAgents(task)) {
+    if (kind === 'record' && task?.id !== undefined && !looked.has(task.id)) {
       looked.add(task.id)
       await listAgents($, agentIds)
+      const found = promptRow(e.props, isAgents)
+      if (found !== kind) {
+        kind = found
+        see($, view, e.requestId, kind)
+        $.ui.invalidate('ui.render')
+      }
     }
-    const kind = promptRow(e.props, isAgents)
-    see($, view, e.requestId, kind)
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
   })
 

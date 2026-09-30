@@ -1,4 +1,4 @@
-import { describe, expect, test, tier } from 'claude-code/testing'
+import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind, Task } from '../../hooks/mods/to-human'
 import {
@@ -255,6 +255,15 @@ describe('answers', () => {
     expect(withAnswer('note to self\n', 'Which region?', 'eu-west')).toBe('note to self\nAnswering "Which region?": eu-west')
     expect(withAnswer('  ', 'Which region?', 'eu-west')).toBe('Answering "Which region?": eu-west')
   })
+
+  test('withAnswer collapses two lines for one question into the one pressed', async () => {
+    // A duplicate the person pasted or edited in would settle the question by
+    // its later line, over the choice just pressed.
+    const pasted = 'Answering "Q": old\nAnswering "Q": later\nnote'
+
+    expect(withAnswer(pasted, 'Q', 'new')).toBe('Answering "Q": new\nnote')
+    expect(withAnswer(pasted, 'Q', undefined)).toBe('note\nAnswering "Q": ')
+  })
 })
 
 describe('promptRow', () => {
@@ -281,6 +290,61 @@ describe('promptRow', () => {
     expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } }, isAgents)).toBe('marked')
     expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } }, isAgents)).toBe('marked')
     expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a5d804ff68753fdeb' } }, isAgents)).toBe('marked')
+  })
+})
+
+describe('rows', () => {
+  // The plugin the runner stages the mods as.
+  const PLUGIN = 'doperpowers-mods'
+
+  test('a notification whose agent lookup is pending keeps the place it first drew in', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    // The engine's own drawing beneath the mod: the row's text, one line.
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    // The agent list, held until the test lets it go: the rows after the
+    // notification draw while its lookup is pending.
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    on('agent.list', async () => {
+      await held
+      return { value: [] }
+    })
+
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    const marked1 = message('m1', '<to-human>One.</to-human>')
+    const record1 = message('u1', 'Working.')
+    const notification = $.ui.mount({
+      plugin: PLUGIN,
+      surface: 'terminal',
+      component: 'UserMessage',
+      requestId: 'n1',
+      props: { text: 'Background command "x" completed', origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'b1' } },
+    })
+    const marked2 = message('m2', '<to-human>Two.</to-human>')
+    const record2 = message('u2', 'More.')
+    const [, first, , second] = await Promise.all([marked1, record1, marked2, record2])
+    release()
+    const note = await notification
+
+    // The first unmarked message opens the run the notification stands in; the
+    // second opens the run after the second mark. The notification draws no
+    // button of its own.
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await second.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await note.find({ type: 'Button' })).toBeUndefined()
+
+    // Unfolded from its first row, the run ends at the notification, which
+    // draws the fold; the first row does not.
+    await first.press({ key: 'to-human-toggle' })
+    expect(await note.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    expect(await first.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
   })
 })
 
