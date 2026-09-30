@@ -28,19 +28,21 @@ Optional:
 
 | Level | Shape | Deriver | Finders | Verifier |
 |---|---|---|---|---|
-| low | single | – | sol / xhigh | – |
-| medium | single | – | astra / medium | – |
+| low | single | – | sol / high | – |
+| medium | single | – | sol / xhigh | – |
 | high | single | – | astra / high | – |
-| xhigh | panel | sol / high | astra / medium | astra / medium |
+| xhigh | panel | sol / high | sol / high | sol / high |
 | max | panel | sol / xhigh | astra / high | astra / high |
 
-Sol at xhigh — medium when scored, the low rung since 2026-09-25 — reproduced
-the codex baseline exactly on the X1 seeded set (17/17, FP 0;
-`tests/review-bench/results/2026-09-09-native-x1`); astra at medium is unscored
-on the bench. Known tendency of the panel on Sol finders and a Sol verifier
-(xhigh until 2026-09-25): it raises intent-documented design choices and
-confirms them (two such FPs on the seeded set; max raised none) — weigh a
-panel finding against the change's stated intent.
+Sol at xhigh — medium when scored, low from 2026-09-25, medium again since
+2026-09-29 — reproduced the codex baseline exactly on the X1 seeded set (17/17,
+FP 0; `tests/review-bench/results/2026-09-09-native-x1`). That score is GPT-5.6
+Sol's; GPT-6.1 Sol, which `sol` resolves to since 2026-09-29, is unscored on
+the bench, as is sol at high. Known tendency of the panel on Sol finders and a
+Sol verifier (at xhigh until 2026-09-25, at high since 2026-09-29): it raises
+intent-documented design choices and confirms them (two such FPs on the seeded
+set; max raised none) — weigh a panel finding against the change's stated
+intent.
 
 ## The panel
 
