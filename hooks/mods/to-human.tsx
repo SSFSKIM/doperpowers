@@ -219,9 +219,9 @@ export function parse(text: string): Parsed {
 /**
  * What one row of the transcript is: the person's prompt; a row they read
  * (an assistant message carrying marks, a question they answered, an
- * agent's dispatch, a message an agent sent, an agent's finish); or working
- * record (an unmarked message, a tool call and its result, a notification
- * of the model's own background work).
+ * agent's dispatch, a message an agent sent); or working record (an
+ * unmarked message, a tool call and its result, a notification of
+ * background work, an agent's finish among it).
  */
 export type RowKind = 'user' | 'marked' | 'record'
 
@@ -229,9 +229,9 @@ export type RowKind = 'user' | 'marked' | 'record'
  * The origins of a prompt row that is a delivery to the session and not the
  * person's own words: a task's notification, a schedule firing, another
  * session's or a coordinator's message, an observer's report, a plugin's
- * submission. Such a row is working record unless `promptRow` reads it as
- * an agent's. Any other origin, and any the engine names later, is taken as
- * the person's: hiding their own prompt is the worse mistake.
+ * submission. Such a row is working record unless someone sent it. Any
+ * other origin, and any the engine names later, is taken as the person's:
+ * hiding their own prompt is the worse mistake.
  */
 const DELIVERED: ReadonlySet<string> = new Set([
   'task-notification',
@@ -245,34 +245,28 @@ const DELIVERED: ReadonlySet<string> = new Set([
   'plugin',
 ])
 
-/**
- * The background task a notification row reports on, as its `task` prop
- * names it: the task's id (a subagent's is the one `agent.spawn` returned)
- * and the call that started it.
- */
-export type Task = { id?: string; toolUseId?: string }
-
 /** The props of a prompt row that say what it is. */
 export type PromptRowProps = {
   origin?: Pick<PromptOrigin, 'kind'>
   /** Present when someone other than the person sent it: an agent, a teammate, another session, a channel. */
   from?: { name: string }
-  /** Present on a notification row: the task it reports on. */
-  task?: Task
+  /** Present on a notification row: the background task it reports on, an agent's run among them. */
+  task?: { id?: string; toolUseId?: string }
 }
 
 /**
  * What a prompt row is: the person's own words; a row they read (a message
- * someone else sent, the finish of an agent, which `isAgents` tells from
- * the model's own background work: a command, a monitor); or working
- * record (any other delivery).
+ * someone else sent); or working record (any other delivery, a task's
+ * notification among them: a command's, a monitor's, an agent's finish. The
+ * finish says only that the agent returned; what it returned, the model
+ * reports, so the row is the model's business, not a row the person reads).
  */
-export function promptRow(props: PromptRowProps, isAgents: (task: Task) => boolean): RowKind {
+export function promptRow(props: PromptRowProps): RowKind {
   if (props.from !== undefined) {
     return 'marked'
   }
   if (props.task !== undefined) {
-    return isAgents(props.task) ? 'marked' : 'record'
+    return 'record'
   }
   return props.origin !== undefined && DELIVERED.has(props.origin.kind) ? 'record' : 'user'
 }
@@ -535,13 +529,6 @@ async function recordRow<E extends RenderInput>(
   )
 }
 
-/** Adds the ids of the session's agents, as the engine lists them now, to `into`. */
-async function listAgents($: EngineInterface, into: Set<string>) {
-  for (const agent of await $.agent.list()) {
-    into.add(agent.id)
-  }
-}
-
 /**
  * Reads the answers the transcript holds into `answered`: every prompt of
  * the person's that names its questions, the latest per question.
@@ -564,9 +551,9 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
  * transcript by the band above the prompt. The session's agents stay in the
- * report: their dispatch, the messages they send, their finish. A
- * `need-input` span draws its choices as buttons under the question, in the
- * message itself.
+ * report: their dispatch and the messages they send (their finish is
+ * working record, the model's to report on). A `need-input` span draws its
+ * choices as buttons under the question, in the message itself.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
@@ -593,56 +580,15 @@ export function registerToHuman(on: On) {
     return key
   }
 
-  // The session's agents, by id, and the tool each call's row drew. A
-  // notification row is an agent's when its task is one of them, or was
-  // started by an agent tool's call (the notification names the call); an
-  // id neither knows is looked for once in the engine's list, which keeps a
-  // finished agent for a while after it ends, so a notification drawn as it
-  // arrives finds its agent there. The lookup waits, and the row's place in
-  // the order is taken before it (see the hook below). (A resumed session's
-  // earlier agents are not listed: their finish is known by the call's row,
-  // drawn before it.)
-  const agentIds = new Set<string>()
-  const toolOf = new Map<string, string>()
-  const looked = new Set<string>()
-  const isAgents = (task: Task) => {
-    const known =
-      (task.id !== undefined && agentIds.has(task.id)) ||
-      (task.toolUseId !== undefined && AGENT_TOOLS.has(toolOf.get(task.toolUseId) ?? ''))
-    if (known && task.id !== undefined) {
-      agentIds.add(task.id)
-    }
-    return known
-  }
-
   // The person's prompt breaks a run: the record before it and the record
   // after it are two, as the person reads them. So does a row they read: a
-  // message from an agent, a teammate or another session, and the finish of
-  // an agent. A delivery that is the model's own business (a command's or a
-  // monitor's notification, a schedule firing) is working record, and
-  // stands in the run it falls in.
-  //
-  // The row takes its place in the order as it first draws, before any
-  // wait: the rows after it draw meanwhile, and a place taken after them
-  // would be after them for good, no redraw putting it back. A notification
-  // whose task no one knows yet is then looked for in the engine's list,
-  // once per task; found to be an agent's, the row is read again as one and
-  // every drawing is asked for again, since the rows drawn meanwhile took it
-  // for record.
-  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    let kind = promptRow(e.props, isAgents)
+  // message from an agent, a teammate or another session. A delivery that
+  // is the model's own business (a task's notification, an agent's finish
+  // among them; a schedule firing) is working record, and stands in the run
+  // it falls in.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    const kind = promptRow(e.props)
     see($, view, e.requestId, kind)
-    const task = e.props.task
-    if (kind === 'record' && task?.id !== undefined && !looked.has(task.id)) {
-      looked.add(task.id)
-      await listAgents($, agentIds)
-      const found = promptRow(e.props, isAgents)
-      if (found !== kind) {
-        kind = found
-        see($, view, e.requestId, kind)
-        $.ui.invalidate('ui.render')
-      }
-    }
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
   })
 
@@ -786,7 +732,6 @@ export function registerToHuman(on: On) {
   // inline and is whole: it stands in the group's run, and the group's last
   // call draws the run's end where the group would.
   on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
-    toolOf.set(e.requestId, e.props.tool)
     const read = isRead(e.props.tool)
     const group = groupOf.get(e.requestId)
     if (group === undefined) {

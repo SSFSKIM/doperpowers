@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
-import type { RowKind, Task } from '../../hooks/mods/to-human'
+import type { RowKind } from '../../hooks/mods/to-human'
 import {
   answerText,
   answersOf,
@@ -267,29 +267,25 @@ describe('answers', () => {
 })
 
 describe('promptRow', () => {
-  const agents = new Set(['a5d804ff68753fdeb'])
-  const isAgents = (task: Task) => task.id !== undefined && agents.has(task.id)
-
   test('a prompt the person typed, or one of unknown origin, is theirs', async () => {
-    expect(promptRow({ origin: { kind: 'composer' } }, isAgents)).toBe('user')
-    expect(promptRow({ origin: { kind: 'bridge' } }, isAgents)).toBe('user')
-    expect(promptRow({ origin: { kind: 'unclassified' } }, isAgents)).toBe('user')
-    expect(promptRow({}, isAgents)).toBe('user')
+    expect(promptRow({ origin: { kind: 'composer' } })).toBe('user')
+    expect(promptRow({ origin: { kind: 'bridge' } })).toBe('user')
+    expect(promptRow({ origin: { kind: 'unclassified' } })).toBe('user')
+    expect(promptRow({})).toBe('user')
   })
 
-  test('a delivery of the model\'s own business is working record', async () => {
-    expect(promptRow({ origin: { kind: 'scheduled-trigger' } }, isAgents)).toBe('record')
-    expect(promptRow({ origin: { kind: 'coordinator' } }, isAgents)).toBe('record')
-    // A background command's notification: a task no agent of the session ran.
-    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'br5d455do', toolUseId: 'toolu_1' } }, isAgents)).toBe(
-      'record',
-    )
+  test('a delivery of the model\'s own business is working record, an agent\'s finish among them', async () => {
+    expect(promptRow({ origin: { kind: 'scheduled-trigger' } })).toBe('record')
+    expect(promptRow({ origin: { kind: 'coordinator' } })).toBe('record')
+    // A background command's notification.
+    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'br5d455do', toolUseId: 'toolu_1' } })).toBe('record')
+    // A subagent's finish: the model reports what it returned.
+    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a5d804ff68753fdeb', toolUseId: 'toolu_2' } })).toBe('record')
   })
 
-  test('a message someone else sent, and the finish of an agent, are rows the person reads', async () => {
-    expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } }, isAgents)).toBe('marked')
-    expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } }, isAgents)).toBe('marked')
-    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a5d804ff68753fdeb' } }, isAgents)).toBe('marked')
+  test('a message someone else sent is a row the person reads', async () => {
+    expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } })).toBe('marked')
+    expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } })).toBe('marked')
   })
 })
 
@@ -297,7 +293,7 @@ describe('rows', () => {
   // The plugin the runner stages the mods as.
   const PLUGIN = 'doperpowers-mods'
 
-  test('a notification whose agent lookup is pending keeps the place it first drew in', async ($, on) => {
+  test('an agent\'s finish notification stands in the run it falls in', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     // The engine's own drawing beneath the mod: the row's text, one line.
@@ -305,16 +301,6 @@ describe('rows', () => {
       type: 'Text',
       children: [String((e.props as { text?: string }).text ?? e.component)],
     }))
-    // The agent list, held until the test lets it go: the rows after the
-    // notification draw while its lookup is pending.
-    let release: () => void = () => {}
-    const held = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    on('agent.list', async () => {
-      await held
-      return { value: [] }
-    })
 
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
@@ -325,13 +311,16 @@ describe('rows', () => {
       surface: 'terminal',
       component: 'UserMessage',
       requestId: 'n1',
-      props: { text: 'Background command "x" completed', origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'b1' } },
+      props: {
+        text: 'Agent "Resolve the merge" finished · 5m 3s',
+        origin: { kind: 'task-notification' },
+        isExpanded: false,
+        task: { id: 'a1', toolUseId: 'toolu_1' },
+      },
     })
     const marked2 = message('m2', '<to-human>Two.</to-human>')
     const record2 = message('u2', 'More.')
-    const [, first, , second] = await Promise.all([marked1, record1, marked2, record2])
-    release()
-    const note = await notification
+    const [, first, note, , second] = await Promise.all([marked1, record1, notification, marked2, record2])
 
     // The first unmarked message opens the run the notification stands in; the
     // second opens the run after the second mark. The notification draws no

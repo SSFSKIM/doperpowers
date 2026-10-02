@@ -50,14 +50,11 @@ a mark, so a session without the output style is left alone. From then on:
   human's own words, and they read it as they read a mark.
 - The session's agents stay in the report, as the engine draws them: an
   `Agent` call (a dispatch) and a `Workflow` of agents, a `SendMessage` call
-  (a message to an agent, which is also how a finished one is resumed), a
-  message another agent, teammate or session sent, and the notification that
-  an agent finished. An agent is known by the engine's own list of the
-  session's agents (looked up once per task, as the notification arrives;
-  the list keeps a finished agent for a while) or by the `Agent` call that
-  started it (the notification names the call), which is how a resumed
-  session's earlier agents are known; a background command's or a monitor's
-  notification is working record as before.
+  (a message to an agent, which is also how a finished one is resumed), and
+  a message another agent, teammate or session sent. The notification that
+  an agent finished is working record, like a background command's or a
+  monitor's: it says only that the agent returned, and what it returned the
+  model reports.
 - A `need-input` span is a question the human answers from the terminal. The
   options the model wrote as `<choice>…</choice>` lines (one of them
   `<choice recommended>`) draw as buttons under the question, `★` on the
@@ -108,9 +105,7 @@ lives in the module and resets on reload or a new session (answers do not:
 they are read from the transcript); a question is known by its first line, so
 two questions that open alike are answered together; a run's rows are known
 by the order they first drew in, so a resumed session that redraws history
-out of order can put a button on the wrong row until the next redraw, and
-an agent's finish drawn before the `Agent` call that started it reads as
-working record until then.
+out of order can put a button on the wrong row until the next redraw.
 
 ## agents (`agents.tsx`)
 
