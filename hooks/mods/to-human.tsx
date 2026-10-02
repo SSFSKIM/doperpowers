@@ -219,11 +219,13 @@ export function parse(text: string): Parsed {
 /**
  * What one row of the transcript is: the person's prompt; a row they read
  * (an assistant message carrying marks, a question they answered, an
- * agent's dispatch, a message an agent sent); or working record (an
+ * agent's dispatch, a message an agent sent); a mixed row, a message
+ * carrying marks with unmarked text beside them, which the person reads and
+ * which opens the run of working record after it; or working record (an
  * unmarked message, a tool call and its result, a notification of
  * background work, an agent's finish among it).
  */
-export type RowKind = 'user' | 'marked' | 'record'
+export type RowKind = 'user' | 'marked' | 'mixed' | 'record'
 
 /**
  * The origins of a prompt row that is a delivery to the session and not the
@@ -272,11 +274,15 @@ export function promptRow(props: PromptRowProps): RowKind {
 }
 
 /**
- * The first message of the run of working record `id` belongs to: walking
- * back over the rows that are working record too and stopping at a prompt or
- * at a message that carries marks. A run of unmarked messages draws as one
- * button rather than one button each, so the report reads as a report; this
- * names the message that draws it, and the rest of the run draw nothing.
+ * The first row of the run of working record `id` belongs to: walking back
+ * over the rows that are working record too and stopping at a prompt or at
+ * a message that carries marks. A mixed message, marks with unmarked text
+ * beside them, is where the run after it starts: its own record and the run
+ * open and close as one, under its one button, so two things the person
+ * reads have one `[ working record ]` between them and not two. A run of
+ * unmarked messages draws as one button rather than one button each, so the
+ * report reads as a report; this names the row that draws it, and the rest
+ * of the run draw nothing.
  */
 export function runStart(
   order: readonly string[],
@@ -284,14 +290,20 @@ export function runStart(
   id: string,
 ): string {
   let at = order.indexOf(id)
-  if (at < 0) {
+  if (at < 0 || rowOf.get(id) === 'mixed') {
     return id
   }
   while (at > 0 && rowOf.get(order[at - 1] as string) === 'record') {
     at -= 1
   }
+  if (at > 0 && rowOf.get(order[at - 1] as string) === 'mixed') {
+    at -= 1
+  }
   return order[at] as string
 }
+
+/** Whether a row stands in a run of working record: as record, or as the mixed message that opens one. */
+const inRun = (kind: RowKind | undefined) => kind === 'record' || kind === 'mixed'
 
 /**
  * The last message of the run of working record `id` belongs to: walking
@@ -461,7 +473,7 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
   }
   rowOf.set(requestId, kind)
   const before = order[order.indexOf(requestId) - 1]
-  if (view.isFolding() && before !== undefined && rowOf.get(before) === 'record' && unfolded.has(runStart(order, rowOf, before))) {
+  if (view.isFolding() && before !== undefined && inRun(rowOf.get(before)) && unfolded.has(runStart(order, rowOf, before))) {
     $.ui.invalidate('ui.render')
   }
 }
@@ -608,7 +620,7 @@ export function registerToHuman(on: On) {
     }
     const prior = before.get(e.requestId)
     const isShown =
-      prior !== undefined && view.rowOf.get(prior) === 'record' && unfolded.has(runStart(view.order, view.rowOf, prior))
+      prior !== undefined && inRun(view.rowOf.get(prior)) && unfolded.has(runStart(view.order, view.rowOf, prior))
     if (isShown) {
       return next(e)
     }
@@ -618,7 +630,7 @@ export function registerToHuman(on: On) {
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const parsed = parse(e.props.text)
-    see($, view, e.requestId, parsed.spans.length > 0 ? 'marked' : 'record')
+    see($, view, e.requestId, parsed.spans.length === 0 ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
       // Rows drawn before the first mark (the tool rows of this turn, the
@@ -654,13 +666,17 @@ export function registerToHuman(on: On) {
     const requestId = e.requestId
     const toggleThis = () => toggle(unfolded, requestId)
 
+    // Unfolded, a mixed message is the first row of its run: the run's end
+    // draws the fold, under itself, unless the run is this row alone.
     if (unfolded.has(requestId)) {
       return (
         <Box flexDirection="column">
           {await next(e)}
-          <Box paddingLeft={2}>
-            <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleThis} />
-          </Box>
+          {runEnd(view.order, view.rowOf, requestId) === requestId ? (
+            <Box paddingLeft={2}>
+              <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleThis} />
+            </Box>
+          ) : null}
         </Box>
       )
     }
@@ -714,6 +730,7 @@ export function registerToHuman(on: On) {
           )
         })}
         {parsed.hasRecord ? (
+          // The one button of this message's record and of the run after it.
           <Box paddingLeft={2}>
             <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
           </Box>

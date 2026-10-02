@@ -23,16 +23,20 @@ a mark, so a session without the output style is left alone. From then on:
   whole), so a table or a list inside a mark draws as it would unmarked. A
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
-  unfolds the engine's drawing of the whole block.
+  unfolds the engine's drawing of the whole block, and the run of working
+  record after that message opens and closes with it: the message is where
+  the run starts, so two things the person reads have one button between
+  them, never the message's and the run's stacked.
 - Messages with no marks at all, tool calls with their results, and prompt
   rows that are deliveries of the model's own business rather than the
   person's words (a background command's or a monitor's notification, a
   schedule firing) are working record, and a run of it draws one
   `[ working record ]` button rather than one button per row: the run breaks
-  at the person's own prompt, at a message that carries marks, and at every
-  row of the next two bullets, so what stands between two things they read
-  opens and closes as a unit. The button is
-  drawn by the row the run starts at and the rest of the run draw nothing;
+  at the person's own prompt, at a message that carries marks (one with
+  record beside its marks starts the run itself), and at every row of the
+  next two bullets, so what stands between two things they read opens and
+  closes as a unit. The button is drawn by the row the run starts at and the
+  rest of the run draw nothing;
   unfolded, the run shows the engine's own rows as the transcript draws them
   (a group of reads keeps its count line: each call in its place would be
   the ctrl+o form, its whole output inline; where the engine expands the

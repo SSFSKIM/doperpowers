@@ -118,6 +118,17 @@ describe('runStart', () => {
     expect(runStart(order, rowOf, 'r1')).toBe('r1')
   })
 
+  test('a mixed message, marks with record beside them, is where the run after it starts', async () => {
+    const { order, rowOf } = rows(['r1', 'record'], ['m', 'mixed'], ['r2', 'record'], ['r3', 'record'], ['n', 'mixed'])
+
+    expect(runStart(order, rowOf, 'r1')).toBe('r1')
+    expect(runStart(order, rowOf, 'm')).toBe('m')
+    expect(runStart(order, rowOf, 'r2')).toBe('m')
+    expect(runStart(order, rowOf, 'r3')).toBe('m')
+    expect(runStart(order, rowOf, 'n')).toBe('n')
+    expect(runEnd(order, rowOf, 'm')).toBe('r3')
+  })
+
   test('a message the transcript has not drawn yet stands alone', async () => {
     const { order, rowOf } = rows(['r1', 'record'])
 
@@ -334,6 +345,35 @@ describe('rows', () => {
     await first.press({ key: 'to-human-toggle' })
     expect(await note.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
     expect(await first.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+  })
+})
+
+describe('mixed', () => {
+  const PLUGIN = 'doperpowers-mods'
+
+  test('a marked message with record beside it draws the one button for itself and the run after it', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    const mixed = await message('m1', 'Looking first.\n<to-human>One.</to-human>')
+    const record = await message('u1', 'Working.')
+    const after = await message('m2', '<to-human>Two.</to-human>')
+
+    // One button, the mixed message's; the record row after it draws nothing.
+    expect(await mixed.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await record.find({ type: 'Button' })).toBeUndefined()
+    expect(await after.find({ type: 'Button' })).toBeUndefined()
+
+    // Unfolded from the mixed message, the run ends at the record row, which
+    // draws the fold; the mixed message does not.
+    await mixed.press({ key: 'to-human-toggle' })
+    expect(await record.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    expect(await mixed.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
   })
 })
 
