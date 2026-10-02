@@ -52,13 +52,10 @@ a mark, so a session without the output style is left alone. From then on:
 - A question answered through `AskUserQuestion` draws as the engine draws it
   (the question and the answer given) in the report itself: the answer is the
   human's own words, and they read it as they read a mark.
-- The session's agents stay in the report, as the engine draws them: an
-  `Agent` call (a dispatch) and a `Workflow` of agents, a `SendMessage` call
-  (a message to an agent, which is also how a finished one is resumed), and
-  a message another agent, teammate or session sent. The notification that
-  an agent finished is working record, like a background command's or a
-  monitor's: it says only that the agent returned, and what it returned the
-  model reports.
+- Agent spawns stay in the report as the engine draws them: an `Agent`
+  call and a `Workflow` of agents. `SendMessage` calls, received messages
+  from agents, teammates or other sessions, and agent-finish notifications
+  are working record. Unfolding the run or the full transcript reveals them.
 - A `need-input` span is a question the human answers from the terminal. The
   options the model wrote as `<choice>…</choice>` lines (one of them
   `<choice recommended>`) draw as buttons under the question, `★` on the

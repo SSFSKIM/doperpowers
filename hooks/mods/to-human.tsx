@@ -219,11 +219,11 @@ export function parse(text: string): Parsed {
 /**
  * What one row of the transcript is: the person's prompt; a row they read
  * (an assistant message carrying marks, a question they answered, an
- * agent's dispatch, a message an agent sent); a mixed row, a message
+ * agent's dispatch); a mixed row, a message
  * carrying marks with unmarked text beside them, which the person reads and
  * which opens the run of working record after it; or working record (an
- * unmarked message, a tool call and its result, a notification of
- * background work, an agent's finish among it).
+ * unmarked message, a tool call and its result, agent messages and
+ * background notifications).
  */
 export type RowKind = 'user' | 'marked' | 'mixed' | 'record'
 
@@ -231,8 +231,8 @@ export type RowKind = 'user' | 'marked' | 'mixed' | 'record'
  * The origins of a prompt row that is a delivery to the session and not the
  * person's own words: a task's notification, a schedule firing, another
  * session's or a coordinator's message, an observer's report, a plugin's
- * submission. Such a row is working record unless someone sent it. Any
- * other origin, and any the engine names later, is taken as the person's:
+ * submission. These deliveries are working record. An unknown origin without
+ * a sender or task is taken as the person's:
  * hiding their own prompt is the worse mistake.
  */
 const DELIVERED: ReadonlySet<string> = new Set([
@@ -257,17 +257,11 @@ export type PromptRowProps = {
 }
 
 /**
- * What a prompt row is: the person's own words; a row they read (a message
- * someone else sent); or working record (any other delivery, a task's
- * notification among them: a command's, a monitor's, an agent's finish. The
- * finish says only that the agent returned; what it returned, the model
- * reports, so the row is the model's business, not a row the person reads).
+ * The person's own words stay visible. Messages delivered by agents and
+ * background notifications belong to the working record.
  */
 export function promptRow(props: PromptRowProps): RowKind {
-  if (props.from !== undefined) {
-    return 'marked'
-  }
-  if (props.task !== undefined) {
+  if (props.from !== undefined || props.task !== undefined) {
     return 'record'
   }
   return props.origin !== undefined && DELIVERED.has(props.origin.kind) ? 'record' : 'user'
@@ -428,18 +422,8 @@ const ASK = 'need-input:'
  */
 type Press = { kind: 'answer'; question: Question; answer: string } | { kind: 'reply'; question: Question }
 
-/**
- * The tools that reach the session's agents: a dispatch (`Agent`, and a
- * `Workflow` of agents), and a message to one, which is also how a
- * finished agent is resumed (`SendMessage`).
- */
-const AGENT_TOOLS: ReadonlySet<string> = new Set(['Agent', 'SendMessage', 'Workflow'])
-
-/**
- * A tool call whose row the person reads as they read a mark: the question
- * dialog's (its row is the person's own answer) and the agent tools'.
- */
-export const isRead = (tool: string) => tool === 'AskUserQuestion' || AGENT_TOOLS.has(tool)
+/** Questions and agent spawns stay in the report; messaging is working record. */
+export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === 'Agent' || tool === 'Workflow'
 
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked
@@ -562,9 +546,8 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
  * the engine does; from then on, assistant messages fold to their marks and
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
- * transcript by the band above the prompt. The session's agents stay in the
- * report: their dispatch and the messages they send (their finish is
- * working record, the model's to report on). A `need-input` span draws its
+ * transcript by the band above the prompt. Agent spawns stay in the report;
+ * agent messages and finish notifications are working record. A `need-input` span draws its
  * choices as buttons under the question, in the message itself.
  */
 export function registerToHuman(on: On) {
@@ -593,11 +576,8 @@ export function registerToHuman(on: On) {
   }
 
   // The person's prompt breaks a run: the record before it and the record
-  // after it are two, as the person reads them. So does a row they read: a
-  // message from an agent, a teammate or another session. A delivery that
-  // is the model's own business (a task's notification, an agent's finish
-  // among them; a schedule firing) is working record, and stands in the run
-  // it falls in.
+  // after it are two, as the person reads them. Agent messages and background
+  // deliveries are working record, and stand in the run they fall in.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
     const kind = promptRow(e.props)
     see($, view, e.requestId, kind)
@@ -741,8 +721,8 @@ export function registerToHuman(on: On) {
 
   // A tool call is working record too, and stands in the run it falls in,
   // except one the person reads: the question dialog's, whose row is the
-  // answer they gave, and an agent tool's, the dispatch or the message it
-  // is; each breaks the run as a marked message does. A standalone call's
+  // answer they gave, and an agent spawn; each breaks the run as a marked
+  // message does. A standalone call's
   // result is a row of its own beneath it once the call resolves, so until
   // then (no output, and no abort, which leaves one) the call's row is the
   // last of the two. A row of a group the engine expanded draws its output

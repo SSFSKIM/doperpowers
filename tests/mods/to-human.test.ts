@@ -294,15 +294,46 @@ describe('promptRow', () => {
     expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a5d804ff68753fdeb', toolUseId: 'toolu_2' } })).toBe('record')
   })
 
-  test('a message someone else sent is a row the person reads', async () => {
-    expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } })).toBe('marked')
-    expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } })).toBe('marked')
+  test('received agent messages are working record, even without an origin', async () => {
+    expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } })).toBe('record')
+    expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } })).toBe('record')
+    expect(promptRow({ from: { name: 'reviewer' } })).toBe('record')
   })
 })
 
 describe('rows', () => {
   // The plugin the runner stages the mods as.
   const PLUGIN = 'doperpowers-mods'
+
+  test('incoming messages fold into the surrounding run and remain available when unfolded', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    await message('m1', '<to-human>Checking.</to-human>')
+    const first = await message('r1', 'Working.')
+    const incoming = await $.ui.mount({
+      plugin: PLUGIN,
+      surface: 'terminal',
+      component: 'UserMessage',
+      requestId: 'peer1',
+      props: { text: 'Review ready.', origin: { kind: 'peer' }, from: { name: 'reviewer' }, isExpanded: false },
+    })
+    const last = await message('r2', 'Reading the review.')
+    await message('m2', '<to-human>Checked.</to-human>')
+
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await incoming.find({ type: 'Text', text: 'Review ready.' })).toBeUndefined()
+    expect(await incoming.find({ type: 'Button' })).toBeUndefined()
+    expect(await last.find({ type: 'Button' })).toBeUndefined()
+    await first.press({ key: 'to-human-toggle' })
+    expect(await incoming.find({ type: 'Text', text: 'Review ready.' })).toBeDefined()
+    expect(await last.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+  })
 
   test('an agent\'s finish notification stands in the run it falls in', async ($, on) => {
     mock.env(on, {})
@@ -378,8 +409,8 @@ describe('mixed', () => {
 })
 
 describe('isRead', () => {
-  test('the question dialog and the agent tools draw as the person reads them; the rest is record', async () => {
-    expect(['AskUserQuestion', 'Agent', 'SendMessage', 'Workflow'].map(isRead)).toEqual([true, true, true, true])
-    expect(['Bash', 'Read', 'Monitor', 'TaskOutput'].map(isRead)).toEqual([false, false, false, false])
+  test('questions and agent spawns stay visible while messaging is working record', async () => {
+    expect(['AskUserQuestion', 'Agent', 'Workflow'].map(isRead)).toEqual([true, true, true])
+    expect(['SendMessage', 'Bash', 'Read', 'Monitor', 'TaskOutput'].map(isRead)).toEqual([false, false, false, false, false])
   })
 })
