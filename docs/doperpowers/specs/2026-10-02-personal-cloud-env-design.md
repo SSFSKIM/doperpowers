@@ -1,6 +1,6 @@
 # Personal cloud agent environment — design
 
-**Date.** 2026-10-02. **Status.** Presented for approval; routes to doperpowers:execspec.
+**Date.** 2026-10-02. **Status.** Revised after the human's two decisions (GCP Secret Manager; relay only, no fallback); pending approval; routes to doperpowers:execspec.
 **Research.** `docs/doperpowers/2026-09-30-personal-cloud-env-research.md` (+ four reports under
 `docs/doperpowers/research/2026-09-30-personal-cloud-env/`). **Critique.** One round with
 `doperpowers:critique` on 2026-10-02; converged positions are folded in and listed in §10.
@@ -19,14 +19,14 @@ a session harder to start, find, resume, or trust works against that purpose.
 **Best manifestation.** From any terminal, `mosh devbox` → tmux → the same `claude` as on the Macs,
 with the same `~/.claude`, the same model routing, the same plugins and MCP servers, the same
 session list, and `ssh mini` or a cua call one tool away. Forty seats run while the laptop sleeps.
-A session started on the Mac yesterday resumes on the devbox today. When the home goes dark, the
-devbox keeps working on Anthropic directly. Nothing in this is a "cloud session" in Anthropic's
+A session started on the Mac yesterday resumes on the devbox today. Nothing in this is a "cloud session" in Anthropic's
 sense; it is the person's own computer, elsewhere.
 
 **What it must not be.** A fleet (one trust domain, no per-session containers). A mirror of a Mac
 (state is decomposed by class, not copied by machine). A second place to configure things (the
 synced `settings.json` stays byte-identical on every host). A dependency on Anthropic's cloud
 sessions, Remote Control, or self-hosted runners (all refused or inapplicable behind the relay).
+A second inference path: every host's inference goes through the relay on the mini, and only there.
 A box that can delete its own soul (no write-scoped cloud token on the devbox).
 
 ## 2. Architecture
@@ -38,7 +38,7 @@ A box that can delete its own soul (no write-scoped cloud token on the devbox).
   Mac mini (hub: identity archive, relay, hands)  ◄── mutagen (initiated by mini) ──►  devbox (agent home)
    • ClaudeUsage relay, tailscale-served :8641                                        • Hetzner fsn1/nbg1 CAX41 ARM, Ubuntu 24.04
    • union of ~/.claude/projects (60-day live window)                                 • volume = /Users/new (btrfs zstd, daily ro snapshots, 365 d)
-   • cua / Chrome / Keychain hands over ssh                                            • HAProxy 127.0.0.1:8641 → mini relay, fallback api.anthropic.com
+   • cua / Chrome / Keychain hands over ssh                                            • inference: managed-settings override → mini relay (tailscale-served TLS), relay only
    • controller: sync, watchers, reaper, restic                                       • seats under tmux + sminos, worktrees per session
    • runs few or zero seats after M3                                                  • restic of the volume → B2
 ```
@@ -58,7 +58,7 @@ a key to the laptop.
 | Session state (`~/.claude/projects` incl. `memory/`, `plans/`, `tasks/`) | Mutagen `two-way-safe`, star topology initiated from the mini; one writer per file; `--fork-session` on cross-host resume | the writing host per file; mini = union | 60-day live window everywhere (`cleanupPeriodDays: 60` in the synced settings); devbox btrfs daily read-only snapshots kept 365 days = long online window; restic → B2 = disaster copy |
 | Shared logs (`history.jsonl`), runtime (`sessions/`, `~/.claude.json`, `debug/`, `shell-snapshots/`, `session-env/`, `paste-cache/`, `file-history/`, `jobs/`, tailscaled state) | host-local, excluded from every sync | each host | none (devbox: btrfs snapshots incidentally) |
 | Caches (`plugins/`, package caches) | rebuilt per host from the manifest (`sync/apply.py`) | manifest in git | git |
-| Secrets (GitHub PAT, Tailscale auth key, setup-token fallback, restic key, Hetzner token on the mini) | the secret handler (§5); never plaintext in the repo or on the devbox disk except the one per-host root key | the vault (§5 fork) | vault |
+| Secrets (GitHub PAT, Tailscale auth key, restic key, Hetzner token on the mini) | the secret handler (§5, GCP Secret Manager); never plaintext in the repo or on the devbox disk except the one per-host service-account key | GCP Secret Manager | versions |
 | Repositories | git; canonical clones on the volume, worktrees per session; WIP pushed to `wip/<host>` branches | git remote | git |
 | Device-bound capabilities (GUI, Chrome profile, Keychain, TCC, Xcode) | hands over ssh to the mini (§7) | the mini | — |
 
@@ -72,7 +72,7 @@ ARM; formats the volume as btrfs (`compress=zstd:3`, `noatime`) only when blank;
 `/Users` with a `home` subvolume at `/Users/new` and a `.snapshots` subvolume; creates user `new`
 uid 501 with that home (`snap set system homedirs=/Users`, Chromium/Playwright non-snap); installs
 git, build-essential, python3, Node LTS (nvm, as on the Macs), `gh`, `claude` (native installer,
-as `new`), Tailscale, tmux, mosh, HAProxy, restic, rclone, mise; sets the per-body hostname
+as `new`), Tailscale, tmux, mosh, restic, rclone, mise; sets the per-body hostname
 `devbox-<machine-id[:6]>` (host-aware seat liveness; `/etc/machine-id` is never persisted);
 restores the SSH host key from the volume; `ufw` allows inbound only on `tailscale0` once the node
 has joined. A hard gate aborts provisioning if `/Users` is not a mountpoint, as in worker-host.
@@ -91,20 +91,21 @@ template seeds `~/.claude.json` with `projects["/Users/new/Developer/GitHub/<rep
 for the canonical clones so detached seats never block on the trust dialog; `gh auth login` with the
 single account PAT from the vault; one ssh key (restricted below) for the mini; git identity.
 
-**Inference.** HAProxy listens on `127.0.0.1:8641` so the synced `settings.json`
-(`ANTHROPIC_BASE_URL=http://127.0.0.1:8641`, the non-secret relay marker as the auth token) is true
-unchanged. Backend `mini`: the mini's tailscale-served TLS endpoint (`ssl verify required`, system
-CA, SNI); health check `GET /claudeusage/state` with the marker header, expecting an HTTP answer
-from the relay itself (a TCP check would pass while the relay app is down, because `tailscale
-serve` accepts the handshake). Backend `anthropic`: `api.anthropic.com` with the Authorization
-header replaced by the setup-token from the vault, used only while `nbsrv(mini) == 0`. Failover is
-connection-level only, never on 429/5xx: the relay deliberately holds requests near account limits,
-and a response-level fallback would spend the fallback account outside the relay's ledger.
-Consequences stated: the fallback is Claude-only (the GPT rungs the review agents use are relay
-routing), and a flip changes account so prompt caches rebuild once. The config is root-owned 0600,
-rendered from the vault. Managed settings (`/etc/claude-code/managed-settings.json`) remain the
-documented mechanism for any other per-host divergence, since policy settings beat the synced user
-settings and settings `env` is assigned over the shell environment.
+**Inference.** Relay only, by the human's decision (2026-10-02): the devbox has no second
+inference path. The synced `settings.json` keeps `ANTHROPIC_BASE_URL=http://127.0.0.1:8641` and the
+non-secret relay marker; on the devbox a root-owned managed-settings file
+(`/etc/claude-code/managed-settings.json`) sets `env.ANTHROPIC_BASE_URL` to the mini's
+tailscale-served TLS endpoint (`https://mac-mini.<tailnet>.ts.net:8641`, Let's Encrypt certificate,
+system trust store). Policy settings are applied after user settings and settings `env` is
+assigned over the shell environment, so this override holds for every session and seat without
+touching the synced file; the same file is the documented mechanism for any other per-host
+divergence. No proxy process runs on the devbox. Consequences stated: when the mini or its relay is
+down, the devbox has no inference — sessions retry connection errors and resume when the relay
+returns, and a relay outage mid-turn loses that turn like any process kill; the standby property
+("home dark, devbox keeps working") is not provided, so the cloud choice rests on RAM, persistence
+and reach, with the home Linux box the named alternative. A Linux build of the relay's gateway
+target (already a separate Swift target with a `CredentialSource` protocol) is the later route to a
+devbox-local relay; it stays a separate goal.
 
 **Sessions.** Interactive: `mosh devbox` → tmux. Detached: sminos seats (`claude --bg`), registry on
 the volume, host-stamped. Cross-session messaging works among seats on the devbox as on one
@@ -112,20 +113,20 @@ computer. Remote Control is not used.
 
 ## 5. Secrets
 
-The handler is `~/.claude/tools/secret-env` (synced): it resolves `secret://<name>` references into
-environment variables at session or shell start, caches nothing on disk, and has a pluggable
-backend. Two backends are candidates; this is the design's one open fork (§9).
-
-- **sops + age, inside `claude-config`.** `sync/secrets.yaml` encrypted to one age recipient per
-  host; the per-host age key is the only hand-seeded secret (0600 on the volume / in the Mac's
-  home). No network at boot, no SaaS, four strings today.
-- **GCP Secret Manager.** The laptop reads with its existing ADC (project `ytdownload-505811`).
-  The devbox has no GCP identity and Hetzner offers no OIDC issuer, so it can only authenticate with
-  a service-account key file on the volume — a secret to protect the secrets — and needs the
-  network at boot. Gains central UI, audit, versioning, rotation.
-
-Either way: no plaintext secret in the repo; the relay marker is not a secret and stays in
-`settings.json`; the Hetzner token lives only on the mini (controller) and the laptop (operator).
+Backend: **GCP Secret Manager** (the human's choice, 2026-10-02; project `ytdownload-505811`).
+The handler is `~/.claude/tools/secret-env` (synced, python, `google-auth` in its own venv): it
+resolves `secret://<name>` references into environment variables at shell or session start via
+`projects/*/secrets/*/versions/latest:access`, holds values in memory only (an optional tmpfs cache
+with a short TTL for session-start latency), and keeps its backend behind one flag so sops+age can
+replace it without touching callers. Authentication: the laptop uses its existing ADC; the mini
+gets ADC once (`gcloud auth application-default login`) or a service-account key; the devbox has no
+GCP identity and Hetzner offers no OIDC issuer, so it holds one service-account key file on the
+volume (0600, role `secretmanager.secretAccessor` on that project only) — the single per-host root
+secret, seeded by hand once per volume. Secrets today: the GitHub account PAT (one credential for
+every repo, injected as `GH_TOKEN`; git through `gh auth git-credential`), the Tailscale auth key
+(ephemeral, tagged, used once at join), the restic repository key, and the Hetzner token (mini and
+laptop only). The relay marker is not a secret and stays in `settings.json`. No plaintext secret in
+the repo or on the devbox disk; no vault egress proxy.
 
 ## 6. Sync, windows, archives
 
@@ -176,39 +177,34 @@ Either way: no plaintext secret in the repo; the relay marker is not a secret an
 
 ## 8. Observability, elasticity, fallback
 
-- Timers on the mini: Mutagen conflict/health, relay reachability from the devbox (HAProxy stats),
-  restic success, disk headroom on the mini and the volume. Notification through the existing
+- Timers on the mini: Mutagen conflict/health, relay reachability from the devbox (an HTTP probe
+  of `GET /claudeusage/state` through the tailscale-served endpoint), restic success, disk headroom
+  on the mini and the volume. Notification through the existing
   notify hook; a push channel (ntfy) is optional.
 - Elasticity (later milestone): `hcloud server change-type --keep-disk` between CAX11 (idle,
   ≈€4/month) and CAX41 (busy), driven from the mini when no seat is busy / on the first spawn. Same
   host identity, host key, tailnet node, Mutagen session; no snapshot image to keep fresh. The
   earlier delete-and-recreate design is superseded.
-- The inference fallback (§4) is in v1; a Linux build of the relay's gateway target (it is already
-  a separate Swift target with a `CredentialSource` protocol) is the mature endpoint for "the
-  devbox's own login" and a separate later goal.
+- No inference fallback (§4). A devbox-local relay (Linux build of the gateway target) is a
+  separate later goal.
 - `claude` auto-updates on each host; `minimumVersion` in the synced settings bounds skew.
 
-## 9. Open fork — secrets backend
+## 9. Open forks
 
-| | sops + age in claude-config | GCP Secret Manager |
-|---|---|---|
-| per-host root secret | age private key file | service-account key JSON |
-| boot/network dependency | none | yes (session start fetches; needs caching) |
-| management | edit an encrypted YAML in git | console, audit, versions, rotation, IAM |
-| fits | four strings, one person, headless box | many secrets, several principals, compliance |
-
-Recommendation: sops + age now; the handler's backend flag lets GCP replace it later without
-touching callers. The human asked for GCP first, so this is theirs to decide.
+None. The secrets backend (GCP Secret Manager) and the inference path (relay only, no fallback)
+were decided by the human on 2026-10-02.
 
 ## 10. Decision log (from research and critique)
 
-1. Cloud devbox over a bigger Mac mini or a home Linux box — justified by the standby property only
-   because the inference fallback is in v1; the home box stays the named alternative.
+1. Cloud devbox over a bigger Mac mini or a home Linux box — chosen for RAM, persistence and
+   reach; without an inference fallback it provides no standby, and the home box stays the named
+   alternative.
 2. btrfs over ZFS on the volume: in-kernel (no DKMS failure after an unattended kernel update),
    zstd, snapshots, online grow; monthly defragment of `projects/`, qgroups off.
-3. HAProxy on 127.0.0.1:8641 over socat or a per-host managed-settings override: keeps the synced
-   settings identical everywhere and makes failover automatic for running seats; HAProxy, not
-   custom code, because 40 concurrent SSE streams are exactly what a small proxy gets wrong.
+3. Inference through the relay only, no setup-token fallback (the human's decision). With one
+   backend the per-host managed-settings override beats a proxy: no process, nothing to supervise,
+   the synced settings file untouched. The critique's HAProxy-with-failover shape is recorded as
+   the design if a fallback is ever wanted.
 4. Mutagen initiated from the mini: peers need only sshd; a recreated or re-typed body resumes the
    same session.
 5. Always-on first, change-type elasticity later: €41 vs ~€15 is not worth a reaper before the duty
@@ -217,7 +213,9 @@ touching callers. The human asked for GCP first, so this is theirs to decide.
    (theater when cua already means full control).
 7. Live window 60 days + btrfs long window + restic, replacing "everything live forever" and Time
    Machine for `projects/`.
-8. The relay marker is not a secret; the vault holds four strings.
+8. The relay marker is not a secret; the vault holds three strings on the devbox (GitHub PAT,
+   Tailscale auth key, restic key) plus the Hetzner token on the Macs. Backend: GCP Secret Manager
+   (the human's choice over sops+age), with a service-account key as the devbox's root secret.
 9. No per-repo GitHub tokens: one account credential, injected by the handler (the human's call,
    2026-10-02).
 10. Per-session isolation not wanted; sessions share one computer's semantics.
@@ -228,8 +226,10 @@ touching callers. The human asked for GCP first, so this is theirs to decide.
 - Mutagen mtime preservation (M2) → decides whether re-seeding a peer needs a touch-back.
 - cua / Playwright over ssh from Linux (M3 day one) → decides whether the wrapper needs a
   persistent agent on the mini instead of per-call ssh.
-- HAProxy health route: `GET /claudeusage/state` with the marker; if the relay refuses it without
-  a session, add `/healthz` to the relay (the human owns it).
+- Whether `GET /claudeusage/state` answers through the tailscale-served endpoint without a
+  session (for the reachability probe); if not, add `/healthz` to the relay (the human owns it).
+- Managed-settings `env` override verified end to end on Linux (the precedence was read in the
+  2.1.283 source; M3 confirms it on the devbox).
 - Hetzner CAX41 availability on the day (stock varies by location).
 
 ## 12. Plan of work (outline for execspec)
@@ -239,7 +239,7 @@ touching callers. The human asked for GCP first, so this is theirs to decide.
 | M0 | Tailnet ACLs; Hetzner project + token on the laptop and mini | the relay reachable only from the Macs and `tag:devbox` |
 | M1 | Hub prep on the mini: Mutagen, restic → B2, `cleanupPeriodDays: 60`, TM exclusion, conflict watcher, `jobs/` pruned | the union has an archive and a window |
 | M2 | Mini ⇄ laptop sync live; `--fork-session` cross-host resume verified; mtime check | two Macs share one session history |
-| M3 | `infra/devbox/`: cloud-init, volume, identity seeding, HAProxy with fallback, hands wrapper, trust seeding; first session over mosh; cua over ssh; fio | the devbox is the person's computer |
+| M3 | `infra/devbox/`: cloud-init, volume, identity seeding, managed-settings inference override, secret handler with the GCP service-account key, hands wrapper, trust seeding; first session over mosh; cua over ssh; fio | the devbox is the person's computer |
 | M4 | Mini ⇄ devbox sync; seats on the devbox under sminos; mini runs few or zero seats | elastic sessions, one history |
-| M5 | Observability timers; standby drill (mini off → devbox keeps working on Anthropic) | the standby is real |
+| M5 | Observability timers; relay-outage drill (relay restarted → devbox sessions recover by retry; mini off → sessions wait, nothing lost past the turn) | failure modes known |
 | M6 | Elasticity via change-type; cost review against the duty cycle | scale-to-idle |
