@@ -337,6 +337,12 @@ Each is named where the field that would need it is recorded.
   and as the real `<GH>` on the devbox (E4).
 - **Both OSes:** every `devenv`/`reap` behavior that can run on macOS is tested on the laptop;
   the Linux-only parts (`PR_SET_CHILD_SUBREAPER`) are guarded and tested on the devbox in E4.
+- **No test session in the person's session store** (2026-10-02, after E2's runs surfaced in
+  MAWS, which indexes every session under `~/.claude/projects`): every `claude` invocation a test or
+  acceptance step makes runs with `CLAUDE_CONFIG_DIR=<scratch>/claude-config`, seeded with the
+  minimum settings it needs; where a step must use the real config (plugins — e.g. a sminos seat),
+  its cwd is a scratch directory and the step deletes `~/.claude/projects/<scratch key>/` on
+  teardown. MAWS runs stay halted until the design session lifts the halt.
 - **Cross-spec dependency:** E4 needs the host layer's M3 (a devbox with `secret-env` and its
   key); E1–E3 run on the laptop and do not wait for it.
 - **Testing:** `python3 -m unittest discover -s ~/.claude/tools/tests` for the tools; the skill is
@@ -417,7 +423,9 @@ Concrete Steps. Touches: Concrete Steps of this spec; `~/.claude/tools/tests/` (
 test); a fixture project (registry entry or scratch `<GH>`) whose service is
 `python3 -m http.server 8765`, standing in for MAWS's Electron dev server in acceptance 4. Before
 the run, pre-existing clones are prepared per §2 (`repos[].ref`): clean → `git switch <ref>`,
-dirty → stop and report. Decisions: the devbox gets the manifests by `devenv up` cloning the `devbox-manifest`
+dirty → stop and report. Acceptance 7 on the devbox relies on the host layer's trust seeding of the
+canonical clones (its `~/.claude.json` template): a background seat's `--cwd` must be a trusted
+workspace. Decisions: the devbox gets the manifests by `devenv up` cloning the `devbox-manifest`
 branches until the human merges them (`ref` in the registry entries points at those branches for
 now; a Decision Log line records when `main` takes over). Does not touch: the host layer's files.
 Proves: acceptance 10, and runs 1–9 again.
@@ -733,6 +741,13 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   runs only the hermetic suites (lint of changed scripts, sminos, the poller); test sandboxes get
   their own HOME. `devenv` is ~1100 lines, not ~600; it stays one file, sectioned, with
   `services` the seam if it is ever split.
+
+- Decision (2026-10-02, the design session, confirming E2's checkpoint): settings.local.json is
+  the session-side mechanism (the shell snapshot drops exports); masking excludes git
+  push/fetch/pull and always allows a masked secret's hosts; seats need a trusted workspace, and
+  E4 relies on the host layer's trust seeding; `sminos resume` dropping `GH_TOKEN` is residue (a
+  sminos doc fix); services under `bash -c` with the caller's `PATH`; the ~1100-line `devenv` is
+  acceptable as one file.
 
 ## Outcomes & Retrospective
 
