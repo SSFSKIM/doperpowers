@@ -63,8 +63,9 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    the handler call `…/secret-env export devbox-github-pat:GH_TOKEN` and no value;
    `.devbox/sandbox.settings.json` masks `GH_TOKEN` with `injectHosts` `api.github.com`,
    `github.com`; (ii) `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'`
-   prints `development` and `token-set`; (iii) in a session started by `devenv claude doperpowers`,
-   a Bash tool `env | grep ^GH_TOKEN=` shows a `fake_value_` placeholder (mask), not the value;
+   prints `development` and `token-set`; in a session started by `devenv claude doperpowers` a Bash
+   tool command sees `GH_TOKEN` set; (iii) only for a project with `sandbox: true` (or
+   `devenv claude --sandbox`): a Bash tool `env | grep ^GH_TOKEN=` shows a `fake_value_` placeholder (mask), not the value;
    `gh api user` succeeds (injection to `api.github.com`); a request to a non-inject host
    (`curl -s -H "Authorization: Bearer $GH_TOKEN" https://httpbin.org/headers`) shows the
    placeholder, not the token; (iv) the handler's value appears nowhere on disk:
@@ -85,7 +86,8 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    finds nothing; `reap --timeout 2 -- sleep 300` exits 124 and the sleep is gone.
 7. **Seats inherit.** `sminos spawn envtest "print the value of NODE_ENV and stop" --cwd <GH>/doperpowers --wait`
    replies with `development`; a seat spawned with `--settings <GH>/doperpowers/.devbox/sandbox.settings.json`
-   that holds `GH_TOKEN` in its environment sees the `fake_value_` placeholder, not the value.
+   that holds `GH_TOKEN` in its environment sees the `fake_value_` placeholder, not the value (a
+   sandbox check: run where the sandbox is opted into).
 8. **Onboarding by skill.** In `<GH>/claude-usage-menubar` (no manifest yet), the `cloud-env-setup`
    skill produces `.devbox/environment.json`, `.devbox/install.sh`,
    `.devbox/skill/{SKILL,start,validation}.md`, and `devenv up claude-usage-menubar`
@@ -184,13 +186,18 @@ Field semantics, each a decision:
   returning 2xx/3xx; `tcp`: `host:port` accepting) and prints one line per service; `devenv stop`
   kills the session; `devenv status` lists windows and whether each `ready` check passes now.
 - `network`: drives Claude Code's native sandbox (the human's decision, 2026-10-02, replacing
-  "recorded, not enforced"). `access` ∈ `unrestricted` (default) | `restricted`. `devenv up`
-  writes `<root>/.devbox/sandbox.settings.json` (I9): `sandbox.enabled: true`; when `restricted`,
+  "recorded, not enforced"), opt-in and never blocking. `access` ∈ `unrestricted` (default) |
+  `restricted`. `devenv up` writes `<root>/.devbox/sandbox.settings.json` (I9) whenever
+  `access` is `restricted` or any secret has `domains`: `sandbox.enabled: true`; when `restricted`,
   `network.allowedDomains` = `allowed_domains` plus every `secrets[].domains` entry, with
   `strictAllowlist: true`; when `unrestricted`, no allowlist. Masking takes effect only from
-  user/managed settings or `--settings`, never from a repository's `.claude/settings.json`, so
-  `devenv claude` passes `--settings <root>/.devbox/sandbox.settings.json`, and a seat gets it by
-  `sminos spawn --settings <that file>` (sminos already takes `--settings`; no sminos change).
+  user/managed settings or `--settings`, never from a repository's `.claude/settings.json`.
+  Applying it is opt-in: `devenv claude` passes `--settings <root>/.devbox/sandbox.settings.json`
+  only when the manifest sets `sandbox: true` (optional boolean, default `false`) or the person
+  passes `--sandbox`; otherwise the session runs with the host's default settings and the auto
+  classifier. A seat opts in by `sminos spawn --settings <that file>` (sminos already takes
+  `--settings`; no sminos change). Friction under masking (git push, TLS) is recorded and the
+  project's `sandbox` left `false`.
 - `env`: non-secret variables, written into `env.sh` literally (shell-quoted).
 - `repos[].ref` and existing checkouts: `ref` names the branch carrying the manifest
   (doperpowers: `project-env-manifest`; MAWS and claude-usage-menubar: `devbox-manifest`) until the
@@ -204,7 +211,8 @@ Field semantics, each a decision:
   requests to those hosts — and a secret without `domains` becomes `{name: <env>, mode: "deny"}`;
   `network.tlsTerminate: {}` is set whenever any mask entry exists (experimental in 2.1.283). On
   Darwin the generated settings add `excludedCommands` for `gh`, `gcloud` and `terraform`, which
-  can fail TLS under termination. Secrets enter at launch, never inside a session:
+  can fail TLS under termination. Secrets enter at launch, never inside a session, whether or not
+  the sandbox is applied:
   `devenv claude/shell/start/validate` resolve them strictly in the launcher and export them into
   the child's environment, where the sandbox masks them for every Bash tool command; `devenv up`
   resolves them for the install non-strictly (an unavailable secret warns, value-free, and the
@@ -349,8 +357,8 @@ line), `~/.claude/tools/tests/`, `<GH>/MAWS/.devbox/` (branch `devbox-manifest`)
 Tests: a service started while a tmux server already runs reads a fake-backed variable from env.sh
 inside the service child; the rc hook with a failing handler warns once, value-free, and the shell
 continues, and under `CLAUDECODE=1` never calls the handler; `sandbox.settings.json` generation
-for restricted/unrestricted, mask/deny and the Darwin `excludedCommands`; `devenv claude` passing
-`--settings`; the placeholder halves of acceptance 3(iii) and the git-push-under-masking risk (§2)
+for restricted/unrestricted, mask/deny and the Darwin `excludedCommands`, and its absence when
+neither applies; `devenv claude` passing `--settings` only under `sandbox: true` or `--sandbox`; the placeholder halves of acceptance 3(iii) and the git-push-under-masking risk (§2)
 checked on the laptop; the `settings.local.json` merge keeps other keys and never writes a secret;
 `settings.local.json` is kept out of git (`.git/info/exclude` when the repository does not
 already ignore it). Acceptance 7 is verified with the background daemon already running under a
@@ -421,7 +429,9 @@ E2–E4: as the milestones state; recorded here when run.
 devenv up <name> [--force] [--url <https url> [--ref r]]
                                     clone/fetch repos, write env.sh, run install (skipped when unchanged), link the start skill;
                                     --url writes a single-repository registry entry first (§1)
-devenv claude <name> [args…]        cd root; source env.sh; exec claude args…
+devenv claude <name> [--sandbox] [args…]
+                                    cd root; source env.sh; resolve secrets; exec claude [--settings <sandbox.settings.json>] args…
+                                    (--settings when the manifest's `sandbox` is true or --sandbox is given)
 devenv shell <name> [-c cmd]        cd root; source env.sh; exec $SHELL [-c cmd]
 devenv start|stop|status <name>     services in tmux session <name>
 devenv validate <name>              run <root>/.devbox/validate.sh, else print validation.md
@@ -489,7 +499,8 @@ value-free warning on stderr, and the shell continues.
 §2 `network` and `secrets[]`): `{"sandbox": {"enabled": true, "network": {["allowedDomains": […],
 "strictAllowlist": true,] ["tlsTerminate": {}]}, "credentials": {"envVars": [{"name": "GH_TOKEN",
 "mode": "mask", "injectHosts": ["api.github.com", "github.com"]}, …]}, ["excludedCommands": [...]]}}`
-— keys per Claude Code 2.1.283's sandbox settings; `devenv claude` passes it as `--settings`.
+— keys per Claude Code 2.1.283's sandbox settings; `devenv claude` passes it as `--settings` only
+under `sandbox: true` or `--sandbox`.
 
 **I8 — `cloud-env-setup` skill:** `skills/cloud-env-setup/SKILL.md`, frontmatter `name:
 cloud-env-setup`, description with the five trigger phrases of §4.
@@ -616,6 +627,15 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   a host without the handler, and the cloud-env-setup flow reports a missing secret rather than
   failing on it. E1's env.sh secret lines move to `secrets.sh` in E1's fix wave; sandbox settings
   generation is E2.
+
+- Decision (2026-10-02, the human; folded by the plan-executor): "even without the native
+  sandbox, relying on the auto classifier is almost sufficient." The sandbox is opt-in and never
+  blocking: `sandbox.settings.json` is generated when `access: restricted` or any secret has
+  `domains`; `devenv claude` applies it only under the manifest's `sandbox: true` (new optional
+  boolean, default false) or `--sandbox`; otherwise the host's default settings and the auto
+  classifier govern. Secrets still enter only at launch. Acceptance 3's mask/injection checks run
+  only where the sandbox is opted into; unconditionally, the variable is present in the session and
+  no value is on disk. Friction under masking in E2/E4 is recorded and leaves `sandbox` false.
 
 ## Outcomes & Retrospective
 
