@@ -659,6 +659,17 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   `validation.md` instead of copying `start.md`'s body — two hand-maintained copies of the same
   behavior-shaping text drift apart. §2 revised.
 
+- Decision (2026-10-02, E1 fix waves, folded by the controller): `secrets.sh` unsets every
+  declared variable first, then tries every secret, and returns 1 if any failed — strict callers
+  refuse, the non-strict install and rc hook keep what resolved; handler stderr is dropped (exit
+  status kept) so a failure is exactly one value-free line; `devenv claude`/`shell` resolve by
+  sourcing `secrets.sh`, one implementation of I2 for every caller; the install's wrapper (secrets
+  then reap) leads its own session, devenv forwards SIGINT/SIGTERM to that whole process group,
+  terminates what is left once the wrapper exits (SIGTERM, 5 s, SIGKILL), and an interrupted install
+  exits 2 (`install interrupted (SIGTERM)`) with no stamp; the non-strict install's secret warning
+  goes to the terminal, not the log. E2 owes: `devenv up`'s restricted-network warning still reads
+  "recorded, not enforced" — stale under the sandbox decision.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
