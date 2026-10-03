@@ -56,15 +56,23 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
 2. **Up is idempotent.** With `<GH>/doperpowers` moved aside, `devenv up doperpowers` clones it,
    runs `.devbox/install.sh`, writes `<GH>/doperpowers/.devbox/env.sh` and
    `<GH>/doperpowers/.devbox/logs/install-<ts>.log`, and links
-   `<GH>/doperpowers/.claude/skills/devenv/SKILL.md`; a second `devenv up doperpowers` finishes in
-   under 15 s and reports `fetched, install skipped (unchanged)`.
-3. **Environment and secrets.** `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'`
-   prints `development` and `token-set`; env.sh's only `GH_TOKEN` line reads
-   `eval "$(…secret-env export devbox-github-pat:GH_TOKEN …)"`, and `grep -rlF "<the token value>" <GH>/doperpowers/`
-   finds nothing (the value is never on disk; amended 2026-10-02, Decision Log).
+   `<GH>/doperpowers/.claude/skills/devenv/{SKILL,start,validation}.md`; a second `devenv up doperpowers` finishes in
+   under 15 s and reports `fetched, install skipped (unchanged)`. (E1 proves the install-only
+   subset — everything but the link; E2 proves the whole item.)
+3. **Environment and secrets.** (i) env.sh references the handler, never a value: its only
+   `GH_TOKEN` reference is the call `…/secret-env export devbox-github-pat:GH_TOKEN`; (ii)
+   `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'` prints
+   `development` and `token-set`; (iii) the handler's value appears nowhere on disk:
+   `grep -rlF "<the value>" <GH>/doperpowers/.devbox/` (logs included) finds nothing. On the laptop
+   (i)–(iii) run fake-backed (`DEVENV_SECRET_ENV`); the real-handler run is deferred to "handler
+   present" — the laptop once the host layer's M1 lands `secret-env` there, at the latest E4
+   (amended 2026-10-02, Decision Log).
 4. **Services.** `devenv start maws` creates tmux session `maws` with window `dev` and prints
    `dev: ready (http://127.0.0.1:5173/)` within 120 s; `devenv status maws` lists `dev running`;
-   `devenv stop maws` ends the session and `tmux has-session -t maws` fails.
+   `devenv stop maws` ends the session and `tmux has-session -t maws` fails. This is a macOS check
+   (MAWS's `pnpm dev` is electron-vite, which needs a display); on the devbox E4 proves the same
+   start/status/stop and readiness with a fixture project whose service is
+   `python3 -m http.server 8765` with an `http` ready check.
 5. **Validation.** `devenv validate doperpowers` runs `.devbox/validate.sh` and prints
    `validate: pass` (exit 0); in a project with only `validation.md` it prints that checklist and
    exits 0 with `validate: checklist printed (no validate.sh)`.
@@ -74,7 +82,7 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    replies with `development`.
 8. **Onboarding by skill.** In `<GH>/claude-usage-menubar` (no manifest yet), the `cloud-env-setup`
    skill produces `.devbox/environment.json`, `.devbox/install.sh`,
-   `.claude/skills/devenv/start.md` and `validation.md`, and `devenv up claude-usage-menubar`
+   `.devbox/skill/{SKILL,start,validation}.md`, and `devenv up claude-usage-menubar`
    passes on the first run after the skill finishes.
 9. **Registry composition.** With `~/.claude/envs/maws.json` naming repos `MAWS` and `doperpowers`
    and overriding `env.NODE_ENV` to `test`, `devenv show maws` prints `root` = `<GH>/MAWS`, both
@@ -117,7 +125,7 @@ named by `root` (default: the first) is the project root.
   ],
   "root": "MAWS",
   "install": {"script": ".devbox/install.sh", "timeout_sec": 1800},
-  "start_skill": ".claude/skills/devenv",
+  "start_skill": ".devbox/skill",
   "services": [
     {"name": "dev", "cmd": "pnpm dev", "cwd": ".", "ready": {"http": "http://127.0.0.1:5173/"}}
   ],
@@ -139,20 +147,24 @@ Field semantics, each a decision:
 - `install.script`: path relative to root; run through `reap` with `timeout_sec` (default 1800)
   and a log at `<root>/.devbox/logs/install-<UTC ts>.log`; must be idempotent (Cursor and Codex
   both make this the contract that makes refresh safe). Exit non-zero fails `devenv up` with the
-  log's last 40 lines on stderr. `devenv up` skips install when the script, the manifest and every
-  lockfile the script names in a leading `# devenv-inputs: <glob>…` comment are unchanged since
-  the last successful run (a hash recorded in `<root>/.devbox/.install-stamp`); `--force` reruns.
-- `start_skill`: a directory relative to root holding `start.md` and `validation.md`. `devenv up`
-  writes `<root>/.claude/skills/devenv/SKILL.md` as a symlink to `<start_skill>/SKILL.md`, which
-  the skill author writes with frontmatter (`name: devenv`, description "Use when starting,
+  log's last 40 lines on stderr. `devenv up` skips install when its fingerprint matches the one
+  recorded in `<root>/.devbox/.install-stamp`; `--force` reruns. The fingerprint is sha256 over
+  (a) the canonical JSON (sorted keys) of the *effective* composed manifest, (b) the install
+  script's bytes, (c) for each `# devenv-inputs: <glob>…` line among the leading comment lines
+  after the shebang (globs relative to root), the sorted matched paths each with its content hash
+  — a glob matching nothing contributes its own text. The stamp is written only after a
+  successful install.
+- `start_skill`: a directory relative to root (default `.devbox/skill`) holding `SKILL.md`,
+  `start.md` and `validation.md`. `devenv up` links each file into `<root>/.claude/skills/devenv/`
+  (I5). `SKILL.md` is what the skill author writes with frontmatter (`name: devenv`, description "Use when starting,
   running, or validating this project's development workflow") and a body that is `start.md`'s
   content pointing at `validation.md`. Claude Code loads it as a project skill.
-  `start_skill` is the repository's choice: a repository that gitignores `.claude/` (as doperpowers
-  does) keeps the source under `.devbox/skill/`; others may keep it at `.claude/skills/devenv/`
-  directly. `devenv up` links file by file either way (I5), and the link is a no-op when the source
-  already is `.claude/skills/devenv/`.
+  `.devbox/skill/` is the documented default source for every repository (it is committed even
+  where `.claude/` is gitignored, as in doperpowers); a repository may name another directory.
+  The link is a no-op only when source and destination are the same directory.
 - `services[]`: optional. `devenv start` opens tmux session `<name>` with one window per service
-  running `cmd` in `cwd` (relative to root), then waits up to 120 s for `ready` (`http`: GET
+  running `bash -lc 'source <root>/.devbox/env.sh && exec <cmd>'` in `cwd` (relative to root) — the
+  environment comes from env.sh, not the tmux server, which may already exist with another one — then waits up to 120 s for `ready` (`http`: GET
   returning 2xx/3xx; `tcp`: `host:port` accepting) and prints one line per service; `devenv stop`
   kills the session; `devenv status` lists windows and whether each `ready` check passes now.
 - `network`: recorded, not enforced (the human's decision: unrestricted; the agents and the auto
@@ -160,6 +172,11 @@ Field semantics, each a decision:
   future per-project proxy would enforce. `devenv up` prints a one-line warning when `restricted`
   is set.
 - `env`: non-secret variables, written into `env.sh` literally (shell-quoted).
+- `repos[].ref` and existing checkouts: `ref` names the branch carrying the manifest
+  (doperpowers: `project-env-manifest`; MAWS and claude-usage-menubar: `devbox-manifest`) until the
+  human merges it. For a checkout that already exists, `devenv up` stays fetch-only; E4 has a
+  documented preparation step for pre-existing clones: a clean working tree is `git switch <ref>`ed,
+  a dirty one stops the run with the tree reported — never reset.
 - `secrets[]`: `name` is the Secret Manager name (host layer §5), `env` the variable; `domains`
   is recorded for the future proxy-substitution mode and unused now. `env.sh` resolves them at
   source time through the handler, so no value is ever on disk; the agent can read them in its
@@ -171,7 +188,9 @@ Field semantics, each a decision:
 
 All live in `claude-config` (`~/.claude/tools/`, synced to every host): python 3.11, standard
 library only (plus calling `secret-env`), one file each, executable, with tests under
-`~/.claude/tools/tests/`.
+`~/.claude/tools/tests/`. `~/.claude/tools` is not on `PATH`: `~/.claude/sync/apply.py` installs
+`~/.local/bin/devenv` and `~/.local/bin/reap` as symlinks to them (idempotent), so every host that
+syncs has the commands; internal calls use absolute paths.
 
 **`devenv`** — subcommands in Interfaces §I1. `env.sh` (Interfaces §I2) is written to
 `<root>/.devbox/env.sh`; it holds no value and so is safe to commit, but it is a per-host,
@@ -254,15 +273,21 @@ through sync on the mini), unit tests for resolution and merge precedence and fo
 process cleanup, `<GH>/doperpowers/.devbox/environment.json` + `install.sh` (this repository is
 the first project; its install is `npm ci` in `application-agents/triaging-feedback` plus
 `tests/mods` staging as the README describes, idempotent), `~/.claude/envs/` created with a README
-line, and acceptance 1, 2, 3, 6, 9 passing on the laptop. Touches: `~/.claude/tools/{devenv,reap}`,
-`~/.claude/tools/tests/`, `~/.claude/envs/README.md`, `<GH>/doperpowers/.devbox/` (on the branch).
+line, `!envs/`/`!envs/**` whitelisted in `~/.claude/.gitignore` in the same commit (verified by a
+clean clone of claude-config carrying `envs/`), the `~/.local/bin` links from `sync/apply.py`
+(verified from a fresh login shell), and acceptance 1, 2 (install-only subset), 3 (fake-backed),
+6, 9 passing on the laptop. Touches: `~/.claude/tools/{devenv,reap}`,
+`~/.claude/tools/tests/`, `~/.claude/envs/`, `~/.claude/.gitignore`, `~/.claude/sync/apply.py`,
+`<GH>/doperpowers/.devbox/` (on the branch).
 Decisions: `devenv` is one file (~600 lines) with a `Manifest` dataclass, `resolve(name)`,
 `merge(repo_manifest, registry_entry)`, `write_env_sh`, `run_install`; subprocess calls go through
 `reap` for install only; `git fetch` failures are warnings, clone failures are errors; the
-install-skip hash covers the manifest, the script, and the `# devenv-inputs:` globs; `devenv
+install-skip fingerprint is §2's (tests: lockfile mutation reruns, lockfile deletion reruns,
+registry override reruns, failed install leaves no stamp, `--force` reruns); env.sh's failure
+semantics are I2's (tests: absent handler, denied/missing secret, stale variable); `devenv
 claude` passes through all remaining arguments to `claude`; `devenv shell` passes `-c` through to
 `$SHELL`. Does not touch: services, validate, the skill link, sminos, the skill. Proves:
-acceptance 1, 2, 3, 6, 9.
+acceptance 1, 2 (install-only subset), 3 (fake-backed), 6, 9.
 
 #### E2 — `start/stop/status/validate`, the skill link, sminos sources `env.sh`
 
@@ -270,11 +295,16 @@ What exists at the end: services run in tmux with readiness, `validate` runs or 
 `devenv up` links the start skill, a seat spawned into a project root carries the environment;
 acceptance 4, 5, 7 pass on the laptop (4 against MAWS's `pnpm dev`, which needs MAWS's manifest —
 a minimal one is written here by hand and replaced by E3's skill-authored one). Touches:
-`~/.claude/tools/devenv`, `~/.claude/tools/tests/`, `skills/sminos/scripts/lib.sh` (one guarded
-`source` line), sminos' tests, `<GH>/MAWS/.devbox/` (branch `devbox-manifest`). Decisions: tmux
+`~/.claude/tools/devenv`, `~/.claude/tools/tests/`, `skills/sminos/scripts/sminos.py`
+(`run_claude_bg`, I6), `tests/sminos/run-sminos-tests.sh` (a seat spawned into a directory holding a
+fake-backed env.sh carries its variable, and `launch_env`'s filtering still applies — the sourced
+variables land on top of it, not instead), `<GH>/MAWS/.devbox/` (branch `devbox-manifest`). Further
+tests: a service started while a tmux server already runs reads a fake-backed variable from env.sh
+inside the service child. Decisions: tmux
 session name = project name; `ready.http` uses `urllib` with a 3 s timeout polled every 2 s;
 `status` prints `<service> running|exited` from `tmux list-panes` plus `ready yes|no`; `validate`
-exits with `validate.sh`'s code. Does not touch: the skill. Proves: acceptance 4, 5, 7.
+exits with `validate.sh`'s code. Does not touch: the skill. Proves: acceptance 2 (whole, with the
+link), 4, 5, 7.
 
 #### E3 — The `cloud-env-setup` skill and three real manifests
 
@@ -283,7 +313,7 @@ needs them), pressure-tested; manifests, install scripts and start skills for do
 E1's hand-written one where the skill improves it), MAWS and claude-usage-menubar authored by
 running the skill, each passing `devenv up`, `start` (where services exist) and `validate`;
 acceptance 8 passes. Touches: `skills/cloud-env-setup/`, the version bump, the three repositories'
-`.devbox/` and `.claude/skills/devenv/` on their `devbox-manifest` branches. Decisions: the skill's
+`.devbox/` (including `.devbox/skill/`) on their manifest branches. Decisions: the skill's
 body follows this repository's skill voice ("your human partner"); its triggers are the five
 phrases of §4; it refuses to write a secret value anywhere and names the Secret Manager entry
 instead; the macOS-only project (claude-usage-menubar, Swift) gets an install script that checks
@@ -296,7 +326,10 @@ What exists at the end: on the devbox (host layer M3 done), `devenv up` for the 
 `devenv claude` through the relay, secrets through the handler's service-account key, `reap`'s
 subreaper path tested on Linux, and acceptance 1–10 run as written with output recorded in
 Concrete Steps. Touches: Concrete Steps of this spec; `~/.claude/tools/tests/` (a Linux-marked
-test). Decisions: the devbox gets the manifests by `devenv up` cloning the `devbox-manifest`
+test); a fixture project (registry entry or scratch `<GH>`) whose service is
+`python3 -m http.server 8765`, standing in for MAWS's Electron dev server in acceptance 4. Before
+the run, pre-existing clones are prepared per §2 (`repos[].ref`): clean → `git switch <ref>`,
+dirty → stop and report. Decisions: the devbox gets the manifests by `devenv up` cloning the `devbox-manifest`
 branches until the human merges them (`ref` in the registry entries points at those branches for
 now; a Decision Log line records when `main` takes over). Does not touch: the host layer's files.
 Proves: acceptance 10, and runs 1–9 again.
@@ -341,8 +374,18 @@ it at a fake).
 export DEVENV_PROJECT='maws'
 export DEVENV_ROOT='/Users/new/Developer/GitHub/MAWS'
 export NODE_ENV='development'
-eval "$(/Users/new/.claude/tools/secret-env export devbox-github-pat:GH_TOKEN 2>/dev/null)"
+unset GH_TOKEN
+_devenv_out="$('/Users/new/.claude/tools/secret-env' export devbox-github-pat:GH_TOKEN)" \
+  || { echo "devenv: secret devbox-github-pat (GH_TOKEN) unavailable" >&2; unset _devenv_out; return 1; }
+eval "$_devenv_out"; unset _devenv_out
 ```
+Failure semantics: the handler's stdout is captured with its exit status, never
+`eval "$(… 2>/dev/null)"`; a stale preexisting variable is unset first; on non-zero the file prints
+one line to stderr naming the secret (never a value) and returns non-zero, so `devenv
+claude/shell/start` and the sminos launch refuse to proceed. The handler path is baked in at
+generation from `DEVENV_SECRET_ENV` (default `/Users/new/.claude/tools/secret-env`) — the one
+injection point the CLI and env.sh share. The exact shell is the implementer's; these semantics
+bind.
 `secret-env export <name>:<ENV>` is the host layer's I1 export with an explicit variable name
 (the host layer's handler already maps `devbox-github-pat` → `GH_TOKEN`; the `:<ENV>` form is
 added there by the host layer's executor, which owns `secret-env` — this spec never edits it; until
@@ -355,11 +398,10 @@ on stderr when it had to kill anything.
 **I4 — Registry entry** (`~/.claude/envs/<name>.json`): the manifest schema of §2 with every
 field optional except `name` and `repos`.
 
-**I5 — Start-skill link:** each file of `<root>/<start_skill>/` (`SKILL.md`, `start.md`,
-`validation.md`) is linked as `<root>/.claude/skills/devenv/<file>` (relative symlinks), so the
-skill's references to its sibling files resolve from the linked location. When `start_skill` is
-`.claude/skills/devenv` itself (the default) nothing is linked and `devenv up` only checks that
-`SKILL.md` exists.
+**I5 — Start-skill link:** each file of `<root>/<start_skill>/` (default `.devbox/skill`:
+`SKILL.md`, `start.md`, `validation.md`) is linked as `<root>/.claude/skills/devenv/<file>`
+(relative symlinks), so the skill's references to its sibling files resolve from the linked
+location. Linking is a no-op only when `start_skill` is `.claude/skills/devenv` itself.
 
 **I6 — sminos:** `run_claude_bg` in `skills/sminos/scripts/sminos.py`: when `<cwd>/.devbox/env.sh`
 exists, the launch is `bash -c '. "$1"; shift; exec claude "$@"' devenv <cwd>/.devbox/env.sh <args…>`
@@ -411,6 +453,27 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   are also what the devbox resolves through claude-config sync, so they stay minimal — `name`,
   `repos` (with refs), `root` — and their refs move to the default branches, with a dated line
   here, once the human merges the manifest branches.
+
+- Decision (2026-10-02, plan-executor folding the execution-section buildability review): (1) the
+  `envs/` whitelist lands in the claude-config commit that creates the registry, verified by a
+  clean clone; (2) the host layer has added `secret-env export <name>:<ENV>`, `run <name>:<ENV>`
+  and `list` to its I1 (its commit d464bd2f); the executable lands with its M1 — until then every
+  laptop test is fake-backed through `DEVENV_SECRET_ENV`, the single injection point the CLI and
+  env.sh share, and acceptance 3's real-handler run is deferred to "handler present" (at the latest
+  E4); (3) env.sh's failure semantics (I2): captured status, stale variable unset, one stderr line
+  naming the secret, non-zero return so callers refuse; (4) `.devbox/skill/` is the default
+  start-skill source for every repository, superseding the earlier per-repository wording, with a
+  no-op only when source and destination coincide (§2, I5, acceptance 8); (5) manifest refs point
+  at the manifest branches until merged; existing checkouts stay fetch-only, with E4's preparation
+  step (clean → switch, dirty → stop) for pre-existing clones; (6) tmux service windows source
+  env.sh themselves, tested against an already-running tmux server; (7) acceptance 4 is a macOS
+  check against MAWS (electron-vite needs a display), with an `http.server` fixture proving it on
+  the devbox; (8) the install fingerprint is defined in §2 with five named tests; (9) E1 proves
+  acceptance 2's install-only subset and E2 the whole item; acceptance 3 split into (i)–(iii);
+  (10) `sync/apply.py` installs `~/.local/bin/{devenv,reap}` symlinks, verified from a fresh login
+  shell; (11) sminos' change is tested through `run-sminos-tests.sh` with `launch_env`'s filtering
+  preserved. Rationale: the review's findings, each a real gap between the spec and what would
+  build or hold on a second host.
 
 ## Outcomes & Retrospective
 
