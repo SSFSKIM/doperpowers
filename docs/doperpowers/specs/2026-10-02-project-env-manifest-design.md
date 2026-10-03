@@ -265,6 +265,14 @@ launch reaches it. Two mechanisms carry it instead:
 `devenv claude/shell/start/validate` keep their explicit strict path: env.sh sourced, secrets
 resolved in the launcher.
 
+**Seats carry only global secrets (v1 limitation).** A seat's environment is the background
+daemon's, so a seat holds only the secrets the daemon was started with: on the devbox the host
+layer starts the daemon at boot with `GH_TOKEN` (its M4 records the route); on the Macs the daemon
+inherits the login shell that first spawns (rc hook, outside Claude Code). Project-specific secrets
+reach interactive sessions through `devenv claude` only; a seat that needs a project secret is not
+supported in v1. Non-secret project env does reach seats — through the rc hook (Bash tool shells)
+and `settings.local.json` (the session process).
+
 ## 4. The `cloud-env-setup` skill
 
 `skills/cloud-env-setup/SKILL.md` in this repository: the agent's procedure to author or refresh
@@ -286,7 +294,9 @@ install script's steps are commands that ran). Written and tested with `doperpow
 
 No per-session or per-project isolation beyond Claude Code's sandbox; no proxy of our own (the
 sandbox's masking and allowlist are the enforcement, and only for sessions launched with the
-generated `--settings`); no environment snapshots or "publication"; no fleet-wide environment registry.
+generated `--settings`); no project-specific secrets in seats (§3 — per-seat project secrets need a
+daemon-independent spawn path or a change to Claude Code's dispatch allowlist); no environment
+snapshots or "publication"; no fleet-wide environment registry.
 Each is named where the field that would need it is recorded.
 
 ## 6. Execution
@@ -636,6 +646,12 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   classifier govern. Secrets still enter only at launch. Acceptance 3's mask/injection checks run
   only where the sandbox is opted into; unconditionally, the variable is present in the session and
   no value is on disk. Friction under masking in E2/E4 is recorded and leaves `sandbox` false.
+
+- Decision (2026-10-02, the design session): `devenv up`'s install resolves secrets non-strictly
+  (confirmed). Seats carry only global secrets — the daemon's environment — and project-specific
+  secrets reach interactive sessions through `devenv claude` only (§3, §5); acceptance 7's
+  placeholder check is conditional on the seat holding `GH_TOKEN`, its NODE_ENV check proves the
+  non-secret path. Per-seat project secrets are residue for a ticket.
 
 ## Outcomes & Retrospective
 
