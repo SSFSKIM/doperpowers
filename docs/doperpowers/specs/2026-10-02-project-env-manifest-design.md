@@ -59,15 +59,19 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    `<GH>/doperpowers/.claude/skills/devenv/{SKILL,start,validation}.md`; a second `devenv up doperpowers` finishes in
    under 15 s and reports `fetched, install skipped (unchanged)`. (E1 proves the install-only
    subset — everything but the link; E2 proves the whole item.)
-3. **Environment and secrets.** (i) env.sh references the handler, never a value: every
-   `GH_TOKEN` line is the `unset`, the call `…/secret-env export devbox-github-pat:GH_TOKEN`, or
-   its value-free error message; (ii)
-   `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'` prints
-   `development` and `token-set`; (iii) the handler's value appears nowhere on disk:
+3. **Environment and secrets.** (i) env.sh carries non-secret env only; `secrets.sh` (I2) holds
+   the handler call `…/secret-env export devbox-github-pat:GH_TOKEN` and no value;
+   `.devbox/sandbox.settings.json` masks `GH_TOKEN` with `injectHosts` `api.github.com`,
+   `github.com`; (ii) `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'`
+   prints `development` and `token-set`; (iii) in a session started by `devenv claude doperpowers`,
+   a Bash tool `env | grep ^GH_TOKEN=` shows a `fake_value_` placeholder (mask), not the value;
+   `gh api user` succeeds (injection to `api.github.com`); a request to a non-inject host
+   (`curl -s -H "Authorization: Bearer $GH_TOKEN" https://httpbin.org/headers`) shows the
+   placeholder, not the token; (iv) the handler's value appears nowhere on disk:
    `grep -rlF "<the value>" <GH>/doperpowers/.devbox/` (logs included) finds nothing. On the laptop
-   (i)–(iii) run fake-backed (`DEVENV_SECRET_ENV`); the real-handler run is deferred to "handler
-   present" — the laptop once the host layer's M1 lands `secret-env` there, at the latest E4
-   (amended 2026-10-02, Decision Log).
+   (i), (ii), (iv) and the placeholder halves of (iii) run fake-backed (`DEVENV_SECRET_ENV`); `gh api
+   user` and every real-handler run are deferred to "handler present" — the laptop once the
+   handler can read Secret Manager there, at the latest E4 (amended 2026-10-02, Decision Log).
 4. **Services.** `devenv start maws` creates tmux session `maws` with window `dev` and prints
    `dev: ready (http://127.0.0.1:5173/)` within 120 s; `devenv status maws` lists `dev running`;
    `devenv stop maws` ends the session and `tmux has-session -t maws` fails. This is a macOS check
@@ -80,7 +84,8 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
 6. **Reap.** `reap -- bash -c 'sleep 300 & exit 0'` returns within 10 s and `pgrep -f "sleep 300"`
    finds nothing; `reap --timeout 2 -- sleep 300` exits 124 and the sleep is gone.
 7. **Seats inherit.** `sminos spawn envtest "print the value of NODE_ENV and stop" --cwd <GH>/doperpowers --wait`
-   replies with `development`.
+   replies with `development`; a seat spawned with `--settings <GH>/doperpowers/.devbox/sandbox.settings.json`
+   that holds `GH_TOKEN` in its environment sees the `fake_value_` placeholder, not the value.
 8. **Onboarding by skill.** In `<GH>/claude-usage-menubar` (no manifest yet), the `cloud-env-setup`
    skill produces `.devbox/environment.json`, `.devbox/install.sh`,
    `.devbox/skill/{SKILL,start,validation}.md`, and `devenv up claude-usage-menubar`
@@ -178,21 +183,36 @@ Field semantics, each a decision:
   environment comes from env.sh, not the tmux server, which may already exist with another one — then waits up to 120 s for `ready` (`http`: GET
   returning 2xx/3xx; `tcp`: `host:port` accepting) and prints one line per service; `devenv stop`
   kills the session; `devenv status` lists windows and whether each `ready` check passes now.
-- `network`: recorded, not enforced (the human's decision: unrestricted; the agents and the auto
-  classifier are trusted). `access` ∈ `unrestricted` | `restricted`; `allowed_domains` is what a
-  future per-project proxy would enforce. `devenv up` prints a one-line warning when `restricted`
-  is set.
+- `network`: drives Claude Code's native sandbox (the human's decision, 2026-10-02, replacing
+  "recorded, not enforced"). `access` ∈ `unrestricted` (default) | `restricted`. `devenv up`
+  writes `<root>/.devbox/sandbox.settings.json` (I9): `sandbox.enabled: true`; when `restricted`,
+  `network.allowedDomains` = `allowed_domains` plus every `secrets[].domains` entry, with
+  `strictAllowlist: true`; when `unrestricted`, no allowlist. Masking takes effect only from
+  user/managed settings or `--settings`, never from a repository's `.claude/settings.json`, so
+  `devenv claude` passes `--settings <root>/.devbox/sandbox.settings.json`, and a seat gets it by
+  `sminos spawn --settings <that file>` (sminos already takes `--settings`; no sminos change).
 - `env`: non-secret variables, written into `env.sh` literally (shell-quoted).
 - `repos[].ref` and existing checkouts: `ref` names the branch carrying the manifest
   (doperpowers: `project-env-manifest`; MAWS and claude-usage-menubar: `devbox-manifest`) until the
   human merges it. For a checkout that already exists, `devenv up` stays fetch-only; E4 has a
   documented preparation step for pre-existing clones: a clean working tree is `git switch <ref>`ed,
   a dirty one stops the run with the tree reported — never reset.
-- `secrets[]`: `name` is the Secret Manager name (host layer §5), `env` the variable; `domains`
-  is recorded for the future proxy-substitution mode and unused now. `env.sh` resolves them at
-  source time through the handler, so no value is ever on disk; the agent can read them in its
-  environment (accepted for v1; the alternative — placeholders substituted by an HTTPS-terminating
-  proxy with a local CA, Codex's "network secrets" — is the named follow-up).
+- `secrets[]`: `name` is the Secret Manager name (host layer §5), `env` the variable, `domains`
+  the hosts the value may be sent to. In `sandbox.settings.json` each secret with `domains`
+  becomes `credentials.envVars` `{name: <env>, mode: "mask", injectHosts: <domains>}` — sandboxed
+  commands see a `fake_value_` placeholder, and the proxy substitutes the real value only in
+  requests to those hosts — and a secret without `domains` becomes `{name: <env>, mode: "deny"}`;
+  `network.tlsTerminate: {}` is set whenever any mask entry exists (experimental in 2.1.283). On
+  Darwin the generated settings add `excludedCommands` for `gh`, `gcloud` and `terraform`, which
+  can fail TLS under termination. Secrets enter at launch, never inside a session:
+  `devenv claude/shell/start/validate` resolve them strictly in the launcher and export them into
+  the child's environment, where the sandbox masks them for every Bash tool command; `devenv up`
+  resolves them for the install non-strictly (an unavailable secret warns, value-free, and the
+  install runs without it, failing on its own if it needed it). No value is ever on disk.
+  Known risk, verified in E2 (laptop) and E4 (devbox): `git push`/`fetch` over HTTPS send Basic
+  auth, which the proxy's plain-text replacement may not match; if they fail under masking, the
+  chosen workaround (`excludedCommands` for `git push*`/`git fetch*`, or an extract rule) goes into
+  the generated settings and the Decision Log.
 - No `tailscale` field: the auth key is a host-layer concern.
 
 ## 3. The tools
@@ -221,16 +241,21 @@ and a worker's environment is the daemon's plus that dispatch, so nothing source
 launch reaches it. Two mechanisms carry it instead:
 - the **shell-rc hook** (I6): `~/.claude/tools/devenv-rc.sh`, sourced from `~/.zshrc` and
   `~/.bashrc` (`sync/apply.py` appends the line idempotently on every host; the host layer's
-  `seed.sh` runs `apply.py`, so the devbox gets it), sources `$PWD/.devbox/env.sh` when it exists,
-  non-strict — a handler failure prints one value-free warning and the shell continues; it never
-  breaks a login shell. Claude Code snapshots the login shell at session start in the session's
+  `seed.sh` runs `apply.py`, so the devbox gets it), sources `$PWD/.devbox/env.sh` when it exists.
+  Only when `CLAUDECODE` is unset — the person's own login shells — does it also source
+  `$PWD/.devbox/secrets.sh`, non-strict (a handler failure prints one value-free warning and the
+  shell continues; it never breaks a login shell), so a daemon or `claude` started from such a
+  shell inherits the secrets. Inside a Claude Code Bash shell (`CLAUDECODE=1`) it sources the
+  non-secret env only: the sandbox denies the handler's key file to sandboxed commands (host
+  layer), and a secret fetched inside a sandboxed shell would bypass masking. Claude Code snapshots the login shell at session start in the session's
   cwd, and a seat's worker does the same from its `--cwd`, so every Bash tool shell of a session
   or seat started in a project root carries the environment, whatever environment the daemon
   started with.
 - **`settings.local.json` env** (I7): `devenv up` merges the NON-secret `env` into
   `<root>/.claude/settings.local.json`'s `env` block (other keys untouched), so the session process
   itself, its hooks and MCP servers see them. Secrets never go there.
-`devenv claude/shell/start/validate` keep their explicit strict sourcing of env.sh.
+`devenv claude/shell/start/validate` keep their explicit strict path: env.sh sourced, secrets
+resolved in the launcher.
 
 ## 4. The `cloud-env-setup` skill
 
@@ -251,8 +276,9 @@ install script's steps are commands that ran). Written and tested with `doperpow
 
 ## 5. What this is not
 
-No per-session or per-project isolation; no network enforcement; no secret placeholder
-substitution; no environment snapshots or "publication"; no fleet-wide environment registry.
+No per-session or per-project isolation beyond Claude Code's sandbox; no proxy of our own (the
+sandbox's masking and allowlist are the enforcement, and only for sessions launched with the
+generated `--settings`); no environment snapshots or "publication"; no fleet-wide environment registry.
 Each is named where the field that would need it is recorded.
 
 ## 6. Execution
@@ -313,7 +339,8 @@ acceptance 1, 2 (install-only subset), 3 (fake-backed), 6, 9.
 #### E2 — `start/stop/status/validate`, the skill link, the rc hook and `settings.local.json` env
 
 What exists at the end: services run in tmux with readiness, `validate` runs or prints,
-`devenv up` links the start skill and writes the `settings.local.json` env (I7), the shell-rc hook
+`devenv up` links the start skill and writes the `settings.local.json` env (I7) and
+`sandbox.settings.json` (I9), `devenv claude` passes it as `--settings`, the shell-rc hook
 (I6) installed by `apply.py`, a seat spawned into a project root carries the environment;
 acceptance 4, 5, 7 pass on the laptop (4 against MAWS's `pnpm dev`, which needs MAWS's manifest —
 a minimal one is written here by hand and replaced by E3's skill-authored one). Touches:
@@ -321,7 +348,10 @@ a minimal one is written here by hand and replaced by E3's skill-authored one). 
 line), `~/.claude/tools/tests/`, `<GH>/MAWS/.devbox/` (branch `devbox-manifest`); no sminos change.
 Tests: a service started while a tmux server already runs reads a fake-backed variable from env.sh
 inside the service child; the rc hook with a failing handler warns once, value-free, and the shell
-continues; the `settings.local.json` merge keeps other keys and never writes a secret;
+continues, and under `CLAUDECODE=1` never calls the handler; `sandbox.settings.json` generation
+for restricted/unrestricted, mask/deny and the Darwin `excludedCommands`; `devenv claude` passing
+`--settings`; the placeholder halves of acceptance 3(iii) and the git-push-under-masking risk (§2)
+checked on the laptop; the `settings.local.json` merge keeps other keys and never writes a secret;
 `settings.local.json` is kept out of git (`.git/info/exclude` when the repository does not
 already ignore it). Acceptance 7 is verified with the background daemon already running under a
 different environment, for a spawn and for a resume. Decisions: tmux
@@ -339,7 +369,10 @@ running the skill, each passing `devenv up`, `start` (where services exist) and 
 acceptance 8 passes. Touches: `skills/cloud-env-setup/`, the version bump, the three repositories'
 `.devbox/` (including `.devbox/skill/`) on their manifest branches. Decisions: the skill's
 body follows this repository's skill voice ("your human partner"); its triggers are the five
-phrases of §4; it refuses to write a secret value anywhere and names the Secret Manager entry
+phrases of §4; it writes `domains` for every secret it declares (the hosts the tool actually calls,
+found from the repository's config) and sets `network.access` to `restricted` — with the package
+registries and the secrets' hosts — when the project's install and tests reach a known, short list
+of hosts, otherwise `unrestricted`; it refuses to write a secret value anywhere and names the Secret Manager entry
 instead; the macOS-only project (claude-usage-menubar, Swift) gets an install script that checks
 the Xcode toolchain and exits 0 with a message on Linux, and `validate.sh` runs `swift build` on
 macOS only. Does not touch: the devbox. Proves: acceptance 8.
@@ -401,7 +434,7 @@ failed (log tail on stderr); 3 service not ready within 120 s. Environment: `DEV
 the handler path written into `env.sh` (default `/Users/new/.claude/tools/secret-env`; tests point
 it at a fake).
 
-**I2 — `env.sh`** (generated; bash):
+**I2 — `env.sh` and `secrets.sh`** (generated; bash). `env.sh` carries non-secret env only:
 ```
 # generated by devenv — do not edit; edit environment.json
 export DEVENV_PROJECT='maws'
@@ -409,18 +442,24 @@ export DEVENV_ROOT='/Users/new/Developer/GitHub/MAWS'
 export DEVENV_REPO_MAWS='/Users/new/Developer/GitHub/MAWS'
 export DEVENV_REPO_DOPERPOWERS='/Users/new/Developer/GitHub/doperpowers'
 export NODE_ENV='development'
+```
+`secrets.sh` holds the handler calls, never a value:
+```
+# generated by devenv — do not edit; edit environment.json
 unset GH_TOKEN
 _devenv_out="$('/Users/new/.claude/tools/secret-env' export devbox-github-pat:GH_TOKEN)" \
   || { echo "devenv: secret devbox-github-pat (GH_TOKEN) unavailable" >&2; unset _devenv_out; return 1; }
 eval "$_devenv_out"; unset _devenv_out
 ```
 Failure semantics: the handler's stdout is captured with its exit status, never
-`eval "$(… 2>/dev/null)"`; a stale preexisting variable is unset first; on non-zero the file prints
-one line to stderr naming the secret (never a value) and returns non-zero, so `devenv
-claude/shell/start/validate` refuse to proceed (the rc hook, I6, is the non-strict caller). The handler path is baked in at
-generation from `DEVENV_SECRET_ENV` (default `/Users/new/.claude/tools/secret-env`) — the one
-injection point the CLI and env.sh share. The exact shell is the implementer's; these semantics
-bind.
+`eval "$(… 2>/dev/null)"`; a stale preexisting variable is unset first; on non-zero one line on
+stderr names the secret (never a value) and the resolution fails, so `devenv
+claude/shell/start/validate` refuse to proceed; the rc hook (I6) and `devenv up`'s install are the
+non-strict callers. The launcher may resolve in Python or by sourcing `secrets.sh`; either way the
+handler path comes from `DEVENV_SECRET_ENV` (default `/Users/new/.claude/tools/secret-env`, baked
+into `secrets.sh` at generation) — the one injection point. `env.sh`, `secrets.sh` and
+`sandbox.settings.json` are gitignored by `devenv up`. The exact shell is the implementer's; these
+semantics bind.
 `secret-env export <name>:<ENV>` is the host layer's I1 export with an explicit variable name
 (the host layer's handler already maps `devbox-github-pat` → `GH_TOKEN`; the `:<ENV>` form is
 added there by the host layer's executor, which owns `secret-env` — this spec never edits it; until
@@ -439,11 +478,18 @@ field optional except `name` and `repos`.
 location. Linking is a no-op only when `start_skill` is `.claude/skills/devenv` itself.
 
 **I6 — shell-rc hook** (`~/.claude/tools/devenv-rc.sh`): sourced from `~/.zshrc` and
-`~/.bashrc` by a line `sync/apply.py` appends idempotently; when `$PWD/.devbox/env.sh` exists it is
-sourced non-strict — on failure one value-free warning on stderr, and the shell continues.
+`~/.bashrc` by a line `sync/apply.py` appends idempotently; sources `$PWD/.devbox/env.sh` when it
+exists, and `$PWD/.devbox/secrets.sh` only when `CLAUDECODE` is unset, non-strict — on failure one
+value-free warning on stderr, and the shell continues.
 
 **I7 — `settings.local.json` env:** `devenv up` merges the resolved non-secret `env` into
 `<root>/.claude/settings.local.json` → `env` (other keys preserved); secrets never written.
+
+**I9 — `sandbox.settings.json`** (`<root>/.devbox/sandbox.settings.json`, generated by `devenv up`;
+§2 `network` and `secrets[]`): `{"sandbox": {"enabled": true, "network": {["allowedDomains": […],
+"strictAllowlist": true,] ["tlsTerminate": {}]}, "credentials": {"envVars": [{"name": "GH_TOKEN",
+"mode": "mask", "injectHosts": ["api.github.com", "github.com"]}, …]}, ["excludedCommands": [...]]}}`
+— keys per Claude Code 2.1.283's sandbox settings; `devenv claude` passes it as `--settings`.
 
 **I8 — `cloud-env-setup` skill:** `skills/cloud-env-setup/SKILL.md`, frontmatter `name:
 cloud-env-setup`, description with the five trigger phrases of §4.
@@ -554,6 +600,22 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   doperpowers' install is `npm ci` in triaging-feedback (the mods suite stages itself per run, so
   there is nothing to pre-stage), and its start skill was hand-written into `.devbox/skill/` in E1
   so E2 can prove acceptance 2 whole.
+
+- Decision (2026-10-02, the human; folded by the plan-executor): the manifest's `network` and
+  `secrets[].domains` drive Claude Code's native sandbox (verified in 2.1.283's sandbox settings:
+  `allowedDomains` + `strictAllowlist`, `credentials.envVars` mask/deny with `injectHosts`,
+  `tlsTerminate`, `excludedCommands`; masking only from user/managed settings or `--settings`).
+  Supersedes "network recorded, not enforced" and the deferral of proxy substitution in the
+  2026-10-02 grill-round entry. Consequences: `devenv up` writes `sandbox.settings.json` (I9);
+  `devenv claude` passes it; seats get it through `sminos spawn --settings`; secrets enter at
+  launch only — env.sh is non-secret, `secrets.sh` holds the handler calls, the rc hook resolves
+  secrets only outside Claude Code (the sandbox denies the handler's key file, and an in-sandbox
+  fetch would bypass masking); acceptance 3 and 7 test the placeholder. Controller's call within
+  it: `devenv up`'s install resolves secrets non-strictly (warns and runs without an unavailable
+  one), reversing E1's strict install sourcing — an install that needs no secret must not fail on
+  a host without the handler, and the cloud-env-setup flow reports a missing secret rather than
+  failing on it. E1's env.sh secret lines move to `secrets.sh` in E1's fix wave; sandbox settings
+  generation is E2.
 
 ## Outcomes & Retrospective
 
