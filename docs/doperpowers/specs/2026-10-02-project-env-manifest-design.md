@@ -579,6 +579,18 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   the sminos skill's "resume inherits this process's environment" is untrue for allowlist-dropped
   variables. The person's global gitignore ignores `**/.claude/settings.local.json` on the laptop.
   A sminos test assumes the canonical `/private/tmp` path and fails under the `/tmp` symlink.
+- 2026-10-02 (E2, incident timeline and resolution): 21:41 MAWS manifest 7de5000f; ~21:51–21:53
+  touch 1 (`devenv start maws`, default userData); 21:52 R3 merged on MAWS master by the human's own
+  MAWS session; 22:07:17/22:07:49 isolation and ready-URL commits; 22:07:34–22:08:16 touch 2 (the
+  executor's hand-run `electron-vite --rendererOnly`); after 22:08 an isolated run; after 22:23 the
+  guarded final run (0 entries newer under the real userData before and after). The human then saw
+  sessions that were not theirs: MAWS indexes every session in `~/.claude/projects`, and E2's 11
+  `claude` runs (probes, the git-push checks, the rc probe, the envtest seat) had landed there under
+  three `-private-tmp-devenv-e2-*` keys — deleted on the human's decision; hence the
+  `CLAUDE_CONFIG_DIR` constraint. At 23:06 `dist/mac-arm64/MAWS.app` in the real checkout was rebuilt
+  — not by this work (every agent transcript scanned): the human's own MAWS session built the
+  post-R3 app, which is the "completely changed" MAWS they opened. MAWS work resumed on the isolated
+  path.
 - 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
   no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
