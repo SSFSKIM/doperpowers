@@ -74,7 +74,7 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    user` and every real-handler run are deferred to "handler present" — the laptop once the
    handler can read Secret Manager there, at the latest E4 (amended 2026-10-02, Decision Log).
 4. **Services.** `devenv start maws` creates tmux session `maws` with window `dev` and prints
-   `dev: ready (http://127.0.0.1:5173/)` within 120 s; `devenv status maws` lists `dev running`;
+   `dev: ready (http://localhost:5173/)` within 120 s (Vite binds `[::1]` only on macOS); `devenv status maws` lists `dev running`;
    `devenv stop maws` ends the session and `tmux has-session -t maws` fails. This is a macOS check
    (MAWS's `pnpm dev` is electron-vite, which needs a display); on the devbox E4 proves the same
    start/status/stop and readiness with a fixture project whose service is
@@ -143,7 +143,7 @@ repository so the root's install script can reach its siblings.
   "install": {"script": ".devbox/install.sh", "timeout_sec": 1800},
   "start_skill": ".devbox/skill",
   "services": [
-    {"name": "dev", "cmd": "pnpm dev", "cwd": ".", "ready": {"http": "http://127.0.0.1:5173/"}}
+    {"name": "dev", "cmd": "env MAWS_USER_DATA=\"$DEVENV_ROOT/.devbox/maws-userdata\" pnpm dev", "cwd": ".", "ready": {"http": "http://localhost:5173/"}}
   ],
   "network": {"access": "unrestricted", "allowed_domains": []},
   "env": {"NODE_ENV": "development"},
@@ -183,10 +183,15 @@ Field semantics, each a decision:
   where `.claude/` is gitignored, as in doperpowers); a repository may name another directory.
   The link is a no-op only when source and destination are the same directory.
 - `services[]`: optional. `devenv start` opens tmux session `<name>` with one window per service
-  running `bash -lc 'source <root>/.devbox/env.sh && exec <cmd>'` in `cwd` (relative to root) — the
-  environment comes from env.sh, not the tmux server, which may already exist with another one — then waits up to 120 s for `ready` (`http`: GET
+  running `bash -c` that sources `<root>/.devbox/env.sh` and `secrets.sh` and execs `cmd`, in `cwd`
+  (relative to root), with the caller's `PATH` — the environment comes from env.sh, not the tmux
+  server, which may already exist with another one; not a login shell, because macOS's
+  `path_helper` would reorder `PATH` onto a different node/pnpm than the install used — then waits up to 120 s for `ready` (`http`: GET
   returning 2xx/3xx; `tcp`: `host:port` accepting) and prints one line per service; `devenv stop`
-  kills the session; `devenv status` lists windows and whether each `ready` check passes now.
+  sends SIGTERM to each pane's process group (SIGKILL after 5 s) and then kills the session;
+  `devenv status` lists windows and whether each `ready` check passes now.
+- `validate`: optional `{"script": <path>}` (default `.devbox/validate.sh`), root-only like
+  `install`; no timeout, it runs in the foreground.
 - `network`: drives Claude Code's native sandbox (the human's decision, 2026-10-02, replacing
   "recorded, not enforced"), opt-in and never blocking. `access` ∈ `unrestricted` (default) |
   `restricted`. `devenv up` writes `<root>/.devbox/sandbox.settings.json` (I9) whenever
@@ -257,13 +262,16 @@ launch reaches it. Two mechanisms carry it instead:
   shell continues; it never breaks a login shell), so a daemon or `claude` started from such a
   shell inherits the secrets. Inside a Claude Code Bash shell (`CLAUDECODE=1`) it sources the
   non-secret env only: the sandbox denies the handler's key file to sandboxed commands (host
-  layer), and a secret fetched inside a sandboxed shell would bypass masking. Claude Code snapshots the login shell at session start in the session's
-  cwd, and a seat's worker does the same from its `--cwd`, so every Bash tool shell of a session
-  or seat started in a project root carries the environment, whatever environment the daemon
-  started with.
+  layer), and a secret fetched inside a sandboxed shell would bypass masking. The hook serves the
+  person's own shells and any `claude` or daemon started from one: Claude Code's shell snapshot
+  captures functions, options, aliases and `PATH`, never exported variables (2.1.287, observed in
+  E2), so a Bash tool shell does not inherit what the hook exports.
 - **`settings.local.json` env** (I7): `devenv up` merges the NON-secret `env` into
   `<root>/.claude/settings.local.json`'s `env` block (other keys untouched), so the session process
-  itself, its hooks and MCP servers see them. Secrets never go there.
+  itself, its hooks, MCP servers and every Bash tool command see them — this, with the launch
+  environment of `devenv claude`, is what carries the project's env inside a session or seat.
+  It carries the whole non-secret environment (`DEVENV_PROJECT`, `DEVENV_ROOT`, `DEVENV_REPO_*` and
+  `env`), rewritten on every devenv command. Secrets never go there.
 `devenv claude/shell/start/validate` keep their explicit strict path: env.sh sourced, secrets
 resolved in the launcher.
 
@@ -289,7 +297,8 @@ secrets); draft `.devbox/environment.json`, `.devbox/install.sh` (with its `# de
 line) and the start skill; run `devenv up` for real and fix until install passes; run
 `devenv start` and `devenv validate` until the checks pass — and before declaring a service,
 check whether its dev build shares an installed application's state (userData, config dirs,
-sockets, single-instance locks) and isolate it in the service's cmd or env; commit the files; report what passed,
+sockets, single-instance locks) and isolate it in the service's cmd or env; a background seat's
+`--cwd` must be a trusted workspace (a fresh clone is not); commit the files; report what passed,
 what needs a value only the human has (a secret to add to Secret Manager, named by the manifest's
 `secrets[]` entry), and what remains. It writes fields as decisions, never placeholders (the
 install script's steps are commands that ran). Written and tested with `doperpowers:writing-skills`.
@@ -552,6 +561,16 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   electron-vite/Electron alive for seconds after `kill-session`; it now terminates each pane's
   process group first. Vite binds `[::1]` only on macOS, so MAWS's ready check is
   `http://localhost:5173/`, not `127.0.0.1`.
+- 2026-10-02 (E2): Claude Code's shell snapshot never captures exported variables, so the rc
+  hook cannot carry env into Bash tool shells; settings.local.json (I7) and the launch environment
+  do. bash reads `~/.bashrc` when stdin is a socket, so `ssh devbox devenv …` will run the rc hook
+  in the launch wrapper (harmless: a cached non-strict call). Background seats need a trusted
+  workspace (`sminos spawn` refuses a fresh clone: "Workspace not trusted"); acceptance 7 ran in a
+  detached worktree of the trusted doperpowers repository. `sminos resume` goes through
+  `claude --bg --resume`, and the resumed seat saw `GH_TOKEN` unset though the caller exported it —
+  the sminos skill's "resume inherits this process's environment" is untrue for allowlist-dropped
+  variables. The person's global gitignore ignores `**/.claude/settings.local.json` on the laptop.
+  A sminos test assumes the canonical `/private/tmp` path and fails under the `/tmp` symlink.
 - 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
   no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
@@ -694,6 +713,26 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   `devenv stop` terminates each pane's process group before `kill-session`, tested. The host layer
   gives the devbox account a list-only role, so `secret-env list` works there too; the skill keeps
   the laptop path as the fallback.
+
+- Decision (2026-10-02, E2 executor, folded by the controller): `validate` is `{script}`, default
+  `.devbox/validate.sh`; services run under `bash -c` with the caller's `PATH` (a login shell's
+  `path_helper` picked another node/pnpm on macOS); start/validate pre-check secrets strictly in the
+  launcher and source them again in the child, so no value rides a tmux command line or the tmux
+  environment; env.sh, secrets.sh, sandbox.settings.json and the settings.local.json env are
+  rewritten as one unit on every up/claude/shell/start/validate (the merge removes stale keys by
+  the previous env.sh's names), and settings.local.json carries the whole non-secret environment;
+  the sandbox settings go past I9 on laptop evidence — a masked secret's hosts are always in
+  `allowedDomains` (without `strictAllowlist` that restricts nothing, and a `-p` session or seat
+  cannot answer a domain prompt), and `git push:*`/`fetch:*`/`pull:*` are `excludedCommands`
+  whenever a secret is masked, because the proxy does not substitute inside Basic auth (the §2
+  risk, confirmed: a credential helper saw the placeholder until excluded); links and
+  settings.local.json go into `info/exclude` unless git already ignores them; `start` respawns an
+  exited window, warns when a ready target answers before its service starts, and `status` exits 3
+  unless all are running and ready; `stop` is idempotent; `--sandbox` is recognized only first
+  after the name; `apply.py` creates `~/.bashrc`/`~/.zshrc` when absent; doperpowers' validate.sh
+  runs only the hermetic suites (lint of changed scripts, sminos, the poller); test sandboxes get
+  their own HOME. `devenv` is ~1100 lines, not ~600; it stays one file, sectioned, with
+  `services` the seam if it is ever split.
 
 ## Outcomes & Retrospective
 
