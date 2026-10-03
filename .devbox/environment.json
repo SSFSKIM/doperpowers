@@ -6,6 +6,7 @@
   ],
   "install": {"script": ".devbox/install.sh", "timeout_sec": 1800},
   "start_skill": ".devbox/skill",
+  "validate": {"script": ".devbox/validate.sh"},
   "network": {"access": "unrestricted", "allowed_domains": []},
   "env": {"NODE_ENV": "development"},
   "secrets": [
