@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "doperpowers",
+  "repos": [
+    {"name": "doperpowers", "url": "https://github.com/SSFSKIM/doperpowers.git"}
+  ],
+  "install": {"script": ".devbox/install.sh", "timeout_sec": 1800},
+  "start_skill": ".devbox/skill",
+  "network": {"access": "unrestricted", "allowed_domains": []},
+  "env": {"NODE_ENV": "development"},
+  "secrets": [
+    {"name": "devbox-github-pat", "env": "GH_TOKEN", "domains": ["api.github.com", "github.com"]}
+  ]
+}
