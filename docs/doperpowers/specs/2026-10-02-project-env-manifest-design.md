@@ -41,7 +41,7 @@ host (`~/.claude/sync/sync.sh` commits, rebases and pushes it every 30 minutes).
 ## Progress
 
 - [x] E1 — Manifest schema and resolution, `devenv up/claude/shell/show/list`, `env.sh`, `reap`; tests; this repository as the first project. Completed 2026-10-02 ~21:30 PDT, reviewed clean after two fix waves. claude-config: f86ae18 (reap), 2b16ebb (devenv + tests), 15d94dd (registry + `envs/` whitelist), 40187a0 (`~/.local/bin` links), b84a386 (3.9-safe globbing), 2c9fe4f (secrets.sh split, launch/install secret semantics, signal forwarding), 437b1da (pre-reap cancellation; carries the auto-sync message). This branch: 13858369, 30d39690. 93 tests OK. Laptop acceptance 1, 2 (install-only), 3 (i)(ii)(iv) fake-backed, 6, 9 pass; fresh-login PATH verified; the mini's sync delivery not yet observed.
-- [ ] E2 — `devenv start/stop/status/validate`, the start-skill link, the shell-rc hook and `settings.local.json` env (seats inherit)
+- [x] E2 — `devenv start/stop/status/validate`, the start-skill link, the shell-rc hook and `settings.local.json` env (seats inherit). Completed 2026-10-02 ~23:50 PDT, reviewed clean after two fix waves. claude-config: 703e1ba, 683b8be, ad70f3c, 01cadb4, 954a7a8, 6772c2c, 95087f2, e308662, b2d1b19 (auto-sync capture), f1899ec, 5ffe2ab, dce0853, c083196. This branch: 0a0ecd32 (validate.sh). MAWS `devbox-manifest` (pushed, unmerged): 7de5000f, 60fce2f0, 97d9e68d. 152 tests OK. Laptop acceptance 2 (whole), 4 (isolated MAWS), 5, 7 (spawn and resume) and 3's placeholder halves pass; `gh api user`, the real-handler runs and the seat-under-sandbox check are E4's. Two touches of the person's MAWS data during E2 (Surprises).
 - [ ] E3 — `cloud-env-setup` skill; manifests for doperpowers, MAWS, claude-usage-menubar authored by it
 - [ ] E4 — On the devbox: the three projects up, sessions open, secrets through the handler; acceptance run
 
@@ -453,7 +453,21 @@ $ DEVENV_REGISTRY=<scratch maws.json + NODE_ENV=test, MAWS ref master> devenv sh
   {"root":".../GH/MAWS","repos":["MAWS","doperpowers"],"NODE_ENV":"test","secrets":["devbox-github-pat"],"install":null}
 $ devenv up maws                 # maws: cloned MAWS; fetched doperpowers, no install script (doperpowers' install not run)
 ```
-E2–E4: as the milestones state; recorded here when run.
+E2 — run 2026-10-02 on the laptop, scratch `<GH>=/private/tmp/devenv-e2/acc/GH`, fake handler;
+full transcripts in the E2 report.
+```
+$ devenv up doperpowers          # cloned doperpowers, install ok; .claude/skills/devenv/{SKILL,start,validation}.md -> ../../../.devbox/skill/…
+$ devenv up doperpowers          # fetched, install skipped (unchanged)  rc=0, 0.67 s
+$ devenv claude doperpowers -p … probe.sh             # NODE_ENV=development / GH_TOKEN: fake-handler-value
+$ devenv claude doperpowers --sandbox -p … probe.sh   # GH_TOKEN: placeholder; non-inject host saw: placeholder
+$ devenv start maws              # dev: ready (http://localhost:5173/)  rc=0 (2 s)   [MAWS_USER_DATA isolated; 0 new entries under the real userData]
+$ devenv status maws             # dev running, ready yes
+$ devenv stop maws; tmux has-session -t maws   # maws: stopped / rc=1; no scratch-tree process left
+$ devenv validate doperpowers    # … sminos 856 assertions passed … Tests 117 passed … validate: pass  rc=0
+$ devenv validate maws           # (validation.md printed) validate: checklist printed (no validate.sh)
+$ sminos spawn envtest "print the value of NODE_ENV and stop" --cwd <scratch worktree>/doperpowers --wait   # NODE_ENV=development (spawn and resume)
+```
+E3–E4: as the milestones state; recorded here when run.
 
 ### Interfaces and Dependencies
 
