@@ -40,7 +40,7 @@ host (`~/.claude/sync/sync.sh` commits, rebases and pushes it every 30 minutes).
 
 ## Progress
 
-- [ ] E1 — Manifest schema and resolution, `devenv up/claude/shell/show/list`, `env.sh`, `reap`; tests; this repository as the first project
+- [x] E1 — Manifest schema and resolution, `devenv up/claude/shell/show/list`, `env.sh`, `reap`; tests; this repository as the first project. Completed 2026-10-02 ~21:30 PDT, reviewed clean after two fix waves. claude-config: f86ae18 (reap), 2b16ebb (devenv + tests), 15d94dd (registry + `envs/` whitelist), 40187a0 (`~/.local/bin` links), b84a386 (3.9-safe globbing), 2c9fe4f (secrets.sh split, launch/install secret semantics, signal forwarding), 437b1da (pre-reap cancellation; carries the auto-sync message). This branch: 13858369, 30d39690. 93 tests OK. Laptop acceptance 1, 2 (install-only), 3 (i)(ii)(iv) fake-backed, 6, 9 pass; fresh-login PATH verified; the mini's sync delivery not yet observed.
 - [ ] E2 — `devenv start/stop/status/validate`, the start-skill link, the shell-rc hook and `settings.local.json` env (seats inherit)
 - [ ] E3 — `cloud-env-setup` skill; manifests for doperpowers, MAWS, claude-usage-menubar authored by it
 - [ ] E4 — On the devbox: the three projects up, sessions open, secrets through the handler; acceptance run
