@@ -82,6 +82,8 @@ tests=(
     "test-kairos-hook.sh"
     # The to-human MessageDisplay hook — hermetic, drives the hook by payload.
     "test-to-human-stream-hook.sh"
+    # cloud-env-setup's env-names — hermetic: names from a .env, never a value.
+    "test-cloud-env-setup-env-names.sh"
     "test-subagent-driven-execution.sh"
     # board-api (A2): hermetic and fast — every suite below drives the toolkit's
     # verbs against the fixture mock in board-api/mock-server.py, no network and

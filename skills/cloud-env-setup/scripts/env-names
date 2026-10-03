@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""env-names [FILE] — print the variable names a .env file assigns (default ./.env), one per line,
+and nothing of any value.
+
+Only an identifier at the start of an assignment line is printed. A value that opens a quote and
+does not close it on that line runs until the closing quote (a double-quoted value honours
+backslash escapes), and an unquoted value starting `-----BEGIN` runs to its `-----END` line; every
+line inside a value is skipped, whatever it looks like. `cut -d= -f1` is not names-only: a line
+with no `=` — the body of a multiline key — passes through whole.
+"""
+import re
+import sys
+
+ASSIGNMENT = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)")
+
+
+def closing_quote(text, quote):
+    """Index just past the quote that closes `text` (which follows the opening one), or None."""
+    i = 0
+    while i < len(text):
+        if quote == '"' and text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            return i + 1
+        i += 1
+    return None
+
+
+def names(lines):
+    inside = None  # the quote, or "-----END", that ends the value being skipped
+    for line in lines:
+        if inside == "-----END":
+            if "-----END" in line:
+                inside = None
+            continue
+        if inside:
+            if closing_quote(line, inside) is not None:
+                inside = None
+            continue
+        match = ASSIGNMENT.match(line)
+        if not match:
+            continue
+        yield match.group(1)
+        value = match.group(2)
+        if value[:1] in ("'", '"') and closing_quote(value[1:], value[0]) is None:
+            inside = value[0]
+        elif value.startswith("-----BEGIN") and "-----END" not in value:
+            inside = "-----END"
+
+
+def main(argv):
+    path = argv[1] if len(argv) > 1 else ".env"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for name in names(f):
+                print(name)
+    except FileNotFoundError:
+        print(f"env-names: {path}: no such file", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

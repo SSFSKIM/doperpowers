@@ -21,8 +21,9 @@ field that guesses, or an install line that never ran, fails on the first host t
    install recipe; lockfiles and toolchain pins (`packageManager`, `.nvmrc`, `.tool-versions`,
    `Package.swift`) say which tools; `.env.example`, CI `secrets.*` references and the code's own
    environment reads say which variables and secrets exist; `README`/`AGENTS.md`/`CLAUDE.md` say
-   how a person runs it. Read `.env` files for variable names only (`cut -d= -f1 .env`) — a value
-   you print lands in the transcript.
+   how a person runs it. Read a `.env` for its variable names only, with this skill's
+   `scripts/env-names [file]` — a value you print lands in the transcript, and `cut -d= -f1`
+   prints the body of a quoted multiline key whole.
 2. **Check what already works before asking for anything**: `~/.claude/tools/secret-env list`
    for the secret names Secret Manager already holds (names only, never values), `compgen -e` for
    variables already in the environment, `git ls-remote` for repository access.
@@ -40,8 +41,9 @@ field that guesses, or an install line that never ran, fails on the first host t
 6. **Start and validate**: `devenv start <name>`, `devenv status <name>`, `devenv validate <name>`
    until they pass, then `devenv stop <name>`. Leave nothing running that you started. The setup
    describes the project as it is: a check that fails in the project's own code or tests is a
-   finding for your report (with its cause, if you found it), not a fix to slip into the setup —
-   keep that check out of `validate.sh` until your human partner decides.
+   finding for your report (with its cause, if you found it), not a fix to slip into the setup.
+   The check stays in `validate.sh` and fails truthfully; dropping or narrowing it removes the
+   project's regression signal, which is your human partner's call.
 7. **Commit the `.devbox/` files and the changes the setup needed, by path** — the checkout may
    hold your human partner's own uncommitted work, which stays as it was. devenv gitignores what
    it generates (`env.sh`, `secrets.sh`, `sandbox.settings.json`, `logs/`, `.install-stamp`).
