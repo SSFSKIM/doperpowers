@@ -1,3 +1,5 @@
 env.sh
+secrets.sh
+sandbox.settings.json
 logs/
 .install-stamp
