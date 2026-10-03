@@ -607,6 +607,14 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   — not by this work (every agent transcript scanned): the human's own MAWS session built the
   post-R3 app, which is the "completely changed" MAWS they opened. MAWS work resumed on the isolated
   path.
+- 2026-10-03 (E3): macOS ignores `$HOME` for `~/Library` in native APIs (Electron's userData,
+  `FileManager`); a scratch HOME isolates nothing there, only an app's own override does. Sessions
+  under a scratch `CLAUDE_CONFIG_DIR` added `Co-Authored-By` to commits in 2 of 4 runs despite seeded
+  `includeCoAuthoredBy: false` (the person's global CLAUDE.md does not load there); none was pushed.
+  MAWS's dev build reads the Claude Code config home for sessions, by design. `devenv start` on a
+  project with no services exits 1 (`declares no services`). Pressure tests: without the skill, 3
+  of 4 sonnet runs never ran `devenv up` and shipped untested install lines; with it, 5 of 5 ran
+  up/start/validate/stop for real and leaked no value.
 - 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
   no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
@@ -791,6 +799,19 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   stop on SIGTTIN. A helper ignoring both SIGHUP and SIGTERM still survives — accepted for v1. A
   broken `settings.local.json` refuses every env-regenerating command with exit 1, file kept,
   checked before env.sh moves; `stop` targets `=name:` so dotted names work.
+
+- Decision (2026-10-03, E3 executor, folded by the controller): the skill is one `SKILL.md` (no
+  `references/`), carrying the manifest format, the stub-handler route (`DEVENV_SECRET_ENV`) for
+  checking everything before a secret exists, and the human's `gcloud secrets create … --data-file -`
+  so a value never passes through the agent; it commits by path in the checkout as given and never
+  creates branches; existing manifest fields are decisions to keep. MAWS's refresh was written by the
+  executor following the skill, not by a session (a session hand-running Electron is how E2's second
+  touch happened); claude-usage-menubar's and doperpowers' were written by skill sessions.
+  claude-usage-menubar's `validate.sh` runs `swift build --build-tests` (two `HistoryStoreTests`
+  fail on main, date-dependent — a product bug for the human; `swift test` is a run-yourself check
+  in validation.md) and it declares no service (its state has no override and it is the machine's
+  gateway). MAWS's install and validate exit 0 off macOS (its postinstall chmods a darwin-arm64
+  helper), so on the devbox `devenv up maws` installs nothing — open for E4/the human.
 
 ## Outcomes & Retrospective
 
