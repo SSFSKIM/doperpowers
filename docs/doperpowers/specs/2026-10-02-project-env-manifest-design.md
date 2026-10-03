@@ -59,9 +59,9 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    `<GH>/doperpowers/.claude/skills/devenv/SKILL.md`; a second `devenv up doperpowers` finishes in
    under 15 s and reports `fetched, install skipped (unchanged)`.
 3. **Environment and secrets.** `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'`
-   prints `development` and `token-set`; `grep -rl "GH_TOKEN=" <GH>/doperpowers/.devbox/` finds
-   only `env.sh`, and that line reads `eval "$(…secret-env export devbox-github-pat:GH_TOKEN)"`,
-   never a value.
+   prints `development` and `token-set`; env.sh's only `GH_TOKEN` line reads
+   `eval "$(…secret-env export devbox-github-pat:GH_TOKEN …)"`, and `grep -rlF "<the token value>" <GH>/doperpowers/`
+   finds nothing (the value is never on disk; amended 2026-10-02, Decision Log).
 4. **Services.** `devenv start maws` creates tmux session `maws` with window `dev` and prints
    `dev: ready (http://127.0.0.1:5173/)` within 120 s; `devenv status maws` lists `dev running`;
    `devenv stop maws` ends the session and `tmux has-session -t maws` fails.
@@ -170,8 +170,9 @@ library only (plus calling `secret-env`), one file each, executable, with tests 
 `~/.claude/tools/tests/`.
 
 **`devenv`** — subcommands in Interfaces §I1. `env.sh` (Interfaces §I2) is written to
-`<root>/.devbox/env.sh` and is safe to commit; `.devbox/logs/` and `.devbox/.install-stamp` are
-appended to `<root>/.devbox/.gitignore` by `devenv up`.
+`<root>/.devbox/env.sh`; it holds no value and so is safe to commit, but it is a per-host,
+per-resolution artifact (a registry override changes it), so `devenv up` appends `env.sh`,
+`logs/` and `.install-stamp` to `<root>/.devbox/.gitignore` (Decision Log, 2026-10-02 pre-flight).
 
 **`reap`** (Interfaces §I3) — runs a command in its own process group as a child subreaper
 (`prctl(PR_SET_CHILD_SUBREAPER)` on Linux; on macOS only a process-group owner), forwards
@@ -180,10 +181,11 @@ SIGTERM/SIGINT, waits, reaps every zombie it adopted, then terminates what is le
 from a killed install accumulate on a box that runs for months. Codex cloud ships the same tool as
 `reap.py`.
 
-**sminos** — the seat spawn path (`skills/sminos/scripts/lib.sh`, the function that assembles
-the `claude --bg` command) sources `<cwd>/.devbox/env.sh` when it exists, in the subshell that
-launches the seat, so a seat spawned into a project root gets the project's environment. One
-guarded line; no other sminos change; its test lives beside sminos' existing tests.
+**sminos** — the seat launch path (`run_claude_bg` in `skills/sminos/scripts/sminos.py`, through
+which every `claude --bg` spawn and resume goes) sources `<cwd>/.devbox/env.sh` when it exists, in
+a bash subshell that then execs `claude`, so a seat spawned into a project root gets the project's
+environment. One guarded change; no other sminos change; its test lives in
+`tests/sminos/run-sminos-tests.sh` (Decision Log, 2026-10-02 pre-flight).
 
 ## 4. The `cloud-env-setup` skill
 
@@ -225,7 +227,12 @@ Each is named where the field that would need it is recorded.
   assume anything else.
 - **Python 3.11 standard library only** for `devenv` and `reap`; the secret handler is invoked as
   a subprocess, never imported.
-- **No secret value** in `env.sh`, logs, tests or transcripts; tests use a fake handler on `PATH`.
+- **No secret value** in `env.sh`, logs, tests or transcripts; tests use a fake handler
+  (`DEVENV_SECRET_ENV`, I1).
+- **The person's checkouts are never moved, switched or written on the laptop.** Laptop runs of
+  `devenv` happen in a scratch `<GH>` (`DEVENV_GH`) holding fresh clones or `git worktree`s on the
+  manifest branches; acceptance items naming `<GH>` read as that scratch directory on the laptop
+  and as the real `<GH>` on the devbox (E4).
 - **Both OSes:** every `devenv`/`reap` behavior that can run on macOS is tested on the laptop;
   the Linux-only parts (`PR_SET_CHILD_SUBREAPER`) are guarded and tested on the devbox in E4.
 - **Cross-spec dependency:** E4 needs the host layer's M3 (a devbox with `secret-env` and its
@@ -320,7 +327,9 @@ devenv list                         registry entries and <GH>/*/.devbox/environm
 ```
 Exit codes: 0 ok; 1 user error (no manifest, bad field) with one line on stderr; 2 install
 failed (log tail on stderr); 3 service not ready within 120 s. Environment: `DEVENV_GH` overrides
-`<GH>` (tests), `DEVENV_REGISTRY` overrides `~/.claude/envs` (tests).
+`<GH>` (tests), `DEVENV_REGISTRY` overrides `~/.claude/envs` (tests), `DEVENV_SECRET_ENV` overrides
+the handler path written into `env.sh` (default `/Users/new/.claude/tools/secret-env`; tests point
+it at a fake).
 
 **I2 — `env.sh`** (generated; bash):
 ```
@@ -332,7 +341,8 @@ eval "$(/Users/new/.claude/tools/secret-env export devbox-github-pat:GH_TOKEN 2>
 ```
 `secret-env export <name>:<ENV>` is the host layer's I1 export with an explicit variable name
 (the host layer's handler already maps `devbox-github-pat` → `GH_TOKEN`; the `:<ENV>` form is
-added there by E1 as a one-line change and recorded in that spec's Decision Log).
+added there by the host layer's executor, which owns `secret-env` — this spec never edits it; until
+it lands, tests use a fake handler printing `export <ENV>=<value>` lines).
 
 **I3 — `reap`** (`~/.claude/tools/reap`): `reap [--timeout SEC] [--grace SEC] -- cmd args…`;
 exits with the command's code; 124 on timeout; prints `reap: terminated N leftover process(es)`
@@ -341,11 +351,15 @@ on stderr when it had to kill anything.
 **I4 — Registry entry** (`~/.claude/envs/<name>.json`): the manifest schema of §2 with every
 field optional except `name` and `repos`.
 
-**I5 — Start-skill link:** `<root>/.claude/skills/devenv/SKILL.md` → `<root>/<start_skill>/SKILL.md`
-(relative symlink). The skill directory holds `SKILL.md`, `start.md`, `validation.md`.
+**I5 — Start-skill link:** each file of `<root>/<start_skill>/` (`SKILL.md`, `start.md`,
+`validation.md`) is linked as `<root>/.claude/skills/devenv/<file>` (relative symlinks), so the
+skill's references to its sibling files resolve from the linked location. When `start_skill` is
+`.claude/skills/devenv` itself (the default) nothing is linked and `devenv up` only checks that
+`SKILL.md` exists.
 
-**I6 — sminos:** `skills/sminos/scripts/lib.sh`, in the seat launch subshell:
-`[ -f "$cwd/.devbox/env.sh" ] && . "$cwd/.devbox/env.sh"` before `claude --bg …`.
+**I6 — sminos:** `run_claude_bg` in `skills/sminos/scripts/sminos.py`: when `<cwd>/.devbox/env.sh`
+exists, the launch is `bash -c '. "$1"; shift; exec claude "$@"' devenv <cwd>/.devbox/env.sh <args…>`
+instead of `claude <args…>`; otherwise unchanged.
 
 **I7 — `cloud-env-setup` skill:** `skills/cloud-env-setup/SKILL.md`, frontmatter `name:
 cloud-env-setup`, description with the five trigger phrases of §4.
@@ -367,6 +381,28 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   rejected then: registry-only (no sharing), repo-only (multi-repo awkward), proxy substitution now
   (an HTTPS-terminating proxy and a local CA for four secrets), per-seat network namespaces.
   Date/Author: 2026-10-02, the human.
+
+- Decision (pre-flight, 2026-10-02, plan-executor): reconciling the spec with the codebase before E1.
+  (a) sminos' seat launch is `run_claude_bg` in `sminos.py`, not `lib.sh` (which holds no launch);
+  §3 and I6 now name it, the guarded source becoming a `bash -c` wrapper there, covering spawn and
+  resume alike. (b) `secret-env` is owned by the host layer's executor, which adds the
+  `export <name>:<ENV>` form; this spec never edits it, and env.sh's handler path is overridable at
+  generation time (`DEVENV_SECRET_ENV`) so tests point at a fake. (c) A repository's own manifest
+  cannot be resolved before that repository is cloned, so acceptance 2 (repo absent) and E4 (fresh
+  devbox) need registry entries: `~/.claude/envs/` holds `doperpowers.json`, `maws.json` and
+  `claude-usage-menubar.json`, refs pointing at the branches that carry the manifests
+  (`project-env-manifest`, `devbox-manifest`) until the human merges them (MAWS's default branch is
+  `master`, not `main`); `~/.claude/.gitignore` whitelists `envs/`. (d) doperpowers ignores
+  `.claude/` wholesale, so its start skill lives in a committed `.devbox/skill/` and is linked;
+  I5 links every start-skill file, not `SKILL.md` alone, so `start.md`/`validation.md` resolve.
+  (e) env.sh is gitignored by `devenv up`: it carries a host path and registry overrides, so a
+  committed copy would be dirtied by every resolution. (f) Laptop runs use a scratch `<GH>` with
+  fresh clones / worktrees — the person's checkouts (claude-usage-menubar is on a working branch with
+  untracked files) are never touched. (g) Acceptance 3's `grep "GH_TOKEN="` could never match the
+  eval line it describes; restated as the eval line plus a grep for the (fake, on the laptop) value.
+  (h) Acceptance 9 runs against a scratch `DEVENV_REGISTRY` copy of the real `maws.json` with the
+  `NODE_ENV=test` override; the real entry carries none (it would change every real session's dev
+  server).
 
 ## Outcomes & Retrospective
 
