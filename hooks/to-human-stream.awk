@@ -17,9 +17,9 @@ BEGIN {
   DIM = ESC "[2m"
   OFF = ESC "[0m"
   LABEL["to-human"] = "to human";    COLOR["to-human"] = ESC "[1;36m"
-  LABEL["essential"] = "essential";  COLOR["essential"] = ESC "[1;33m"
+  LABEL["essential"] = "essential";  COLOR["essential"] = ESC "[1;32m"
   LABEL["need-input"] = "need input"; COLOR["need-input"] = ESC "[1;35m"
-  LABEL["insight"] = "insight";      COLOR["insight"] = ESC "[1;32m"
+  LABEL["insight"] = "insight";      COLOR["insight"] = ESC "[1;33m"
   CHOICE = "\342\227\207 "       # ◇ U+25C7, the marker of a choice
   RECOMMENDED = "\342\227\206 "  # ◆ U+25C6, the marker of the recommended one
 

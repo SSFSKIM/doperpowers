@@ -151,9 +151,9 @@ const HEADER = /\[1;3[2356]m(?:to human|essential|need input|insight)\[0m/
 
 const KIND_OF_COLOR: Record<string, Kind> = {
   '36': 'to-human',
-  '33': 'essential',
+  '32': 'essential',
   '35': 'need-input',
-  '32': 'insight',
+  '33': 'insight',
 }
 
 /**
@@ -409,9 +409,9 @@ export function withAnswer(box: string, head: string, answer?: string): string {
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
   'to-human': { label: 'to human', color: 'cyan' },
-  essential: { label: 'essential', color: 'yellow' },
+  essential: { label: 'essential', color: 'green' },
   'need-input': { label: 'need input', color: 'magenta' },
-  insight: { label: 'insight', color: 'green' },
+  insight: { label: 'insight', color: 'yellow' },
 }
 
 const TOGGLE = 'to-human-toggle'

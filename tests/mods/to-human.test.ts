@@ -63,7 +63,7 @@ describe('register', () => {
   const streamed =
     'Notes: formatting-only request, no tools needed.\n\n\n' +
     '\u001b[1;36mto human\u001b[0m\n\n\nRivers carry water downhill.\n\n\n' +
-    '\u001b[1;33messential\u001b[0m\n\n\nNo files were changed.\n\n\n' +
+    '\u001b[1;32messential\u001b[0m\n\n\nNo files were changed.\n\n\n' +
     '\u001b[2mDone \u2014 nothing else pending.\u001b[0m\n'
 
   test('parse reads the headers the streaming hook drew over the marks', async () => {
@@ -89,7 +89,7 @@ describe('register', () => {
     expect(parse('Editing.\n<insight>The cache key is the path.</insight>').spans).toEqual([
       { kind: 'insight', text: 'The cache key is the path.', isOpen: false },
     ])
-    expect(parse('\u001b[1;32minsight\u001b[0m\n\nThe cache key is the path.\n').spans).toEqual([
+    expect(parse('\u001b[1;33minsight\u001b[0m\n\nThe cache key is the path.\n').spans).toEqual([
       { kind: 'insight', text: 'The cache key is the path.', isOpen: false },
     ])
   })

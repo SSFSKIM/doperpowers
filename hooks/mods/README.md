@@ -18,8 +18,8 @@ Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under a colored
-  label: `to human` in cyan, `essential` in yellow, `need input` in magenta,
-  `insight` in green. A
+  label: `to human` in cyan, `essential` in green, `need input` in magenta,
+  `insight` in yellow. A
   span's body is the engine's own markdown drawing of the span's text (the
   block is handed back beneath the hook with that text in place of the
   whole), so a table or a list inside a mark draws as it would unmarked. A

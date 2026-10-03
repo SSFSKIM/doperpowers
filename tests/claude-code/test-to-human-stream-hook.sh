@@ -19,7 +19,7 @@ state_dir="$TMPDIR/doperpowers-to-human"
 
 ESC=$(printf '\033')
 CYAN="${ESC}[1;36m"
-YELLOW="${ESC}[1;33m"
+GREEN="${ESC}[1;32m"
 DIM="${ESC}[2m"
 OFF="${ESC}[0m"
 
@@ -90,10 +90,10 @@ Inner.
 Outer again.
 ")
 case $out in
-  *"${YELLOW}essential${OFF}"*) pass "the inner mark opens as its own header" ;;
+  *"${GREEN}essential${OFF}"*) pass "the inner mark opens as its own header" ;;
   *) fail "no inner header: $(printf '%q' "$out")" ;;
 esac
-inner_then_outer="${YELLOW}essential${OFF}"$'\n\n\n''Inner.'
+inner_then_outer="${GREEN}essential${OFF}"$'\n\n\n''Inner.'
 case $out in
   *"$inner_then_outer"*"${CYAN}to human${OFF}"*) pass "the enclosing mark's header resumes when the inner one closes" ;;
   *) fail "no resumed header: $(printf '%q' "$out")" ;;
@@ -147,14 +147,14 @@ case $out in
 esac
 
 echo "an insight:"
-GREEN="${ESC}[1;32m"
+YELLOW="${ESC}[1;33m"
 out=$(flush m7 0 true "Editing the parser.
 <insight>
 The cache key is the path.
 </insight>
 ")
 case $out in
-  *"${GREEN}insight${OFF}"*) pass "the insight opens as a header in its color" ;;
+  *"${YELLOW}insight${OFF}"*) pass "the insight opens as a header in its color" ;;
   *) fail "no insight header: $(printf '%q' "$out")" ;;
 esac
 case $out in
