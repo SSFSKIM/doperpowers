@@ -30,6 +30,16 @@ characterization test naming the assumption.
 field, not just the ones this test reads. Partial mocks pass while
 integration breaks on the omitted field.
 
+**Pin real data whole when the answer is known by example.** When correctness
+is "this real input produces this output" rather than a rule you can state — a
+parser over real exports, a renderer, a report — the real captured input is the
+fixture and its complete output is the expectation. A row count or a
+first-and-last spot check leaves the middle rows unpinned, and the middle row
+is the one that breaks. Deriving that expectation by hand means reading it,
+however it was produced: check every line against the input before committing,
+and accept a regeneration only after reading its diff. Minimal hand-built
+inputs still belong beside it, one per quirk, so a failure names its cause.
+
 **Production classes carry production methods only.** Cleanup only tests
 need lives in test utilities, never as a `destroy()` on the production
 class. A method called only from test files is in the wrong place.
@@ -45,6 +55,7 @@ class. A method called only from test files is in the wrong place.
 | Want to assert on a mocked element | Test the real component, or unmock it |
 | Are about to mock a method | Learn its side effects; mock the slow/external level below them |
 | Build a mock response | Mirror the real structure completely |
+| Know the right answer by example, not by rule | Golden fixture: a real captured input, its complete output pinned, every line checked against the input before commit; read the diff before accepting a regeneration |
 | Need cleanup only tests use | Put it in test utilities |
 | Watch mock setup balloon | Switch to an integration test with real components |
 | Finish a test file | Mutate the production code in your head — wrong constant, wrong branch, missing side effect, empty return, missing validation — and confirm a test fails for each |
@@ -60,4 +71,6 @@ class. A method called only from test files is in the wrong place.
 - The test exists for coverage, checking no side effect or outcome
 - An assertion checks a `*-mock` test ID, or fails if you remove the mock
 - A method is called only from test files
+- A real sample exists and the test checks its row count or its first and last rows instead of pinning the whole output
+- A golden expectation was regenerated and committed without anyone reading the diff
 - Mock setup is more than half the test, or you can't explain why the mock is needed
