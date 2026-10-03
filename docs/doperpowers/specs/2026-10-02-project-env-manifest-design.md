@@ -342,7 +342,8 @@ Each is named where the field that would need it is recorded.
 - **No test session in the person's session store** (2026-10-02, after E2's runs surfaced in
   MAWS, which indexes every session under `~/.claude/projects`): every `claude` invocation a test or
   acceptance step makes runs with `CLAUDE_CONFIG_DIR=<scratch>/claude-config`, seeded with the
-  minimum settings it needs; where a step must use the real config (plugins — e.g. a sminos seat),
+  minimum settings it needs — always `"includeCoAuthoredBy": false` in its `settings.json` and a copy
+  of the person's `~/.claude/CLAUDE.md`, so a scratch session commits under the same rules; where a step must use the real config (plugins — e.g. a sminos seat),
   its cwd is a scratch directory and the step deletes `~/.claude/projects/<scratch key>/` on
   teardown. MAWS runs only on the isolated path (Decision Log, the human's 2026-10-02 decision).
 - **Cross-spec dependency:** E4 needs the host layer's M3 (a devbox with `secret-env` and its
@@ -430,7 +431,11 @@ canonical clones (its `~/.claude.json` template): a background seat's `--cwd` mu
 workspace. Decisions: the devbox gets the manifests by `devenv up` cloning the `devbox-manifest`
 branches until the human merges them (`ref` in the registry entries points at those branches for
 now; a Decision Log line records when `main` takes over). Does not touch: the host layer's files.
-Proves: acceptance 10, and runs 1–9 again.
+Proves: acceptance 10, and runs 1–9 again. Also in E4 (the design session's call, 2026-10-03):
+MAWS's install on Linux becomes `pnpm install --ignore-scripts`, and its validate there runs
+typecheck, lint and the non-native unit tests, so a devbox session can work on MAWS; building or
+running the Electron app stays Mac-only, said in one line of MAWS's start skill so a devbox session
+does not try.
 
 ### Concrete Steps
 
@@ -812,6 +817,14 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   in validation.md) and it declares no service (its state has no override and it is the machine's
   gateway). MAWS's install and validate exit 0 off macOS (its postinstall chmods a darwin-arm64
   helper), so on the devbox `devenv up maws` installs nothing — open for E4/the human.
+
+- Decision (2026-10-03, the design session): (1) MAWS on the devbox installs with
+  `--ignore-scripts` and validates typecheck/lint/non-native unit tests — E4, where it is verifiable;
+  the Electron app stays Mac-only. (2) claude-usage-menubar's `HistoryStore.record` pruning by
+  `Date()` instead of the passed `now` is residue for a ticket; its validate stays
+  `swift build --build-tests`, the reason noted in its start skill. (3) Scratch config dirs are
+  seeded with `includeCoAuthoredBy: false` and a copy of `~/.claude/CLAUDE.md` before any `claude`
+  run (Constraints); the two trailer commits were never pushed.
 
 ## Outcomes & Retrospective
 
