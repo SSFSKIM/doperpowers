@@ -65,7 +65,7 @@ inside Codex; Claude's registered agents and companion remain available.
 
 ## The skills
 
-Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
+Sixteen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
 
 **Shape the work**
 - `brainstorming` — Socratic design refinement before any code is written
@@ -87,6 +87,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 **Run it unattended**
 - `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)
 - `sminos` — the fleet registry: seats (durable background sessions with a role, in a group), spawn/wake/attach, topology, and the group board
+- `cloud-env-setup` — make a project ready for `devenv` on every host: the `.devbox/` manifest, an install that ran, its services with their state kept apart from the installed app, secrets named in Secret Manager, never valued
 
 **Deployed alongside, not a skill**
 - `application-agents/triaging-feedback/` — the feedback→triage poller: turns product feedback into grounded board tickets
