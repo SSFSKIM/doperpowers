@@ -147,6 +147,10 @@ Field semantics, each a decision:
   the skill author writes with frontmatter (`name: devenv`, description "Use when starting,
   running, or validating this project's development workflow") and a body that is `start.md`'s
   content pointing at `validation.md`. Claude Code loads it as a project skill.
+  `start_skill` is the repository's choice: a repository that gitignores `.claude/` (as doperpowers
+  does) keeps the source under `.devbox/skill/`; others may keep it at `.claude/skills/devenv/`
+  directly. `devenv up` links file by file either way (I5), and the link is a no-op when the source
+  already is `.claude/skills/devenv/`.
 - `services[]`: optional. `devenv start` opens tmux session `<name>` with one window per service
   running `cmd` in `cwd` (relative to root), then waits up to 120 s for `ready` (`http`: GET
   returning 2xx/3xx; `tcp`: `host:port` accepting) and prints one line per service; `devenv stop`
@@ -403,6 +407,10 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   (h) Acceptance 9 runs against a scratch `DEVENV_REGISTRY` copy of the real `maws.json` with the
   `NODE_ENV=test` override; the real entry carries none (it would change every real session's dev
   server).
+- Decision (2026-10-02, the design session, confirming the pre-flight): the three registry entries
+  are also what the devbox resolves through claude-config sync, so they stay minimal — `name`,
+  `repos` (with refs), `root` — and their refs move to the default branches, with a dated line
+  here, once the human merges the manifest branches.
 
 ## Outcomes & Retrospective
 
