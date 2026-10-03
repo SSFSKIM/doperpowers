@@ -57,6 +57,20 @@ ESCAPED
 AFTER" "$out"
 no_marker "multiline" "$out"
 
+echo "an escaped apostrophe inside a single-quoted multiline value:"
+cat > "$WORK/sq.env" <<'E'
+PRIVATE_KEY='-----BEGIN PRIVATE KEY-----
+it\'s MARKERsq1
+FAKE_KEY_BODYAAAA==MARKERsq2
+-----END PRIVATE KEY-----'
+NEXT=1
+E
+out="$("$TOOL" "$WORK/sq.env")"
+expect "an escaped delimiter does not close the value" "PRIVATE_KEY
+NEXT" "$out"
+no_marker "escaped single quote" "$out"
+if printf '%s' "$out" | grep -q FAKE_KEY_BODY; then fail "a body fragment printed"; else pass "no body fragment printed"; fi
+
 echo "single-line quoted values:"
 cat > "$WORK/oneline.env" <<'E'
 A="MARKERq1 it's fine"

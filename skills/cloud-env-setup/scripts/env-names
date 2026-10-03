@@ -3,8 +3,8 @@
 and nothing of any value.
 
 Only an identifier at the start of an assignment line is printed. A value that opens a quote and
-does not close it on that line runs until the closing quote (a double-quoted value honours
-backslash escapes), and an unquoted value starting `-----BEGIN` runs to its `-----END` line; every
+does not close it on that line runs until the closing quote (a backslash-escaped quote never
+closes, in either kind — when in doubt, skip), and an unquoted value starting `-----BEGIN` runs to its `-----END` line; every
 line inside a value is skipped, whatever it looks like. `cut -d= -f1` is not names-only: a line
 with no `=` — the body of a multiline key — passes through whole.
 """
@@ -18,7 +18,7 @@ def closing_quote(text, quote):
     """Index just past the quote that closes `text` (which follows the opening one), or None."""
     i = 0
     while i < len(text):
-        if quote == '"' and text[i] == "\\":
+        if text[i] == "\\":  # an escaped delimiter never closes, in either quote (skip rather than print)
             i += 2
             continue
         if text[i] == quote:
