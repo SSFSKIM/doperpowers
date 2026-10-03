@@ -620,6 +620,13 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   project with no services exits 1 (`declares no services`). Pressure tests: without the skill, 3
   of 4 sonnet runs never ran `devenv up` and shipped untested install lines; with it, 5 of 5 ran
   up/start/validate/stop for real and leaked no value.
+- 2026-10-03 (E3 fix wave): `tests/claude-code/run-skill-tests.sh` as a whole drives the real
+  `claude` CLI under the real config (its `test-subagent-driven-execution.sh`); running it put 9
+  sessions in a new projects key, deleted at once under the teardown rule. Run hermetic tests
+  directly. `cut -d= -f1 .env` is not names-only — a line without `=` (a multiline PEM body) passes
+  through whole; the skill's `scripts/env-names` emits identifiers only (with old text, one pressure
+  run printed a fake key body; with the fix, 0 of 3). With `includeCoAuthoredBy: false` and the
+  person's CLAUDE.md seeded, 4 of 4 committing scratch sessions carried no trailer.
 - 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
   no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
