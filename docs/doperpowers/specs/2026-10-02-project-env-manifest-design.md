@@ -183,7 +183,9 @@ Field semantics, each a decision:
   where `.claude/` is gitignored, as in doperpowers); a repository may name another directory.
   The link is a no-op only when source and destination are the same directory.
 - `services[]`: optional. `devenv start` opens tmux session `<name>` with one window per service
-  running `bash -c` that sources `<root>/.devbox/env.sh` and `secrets.sh` and execs `cmd`, in `cwd`
+  running `bash -c` that sources `<root>/.devbox/env.sh` and `secrets.sh` and runs `cmd` in the
+  foreground, ending its own process group when `cmd` exits (so no helper outlives an exited
+  service), in `cwd`
   (relative to root), with the caller's `PATH` — the environment comes from env.sh, not the tmux
   server, which may already exist with another one; not a login shell, because macOS's
   `path_helper` would reorder `PATH` onto a different node/pnpm than the install used — then waits up to 120 s for `ready` (`http`: GET
@@ -767,6 +769,14 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   resumes on the isolated path only — scratch clone, `MAWS_USER_DATA` under `.devbox`, a scratch
   `CLAUDE_CONFIG_DIR` for every `claude` run, never the person's checkout or
   `~/Library/Application Support/MAWS`; E3 may author MAWS's manifest under those rules.
+
+- Decision (2026-10-02, E2 fix wave): a service window's shell runs `cmd` in the foreground rather
+  than `exec`ing it and SIGTERMs its own process group when `cmd` exits; `stop` signals only live
+  panes (an exited pane's group id may since belong to someone else). `reap` as the window leader was
+  rejected: the service would sit in a background group, and a key-reading dev server (Vite) would
+  stop on SIGTTIN. A helper ignoring both SIGHUP and SIGTERM still survives — accepted for v1. A
+  broken `settings.local.json` refuses every env-regenerating command with exit 1, file kept,
+  checked before env.sh moves; `stop` targets `=name:` so dotted names work.
 
 ## Outcomes & Retrospective
 
