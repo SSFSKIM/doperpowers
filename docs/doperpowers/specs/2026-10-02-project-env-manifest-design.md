@@ -175,8 +175,10 @@ Field semantics, each a decision:
 - `start_skill`: a directory relative to root (default `.devbox/skill`) holding `SKILL.md`,
   `start.md` and `validation.md`. `devenv up` links each file into `<root>/.claude/skills/devenv/`
   (I5). `SKILL.md` is what the skill author writes with frontmatter (`name: devenv`, description "Use when starting,
-  running, or validating this project's development workflow") and a body that is `start.md`'s
-  content pointing at `validation.md`. Claude Code loads it as a project skill.
+  running, or validating this project's development workflow") and a short body that sends the
+  reader to `start.md` (how to run the project) and `validation.md` (how to check it) — one
+  maintained copy of each workflow, never a duplicate in `SKILL.md`. Claude Code loads it as a
+  project skill.
   `.devbox/skill/` is the documented default source for every repository (it is committed even
   where `.claude/` is gitignored, as in doperpowers); a repository may name another directory.
   The link is a no-op only when source and destination are the same directory.
@@ -652,6 +654,10 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   secrets reach interactive sessions through `devenv claude` only (§3, §5); acceptance 7's
   placeholder check is conditional on the seat holding `GH_TOKEN`, its NODE_ENV check proves the
   non-secret path. Per-seat project secrets are residue for a ticket.
+
+- Decision (2026-10-02, plan-executor, from E1's review): `SKILL.md` points at `start.md` and
+  `validation.md` instead of copying `start.md`'s body — two hand-maintained copies of the same
+  behavior-shaping text drift apart. §2 revised.
 
 ## Outcomes & Retrospective
 
