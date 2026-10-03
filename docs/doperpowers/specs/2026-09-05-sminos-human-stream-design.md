@@ -42,8 +42,8 @@ Three marks, told apart by the attention they ask of the human:
 - `<need-input>` — input the agent needs from the human: a decision, a
   judgment, a real value, or more.
 
-The doctrine is those three lines and one premise: *your tool results and
-messages are not shown to the human.* It is carried by an output style — `output-styles/to-human.md` in this plugin, which
+The doctrine is those three lines and one premise: *the human does not
+watch the session; each `<to-human>` span is a message you send them.* It is carried by an output style — `output-styles/to-human.md` in this plugin, which
 the harness injects as persistent context at session start and after every
 compaction, and which also carries the explanatory-insights style so a session
 loses nothing by selecting it. A launcher whose surface is the stream (afleet)
@@ -238,6 +238,25 @@ Observable when the build lands:
   examples, and failure modes. The human's call, and consistent with this
   repo's rule that a constraint earns its place only against an observed
   failure.
+- Decision (2026-10-02): the premise frames `<to-human>` as sending a message,
+  not as choosing what to display. Observed failure: agents marked routine
+  progress ("Looking at the repo and running the tests"), so the human read
+  too many spans. The human had seen an unattended session given only a
+  Telegram send tool, with no instructions on when to send, message exactly
+  when it had to; sending carries the cost of interrupting someone, which
+  "wrap what you want them to see" does not. Rejected again, by the human: a
+  criteria list (an answer they asked for, input needed, a blocker, a timely
+  reminder) and a rule that progress stays unmarked; the framing alone
+  carried the change. Evidence: one headless task (fix two failing tests, add
+  a method, report), five runs per wording on Fable 5.1 — the old premise
+  sent a progress message in 2 of 5 runs, the new one in 0 of 5; every run
+  sent its final report.
+- Decision (2026-10-02): explanatory insights are a fourth mark,
+  `<insight>`, drawn by the mod in its own color, replacing the backticked
+  `★ Insight` banner the explanatory style used. It is a note drawn beside
+  the messages, not a message: a reader of the stream (the planned inbox)
+  should leave it out. Rejected: wrapping insights in `<to-human>`, which
+  would make each one a message sent.
 - Decision: the doctrine travels as an output style, selected per launch.
   Rejected: the root or project CLAUDE.md — its premise ("your messages are
   not shown to the human") is false in a plain terminal session, and
@@ -310,3 +329,6 @@ Pending — written at finish.
   `inbox --essential` and the `mark` field in `--json` follow. The Decision
   Log records why this is not the rejected kind taxonomy and the names not
   chosen.
+- 2026-10-02 — The premise reframed `<to-human>` as a message sent to the
+  human, and a fourth mark, `<insight>`, replaced the explanatory style's
+  banner; the style, §1's premise, the mod, and the streaming hook follow.

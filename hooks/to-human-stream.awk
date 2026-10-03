@@ -19,6 +19,7 @@ BEGIN {
   LABEL["to-human"] = "to human";    COLOR["to-human"] = ESC "[1;36m"
   LABEL["essential"] = "essential";  COLOR["essential"] = ESC "[1;33m"
   LABEL["need-input"] = "need input"; COLOR["need-input"] = ESC "[1;35m"
+  LABEL["insight"] = "insight";      COLOR["insight"] = ESC "[1;32m"
   CHOICE = "\342\227\207 "       # ◇ U+25C7, the marker of a choice
   RECOMMENDED = "\342\227\206 "  # ◆ U+25C6, the marker of the recommended one
 
@@ -44,7 +45,7 @@ function body(text) {
   rest = $0
   out = ""
 
-  while (match(rest, /<\/?(to-human|essential|need-input|choice( recommended)?)>/)) {
+  while (match(rest, /<\/?(to-human|essential|need-input|insight|choice( recommended)?)>/)) {
     out = out body(substr(rest, 1, RSTART - 1))
     tag = substr(rest, RSTART, RLENGTH)
     rest = substr(rest, RSTART + RLENGTH)

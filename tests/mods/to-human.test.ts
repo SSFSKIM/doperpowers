@@ -85,6 +85,15 @@ describe('register', () => {
     expect(parsed.hasRecord).toBe(true)
   })
 
+  test('parse reads an insight as a span of its own, in either form', async () => {
+    expect(parse('Editing.\n<insight>The cache key is the path.</insight>').spans).toEqual([
+      { kind: 'insight', text: 'The cache key is the path.', isOpen: false },
+    ])
+    expect(parse('\u001b[1;32minsight\u001b[0m\n\nThe cache key is the path.\n').spans).toEqual([
+      { kind: 'insight', text: 'The cache key is the path.', isOpen: false },
+    ])
+  })
+
   test('parse finds no spans in an unmarked message', async () => {
     const parsed = parse('Plain reply.')
 

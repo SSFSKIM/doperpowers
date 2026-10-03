@@ -146,6 +146,23 @@ case $out in
   *) fail "a choice outside need-input was drawn as one: $(printf '%q' "$out")" ;;
 esac
 
+echo "an insight:"
+GREEN="${ESC}[1;32m"
+out=$(flush m7 0 true "Editing the parser.
+<insight>
+The cache key is the path.
+</insight>
+")
+case $out in
+  *"${GREEN}insight${OFF}"*) pass "the insight opens as a header in its color" ;;
+  *) fail "no insight header: $(printf '%q' "$out")" ;;
+esac
+case $out in
+  *"${DIM}The cache key"*) fail "the insight's body was dimmed as record" ;;
+  *"The cache key is the path."*) pass "the insight's body stays undimmed" ;;
+  *) fail "the insight's body was dropped: $(printf '%q' "$out")" ;;
+esac
+
 echo "state:"
 if [ "$(cat "$state_dir/m2")" = "$(printf '0\n1\nto-human\n')" ]; then pass "a message still streaming records its index, that it has marked, and the marks open"
 else fail "state after a marked flush: $(cat "$state_dir/m2" 2>&1)"; fi

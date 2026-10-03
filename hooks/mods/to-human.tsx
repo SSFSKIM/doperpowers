@@ -1,11 +1,12 @@
 import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
 
 /**
- * The three marks the `to-human` output style asks the model to write:
- * what the human should read, what is essential, and what the model needs
- * from them. Everything outside a mark is the model's working record.
+ * The marks the `to-human` output style asks the model to write: a message
+ * to the human, what is essential, what the model needs from them, and an
+ * explanatory insight. Everything outside a mark is the model's working
+ * record.
  */
-export type Kind = 'to-human' | 'essential' | 'need-input'
+export type Kind = 'to-human' | 'essential' | 'need-input' | 'insight'
 
 /**
  * One option a `need-input` mark offers, as a `<choice>` line under the
@@ -31,7 +32,7 @@ export type Parsed = {
   hasRecord: boolean
 }
 
-const TAG = /<(\/?)(to-human|essential|need-input)>/g
+const TAG = /<(\/?)(to-human|essential|need-input|insight)>/g
 
 /** A choice as the model writes it, inside a `need-input` mark. */
 const CHOICE = /<choice( recommended)?>([\s\S]*?)<\/choice>\n?/g
@@ -144,14 +145,15 @@ function parseMarked(text: string): Parsed {
  *
  * The first group is the header's color, the second a dimmed run's text.
  */
-const RENDERED = /\[1;(3[356])m(?:to human|essential|need input)\[0m|\[2m([\s\S]*?)\[0m/g
+const RENDERED = /\[1;(3[2356])m(?:to human|essential|need input|insight)\[0m|\[2m([\s\S]*?)\[0m/g
 
-const HEADER = /\[1;3[356]m(?:to human|essential|need input)\[0m/
+const HEADER = /\[1;3[2356]m(?:to human|essential|need input|insight)\[0m/
 
 const KIND_OF_COLOR: Record<string, Kind> = {
   '36': 'to-human',
   '33': 'essential',
   '35': 'need-input',
+  '32': 'insight',
 }
 
 /**
@@ -409,6 +411,7 @@ const STYLE: Record<Kind, { label: string; color: string }> = {
   'to-human': { label: 'to human', color: 'cyan' },
   essential: { label: 'essential', color: 'yellow' },
   'need-input': { label: 'need input', color: 'magenta' },
+  insight: { label: 'insight', color: 'green' },
 }
 
 const TOGGLE = 'to-human-toggle'

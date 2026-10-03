@@ -8,16 +8,18 @@ ignores it elsewhere; the shell hooks beside this folder run everywhere.
 ## to-human (`to-human.tsx`)
 
 The `to-human` output style (`output-styles/to-human.md`) assumes a human who
-reads a report stream, not the transcript: the model wraps what they should
-read in `<to-human>`, what is essential in `<essential>`, what it needs from
-them in `<need-input>`, and leaves its working record unwrapped. This mod
+reads a report stream, not the transcript: the model sends them messages in
+`<to-human>`, what is essential in `<essential>`, what it needs from them in
+`<need-input>`, explanatory notes in `<insight>`, and leaves its working
+record unwrapped. This mod
 makes the Claude Code terminal the consumer of those marks.
 
 Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under a colored
-  label: `to human` in cyan, `essential` in yellow, `need input` in magenta. A
+  label: `to human` in cyan, `essential` in yellow, `need input` in magenta,
+  `insight` in green. A
   span's body is the engine's own markdown drawing of the span's text (the
   block is handed back beneath the hook with that text in place of the
   whole), so a table or a list inside a mark draws as it would unmarked. A
