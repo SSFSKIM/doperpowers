@@ -59,8 +59,9 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    `<GH>/doperpowers/.claude/skills/devenv/{SKILL,start,validation}.md`; a second `devenv up doperpowers` finishes in
    under 15 s and reports `fetched, install skipped (unchanged)`. (E1 proves the install-only
    subset — everything but the link; E2 proves the whole item.)
-3. **Environment and secrets.** (i) env.sh references the handler, never a value: its only
-   `GH_TOKEN` reference is the call `…/secret-env export devbox-github-pat:GH_TOKEN`; (ii)
+3. **Environment and secrets.** (i) env.sh references the handler, never a value: every
+   `GH_TOKEN` line is the `unset`, the call `…/secret-env export devbox-github-pat:GH_TOKEN`, or
+   its value-free error message; (ii)
    `devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'` prints
    `development` and `token-set`; (iii) the handler's value appears nowhere on disk:
    `grep -rlF "<the value>" <GH>/doperpowers/.devbox/` (logs included) finds nothing. On the laptop
@@ -362,14 +363,21 @@ Proves: acceptance 10, and runs 1–9 again.
 Working directory: the laptop, `~/.claude` for the tools, the branch worktree for this
 repository. Recorded with real transcripts as milestones complete.
 
-E1
+E1 — run 2026-10-02 on the laptop, scratch `DEVENV_GH=/tmp/devenv-e1-acceptance/GH`, fake handler
+(`DEVENV_SECRET_ENV`, value `FAKE-ghp-acceptance-not-a-token`); full transcripts in the E1 report.
 ```
-python3 -m unittest discover -s ~/.claude/tools/tests            # OK (N tests)
-devenv show doperpowers | jq .root                                 # "/Users/new/Developer/GitHub/doperpowers"
-mv <GH>/doperpowers <GH>/doperpowers.aside && devenv up doperpowers && mv … back  # (in a scratch GH dir for the test)
-devenv up doperpowers                                              # fetched, install skipped (unchanged)
-devenv shell doperpowers -c 'echo $NODE_ENV'                       # development
-reap -- bash -c 'sleep 300 & exit 0'; pgrep -f "sleep 300" || echo clean   # clean
+$ python3 -m unittest discover -s ~/.claude/tools/tests      # Ran 87 tests … OK (58 devenv/reap + 29 secret-env)
+$ devenv show doperpowers | jq .root                         # "/tmp/devenv-e1-acceptance/GH/doperpowers"
+$ devenv show nosuch; echo rc=$?                             # no manifest for nosuch; run the cloud-env-setup skill in that repository / rc=1
+$ devenv up doperpowers          # (<GH> empty) doperpowers: cloned doperpowers, install ok (log: …/.devbox/logs/install-20261003T033246Z.log)  rc=0, 7 s
+$ devenv up doperpowers          # doperpowers: fetched, install skipped (unchanged)  rc=0, 0.58 s
+$ devenv shell doperpowers -c 'echo $NODE_ENV; [ -n "$GH_TOKEN" ] && echo token-set'   # development / token-set
+$ grep -rlF FAKE-ghp-acceptance-not-a-token <GH>/doperpowers/.devbox/; echo rc=$?       # rc=1 (logs included)
+$ reap -- bash -c 'sleep 300 & exit 0'; pgrep -f "sleep 300" || echo clean            # reap: terminated 1 leftover process(es) / clean (0.23 s)
+$ reap --timeout 2 -- sleep 300; echo rc=$?                  # reap: timed out after 2 s / rc=124 (2.22 s), sleep gone
+$ DEVENV_REGISTRY=<scratch maws.json + NODE_ENV=test, MAWS ref master> devenv show maws | jq -c …
+  {"root":".../GH/MAWS","repos":["MAWS","doperpowers"],"NODE_ENV":"test","secrets":["devbox-github-pat"],"install":null}
+$ devenv up maws                 # maws: cloned MAWS; fetched doperpowers, no install script (doperpowers' install not run)
 ```
 E2–E4: as the milestones state; recorded here when run.
 
@@ -442,7 +450,23 @@ cloud-env-setup`, description with the five trigger phrases of §4.
 
 ## Surprises & Discoveries
 
-(none yet)
+- 2026-10-02 (E1): the laptop has no GitHub SSH key either (`ssh -T git@github.com` → publickey
+  denied); HTTPS URLs are what make laptop clones work (doperpowers 7 s, MAWS 22 s).
+- 2026-10-02 (E1): npm 12.1 blocks dependency install scripts unless allow-listed (`allowScripts`;
+  esbuild ×2 and fsevents in triaging-feedback). The poller suite still passes 117/117 (esbuild
+  ships its binary through optionalDependencies), but a project whose native modules need install
+  scripts needs `npm install-scripts approve` or an `allowScripts` entry — E3's skill should know.
+- 2026-10-02 (E1): the sibling's `secret-env` landed in claude-config (303bfcb); its `export`
+  prints `export VAR=<shlex-quoted>`, matching env.sh's `eval` contract. Its tests share
+  `tools/tests/`, so `discover` counts both suites.
+- 2026-10-02 (E1): `/usr/bin/python3` is 3.9.6 and a minimal macOS PATH finds it through
+  `#!/usr/bin/env python3`; the tools run on 3.9 as well as 3.11+ (only `glob(root_dir=)` was in
+  the way).
+- 2026-10-02 (E1): claude-config's 30-minute sync commits whatever is in the tree — 23c8586
+  captured `tools/devenv` mid mutation-check; b84a386 restored it. Tool work in claude-config
+  commits in small units and never leaves a deliberately broken file on disk longer than a test.
+- 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
+  no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
 ## Decision Log
 
@@ -516,6 +540,20 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   (the devbox authenticates GitHub through `gh auth setup-git`, with no SSH key); `git@github.com:`
   normalized. (4) Cold start: clonable by name only through a registry entry; `devenv up --url`
   writes one. Rationale: the review's findings — (1) is a mechanism that could not have worked.
+
+- Decision (2026-10-02, E1 executor, folded by the controller): `devenv` details the spec left
+  open — repository manifests ignore `name`/`root` (the requested name is the project; a registry
+  entry's `name` must match its file); unknown top-level fields, non-string `env` values and
+  non-identifier variable names are exit-1 errors (E2 adds `validate` to the known keys); `show`
+  prints the resolved manifest with defaults filled in, and that JSON is fingerprint part (a);
+  registry-mode repo order is the entry's, then any extra repos the root manifest names, re-resolved
+  after each clone pass; clone failure exits 1 and a failed first `ref` checkout removes the fresh
+  clone; the stamp is deleted before every install run; `devenv claude`/`shell` regenerate env.sh
+  before sourcing; `--url` refuses an existing different entry; reap counts leftovers via `/proc`
+  or `ps` with zombies excluded, and devenv waits through Ctrl-C while reap cleans its group.
+  doperpowers' install is `npm ci` in triaging-feedback (the mods suite stages itself per run, so
+  there is nothing to pre-stage), and its start skill was hand-written into `.devbox/skill/` in E1
+  so E2 can prove acceptance 2 whole.
 
 ## Outcomes & Retrospective
 
