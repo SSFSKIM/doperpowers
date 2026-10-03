@@ -41,7 +41,7 @@ host (`~/.claude/sync/sync.sh` commits, rebases and pushes it every 30 minutes).
 ## Progress
 
 - [ ] E1 — Manifest schema and resolution, `devenv up/claude/shell/show/list`, `env.sh`, `reap`; tests; this repository as the first project
-- [ ] E2 — `devenv start/stop/status/validate`, the start-skill link, sminos sources `env.sh`
+- [ ] E2 — `devenv start/stop/status/validate`, the start-skill link, the shell-rc hook and `settings.local.json` env (seats inherit)
 - [ ] E3 — `cloud-env-setup` skill; manifests for doperpowers, MAWS, claude-usage-menubar authored by it
 - [ ] E4 — On the devbox: the three projects up, sessions open, secrets through the handler; acceptance run
 
@@ -86,7 +86,9 @@ Run as written by E4 (E1–E3 prove their own items on the laptop first). `<GH>`
    passes on the first run after the skill finishes.
 9. **Registry composition.** With `~/.claude/envs/maws.json` naming repos `MAWS` and `doperpowers`
    and overriding `env.NODE_ENV` to `test`, `devenv show maws` prints `root` = `<GH>/MAWS`, both
-   repos, and `NODE_ENV: test`; the unit tests for merge precedence pass
+   repos, and `NODE_ENV: test`; a secret contributed by the non-root repository's manifest appears
+   in the resolved `secrets`; `devenv up maws` runs the root's install only, never the non-root
+   repository's; the unit tests for merge precedence pass
    (`python3 -m unittest discover -s ~/.claude/tools/tests`).
 10. **On the devbox.** `devenv list` names the three projects; `devenv up` for each passes;
     `devenv claude doperpowers -p 'reply with the word pong'` prints `pong`; item 3 holds there
@@ -98,8 +100,10 @@ Two places, composed:
 
 - **In the repository**, `<repo>/.devbox/environment.json`, versioned with the code it serves
   (Cursor's lesson: environment drift is the standing wound, and a spec beside the code drifts
-  least). A single-repository project needs nothing else; its name is the repository's directory
-  name under `<GH>`.
+  least). Its name is the repository's directory name under `<GH>`. A repository-only manifest
+  serves an existing checkout; a project is clonable by name only through a registry entry
+  (repos with `url` + `ref`). `devenv up <name> --url <https url> [--ref r]` writes that registry
+  entry for a single-repository project and proceeds.
 - **In the personal registry**, `~/.claude/envs/<name>.json` (synced by `claude-config`): names a
   project that spans several repositories, pins which repositories and refs belong to it, and
   carries personal overrides (an extra variable, a different install timeout, a local port). The
@@ -109,9 +113,13 @@ Two places, composed:
 Resolution for `devenv <cmd> <name>`: the registry entry if present; else
 `<GH>/<name>/.devbox/environment.json`; else exit 1 with
 `no manifest for <name>; run the cloud-env-setup skill in that repository`. A registry entry's
-repositories each contribute their own `.devbox/environment.json` (install, start skill, env,
-secrets, services) when present; the entry's fields override the merged result. The repository
-named by `root` (default: the first) is the project root.
+repositories are cloned or fetched, and composition is root-only: `install`, `start_skill`,
+`services` and `validate` come from the ROOT repository's manifest (or the registry entry); a
+non-root repository contributes only its `env` and `secrets` — its install, start skill and
+services are ignored. Merge order: non-root repositories in list order, then the root, then the
+registry entry; later wins on a key (`env` by variable, `secrets` by `name`). The repository named
+by `root` (default: the first) is the project root; env.sh exports `DEVENV_REPO_<NAME>` for every
+repository so the root's install script can reach its siblings.
 
 ## 2. The manifest
 
@@ -120,8 +128,8 @@ named by `root` (default: the first) is the project root.
   "version": 1,
   "name": "maws",
   "repos": [
-    {"name": "MAWS", "url": "git@github.com:SSFSKIM/MAWS.git", "ref": "main"},
-    {"name": "doperpowers", "url": "git@github.com:SSFSKIM/doperpowers.git", "ref": "main"}
+    {"name": "MAWS", "url": "https://github.com/SSFSKIM/MAWS.git", "ref": "devbox-manifest"},
+    {"name": "doperpowers", "url": "https://github.com/SSFSKIM/doperpowers.git", "ref": "project-env-manifest"}
   ],
   "root": "MAWS",
   "install": {"script": ".devbox/install.sh", "timeout_sec": 1800},
@@ -141,7 +149,9 @@ Field semantics, each a decision:
 - `repos[]`: cloned to `<GH>/<name>` when absent; `ref` is checked out only on first clone —
   afterwards the checkout is the person's working tree and `devenv up` only `git fetch`es (never
   checks out, resets or pulls: a working tree with the person's changes is never touched). `url`
-  is the ssh form; git authenticates with the host's key.
+  is the HTTPS form: the host layer authenticates GitHub through `gh auth setup-git` with the PAT,
+  and the devbox has no GitHub SSH key; `devenv up` normalizes a `git@github.com:` URL to HTTPS
+  when it meets one.
 - `root`: the project root by repository `name`; default the first repository. In a repository's
   own manifest `root` is implied.
 - `install.script`: path relative to root; run through `reap` with `timeout_sec` (default 1800)
@@ -204,11 +214,22 @@ SIGTERM/SIGINT, waits, reaps every zombie it adopted, then terminates what is le
 from a killed install accumulate on a box that runs for months. Codex cloud ships the same tool as
 `reap.py`.
 
-**sminos** — the seat launch path (`run_claude_bg` in `skills/sminos/scripts/sminos.py`, through
-which every `claude --bg` spawn and resume goes) sources `<cwd>/.devbox/env.sh` when it exists, in
-a bash subshell that then execs `claude`, so a seat spawned into a project root gets the project's
-environment. One guarded change; no other sminos change; its test lives in
-`tests/sminos/run-sminos-tests.sh` (Decision Log, 2026-10-02 pre-flight).
+**Sessions and seats in a project root** get the environment without any sminos change.
+`claude --bg` forwards only an allowlisted environment to the already-running background daemon,
+and a worker's environment is the daemon's plus that dispatch, so nothing sourced around the
+launch reaches it. Two mechanisms carry it instead:
+- the **shell-rc hook** (I6): `~/.claude/tools/devenv-rc.sh`, sourced from `~/.zshrc` and
+  `~/.bashrc` (`sync/apply.py` appends the line idempotently on every host; the host layer's
+  `seed.sh` runs `apply.py`, so the devbox gets it), sources `$PWD/.devbox/env.sh` when it exists,
+  non-strict — a handler failure prints one value-free warning and the shell continues; it never
+  breaks a login shell. Claude Code snapshots the login shell at session start in the session's
+  cwd, and a seat's worker does the same from its `--cwd`, so every Bash tool shell of a session
+  or seat started in a project root carries the environment, whatever environment the daemon
+  started with.
+- **`settings.local.json` env** (I7): `devenv up` merges the NON-secret `env` into
+  `<root>/.claude/settings.local.json`'s `env` block (other keys untouched), so the session process
+  itself, its hooks and MCP servers see them. Secrets never go there.
+`devenv claude/shell/start/validate` keep their explicit strict sourcing of env.sh.
 
 ## 4. The `cloud-env-setup` skill
 
@@ -240,7 +261,7 @@ Each is named where the field that would need it is recorded.
 - **Two repositories.** `devenv`, `reap`, their tests, the registry directory and the manifests
   for the person's own repositories live in `claude-config` (`~/.claude` on the laptop), committed
   directly on its `main` (its sync rebases `main` every 30 minutes; each commit's short SHA goes in
-  Progress). The skill, the sminos line, this spec and docs live in this repository on branch
+  Progress). The skill, this spec and docs live in this repository on branch
   `project-env-manifest` in the isolated worktree `.claude/worktrees/project-env-manifest/`.
   Manifests for MAWS and claude-usage-menubar are committed in those repositories on a branch
   named `devbox-manifest` and pushed; merging them is the human's call.
@@ -261,8 +282,7 @@ Each is named where the field that would need it is recorded.
 - **Cross-spec dependency:** E4 needs the host layer's M3 (a devbox with `secret-env` and its
   key); E1–E3 run on the laptop and do not wait for it.
 - **Testing:** `python3 -m unittest discover -s ~/.claude/tools/tests` for the tools; the skill is
-  pressure-tested per `doperpowers:writing-skills`; sminos' existing test runner for the line
-  there; branch review at the medium rung (Decision Log).
+  pressure-tested per `doperpowers:writing-skills`; acceptance 7 for the seat path; branch review at the medium rung (Decision Log).
 
 ### Plan of Work
 
@@ -289,18 +309,21 @@ claude` passes through all remaining arguments to `claude`; `devenv shell` passe
 `$SHELL`. Does not touch: services, validate, the skill link, sminos, the skill. Proves:
 acceptance 1, 2 (install-only subset), 3 (fake-backed), 6, 9.
 
-#### E2 — `start/stop/status/validate`, the skill link, sminos sources `env.sh`
+#### E2 — `start/stop/status/validate`, the skill link, the rc hook and `settings.local.json` env
 
 What exists at the end: services run in tmux with readiness, `validate` runs or prints,
-`devenv up` links the start skill, a seat spawned into a project root carries the environment;
+`devenv up` links the start skill and writes the `settings.local.json` env (I7), the shell-rc hook
+(I6) installed by `apply.py`, a seat spawned into a project root carries the environment;
 acceptance 4, 5, 7 pass on the laptop (4 against MAWS's `pnpm dev`, which needs MAWS's manifest —
 a minimal one is written here by hand and replaced by E3's skill-authored one). Touches:
-`~/.claude/tools/devenv`, `~/.claude/tools/tests/`, `skills/sminos/scripts/sminos.py`
-(`run_claude_bg`, I6), `tests/sminos/run-sminos-tests.sh` (a seat spawned into a directory holding a
-fake-backed env.sh carries its variable, and `launch_env`'s filtering still applies — the sourced
-variables land on top of it, not instead), `<GH>/MAWS/.devbox/` (branch `devbox-manifest`). Further
-tests: a service started while a tmux server already runs reads a fake-backed variable from env.sh
-inside the service child. Decisions: tmux
+`~/.claude/tools/devenv`, `~/.claude/tools/devenv-rc.sh`, `~/.claude/sync/apply.py` (the rc
+line), `~/.claude/tools/tests/`, `<GH>/MAWS/.devbox/` (branch `devbox-manifest`); no sminos change.
+Tests: a service started while a tmux server already runs reads a fake-backed variable from env.sh
+inside the service child; the rc hook with a failing handler warns once, value-free, and the shell
+continues; the `settings.local.json` merge keeps other keys and never writes a secret;
+`settings.local.json` is kept out of git (`.git/info/exclude` when the repository does not
+already ignore it). Acceptance 7 is verified with the background daemon already running under a
+different environment, for a spawn and for a resume. Decisions: tmux
 session name = project name; `ready.http` uses `urllib` with a 3 s timeout polled every 2 s;
 `status` prints `<service> running|exited` from `tmux list-panes` plus `ready yes|no`; `validate`
 exits with `validate.sh`'s code. Does not touch: the skill. Proves: acceptance 2 (whole, with the
@@ -354,7 +377,9 @@ E2–E4: as the milestones state; recorded here when run.
 
 **I1 — `devenv`** (`~/.claude/tools/devenv`):
 ```
-devenv up <name> [--force]          clone/fetch repos, write env.sh, run install (skipped when unchanged), link the start skill
+devenv up <name> [--force] [--url <https url> [--ref r]]
+                                    clone/fetch repos, write env.sh, run install (skipped when unchanged), link the start skill;
+                                    --url writes a single-repository registry entry first (§1)
 devenv claude <name> [args…]        cd root; source env.sh; exec claude args…
 devenv shell <name> [-c cmd]        cd root; source env.sh; exec $SHELL [-c cmd]
 devenv start|stop|status <name>     services in tmux session <name>
@@ -373,6 +398,8 @@ it at a fake).
 # generated by devenv — do not edit; edit environment.json
 export DEVENV_PROJECT='maws'
 export DEVENV_ROOT='/Users/new/Developer/GitHub/MAWS'
+export DEVENV_REPO_MAWS='/Users/new/Developer/GitHub/MAWS'
+export DEVENV_REPO_DOPERPOWERS='/Users/new/Developer/GitHub/doperpowers'
 export NODE_ENV='development'
 unset GH_TOKEN
 _devenv_out="$('/Users/new/.claude/tools/secret-env' export devbox-github-pat:GH_TOKEN)" \
@@ -382,7 +409,7 @@ eval "$_devenv_out"; unset _devenv_out
 Failure semantics: the handler's stdout is captured with its exit status, never
 `eval "$(… 2>/dev/null)"`; a stale preexisting variable is unset first; on non-zero the file prints
 one line to stderr naming the secret (never a value) and returns non-zero, so `devenv
-claude/shell/start` and the sminos launch refuse to proceed. The handler path is baked in at
+claude/shell/start/validate` refuse to proceed (the rc hook, I6, is the non-strict caller). The handler path is baked in at
 generation from `DEVENV_SECRET_ENV` (default `/Users/new/.claude/tools/secret-env`) — the one
 injection point the CLI and env.sh share. The exact shell is the implementer's; these semantics
 bind.
@@ -403,11 +430,14 @@ field optional except `name` and `repos`.
 (relative symlinks), so the skill's references to its sibling files resolve from the linked
 location. Linking is a no-op only when `start_skill` is `.claude/skills/devenv` itself.
 
-**I6 — sminos:** `run_claude_bg` in `skills/sminos/scripts/sminos.py`: when `<cwd>/.devbox/env.sh`
-exists, the launch is `bash -c '. "$1"; shift; exec claude "$@"' devenv <cwd>/.devbox/env.sh <args…>`
-instead of `claude <args…>`; otherwise unchanged.
+**I6 — shell-rc hook** (`~/.claude/tools/devenv-rc.sh`): sourced from `~/.zshrc` and
+`~/.bashrc` by a line `sync/apply.py` appends idempotently; when `$PWD/.devbox/env.sh` exists it is
+sourced non-strict — on failure one value-free warning on stderr, and the shell continues.
 
-**I7 — `cloud-env-setup` skill:** `skills/cloud-env-setup/SKILL.md`, frontmatter `name:
+**I7 — `settings.local.json` env:** `devenv up` merges the resolved non-secret `env` into
+`<root>/.claude/settings.local.json` → `env` (other keys preserved); secrets never written.
+
+**I8 — `cloud-env-setup` skill:** `skills/cloud-env-setup/SKILL.md`, frontmatter `name:
 cloud-env-setup`, description with the five trigger phrases of §4.
 
 ## Surprises & Discoveries
@@ -474,6 +504,18 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   shell; (11) sminos' change is tested through `run-sminos-tests.sh` with `launch_env`'s filtering
   preserved. Rationale: the review's findings, each a real gap between the spec and what would
   build or hold on a second host.
+
+- Decision (2026-10-02, plan-executor folding the design review of Purpose–§5): (1) seat
+  environment: `claude --bg` forwards only an allowlisted environment to the running background
+  daemon (verified by the reviewer in the 2.1.283 bundle), so pre-flight (a)'s `run_claude_bg`
+  wrapper could never deliver acceptance 7 — reversed: no sminos change; a shell-rc hook (I6) plus
+  `settings.local.json` env (I7) carry the environment, and the skill moves to I8. (2) Multi-repo
+  composition is root-only: install, start skill, services and validate from the root (or the
+  registry); non-root repositories contribute `env` and `secrets` only, in list order, then root,
+  then registry; `DEVENV_REPO_<NAME>` exported for every repository. (3) Repository URLs are HTTPS
+  (the devbox authenticates GitHub through `gh auth setup-git`, with no SSH key); `git@github.com:`
+  normalized. (4) Cold start: clonable by name only through a registry entry; `devenv up --url`
+  writes one. Rationale: the review's findings — (1) is a mechanism that could not have worked.
 
 ## Outcomes & Retrospective
 
