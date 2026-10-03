@@ -287,7 +287,9 @@ commands, `.env.example` and CI config for the variables and secrets it needs, e
 anything (`compgen -e` for variable names, `git ls-remote` for access, `secret-env list` for known
 secrets); draft `.devbox/environment.json`, `.devbox/install.sh` (with its `# devenv-inputs:`
 line) and the start skill; run `devenv up` for real and fix until install passes; run
-`devenv start` and `devenv validate` until the checks pass; commit the files; report what passed,
+`devenv start` and `devenv validate` until the checks pass — and before declaring a service,
+check whether its dev build shares an installed application's state (userData, config dirs,
+sockets, single-instance locks) and isolate it in the service's cmd or env; commit the files; report what passed,
 what needs a value only the human has (a secret to add to Secret Manager, named by the manifest's
 `secrets[]` entry), and what remains. It writes fields as decisions, never placeholders (the
 install script's steps are commands that ran). Written and tested with `doperpowers:writing-skills`.
@@ -538,10 +540,18 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   against the person's REAL userData (`~/Library/Application Support/MAWS`) while the packaged
   MAWS.app ran: it migrated settings.json v7→v8, reset two stale session holders, and deleted the
   app's `engine` custody copy (the running engine survives on the unlinked binary). Reported to the
-  human; their data was not repaired by us. A scratch checkout isolates the code, not the app's
+  human; their data was not repaired by us. A second touch (~22:07:34–22:08:16, the E2 executor's
+  own error): a hand-run `electron-vite --rendererOnly` without `MAWS_USER_DATA` still launched
+  Electron against the real directory, writing index.sqlite, layout.json, DIPS-wal, Session Storage
+  and GPU caches (settings.json unchanged). The packaged MAWS.app and its engine had exited by
+  22:07:34, cause unknown (a quit, or a crash after the engine copy's deletion). A scratch checkout isolates the code, not the app's
   state: MAWS's dev service now sets `MAWS_USER_DATA="$DEVENV_ROOT/.devbox/maws-userdata"`, and the
-  cloud-env-setup skill must check whether a project's dev run shares an installed app's state
-  directory and isolate it.
+  cloud-env-setup skill carries it as a written step: before declaring a service, check whether the
+  dev build shares the installed application's state (userData, config dirs, sockets,
+  single-instance locks) and isolate it in the service's cmd or env. `devenv stop` left
+  electron-vite/Electron alive for seconds after `kill-session`; it now terminates each pane's
+  process group first. Vite binds `[::1]` only on macOS, so MAWS's ready check is
+  `http://localhost:5173/`, not `127.0.0.1`.
 - 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
   no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
@@ -677,6 +687,13 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   exits 2 (`install interrupted (SIGTERM)`) with no stamp; the non-strict install's secret warning
   goes to the terminal, not the log. E2 owes: `devenv up`'s restricted-network warning still reads
   "recorded, not enforced" — stale under the sandbox decision.
+
+- Decision (2026-10-02, the design session): after the MAWS incident — MAWS's dev service sets
+  `MAWS_USER_DATA="$DEVENV_ROOT/.devbox/maws-userdata"` and acceptance 4 runs only through devenv
+  with that isolation; the cloud-env-setup skill gains the state-isolation step (§4, E3);
+  `devenv stop` terminates each pane's process group before `kill-session`, tested. The host layer
+  gives the devbox account a list-only role, so `secret-env list` works there too; the skill keeps
+  the laptop path as the fallback.
 
 ## Outcomes & Retrospective
 
