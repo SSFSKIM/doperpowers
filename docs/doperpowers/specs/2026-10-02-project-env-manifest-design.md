@@ -534,6 +534,14 @@ cloud-env-setup`, description with the five trigger phrases of §4.
 - 2026-10-02 (E1): claude-config's 30-minute sync commits whatever is in the tree — 23c8586
   captured `tools/devenv` mid mutation-check; b84a386 restored it. Tool work in claude-config
   commits in small units and never leaves a deliberately broken file on disk longer than a test.
+- 2026-10-02 (E2, incident): `devenv start maws` from a scratch clone ran MAWS's dev build
+  against the person's REAL userData (`~/Library/Application Support/MAWS`) while the packaged
+  MAWS.app ran: it migrated settings.json v7→v8, reset two stale session holders, and deleted the
+  app's `engine` custody copy (the running engine survives on the unlinked binary). Reported to the
+  human; their data was not repaired by us. A scratch checkout isolates the code, not the app's
+  state: MAWS's dev service now sets `MAWS_USER_DATA="$DEVENV_ROOT/.devbox/maws-userdata"`, and the
+  cloud-env-setup skill must check whether a project's dev run shares an installed app's state
+  directory and isolate it.
 - 2026-10-02 (E1): MAWS's only remote branch is `master`. Upping a registry project whose root has
   no manifest yet leaves an untracked `.devbox/` (env.sh, .gitignore) in that root.
 
