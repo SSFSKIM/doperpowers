@@ -342,7 +342,7 @@ Each is named where the field that would need it is recorded.
   acceptance step makes runs with `CLAUDE_CONFIG_DIR=<scratch>/claude-config`, seeded with the
   minimum settings it needs; where a step must use the real config (plugins — e.g. a sminos seat),
   its cwd is a scratch directory and the step deletes `~/.claude/projects/<scratch key>/` on
-  teardown. MAWS runs stay halted until the design session lifts the halt.
+  teardown. MAWS runs only on the isolated path (Decision Log, the human's 2026-10-02 decision).
 - **Cross-spec dependency:** E4 needs the host layer's M3 (a devbox with `secret-env` and its
   key); E1–E3 run on the laptop and do not wait for it.
 - **Testing:** `python3 -m unittest discover -s ~/.claude/tools/tests` for the tools; the skill is
@@ -748,6 +748,13 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   E4 relies on the host layer's trust seeding; `sminos resume` dropping `GH_TOKEN` is residue (a
   sminos doc fix); services under `bash -c` with the caller's `PATH`; the ~1100-line `devenv` is
   acceptable as one file.
+
+- Decision (2026-10-02, the human, relayed by the design session): the three scratch session
+  keys E2 created (`-private-tmp-devenv-e2-acc-GH-doperpowers`, `-rcprobe`, `-seat-GH-doperpowers`)
+  are deleted by the design session; nothing under the real doperpowers key is touched. MAWS work
+  resumes on the isolated path only — scratch clone, `MAWS_USER_DATA` under `.devbox`, a scratch
+  `CLAUDE_CONFIG_DIR` for every `claude` run, never the person's checkout or
+  `~/Library/Application Support/MAWS`; E3 may author MAWS's manifest under those rules.
 
 ## Outcomes & Retrospective
 
