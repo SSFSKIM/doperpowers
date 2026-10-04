@@ -852,6 +852,16 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   a branch pushed and not merged — never by editing `~/.claude`'s own working tree, which
   `sync.sh` commits to `main` within 30 minutes. E3 needed no claude-config commit.
 
+- Decision (2026-10-03, final whole-branch review fix wave, folded by the controller): the review
+  (medium rung) found three P2s, fixed on claude-config branch `project-env-manifest` (d66e0bf,
+  518c63a, 2a386b6; pushed, unmerged per the human's constraint): manifests may not name
+  `DEVENV_*` or `_devenv*` variables (a secret named `_devenv_rc` overwrote `secrets.sh`'s
+  bookkeeping, so a value could be executed); generated files go through per-process temp files
+  (concurrent launches on one root raced on one temp name); `reap` as a Linux subreaper ends every
+  descendant, repeating the SIGKILL pass (≤10 rounds) while a kill hands it new orphans — modeled on
+  macOS, run for real in E4. Consequence: `~/.claude/tools` on the laptop holds the pre-fix copy
+  until the human merges the branch; E4 runs the tools from that branch.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
