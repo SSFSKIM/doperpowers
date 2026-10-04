@@ -5,6 +5,7 @@ import {
   answerText,
   answersOf,
   isRead,
+  markdownBlocks,
   parse,
   promptRow,
   questionHead,
@@ -414,6 +415,72 @@ describe('mixed', () => {
     await mixed.press({ key: 'to-human-toggle' })
     expect(await record.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
     expect(await mixed.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+  })
+})
+
+describe('surfaces', () => {
+  const PLUGIN = 'doperpowers-mods'
+  const TEXT =
+    '<to-human>One.</to-human>\n' +
+    '<need-input>Which branch?\n<choice recommended>main</choice>\n<choice>dev</choice>\n</need-input>'
+
+  test('a remote surface draws every span body as its own Markdown, the question included', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    // The engine's own drawing beneath the mod, as the terminal case reads it.
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const ui = await $.ui.mount({
+      plugin: PLUGIN,
+      surface: 'desktop',
+      component: 'AssistantMessage',
+      requestId: 'm1',
+      props: { text: TEXT, isFirstOfReply: true },
+    })
+
+    expect(await ui.find({ type: 'Markdown', text: 'One.' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: 'Which branch?' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: '1: main ★' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: '2: dev' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'reply…' })).toBeDefined()
+    // Nothing is handed back beneath the hook: a second block would not draw.
+    expect(await ui.find({ type: 'Text', text: 'One.' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'Which branch?' })).toBeUndefined()
+  })
+
+  test('the terminal keeps the engine\'s own drawing of each span body', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const ui = await $.ui.mount({
+      plugin: PLUGIN,
+      surface: 'terminal',
+      component: 'AssistantMessage',
+      requestId: 'm1',
+      props: { text: TEXT, isFirstOfReply: true },
+    })
+
+    expect(await ui.find({ type: 'Text', text: 'One.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Which branch?' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', text: '1: main ★' })).toBeDefined()
+  })
+
+  test('markdownBlocks strips control characters and cuts under the cap at paragraph breaks', async () => {
+    expect(markdownBlocks('a\u001b[2mb\u001b[0m\r\nc\td')).toEqual(['ab\nc\td'])
+
+    const paragraph = 'x'.repeat(6000)
+    const blocks = markdownBlocks(`${paragraph}\n\n${paragraph}\n\nend`)
+    expect(blocks).toEqual([paragraph, `${paragraph}\n\nend`])
+    expect(blocks.every((block) => block.length <= 10000)).toBe(true)
+
+    const long = markdownBlocks('y'.repeat(25000))
+    expect(long.map((block) => block.length)).toEqual([10000, 10000, 5000])
   })
 })
 

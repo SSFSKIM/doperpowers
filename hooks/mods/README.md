@@ -19,10 +19,16 @@ a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under a colored
   label: `to human` in cyan, `essential` in green, `need input` in magenta,
-  `insight` in yellow. A
+  `insight` in yellow. On the terminal a
   span's body is the engine's own markdown drawing of the span's text (the
   block is handed back beneath the hook with that text in place of the
   whole), so a table or a list inside a mark draws as it would unmarked. A
+  remote surface (the desktop app, VS Code, mobile) draws the body as the
+  surface's own `Markdown` element instead: a render answer carries one
+  props, so of several blocks handed back only the first draws there — Claude
+  Desktop portals its native row into the first engine node and draws nothing
+  at the rest, which left every span after the first label-only and a
+  `need-input` question with its buttons and no question (2026-10-03). A
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
   unfolds the engine's drawing of the whole block, and the run of working
