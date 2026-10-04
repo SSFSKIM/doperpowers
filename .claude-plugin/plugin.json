@@ -1,7 +1,7 @@
 {
   "name": "doperpowers",
   "description": "Emerges by humans, Converges by Agents",
-  "version": "7.133.0",
+  "version": "7.134.0",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
@@ -9,6 +9,9 @@
   "homepage": "https://github.com/SSFSKIM/doperpowers",
   "repository": "https://github.com/SSFSKIM/doperpowers",
   "license": "MIT",
+  "workflows": [
+    "./skills/review-code/workflows/code-review.js"
+  ],
   "keywords": [
     "skills",
     "tdd",

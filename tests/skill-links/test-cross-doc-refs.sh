@@ -9,8 +9,9 @@
 #   - references/*.{md,sh,yml} and scripts/*.sh mentions (must exist
 #     relative to the file, its skill root, or a skill named in the same
 #     paragraph — prose wraps lines, so context is paragraph-scoped)
-#   - doperpowers:<name> references (must be a skill directory or an
-#     agent definition under agents/)
+#   - doperpowers:<name> references (must be a skill directory, an agent
+#     definition under agents/, or a workflow the plugin manifest registers —
+#     its `workflows` entries, each file's `meta.name`)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,6 +23,22 @@ import re, sys, pathlib
 root = pathlib.Path(sys.argv[1]) / "skills"
 skills = {p.name for p in root.iterdir() if p.is_dir()}
 agents = {p.stem for p in (pathlib.Path(sys.argv[1]) / "agents").glob("*.md")}
+
+# Named workflows: `doperpowers:<meta.name>` for every .js the manifest's
+# `workflows` key names (a file or a directory of them), as the engine
+# registers them.
+import json
+repo = pathlib.Path(sys.argv[1])
+manifest = json.loads((repo / ".claude-plugin" / "plugin.json").read_text())
+declared = manifest.get("workflows", [])
+workflows = set()
+for entry in ([declared] if isinstance(declared, str) else declared):
+    path = repo / entry
+    files = sorted(path.glob("*.js")) if path.is_dir() else [path]
+    for js in files:
+        m = re.search(r"export\s+const\s+meta\s*=\s*\{[^}]*?\bname:\s*['\"]([^'\"]+)['\"]", js.read_text())
+        if m:
+            workflows.add(m.group(1))
 fails, checked = [], 0
 
 def paragraphs(text):
@@ -63,10 +80,10 @@ for f in sorted(root.rglob("*.md")):
                     fails.append(f"{f}:{start}: {kind}-path resolves nowhere: {rel}")
         for m in re.finditer(r'doperpowers:([a-z0-9-]+)', para):
             checked += 1
-            if m.group(1) not in skills and m.group(1) not in agents:
+            if m.group(1) not in skills and m.group(1) not in agents and m.group(1) not in workflows:
                 fails.append(f"{f}:{start}: dangling reference doperpowers:{m.group(1)}")
 
-print(f"checked {checked} references across {len(skills)} skills")
+print(f"checked {checked} references across {len(skills)} skills, {len(agents)} agents, {len(workflows)} workflows")
 if fails:
     print(f"{len(fails)} DANGLING:")
     for x in fails:

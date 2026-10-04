@@ -46,9 +46,13 @@ one structural risk surface.
 Workflow tool; a subagent hands the pinned range and level up):
 
 ```
-Workflow({ scriptPath: "<skill-base>/workflows/code-review.js",
+Workflow({ name: "doperpowers:code-review",
            args: { level: "<level>", base: "<base>", baseCommit: "<mb>", headCommit: "<head>" } })
 ```
+
+The plugin registers `workflows/code-review.js` under that name. A `scriptPath`
+into the plugin's cache is refused — the tool's read-path check admits only
+the working directory and added directories — so pass the name, never the path.
 
 It runs in the background. [references/panel.md](references/panel.md) has the
 result contract, the optional args (`repo` for a worktree, `lenses`), and the

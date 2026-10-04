@@ -123,7 +123,7 @@ assert_contains "$PROTOCOL" "auto-merge:" "the brief relays the merge switch"
 
 echo "stand-in protocol — the relay:"
 assert_contains "$PROTOCOL" "NEEDS_PANEL" "panel levels come back to the seat that has the Workflow tool"
-assert_contains "$PROTOCOL" "code-review.js" "the panel runs review-code's own workflow"
+assert_contains "$PROTOCOL" "doperpowers:code-review" "the panel runs review-code's own workflow, by its registered name"
 assert_contains "$PROTOCOL" "Workflow(" "the panel call is the Workflow tool's"
 assert_contains "$PROTOCOL" 'repo: "<absolute path of the checkout you positioned>"' \
     "...naming the checkout it positioned, without which the workflow reads the main checkout instead"

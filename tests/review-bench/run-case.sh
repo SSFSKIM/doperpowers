@@ -11,7 +11,8 @@
 #
 #   native / native-panel run the doperpowers:review-code lane headless
 #   (`claude -p` with the plugin loaded from THIS checkout via --plugin-dir):
-#   the session runs skills/review-code/workflows/code-review.js
+#   the session runs the plugin's `doperpowers:code-review` workflow
+#   (skills/review-code/workflows/code-review.js, registered by plugin.json)
 #   through the Workflow tool at NATIVE_LEVEL (native: default medium, one
 #   reviewer; native-panel: default xhigh, the panel) and prints the result
 #   JSON. Progress and warnings land in <findings-file>.events.log.
@@ -166,10 +167,9 @@ case "$engine" in
     # so the agents under test are the ones in the working tree.
     head_sha="$(git -C "$scratch" rev-parse bench-change)"
     level="${NATIVE_LEVEL:-medium}"; [ "$engine" = "native-panel" ] && level="${NATIVE_LEVEL:-xhigh}"
-    script="$repo_root/skills/review-code/workflows/code-review.js"
     default_args='{"level":"'"$level"'","base":"main","baseCommit":"'"$merge_base"'","headCommit":"'"$head_sha"'","repo":"'"$scratch"'"}'
     wf_args="${PANEL_ARGS:-$default_args}"
-    prompt="Run the review workflow: call the Workflow tool with the scriptPath parameter set to \"$script\" (do not paste the script inline) and args $wf_args (pass args as a JSON object). The workflow runs in the background and you will receive a completion notification; write NOTHING until that notification arrives — a message before it ends this session and kills the run. When it arrives, print the workflow's result object as JSON and nothing else."
+    prompt="Run the review workflow: call the Workflow tool with name \"doperpowers:code-review\" (the plugin loaded from this checkout registers it; pass no scriptPath and do not paste the script inline) and args $wf_args (pass args as a JSON object). The workflow runs in the background and you will receive a completion notification; write NOTHING until that notification arrives — a message before it ends this session and kills the run. When it arrives, print the workflow's result object as JSON and nothing else."
     # shellcheck disable=SC2086
     timeout "$timeout_s" claude -p "$prompt" --plugin-dir "$repo_root" --permission-mode auto \
       ${NATIVE_CLAUDE_ARGS:-} > "$out" 2> "$out.events.log"

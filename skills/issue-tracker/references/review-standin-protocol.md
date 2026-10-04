@@ -161,7 +161,7 @@ makes that positioning count, since without it the workflow isolates every lane
 at the repository's main checkout head instead:
 
 ```
-Workflow({ scriptPath: "{{REVIEW_CODE_DIR}}/workflows/code-review.js",
+Workflow({ name: "doperpowers:code-review",
            args: { level: "<level>", base: "<base>", baseCommit: "<baseCommit>",
                    headCommit: "<headCommit>",
                    repo: "<absolute path of the checkout you positioned>" } })

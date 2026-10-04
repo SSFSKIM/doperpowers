@@ -5,8 +5,11 @@
 // every finder a reviewer agent, one binding verifier over the merged pool.
 // Every model judgment lives in an agent turn; everything else is deterministic.
 //
-// Invoke:  Workflow({ scriptPath: "<skill-base>/workflows/code-review.js",
+// Invoke:  Workflow({ name: "doperpowers:code-review",
 //                     args: { level, base, baseCommit, headCommit } })
+// plugin.json's `workflows` key registers this file under that name. A
+// `scriptPath` into the plugin cache is refused: the Workflow tool's read-path
+// check admits only the working directory and added directories.
 //
 // args:
 //   level       — low | medium | high | xhigh | max (default medium)
