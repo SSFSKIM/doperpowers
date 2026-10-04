@@ -844,6 +844,14 @@ cloud-env-setup`, description with the five trigger phrases of §4.
   seeded with `includeCoAuthoredBy: false` and a copy of `~/.claude/CLAUDE.md` before any `claude`
   run (Constraints); the two trailer commits were never pushed.
 
+- Decision (2026-10-03, the human, relayed by the design session): nothing between the MacBook
+  and the Mac mini until the human lifts it — no commits to claude-config `main` (it reaches the
+  mini through the human's config sync), no ssh to the mini for any change, nothing touching the
+  mini's `~/.claude` or the Mutagen sessions. Commits already on `main` stay. From here, any
+  claude-config change is made in a separate `git worktree` of claude-config outside `~/.claude`, on
+  a branch pushed and not merged — never by editing `~/.claude`'s own working tree, which
+  `sync.sh` commits to `main` within 30 minutes. E3 needed no claude-config commit.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
