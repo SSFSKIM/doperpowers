@@ -864,4 +864,30 @@ cloud-env-setup`, description with the five trigger phrases of §4.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-10-03, after E1–E3 (E4 open, waiting on a devbox).** On the laptop the layer does what the
+Purpose promises, with fakes standing in only at the secret boundary: `devenv up` clones a project
+by name through the registry, installs it idempotently (a second `up` skips in under a second), and
+leaves env files that carry no value; `devenv shell/claude` launch with the project's environment
+and secrets; `devenv start/status/stop` run services in tmux with readiness and leave no process
+behind; `devenv validate` runs or prints the checks; a session or seat started in a project root
+sees the project's env through `settings.local.json`; and `cloud-env-setup` made all three real
+projects ready by running their installs for real (pressure-tested: without it, most runs shipped
+untested install lines). Each milestone passed a task review after fix waves, and the whole branch
+passed the medium-rung review after one fix wave. Open: E4 (acceptance 10, every real-handler check,
+`gh api user`, the seat-under-sandbox check, `reap`'s Linux subreaper path, MAWS's Linux install).
+
+What changed from the design, and why it matters for the next spec: three mechanisms the spec
+named could not have worked and were found only by building — sourcing env.sh around `claude --bg`
+(the daemon forwards an allowlist), the rc hook reaching Bash tool shells (the snapshot drops
+exports), and `exec` in a service window (helpers outlived it). A spec that relies on a harness's
+environment propagation should name an experiment, not a mechanism. The human's sandbox decision
+arrived mid-execution and reshaped secrets twice; it landed cleanly because the spec was revised
+before code consumed it.
+
+The serious failure was not in the code: a scratch checkout isolated the code but not the app's
+state, and E2's MAWS runs wrote to the person's real MAWS data twice, and its probe sessions landed
+in the person's session store, which MAWS displays. The rules that came out — isolate an app's own
+state directory, run every test `claude` under a seeded scratch config — are now in the
+Constraints and in the skill. Two process lessons: an auto-committing sync captures half-finished
+files (commit in small units, mutate copies outside the synced tree), and a test suite that drives
+the real CLI must be named as such so no one runs it under the real config.
