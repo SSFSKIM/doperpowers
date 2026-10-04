@@ -407,6 +407,51 @@ export function withAnswer(box: string, head: string, answer?: string): string {
   return kept.join('\n')
 }
 
+/**
+ * A remote surface (the desktop app, VS Code, mobile) draws a span's body as
+ * its own `Markdown`. A render answer carries one props, so of several blocks
+ * handed back beneath the hook only the first can draw there: Claude Desktop
+ * portals its native row into the first `engine` node and draws nothing at
+ * the rest, which left every span after the first label-only and a
+ * `need-input` question with buttons and no question (2026-10-03). The
+ * terminal draws the hook's whole tree in-process, so there the body stays
+ * the engine's own drawing. `Markdown.text` takes at most 10000 characters
+ * and no control character but tab and newline.
+ */
+const MARKDOWN_MAX = 10000
+
+/**
+ * A span's text as `Markdown` accepts it: residual escape sequences and
+ * control characters out, and cut into blocks under the cap at paragraph
+ * breaks (a paragraph over the cap is cut where it must be).
+ */
+export function markdownBlocks(text: string): string[] {
+  const clean = text.replace(/\u001b\[[0-9;]*m/g, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+  const blocks: string[] = []
+  let current = ''
+  const push = (block: string) => {
+    if (block !== '') {
+      blocks.push(block)
+    }
+  }
+  for (const paragraph of clean.split(/\n{2,}/)) {
+    const joined = current === '' ? paragraph : `${current}\n\n${paragraph}`
+    if (Array.from(joined).length <= MARKDOWN_MAX) {
+      current = joined
+      continue
+    }
+    push(current)
+    let rest = Array.from(paragraph)
+    while (rest.length > MARKDOWN_MAX) {
+      push(rest.slice(0, MARKDOWN_MAX).join(''))
+      rest = rest.slice(MARKDOWN_MAX)
+    }
+    current = rest.join('')
+  }
+  push(current)
+  return blocks
+}
+
 const STYLE: Record<Kind, { label: string; color: string }> = {
   'to-human': { label: 'to human', color: 'cyan' },
   essential: { label: 'essential', color: 'green' },
@@ -645,7 +690,7 @@ export function registerToHuman(on: On) {
       return recordRow($, e, next, view, { bullet })
     }
 
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const requestId = e.requestId
     const toggleThis = () => toggle(unfolded, requestId)
 
@@ -667,13 +712,25 @@ export function registerToHuman(on: On) {
     const last = parsed.spans.length - 1
 
     // A span's body is markdown as the model wrote it (a table, a list, a
-    // code fence), so it is drawn by the engine: the block is handed back
-    // beneath this hook with the span's text in place of the whole, and no
-    // bullet, since the label above carries it. The bullet is the engine's
-    // two-column gutter, so the body is padded by as much to sit where the
-    // transcript's text does.
+    // code fence). On the terminal it is drawn by the engine: the block is
+    // handed back beneath this hook with the span's text in place of the
+    // whole, and no bullet, since the label above carries it. The bullet is
+    // the engine's two-column gutter, so the body is padded by as much to sit
+    // where the transcript's text does. A remote surface draws it as its own
+    // `Markdown` instead, one block per span, since only the first block
+    // handed back would draw there (see `markdownBlocks`).
     const bodies = await Promise.all(
-      parsed.spans.map((span) => next({ ...e, props: { ...e.props, text: span.text, isFirstOfReply: false } })),
+      parsed.spans.map((span) =>
+        e.surface === 'terminal'
+          ? next({ ...e, props: { ...e.props, text: span.text, isFirstOfReply: false } })
+          : Promise.resolve(
+              <Box flexDirection="column">
+                {markdownBlocks(span.text).map((block) => (
+                  <Markdown text={block} />
+                ))}
+              </Box>,
+            ),
+      ),
     )
 
     return (
