@@ -47,6 +47,8 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('compacts on its own at about 967,000')
     expect(describeCompact(undefined)).toContain("compacts on its own near the window's end")
     expect(describeCompact(967_000)).toContain('compacted when this turn ends')
+    expect(describeCompact(967_000)).toContain('300k–400k: compact at any reasonable checkpoint')
+    expect(describeCompact(967_000)).toContain('a backstop, not the')
   })
 
   test('the usage text carries the figures and the threshold', async () => {
