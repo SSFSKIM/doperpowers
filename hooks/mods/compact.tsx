@@ -61,7 +61,8 @@ export function describeCompact(threshold: number | undefined): string {
     'When to compact. At a checkpoint where the summary loses no state of the',
     'current work. It cuts cumulative cache-read cost (every call re-reads the',
     'whole context), leaves room for the work ahead, and drops content that no',
-    'longer matters. `context_usage` tells you where you are.',
+    'longer matters. At each reasonable checkpoint, call `context_usage` to',
+    'see where you are and judge whether to compact:',
     '- Under 150k: rarely worth it.',
     '- 150k–250k: compact when nothing is pending and nothing still needed',
     '  lives only in context.',
@@ -87,7 +88,7 @@ export function describeCompact(threshold: number | undefined): string {
 }
 
 export function describeUsage(): string {
-  return 'Your context size now: tokens used, the window, percent. Costs nothing. Call it when deciding whether to compact.'
+  return 'Your context size now: tokens used, the window, percent. Costs nothing. Call it at each reasonable checkpoint of your work to judge whether to compact.'
 }
 
 export type ContextFigures = {
