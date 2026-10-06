@@ -183,6 +183,49 @@ Known limits: switching on starts a turn, as typing `/kairos` does, and so
 does switching off; a fork gets a new session id and starts out of the mode,
 so the button reads `off` there, as the shell hooks do.
 
+## compact (`compact.tsx`)
+
+Two tools the model can call, registered at `session.start` under the
+plugin's name: `mcp__doperpowers__context_usage` and
+`mcp__doperpowers__compact`. The first answers the figures the status line
+has (`$.session.usage().context`: the input tokens of the last response,
+the window, the percentage) and where the engine compacts on its own (the
+window less the 20k output reserve and 13k headroom: 967k on a 1M model),
+at no cost, so the model asks only when it is deciding. The second is the
+model compacting its own context at a checkpoint of its choosing.
+
+The engine compacts only between turns (`$.session.compact` is refused while
+a turn runs), so the tool defers: its handler keeps the request
+(`instructions`, what this checkpoint's summary should keep or drop beyond
+the standard summary; `resume`, the prompt to receive after the reset) and
+answers at once that the compaction runs when the turn ends, so the model
+ends its turn. At the `turn.complete` of a main-conversation turn the model
+answered (`reason: "answer"`) the module calls `$.session.compact` (the
+`/compact` path, trigger `plugin`: one model call over the live conversation
+with the summary request appended, so the model that chose to compact
+writes the summary; the `PreCompact` shell hook's `compact-instructions.md`
+merges in) and then submits `resume` through `$.prompt.submit`, whatever the
+compaction's outcome (a `{ skip }` or a failure is toasted), so a session
+nobody watches never stalls on a turn the model ended to be compacted. A
+request left by a turn that ended otherwise (an interruption, an API error)
+is dropped at the next `turn.start`, so a turn the person starts is not
+compacted behind them. Nothing is aborted: background shells, monitors, MCP
+servers and subagents run on through a compaction, and their notifications
+arrive in the turn after. The tool's description carries the guidance (why,
+the token bands, call it last and alone, end the turn).
+
+A subagent's call is refused (its turn ends are not the main conversation's)
+and a headless (`-p` / SDK) session gets neither tool: the engine has no
+compactor a plugin can call there yet. The session and turn events are
+taken with a matcher (`isInteractive: true`, `reason: "answer"`) because
+kairos and agents register them too, and the engine admits one unmatched
+registration of an event per module.
+
+Known limits: the threshold in the description ignores an `autoCompactWindow`
+setting; a model that keeps working after the tool answered is compacted at
+whatever answered turn end comes; the `resume` prompt enters under the
+plugin's name, as any plugin-submitted prompt does.
+
 ## Developing
 
 ```

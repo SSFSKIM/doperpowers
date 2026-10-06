@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
 
 import { registerAgents } from './agents'
+import { registerCompact } from './compact'
 import { registerKairos } from './kairos'
 import { registerToHuman } from './to-human'
 
@@ -15,4 +16,5 @@ export function register(on: On) {
   // wraps what kairos drew there.
   registerAgents(on)
   registerKairos(on)
+  registerCompact(on)
 }
