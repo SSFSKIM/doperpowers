@@ -1,4 +1,4 @@
-import type { EngineInterface, On, SessionStartInput, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, On, SessionStartInput, ToolDescribeResult, TurnCompleteInput } from 'claude-code'
 
 /**
  * The tools as the model names them, `mcp__<plugin>__<name>` with the
@@ -70,7 +70,7 @@ export function describeCompact(threshold: number | undefined): string {
     '  can be preserved. Do not wait until your context is full: know that',
     '  from here every call re-reads a large context, which may hold old or',
     '  unrelated content that degrades your reading of the rest. If that is',
-    '  not the case, you can continue.',
+    '  not the case, or justified, you can continue.',
     '- Above 500k: keeping everything verbatim is justified only while the',
     '  work needs it, and try not to go past 650–700k unless truly justified.',
     '  Past that, make sure what matters is in the repository where it can',
@@ -123,6 +123,9 @@ export function scheduledText(request: CompactRequest): string {
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+/** A tool.describe answer that keeps the tool out of tool-search deferral. */
+const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...described, isDeferred: false }) as ToolDescribeResult
 
 /**
  * The request the compact tool took this turn, spent at the turn's end; and
@@ -240,6 +243,13 @@ export function registerCompact(on: On) {
     await compactTurnComplete($, e)
     return result
   })
+
+  // Tool search defers every MCP tool, and these two are MCP tools to the
+  // engine: the model would see their names alone and read the guidance only
+  // after loading one. A tool.describe verdict of isDeferred: false keeps
+  // them inline (the engine's own placement, passed as e.isDeferred, loses).
+  on('tool.describe', { tool: 'mcp__doperpowers__compact' }, async (_, e, next) => inline(await next(e)))
+  on('tool.describe', { tool: 'mcp__doperpowers__context_usage' }, async (_, e, next) => inline(await next(e)))
 
   on('tool.call', { tool: 'mcp__doperpowers__context_usage' }, async ($) => {
     const context = await compactionWindow($)

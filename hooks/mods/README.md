@@ -225,11 +225,15 @@ taken with a matcher (`isInteractive: true`, `reason: "answer"`) because
 kairos and agents register them too, and the engine admits one unmatched
 registration of an event per module.
 
-The tools are MCP tools to the engine, so where tool search defers MCP
-tools (`/context` reads "MCP tools · loaded on-demand · 0 tokens") their
-definitions cost nothing until the model loads one; loaded, `compact`'s
-runs about 2.1k characters (some 500 tokens) and `context_usage`'s about
-220, and each answer is a line.
+The tools are MCP tools to the engine, which tool search defers (the
+model sees the name alone until it loads the tool with `ToolSearch`), so
+the guidance in `compact`'s description would reach the model only once it
+had already thought of compacting. A `tool.describe` hook on each tool
+answers `isDeferred: false`, which the engine takes over its own placement
+(SPEC 14.4.2, since 2.1.287), so both ship inline in every request:
+`/context` then reads "MCP tools · 1.1k tokens" where it read "0 tokens",
+the two definitions together (`compact`'s is about 2.1k characters), in the
+prompt-cache prefix. Each answer is a line.
 
 Known limits: the threshold is read once, at session start, so a window
 changed by `/autocompact` mid-session is not followed; a model that keeps
