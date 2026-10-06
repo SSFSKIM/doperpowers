@@ -9,10 +9,9 @@ export const COMPACT = 'mcp__doperpowers__compact'
 export const CONTEXT_USAGE = 'mcp__doperpowers__context_usage'
 
 /**
- * What the engine subtracts from the window before compacting on its own:
- * the output reserve (at most 20k) and the headroom below it (13k). On a 1M
- * model the threshold is 967k, on a 200k model 167k. An `autoCompactWindow`
- * setting lowers the window the reserve comes off; this ignores it.
+ * What the engine subtracts from the compaction window before compacting on
+ * its own: the output reserve (at most 20k) and the headroom below it (13k).
+ * On a 1M window the threshold is 967k, on 900k 867k, on 200k 167k.
  */
 const OUTPUT_RESERVE = 20_000
 const HEADROOM = 13_000
@@ -85,21 +84,22 @@ export function describeUsage(): string {
 }
 
 export type ContextFigures = {
+  /** Input tokens the last response was answered over. */
   tokens?: number
+  /** The window the engine compacts against. */
   window: number
-  percent?: number
 }
 
 /**
- * The context_usage result: the figures the status line has, and where the
- * engine compacts on its own.
+ * The context_usage result: the last response's input tokens over the
+ * compaction window, and where the engine compacts on its own.
  */
 export function usageText(context: ContextFigures, threshold: number): string {
   const own = `The harness compacts on its own at about ${n(threshold)} tokens.`
   if (context.tokens === undefined) {
     return `Context: no model response yet this session; window ${n(context.window)} tokens. ${own}`
   }
-  const percent = context.percent ?? Math.round((context.tokens / context.window) * 100)
+  const percent = Math.round((context.tokens / context.window) * 100)
   return `Context: ${n(context.tokens)} of ${n(context.window)} tokens (${percent}%). ${own}`
 }
 
@@ -130,13 +130,24 @@ export function resetCompact() {
 }
 
 /**
+ * The window the engine compacts against: the compaction window where one is
+ * set (client data, a setting, an experiment: /context's "Auto-compact
+ * window"), else the model's. The `summary` breakdown estimates locally and
+ * sends no request.
+ */
+async function compactionWindow($: EngineInterface): Promise<{ tokens?: number; window: number }> {
+  const { context } = await $.session.usage({ breakdown: 'summary' })
+  return { tokens: context.tokens, window: context.breakdown?.rawMaxTokens ?? context.window }
+}
+
+/**
  * Session start: reads the window and registers the two tools. Only a session
  * with a person at the prompt gets them: a headless (-p / SDK) session has no
  * compactor a plugin can call.
  */
 export async function compactStart($: EngineInterface, _: SessionStartInput) {
   try {
-    threshold = thresholdOf((await $.session.usage()).context.window)
+    threshold = thresholdOf((await compactionWindow($)).window)
   } catch (error) {
     $.ui.log(`compact: the window could not be read: ${message(error)}`)
   }
@@ -223,7 +234,7 @@ export function registerCompact(on: On) {
   })
 
   on('tool.call', { tool: 'mcp__doperpowers__context_usage' }, async ($) => {
-    const { context } = await $.session.usage()
+    const context = await compactionWindow($)
     return { result: usageText(context, threshold ?? thresholdOf(context.window)) }
   })
 

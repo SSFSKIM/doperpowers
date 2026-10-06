@@ -187,12 +187,16 @@ so the button reads `off` there, as the shell hooks do.
 
 Two tools the model can call, registered at `session.start` under the
 plugin's name: `mcp__doperpowers__context_usage` and
-`mcp__doperpowers__compact`. The first answers the figures the status line
-has (`$.session.usage().context`: the input tokens of the last response,
-the window, the percentage) and where the engine compacts on its own (the
-window less the 20k output reserve and 13k headroom: 967k on a 1M model),
-at no cost, so the model asks only when it is deciding. The second is the
-model compacting its own context at a checkpoint of its choosing.
+`mcp__doperpowers__compact`. The first answers the input tokens of the
+last response over the window the engine compacts against (the `summary`
+breakdown's `rawMaxTokens`: the compaction window where client data, a
+setting or an experiment set one, as `/context` shows it under
+"Auto-compact window", else the model's; estimated locally, no request
+sent) and where the engine compacts on its own (that window less the 20k
+output reserve and 13k headroom: 867k on the 900k window a 1M model gets
+here, 167k on a 200k one), so the model asks only when it is deciding. The
+second is the model compacting its own context at a checkpoint of its
+choosing.
 
 The engine compacts only between turns (`$.session.compact` is refused while
 a turn runs), so the tool defers: its handler keeps the request
@@ -221,10 +225,17 @@ taken with a matcher (`isInteractive: true`, `reason: "answer"`) because
 kairos and agents register them too, and the engine admits one unmatched
 registration of an event per module.
 
-Known limits: the threshold in the description ignores an `autoCompactWindow`
-setting; a model that keeps working after the tool answered is compacted at
-whatever answered turn end comes; the `resume` prompt enters under the
-plugin's name, as any plugin-submitted prompt does.
+The tools are MCP tools to the engine, so where tool search defers MCP
+tools (`/context` reads "MCP tools · loaded on-demand · 0 tokens") their
+definitions cost nothing until the model loads one; loaded, `compact`'s
+runs about 2.1k characters (some 500 tokens) and `context_usage`'s about
+220, and each answer is a line.
+
+Known limits: the threshold is read once, at session start, so a window
+changed by `/autocompact` mid-session is not followed; a model that keeps
+working after the tool answered is compacted at whatever answered turn end
+comes; the `resume` prompt enters under the plugin's name, as any
+plugin-submitted prompt does.
 
 ## Developing
 

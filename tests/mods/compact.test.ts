@@ -50,7 +50,7 @@ describe('texts', () => {
   })
 
   test('the usage text carries the figures and the threshold', async () => {
-    expect(usageText({ tokens: 312_400, window: 1_000_000, percent: 31 }, 967_000)).toBe(
+    expect(usageText({ tokens: 312_400, window: 1_000_000 }, 967_000)).toBe(
       'Context: 312,400 of 1,000,000 tokens (31%). The harness compacts on its own at about 967,000 tokens.',
     )
     expect(usageText({ tokens: 50_000, window: 200_000 }, 167_000)).toContain('(25%)')
@@ -75,7 +75,7 @@ const turnEnd = (agentId?: string) => ({ ...(agentId !== undefined && { agentId 
  * what the hooks call is written down, and what they are told is set here.
  * The shares of the shared events are called as register.tsx calls them.
  */
-function harness(options: { window?: number; compact?: () => Promise<unknown> } = {}) {
+function harness(options: { window?: number; compactionWindow?: number; compact?: () => Promise<unknown> } = {}) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
@@ -88,7 +88,17 @@ function harness(options: { window?: number; compact?: () => Promise<unknown> } 
   }
   const $ = {
     session: {
-      usage: async () => ({ context: { tokens: 312_400, window: options.window ?? 1_000_000, percent: 31 }, rateLimits: [] }),
+      // The breakdown, asked for, measures against the compaction window.
+      usage: async (args?: { breakdown?: string }) => ({
+        context: {
+          tokens: 312_400,
+          window: options.window ?? 1_000_000,
+          percent: 31,
+          ...(args?.breakdown !== undefined &&
+            options.compactionWindow !== undefined && { breakdown: { rawMaxTokens: options.compactionWindow, maxTokens: options.compactionWindow } }),
+        },
+        rateLimits: [],
+      }),
       compact: async (args: unknown) => {
         calls.push({ op: 'session.compact', args })
         return options.compact === undefined ? { messages: [], tokensBefore: 312_400, tokensAfter: 20_000 } : options.compact()
@@ -134,6 +144,16 @@ describe('registerCompact', () => {
     const answer = (await h.call({ tool: CONTEXT_USAGE, tool_use_id: 't1' })) as { result: string }
     expect(answer.result).toContain('312,400 of 200,000')
     expect(answer.result).toContain('about 167,000')
+  })
+
+  test('a compaction window smaller than the model window is the one measured against', async () => {
+    const h = harness({ window: 1_000_000, compactionWindow: 900_000 })
+    await h.mod.start(h.engine, start(true))
+    const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
+    expect(spec.description).toContain('at about 867,000')
+    const answer = (await h.call({ tool: CONTEXT_USAGE, tool_use_id: 't1' })) as { result: string }
+    expect(answer.result).toContain('312,400 of 900,000 tokens (35%)')
+    expect(answer.result).toContain('about 867,000')
   })
 
   test('a compact call is answered at once and compacted when the main turn ends, then the resume prompt enters', async () => {
