@@ -46,7 +46,7 @@ const n = (value: number) => value.toLocaleString('en-US')
 export function describeCompact(threshold: number | undefined): string {
   const own = threshold === undefined ? "near the window's end" : `at about ${n(threshold)}`
   return [
-    'Compact your own context at a checkpoint of your choosing. Runs when',
+    'Compact your own context at a reasonable checkpoint of your choosing. Runs when',
     'this turn ends: you write the summary that replaces the conversation',
     '(standard instructions plus your `instructions`), then `resume` is',
     'submitted to you as the next prompt. Background shells, monitors, MCP',
