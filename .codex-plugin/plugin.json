@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "version": "7.136.8",
+  "version": "7.136.9",
   "description": "One software-development methodology for coding agents, sized by the work: brainstorm, design, spec, TDD, review, ship — one spec that carries its plan of work as milestones: one milestone runs in order from the spec, several run a fresh subagent per milestone reviewed at each dependency frontier, and the same method runs unattended on the board loop.",
   "author": {
     "name": "SSFSKIM",

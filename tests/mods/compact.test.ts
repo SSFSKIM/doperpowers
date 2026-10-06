@@ -46,9 +46,9 @@ describe('texts', () => {
   test('the compact description names the harness threshold, or its absence', async () => {
     expect(describeCompact(967_000)).toContain('compacts on its own at about 967,000')
     expect(describeCompact(undefined)).toContain("compacts on its own near the window's end")
-    expect(describeCompact(967_000)).toContain('compacted when this turn ends')
-    expect(describeCompact(967_000)).toContain('300k–500k: compact at any reasonable checkpoint')
-    expect(describeCompact(967_000)).toContain('a backstop, not the')
+    expect(describeCompact(967_000)).toContain('Runs when\nthis turn ends')
+    expect(describeCompact(967_000)).toContain('300k–500k: at any reasonable checkpoint')
+    expect(describeCompact(967_000)).toContain('a backstop, not the plan')
   })
 
   test('the usage text carries the figures and the threshold', async () => {

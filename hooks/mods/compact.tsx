@@ -46,49 +46,37 @@ const n = (value: number) => value.toLocaleString('en-US')
 export function describeCompact(threshold: number | undefined): string {
   const own = threshold === undefined ? "near the window's end" : `at about ${n(threshold)}`
   return [
-    'Compact your own context at a checkpoint of your choosing.',
+    'Compact your own context at a checkpoint of your choosing. Runs when',
+    'this turn ends: you write the summary that replaces the conversation',
+    '(standard instructions plus your `instructions`), then `resume` is',
+    'submitted to you as the next prompt. Background shells, monitors, MCP',
+    'servers and subagents keep running; the pre-compaction transcript path',
+    'is given to you afterwards.',
     '',
-    'If you call this, your context is compacted when this turn ends. The',
-    'compaction is one model call: you, with this very context, asked once to',
-    'write the summary that replaces the conversation. The standard summary',
-    'instructions apply; `instructions` adds what matters at this checkpoint.',
-    'Then `resume` is submitted to you as the next prompt and you continue.',
-    'Nothing else is interrupted: background shells, monitors, MCP servers and',
-    'subagents keep running, and their notifications arrive afterwards. The',
-    'pre-compaction transcript path is given to you after the reset, so exact',
-    'details can be read back.',
+    'When. At each reasonable checkpoint, call `context_usage` and judge;',
+    'compact only where no state of the current work is lost.',
+    '- Under 150k: rarely.',
+    '- 150k–250k: when nothing is pending and nothing still needed lives',
+    '  only in context.',
+    '- 300k–500k: at any reasonable checkpoint. Do not wait for a full',
+    '  context: old or unrelated content degrades your reading of the rest;',
+    '  if that is not the case, or justified, continue.',
+    '- Above 500k: verbatim retention only while the work needs it; try not',
+    '  to pass 650–700k unless truly justified. Past that, put what matters',
+    `  in the repository, then compact. The harness compacts on its own ${own}:`,
+    '  a backstop, not the plan.',
     '',
-    'When to compact. At a checkpoint where the summary loses no state of the',
-    'current work. It cuts cumulative cache-read cost, leaves room for the',
-    'work ahead, and drops content that no longer matters. At each reasonable',
-    'checkpoint, call `context_usage` to see where you are and judge whether',
-    'to compact:',
-    '- Under 150k: rarely worth it.',
-    '- 150k–250k: compact when nothing is pending and nothing still needed',
-    '  lives only in context.',
-    '- 300k–500k: compact at any reasonable checkpoint where all work state',
-    '  can be preserved. Do not wait until your context is full: know that',
-    '  from here every call re-reads a large context, which may hold old or',
-    '  unrelated content that degrades your reading of the rest. If that is',
-    '  not the case, or justified, you can continue.',
-    '- Above 500k: keeping everything verbatim is justified only while the',
-    '  work needs it, and try not to go past 650–700k unless truly justified.',
-    '  Past that, make sure what matters is in the repository where it can',
-    '  be read back, and compact.',
-    `  The harness compacts on its own ${own}; that is a backstop, not the`,
-    '  plan.',
-    '',
-    'How to call. As the last tool call of the turn, alone, after pending',
-    'results have arrived; then end your turn without starting new work.',
-    '- instructions (optional): what this checkpoint\'s summary should keep',
-    '  verbatim or drop, beyond the standard summary.',
-    '- resume (optional): the prompt you want to receive after the reset.',
-    `  Default: "${RESUME_DEFAULT}"`,
+    'How. Last tool call of the turn, alone, after pending results arrived;',
+    'then end your turn.',
+    '- instructions (optional): what to keep verbatim or drop beyond the',
+    '  standard summary.',
+    `- resume (optional): the prompt to receive after the reset; default`,
+    `  "${RESUME_DEFAULT}"`,
   ].join('\n')
 }
 
 export function describeUsage(): string {
-  return 'Your context size now: tokens used, the window, percent. Costs nothing. Call it at each reasonable checkpoint of your work to judge whether to compact.'
+  return 'Your context size now: tokens used, window, percent. Free. Call it at each reasonable checkpoint to judge whether to compact.'
 }
 
 export type ContextFigures = {
@@ -169,8 +157,8 @@ export async function compactStart($: EngineInterface, _: SessionStartInput) {
     inputSchema: {
       type: 'object',
       properties: {
-        instructions: { type: 'string', description: "What this checkpoint's summary should keep verbatim or drop, beyond the standard summary." },
-        resume: { type: 'string', description: `The prompt to receive after the reset. Default: "${RESUME_DEFAULT}"` },
+        instructions: { type: 'string', description: 'What to keep verbatim or drop, beyond the standard summary.' },
+        resume: { type: 'string', description: `The prompt to receive after the reset; default "${RESUME_DEFAULT}"` },
       },
     },
   })
