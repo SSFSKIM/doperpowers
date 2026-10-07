@@ -1,6 +1,6 @@
 ---
 name: architecture-mapping
-description: Use when writing or revising a repo's ARCHITECTURE.md or architecture map/codemap — no architecture doc exists, sessions keep re-answering "where is the thing that does X?", a domain or subsystem landed, a real boundary moved, or reviews need numbered architectural invariants to cite.
+description: Use when writing or revising a repo's ARCHITECTURE.md or codemap, including when none exists and sessions keep re-asking where things live.
 ---
 
 # Architecture Mapping

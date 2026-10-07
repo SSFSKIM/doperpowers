@@ -1,6 +1,7 @@
 ---
 name: progress-report
 description: Use when your human partner asks for an explanation — of changes an agent implemented that they did not watch, or of a concept they want to understand — including /progress-report, ELI5-style requests, "explain this", "walk me through what changed", "what is X", "help me understand".
+disable-model-invocation: true
 ---
 
 # Progress report

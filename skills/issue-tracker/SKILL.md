@@ -1,6 +1,6 @@
 ---
 name: issue-tracker
-description: Use when managing the issue board — registering tickets, dispatching, working the wake queue, reconciling after time away, or asking what is in progress or parked — or when operating or setting up the autonomous execution loop that dispatches Architect and Executor workers onto tickets. The board IS the repo's GitHub issues.
+description: Use when managing the board (the repo's GitHub issues) — registering, dispatching, reconciling, checking what is in progress — or running the autonomous loop that dispatches Architect and Executor workers onto tickets.
 ---
 
 # Issue Tracker
