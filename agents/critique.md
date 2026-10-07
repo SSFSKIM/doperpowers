@@ -1,6 +1,6 @@
 ---
 name: critique
-description: Independent peer-review critic for a design that genuinely matters — dispatched from doperpowers:brainstorming's optional peer-review layer, or whenever a matured design and its reasoning deserve adversarial evaluation before they harden. Critiques the design AND the reasoning behind it, then debates the dispatching session over multiple turns until the disagreement converges. Not for routine spec review.
+description: Design critic for a matured design that matters: attacks the design and its reasoning, then debates the dispatching session until the disagreement converges. Not for routine spec review.
 model: fable
 effort: xhigh
 color: red
