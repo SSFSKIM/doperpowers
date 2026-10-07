@@ -84,12 +84,49 @@ export function maskEcho(text: string): string {
   return text.replace(ECHO, (_, head: string, value: string, tail: string) => head + MASK.repeat(value.length) + tail)
 }
 
+// The value and the encodings a command prints it in by accident: base64
+// (padded or not), hex either case, URL encoding. A slice or a transformation
+// of its own making is beyond this; the guard below keeps the store unread.
+function spellings(value: string): string[] {
+  const bytes = Array.from(new TextEncoder().encode(value), (b) => b.toString(16).padStart(2, '0')).join('')
+  const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(value)))
+  return [...new Set([value, base64, base64.replace(/=+$/, ''), bytes, bytes.toUpperCase(), encodeURIComponent(value)])]
+}
+
 function scrub(text: string): string {
   let out = maskEcho(text)
   for (const [key, value] of known) {
-    if (value.length >= SCRUB_MIN) out = out.split(value).join(`[secret:${key}]`)
+    if (value.length < SCRUB_MIN) continue
+    for (const spelling of spellings(value)) out = out.split(spelling).join(`[secret:${key}]`)
   }
   return out
+}
+
+// The one form a command may name a stored value in: substituted where it is
+// used, so the command's own output is all that could carry it.
+const SUBSTITUTION = /\$\(\s*cat\s+(?:~|"?\$HOME"?|"?\$\{HOME\}"?|\/(?:Users|home)\/[^/\s"')]+)\/\.config\/claude-secrets\/[A-Za-z_][A-Za-z0-9_]*\s*\)/g
+
+/**
+ * Why a tool call would read the store itself, or undefined: a command naming
+ * the folder other than in the substitution form, or a file tool whose path
+ * (a Glob's pattern) points into it. What a Write or an Edit puts in a file,
+ * or what a Grep searches for, is not a read of the store.
+ */
+export function guardReason(input: Readonly<Record<string, unknown>>): string | undefined {
+  const reads =
+    typeof input.command === 'string'
+      ? input.command.replace(SUBSTITUTION, '').includes('.config/claude-secrets')
+      : Object.entries(input).some(
+          ([field, value]) =>
+            (/path$/i.test(field) || (input.tool === 'Glob' && field === 'pattern')) &&
+            typeof value === 'string' &&
+            value.includes('claude-secrets'),
+        )
+  if (!reads) return undefined
+  return (
+    'secrets: the stored values are not for reading. Use one only inside the command that needs it, ' +
+    'as "$(cat ~/.config/claude-secrets/KEY)"; the stored keys are listed in the system prompt.'
+  )
 }
 
 // A tool's record, every string in it scrubbed; the same object when none changed.
@@ -239,12 +276,14 @@ export function registerSecrets(on: On) {
   // The tool's own record is what the transcript file keeps beside the row the
   // model reads (`toolUseResult`), and `session.append` cannot reach it.
   on('tool.call', async (_, e, next) => {
+    const reason = guardReason(e)
+    if (reason !== undefined) return { deny: reason }
     const ran = await next(e)
     if (ran.deny !== undefined || known.size === 0) return ran
     const result = scrubRecord(ran.result)
     if (result === ran.result) return ran
     return ran.isError ? { deny: scrub(ran.text ?? '') } : { result, context: ran.context }
-  })
+  }).catch((_, e, next) => (next.called ? next(e) : { deny: 'secrets: its guard failed, so the call did not run.' }))
 
   // The last line of defence: a stored value that turns up in any row the
   // conversation keeps (a tool's output, an echo) is replaced by its key.

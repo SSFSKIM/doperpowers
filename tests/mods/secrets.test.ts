@@ -2,7 +2,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { MASK, maskEcho, maskEdit, readField } from '../../hooks/mods/secrets'
+import { MASK, guardReason, maskEcho, maskEdit, readField } from '../../hooks/mods/secrets'
 
 tier('user')
 
@@ -173,4 +173,49 @@ test('the field stores what was typed, the last characters and Enter arriving to
 
   expect(written?.argv.slice(-2)).toEqual(['/home/t/.config/claude-secrets', 'API_KEY'])
   expect(written?.stdin).toBe('sk-live-9')
+})
+
+describe('the guard', () => {
+  test('lets a command use a value through the substitution form', () => {
+    expect(guardReason({ tool: 'Bash', command: 'curl -H "Authorization: Bearer $(cat ~/.config/claude-secrets/API_KEY)" https://x' })).toBeUndefined()
+    expect(guardReason({ tool: 'Bash', command: 'K="$(cat "$HOME"/.config/claude-secrets/API_KEY)" ./run' })).toBeUndefined()
+  })
+
+  test('refuses a command that reads the store', () => {
+    for (const command of [
+      'cat ~/.config/claude-secrets/API_KEY',
+      'ls -la ~/.config/claude-secrets',
+      'xxd /Users/new/.config/claude-secrets/API_KEY',
+      'echo ok; cat ~/.config/claude-secrets/API_KEY | head -c 4',
+    ]) {
+      expect(guardReason({ tool: 'Bash', command })).toContain('not for reading')
+    }
+  })
+
+  test('refuses a file tool pointed into the store, not text that names it', () => {
+    expect(guardReason({ tool: 'Read', file_path: '/Users/new/.config/claude-secrets/API_KEY' })).toBeDefined()
+    expect(guardReason({ tool: 'Glob', pattern: '/Users/new/.config/claude-secrets/*' })).toBeDefined()
+    expect(guardReason({ tool: 'Grep', pattern: 'claude-secrets', path: '/repo' })).toBeUndefined()
+    expect(guardReason({ tool: 'Write', file_path: '/repo/run.sh', content: 'cat ~/.config/claude-secrets/API_KEY' })).toBeUndefined()
+  })
+})
+
+test('a value printed in base64 or hex is scrubbed too', async ($, on) => {
+  on('tool.call', () => ({
+    result: { stdout: 'c2stbGl2ZS0wMTIzNDU2Nzg5 736b2d6c6976652d30313233343536373839', stderr: '', interrupted: false },
+  }))
+  await startWith($, on, { API_KEY: 'sk-live-0123456789' })
+  const ran = await $.tool.call({ tool: 'Bash', command: 'env' })
+  expect(ran.result).toEqual({ stdout: '[secret:API_KEY] [secret:API_KEY]', stderr: '', interrupted: false })
+})
+
+test('a read of the store is refused before it runs', async ($, on) => {
+  let ran = false
+  on('tool.call', () => {
+    ran = true
+    return { result: { stdout: '', stderr: '', interrupted: false } }
+  })
+  const call = await $.tool.call({ tool: 'Bash', command: 'cat ~/.config/claude-secrets/API_KEY' })
+  expect(call.deny).toContain('not for reading')
+  expect(ran).toBe(false)
 })

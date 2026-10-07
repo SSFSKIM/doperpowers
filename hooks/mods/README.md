@@ -268,8 +268,19 @@ locked and cannot raise its unlock dialog (`User interaction is not
 allowed`), for the store and for the model's read alike. The files are
 encrypted at rest only as the disk is.
 
+The model never needs to read the store, so a tool call that would is
+refused before it runs: a command naming `~/.config/claude-secrets` other than
+in the form `$(cat ~/.config/claude-secrets/KEY)`, which substitutes the value
+where it is used, and a file tool whose path (a Glob's pattern) points into
+the folder. What a Write or an Edit puts in a file, or what a Grep searches
+for, is not a read. In a live session the model, asked to `cat` a stored
+value, declined on the system prompt section alone, and its diagnostic `ls`
+and `wc` of the file were refused.
+
 A stored value that turns up anyway, a tool printing it, is replaced by
-`[secret:KEY]` twice over: in the tool's record at `tool.call` (the transcript
+`[secret:KEY]`, in its own spelling and in the encodings a command prints it
+in by accident (base64 with or without padding, hex in either case, URL
+encoding), twice over: in the tool's record at `tool.call` (the transcript
 file keeps that record as `toolUseResult`, beside the row the model reads, and
 `session.append` cannot reach it) and in every row at `session.append`, which
 also masks the value of a `/secret` echo typed where nothing masked it.
@@ -279,8 +290,9 @@ for the frame before the redraw; an edit inside the bullets (the cursor moved
 back) cannot be placed, and clears the field; a value outside printable ASCII
 is refused, since the bullets hide a stray input-method character; the mobile
 app draws no field; values under six characters are not scrubbed, which would
-strike ordinary words. The model can still use a value in a command; it
-cannot read one.
+strike ordinary words. The guard stops accidents, not intent: a command may
+still transform a substituted value (a slice, another encoding) or write it
+somewhere, since using it is what the store is for.
 
 ## Developing
 
