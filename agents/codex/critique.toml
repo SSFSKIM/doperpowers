@@ -1,5 +1,5 @@
 name = "doperpowers:critique"
-description = "Design critic for a matured design that matters: attacks the design and its reasoning, then debates the dispatching session until the disagreement converges. Not for routine spec review."
+description = "Design critic for a matured design that matters: attacks the design and its reasoning, then debates the dispatching session until the disagreement converges."
 model = "gpt-6-astra"
 model_reasoning_effort = "high"
 developer_instructions = '''

@@ -1,6 +1,6 @@
 ---
 name: critique
-description: Design critic for a matured design that matters: attacks the design and its reasoning, then debates the dispatching session until the disagreement converges. Not for routine spec review.
+description: Design critic for a matured design that matters: attacks the design and its reasoning, then debates the dispatching session until the disagreement converges.
 model: fable
 effort: xhigh
 color: red
