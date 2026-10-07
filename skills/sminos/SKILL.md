@@ -1,6 +1,6 @@
 ---
 name: sminos
-description: Use when spawning, messaging, listing, attaching to, or retiring background Claude sessions (seats) and their groups or family chats, or when a background session must outlive this one.
+description: Use when orchestrating a swarm of agents — a group or a fleet of background Claude sessions (seats) to spawn, send, list, attach to, or retire; joining a group; finding another agent's address; using a family of seats or a group chat for the agents you spawned.
 ---
 
 # Sminos — seats, family chats, and the fleet chart
