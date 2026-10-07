@@ -1,6 +1,6 @@
 ---
 name: decomposing
-description: Use when a goal is too big for one agent to own as one unit and must become child goals, or when tending a live goal tree as children land.
+description: Use when a goal is too big for one agent to own as one unit and must become child goals (a roadmap), or when tending a live goal tree as children land.
 ---
 
 # Decomposing
