@@ -68,18 +68,17 @@ test('an unmasked /secret echo is masked before the model reads it', () => {
   expect(maskEcho('<command-name>/other</command-name><command-args>A b</command-args>')).toContain('A b')
 })
 
-// A headless session whose Keychain holds `keychain`: the mod reads it at
-// session start, as it does in a session (KAIROS keeps kairos off the disk).
-const startWith = async ($: Engine, on: On, keychain: Record<string, string>) => {
-  mock.env(on, { KAIROS: '1' })
-  mock.store(on, { 'secrets.keys': Object.keys(keychain) })
+// A headless session whose ~/.config/claude-secrets holds `files`: the mod
+// reads them at session start, as it does in a session (KAIROS keeps kairos
+// off the disk).
+const startWith = async ($: Engine, on: On, files: Record<string, string>) => {
+  const dir = '/home/t/.config/claude-secrets'
+  mock.env(on, { KAIROS: '1', HOME: '/home/t' })
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('process.run', (_, e) => {
-    const value = keychain[e.argv[e.argv.indexOf('-a') + 1] ?? '']
-    const ran = { stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
-    return { value: value === undefined ? { ...ran, exitCode: 44, stdout: '' } : { ...ran, exitCode: 0, stdout: `${value}\n` } }
-  })
+  on('fs.exists', (_, e) => ({ value: e.path === dir }))
+  on('fs.list', () => ({ value: Object.keys(files).map((name) => ({ name, kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })) }))
+  on('fs.read', (_, e) => ({ value: files[e.path.slice(dir.length + 1)] ?? '' }))
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
 }
 

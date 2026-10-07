@@ -248,11 +248,16 @@ sees. While the draft reads `/secret KEY `, a `prompt.edit` hook keeps each
 typed or pasted character in the module's memory and puts a `•` in the box in
 its place, so the prompt history (`~/.claude/history.jsonl`) and the
 transcript's echo of the command hold bullets only. The command writes the
-value to the macOS Keychain (service `claude-secrets`, account `KEY`) through
-`security -i` on stdin, as hex, and leaves the model a note naming the key and
-the shell form that reads it, `"$(security find-generic-password -s
-claude-secrets -a KEY -w)"`; a system prompt section lists the stored keys in
-later sessions, whose start reads the values back.
+value to `~/.config/claude-secrets/KEY` (directory 700, file 600) on stdin
+and leaves the model a note naming the key and the shell form that reads it,
+`"$(cat ~/.config/claude-secrets/KEY)"`; a system prompt section lists the
+stored keys in later sessions, whose start reads the folder.
+
+A file per key, not the macOS Keychain: a session run under ssh, mosh, a
+tmux server one of them started, or `claude daemon` finds the login keychain
+locked and cannot raise its unlock dialog (`User interaction is not
+allowed`, on the Mac mini, 2026-10-06), for the store and for the model's
+read alike. The files are encrypted at rest only as the disk is.
 
 A stored value that turns up anyway, a tool printing it, is replaced by
 `[secret:KEY]` twice over: in the tool's record at `tool.call` (the transcript
@@ -263,11 +268,10 @@ also masks the value of a `/secret` echo typed where nothing masked it.
 Known limits: the masking needs the terminal's prompt box (`prompt.edit` is
 the composer's), so a value typed on another surface is refused as exposed,
 and stays in that surface's history; an edit to `/secret KEY ` itself drops
-the value typed after it; a value outside printable ASCII is refused, since the
-mask hides a stray input-method character and `security -w` returns such a
-value as hex; values under six characters are not scrubbed, which would strike
-ordinary words. The model can still use a value in a command; it cannot read
-one.
+the value typed after it; a value outside printable ASCII is refused, since
+the mask hides a stray input-method character; values under six characters
+are not scrubbed, which would strike ordinary words. The model can still use
+a value in a command; it cannot read one.
 
 ## Developing
 

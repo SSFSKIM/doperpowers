@@ -2,14 +2,17 @@ import type { Hook, On } from 'claude-code'
 
 /**
  * `/secret KEY <value>` (or `KEY=<value>`): the value is typed masked in the
- * prompt box, stored in the macOS Keychain, and the model sees only the key.
+ * prompt box, stored as `~/.config/claude-secrets/KEY` (mode 600), and the
+ * model sees only the key.
  * The prompt history and the transcript keep bullets; a stored value that
  * turns up in a tool's output reaches neither the model nor the transcript
  * file. The masking needs the terminal's prompt box: on another surface the
  * value would arrive in the clear, so it is refused.
  */
 
-export const SERVICE = 'claude-secrets'
+// A file per key, not the Keychain: a session under ssh, mosh or a daemon
+// finds the login keychain locked and cannot raise its unlock dialog.
+export const DIR = '.config/claude-secrets'
 export const MASK = '•'
 // `/secret KEY ` or `/secret KEY=`: the value starts after the one character
 // that ends the key.
@@ -19,7 +22,6 @@ const ARGS = /^([A-Za-z_][A-Za-z0-9_]*)[ \t=]([\s\S]*)$/
 const ECHO = /(<command-name>\/secret<\/command-name>[\s\S]*?<command-args>[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t=])([\s\S]*?)(<\/command-args>)/g
 // Shorter values would scrub ordinary words out of everything the model reads.
 const SCRUB_MIN = 6
-const STORE_KEYS = 'secrets.keys'
 
 // The value being typed. It lives only in this module's memory, never in
 // `$.state` (which every plugin can read) or the prompt box.
@@ -82,12 +84,8 @@ function scrubRecord(value: unknown): unknown {
   return value
 }
 
-function hex(text: string): string {
-  return Array.from(new TextEncoder().encode(text), (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 function usage(key: string): string {
-  return `"$(security find-generic-password -s ${SERVICE} -a ${key} -w)"`
+  return `"$(cat ~/${DIR}/${key})"`
 }
 
 // Taken with both matchers below: the other mods register session.start too,
@@ -95,13 +93,16 @@ function usage(key: string): string {
 const secretsStart: Hook<'session.start'> = async ($, e, next) => {
   await $.command.register({
     name: 'secret',
-    description: 'Store a secret in the Keychain, typed masked: /secret KEY <value>',
+    description: 'Store a secret, typed masked, that the model sees only by its key: /secret KEY <value>',
     argumentHint: 'KEY value',
   })
-  const keys = ((await $.store.get(STORE_KEYS)) ?? []) as string[]
-  for (const key of keys) {
-    const found = await $.process.run(['security', 'find-generic-password', '-s', SERVICE, '-a', key, '-w'])
-    if (found.exitCode === 0) known.set(key, found.stdout.replace(/\n$/, ''))
+  const dir = `${await $.env.get('HOME')}/${DIR}`
+  if (await $.fs.exists(dir)) {
+    for (const entry of await $.fs.list(dir)) {
+      if (entry.kind === 'file' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry.name)) {
+        known.set(entry.name, await $.fs.read(`${dir}/${entry.name}`))
+      }
+    }
   }
   return next(e)
 }
@@ -132,24 +133,25 @@ export function registerSecrets(on: On) {
           'Typed in the clear, it stays in the prompt history (~/.claude/history.jsonl): treat it as exposed.',
       }
     }
-    // The mask hides a mistyped character (an input method left on), and
-    // `security ... -w` hands back a value outside printable ASCII as hex.
+    // The mask hides a mistyped character, an input method left on.
     if (/[^\x20-\x7e]/.test(value)) {
       return {
         text: 'Not stored: the value has a character outside printable ASCII (is a Korean or other input method on?). Type it again.',
       }
     }
 
-    // The value goes in on stdin, as hex, so no process's arguments carry it.
-    const added = await $.process.run(['security', '-i'], {
-      stdin: `add-generic-password -U -s ${SERVICE} -a ${key} -X ${hex(value)}\n`,
-    })
-    if (added.exitCode !== 0) return { text: `Not stored: the Keychain refused (${added.stderr.trim().split('\n')[0]}).` }
+    // The value goes in on stdin, so no process's arguments carry it, and is
+    // created under umask 077 (`$.fs.write` sets no mode).
+    const dir = `${await $.env.get('HOME')}/${DIR}`
+    const added = await $.process.run(
+      ['/bin/sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$1" && cat > "$1/$2" && chmod 600 "$1/$2"', 'sh', dir, key],
+      { stdin: value },
+    )
+    if (added.exitCode !== 0) return { text: `Not stored: ${added.stderr.trim().split('\n')[0] || 'the write failed'}.` }
 
     known.set(key, value)
-    await $.store.set(STORE_KEYS, [...known.keys()])
     return {
-      text: `Stored ${key} in the Keychain (service ${SERVICE}).`,
+      text: `Stored ${key} in ~/${DIR}/${key}.`,
       context: [
         `The person stored a secret under ${key}. You never see its value. ` +
           `In a shell command, read it as ${usage(key)}, never printing it.`,
@@ -200,7 +202,7 @@ export function registerSecrets(on: On) {
           id: 'doperpowers:secrets',
           scope: 'session',
           text:
-            'Secrets the person stored in the macOS Keychain. You see only their keys; ' +
+            'Secrets the person stored, one file each. You see only their keys; ' +
             'read a value inside the shell command that uses it, never printing it:\n' +
             lines.join('\n'),
         },
