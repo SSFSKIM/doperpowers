@@ -241,6 +241,34 @@ working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
 plugin-submitted prompt does.
 
+## secrets (`secrets.ts`)
+
+`/secret KEY <value>` (or `KEY=<value>`) stores a secret the model never
+sees. While the draft reads `/secret KEY `, a `prompt.edit` hook keeps each
+typed or pasted character in the module's memory and puts a `•` in the box in
+its place, so the prompt history (`~/.claude/history.jsonl`) and the
+transcript's echo of the command hold bullets only. The command writes the
+value to the macOS Keychain (service `claude-secrets`, account `KEY`) through
+`security -i` on stdin, as hex, and leaves the model a note naming the key and
+the shell form that reads it, `"$(security find-generic-password -s
+claude-secrets -a KEY -w)"`; a system prompt section lists the stored keys in
+later sessions, whose start reads the values back.
+
+A stored value that turns up anyway, a tool printing it, is replaced by
+`[secret:KEY]` twice over: in the tool's record at `tool.call` (the transcript
+file keeps that record as `toolUseResult`, beside the row the model reads, and
+`session.append` cannot reach it) and in every row at `session.append`, which
+also masks the value of a `/secret` echo typed where nothing masked it.
+
+Known limits: the masking needs the terminal's prompt box (`prompt.edit` is
+the composer's), so a value typed on another surface is refused as exposed,
+and stays in that surface's history; an edit to `/secret KEY ` itself drops
+the value typed after it; a value outside printable ASCII is refused, since the
+mask hides a stray input-method character and `security -w` returns such a
+value as hex; values under six characters are not scrubbed, which would strike
+ordinary words. The model can still use a value in a command; it cannot read
+one.
+
 ## Developing
 
 ```
