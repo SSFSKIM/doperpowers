@@ -1,13 +1,16 @@
-import type { Hook, On } from 'claude-code'
+import type { EngineInterface, Hook, On } from 'claude-code'
 
 /**
- * `/secret KEY <value>` (or `KEY=<value>`): the value is typed masked in the
- * prompt box, stored as `~/.config/claude-secrets/KEY` (mode 600), and the
- * model sees only the key.
- * The prompt history and the transcript keep bullets; a stored value that
- * turns up in a tool's output reaches neither the model nor the transcript
- * file. The masking needs the terminal's prompt box: on another surface the
- * value would arrive in the clear, so it is refused.
+ * `/secret KEY` opens a field in a pane; the value typed there is drawn as
+ * bullets, stored as `~/.config/claude-secrets/KEY` (mode 600), and the model
+ * sees only the key. The value never passes through the prompt box, so neither
+ * the prompt history nor the transcript can hold it; a stored value that turns
+ * up in a tool's output reaches neither the model nor the transcript file.
+ *
+ * Not the prompt box: when the last keys and Enter arrive in one read (mosh,
+ * a slow link), the editor inserts and submits them before a `prompt.edit`
+ * answer lands, so they reach the history raw. The box still masks a value
+ * typed there out of habit, and the command refuses it.
  */
 
 // A file per key, not the Keychain: a session under ssh, mosh or a daemon
@@ -23,9 +26,15 @@ const ECHO = /(<command-name>\/secret<\/command-name>[\s\S]*?<command-args>[ \t]
 // Shorter values would scrub ordinary words out of everything the model reads.
 const SCRUB_MIN = 6
 
-// The value being typed. It lives only in this module's memory, never in
-// `$.state` (which every plugin can read) or the prompt box.
-let held = ''
+const PANE = 'secret'
+const FIELD = 'secret-value'
+
+// What is typed lives only in this module's memory, never in `$.state` (which
+// every plugin can read): `drafted` behind the prompt box's bullets, `typed`
+// behind the field's, for the key in `pending`.
+let drafted = ''
+let typed = ''
+let pending: string | undefined
 // Every stored secret, key to value, so that no row the model reads carries one.
 const known = new Map<string, string>()
 
@@ -55,6 +64,19 @@ export function maskEdit(held: string, e: Edit): Masked {
   if (after === undefined) return { held: '' }
   const value = spliced.slice(after)
   return { held: value, box: { text: spliced.slice(0, after) + MASK.repeat(value.length), cursor } }
+}
+
+/**
+ * The field's text read back against what it held: bullets for the characters
+ * kept, then whatever was typed since the last redraw (several characters when
+ * they arrived together, Enter among them). Undefined for an edit inside the
+ * bullets, which cannot be placed.
+ */
+export function readField(held: string, value: string): string | undefined {
+  const kept = value.length - value.replace(/^•+/, '').length
+  const added = value.slice(kept)
+  if (kept > held.length || added.includes(MASK)) return undefined
+  return held.slice(0, kept) + added
 }
 
 /** A `/secret` echo with its value masked, for one typed where nothing masked it. */
@@ -88,13 +110,50 @@ function usage(key: string): string {
   return `"$(cat ~/${DIR}/${key})"`
 }
 
+async function storeField($: EngineInterface, key: string, value: string) {
+  if (value === '') return
+  // The bullets hide a mistyped character, an input method left on.
+  if (/[^\x20-\x7e]/.test(value)) {
+    typed = ''
+    $.ui.toast('secret: a character outside printable ASCII (an input method on?); type it again')
+    return
+  }
+  // The value goes in on stdin, so no process's arguments carry it, and is
+  // created under umask 077 (`$.fs.write` sets no mode).
+  const dir = `${await $.env.get('HOME')}/${DIR}`
+  const added = await $.process.run(
+    ['/bin/sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$1" && cat > "$1/$2" && chmod 600 "$1/$2"', 'sh', dir, key],
+    { stdin: value },
+  )
+  if (added.exitCode !== 0) {
+    $.ui.toast(`secret: not stored, ${added.stderr.trim().split('\n')[0] || 'the write failed'}`)
+    return
+  }
+  known.set(key, value)
+  typed = ''
+  pending = undefined
+  await $.ui.close({ id: PANE })
+  $.ui.toast(`secret: stored ${key}`)
+  await $.session.append({
+    message: {
+      type: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `The person stored a secret under ${key}. You never see its value. In a shell command, read it as ${usage(key)}, never printing it.`,
+        },
+      ],
+    },
+  })
+}
+
 // Taken with both matchers below: the other mods register session.start too,
 // and an event is registered without one once per module.
 const secretsStart: Hook<'session.start'> = async ($, e, next) => {
   await $.command.register({
     name: 'secret',
-    description: 'Store a secret, typed masked, that the model sees only by its key: /secret KEY <value>',
-    argumentHint: 'KEY value',
+    description: 'Store a secret that the model sees only by its key; the value goes in the field it opens',
+    argumentHint: 'KEY',
   })
   const dir = `${await $.env.get('HOME')}/${DIR}`
   if (await $.fs.exists(dir)) {
@@ -111,52 +170,70 @@ export function registerSecrets(on: On) {
   on('session.start', { isInteractive: true }, secretsStart)
   on('session.start', { isInteractive: false }, secretsStart)
 
+  // Masks a value typed into the box out of habit; the command refuses it.
   on('prompt.edit', async (_, e, next) => {
-    const masked = maskEdit(held, e)
-    held = masked.held
+    const masked = maskEdit(drafted, e)
+    drafted = masked.held
     return masked.box ?? next(e)
   })
 
   on('command.run', { command: 'secret' }, async ($, e) => {
-    if (e.args.trim() === '') {
+    const args = e.args.trim()
+    if (args === '') {
       return { text: known.size ? `Stored: ${[...known.keys()].join(', ')}` : 'No secrets stored.' }
     }
-    const parsed = ARGS.exec(e.args.trimStart())
-    if (!parsed) return { text: 'Usage: /secret KEY <value>' }
-    const [, key = '', typed = ''] = parsed
-    const value = held
-    held = ''
-    if (value === '' || value.includes(MASK) || typed !== MASK.repeat(value.length)) {
+    const parsed = ARGS.exec(args)
+    drafted = ''
+    if (parsed) {
       return {
         text:
-          "Not stored: the value has to be typed in this terminal's prompt box after `/secret KEY `, where it is masked. " +
-          'Typed in the clear, it stays in the prompt history (~/.claude/history.jsonl): treat it as exposed.',
+          'Not stored: type `/secret KEY` alone and the value in the field it opens. ' +
+          'A value typed in the prompt box may be in the prompt history (~/.claude/history.jsonl), whole or in part.',
       }
     }
-    // The mask hides a mistyped character, an input method left on.
-    if (/[^\x20-\x7e]/.test(value)) {
-      return {
-        text: 'Not stored: the value has a character outside printable ASCII (is a Korean or other input method on?). Type it again.',
-      }
-    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(args)) return { text: 'Usage: /secret KEY (letters, digits and _)' }
+    pending = args
+    typed = ''
+    await $.ui.open({ id: PANE, title: `secret ${args}`, focus: true, closeOnEscape: true, rows: 2 })
+    return { text: `Type the value of ${args} in the field of the pane it opened: Enter stores it, Escape cancels.` }
+  })
 
-    // The value goes in on stdin, so no process's arguments carry it, and is
-    // created under umask 077 (`$.fs.write` sets no mode).
-    const dir = `${await $.env.get('HOME')}/${DIR}`
-    const added = await $.process.run(
-      ['/bin/sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$1" && cat > "$1/$2" && chmod 600 "$1/$2"', 'sh', dir, key],
-      { stdin: value },
+  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
+    if (e.surface === 'mobile') {
+      const { Text } = $.ui.resolve(e)
+      return <Text>The mobile app draws no field: type the value from a terminal, the desktop app or VS Code.</Text>
+    }
+    const { Box, Input, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Input
+          key={FIELD}
+          label={`${pending ?? ''} `}
+          value={MASK.repeat(typed.length)}
+          placeholder="value"
+          submitLabel="store"
+          autoFocus
+          onSubmit={() => {}}
+        />
+        <Text dimColor>Escape cancels. Stored in ~/{DIR}/{pending ?? ''}, mode 600.</Text>
+      </Box>
     )
-    if (added.exitCode !== 0) return { text: `Not stored: ${added.stderr.trim().split('\n')[0] || 'the write failed'}.` }
+  })
 
-    known.set(key, value)
-    return {
-      text: `Stored ${key} in ~/${DIR}/${key}.`,
-      context: [
-        `The person stored a secret under ${key}. You never see its value. ` +
-          `In a shell command, read it as ${usage(key)}, never printing it.`,
-      ],
-    }
+  // Taken here rather than in the element's closures, which have no `$`.
+  on('ui.input', { element: FIELD }, async ($, e) => {
+    const value = readField(typed, e.value)
+    typed = value ?? ''
+    if (value === undefined) $.ui.toast('secret: edit at the end of the field; it was cleared')
+    $.ui.invalidate('ui.render')
+    if (e.kind === 'submit' && value !== undefined && pending !== undefined) await storeField($, pending, value)
+    return { element: e.element, value: MASK.repeat(typed.length) }
+  })
+
+  on('ui.close', { id: PANE }, (_, e, next) => {
+    typed = ''
+    pending = undefined
+    return next(e)
   })
 
   // The tool's own record is what the transcript file keeps beside the row the

@@ -2,7 +2,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { MASK, maskEcho, maskEdit } from '../../hooks/mods/secrets'
+import { MASK, maskEcho, maskEdit, readField } from '../../hooks/mods/secrets'
 
 tier('user')
 
@@ -113,7 +113,26 @@ test('a tool record carrying a stored value is recorded scrubbed', async ($, on)
   expect(ran.result).toEqual({ stdout: 'key=[secret:API_KEY]', stderr: '', interrupted: false })
 })
 
-test('a value typed in the clear is not stored', async ($) => {
+describe('the field', () => {
+  test('reads characters typed after the bullets', () => {
+    expect(readField('abc', '•••d')).toBe('abcd')
+  })
+
+  test('reads several characters that arrived together, before a redraw', () => {
+    expect(readField('abc', '•••de')).toBe('abcde')
+    expect(readField('', 'sk-live-1')).toBe('sk-live-1')
+  })
+
+  test('backspace at the end drops a character', () => {
+    expect(readField('abcd', '•••')).toBe('abc')
+  })
+
+  test('an edit inside the bullets cannot be placed', () => {
+    expect(readField('abcd', '••x••')).toBeUndefined()
+  })
+})
+
+test('a value given with the command is refused', async ($) => {
   const ran = await $.command.run({
     command: 'secret',
     args: 'API_KEY sk-in-the-clear',
@@ -121,4 +140,37 @@ test('a value typed in the clear is not stored', async ($) => {
     presentation: { isFullscreen: false, columns: 80 },
   })
   expect(ran.text).toContain('Not stored')
+})
+
+test('the field stores what was typed, the last characters and Enter arriving together', async ($, on) => {
+  mock.env(on, { HOME: '/home/t' })
+  let opened = ''
+  let written: { argv: readonly string[]; stdin?: string } | undefined
+  on('ui.open', (_, e) => {
+    opened = e.id
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('process.run', (_, e) => {
+    written = { argv: e.argv, stdin: e.init?.stdin }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+
+  await $.command.run({ command: 'secret', args: 'API_KEY', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(opened).toBe('secret')
+  const pane = await $.ui.mount({
+    plugin: 'doperpowers-mods',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'secret',
+    props: { title: 'secret API_KEY', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 2 }, view: {} },
+  })
+  await pane.input({ key: 'secret-value', text: 'sk-l', kind: 'change' })
+  expect((await pane.find({ key: 'secret-value' }))?.props?.value).toBe('••••')
+  // The rest of the value and Enter arrive together.
+  await pane.input({ key: 'secret-value', text: '••••ive-9', kind: 'submit' })
+
+  expect(written?.argv.slice(-2)).toEqual(['/home/t/.config/claude-secrets', 'API_KEY'])
+  expect(written?.stdin).toBe('sk-live-9')
 })

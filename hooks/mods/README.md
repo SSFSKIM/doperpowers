@@ -241,23 +241,32 @@ working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
 plugin-submitted prompt does.
 
-## secrets (`secrets.ts`)
+## secrets (`secrets.tsx`)
 
-`/secret KEY <value>` (or `KEY=<value>`) stores a secret the model never
-sees. While the draft reads `/secret KEY `, a `prompt.edit` hook keeps each
-typed or pasted character in the module's memory and puts a `•` in the box in
-its place, so the prompt history (`~/.claude/history.jsonl`) and the
-transcript's echo of the command hold bullets only. The command writes the
-value to `~/.config/claude-secrets/KEY` (directory 700, file 600) on stdin
-and leaves the model a note naming the key and the shell form that reads it,
-`"$(cat ~/.config/claude-secrets/KEY)"`; a system prompt section lists the
-stored keys in later sessions, whose start reads the folder.
+`/secret KEY` stores a secret the model never sees. The command opens a pane
+holding one field, focused; each character typed there is kept in the
+module's memory and the field is redrawn as bullets, so the value never
+passes through the prompt box and neither the prompt history
+(`~/.claude/history.jsonl`) nor the transcript can hold it. Enter writes it
+to `~/.config/claude-secrets/KEY` (directory 700, file 600) on stdin, closes
+the pane, and appends a note for the model naming the key and the shell form
+that reads it, `"$(cat ~/.config/claude-secrets/KEY)"`; Escape closes it with
+nothing written. A system prompt section lists the stored keys in later
+sessions, whose start reads the folder.
+
+Not the prompt box: when the last keys and Enter arrive in one read, as over
+mosh or a slow link, the editor inserts and submits them before a
+`prompt.edit` answer lands, so they reach the history raw (the Mac mini,
+2026-10-06; reproduced with `tmux send-keys -l $'op\r'`: the history held
+`••••••••op`). The field has no such window: its submit carries the whole
+text, read back as the bullets it held plus what arrived since. The box still
+masks a value typed there out of habit, and the command refuses it.
 
 A file per key, not the macOS Keychain: a session run under ssh, mosh, a
 tmux server one of them started, or `claude daemon` finds the login keychain
 locked and cannot raise its unlock dialog (`User interaction is not
-allowed`, on the Mac mini, 2026-10-06), for the store and for the model's
-read alike. The files are encrypted at rest only as the disk is.
+allowed`), for the store and for the model's read alike. The files are
+encrypted at rest only as the disk is.
 
 A stored value that turns up anyway, a tool printing it, is replaced by
 `[secret:KEY]` twice over: in the tool's record at `tool.call` (the transcript
@@ -265,13 +274,13 @@ file keeps that record as `toolUseResult`, beside the row the model reads, and
 `session.append` cannot reach it) and in every row at `session.append`, which
 also masks the value of a `/secret` echo typed where nothing masked it.
 
-Known limits: the masking needs the terminal's prompt box (`prompt.edit` is
-the composer's), so a value typed on another surface is refused as exposed,
-and stays in that surface's history; an edit to `/secret KEY ` itself drops
-the value typed after it; a value outside printable ASCII is refused, since
-the mask hides a stray input-method character; values under six characters
-are not scrubbed, which would strike ordinary words. The model can still use
-a value in a command; it cannot read one.
+Known limits: characters that arrive together with Enter show in the clear
+for the frame before the redraw; an edit inside the bullets (the cursor moved
+back) cannot be placed, and clears the field; a value outside printable ASCII
+is refused, since the bullets hide a stray input-method character; the mobile
+app draws no field; values under six characters are not scrubbed, which would
+strike ordinary words. The model can still use a value in a command; it
+cannot read one.
 
 ## Developing
 
