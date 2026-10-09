@@ -68,8 +68,11 @@ The two systems differ on one question and everything else follows from it:
   state word is read live from the harness's own session record
   (`~/.claude/sessions/<pid>.json`), one socket probe, and whether the
   transcript is on disk; delivery rides the harness's inbox socket; resume
-  is `claude --bg --resume`; isolation is the harness's `--worktree`. The
-  orchestrator is not a process. Every harness improvement arrives for free;
+  is `claude --bg --resume`; isolation is the harness's `--worktree`. No
+  resident process orchestrates; what does, when something must, is a
+  session — the interactive one that holds the design (the
+  attended-orchestration ruling, §9). Every harness improvement arrives
+  for free;
   everything the harness does not expose — a queue, a mid-turn interrupt,
   a usage-limit state, cross-provider handoff — does not exist.
 
@@ -744,7 +747,7 @@ sessions (and Codex threads as message targets) and nothing else.
    shows them; `--state retired|gone` still selects them; `--json` keeps
    every row (scripts filter on `state`). A family seat's scoped `list` is
    unaffected in practice (its reach is small). Fifteen lines, hermetic
-   assertions, one sentence in `SKILL.md`. **Shipped in 7.136.0**
+   assertions, one sentence in `SKILL.md`. **Shipped in 7.142.0**
    (2026-10-08): `HIDDEN = ("retired", "gone")` shared by `list` and the
    chart's `is_dead`; the tail reads `+N hidden (retired, gone) — sminos
    list --all`; on the real registry `list` went from 59 lines to four;
@@ -967,3 +970,37 @@ not fashion, dictates these — and it localizes the real disagreements to
 - Theo's design rationale is known only through search snippets of X
   posts; the one maintainer quote ("not putting a new database under a
   feature flag") is second-hand via the skyflo page.
+
+---
+
+## 9. Postscript (2026-10-09): the attended-orchestration ruling
+
+`specs/2026-10-09-attended-orchestration-ruling.md` landed on main while
+this doc was on its branch. The owner's ruling: fully unattended operation
+is not a target; when a human is needed, the faster form is mediation
+through the interactive session that holds the design, which relays,
+rules, and dispatches; tickets are the backlog, not the record of work.
+Evidence: MAWS — one interactive session as architect for eleven days,
+1,017 native subagents at depth ≤ 3, 3,512 commits, no sminos seat and no
+board for the product.
+
+What it changes in this doc:
+
+1. The framing holds. T3's product serves exactly the regime the ruling
+   names — a person steering threads — and its orchestrator is a server;
+   ours is a session. §0 now says so.
+2. FD-2 is settled in practice. The fan-out shape runs on native subagents
+   (MAWS: 29 plan-executor dispatches of 8–43 task-executors each); a family
+   of seats is for work that must outlive its session, which the ruling
+   makes rarer still. `decomposing` no longer names a leaf-as-seat route
+   (fbcd641b); the route into a family is the agent's judgment under
+   doperpowers:sminos alone.
+3. FD-4 gains weight in the direction already recommended. A quarter of the
+   owner's MAWS messages tended the machinery — resumes after outages,
+   manual compaction, status probes — and the ruling's answer is in-harness
+   mods (`compact.tsx`, `agents.tsx`), not another substrate: option (a)/(b),
+   the harness's own surface and a reader over its transcripts, not a
+   product app.
+4. §4.1's limit-aware sweep serves the board's unattended seats, which the
+   ruling demotes from the primary regime to one regime. Its priority drops;
+   the capture (TECH-DEBT 31) stays, because the sweep still runs.
