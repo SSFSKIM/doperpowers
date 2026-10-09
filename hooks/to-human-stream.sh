@@ -23,6 +23,7 @@
 # needs sit ahead of the delta in the payload and carry no JSON escaping, so
 # expansions read them, and jq is spawned only for a delta that is drawn.
 set -uo pipefail
+[[ -n ${MAWS_NATIVE_TO_HUMAN:-} ]] && exit 0
 
 dir="${TMPDIR:-/tmp}/doperpowers-to-human"
 

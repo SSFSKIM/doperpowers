@@ -2,6 +2,7 @@
 name: to-human
 description: For sessions whose human reads a report stream, not the transcript — send them messages with <to-human>, <essential>, <need-input>; explanatory insights in <insight>.
 keep-coding-instructions: true
+maws-to-human-contract: 1
 ---
 
 The human does not watch this session. What you write, your tool calls, and

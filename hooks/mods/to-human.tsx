@@ -588,6 +588,13 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
   }
 }
 
+// MAWS draws this channel itself when it advertises native support; the
+// terminal keeps this view. Every hook awaits the same read for this worker.
+let maws: Promise<boolean> | undefined
+const native = async ($: EngineInterface, e: object) =>
+  (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
+  (!('surface' in e) || e.surface !== 'terminal')
+
 /**
  * Registers the view. Nothing changes until the first marked assistant
  * message of the session, so a session without the output style draws as
@@ -626,7 +633,8 @@ export function registerToHuman(on: On) {
   // The person's prompt breaks a run: the record before it and the record
   // after it are two, as the person reads them. Agent messages and background
   // deliveries are working record, and stand in the run they fall in.
-  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const kind = promptRow(e.props)
     see($, view, e.requestId, kind)
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
@@ -639,7 +647,8 @@ export function registerToHuman(on: On) {
   // transcript's footer of that stretch; otherwise it draws nothing, and the
   // full transcript shows it as the engine does.
   const before = new Map<string, string | undefined>()
-  on('ui.render', { component: 'TurnDuration' }, ($, e, next) => {
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     if (!before.has(e.requestId)) {
       before.set(e.requestId, view.order[view.order.length - 1])
     }
@@ -657,6 +666,7 @@ export function registerToHuman(on: On) {
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const parsed = parse(e.props.text)
     see($, view, e.requestId, parsed.spans.length === 0 ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 
@@ -788,7 +798,8 @@ export function registerToHuman(on: On) {
   // last of the two. A row of a group the engine expanded draws its output
   // inline and is whole: it stands in the group's run, and the group's last
   // call draws the run's end where the group would.
-  on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const read = isRead(e.props.tool)
     const group = groupOf.get(e.requestId)
     if (group === undefined) {
@@ -814,7 +825,8 @@ export function registerToHuman(on: On) {
   // with no row to draw once the group collapses again. The last call
   // draws the run's end in the group's place, and when a call joins the
   // group the row that drew it is asked for again.
-  on('ui.render', { component: 'ToolGroup' }, ($, e, next) => {
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const id = `group:${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     see($, view, id, 'record')
     let last: string | undefined
@@ -837,7 +849,8 @@ export function registerToHuman(on: On) {
   // The result row shares its call's id: folded, the call's row has drawn
   // the run's button and this one draws nothing; unfolded, it is the last
   // of the two, and carries the run's end.
-  on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const read = isRead(e.props.tool)
     see($, view, e.requestId, read ? 'marked' : 'record')
     return isFolding() && !read ? recordRow($, e, next, view, { opens: false }) : next(e)
@@ -845,7 +858,8 @@ export function registerToHuman(on: On) {
 
   // The band above the prompt names the view and switches it: the whole
   // transcript as the engine draws it, or the report.
-  on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
     }
@@ -870,12 +884,14 @@ export function registerToHuman(on: On) {
   // A press runs the button's own closure beneath this hook; the redraw
   // follows it so the transcript reflects the state the closure left.
   on('ui.press', { element: TOGGLE }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result
   })
 
   on('ui.press', { element: MODE }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result
@@ -890,6 +906,7 @@ export function registerToHuman(on: On) {
   // framed as the plugin's message to the model and labelled so in the
   // transcript, by an origin no hook may change; so nothing here submits.)
   on('ui.press', async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const press = e.element.startsWith(ASK) ? presses.get(e.element) : undefined
     if (!press) {
       return next(e)
@@ -908,6 +925,7 @@ export function registerToHuman(on: On) {
   // as a choice or `reply` wrote them in the box, or as the person typed
   // them; each question is settled once the prompt enters.
   on('prompt.submit', async ($, e, next) => {
+    if (await native($, e)) return next(e)
     const found = answersOf(e.text)
     if (found.length === 0) {
       return next(e)
