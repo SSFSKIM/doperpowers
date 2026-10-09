@@ -253,10 +253,17 @@ parent turn spent on "still running, nothing to do". The engine marks them,
 writing "This agent stopped with background work of its own still running"
 into the notification's `<note>` (the final one carries the other note), so a
 `prompt.submit` hook matched on `origin.kind: 'task-notification'` drops those
-before they enter the session. The agent's last notification arrives as
-before. A subagent that has something for its parent while its own work runs
-says it with `SendMessage`, not by ending its turn. A hook that fails lets the
-notification through.
+before they enter the session, but only when the status is `completed`, the
+`<note>` element carries that marker, and the whole `<result>` is one of the
+engine's placeholders (the report is still to come through SubagentHandback,
+or was already delivered as a message). A result holding anything else, the
+agent's words where hand-back is off or an engine warning beside the
+placeholder, passes, as do the final notification and a report that merely
+quotes the marker. Replayed over that session, the filter drops 280
+notifications, every one a placeholder. What it gives up: an agent killed
+after a dropped placeholder gets no fresh notification from the engine, so
+the parent hears of the kill only if it did the killing or looks. A hook
+that fails lets the notification through.
 
 ## secrets
 
