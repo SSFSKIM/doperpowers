@@ -243,6 +243,21 @@ working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
 plugin-submitted prompt does.
 
+## interim (`interim.ts`)
+
+A subagent that ends its turn while its own subagent or background shell
+still runs makes the engine send its parent a completion notification anyway,
+and again each time that work wakes it and it stops to wait once more: in one
+MAWS session (2026-09-29) 277 of 486 notifications were these, each one a
+parent turn spent on "still running, nothing to do". The engine marks them,
+writing "This agent stopped with background work of its own still running"
+into the notification's `<note>` (the final one carries the other note), so a
+`prompt.submit` hook matched on `origin.kind: 'task-notification'` drops those
+before they enter the session. The agent's last notification arrives as
+before. A subagent that has something for its parent while its own work runs
+says it with `SendMessage`, not by ending its turn. A hook that fails lets the
+notification through.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
