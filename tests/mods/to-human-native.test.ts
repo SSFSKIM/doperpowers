@@ -55,7 +55,7 @@ describe('MAWS native to-human', () => {
     // look like a pass-through simply because there was nothing to do yet.
     calls.length = 0
     for (const surface of ['desktop', 'vscode', 'mobile', undefined]) {
-      await Promise.all(hooks.map(async (hook) => {
+      await Promise.all(hooks.filter((hook) => hook.event !== 'prompt.submit').map(async (hook) => {
         const e: Event = {
           ...(surface !== undefined && { surface }),
           ...hook.matcher,
@@ -67,7 +67,6 @@ describe('MAWS native to-human', () => {
             isExpanded: false,
           },
           ...(hook.event === 'ui.press' && { element: hook.matcher.element ?? 'need-input:m1:1:0' }),
-          ...(hook.event === 'prompt.submit' && { text: 'Answering "Which branch?": main' }),
         }
         const result = Object.freeze({ marker: 'next result' })
         const received: Event[] = []
@@ -80,6 +79,18 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
+
+    // A submission carries no surface and is not gated: the answer settles
+    // the question, and the terminal's row reads it on its next draw.
+    const submit = hooks.find((hook) => hook.event === 'prompt.submit')!
+    const passed = Object.freeze({})
+    expect(await submit.handler(engine, { text: 'Answering "Which branch?": main' }, async () => passed)).toBe(passed)
+    expect(calls).toEqual(['invalidate'])
+    const settled = await assistant.handler(engine, terminal, async (e) => ({ type: 'Text', children: [(e.props as { text: string }).text] }))
+    const leaves = (node: unknown): string => typeof node === 'string' ? node
+      : Array.isArray(node) ? node.map(leaves).join('')
+      : node && typeof node === 'object' ? leaves((node as { children?: unknown }).children ?? Object.values(node)) : ''
+    expect(leaves(settled)).toContain('answered: main')
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
 })

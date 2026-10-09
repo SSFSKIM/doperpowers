@@ -590,6 +590,8 @@ async function readAnswers($: EngineInterface, answered: Map<string, string>) {
 
 // MAWS draws this channel itself when it advertises native support; the
 // terminal keeps this view. Every hook awaits the same read for this worker.
+// The prompt-submit hook is not gated: it draws nothing, and the terminal's
+// view reads the answers it settles.
 let maws: Promise<boolean> | undefined
 const native = async ($: EngineInterface, e: object) =>
   (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
@@ -923,9 +925,10 @@ export function registerToHuman(on: On) {
 
   // An answer is a prompt that names its question, one line per question,
   // as a choice or `reply` wrote them in the box, or as the person typed
-  // them; each question is settled once the prompt enters.
+  // them; each question is settled once the prompt enters. (Not gated on
+  // MAWS: a submission carries no surface, this hook draws nothing, and an
+  // answer given either way is what the terminal's question reads.)
   on('prompt.submit', async ($, e, next) => {
-    if (await native($, e)) return next(e)
     const found = answersOf(e.text)
     if (found.length === 0) {
       return next(e)

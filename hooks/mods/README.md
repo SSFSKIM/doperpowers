@@ -14,7 +14,7 @@ reads a report stream, not the transcript: the model sends them messages in
 record unwrapped. This mod
 makes the Claude Code terminal the consumer of those marks.
 
-Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report, the questions and their answers itself; this view passes every hook through on non-terminal surfaces, and the streaming hook draws nothing.
+Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report, the questions and their answers itself; this view passes every drawing hook through on non-terminal surfaces (a submitted answer still settles its question, for the terminal's view), and the streaming hook draws nothing.
 
 Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
