@@ -765,7 +765,7 @@ kind taxonomy the human-stream spec refused? The human-stream precedent
 
 ### FD-3 · Harness plurality: seven drivers vs one harness and a gateway
 
-**T3:** eight providers and a registry; cross-provider `delegate_task`;
+**T3:** seven drivers, one of them a registry; cross-provider `delegate_task`;
 lossy switch. **Ours:** one harness; multi-*model* through the gateway
 inside one context; codex reachable as a message target only; the codex
 process arm removed 2026-09-26. **Skew:** their adapter layer is both
