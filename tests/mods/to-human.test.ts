@@ -471,6 +471,32 @@ describe('surfaces', () => {
     expect(await ui.find({ type: 'Button', text: '1: main ★' })).toBeDefined()
   })
 
+  test('without MAWS, the report band and its press still switch the desktop transcript', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const message = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage',
+      requestId: 'm1', props: { text: TEXT, isFirstOfReply: true },
+    })
+    const band = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt',
+      props: {
+        hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80,
+        scroll: { offset: 0, bodyRows: 5 }, view: {},
+      },
+    })
+    expect(await message.find({ type: 'Markdown', text: 'Which branch?' })).toBeDefined()
+    expect(await band.find({ type: 'Button', text: 'full transcript' })).toBeDefined()
+    await band.press({ key: 'to-human-mode' })
+    expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
+    expect(await message.find({ type: 'Text', text: TEXT })).toBeDefined()
+    expect(await message.find({ type: 'Markdown' })).toBeUndefined()
+  })
+
   test('markdownBlocks strips control characters and cuts under the cap at paragraph breaks', async () => {
     expect(markdownBlocks('a\u001b[2mb\u001b[0m\r\nc\td')).toEqual(['ab\nc\td'])
 

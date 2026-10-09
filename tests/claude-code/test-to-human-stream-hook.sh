@@ -33,6 +33,17 @@ flush() { # <message-id> <index> <final> <delta> → the text the hook asks to d
   printf '%s' "$payload" | "$HOOK" | jq -r 'if . == null then "" else .hookSpecificOutput.displayContent end'
 }
 
+echo "MAWS draws the channel itself:"
+out=$(MAWS_NATIVE_TO_HUMAN=1 flush maws 0 false '<to-human>The report.</to-human>')
+if [ -z "$out" ]; then pass "native MAWS returns no drawing"; else fail "native drawing: $(printf '%q' "$out")"; fi
+if [ ! -e "$state_dir/maws" ]; then pass "native MAWS creates no streaming state"; else fail "native MAWS left streaming state"; fi
+out=$(MAWS_NATIVE_TO_HUMAN='' flush empty-env 0 true '<to-human>The report.</to-human>')
+case $out in
+  *"${CYAN}to human${OFF}"*) pass "an empty advertisement keeps today's drawing" ;;
+  *) fail "empty advertisement skipped the drawing: $(printf '%q' "$out")" ;;
+esac
+
+unset MAWS_NATIVE_TO_HUMAN
 echo "a message with no mark:"
 out=$(flush m0 0 false "Just a reply.
 ")
