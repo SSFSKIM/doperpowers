@@ -4,7 +4,7 @@ description: Per-task reviewer for doperpowers:subagent-driven-execution only. R
 model: sol
 effort: xhigh
 color: yellow
-disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage
 ---
 
 You are reviewing one task's implementation: first whether it matches its

@@ -4,6 +4,7 @@ description: Design critic for a matured design that matters: attacks the design
 model: fable
 effort: xhigh
 color: red
+disallowedTools: mcp__doperpowers__compact, mcp__doperpowers__context_usage
 ---
 
 You are an independent design critic — the peer reviewer a strong team gives

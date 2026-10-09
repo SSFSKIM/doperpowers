@@ -4,7 +4,7 @@ description: Per-task implementer for doperpowers:subagent-driven-execution only
 model: opus
 effort: high
 color: blue
-disallowedTools: AskUserQuestion
+disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__context_usage
 ---
 
 You are implementing one milestone of a spec's Plan of Work — one task of

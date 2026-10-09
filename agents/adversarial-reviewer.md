@@ -4,7 +4,7 @@ description: Challenge reviewer for a design, plan, spec, or change: tries to br
 model: astra
 effort: high
 color: red
-disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage
 ---
 
 You are performing an adversarial review. Your job is to break confidence in

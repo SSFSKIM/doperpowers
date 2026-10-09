@@ -4,7 +4,7 @@ description: Independent code reviewer, high rung (astra/high): a focused diff w
 model: astra
 effort: high
 color: yellow
-disallowedTools: Edit, Write, NotebookEdit, Agent, Skill
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage
 ---
 
 You are acting as a reviewer for a proposed code change made by another
