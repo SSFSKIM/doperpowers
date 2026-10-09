@@ -77,7 +77,7 @@ Per-axis superiority is clear and split:
 | Runtime durability (restart, queue, limits, stuck states) | **T3** | the PR's ~190-issue ledger is V1's "derived state" failure class, closed by server-owned state (§2.2, §2.4) |
 | Multi-harness | **T3** | seven built-in drivers, one of them a generic ACP-registry adapter, behind one adapter interface; sminos is Claude-only by a September decision (§2.5) |
 | Agent-to-agent *conversation* | **ours** | a recorded, addressed, reach-scoped family chat read before acting; T3 children are read-only threads reached by point-to-point tools (§2.3) |
-| Agent-to-agent *delegation* (fan out, collect typed results) | **T3** | `delegate_task` + `t3_thread_wait` with batched results; sminos has `send --wait` for one seat and prose in a chat (§2.3) |
+| Agent-to-agent *delegation* (a child on any provider, a typed result, fork + merge-back) | **T3** | `delegate_task` ends in a result the parent receives as such; sminos results are prose in a chat, Claude-only, no fork (§2.3). Their `wait` is not part of the lead: a pull model needs it, a push model does not (§5) |
 | Human surface | **T3** | desktop/web/mobile, Working section, phone steering, lineage; ours is `list`/`chart`/`tui`, in-harness mods, afleet at C1 (§2.7) |
 | Human-attention doctrine | **ours** | the agent decides what to send (`<to-human>`/`<essential>`/`<need-input>`, evaluated 5×5); T3's "needs attention" is runtime state (§2.7) |
 | Work semantics above the runtime (tickets, gate, review, merge) | **ours** | the board; T3 has settle + linked PRs + schedules and no gate, no review species (§2.8) |
@@ -87,10 +87,10 @@ Per-axis superiority is clear and split:
 | Scale evidence | **T3**, by orders of magnitude | a nightly user base that filed migration bugs within the weekend, a community CLI on protocol 2 the next day, 15k issues and PRs; ours is n=1 live proofs (§8) |
 
 The right move is **not** to T3-ize (an event-sourced server owning every
-session) but to import three things their runtime proved matter and ours
-lacks — a *wait-for-children* primitive, a *usage-limit* state with a reset
-time, and *restart continuity* for family seats — as registry reads and one
-verb, keeping the harness-as-truth architecture (§4, §5). The genuine
+session) but to import two things their runtime proved matter and ours
+lacks — a *usage-limit* state with a reset time and *restart continuity*
+for family seats — as registry reads, keeping the harness-as-truth
+architecture (§4, §5). The genuine
 strategic fork is the human surface (FD-4): T3 Code is the surface we have
 not built, and it cannot host sminos seats.
 
@@ -312,16 +312,30 @@ grandchild was refused an uncle, the cascade retired the tree in order;
 **Judgment.** This is the axis where the two systems are most different
 and each is ahead on half of it.
 
-*Where T3 is ahead:* **typed results and a wait.** A `delegate_task` child
-ends with a result the parent receives as such — in `mode:"wait"` as the
-tool's return, otherwise as a mailbox wake carrying batched results — and
-`t3_thread_wait` blocks on a set of threads. Ours has `send --wait` for *one*
-seat and a reply read from its transcript; a host waiting on three
-children idles and is woken three times, or polls `chat`. For "fan out N,
-collect N" — the shape SDE's per-milestone dispatch and review-code's
-panel already use *native subagents* for — T3's primitive is simply the
-right one. **Cross-provider children** (Claude plans, Codex implements) and
+*Where T3 is ahead:* **typed results, any provider, fork.** A
+`delegate_task` child ends with a *result* the parent receives as such —
+in `mode:"wait"` as the tool's return, otherwise as a mailbox wake carrying
+batched results; ours is the child's last untagged `say`, prose in the
+chat. **Cross-provider children** (Claude plans, Codex implements) and
 **fork + merge-back** of a thread's context have no counterpart here.
+
+What is *not* part of their lead, though it reads like one: the wait.
+`t3_thread_wait` and `mode:"wait"` exist because a T3 parent is otherwise
+a tool-calling agent that would poll `task_status`; the mailbox wake is
+their answer to that, bolted onto a pull model. A sminos host is pushed:
+a child's `say` is a frame on the host's socket — an idle host starts a
+turn on it, a busy one absorbs it at its next tool round (observed:
+`absorbed_mid_turn`), and two frames in the same second split between the
+two paths without loss. The host's "join" is its judgment on each wake,
+with `chat -n 30` showing which children have reported. A `wait` verb
+would be a long-blocked tool call inside the host's turn — the seat reads
+`busy` while it does nothing, the Bash tool's timeout bounds it, and the
+operator cannot tell waiting from working — which is the shape the push
+model exists to avoid. The one cost of push, N reports = N host turns, is
+the price the family-chat design accepted on purpose; and the strict
+"fan out N, collect N" shape is what this plugin routes to *native
+subagents* (SDE's per-milestone dispatch, review-code's panel), whose
+completion the harness already returns as a result.
 
 *Where we are ahead:* **the team is a conversation, not a result set.**
 Siblings address each other (`@b your migration renames a column I read`);
@@ -344,7 +358,8 @@ they built the queue, we observed the harness's.
 
 *Convergent:* the parent is woken by a child's completion in both; the
 child is a full session in both, never text spliced into the parent (T3
-closed three issues on exactly that splice). Import: a wait verb (§4.1).
+closed three issues on exactly that splice). No import on this axis; the
+wait was considered and dropped (§5).
 
 ### 2.4 Liveness, state words, and recovery
 
@@ -390,7 +405,7 @@ the board sweep's three blind retries are the wrong policy for a limit
 that lifts at a known hour) and the restart-continuity notion of "this
 seat was mid-turn when the machine went down" (the transcript's last
 record shows it; nothing reads it). Both are registry reads, not runtime
-(§4.2, §4.3). What T3 cannot do that we can: nothing on this axis — except
+(§4.1, §4.2). What T3 cannot do that we can: nothing on this axis — except
 that our `stopped` seat resumes with the harness's full context, where T3
 documents a lossy rebuild when the native session is gone.
 
@@ -552,7 +567,7 @@ scheduler is a real capability we lack at the seat level (the harness's
 own `CronCreate` exists and nothing in sminos wraps it); the board's sweep
 is the work-shaped version and covers what we actually run unattended.
 Their settlement is a sidebar-hygiene concept; ours is the board's state
-machine, which is the richer object. No import beyond §4.5.
+machine, which is the richer object. No import beyond §4.6.
 
 ### 2.9 Safety
 
@@ -614,7 +629,7 @@ undocumented internals (the human-stream spec records reading them from
 the 2.1.259 binary), and a harness release that changes the record's
 fields breaks `state()` on that day. T3's coupling is to seven drivers with
 version floors they enforce; ours is to one with none. We should pin the
-harness version floor we read against (§4.6).
+harness version floor we read against (§4.5).
 
 ---
 
@@ -628,7 +643,7 @@ harness version floor we read against (§4.6).
   must be spent (FD-3's trigger).
 - **Conversation semantics: ours.** Family chat, reach, tag-decides-push,
   chat-first boot. T3's children are read-only and sibling-blind by
-  design; nothing to take except the wait (§4.1).
+  design; nothing to take — their wait is a pull model's necessity (§5).
 - **Work semantics: ours.** The board, the gate, the review species, the
   merge tiers — T3 has settle and schedules; it does not attempt these.
 - **Human surface: T3.** By the whole product. What to do about it is
@@ -642,20 +657,13 @@ harness version floor we read against (§4.6).
 
 ## 4. Import candidates (prioritized)
 
-1. **A wait for children** — `sminos wait [@a @b …] [--any|--all] [--timeout]`
-   from a host: block until each named child (default: every live child)
-   has written to the host's chat since the host's watermark, print those
-   messages, advance the watermark. Everything it needs exists (`chat_seen`,
-   the `delivered` map, the per-chat lock, `--wait`'s transcript watcher).
-   Closes the one delegation shape T3 does better; the host stops paying a
-   turn per report. (RN `delegate_task` wait, `t3_thread_wait`.)
-2. **Limited as a reading** — when a seat's turn ended on a usage-limit
+1. **Limited as a reading** — when a seat's turn ended on a usage-limit
    error, `list`'s now column reads `limited until <time>` (parsed from the
    reply, the way `waiting` reads `waitingFor`), and the board sweep's
    recovery schedules the resume at the reset instead of three attempts.
    A registry read plus one sweep branch. (PR `UsageLimitRecoveryWorker`;
    today's digest-agent failure as the local evidence.)
-3. **Restart continuity for family seats** — a seat whose transcript's last
+2. **Restart continuity for family seats** — a seat whose transcript's last
    record is a running turn with no end reads `interrupted`, not `stopped`
    (a sub-case of `stopped`: `send` resumes it the same way); a host's
    `list` shows it; `sminos sync --continue` resumes every interrupted
@@ -663,24 +671,34 @@ harness version floor we read against (§4.6).
    restarts"; PR `ProviderRuntimeRecoveryService`.) Decide the word
    carefully — the one-name spec's lesson is to test the predicate on the
    real harness first.
-4. **State the self-approval rule** — one sentence in `SKILL.md`: a seat's
+3. **State the self-approval rule** — one sentence in `SKILL.md`: a seat's
    permission prompt is answered by a person or by its host, never by the
    seat (a `waiting` seat runs no turn). Already structural; worth a
    sentence because a host reading the skill should know it may answer a
    child's prompt and what that makes it responsible for. (RN.)
-5. **Model and cost in `list --json`** — the model the seat runs and the
+4. **Model and cost in `list --json`** — the model the seat runs and the
    transcript's `cost-state`, for a host integrating children; already in
    the transcript, one read. (RN lineage shows model/duration.)
-6. **A harness version floor** — `sminos` records the harness version it
+5. **A harness version floor** — `sminos` records the harness version it
    last read a session record from and warns when the record's fields
    change; T3 enforces `Claude Code 2.1.280+`. Cheap insurance against
    the coupling §2.10 names.
-7. **Settle-as-hide** (later) — `list`/`chart` fold an `idle` seat whose
+6. **Settle-as-hide** (later) — `list`/`chart` fold an `idle` seat whose
    host has retired or whose last reply is older than a day, as `retired`
    and `gone` are folded today. Sidebar hygiene; only if `list` grows noisy.
 
 ## 5. Deliberate non-imports
 
+- **A wait-for-children verb** — proposed in this doc's first draft as
+  `sminos wait [@a @b] --all`, dropped on the human partner's objection
+  (2026-10-08): the family chat is push. A child's `say` lands on the
+  host's socket and the harness starts or absorbs a turn; a host that
+  blocks in a tool call until N children report is a seat that reads
+  `busy` while doing nothing, bounded by the tool's timeout, indistinct
+  from working. T3 needs the wait because its parent would otherwise poll
+  `task_status`; ours is the message's recipient. N reports costing N
+  host turns is the family-chat design's accepted price, and the strict
+  join shape belongs to native subagents (§2.3).
 - **A server / event log** — the answer to §0's question is the harness;
   a second copy of its state is V1's race.
 - **Provider adapters and mid-thread provider switch** — one harness; the
@@ -738,14 +756,14 @@ per-milestone executor — the shapes our skills already run on *native
 subagents*, not seats); ours is the right one for a team whose members
 must know what the others said (a lead integrating two children whose
 changes collide — the live proof's exact scenario). Theirs has no group
-record; ours has no typed result and no wait. **Open:** §4.1 imports the
-wait. The deeper question: should a *result* be a first-class thing in the
-chat — a message kind the host can wait on — or is "the child's last
+record; ours has no typed result (and needs no wait: the host is pushed,
+§5). **Open:** should a *result* be a first-class thing in the
+chat — a message kind the host can act on — or is "the child's last
 untagged message after its turn ends" already that, and typing it the
 kind taxonomy the human-stream spec refused? The human-stream precedent
 (no kinds; marks divide attention, not content) argues for the latter.
 
-### FD-3 · Harness plurality: eight adapters vs one harness and a gateway
+### FD-3 · Harness plurality: seven drivers vs one harness and a gateway
 
 **T3:** eight providers and a registry; cross-provider `delegate_task`;
 lossy switch. **Ours:** one harness; multi-*model* through the gateway
@@ -800,7 +818,7 @@ hundreds stays readable; ours puts the decision on a host or the board,
 which is right while a human or a host reads `list` and wrong the day
 `list` holds a hundred idle seats nobody retired (the real registry
 already held 21 `gone` seats from other hosts when the one-name spec was
-written). **Open:** is "finished" a seat fact or a view fold? §4.7 says
+written). **Open:** is "finished" a seat fact or a view fold? §4.6 says
 fold; a seat fact would need a word, and the one-name spec's rule is that
 a word must be tested on the real harness before it names anything.
 
