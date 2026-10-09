@@ -15,6 +15,13 @@ ones may go, the orchestrator dispatching bounded subagents" — the
 implementer auto-dispatch replaced by the main session acting on the
 owner's word.
 
+Tickets are not needed for most work either. In MAWS everything discussed
+was going to be built, so a ticket per item would have cost more than
+writing the spec and going; the record of work done is the commit history,
+so tickets are not the record of all work. They are the state of future
+work — the backlog — as in cua, where only the items not yet taken were
+registered and then called by number.
+
 ## Evidence A — MAWS, session e3ce7feb (2026-09-25 → 10-09)
 
 A macOS Electron workstation built from an empty directory: 3,512 commits in
@@ -87,13 +94,24 @@ the owner's return — mediation, not parking.
    form inside an attended composite. The proposal from this analysis to
    run hours-long plan-executors as child seats is rejected: the costs it
    targeted are owned in-harness (above).
-3. Open: `doperpowers:issue-tracker` frames the board around "no
-   orchestrator-judge" — mechanical dispatch, park states, the wake
-   ritual. The regime in use has an orchestrator-judge (the interactive
-   session) and the owner mediating through it; the board is its backlog
-   and state ledger. Whether that framing is re-cut, and how far (the
-   autonomous loop kept as an option for the edge-ticket and triage
-   cases, or demoted), is the owner's scope decision, not taken here.
+3. `doperpowers:issue-tracker`, its worker protocols, its review loop and
+   `doperpowers:sminos` lose only the sentences that assert there is no
+   orchestrator ("There is no orchestrator-judge. Dispatch is
+   mechanical", "There is NO orchestrator in this loop", "No orchestrator
+   sits above the loop", "watching a worker work is supervision, which
+   this pipeline removed", "reintroduces the judge the pipeline
+   removed"). The doctrine itself stays as written (v7.141.4): a worker's
+   escalation targets are the board and the human, the board is written
+   through the scripts, no live progress mirror, the dispatch ritual
+   carries no judgment. The owner's reason for stopping there: a dispatch
+   doctrine that assumes no central orchestrator works unchanged when one
+   is present — today's case — while a doctrine built around an
+   orchestrator-judge cannot run mechanical dispatch, which a large
+   production board still needs at times (ida-solution's VM once ran
+   ticket automation up to GitHub's rate limit while a central session
+   kept receiving the tickets' state). An orchestrator may appear in a
+   design that never assumed it; the reverse does not hold. The board is
+   not re-centred on the orchestrator.
 
 ## Sources
 

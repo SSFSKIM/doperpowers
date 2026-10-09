@@ -10,10 +10,9 @@ this manual.
 The execution-side mirror of the board's review loop: where the review
 loop puts its rigor gate at the END of the pipeline (a confident review
 verdict before merge), this loop puts its rigor gate at the START — **a worker may not
-write code until the ticket passes the Ticket Gate**. There is NO
-orchestrator: a worker's escalation targets are the board itself (states,
-notes, comments) and the human on their next wake; turn-end messages are
-audit trail, not requests. Full design + rationale:
+write code until the ticket passes the Ticket Gate**. A worker's
+escalation targets are the board itself (states, notes, comments) and the
+human on their next wake; turn-end messages are audit trail, not requests. Full design + rationale:
 `docs/doperpowers/specs/2026-07-09-implement-worker-autonomy-design.md`.
 
 ## The pieces
@@ -97,8 +96,7 @@ at those gates is precisely `interactive-preferred`.
 the PR body is the closing artifact (`Closes #N` on the gh binding only, `## Validation Evidence`
 — cross-checked by the QA agent, `## Confusions` when warranted,
 FOLLOW-UPS), and a park comment carries the questions plus a 3–6 line
-orientation summary. Mid-flight visibility is the board's state label —
-watching a worker work is supervision, which this pipeline removed.
+orientation summary. Mid-flight visibility is the board's state label.
 
 ## The spike lane (category `spike`)
 

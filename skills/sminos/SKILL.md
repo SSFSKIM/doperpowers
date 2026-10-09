@@ -210,4 +210,4 @@ shared lock. Do not hand-drive a pipeline worker: it escalates by parking its
 ticket (per the who-unparks discriminant in doperpowers:issue-tracker, the
 board schema's single home), the human answers on the ticket, and
 issue-tracker's `board-answer.sh` relays that answer with `sminos resume` —
-resuming one with your own answers reintroduces the judge the pipeline removed.
+an answer that bypasses the ticket leaves the board unaware of it.

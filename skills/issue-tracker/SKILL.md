@@ -22,8 +22,8 @@ every script talks to GitHub directly (`gh` required, fail-loud) and may run
 from any checkout. `doperpowers/issue-tracker/` in the consumer repo survives
 only as a gitignored render cache for `board-map.sh`.
 
-**There is no orchestrator-judge.** Dispatch is mechanical (the ritual
-below): it renders a protocol, spawns a worker, and writes nothing. Workers
+The dispatch ritual (below) renders a protocol, spawns a worker, and
+writes nothing. Workers
 write their own ticket's open states and register child/follow-up tickets
 directly, under their protocol's authority rules. Everything that needs a
 human lands on the board as a parked state and waits for the wake ritual.

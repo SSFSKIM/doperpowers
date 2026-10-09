@@ -65,7 +65,7 @@ assert_contains "$proto" 'under a gh board your PR body MUST say "Closes #{{ISSU
 assert_contains "$proto" '- Under a gh board, "Closes #{{ISSUE_NUMBER}}". Under an API board, NO' "Closing Artifact: the Closes bullet splits by binding"
 assert_contains "$proto" '`Closes`/`Fixes`/`Resolves` line for the ticket' "...and an API board's PR body carries no closing keyword for the ticket"
 assert_not_contains "$proto" 'your PR body MUST say "Closes #{{ISSUE_NUMBER}}", and' "...and no binding-blind Closes duty survives"
-assert_contains "$proto" "NO orchestrator" "no-orchestrator doctrine"
+assert_contains "$proto" "escalation targets are the board itself" "escalation targets are the board and the human"
 assert_contains "$proto" "EXECUTION (gate passed)" "execution doctrine lives inline in the protocol (no binding indirection)"
 assert_contains "$proto" "A fork discovered mid-build" "post-gate park clause present"
 assert_contains "$proto" "ASK EARLY" "ask-early clause present (no assumption-building past human-grade forks)"

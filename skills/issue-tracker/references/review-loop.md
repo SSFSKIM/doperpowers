@@ -23,7 +23,7 @@ only three, are an owner's to answer (a spec conflict, a design gap, a
 dismissal); a stand-in holds no design reasoning, so each becomes a board edge
 instead.
 
-**No orchestrator sits above the loop.** Its escalation targets are the board
+The loop's escalation targets are the board
 itself (states, notes, comments), the human on their next wake, and — for those
 three kinds — its dispatcher; within its own turn the agent is the orchestrator
 of its fixers. Full design + rationale:
