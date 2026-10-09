@@ -39,7 +39,10 @@
 >   `output-styles/to-human.md`, afleet (`~/Developer/GitHub/afleet`, at C1
 >   of a 17-step roadmap). `docs/doperpowers/TECH-DEBT.md` rows 27–30.
 >
-> **Status: agenda open.** §6's forked decisions await discussion.
+> **Status (2026-10-08):** §4 audited against the real registry and the
+> code — one import now (`list` folds retired and gone), one after a
+> capture (a limit-aware sweep), four dropped. FD-3 closed (harness
+> plurality is an accepted non-goal). FD-1, FD-2, FD-4, FD-5, FD-6 open.
 
 ---
 
@@ -87,9 +90,9 @@ Per-axis superiority is clear and split:
 | Scale evidence | **T3**, by orders of magnitude | a nightly user base that filed migration bugs within the weekend, a community CLI on protocol 2 the next day, 15k issues and PRs; ours is n=1 live proofs (§8) |
 
 The right move is **not** to T3-ize (an event-sourced server owning every
-session) but to import two things their runtime proved matter and ours
-lacks — a *usage-limit* state with a reset time and *restart continuity*
-for family seats — as registry reads, keeping the harness-as-truth
+session) but to take what the audit (§4) left standing — a limit-aware
+sweep once a real limit stop has been captured, and `list` folding retired
+and gone seats as `chart` already does — keeping the harness-as-truth
 architecture (§4, §5). The genuine
 strategic fork is the human surface (FD-4): T3 Code is the surface we have
 not built, and it cannot host sminos seats.
@@ -404,8 +407,10 @@ fails. T3's vocabulary has two words we need and cannot derive today:
 the board sweep's three blind retries are the wrong policy for a limit
 that lifts at a known hour) and the restart-continuity notion of "this
 seat was mid-turn when the machine went down" (the transcript's last
-record shows it; nothing reads it). Both are registry reads, not runtime
-(§4.1, §4.2). What T3 cannot do that we can: nothing on this axis — except
+record shows it; nothing reads it). Both would be registry reads, not
+runtime; the audit kept the first and dropped the second for want of a
+single observed case (§4.1, §4.2). What T3 cannot do that we can: nothing
+on this axis — except
 that our `stopped` seat resumes with the harness's full context, where T3
 documents a lossy rebuild when the native session is gone.
 
@@ -628,8 +633,10 @@ not shallower: the sessions registry and the socket injection recipe are
 undocumented internals (the human-stream spec records reading them from
 the 2.1.259 binary), and a harness release that changes the record's
 fields breaks `state()` on that day. T3's coupling is to seven drivers with
-version floors they enforce; ours is to one with none. We should pin the
-harness version floor we read against (§4.5).
+version floors they enforce; ours is to one with none. A version floor of
+our own was audited and dropped (§4.5): the exposure is silent misreading,
+not a refused launch, and the defense in use is the live proof on the real
+harness at each sminos spec's last milestone.
 
 ---
 
@@ -638,9 +645,10 @@ harness version floor we read against (§4.5).
 - **Runtime durability: T3.** Settled not by building a server but by
   reading the harness for the two states we lack (Limited, interrupted
   mid-turn) and keeping resume as the recovery verb.
-- **Multi-harness: T3.** We stopped paying for it on purpose; the gateway
-  is our multi-model answer. Reopen only if a second harness subscription
-  must be spent (FD-3's trigger).
+- **Multi-harness: T3.** An accepted non-goal (human decision,
+  2026-10-08): sminos assumes messaging between Claude Code sessions, and
+  Codex threads as message targets, and nothing else; the gateway is the
+  multi-model answer. FD-3 is closed.
 - **Conversation semantics: ours.** Family chat, reach, tag-decides-push,
   chat-first boot. T3's children are read-only and sibling-blind by
   design; nothing to take — their wait is a pull model's necessity (§5).
@@ -655,37 +663,92 @@ harness version floor we read against (§4.5).
 
 ---
 
-## 4. Import candidates (prioritized)
+## 4. Import candidates — audited (2026-10-08)
 
-1. **Limited as a reading** — when a seat's turn ended on a usage-limit
-   error, `list`'s now column reads `limited until <time>` (parsed from the
-   reply, the way `waiting` reads `waitingFor`), and the board sweep's
-   recovery schedules the resume at the reset instead of three attempts.
-   A registry read plus one sweep branch. (PR `UsageLimitRecoveryWorker`;
-   today's digest-agent failure as the local evidence.)
-2. **Restart continuity for family seats** — a seat whose transcript's last
-   record is a running turn with no end reads `interrupted`, not `stopped`
-   (a sub-case of `stopped`: `send` resumes it the same way); a host's
-   `list` shows it; `sminos sync --continue` resumes every interrupted
-   child of a host with a one-line nudge. (RN "Continue threads after
-   restarts"; PR `ProviderRuntimeRecoveryService`.) Decide the word
-   carefully — the one-name spec's lesson is to test the predicate on the
-   real harness first.
-3. **State the self-approval rule** — one sentence in `SKILL.md`: a seat's
-   permission prompt is answered by a person or by its host, never by the
-   seat (a `waiting` seat runs no turn). Already structural; worth a
-   sentence because a host reading the skill should know it may answer a
-   child's prompt and what that makes it responsible for. (RN.)
-4. **Model and cost in `list --json`** — the model the seat runs and the
-   transcript's `cost-state`, for a host integrating children; already in
-   the transcript, one read. (RN lineage shows model/duration.)
-5. **A harness version floor** — `sminos` records the harness version it
-   last read a session record from and warns when the record's fields
-   change; T3 enforces `Claude Code 2.1.280+`. Cheap insurance against
-   the coupling §2.10 names.
-6. **Settle-as-hide** (later) — `list`/`chart` fold an `idle` seat whose
-   host has retired or whose last reply is older than a day, as `retired`
-   and `gone` are folded today. Sidebar hygiene; only if `list` grows noisy.
+Each candidate was checked against the real registry, the code paths it
+would touch, and the harness as it runs on this machine, under the
+one-name spec's rule: no word and no verb before its predicate is
+observed. The human partner's framing for the audit: harness plurality is
+an accepted non-goal — sminos assumes messaging between Claude Code
+sessions (and Codex threads as message targets) and nothing else.
+
+1. **Limited as a reading** — **real, and blocked on one observation.**
+   What happens today is structural, read from the code: a seat whose turn
+   ends on a usage-limit error is a harness job in `failed`;
+   `status_for_state` maps it to `error`; the sweep's `pass_recover`
+   (`board-sweep.sh:372–481`) treats `error` as "turn errored" and resumes
+   it with a nudge, up to `SWEEP_RECOVERY_CAP` (3) lifetime attempts at the
+   sweep's five-minute tick, then parks the ticket `needs-human`. Against a
+   limit that lifts in hours, three resumes about fifteen minutes apart all
+   fail, the cap is spent, and the ticket waits for a person twice: once at
+   the park, and again because the recovery cap is gone for good. The sweep
+   never reads the error text. A family seat simply reads `stopped`. Value
+   is therefore real for pipeline seats on gateway routes — the limit this
+   doc's own digest agent hit (astra, `400 … at its usage limit until Oct 9,
+   14:13 PDT`) carried its reset time in the text. Not known: how
+   Anthropic's own limit stop appears in a `--bg` seat's transcript and
+   harness row (no `failed` job is in the current list, and this audit did
+   not scan transcripts), and whether its text carries a reset time at all.
+   The first step is a capture, not code: on the next limit stop of a seat,
+   save the transcript's last records and the harness row (TECH-DEBT 31).
+   Then: the sweep stamps `limited_until` on the seat and skips recovery
+   until it passes without spending the cap; `list`'s now column reads it
+   the way `waiting` reads `waitingFor`. Priority 1 of this list.
+2. **Restart continuity for family seats** — **dropped: no observed demand,
+   mechanism already present.** `stopped` already means "`send` resumes it
+   with the harness's context intact" (one-name live proof: `kill <pid>`,
+   then `send --wait` returned `via --bg --resume` and the reply). After a
+   reboot the host is `stopped` too; one `send` to the host, and its `list`
+   shows its children `stopped`; it decides. What is missing is only a mark
+   distinguishing "died mid-turn" from "finished and exited", which needs a
+   tail read of every stopped seat's transcript on each `list`. The real
+   registry holds exactly one family ever run (`fam`, the live proof, all
+   retired); no family has run unattended across a reboot. Pipeline seats
+   already get `absent → resume` from the sweep. Reopen trigger: a family
+   left running across a reboot where the host could not tell which
+   children were mid-turn.
+3. **State the self-approval rule** — **dropped: the sentence would be
+   wrong.** A `send` is a user message on the inbox socket: it answers a
+   pending `AskUserQuestion` and nothing else; a harness permission prompt
+   is answered only by a person through `sminos attach` — `SKILL.md`
+   already says so ("send it an instruction, or `sminos attach` and
+   approve"). A host therefore cannot approve a child's permission prompt
+   at all, and a seat cannot approve its own because a `waiting` seat runs
+   no turn. Nothing to add; "a host may answer a child's prompt" as
+   proposed would have overstated what `send` does.
+4. **Model and cost in `list --json`** — **dropped: half exists, the other
+   half has no reader.** `model` is a field of the seat record
+   (`spawn_fresh` writes it; `fill` can change it) and `public_seat` keeps
+   it, so `list --json` already carries it. Cost is in the transcript's
+   `cost-state` records (`totalCostUSD`, `modelUsage` per model) — one more
+   file read per seat — and nobody on our side acts on it: hosts do not
+   integrate on cost, and the operator's spend is a subscription and
+   gateway allowances where `totalCostUSD` is notional. T3 shows per-child
+   usage because its users pay per provider.
+5. **A harness version floor** — **dropped: a warning nobody would act on.**
+   sminos's history has no commit caused by a session-record field change
+   (`git log` on `skills/sminos`: two harness-related commits, neither a
+   breakage); the specs read the binary for feature facts (2.1.259,
+   2.1.260, 2.1.283), not to repair. The real exposure is silent
+   misreading — a vanished field makes `state()` answer `busy` or `stopped`
+   with no error — and the defense already practiced is the live proof on
+   the real harness at each sminos spec's last milestone. A floor adds a
+   number to maintain.
+6. **`list` folds retired and gone** — **import now; the evidence is
+   today's registry.** 50 seats, none live: 28 `retired`, 20 `gone`
+   (sessions from other hosts), 2 `stopped`; `list` prints all 50 (59
+   lines) while `chart` and `tui` already hide retired-or-gone unless
+   `--all`. So this is not T3's "settle" — nothing needs deciding about
+   when a seat is finished — it is `list` lacking the fold its two sibling
+   views have. Shape: `list` hides `retired` and `gone` by default; `--all`
+   shows them; `--state retired|gone` still selects them; `--json` keeps
+   every row (scripts filter on `state`). A family seat's scoped `list` is
+   unaffected in practice (its reach is small). Fifteen lines, hermetic
+   assertions, one sentence in `SKILL.md`.
+
+Settled by the audit: one import now (6), one after a capture (1), four
+dropped (2–5). Everything else T3 does on these axes is a product of
+owning the session, which §5 declines.
 
 ## 5. Deliberate non-imports
 
@@ -779,6 +842,12 @@ unattended — at which point the honest shape is a *seat kind*, not an
 adapter: a Codex thread registered as a seat with `send` through
 `codex queue` and a state word read from Codex's own session store, the
 same harness-as-truth bet applied to a second harness.
+
+**CLOSED (2026-10-08, human decision):** harness plurality is an accepted
+non-goal, not a deferred one. sminos assumes messaging between Claude Code
+sessions (and Codex threads as message targets) and nothing more; T3's
+lead on this axis is recorded in §0 as a fact about a product with a
+different purpose. No reopen trigger.
 
 ### FD-4 · The human surface: a product app vs the harness's UI, a doctrine, and afleet
 
