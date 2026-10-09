@@ -30,7 +30,8 @@ family seat's family for that seat.
     sminos status   <seat> <one line>                     # the agent's own "now" line
     sminos retire   <seat> [--purge] [--cascade]           # stop; keep (or purge) the record
     sminos remove   <seat>                                # stop and delete the record
-    sminos list     [group] [--state W] [--json]         # W: busy idle waiting stopped gone vacant retired
+    sminos list     [group] [--state W] [--json] [--all] # W: busy idle waiting stopped gone vacant retired;
+                   retired and gone fold into a "+N hidden" tail until --all or --state names them
     sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
     sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -103,6 +104,9 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 STATES = ("busy", "idle", "waiting", "stopped", "gone", "vacant", "retired")
 FILLED = ("busy", "idle", "waiting")
 REFILLABLE = ("vacant", "stopped", "gone")
+# HIDDEN: what list, chart, and tui fold by default — a seat only a `fill`
+# can act on. The word decides; the hide rule asks nothing more.
+HIDDEN = ("retired", "gone")
 TERMINAL = ("done", "done-blocked", "blocked", "failed", "stopped", "error")
 # Model-visible surfaces never carry a credential: the pipeline colonizes the
 # record with run_bearer and friends, and a seat's JSON is read by agents.
@@ -2836,8 +2840,19 @@ def cmd_list(a):
             out.append(d)
         print(json.dumps(out, indent=2))
         return
+    # The text view folds the seats only a `fill` can act on, as chart and
+    # tui do, unless --all or an explicit --state names the word; the tail
+    # line says how many it folded. --json keeps every row (a script filters
+    # on `state`).
+    hidden = 0
+    if not a.all and not a.state:
+        hidden = sum(1 for _, st in rows if st in HIDDEN)
+        rows = [(s, st) for s, st in rows if st not in HIDDEN]
+    tail = ("+%d hidden (%s) — sminos list --all" % (hidden, ", ".join(HIDDEN))) if hidden else ""
     if not rows:
         print("(no seats)")
+        if tail:
+            print(tail)
         return
     # Groups in order of their most recently updated seat: rows are already
     # newest first, so a group's first appearance is its place.
@@ -2849,6 +2864,8 @@ def cmd_list(a):
         print(g)
         for s, st in members:
             print(list_row(s, st, width))
+    if tail:
+        print(tail)
 
 
 def cmd_attach(a):
@@ -3065,6 +3082,7 @@ def build_parser():
     ls.add_argument("group", nargs="?", default=None)
     ls.add_argument("--state", default="", choices=STATES)
     ls.add_argument("--json", action="store_true")
+    ls.add_argument("--all", action="store_true")
     ls.set_defaults(fn=cmd_list)
 
     ch = sub.add_parser("chart", add_help=False)

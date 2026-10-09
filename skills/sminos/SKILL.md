@@ -75,7 +75,7 @@ is a family seat; use `spawn` to grow its family, not `seat add`.
 From a terminal, or an interactive session not holding a seat, the operator
 can address the fleet. `human` is reserved for this identity, not a seat.
 
-    sminos list [group] [--state W] [--json]  # seats under their group: alias, state word, now
+    sminos list [group] [--state W] [--json] [--all]  # seats under their group: alias, state word, now
     sminos say --in <host> "…"       # write to a named family chat as human
     sminos chat <host> [-n N] [--since ID] [--json]  # read its history; default last 30
     sminos send <target> "…" [--wait]  # a seat (live, or resumed if stopped), a live harness session, or a Codex thread through its queue
@@ -124,11 +124,14 @@ what it waits for, else its latest reply), led by its role:
       a      busy      parsing the schema
       b      waiting   input needed
 
-`list --json` carries each seat's ids and `state`, for scripts. `chart` and
-`tui` draw the same words (`●` busy, `○` idle, `◐` waiting, `■` stopped, `✕`
-gone, `◌` vacant, `⊘` retired) and hide retired and gone seats until `--all`
-or the `a` key — except one with a visible descendant, which stays drawn as
-the edge its children hang from. `send` refuses a vacant, retired, or gone
+`list` hides retired and gone seats — the ones only a `fill` can act on —
+and ends with `+N hidden (retired, gone)` when it did; `--all` shows them,
+and `--state retired` or `--state gone` names them. `list --json` carries
+every seat with its ids and `state`, for scripts. `chart` and `tui` draw
+the same words (`●` busy, `○` idle, `◐` waiting, `■` stopped, `✕` gone, `◌`
+vacant, `⊘` retired) and hide the same seats until `--all` or the `a` key —
+except one with a visible descendant, which stays drawn as the edge its
+children hang from. `send` refuses a vacant, retired, or gone
 seat, pointing at the verb that reaches it. `send --wait` waits for evidence the message landed, then for
 the turn's end, and prints the reply; it needs a seat. `resume` interrupts a
 live turn and inherits this process's environment (the board pipeline's

@@ -330,7 +330,7 @@ mkdir -p "$NEW/groups/other/nodes"
 printf '{"alias":"scout2","parent":"","addr":"scout2","session":"22222222-bbbb-4000-8000-000000000002","cwd":"/y","branch":"","desc":"other side","joined":"2026-01-01T00:00:00Z","updated":"2026-01-01T00:00:00Z"}\n' \
   > "$NEW/groups/other/nodes/scout2.json"
 chmod 755 "$OLD"; chmod 644 "$OLD/$OLD_UUID.json"   # the old substrate's wide modes
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list --all
 assert_rc 0 "$RC" "first command against the default root migrates and lists"
 if [ -L "$OLD" ]; then pass "old daemon root became a symlink"; else fail "old daemon root became a symlink"; fi
 assert_file_exists "$NEW/$OLD_UUID.json" "daemon meta moved into the new root"
@@ -360,7 +360,7 @@ assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))
 assert_contains "$(cat "$NEW/$DUP_CX.json")" '"alias": "review-pr-470@cccc3333"' "a codex record never wins an alias over a claude record"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$CX_LIVE.json")" "working" "a working codex record with a live pid is left as is"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$NEW/$DUP_NEW.json")" "idle" "the newest duplicate keeps its status"
-run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list other
+run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list other --all
 assert_contains "$OUT" "scout2" "a second group's node sharing a session id still converts"
 run env -u SMINOS_HOME HOME="$MH" "$SMINOS" list demo --json
 assert_contains "$OUT" '"alias": "scout"' "the first group's node keeps its seat"
@@ -393,7 +393,7 @@ mkdir -p "$AH/.claude/agora/groups/g1"
 ln -s "$AH/.claude/agora" "$AH/.claude/orchestrating-daemons"
 V3_UUID="33333333-cccc-4000-8000-000000000003"
 printf '{"uuid":"%s","alias":"keeper","name":"keeper","group":"g1","status":"idle","current":"%s","cwd":"/k","updated":"2026-09-01T00:00:00Z"}\n' "$V3_UUID" "$V3_UUID" > "$AH/.claude/agora/$V3_UUID.json"
-run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list
+run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list --all
 assert_rc 0 "$RC" "a root under the former name migrates on the first command"
 assert_contains "$OUT" "keeper" "the former root's seats are listed"
 assert_file_exists "$AH/.claude/sminos/$V3_UUID.json" "the former root was renamed into place"
@@ -402,7 +402,7 @@ if [ -L "$AH/.claude/orchestrating-daemons" ]; then pass "the daemon-era symlink
 # A real directory recreated at the former path (an older consumer's mkdir -p
 # landing in the cutover gap) must never displace a root that holds records.
 rm "$AH/.claude/agora"; mkdir "$AH/.claude/agora"
-run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list
+run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list --all
 assert_contains "$OUT" "keeper" "a directory recreated at the former path does not displace the root"
 assert_file_exists "$AH/.claude/sminos/$V3_UUID.json" "the record-holding root stays where it is"
 if [ -L "$AH/.claude/agora" ]; then pass "the recreated directory is folded away and the symlink restored"; else fail "the recreated directory is folded away and the symlink restored"; fi
@@ -417,7 +417,7 @@ LATE_UUID="44444444-dddd-4000-8000-000000000004"
 printf '{"uuid":"%s","alias":"latecomer","name":"latecomer","group":"g1","status":"idle","current":"%s","cwd":"/l","updated":"2026-09-04T00:00:00Z"}\n' "$LATE_UUID" "$LATE_UUID" > "$AH/.claude/agora/$LATE_UUID.json"
 printf 'late reply\n' > "$AH/.claude/agora/$LATE_UUID.reply.txt"
 : > "$AH/.claude/agora/.metalock"
-run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list
+run env -u SMINOS_HOME HOME="$AH" "$SMINOS" list --all
 assert_rc 0 "$RC" "a recreated former root holding a seat migrates cleanly"
 assert_file_exists "$AH/.claude/sminos/$LATE_UUID.json" "a seat written into the recreated former root moves into the root"
 assert_file_exists "$AH/.claude/sminos/$LATE_UUID.reply.txt" "its reply file moves with it"
@@ -1676,7 +1676,7 @@ done
 "$SMINOS" meta set st2/z updated 2099-01-01T00:00:59Z >/dev/null
 run "$SMINOS" list st
 assert_rc 0 "$RC" "list of a group exits 0"
-EXPECTED_ST="$(printf '%s\n' \
+EXPECTED_ST_ALL="$(printf '%s\n' \
   'st' \
   '  s-wait    waiting   permission to run rm' \
   '  s-idle    idle      SCOUT' \
@@ -1687,7 +1687,28 @@ EXPECTED_ST="$(printf '%s\n' \
   '  s-gone    gone' \
   '  s-ret     retired' \
   '  s-vac     vacant')"
-assert_equals "$OUT" "$EXPECTED_ST" "list is the group heading, then alias, state word and now column — no header, ids, or recorded status"
+# The text view folds retired and gone (the seats only a fill can act on) into
+# a tail line, as chart and tui do; --all shows them in place; --json keeps them.
+EXPECTED_ST="$(printf '%s\n' \
+  'st' \
+  '  s-wait    waiting   permission to run rm' \
+  '  s-idle    idle      SCOUT' \
+  '  s-busy    busy      parsing the schema' \
+  '  s-shell   busy' \
+  '  s-bare    busy' \
+  '  s-stop    stopped' \
+  '  s-vac     vacant' \
+  '+2 hidden (retired, gone) — sminos list --all')"
+assert_equals "$OUT" "$EXPECTED_ST" "list is the group heading, then alias, state word and now column — no header, ids, or recorded status; retired and gone fold into the tail"
+run "$SMINOS" list st --all
+assert_equals "$OUT" "$EXPECTED_ST_ALL" "--all shows the retired and gone rows in place and prints no tail"
+run "$SMINOS" list --json st
+assert_contains "$OUT" '"state": "retired"' "--json keeps a retired row"
+assert_contains "$OUT" '"state": "gone"' "--json keeps a gone row"
+"$SMINOS" seat add st4 ghost --session 0e0e0e0e-0e0e-4000-8000-0e0e0e0e0e0e >/dev/null
+run "$SMINOS" list st4
+assert_equals "$OUT" "$(printf '(no seats)\n+1 hidden (retired, gone) — sminos list --all')" "a group of only folded seats says so, then the count on its own line"
+"$SMINOS" remove st4/ghost >/dev/null
 run "$SMINOS" list
 EXPECTED_ST2="$(printf 'st2\n  %s   busy\n  %-24s   vacant    REVIEWER\nst\n  s-wait' lone-seat-with-a-long-name-past-24 z)"
 assert_contains "$OUT" "$EXPECTED_ST2" "groups are ordered by their newest seat; an alias pads to at most 24 cells and is never cut"
@@ -1708,7 +1729,7 @@ assert_equals "$OUT" "(no seats)" "list of an empty selection says so"
 "$SMINOS" list st --json >/dev/null
 "$SMINOS" list st >/dev/null
 assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list runs no claude agents, even for seats with no live peer"
-STUB_AGENTS_FAIL=1 run "$SMINOS" list st
+STUB_AGENTS_FAIL=1 run "$SMINOS" list st --all
 assert_rc 0 "$RC" "list is unaffected by a failing harness"
 assert_contains "$OUT" "s-idle    idle" "and still reads the live word"
 assert_contains "$OUT" "s-gone    gone" "and a gone seat stays gone"

@@ -744,7 +744,12 @@ sessions (and Codex threads as message targets) and nothing else.
    shows them; `--state retired|gone` still selects them; `--json` keeps
    every row (scripts filter on `state`). A family seat's scoped `list` is
    unaffected in practice (its reach is small). Fifteen lines, hermetic
-   assertions, one sentence in `SKILL.md`.
+   assertions, one sentence in `SKILL.md`. **Shipped in 7.136.0**
+   (2026-10-08): `HIDDEN = ("retired", "gone")` shared by `list` and the
+   chart's `is_dead`; the tail reads `+N hidden (retired, gone) — sminos
+   list --all`; on the real registry `list` went from 59 lines to four;
+   the suite's seven migration checks that read converted (retired) seats
+   from plain `list` now pass `--all`; 860 assertions green.
 
 Settled by the audit: one import now (6), one after a capture (1), four
 dropped (2–5). Everything else T3 does on these axes is a product of

@@ -70,8 +70,9 @@ def fit(s, n, collapse=True):
 
 def is_dead(st):
     """Hidden by default (shown with --all): a retired or gone seat — one only
-    a `fill` can act on. The word decides; the hide rule asks nothing more."""
-    return st in ("retired", "gone")
+    a `fill` can act on. The word decides; the hide rule asks nothing more.
+    `list` folds the same words (sminos.HIDDEN)."""
+    return st in sminos.HIDDEN
 
 
 def seat_node(s, st, node_id):
