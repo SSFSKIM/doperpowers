@@ -243,28 +243,6 @@ working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
 plugin-submitted prompt does.
 
-## interim (`interim.ts`)
-
-A subagent that ends its turn while its own subagent or background shell
-still runs makes the engine send its parent a completion notification anyway,
-and again each time that work wakes it and it stops to wait once more: in one
-MAWS session (2026-09-29) 277 of 486 notifications were these, each one a
-parent turn spent on "still running, nothing to do". The engine marks them,
-writing "This agent stopped with background work of its own still running"
-into the notification's `<note>` (the final one carries the other note), so a
-`prompt.submit` hook matched on `origin.kind: 'task-notification'` drops those
-before they enter the session, but only when the status is `completed`, the
-`<note>` element carries that marker, and the whole `<result>` is one of the
-engine's placeholders (the report is still to come through SubagentHandback,
-or was already delivered as a message). A result holding anything else, the
-agent's words where hand-back is off or an engine warning beside the
-placeholder, passes, as do the final notification and a report that merely
-quotes the marker. Replayed over that session, the filter drops 280
-notifications, every one a placeholder. What it gives up: an agent killed
-after a dropped placeholder gets no fresh notification from the engine, so
-the parent hears of the kill only if it did the killing or looks. A hook
-that fails lets the notification through.
-
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
