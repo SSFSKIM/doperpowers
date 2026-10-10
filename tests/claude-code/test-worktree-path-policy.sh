@@ -48,8 +48,9 @@ echo ""
 
 assert_not_contains "$WORKSPACE_REF" "~/.config/doperpowers/worktrees" "isolated-workspace does not mention old global path"
 assert_not_contains "$WORKSPACE_REF" "global legacy" "isolated-workspace does not use unclear global legacy shorthand"
-assert_contains "$WORKSPACE_REF" '`git worktree add .worktrees/<branch>' "isolated-workspace defaults new manual worktrees to .worktrees/"
-assert_contains "$WORKSPACE_REF" '`.worktrees/` or `worktrees/`' "isolated-workspace keeps project-local cleanup ownership"
+assert_contains "$WORKSPACE_REF" '.claude/worktrees/<branch> -b <branch>' "isolated-workspace defaults new manual worktrees to the harness-managed .claude/worktrees/"
+assert_not_contains "$WORKSPACE_REF" 'git worktree add .worktrees/' "isolated-workspace no longer defaults to the unmanaged .worktrees/"
+assert_contains "$WORKSPACE_REF" '`.claude/worktrees/`, `.worktrees/` or `worktrees/`' "isolated-workspace keeps project-local cleanup ownership"
 
 assert_not_contains "$ROTOTILL_SPEC" "~/.config/doperpowers/worktrees" "rototill spec does not preserve old global path policy"
 assert_not_contains "$ROTOTILL_PLAN" "~/.config/doperpowers/worktrees" "rototill plan does not preserve old global path policy"

@@ -16,9 +16,14 @@ a workspace the harness cannot see, follow, or clean up (validated 50/50
 runs when the preference was stated explicitly). Ask before creating one
 unless the human partner's instructions already state a preference.
 
-**Manual fallback** (no native tool): `git worktree add .worktrees/<branch>
--b <branch>` at the project root, and confirm `.worktrees/` is gitignored
-first — add and commit the ignore line if not. A sandbox that denies the
+**Manual fallback** (no native tool): `git worktree add
+.claude/worktrees/<branch> -b <branch>` at the project root, and confirm
+`.claude/worktrees/` is gitignored first — add and commit the ignore line if
+not. That directory is the only location the harness treats as its own: a
+worktree anywhere else (a sibling directory, `.worktrees/`) makes every
+later `EnterWorktree` into it a permission prompt that no allow rule, hook,
+or classifier can answer, because entering it relocates the session's
+permission root. A sandbox that denies the
 add: say so and work in place. Run the project's setup and its test suite
 before the first task, so a failure later is yours.
 
@@ -35,7 +40,7 @@ it runs, itself with `--no-ff` at the end — rather than rebases: a rebase
 rewrites every cited SHA and leaves intermediate commits that may not
 build. Rebase a branch whose record cites nothing, or record the old-to-new
 mapping for every cited range when you must. Remove only a worktree you created (one
-under `.worktrees/` or `worktrees/`), from outside it, and only after the
+under `.claude/worktrees/`, `.worktrees/` or `worktrees/`), from outside it, and only after the
 merge is confirmed; a harness-owned workspace is left in place or exited
 through the harness's own tool. A removal refused for
 `modified or untracked files` means those files exist nowhere else: never
