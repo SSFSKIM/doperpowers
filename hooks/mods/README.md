@@ -219,7 +219,8 @@ compacted behind them. Nothing is aborted: background shells, monitors, MCP
 servers and subagents run on through a compaction, and their notifications
 arrive in the turn after. The tool's description carries the guidance
 (the work's checkpoints decide, size only sets how small a checkpoint will
-do, the token bands, call it last and alone, end the turn).
+do, why a checkpoint is worth compacting at, the token bands, call it last
+and alone, end the turn).
 
 A subagent's call to `compact` is refused (its turn ends are not the main
 conversation's), and so is one to `context_usage` (`$.session.usage` reads
