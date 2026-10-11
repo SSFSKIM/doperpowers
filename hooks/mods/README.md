@@ -217,11 +217,14 @@ request left by a turn that ended otherwise (an interruption, an API error)
 is dropped at the next `turn.start`, so a turn the person starts is not
 compacted behind them. Nothing is aborted: background shells, monitors, MCP
 servers and subagents run on through a compaction, and their notifications
-arrive in the turn after. The tool's description carries the guidance (why,
-the token bands, call it last and alone, end the turn).
+arrive in the turn after. The tool's description carries the guidance
+(the work's checkpoints decide, size only sets how small a checkpoint will
+do, the token bands, call it last and alone, end the turn).
 
-A subagent's call is refused (its turn ends are not the main conversation's)
-and a headless (`-p` / SDK) session gets neither tool: the engine has no
+A subagent's call to `compact` is refused (its turn ends are not the main
+conversation's), and so is one to `context_usage` (`$.session.usage` reads
+the main conversation, so it would answer the parent's figures). A
+headless (`-p` / SDK) session gets neither tool: the engine has no
 compactor a plugin can call there yet. The session and turn events are
 taken with a matcher (`isInteractive: true`, `reason: "answer"`) because
 kairos and agents register them too, and the engine admits one unmatched

@@ -47,7 +47,8 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('compacts on its own at about 967,000')
     expect(describeCompact(undefined)).toContain("compacts on its own near the window's end")
     expect(describeCompact(967_000)).toContain('Runs when\nthis turn ends')
-    expect(describeCompact(967_000)).toContain('300k–500k: at any reasonable checkpoint')
+    expect(describeCompact(967_000)).toContain('250k–400k: at any reasonable checkpoint')
+    expect(describeCompact(967_000)).toContain('Try not to pass 600k')
     expect(describeCompact(967_000)).toContain('a backstop, not the plan')
   })
 
@@ -189,6 +190,14 @@ describe('registerCompact', () => {
     await h.mod.turnComplete(h.engine, turnEnd())
     await h.settle()
     expect(h.calls.some((c) => c.op === 'session.compact' || c.op === 'prompt.submit')).toBe(false)
+  })
+
+  test('context_usage from a subagent is refused, not answered with the parent figures', async () => {
+    const h = harness()
+    await h.mod.start(h.engine, start(true))
+    const answer = (await h.call({ tool: CONTEXT_USAGE, tool_use_id: 't1', agentId: 'a1' })) as { deny?: string; result?: string }
+    expect(answer.deny).toContain('main conversation')
+    expect(answer.result).toBeUndefined()
   })
 
   test('a call from a subagent is refused', async () => {

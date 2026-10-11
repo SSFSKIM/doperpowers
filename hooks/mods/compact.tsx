@@ -52,18 +52,16 @@ export function describeCompact(threshold: number | undefined): string {
     'submitted to you as the next prompt. Background shells, monitors, MCP',
     'servers and subagents keep running.',
     '',
-    'When. At each reasonable checkpoint, call `context_usage` and judge;',
-    'compact only where no state of the current work is lost.',
-    '- Under 150k: rarely.',
-    '- 150k–250k: when nothing is pending and nothing still needed lives',
-    '  only in context.',
-    '- 300k–500k: at any reasonable checkpoint. Do not wait for a full',
-    '  context: old or unrelated content degrades your reading of the rest;',
-    '  if that is not the case, or justified, continue.',
-    '- Above 500k: verbatim retention only while the work needs it; try not',
-    '  to pass 650–700k unless truly justified. Past that, put what matters',
-    `  in the repository, then compact. The harness compacts on its own ${own}:`,
-    '  a backstop, not the plan.',
+    'When. The work decides, not the context size: compact at a checkpoint',
+    'in the work where none of its state is lost. `context_usage` there',
+    'gives the size, and the larger it is, the smaller a checkpoint that',
+    'will do. Size is never a reason to hurry or cut work short.',
+    '- Under about 250k: when the work at hand is done, or little of',
+    '  substance remains.',
+    '- 250k–400k: at any reasonable checkpoint.',
+    '- Above 400k: at a checkpoint where the work\'s state is all recorded',
+    '  outside this conversation. Try not to pass 600k. The harness',
+    `  compacts on its own ${own}: a backstop, not the plan.`,
     '',
     'How. Last tool call of the turn, alone, after pending results arrived;',
     'then end your turn.',
@@ -75,7 +73,7 @@ export function describeCompact(threshold: number | undefined): string {
 }
 
 export function describeUsage(): string {
-  return 'Your context size now: tokens used, window, percent. Free. Call it at each reasonable checkpoint to judge whether to compact.'
+  return 'Your context size now: tokens used, window, percent. Free. Main conversation only. Call it at a checkpoint in your work to judge whether to compact.'
 }
 
 export type ContextFigures = {
@@ -238,7 +236,12 @@ export function registerCompact(on: On) {
   on('tool.describe', { tool: 'mcp__doperpowers__compact' }, async (_, e, next) => inline(await next(e)))
   on('tool.describe', { tool: 'mcp__doperpowers__context_usage' }, async (_, e, next) => inline(await next(e)))
 
-  on('tool.call', { tool: 'mcp__doperpowers__context_usage' }, async ($) => {
+  // $.session.usage reads the main conversation: a subagent would get its
+  // parent's figures, and it cannot compact anyway.
+  on('tool.call', { tool: 'mcp__doperpowers__context_usage' }, async ($, e) => {
+    if (e.agentId !== undefined) {
+      return { deny: "context_usage is for the main conversation: it reads that conversation's context, not a subagent's, and a subagent cannot compact." }
+    }
     const context = await compactionWindow($)
     return { result: usageText(context, threshold ?? thresholdOf(context.window)) }
   })
