@@ -18,10 +18,9 @@
 # message's state file when it is done and the next waits for that record
 # before reading the file.
 #
-# This runs in every session, including the ones that never mark anything, so
-# the path that has nothing to do stays inside this process: the fields it
-# needs sit ahead of the delta in the payload and carry no JSON escaping, so
-# expansions read them, and jq is spawned only for a delta that is drawn.
+# Even a flush without marks can open a code region or leave a delimiter
+# pending, so every delta goes through the reader. Scalar payload fields sit
+# ahead of the delta and carry no JSON escaping; expansions read those.
 set -uo pipefail
 [[ -n ${MAWS_NATIVE_TO_HUMAN:-} ]] && exit 0
 
@@ -50,7 +49,9 @@ case $index in *[!0-9]*) exit 0 ;; esac
 
 # The state file: the index of the last flush that finished, whether the
 # message has marked anything yet, and the marks left open (innermost last,
-# comma-separated), one per line.
+# comma-separated), one per line. The awk reader owns the remaining lines:
+# emitted source offset, source length, and source, retaining code-region and
+# pending inline-span state across flushes.
 state="$dir/$message_id"
 seen=0
 stack=""
@@ -59,28 +60,12 @@ if ((index > 0)); then
   # bounded: a flush the engine cancelled leaves none, and the message must
   # not stall on it.
   for ((i = 0; i < 200; i++)); do
-    if { IFS= read -r done_index && IFS= read -r seen && IFS= read -r stack; } <"$state" 2>/dev/null \
+    if { IFS= read -r done_index && IFS= read -r seen && IFS= read -r stack; } 2>/dev/null <"$state" \
       && [[ $done_index != *[!0-9]* && -n $done_index ]] && ((done_index >= index - 1)); then
       break
     fi
     sleep 0.01
   done
-fi
-
-if ((seen == 0)); then
-  case $input in
-    *'<message>'* | *'<to-human>'* | *'<essential>'* | *'<need-input>'* | *'<insight>'*) ;;
-    *)
-      # Nothing to draw and nothing pending: leave the record and go.
-      if [[ $final == true ]]; then
-        [[ -f $state ]] && rm -f "$state"
-      else
-        [[ -d $dir ]] || mkdir -p "$dir" || exit 0
-        printf '%s\n0\n\n' "$index" >"$state"
-      fi
-      exit 0
-      ;;
-  esac
 fi
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,14 +82,23 @@ if [[ $final == true ]]; then
   # The last flush records nothing; what it leaves is removed below.
   record=""
 else
-  record="$state"
+  # Publish the synchronization index and full source together. The next
+  # flush must never see a done index while its source is still being written.
+  record=$(mktemp "$dir/.${message_id}-${index}.XXXXXX") || exit 0
 fi
+trap '[[ -z $record ]] || rm -f "$record"' EXIT
 
 out=$(
-  printf '%s' "$delta" | awk -v flush="$index" -v seen="$seen" -v stack="$stack" -v statefile="$record" -f "$here/to-human-stream.awk"
+  printf '%sX' "$delta" | awk -v flush="$index" -v final="$final" -v seen="$seen" -v stack="$stack" -v previous="$state" -v statefile="$record" -f "$here/to-human-stream.awk" || exit
   printf 'X'
 ) || exit 0
+if [[ -n $record ]]; then
+  mv -f "$record" "$state" || exit 0
+  record=''
+fi
 out=${out%X}
+replace=${out%%$'\n'*}
+out=${out#*$'\n'}
 
 if [[ $final == true ]]; then
   [[ -f $state ]] && rm -f "$state"
@@ -115,4 +109,5 @@ if [[ $final == true ]]; then
   ((${#left[@]} > 64)) && find "$dir" -type f -mmin +720 -delete 2>/dev/null
 fi
 
+[[ $replace == 1 ]] || exit 0
 printf '%s' "$out" | jq -Rs '{ hookSpecificOutput: { hookEventName: "MessageDisplay", displayContent: . } }'

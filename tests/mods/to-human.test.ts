@@ -127,6 +127,121 @@ describe('register', () => {
   })
 })
 
+// Golden MessageDisplay output: the record's SGR sequences interrupt the
+// fence lines and literal tags, but do not change their code meaning.
+const renderedFenceRecord = (fence: string, close: boolean, blank = false) =>
+  '\n\u001b[1;38;2;215;119;87mmessage\u001b[0m\n\nReport.\n' +
+  `\u001b[2m${fence}\u001b[0m\n` + (blank ? '\n' : '') +
+  '\u001b[2m<need-input>\u001b[0m\u001b[2mExample</need-input>\u001b[0m\n' +
+  (close ? `\u001b[2m${fence}\u001b[0m\n` : '')
+
+describe('tags in code', () => {
+  const sentence = 'The style now asks for three marks: `<message>`, `<need-input>`, `<insight>`.'
+
+  test('rendered headers win over literal raw tags in ANSI-dimmed fenced record', async () => {
+    for (const [fence, close, blank] of [['~~~', true, false], ['```', true, true], ['```', false, true]] as const) {
+      expect(parse(renderedFenceRecord(fence, close, blank))).toEqual({
+        spans: [{ kind: 'message', text: 'Report.', isOpen: false }], hasRecord: true,
+      })
+    }
+  })
+
+  test('rendered headers quoted in fenced or inline code remain part of the real message', async () => {
+    const quoted = '\u001b[1;35mneed input\u001b[0m'
+    for (const example of [`~~~\n<need-input>Example</need-input>\n${quoted}\n~~~`, `Use \`${quoted}\` literally.`]) {
+      const body = `Example:\n${example}\nDone.`
+      expect(parse(`\u001b[1;38;2;215;119;87mmessage\u001b[0m\n\n${body}`)).toEqual({
+        spans: [{ kind: 'message', text: body, isOpen: false }], hasRecord: false,
+      })
+    }
+    expect(parse(`~~~\n${quoted}\n~~~`)).toEqual({ spans: [], hasRecord: true })
+    expect(parse(`<message>Use \`${quoted}\` literally.</message>`)).toEqual({
+      spans: [{ kind: 'message', text: `Use \`${quoted}\` literally.`, isOpen: false }], hasRecord: false,
+    })
+  })
+
+  test('quoted vocabulary is working record, not three empty reports', async () => {
+    expect(parse(sentence)).toEqual({ spans: [], hasRecord: true })
+  })
+
+  test('a real message keeps its backticked vocabulary without nested marks', async () => {
+    expect(parse(`<message>${sentence}</message>`)).toEqual({
+      spans: [{ kind: 'message', text: sentence, isOpen: false }], hasRecord: false,
+    })
+  })
+
+  test('fenced questions and choices are literal, with either fence character', async () => {
+    for (const fence of ['```', '~~~~']) {
+      const example = `${fence}md\n<need-input>Which?\n<choice recommended>A</choice>\n<choice>B</choice>\n</need-input>\n${fence}`
+      expect(parse(example)).toEqual({ spans: [], hasRecord: true })
+      expect(parse(`<message>Example:\n${example}\nDone.</message>`)).toEqual({
+        spans: [{ kind: 'message', text: `Example:\n${example}\nDone.`, isOpen: false }], hasRecord: false,
+      })
+    }
+  })
+
+  test('quoted closers and choice tags do not end a mark or become buttons', async () => {
+    const question = 'Which form?\nWrite `<choice>A</choice>` lines.\n```\n</need-input>\n<choice>B</choice>\n```'
+    expect(parse(`<need-input>${question}\n<choice recommended>Yes</choice>\n</need-input>`)).toEqual({
+      spans: [{ kind: 'need-input', text: question, isOpen: false, choices: [{ text: 'Yes', recommended: true }] }],
+      hasRecord: false,
+    })
+  })
+
+  test('fences close only with the same character and sufficient length, or run to the end', async () => {
+    expect(parse('````\n```\n~~~~\n<message>quoted</message>\n````\n<message>Shown.</message>')).toEqual({
+      spans: [{ kind: 'message', text: 'Shown.', isOpen: false }], hasRecord: true,
+    })
+    expect(parse('Intro\n```\n<message>quoted</message>')).toEqual({ spans: [], hasRecord: true })
+  })
+
+  test('inline spans pair equal-length runs within a paragraph, skipping unpaired other lengths', async () => {
+    for (const text of ['Use ``a ` <message>x</message>`` ok', '```<message>x</message>```', 'Use ``` x `` <message>x</message> ``']) {
+      expect(parse(text)).toEqual({ spans: [], hasRecord: true })
+    }
+    for (const text of ['A stray ` then <message>Done.</message>', 'A ` start\n\n<message>Done.</message> and ` end']) {
+      expect(parse(text)).toEqual({ spans: [{ kind: 'message', text: 'Done.', isOpen: false }], hasRecord: true })
+    }
+  })
+
+  test('JavaScript line terminators in fence info leave the line in its inline paragraph', async () => {
+    for (const info of ['\r', ' ', ' ']) {
+      expect(parse(`Use \`\n<need-input>Example</need-input>\n~~~${info}\n x\`\n`)).toEqual({ spans: [], hasRecord: true })
+    }
+  })
+
+  test('JavaScript trim whitespace ends an inline-code paragraph', async () => {
+    for (const blank of [' ', ' ', '\f']) {
+      expect(parse(`stray \`\n${blank}\nUse \`<need-input>Example</need-input>\`\n`)).toEqual({ spans: [], hasRecord: true })
+    }
+  })
+
+  test('a glued fence recovers balanced marks, but never reinterprets a balanced strict report', async () => {
+    for (const fence of ['```', '~~~']) {
+      expect(parse(`<message>Run this:\n${fence}bash\nnpm test\n${fence}</message>\n<need-input>Go?</need-input>`)).toEqual({
+        spans: [{ kind: 'message', text: `Run this:\n${fence}bash\nnpm test\n${fence}`, isOpen: false },
+          { kind: 'need-input', text: 'Go?', isOpen: false }], hasRecord: false,
+      })
+    }
+    expect(parse('<message>```bash\nnpm test\n```\n</message>\n<need-input>Go?</need-input>').spans).toEqual([
+      { kind: 'message', text: '```bash\nnpm test\n```', isOpen: false }, { kind: 'need-input', text: 'Go?', isOpen: false },
+    ])
+    const example = 'Example syntax:\n```text\n```</message>\n<need-input>Example only?</need-input>\n```\nEnd of example.'
+    expect(parse(`<message>${example}</message>`)).toEqual({
+      spans: [{ kind: 'message', text: example, isOpen: false }], hasRecord: false,
+    })
+  })
+
+  test('rendered orange messages keep quoted tags and do not turn code choice markers into buttons', async () => {
+    expect(parse(`\u001b[1;38;2;215;119;87mmessage\u001b[0m\n\n${sentence}\n`)).toEqual({
+      spans: [{ kind: 'message', text: sentence, isOpen: false }], hasRecord: false,
+    })
+    expect(parse('\u001b[1;35mneed input\u001b[0m\n\nExample:\n```\n◇ literal\n```\n◆ Yes\n').spans).toEqual([
+      { kind: 'need-input', text: 'Example:\n```\n◇ literal\n```', isOpen: false, choices: [{ text: 'Yes', recommended: true }] },
+    ])
+  })
+})
+
 describe('runStart', () => {
   const rows = (...pairs: [string, RowKind][]) => ({
     order: pairs.map(([id]) => id),
@@ -219,6 +334,46 @@ describe('choices', () => {
     )
 
     expect(parsed.spans).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices }])
+  })
+
+  test('raw choices pair only tag tokens outside code, ignoring quoted closing tags', async () => {
+    expect(parse('<need-input>Which?\n<choice>Keep `</choice>` literal.</choice>\n</need-input>')).toEqual({
+      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
+        { text: 'Keep `</choice>` literal.', recommended: false },
+      ] }], hasRecord: false,
+    })
+  })
+
+  test('raw choices ignore fenced closing tag examples before their real closer', async () => {
+    expect(parse('<need-input>Which?\n<choice recommended>Keep this example:\n```\n</choice>\n```\nliteral.</choice>\n</need-input>')).toEqual({
+      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
+        { text: 'Keep this example:\n```\n</choice>\n```\nliteral.', recommended: true },
+      ] }], hasRecord: false,
+    })
+  })
+
+  test('nested and unclosed raw choice markup stays literal under the flat option grammar', async () => {
+    const markup = '<choice>Outer <choice>Inner</choice></choice>\n<choice>Unclosed'
+    expect(parse(`<need-input>Which?\n${markup}</need-input>`)).toEqual({
+      spans: [{ kind: 'need-input', text: `Which?\n${markup}`, isOpen: false }], hasRecord: false,
+    })
+  })
+
+  test('rendered choices may end in inline code or consist entirely of it', async () => {
+    expect(parse('\u001b[1;35mneed input\u001b[0m\n\nWhich?\n◇ Use `main`\n◆ `npm test`\n')).toEqual({
+      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
+        { text: 'Use `main`', recommended: false }, { text: '`npm test`', recommended: true },
+      ] }], hasRecord: false,
+    })
+    expect(parse('<need-input>Which?\n<choice>Use `main`</choice>\n<choice recommended>`npm test`</choice>\n</need-input>')).toEqual({
+      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
+        { text: 'Use `main`', recommended: false }, { text: '`npm test`', recommended: true },
+      ] }], hasRecord: false,
+    })
+    // A raw closing choice tag inside code cannot close the real choice.
+    expect(parse('<need-input>Example:\n<choice>Use `</choice>` literally.\n</need-input>')).toEqual({
+      spans: [{ kind: 'need-input', text: 'Example:\n<choice>Use `</choice>` literally.', isOpen: false }], hasRecord: false,
+    })
   })
 
   test('parse reads choices written on one line, in either form', async () => {
@@ -472,6 +627,20 @@ describe('surfaces', () => {
     // Nothing is handed back beneath the hook: a second block would not draw.
     expect(await ui.find({ type: 'Text', text: 'One.' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'Which branch?' })).toBeUndefined()
+  })
+
+  test('MessageDisplay fenced record folds without losing the report or inventing a reply button', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    const ui = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'fenced-record',
+      props: { text: renderedFenceRecord('~~~', true), isFirstOfReply: true },
+    })
+    expect(await ui.find({ type: 'Text', text: 'Report.' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'reply…' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: '● need input' })).toBeUndefined()
   })
 
   test('the terminal keeps the engine\'s own drawing of each span body', async ($, on) => {

@@ -11,7 +11,8 @@ The `to-human` output style (`output-styles/to-human.md`) assumes a human who
 reads a report stream, not the transcript: the model sends them messages in
 `<message>`, what it needs from them in `<need-input>`, explanatory notes in
 `<insight>`, and leaves its working record unwrapped. The old `<to-human>`
-and `<essential>` marks read as aliases of `<message>`. This mod
+and `<essential>` marks read as aliases of `<message>`; tags in inline code
+or fenced blocks stay literal. This mod
 makes the Claude Code terminal the consumer of those marks.
 
 Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report, the questions and their answers itself; this view passes every drawing hook through on non-terminal surfaces (a submitted answer still settles its question, for the terminal's view), and the streaming hook draws nothing.

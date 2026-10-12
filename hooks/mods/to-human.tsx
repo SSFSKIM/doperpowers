@@ -32,10 +32,138 @@ export type Parsed = {
   hasRecord: boolean
 }
 
+// Code regions (grammar 2): half-open [start, end) offsets into the text, in order.
+type CodeRegion = readonly [start: number, end: number]
+
+// A fence line's two patterns: group 1 the fence run, group 2 what follows it on the line (an opening fence's info string
+// a closing fence's trailing mark tags, empty in the strict reading).
+type Fences = { open: RegExp; close: RegExp }
+const STRICT: Fences = { open: /^[ \t]*(`{3,}|~{3,})(.*)$/, close: /^[ \t]*(`{3,}|~{3,})[ \t]*()$/ }
+// MAWS's glued recovery reading: mark tags are transparent at a fence line's edges, so `<to-human>` glued
+// before an opening fence or `</to-human>` after a closing one still means the fence, the tags outside the region. It
+// is a recovery only: a report the strict reading balances never reads through it.
+const MARK_TAGS = String.raw`(?:<\/?(?:message|to-human|essential|need-input|insight)>[ \t]*)*`
+const GLUED: Fences = {
+  open: new RegExp(String.raw`^[ \t]*${MARK_TAGS}(\x60{3,}|~{3,})(.*)$`),
+  close: new RegExp(String.raw`^[ \t]*(\x60{3,}|~{3,})[ \t]*(${MARK_TAGS})$`),
+}
+
+function codeRegions(text: string): CodeRegion[] {
+  return regionsOf(text, STRICT)
+}
+
+function regionsOf(text: string, fences: Fences): CodeRegion[] {
+  const regions: CodeRegion[] = []
+  let paragraph: [number, number] | null = null
+  let fence: { char: string; length: number; start: number } | null = null
+  const closeParagraph = () => {
+    if (paragraph !== null) inlineSpans(text, paragraph[0], paragraph[1], regions)
+    paragraph = null
+  }
+  for (let at = 0; at <= text.length;) {
+    const newline = text.indexOf('\n', at)
+    const end = newline === -1 ? text.length : newline
+    const line = text.slice(at, end)
+    if (fence !== null) {
+      const close = fences.close.exec(line)
+      if (close !== null && close[1]![0]! === fence.char && close[1]!.length >= fence.length) {
+        regions.push([fence.start, end - close[2]!.length])
+        fence = null
+      }
+    } else {
+      const open = fences.open.exec(line)
+      // A backtick fence's info string holds no backtick; such a line is an inline span instead.
+      if (open !== null && !(open[1]![0]! === '`' && open[2]!.includes('`'))) {
+        closeParagraph()
+        fence = { char: open[1]![0]!, length: open[1]!.length, start: end - open[1]!.length - open[2]!.length }
+      } else if (line.trim() === '') closeParagraph()
+      else paragraph = paragraph === null ? [at, end] : [paragraph[0], end]
+    }
+    at = end + 1
+  }
+  if (fence !== null) regions.push([fence.start, text.length])
+  closeParagraph()
+  return regions.sort((a, b) => a[0] - b[0])
+}
+
+// A run of N backticks opens a span closed by the next run of exactly N; a run with no partner is literal backticks.
+// Linear in the runs: one pass links each run to the next run of its length, then the walk pairs left to right.
+function inlineSpans(text: string, start: number, end: number, regions: CodeRegion[]) {
+  const runs = [...text.slice(start, end).matchAll(/`+/g)]
+  const next: number[] = runs.map(() => -1)
+  const latest = new Map<number, number>()
+  runs.forEach((run, i) => {
+    const previous = latest.get(run[0].length)
+    if (previous !== undefined) next[previous] = i
+    latest.set(run[0].length, i)
+  })
+  for (let i = 0; i < runs.length; i++) {
+    const close = next[i]!
+    if (close === -1) continue
+    regions.push([start + runs[i]!.index, start + runs[close]!.index + runs[close]![0].length])
+    i = close
+  }
+}
+
+// Whether an offset lies in one of `codeRegions`' regions (binary search over the ordered, disjoint regions).
+const insideCode = (regions: readonly CodeRegion[]) => (offset: number): boolean => {
+  let low = 0
+  let high = regions.length - 1
+  while (low <= high) {
+    const middle = (low + high) >> 1
+    if (offset < regions[middle]![0]) high = middle - 1
+    else if (offset >= regions[middle]![1]) low = middle + 1
+    else return true
+  }
+  return false
+}
+
+// The code-region reading is shared with MAWS grammar 2. Unlike stored text,
+// this display parser still draws unclosed marks as open.
 const TAG = /<(\/?)(message|to-human|essential|need-input|insight)>/g
 
-/** A choice as the model writes it, inside a `need-input` mark. */
-const CHOICE = /<choice( recommended)?>([\s\S]*?)<\/choice>\n?/g
+function readingOf(text: string, regions: readonly CodeRegion[]) {
+  const inCode = insideCode(regions)
+  const tokens = [...text.matchAll(TAG)].filter((token) => !inCode(token.index))
+  const stack: string[] = []
+  let balanced = true
+  for (const token of tokens) {
+    if (!token[1]) stack.push(token[2]!)
+    else if (stack.at(-1) === token[2]) stack.pop()
+    else { balanced = false; stack.length = 0 }
+  }
+  return { inCode, tokens, balanced: balanced && stack.length === 0 }
+}
+
+/** Raw choices use the same flat, code-aware tag pairing as MAWS grammar 2. */
+const CHOICE_TAG = /<choice(?: recommended)?>|<\/choice>/g
+
+function liftRawChoices(span: Span, inCode: (offset: number) => boolean, start: number) {
+  if (span.kind !== 'need-input') return
+  const choices: Choice[] = []
+  const marks = [...span.text.matchAll(CHOICE_TAG)].filter((mark) => !inCode(start + mark.index))
+  const opens: number[] = []
+  const flat: [RegExpExecArray, RegExpExecArray][] = []
+  for (let i = 0; i < marks.length; i++) {
+    if (marks[i]![0] !== '</choice>') opens.push(i)
+    else if (opens.length > 0) {
+      const open = opens.pop()!
+      // Nested or malformed choice markup is not a flat option; keep it literal.
+      if (opens.length === 0 && i === open + 1) flat.push([marks[open]!, marks[i]!])
+    }
+  }
+  let text = ''
+  let from = 0
+  for (const [open, close] of flat) {
+    const body = span.text.slice(open.index + open[0].length, close.index).trim()
+    if (body !== '') choices.push({ text: body, recommended: open[0] !== '<choice>' })
+    text += span.text.slice(from, open.index)
+    from = close.index + close[0].length
+    if (span.text[from] === '\n') from++
+  }
+  span.text = text + span.text.slice(from)
+  if (choices.length > 0) span.choices = choices
+}
 
 /**
  * A choice as the streaming hook drew it: text under `◇`, or `◆` for the
@@ -50,12 +178,23 @@ const MARKER = /([◇◆]) ([^\n]*?)(?=\s*[◇◆] |\n|$)/g
  * `pattern` gives them, leaving the question. A span of another kind keeps
  * its text as it is.
  */
-function liftChoices(span: Span, pattern: RegExp, isRecommended: (mark: string | undefined) => boolean) {
+function liftChoices(
+  span: Span,
+  pattern: RegExp,
+  isRecommended: (mark: string | undefined) => boolean,
+  inCode: (offset: number) => boolean = insideCode(codeRegions(span.text)),
+  start = 0,
+) {
   if (span.kind !== 'need-input') {
     return
   }
   const choices: Choice[] = []
-  span.text = span.text.replace(pattern, (_, mark: string | undefined, text: string) => {
+  span.text = span.text.replace(pattern, (whole: string, mark: string | undefined, text: string, offset: number) => {
+    // A rendered marker needs only its start outside code: the option's body
+    // may end in backticks. Raw choices are paired separately, token by token.
+    if (inCode(start + offset)) {
+      return whole
+    }
     const trimmed = text.trim()
     if (trimmed !== '') {
       choices.push({ text: trimmed, recommended: isRecommended(mark) })
@@ -73,6 +212,13 @@ function liftChoices(span: Span, pattern: RegExp, isRecommended: (mark: string |
  * span of its own, in the order written. An unclosed mark runs to the end.
  */
 function parseMarked(text: string): Parsed {
+  let reading = readingOf(text, codeRegions(text))
+  if (!reading.balanced) {
+    const glued = readingOf(text, regionsOf(text, GLUED))
+    if (glued.balanced) reading = glued
+  }
+  const { inCode, tokens } = reading
+  const starts = new Map<Span, number>()
   const spans: Span[] = []
   // One entry per open mark, innermost last; `span` is the entry's current
   // run of text, or null once an inner mark has interrupted it.
@@ -89,6 +235,7 @@ function parseMarked(text: string): Parsed {
     } else if (piece.trim() !== '') {
       top.span = { kind: top.kind, text: piece, isOpen: true }
       spans.push(top.span)
+      starts.set(top.span, last)
     }
   }
 
@@ -99,7 +246,7 @@ function parseMarked(text: string): Parsed {
     entry.span = null
   }
 
-  for (const match of text.matchAll(TAG)) {
+  for (const match of tokens) {
     const [whole, slash] = match
     const tag = match[2] as string
     const kind = (tag === 'to-human' || tag === 'essential' ? 'message' : tag) as Kind
@@ -114,6 +261,7 @@ function parseMarked(text: string): Parsed {
       }
       const span: Span = { kind, text: '', isOpen: true }
       spans.push(span)
+      starts.set(span, last)
       open.push({ tag, kind, span })
     } else {
       const depth = open.map((entry) => entry.tag).lastIndexOf(tag)
@@ -129,7 +277,7 @@ function parseMarked(text: string): Parsed {
   take(text.slice(last))
 
   for (const span of spans) {
-    liftChoices(span, CHOICE, (mark) => mark !== undefined)
+    liftRawChoices(span, inCode, starts.get(span) ?? 0)
     span.text = span.text.trim()
   }
 
@@ -147,11 +295,14 @@ function parseMarked(text: string): Parsed {
  *
  * The first group is the header's color, the second a dimmed run's text.
  */
-const RENDERED = /\[1;(3[2356])m(?:message|to human|essential|need input|insight)\[0m|\[2m([\s\S]*?)\[0m/g
+const RENDERED = /\[1;(3[2356]|38;2;215;119;87)m(?:message|to human|essential|need input|insight)\[0m|\[2m([\s\S]*?)\[0m/g
 
-const HEADER = /\[1;3[2356]m(?:message|to human|essential|need input|insight)\[0m/
+const HEADER = /\[1;(?:3[2356]|38;2;215;119;87)m(?:message|to human|essential|need input|insight)\[0m/
+
+const SGR = /\u001b\[[0-9;]*m/g
 
 const KIND_OF_COLOR: Record<string, Kind> = {
+  '38;2;215;119;87': 'message',
   '36': 'message',
   '32': 'message',
   '35': 'need-input',
@@ -164,11 +315,16 @@ const KIND_OF_COLOR: Record<string, Kind> = {
  * follows, which is how a mark's close survives a form that has no closing
  * marker.
  */
-function parseRendered(text: string): Parsed {
+function parseRendered(text: string): Parsed | null {
+  // Color escapes are not Markdown syntax. Scan the visible text, then track
+  // visible offsets through the raw tokens so dimmed fences still fence code.
+  const inCode = insideCode(codeRegions(text.replace(SGR, '')))
   const spans: Span[] = []
   let outside = ''
   let current: Span | null = null
   let last = 0
+  let visibleAt = 0
+  let hasHeader = false
 
   const take = (piece: string) => {
     if (piece === '') {
@@ -184,16 +340,22 @@ function parseRendered(text: string): Parsed {
   for (const match of text.matchAll(RENDERED)) {
     const [whole, color, dimmed] = match
     const at = match.index ?? 0
-    take(text.slice(last, at))
+    const before = text.slice(last, at)
+    take(before)
+    visibleAt += before.replace(SGR, '').length
     last = at + whole.length
 
-    if (color !== undefined) {
+    if (color !== undefined && inCode(visibleAt)) {
+      take(whole)
+    } else if (color !== undefined) {
+      hasHeader = true
       current = { kind: KIND_OF_COLOR[color] as Kind, text: '', isOpen: false }
       spans.push(current)
     } else {
       current = null
       outside += dimmed ?? ''
     }
+    visibleAt += whole.replace(SGR, '').length
   }
 
   take(text.slice(last))
@@ -203,7 +365,7 @@ function parseRendered(text: string): Parsed {
     span.text = span.text.trim()
   }
 
-  return { spans: spans.filter((span) => span.text !== ''), hasRecord: outside.trim() !== '' }
+  return hasHeader ? { spans: spans.filter((span) => span.text !== ''), hasRecord: outside.trim() !== '' } : null
 }
 
 /**
@@ -213,11 +375,9 @@ function parseRendered(text: string): Parsed {
  * hook drew over them.
  */
 export function parse(text: string): Parsed {
-  const marked = parseMarked(text)
-  if (marked.spans.length > 0 || !HEADER.test(text)) {
-    return marked
-  }
-  return parseRendered(text)
+  // A real rendered header identifies hook output, whose remaining raw tags
+  // are quoted examples. A header quoted in code does not select this reader.
+  return (HEADER.test(text) ? parseRendered(text) : null) ?? parseMarked(text)
 }
 
 /**
@@ -455,7 +615,7 @@ export function markdownBlocks(text: string): string[] {
 }
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
-  message: { label: 'message', color: 'cyan' },
+  message: { label: 'message', color: 'claude' },
   'need-input': { label: 'need input', color: 'magenta' },
   insight: { label: 'insight', color: 'yellow' },
 }
