@@ -19,7 +19,7 @@ state_dir="$TMPDIR/doperpowers-to-human"
 
 ESC=$(printf '\033')
 CYAN="${ESC}[1;36m"
-GREEN="${ESC}[1;32m"
+YELLOW="${ESC}[1;33m"
 DIM="${ESC}[2m"
 OFF="${ESC}[0m"
 
@@ -34,12 +34,12 @@ flush() { # <message-id> <index> <final> <delta> → the text the hook asks to d
 }
 
 echo "MAWS draws the channel itself:"
-out=$(MAWS_NATIVE_TO_HUMAN=1 flush maws 0 false '<to-human>The report.</to-human>')
+out=$(MAWS_NATIVE_TO_HUMAN=1 flush maws 0 false '<message>The report.</message>')
 if [ -z "$out" ]; then pass "native MAWS returns no drawing"; else fail "native drawing: $(printf '%q' "$out")"; fi
 if [ ! -e "$state_dir/maws" ]; then pass "native MAWS creates no streaming state"; else fail "native MAWS left streaming state"; fi
-out=$(MAWS_NATIVE_TO_HUMAN='' flush empty-env 0 true '<to-human>The report.</to-human>')
+out=$(MAWS_NATIVE_TO_HUMAN='' flush empty-env 0 true '<message>The report.</message>')
 case $out in
-  *"${CYAN}to human${OFF}"*) pass "an empty advertisement keeps today's drawing" ;;
+  *"${CYAN}message${OFF}"*) pass "an empty advertisement keeps today's drawing" ;;
   *) fail "empty advertisement skipped the drawing: $(printf '%q' "$out")" ;;
 esac
 
@@ -52,13 +52,21 @@ if [ "$(cat "$state_dir/m0")" = "$(printf '0\n0\n')" ]; then pass "and records t
 flush m0 1 true "" > /dev/null
 if [ ! -e "$state_dir/m0" ]; then pass "the last flush removes the record"; else fail "record left behind after the last flush"; fi
 
+echo "old marks:"
+for tag in to-human essential; do
+  out=$(flush "legacy-$tag" 0 true "<$tag>Old report.</$tag>"$'\n'"notes")
+  expected=$'\n'"${CYAN}message${OFF}"$'\n\n''Old report.'$'\n'"${DIM}notes${OFF}"
+  if [ "$out" = "$expected" ]; then pass "$tag draws as message and closes before the record"
+  else fail "$tag alias: $(printf '%q' "$out")"; fi
+done
+
 echo "one flush:"
 out=$(flush m1 0 false "a note
-<to-human>
+<message>
 The report.
 ")
 case $out in
-  *"${CYAN}to human${OFF}"*) pass "the mark opens as a header in its color" ;;
+  *"${CYAN}message${OFF}"*) pass "the mark opens as a header in its color" ;;
   *) fail "no header: $(printf '%q' "$out")" ;;
 esac
 case $out in
@@ -74,7 +82,7 @@ esac
 
 echo "the next flush of the same message:"
 out=$(flush m1 1 false "Still the report.
-</to-human>
+</message>
 back to notes
 ")
 case $out in
@@ -93,20 +101,20 @@ case $out in
 esac
 
 echo "a mark inside another:"
-out=$(flush m2 0 false "<to-human>
+out=$(flush m2 0 false "<message>
 Outer.
-<essential>
+<insight>
 Inner.
-</essential>
+</insight>
 Outer again.
 ")
 case $out in
-  *"${GREEN}essential${OFF}"*) pass "the inner mark opens as its own header" ;;
+  *"${YELLOW}insight${OFF}"*) pass "the inner mark opens as its own header" ;;
   *) fail "no inner header: $(printf '%q' "$out")" ;;
 esac
-inner_then_outer="${GREEN}essential${OFF}"$'\n\n\n''Inner.'
+inner_then_outer="${YELLOW}insight${OFF}"$'\n\n\n''Inner.'
 case $out in
-  *"$inner_then_outer"*"${CYAN}to human${OFF}"*) pass "the enclosing mark's header resumes when the inner one closes" ;;
+  *"$inner_then_outer"*"${CYAN}message${OFF}"*) pass "the enclosing mark's header resumes when the inner one closes" ;;
   *) fail "no resumed header: $(printf '%q' "$out")" ;;
 esac
 case $out in
@@ -148,9 +156,9 @@ case $out in
   *"Which? "$'\n'"◇ A"*$'\n'"◆ B"*) pass "choices written on one line each get a line of their own" ;;
   *) fail "inline choices not broken into lines: $(printf '%q' "$out")" ;;
 esac
-out=$(flush m5 0 true "<to-human>
+out=$(flush m5 0 true "<message>
 <choice>A</choice>
-</to-human>
+</message>
 ")
 case $out in
   *"<choice>A</choice>"*) pass "a choice outside a need-input mark is text" ;;
@@ -158,7 +166,6 @@ case $out in
 esac
 
 echo "an insight:"
-YELLOW="${ESC}[1;33m"
 out=$(flush m7 0 true "Editing the parser.
 <insight>
 The cache key is the path.
@@ -175,9 +182,9 @@ case $out in
 esac
 
 echo "state:"
-if [ "$(cat "$state_dir/m2")" = "$(printf '0\n1\nto-human\n')" ]; then pass "a message still streaming records its index, that it has marked, and the marks open"
+if [ "$(cat "$state_dir/m2")" = "$(printf '0\n1\nmessage\n')" ]; then pass "a message still streaming records its index, that it has marked, and the marks open"
 else fail "state after a marked flush: $(cat "$state_dir/m2" 2>&1)"; fi
-flush m2 1 true "</to-human>
+flush m2 1 true "</message>
 " > /dev/null
 if [ ! -e "$state_dir/m2" ]; then pass "the last flush of a message clears its state"; else fail "state left behind after the final flush"; fi
 
@@ -187,7 +194,7 @@ echo "two flushes at once:"
 # the earlier one's record rather than read stale state: here the earlier one
 # is simulated by a record that appears only after the later one has started.
 mkdir -p "$state_dir"
-printf '0\n1\nto-human\n' > "$state_dir/m3"   # flush 0 done; flush 1 (which closes the mark) still running
+printf '0\n1\nmessage\n' > "$state_dir/m3"   # flush 0 done; flush 1 (which closes the mark) still running
 out_file="$TMPDIR/m3.out"
 ( flush m3 2 true "a tail after the close" > "$out_file" ) &
 later=$!

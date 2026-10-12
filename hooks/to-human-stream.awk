@@ -16,8 +16,8 @@ BEGIN {
   ESC = sprintf("%c", 27)
   DIM = ESC "[2m"
   OFF = ESC "[0m"
-  LABEL["to-human"] = "to human";    COLOR["to-human"] = ESC "[1;36m"
-  LABEL["essential"] = "essential";  COLOR["essential"] = ESC "[1;32m"
+  LABEL["message"] = LABEL["to-human"] = LABEL["essential"] = "message"
+  COLOR["message"] = COLOR["to-human"] = COLOR["essential"] = ESC "[1;36m"
   LABEL["need-input"] = "need input"; COLOR["need-input"] = ESC "[1;35m"
   LABEL["insight"] = "insight";      COLOR["insight"] = ESC "[1;33m"
   CHOICE = "\342\227\207 "       # ◇ U+25C7, the marker of a choice
@@ -45,7 +45,7 @@ function body(text) {
   rest = $0
   out = ""
 
-  while (match(rest, /<\/?(to-human|essential|need-input|insight|choice( recommended)?)>/)) {
+  while (match(rest, /<\/?(message|to-human|essential|need-input|insight|choice( recommended)?)>/)) {
     out = out body(substr(rest, 1, RSTART - 1))
     tag = substr(rest, RSTART, RLENGTH)
     rest = substr(rest, RSTART + RLENGTH)

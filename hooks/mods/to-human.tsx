@@ -2,11 +2,11 @@ import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } fr
 
 /**
  * The marks the `to-human` output style asks the model to write: a message
- * to the human, what is essential, what the model needs from them, and an
- * explanatory insight. Everything outside a mark is the model's working
- * record.
+ * to the human, what the model needs from them, and an explanatory insight.
+ * The old `to-human` and `essential` marks read as messages too. Everything
+ * outside a mark is the model's working record.
  */
-export type Kind = 'to-human' | 'essential' | 'need-input' | 'insight'
+export type Kind = 'message' | 'need-input' | 'insight'
 
 /**
  * One option a `need-input` mark offers, as a `<choice>` line under the
@@ -32,7 +32,7 @@ export type Parsed = {
   hasRecord: boolean
 }
 
-const TAG = /<(\/?)(to-human|essential|need-input|insight)>/g
+const TAG = /<(\/?)(message|to-human|essential|need-input|insight)>/g
 
 /** A choice as the model writes it, inside a `need-input` mark. */
 const CHOICE = /<choice( recommended)?>([\s\S]*?)<\/choice>\n?/g
@@ -68,15 +68,15 @@ function liftChoices(span: Span, pattern: RegExp, isRecommended: (mark: string |
 }
 
 /**
- * Splits text still carrying its marks. Marks may nest (an `<essential>`
- * inside a `<to-human>`): each contiguous run of text under one mark is a
+ * Splits text still carrying its marks. Marks may nest (an `<insight>`
+ * inside a `<message>`): each contiguous run of text under one mark is a
  * span of its own, in the order written. An unclosed mark runs to the end.
  */
 function parseMarked(text: string): Parsed {
   const spans: Span[] = []
   // One entry per open mark, innermost last; `span` is the entry's current
   // run of text, or null once an inner mark has interrupted it.
-  const open: { kind: Kind; span: Span | null }[] = []
+  const open: { tag: string; kind: Kind; span: Span | null }[] = []
   let outside = ''
   let last = 0
 
@@ -92,7 +92,7 @@ function parseMarked(text: string): Parsed {
     }
   }
 
-  const close = (entry: { kind: Kind; span: Span | null }) => {
+  const close = (entry: { span: Span | null }) => {
     if (entry.span) {
       entry.span.isOpen = false
     }
@@ -100,7 +100,9 @@ function parseMarked(text: string): Parsed {
   }
 
   for (const match of text.matchAll(TAG)) {
-    const [whole, slash, kind] = match
+    const [whole, slash] = match
+    const tag = match[2] as string
+    const kind = (tag === 'to-human' || tag === 'essential' ? 'message' : tag) as Kind
     const at = match.index ?? 0
     take(text.slice(last, at))
     last = at + whole.length
@@ -110,11 +112,11 @@ function parseMarked(text: string): Parsed {
       if (top) {
         close(top)
       }
-      const span: Span = { kind: kind as Kind, text: '', isOpen: true }
+      const span: Span = { kind, text: '', isOpen: true }
       spans.push(span)
-      open.push({ kind: kind as Kind, span })
+      open.push({ tag, kind, span })
     } else {
-      const depth = open.map((entry) => entry.kind).lastIndexOf(kind as Kind)
+      const depth = open.map((entry) => entry.tag).lastIndexOf(tag)
       if (depth === -1) {
         continue // a stray closing tag: nothing to close
       }
@@ -145,13 +147,13 @@ function parseMarked(text: string): Parsed {
  *
  * The first group is the header's color, the second a dimmed run's text.
  */
-const RENDERED = /\[1;(3[2356])m(?:to human|essential|need input|insight)\[0m|\[2m([\s\S]*?)\[0m/g
+const RENDERED = /\[1;(3[2356])m(?:message|to human|essential|need input|insight)\[0m|\[2m([\s\S]*?)\[0m/g
 
-const HEADER = /\[1;3[2356]m(?:to human|essential|need input|insight)\[0m/
+const HEADER = /\[1;3[2356]m(?:message|to human|essential|need input|insight)\[0m/
 
 const KIND_OF_COLOR: Record<string, Kind> = {
-  '36': 'to-human',
-  '32': 'essential',
+  '36': 'message',
+  '32': 'message',
   '35': 'need-input',
   '33': 'insight',
 }
@@ -453,8 +455,7 @@ export function markdownBlocks(text: string): string[] {
 }
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
-  'to-human': { label: 'to human', color: 'cyan' },
-  essential: { label: 'essential', color: 'green' },
+  message: { label: 'message', color: 'cyan' },
   'need-input': { label: 'need input', color: 'magenta' },
   insight: { label: 'insight', color: 'yellow' },
 }

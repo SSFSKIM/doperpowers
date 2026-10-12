@@ -74,7 +74,7 @@ describe('summarize', () => {
     }),
     line({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '<task-notification>done</task-notification>' }] } }),
     line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '' }] } }),
-    line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } }),
+    line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '<message>Done.</message>' }] } }),
     'not json',
   ].join('\n')
 
@@ -90,7 +90,7 @@ describe('summarize', () => {
       { kind: 'tool', text: 'Bash(ls -la /tmp)' },
       { kind: 'result', text: 'ls: cannot access', isError: true },
       { kind: 'note', text: '<task-notification>done</task-notification>' },
-      { kind: 'text', text: 'Done.' },
+      { kind: 'text', text: '<message>Done.</message>' },
     ])
   })
 

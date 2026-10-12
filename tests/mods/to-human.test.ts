@@ -19,12 +19,36 @@ tier('user')
 describe('register', () => {
   test('parse splits marked spans from the working record', async () => {
     const parsed = parse(
-      'Reading the file.\n<to-human>Done.</to-human>\n<essential>Tests fail.</essential>',
+      'Reading the file.\n<message>Done.</message>\n<insight>Tests fail.</insight>',
     )
 
     expect(parsed.spans).toEqual([
-      { kind: 'to-human', text: 'Done.', isOpen: false },
-      { kind: 'essential', text: 'Tests fail.', isOpen: false },
+      { kind: 'message', text: 'Done.', isOpen: false },
+      { kind: 'insight', text: 'Tests fail.', isOpen: false },
+    ])
+    expect(parsed.hasRecord).toBe(true)
+  })
+
+  test('parse reads old to-human marks as messages', async () => {
+    const parsed = parse('<to-human>Done.</to-human>\nWorking.')
+
+    expect(parsed.spans).toEqual([{ kind: 'message', text: 'Done.', isOpen: false }])
+    expect(parsed.hasRecord).toBe(true)
+  })
+
+  test('parse reads old essential marks as messages', async () => {
+    const parsed = parse('<essential>Tests fail.</essential>\nWorking.')
+
+    expect(parsed.spans).toEqual([{ kind: 'message', text: 'Tests fail.', isOpen: false }])
+    expect(parsed.hasRecord).toBe(true)
+  })
+
+  test('parse closes nested aliases by the tag the model wrote', async () => {
+    const parsed = parse('<to-human>Done.\n<essential>Tests fail.</to-human>\nWorking.')
+
+    expect(parsed.spans).toEqual([
+      { kind: 'message', text: 'Done.', isOpen: false },
+      { kind: 'message', text: 'Tests fail.', isOpen: false },
     ])
     expect(parsed.hasRecord).toBe(true)
   })
@@ -38,23 +62,23 @@ describe('register', () => {
 
   test('parse lifts a mark nested inside another into a span of its own', async () => {
     const parsed = parse(
-      '<to-human>\nDone.\n\n<essential>\nTests fail.\n</essential>\nMore.\n</to-human>',
+      '<message>\nDone.\n\n<insight>\nTests fail.\n</insight>\nMore.\n</message>',
     )
 
     expect(parsed.spans).toEqual([
-      { kind: 'to-human', text: 'Done.', isOpen: false },
-      { kind: 'essential', text: 'Tests fail.', isOpen: false },
-      { kind: 'to-human', text: 'More.', isOpen: false },
+      { kind: 'message', text: 'Done.', isOpen: false },
+      { kind: 'insight', text: 'Tests fail.', isOpen: false },
+      { kind: 'message', text: 'More.', isOpen: false },
     ])
     expect(parsed.hasRecord).toBe(false)
   })
 
   test('parse does not let an unclosed mark swallow the marks after it', async () => {
-    const parsed = parse('<to-human>Done.\n<essential>Tests fail.</essential>\n<need-input>Which')
+    const parsed = parse('<message>Done.\n<insight>Tests fail.</insight>\n<need-input>Which')
 
     expect(parsed.spans).toEqual([
-      { kind: 'to-human', text: 'Done.', isOpen: false },
-      { kind: 'essential', text: 'Tests fail.', isOpen: false },
+      { kind: 'message', text: 'Done.', isOpen: false },
+      { kind: 'insight', text: 'Tests fail.', isOpen: false },
       { kind: 'need-input', text: 'Which', isOpen: true },
     ])
   })
@@ -67,22 +91,22 @@ describe('register', () => {
     '\u001b[1;32messential\u001b[0m\n\n\nNo files were changed.\n\n\n' +
     '\u001b[2mDone \u2014 nothing else pending.\u001b[0m\n'
 
-  test('parse reads the headers the streaming hook drew over the marks', async () => {
+  test('parse reads the old headers the streaming hook drew as messages', async () => {
     const parsed = parse(streamed)
 
     expect(parsed.spans).toEqual([
-      { kind: 'to-human', text: 'Rivers carry water downhill.', isOpen: false },
-      { kind: 'essential', text: 'No files were changed.', isOpen: false },
+      { kind: 'message', text: 'Rivers carry water downhill.', isOpen: false },
+      { kind: 'message', text: 'No files were changed.', isOpen: false },
     ])
     expect(parsed.hasRecord).toBe(true)
   })
 
   test('parse ends a span at the record that follows it', async () => {
     const parsed = parse(
-      '\u001b[1;36mto human\u001b[0m\n\nKept.\n\u001b[2mDropped from the span.\u001b[0m\n',
+      '\u001b[1;36mmessage\u001b[0m\n\nKept.\n\u001b[2mDropped from the span.\u001b[0m\n',
     )
 
-    expect(parsed.spans).toEqual([{ kind: 'to-human', text: 'Kept.', isOpen: false }])
+    expect(parsed.spans).toEqual([{ kind: 'message', text: 'Kept.', isOpen: false }])
     expect(parsed.hasRecord).toBe(true)
   })
 
@@ -212,9 +236,9 @@ describe('choices', () => {
   })
 
   test('a choice outside a need-input span is text', async () => {
-    const parsed = parse('<to-human>\nPick.\n<choice>A</choice>\n</to-human>')
+    const parsed = parse('<message>\nPick.\n<choice>A</choice>\n</message>')
 
-    expect(parsed.spans).toEqual([{ kind: 'to-human', text: 'Pick.\n<choice>A</choice>', isOpen: false }])
+    expect(parsed.spans).toEqual([{ kind: 'message', text: 'Pick.\n<choice>A</choice>', isOpen: false }])
   })
 })
 
@@ -324,7 +348,7 @@ describe('rows', () => {
     }))
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
-    await message('m1', '<to-human>Checking.</to-human>')
+    await message('m1', '<message>Checking.</message>')
     const first = await message('r1', 'Working.')
     const incoming = await $.ui.mount({
       plugin: PLUGIN,
@@ -334,7 +358,7 @@ describe('rows', () => {
       props: { text: 'Review ready.', origin: { kind: 'peer' }, from: { name: 'reviewer' }, isExpanded: false },
     })
     const last = await message('r2', 'Reading the review.')
-    await message('m2', '<to-human>Checked.</to-human>')
+    await message('m2', '<message>Checked.</message>')
 
     expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await incoming.find({ type: 'Text', text: 'Review ready.' })).toBeUndefined()
@@ -356,7 +380,7 @@ describe('rows', () => {
 
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
-    const marked1 = message('m1', '<to-human>One.</to-human>')
+    const marked1 = message('m1', '<message>One.</message>')
     const record1 = message('u1', 'Working.')
     const notification = $.ui.mount({
       plugin: PLUGIN,
@@ -370,7 +394,7 @@ describe('rows', () => {
         task: { id: 'a1', toolUseId: 'toolu_1' },
       },
     })
-    const marked2 = message('m2', '<to-human>Two.</to-human>')
+    const marked2 = message('m2', '<message>Two.</message>')
     const record2 = message('u2', 'More.')
     const [, first, note, , second] = await Promise.all([marked1, record1, notification, marked2, record2])
 
@@ -401,9 +425,9 @@ describe('mixed', () => {
     }))
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
-    const mixed = await message('m1', 'Looking first.\n<to-human>One.</to-human>')
+    const mixed = await message('m1', 'Looking first.\n<message>One.</message>')
     const record = await message('u1', 'Working.')
-    const after = await message('m2', '<to-human>Two.</to-human>')
+    const after = await message('m2', '<message>Two.</message>')
 
     // One button, the mixed message's; the record row after it draws nothing.
     expect(await mixed.find({ type: 'Button', text: 'working record' })).toBeDefined()
@@ -421,7 +445,7 @@ describe('mixed', () => {
 describe('surfaces', () => {
   const PLUGIN = 'doperpowers-mods'
   const TEXT =
-    '<to-human>One.</to-human>\n' +
+    '<message>One.</message>\n' +
     '<need-input>Which branch?\n<choice recommended>main</choice>\n<choice>dev</choice>\n</need-input>'
 
   test('a remote surface draws every span body as its own Markdown, the question included', async ($, on) => {
@@ -465,6 +489,7 @@ describe('surfaces', () => {
       props: { text: TEXT, isFirstOfReply: true },
     })
 
+    expect(await ui.find({ type: 'Text', text: '● message' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'One.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Which branch?' })).toBeDefined()
     expect(await ui.find({ type: 'Markdown' })).toBeUndefined()

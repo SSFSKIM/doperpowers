@@ -9,9 +9,9 @@ ignores it elsewhere; the shell hooks beside this folder run everywhere.
 
 The `to-human` output style (`output-styles/to-human.md`) assumes a human who
 reads a report stream, not the transcript: the model sends them messages in
-`<to-human>`, what is essential in `<essential>`, what it needs from them in
-`<need-input>`, explanatory notes in `<insight>`, and leaves its working
-record unwrapped. This mod
+`<message>`, what it needs from them in `<need-input>`, explanatory notes in
+`<insight>`, and leaves its working record unwrapped. The old `<to-human>`
+and `<essential>` marks read as aliases of `<message>`. This mod
 makes the Claude Code terminal the consumer of those marks.
 
 Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report, the questions and their answers itself; this view passes every drawing hook through on non-terminal surfaces (a submitted answer still settles its question, for the terminal's view), and the streaming hook draws nothing.
@@ -20,8 +20,8 @@ Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under a colored
-  label: `to human` in cyan, `essential` in green, `need input` in magenta,
-  `insight` in yellow. On the terminal a
+  label: `message` in cyan, `need input` in magenta, `insight` in yellow.
+  On the terminal a
   span's body is the engine's own markdown drawing of the span's text (the
   block is handed back beneath the hook with that text in place of the
   whole), so a table or a list inside a mark draws as it would unmarked. A
@@ -102,7 +102,8 @@ tail was drawn before the flush that closed its mark had finished, and came
 through undimmed. The hook's labels are what this module then reads: once
 the hook has run, the block's text carries those headers and markers instead
 of the tags, and `parse` takes either form (the tags when the hook is not
-installed, the headers when it is). The two views line up, so the message
+installed, the headers when it is), with old `to human` and `essential`
+headers read as messages too. The two views line up, so the message
 settles into the fold without changing shape.
 
 The stored messages are untouched by both: the transcript on disk carries the

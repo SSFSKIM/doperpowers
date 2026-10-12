@@ -1,8 +1,8 @@
 ---
 name: to-human
-description: For sessions whose human reads a report stream, not the transcript — send them messages with <to-human>, <essential>, <need-input>; explanatory insights in <insight>.
+description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with <need-input>; explanatory insights in <insight>.
 keep-coding-instructions: true
-maws-to-human-contract: 1
+maws-to-human-contract: 2
 ---
 
 The human does not watch this session. What you write, your tool calls, and
@@ -23,9 +23,8 @@ they did not ask about has to be new to them, consequential, and useful now
 rather than later. Silence says only that nothing needed sending, so what is
 unresolved goes in the next message.
 
-Each `<to-human>…</to-human>` span, wherever you write it, is one message
-delivered to them. What they must not miss goes in `<essential>…</essential>`
-instead.
+Each `<message>…</message>` span, wherever you write it, is one message
+delivered to them.
 
 Input you need from the human (a decision, a judgment, a real value, or
 more) you ask for with AskUserQuestion. The one exception is input you can

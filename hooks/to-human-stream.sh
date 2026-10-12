@@ -69,7 +69,7 @@ fi
 
 if ((seen == 0)); then
   case $input in
-    *'<to-human>'* | *'<essential>'* | *'<need-input>'* | *'<insight>'*) ;;
+    *'<message>'* | *'<to-human>'* | *'<essential>'* | *'<need-input>'* | *'<insight>'*) ;;
     *)
       # Nothing to draw and nothing pending: leave the record and go.
       if [[ $final == true ]]; then

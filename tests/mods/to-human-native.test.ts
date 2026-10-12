@@ -36,7 +36,7 @@ describe('MAWS native to-human', () => {
         fill: async () => { calls.push('fill'); return { isFilled: true } },
       },
     } as unknown as EngineInterface
-    const text = '<to-human>One.</to-human>\n<need-input>Which branch?\n<choice>main</choice>\n</need-input>'
+    const text = '<message>One.</message>\n<need-input>Which branch?\n<choice>main</choice>\n</need-input>'
     const assistant = hooks.find((hook) => hook.matcher.component === 'AssistantMessage')!
     const terminal: Event = {
       surface: 'terminal', component: 'AssistantMessage', requestId: 'm1',
