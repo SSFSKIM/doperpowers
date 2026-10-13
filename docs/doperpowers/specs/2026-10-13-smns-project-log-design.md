@@ -73,8 +73,13 @@ machines.
   operator's identity as today.
 - **Writer** — one appender of the log: `<machine>/<session-uuid>` for a
   session, `<machine>/human` for the operator on that machine,
-  `<machine>/daemon` for its daemon, `legacy/<host-seat-id>` for imported
-  family chats. `<machine>` is `host_name()` in sminos.py.
+  `legacy/<host-seat-id>` for imported family chats. `<machine>` is
+  `host_name()` in sminos.py. A session's writer is also the **canonical
+  writer of its lifecycle**: whoever writes a `joined`, `retired`,
+  `renamed`, `state`, `in-charge`, or `status` for a session on its machine
+  — the hook, `spawn`, `retire`, reconciliation, the daemon — appends it to
+  that session's file under its lock, so a session's lifecycle has one
+  sequence (§3).
 - **Event** — one JSON line in a writer's file, identified by
   `(writer, seq)` (§3).
 - **Log** — all writers' files of one project, under
@@ -120,14 +125,12 @@ Every project known to a machine has `$SMINOS_HOME/projects/<id>/`:
       project.json          copy of .smns as last resolved, plus "root": the directory it was found in
       log/                  the writers' files; a git working tree when .smns names a remote
         <machine>.<session-uuid>.jsonl
-        <machine>.human.jsonl
-        <machine>.daemon.jsonl
-        legacy.<host-seat-id>.jsonl
+        <machine>.human.jsonl        legacy.<host-seat-id>.jsonl
         machines/<machine>.json         the machine's instance id, pushed at attach (§8)
-        .sync.lock                      appenders shared, git operations exclusive (§8)
+        .sync.lock                      appenders shared, working-tree git phases exclusive (§8)
+        .sync-op.lock                   one sync at a time (§8)
       cursors/<session-uuid>.json       what a reader has read: {"<writer>": <seq>}   (local only)
-      cursors/export/<session-uuid>.json  the hook's export position in the transcript (§4)   (local only)
-      delivered/<session-uuid>.json     what has been delivered to that local member: {"<writer>": <seq>}   (local only)
+      cursors/export/<session-uuid>.json  the hook's export position in the transcript (§4)   (local only)      delivered/<session-uuid>.json     per writer, the settled prefix and the pending event (§4)   (local only)
 
 and `$SMINOS_HOME/machine.json` holds this machine's random instance id,
 written on first use, and `$SMINOS_HOME/internal/<pid>` marks an internal
@@ -138,8 +141,13 @@ is **attached** (`sminos project attach`, also run by the daemon on first
 sight) by adopting the existing `log/` — `git init` when it is not yet a
 repository, the remote added, local files committed, the remote fetched
 and integrated so that local history is preserved (unrelated histories are
-expected on first attach) — and an attach with the remote unreachable
-succeeds, leaving the first sync to the daemon. The alternative, cloning
+expected on first attach) — and an attach with the remote unreachable succeeds, leaving the first
+sync to the daemon. Before anything is pushed, attach scans every local
+event with the redaction scanner of §3 — a local project never redacted —
+and, on a match, refuses to publish, listing the events by `(writer,
+seq)`; `attach --redact` rewrites those values in place first (these
+files have never left the machine, so the one-time rewrite breaks no
+reader) and proceeds. The alternative, cloning
 the remote into `log/`, was rejected because the normal path is a project
 that mirrored nothing until the second machine arrived.
 
@@ -156,8 +164,14 @@ native tools" clause: the project is the reach.
 **Addressing.** Aliases are display names and can collide: this machine's
 registry has held two sessions named `cua_repl` in one project. So an
 address is resolved when the message is submitted and stored as the
-session id. A tag is `@name`, `@"name with spaces"`, `@name#short`, or
-`@short`; `@project/name` crosses projects. A tag that matches more than
+session id. A tag is `@name`, `@"name with spaces"`, `@name#short`, or `@short`;
+`@project/name` crosses projects. A message goes to exactly one project's
+log, its **destination**: the sender's project by default, or the project
+the tags name, and a message whose tags name two projects is refused. The
+event is appended under the sender's writer id, which is the same in any
+project, and the sender reads the record with `chat <project>`; the sender
+need not be a member of the destination (a session in one project telling
+another's session that a shared plugin changed). A tag that matches more than
 one member is refused with the candidates as `alias#short`, and a tag that
 matches none is refused as unknown. `leading_tags` in sminos.py keeps its
 rule — only the run of tags opening a message addresses anyone — and gains
@@ -165,15 +179,20 @@ the quoted and `#short` forms. A frame shows the alias; delivery, local or
 remote, goes by the session id, so a rename or a replacement after
 submission cannot misroute it.
 
-**Reconciliation.** A harness session or seat on this machine whose working
-directory resolves to the project, and whose latest membership event is
-absent or `retired`, is a member on sight: every CLI call that reads the
-project (`list`, `say`, `chat`, `send`, `status`, `charge`) first appends
-`joined` for such sessions (`by` `""`, `name_source` from the harness), so
-the sessions running when this ships, and any opened without the hook,
-appear in the log without a restart and reach other machines through the
-mirror. The hook (§4) does the same at session start; both are idempotent
-by the membership rule.
+**Reconciliation.** Two kinds of session on this machine are members on
+sight: a *live* harness session (its pid alive, its record under
+`~/.claude/sessions`) whose working directory resolves to the project and
+whose latest membership event is absent or `retired` — a live process is
+evidence of activation, which covers a session resumed outside sminos; and
+a seat record in the project with no membership event at all and a status
+other than `retired` — the seats that exist when this ships. Every CLI call
+that reads the project (`list`, `say`, `chat`, `send`, `status`, `charge`)
+first appends `joined` for them (`by` `""`, `name_source` from the
+harness), so they appear in the log without a restart and reach other
+machines through the mirror. A retired seat with no process is not
+reconciled: it stays retired until `fill`, `resume`, or `send` revives it,
+which appends `joined` (§3). The hook (§4) does the same at session start;
+all of it is idempotent by the membership rule.
 
 There is no host seat. A seat that spawns another is recorded as its
 spawner (§6) and nothing more: it does not integrate the other's work, is
@@ -215,10 +234,13 @@ file: its own `sminos say` from the Bash tool, and the hook of §4), and
 `(writer, seq)` identifies an event everywhere. Within a writer, `seq` is
 authoritative: cursors, delivery, and the projection's "latest" are by
 `seq`, never by `ts`, so a clock correction cannot reorder a writer's own
-events. Across writers the display order is `(ts, writer, seq)`, and the
-one place two writers can contend for the same fact — a member's `charge`
-or `status` set by the member and by the operator on different machines —
-takes the later `ts`: a wall-clock compromise, accepted because the
+events. Across writers the display is a merge of per-writer streams, each in
+`seq` order, the next line taken from whichever stream's head has the
+earlier `(ts, writer)`; a writer's lines never cross even when its clock
+stepped back. A session's lifecycle is one writer by construction (Terms),
+so its latest `joined`/`retired` is by `seq`. The one place two writers can
+contend for the same fact — a member's `charge` or `status` set by the
+member and by the operator on different machines — takes the later `ts`: a wall-clock compromise, accepted because the
 alternative, a vector clock per field, buys nothing a human cannot fix by
 setting the line again. One file per writer is what makes the mirror
 trivial (§8): a file has one writer, so replication is a copy and a merge
@@ -237,8 +259,8 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | `retired` | `session`, `by`, `reason` `retire`/`replaced` | `sminos retire`; `spawn`/`fill` into an occupied seat |
 | `in-charge` | `session`, `text`, `source` `set` or `derived` | `sminos charge`, `spawn --brief`, `sminos derive` |
 | `status` | `session`, `text` | `sminos status` |
-| `renamed` | `session`, `alias`, `name_source` | the daemon, on a harness name change |
-| `state` | `session`, `state` word, `machine` | the daemon, on a liveness transition (§8) |
+| `renamed` | `session`, `alias`, `name_source` | the daemon, on a harness name change, into the session's file |
+| `state` | `session`, `state` word, `machine` | the daemon, on a liveness transition (§8), into the session's file |
 
 **Membership rule.** A session is a member while its latest `joined`/
 `retired` event is `joined`. A fresh fill of a seat appends `retired`
@@ -300,23 +322,36 @@ every member must act on now — and that status is untagged.
 as `human` (operator) or `say` (member) to that session; it reaches a live
 local member over its socket and resumes a stopped one, exactly as today.
 
-**Delivery.** Delivery is a function of the log: an event addressed to a
-member, or carrying `wake`, is owed to that member until the member's
-`delivered/<session-uuid>.json` records the event's `(writer, seq)`. The
-sender's own push, right after the append, is the fast path and records
-its outcome in the same file; the daemon's deliver duty (§8) is the slow
-path for whatever is still owed — a remote event, and a local one whose
-sender exited between the append and the push. Per recipient, the outcomes
-of `push_member` in sminos.py map as: `sent` or `woken` → recorded as
-delivered; `failed` before anything was written → left owed, retried on
-each daemon tick, and after 60 ticks recorded as delivered with a line in
-`$SMINOS_HOME/daemon.log` naming the event and the member; uncertain after
-a write → recorded as delivered. So delivery is **at least once**: a frame
-carries the event id, and a member that sees the same id twice reads it
-once. A project without a daemon has only the fast path, and a sender that
-dies between append and push leaves the record for the member's next
-`chat`. The alternative, exactly-once by acknowledgement over the socket,
-needs a protocol the harness inbox does not offer.
+**Delivery.** Delivery is a function of the log: an event is owed to a
+member until the member's delivery record settles it, and settlement is
+**in order per writer**. `delivered/<session-uuid>.json` holds, per
+writer, the `seq` up to which every event is settled (the prefix) and,
+when the next event failed, that event's `seq` with its attempt count; a
+deliverer never settles an event while an earlier one of the same writer
+is unsettled, so a later success cannot bury an earlier failure. The file
+is updated under `delivered/<session-uuid>.lock`, which the fast path and
+the daemon share. The sender's own push, right after the append, is the
+fast path; the daemon's deliver duty (§8) is the slow path for whatever is
+still owed — a remote event, a local one whose sender exited between the
+append and the push, a failed one. Per event and recipient, the outcomes
+of `push_member` in sminos.py map as: `sent` or `woken` → settled;
+`failed` before anything was written → pending, retried on each daemon
+tick, and after 60 attempts settled with a line in `$SMINOS_HOME/daemon.log`
+naming the event and the member; uncertain after a write → settled. So
+delivery is **at least once**: a frame carries the event id, and a member
+that sees the same id twice reads it once. An event is owed to a member if
+it addresses that member's session and the member is not the sender; an
+addressed event to a `stopped` member resumes it. A `wake` event is owed
+only to members whose `joined` precedes it — a member's delivery record
+is initialised at its join to every writer's head, so nothing before the
+join is ever owed — and is delivered only to a member live at delivery
+time: a `stopped`, `gone`, or `retired` member is settled without a push
+(the broadcast is for who is there now, and an obsolete "stop pushing"
+must not greet a session that joined a day later). A project without a
+daemon has only the fast path, and a sender that dies between append and
+push leaves the record for the member's next `chat`. The alternative,
+exactly-once by acknowledgement over the socket, needs a protocol the
+harness inbox does not offer.
 
 **Messages to the host.** A new shell hook, `hooks/smns-record.sh`,
 registered in `hooks/hooks.json` on `Stop` and on `SessionStart` (matcher
@@ -325,15 +360,24 @@ registered in `hooks/hooks.json` on `Stop` and on `SessionStart` (matcher
 the payload once with `read -r` as `hooks/to-human-stream.sh` does, exits 0
 on every error so a logging failure never blocks a turn, and exits at once
 when `SMNS_INTERNAL` is set in its environment (§5) or `cwd` resolves to no
-project. On `Stop`, `record` reads the transcript from its end back to the
-record named in `cursors/export/<session-uuid>.json` (a record uuid and
-its byte offset; the whole file is never read — an architect session's
-reaches 155MB), extracts marks from the assistant records above it, appends
-them with `src` the record's uuid, and advances the export position; a
-record already exported is skipped by `src`, so a Stop that fires twice,
-or a turn interrupted and resumed, exports each mark once. The export
-boundary is the position, never "the last user record": peer frames arrive
-as user-role records and would move such a boundary past a mark.
+project. On `Stop`, `record` reads the transcript from its end back to the record
+named in `cursors/export/<session-uuid>.json` (a record uuid and its byte
+offset; the whole file is never read — an architect session's reaches
+155MB), extracts marks from the assistant records above it, appends them
+with `src` `<record-uuid>#<span-index>` — one record's spans as one batch
+under the session's file lock, the position advanced only after the batch
+— and skips any `src` already present, so a Stop that fires twice, a turn
+interrupted and resumed, or an export that died after the first span of a
+record exports each mark once. Exports are serialised by
+`cursors/export/<session-uuid>.lock`. The export boundary is the position,
+never "the last user record": peer frames arrive as user-role records and
+would move such a boundary past a mark. The position is initialised at
+`SessionStart` to the transcript's current end, so nothing written before
+the plugin arrived is exported; a `Stop` that finds no position (the
+plugin installed mid-session, the file lost) exports the trailing run of
+assistant records at the end of the file and sets the position there — a
+bounded first-use policy, stated as such: a mark earlier in that one turn,
+before a peer frame interrupted it, is not exported.
 
 Mark extraction is a Python port of the grammar `hooks/mods/to-human.tsx`
 applies for display, not its `TAG` regex alone: tags inside inline code
@@ -472,9 +516,13 @@ another instance id refuses to run and says so.
 the remote is integrated, so no event is ever outside a commit; git never
 rewrites `log/` while an appender writes, and an appender never writes
 while git rewrites — `log/.sync.lock` is taken shared by `log_append` for
-the append and exclusive by the daemon for the whole git operation; and a
-push rejected because the remote moved is retried after another
-integration, bounded (three). The first draft's order, pull then commit,
+the append and exclusive by the daemon for each phase that touches the
+working tree (the commit; the integration of what was fetched) and for
+nothing else: fetch and push, the phases that wait on the network, run
+outside it with a 30-second bound each, so an unreachable remote never
+stalls a local `say` or a Stop export; one sync at a time per project
+(`.sync-op.lock`); and a push rejected because the remote moved is
+retried after another fetch and integration, bounded (three). The first draft's order, pull then commit,
 fails on the first append after a file is tracked: `git pull --rebase`
 refuses a dirty tree (reproduced by both reviewers, exit 128). Within the
 invariant the executor chooses the git commands; `stash` is not among them
@@ -482,7 +530,9 @@ invariant the executor chooses the git commands; `stash` is not among them
 top-level `*.jsonl` of `log/`, so `machines/` is invisible to it.
 
 `sminos daemon run [--interval 5]` loops `sminos daemon tick` over every
-local project with a remote — `tick` is one iteration, used by tests;
+project known locally — the sync duties only for those with a remote, the
+rest for all, so a remote-less project's owed deliveries are retried too —
+`tick` being one iteration, used by tests;
 `sminos daemon install` writes a launchd agent
 (`~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`, modelled on
 `application-agents/triaging-feedback/infra/worker-host`, its
@@ -493,25 +543,26 @@ project. Each tick, with the harness peer cache refreshed first (the
 in-process caches in sminos.py are per invocation; `run` must refresh them
 per tick):
 
-1. **Sync.** Under the invariant above: commit local changes, integrate
-   the remote, push. A failure is logged to `$SMINOS_HOME/daemon.log` and
-   the tick continues on the stale mirror.
-2. **Reconcile.** As every CLI call does (§2): `joined` for local sessions
-   that resolve to the project and are not members.
-3. **Deliver.** For each local member, every event above its `delivered/`
-   record that addresses it by session id or carries `wake`: push a frame
-   or resume, exactly as a local `say` would (§4), and record the outcome
-   per §4. A member that is `gone` or `retired` here is recorded as
-   delivered without a push.
-4. **Publish.** For each local member, compute `state()` as today; when it
+1. **Integrate.** Under the invariant above: commit local changes, fetch,
+   integrate. A failure is logged to `$SMINOS_HOME/daemon.log` and the tick
+   continues on the stale mirror.
+2. **Reconcile.** As every CLI call does (§2).
+3. **Publish.** For each local member, compute `state()` as today; when it
    differs from the last `state` published for that session and differed on
    the previous tick too, append `state` (one tick of persistence drops the
    flip inside a tool round). When the harness name differs from the last
    known alias, append `renamed` with its `name_source`.
-5. **Derive.** Once an hour, `derive --all` (§5).
+4. **Deliver.** For each local member, every event owed to it (§4), in
+   writer order from its settled prefix: push a frame or resume, exactly as
+   a local `say` would, and settle per §4.
+5. **Push.** Commit what this tick appended and push, so a state published
+   in this tick reaches the remote in this tick.
+6. **Derive.** Once an hour, start `derive --all` as a child process and
+   do not wait for it — a fork's model call can take minutes, and the
+   delivery interval must not; one derivation in flight at a time.
 
 A local project has no mirror; the daemon still delivers what the fast
-path left owed, when it runs. The alternative transport, a small server
+path left owed, when it runs, because it visits every project. The alternative transport, a small server
 with push notifications, was rejected for now: git gives replication,
 history, SSH authentication, and offline operation for free, and a
 five-second poll is inside what agent-to-agent messaging tolerates.
@@ -575,8 +626,8 @@ otherwise.
    renamed `/rename c` makes `list` show both as `c#<short>`, and `sminos
    say "@c hi"` is refused naming both.
 5. `sminos charge b "owns the GUI tool"`; `list` shows that line for `b`
-   with `charge_source` `set` in `--json`, and `a`'s row still shows `a`
-   as its alias. For a session with ≥10 prompts, a derived name, and no
+   with `charge_source` `set` in `--json`. `sminos charge a "parser"`;
+   `list` shows `parser` as `a`'s line and `a` still as its alias. For a session with ≥10 prompts, a derived name, and no
    line, `sminos derive <alias>` prints a one-line answer, `list` shows it
    with `charge_source` `derived`, `list --json` has the same number of
    members before and after, `chat --host` has no new line, and the
@@ -630,17 +681,25 @@ file name replaces `/` in the writer id with `.`; `seq` is read as the
 last line's `seq` plus one under `flock` on `<file>.lock`; a malformed
 line is skipped on read and never rewritten; `--in <project>` on the
 operator's `say` accepts a project name or id; `attach` on a populated
-`log/` integrates with unrelated histories allowed; in this milestone an
-address resolves among seat records whose `cwd` resolves to the project,
-and M2 extends it to seat-less members. Does not touch: membership (`list`
+`log/` integrates with unrelated histories allowed; in this milestone an address resolves among seat records whose `cwd`
+resolves to the project, and M2 extends it to seat-less members; the
+destination rule of §2 and the refusal of mixed-project tags; the
+delivery record's shape (settled prefix per writer, one pending event
+with its attempt count) and its lock; a member's delivery record
+initialised at join to every writer's head. Does not touch: membership (`list`
 still prints today's groups until M2), the hook, the daemon. Proves:
 acceptance 2 (local delivery), and tests pin: two writers' lines interleave
 by `ts` while one writer's keep `seq` order under a backwards `ts`; `chat`
 advances the cursor and `-n` does not; a `say` to `*` pushes nothing;
 `@all` pushes to every live member and resumes none; a tag matching two
-seats is refused naming both as `alias#short`; `@"two words"` resolves; a
-redacted value leaves the rest of the line; `attach` with an unreachable
-remote succeeds and preserves local files.
+seats is refused naming both as `alias#short`; `@"two words"` resolves; a redacted value leaves the rest of the line; `attach` with an unreachable
+remote succeeds and preserves local files, and `attach` on a log holding a
+credential-shaped value refuses until `--redact`; a message tagged into
+another project lands in that project's log and nowhere else, and tags
+naming two projects are refused; when a writer's event 10 fails to push
+and its event 11 would succeed, 11 is not delivered before 10 and both
+arrive, in order, on a later attempt; a `@all` written before a member
+joined is never delivered to it, and never to its sender.
 
 ### M2 — The project family
 
@@ -675,9 +734,13 @@ acceptance 1, 4; tests pin that a seat-less harness session in the
 project's cwd lists, that `spawn --parent` is refused as unknown, that
 retiring a spawner leaves the spawned seat live, that a fresh fill writes
 `retired` (`replaced`) then `joined`, that `fill --resume` of a retired seat
-re-joins with the same uuid, that a session running before the log existed
-is joined on the first `list`, and that `status` from one home is visible
-in `list --json` from the other after a sync.
+re-joins with the same uuid, that a session running before the log existed is joined on the first
+`list`, that a retired seat stays retired across repeated `list` and
+`tick` calls and re-joins only when `fill --resume` revives it, that a
+hook `joined` followed by an operator `retire` and a `resume` keep their
+order under a clock stepped back (one writer, by `seq`), and that
+`status` from one home is visible in `list --json` from the other after
+a sync.
 
 ### M3 — Messages to the host and the in-charge line
 
@@ -696,15 +759,16 @@ and a peer frame as a user-role record mid-turn; the stub `claude` gains
 `session_id`, creating the fork's transcript file, and running the hook
 script with a `SessionStart` and a `Stop` payload the way the harness
 would). Interfaces: produces `charge_of`, `extract_marks`; consumes
-`members`, `log_append`. Decisions: the export position is the uuid and
-byte offset of the last exported assistant record, and a missing or
-unreadable position file means "export this turn's records only" (never
-the whole file); `derive`'s fork runs with a 120-second timeout and a
+`members`, `log_append`. Decisions: the export position is the uuid and byte offset of the last
+exported assistant record, initialised at `SessionStart` to the file's end
+and, when missing at `Stop`, by the trailing-run policy of §4; `derive`'s fork runs with a 120-second timeout and a
 failure prints the stderr tail and writes nothing. Does not touch: the
 daemon; the output style. Proves: acceptance 3, 5; tests pin that a
 `<to-human>` span records as `message`, that `need-input` choices are
-lifted, that the backticked and fenced tags record nothing, that a Stop
-replayed over the same transcript appends nothing, that a user-named
+lifted, that the backticked and fenced tags record nothing, that a Stop replayed over the same transcript appends nothing, that an
+export killed after the first of two spans in one record appends only the
+second on retry, that a first `Stop` with no position followed by a peer
+frame exports the trailing run and nothing earlier, that a user-named
 session is never derived, that `charge` beats a user-set name and the name
 beats a derived line, and that `derive` leaves the member count and the
 host stream unchanged and the fork's file deleted.
@@ -718,20 +782,26 @@ slow-path delivery with per-recipient records and the 60-tick give-up;
 `@<machine>` and age. Touches `sminos.py` (`cmd_project` for attach's
 mirror half, `cmd_daemon`, `sync_mirror`, `deliver_owed`, `publish_state`,
 `refresh_caches` per tick), a launchd plist template under
-`skills/sminos/references/`, tests (two homes with `HOME`, `SMINOS_HOME`,
-stub agent state and inbox sockets each; a bare repository; `daemon tick`
-driven phase by phase, and one `daemon run --interval 1` process). Interfaces:
-produces `tick`; consumes everything above. Decisions: git is invoked with
-`-C log` and `GIT_TERMINAL_PROMPT=0`; the exclusive `.sync.lock` is held
-from before `git add` to after `push` returns; delivery to a `stopped`
-member resumes it as a local `say @alias` would, and to a `busy` one pushes
-the frame. Does not touch: the dispatch scripts. Proves: acceptance 6;
+`skills/sminos/references/`, tests (two homes with `HOME`, `SMINOS_HOME`, stub agent state and inbox
+sockets each, the stub `claude` extended to allot session uuids from a
+counter shared across homes — today's stub derives them from a per-state
+counter, so two empty homes would mint the same uuid — asserted distinct
+before anything replicates; a bare repository; `daemon tick` driven phase
+by phase, and one `daemon run --interval 1` process). Interfaces:
+produces `tick`; consumes everything above. Decisions: git is invoked with `-C log`, `GIT_TERMINAL_PROMPT=0`, and a
+30-second `timeout` on fetch and push; the exclusive `.sync.lock` covers
+the commit and the integration and nothing that waits on the network;
+`derive --all` is a `Popen` child whose pid the daemon remembers so a
+second is not started while it runs; the tick's duty order is §8's. Does not touch: the dispatch scripts. Proves: acceptance 6;
 tests pin that an append after a successful sync, while the other home
 publishes, syncs on the next tick with both histories intact; that an
 event to two local members with the second push failing is delivered to
 the first once and to the second on a later tick; that a daemon restarted
-between the push and the record delivers at most once more; that a state
-flip lasting one tick is not published; that a claimed machine name
+between the push and the record delivers at most once more; that a stalled
+remote (a fetch that hangs) leaves a concurrent `say` and a Stop export
+unblocked; that an owed event in a remote-less project is delivered by
+`run`; that `run` keeps delivering while a derivation child sleeps; that a
+state flip lasting one tick is not published; that a claimed machine name
 refuses to run; and that `run` sees a session that appeared after it
 started.
 
@@ -798,14 +868,17 @@ class Project(NamedTuple):
     home: str        # $SMINOS_HOME/projects/<id>
 
 def resolve_project(cwd: str) -> Project | None        # None: no project (§1)
-def writer_id(session_uuid: str | None = None) -> str   # "<machine>/<uuid>" | "<machine>/human" | "<machine>/daemon"
+def writer_id(session_uuid: str | None = None) -> str   # "<machine>/<uuid>" | "<machine>/human"; a session's lifecycle always under its own id
 def log_append(project: Project, writer: str, kind: str, **fields) -> dict   # ts (ms), seq under the file lock, .sync.lock shared; redacts for a remote project
 def log_read(project: Project, since: dict | None = None, kinds: tuple = (), to_session: str | None = None) -> list[dict]
 def cursor_load(project: Project, session_uuid: str) -> dict
 def cursor_save(project: Project, session_uuid: str, cursor: dict) -> None
-def delivered_load(project: Project, session_uuid: str) -> dict
-def delivered_record(project: Project, session_uuid: str, writer: str, seq: int) -> None
-def resolve_tags(project: Project, text: str) -> tuple[list[dict], str, bool]   # recipients [{session, alias}], text, wake; raises on ambiguity/unknown
+def delivered_load(project: Project, session_uuid: str) -> dict           # {writer: {"settled": seq, "pending": seq|None, "attempts": int}}
+def delivered_settle(project: Project, session_uuid: str, writer: str, seq: int) -> None   # refuses a seq that is not settled+1
+def delivered_fail(project: Project, session_uuid: str, writer: str, seq: int) -> None
+def delivered_init(project: Project, session_uuid: str) -> None             # every writer's head, at join
+def owed(project: Project, member: "Member") -> list[dict]                   # in writer order from the settled prefix (§4)
+def resolve_tags(project: Project, text: str) -> tuple["Project", list[dict], str, bool]   # destination, recipients [{session, alias}], text, wake; raises on ambiguity/unknown/mixed projects
 def redact(text: str) -> tuple[str, bool]
 
 class Member(NamedTuple):
@@ -817,7 +890,7 @@ def members(project: Project) -> list[Member]          # ignores $SMINOS_HOME/in
 def reconcile(project: Project) -> int                 # joined events appended for unrecorded local sessions
 def charge_of(member: Member, events: list[dict]) -> tuple[str, str]
 def extract_marks(text: str) -> list[dict]             # [{"kind": "message"|"need-input", "text": str, "choices": [str]}], code-aware
-def tick(project: Project) -> dict                     # {"synced": bool, "reconciled": int, "delivered": int, "published": int}
+def tick(project: Project) -> dict                     # {"integrated": bool, "reconciled": int, "published": int, "delivered": int, "pushed": bool}
 ```
 
 CLI verbs added: `project init|show|attach`, `charge`, `derive`, `record`,
@@ -901,8 +974,28 @@ Dispatch scripts: one `--brief` each.
   Rationale: the two blockers were real (a durable address on a mutable,
   colliding name; a sync order that fails on the first append), and the
   should-fix findings each named a decision the executor would otherwise
-  have made alone. Dismissed: none. Deferred: remote control of a session's
-  process (named in §9 as out of scope).
+  have made alone. Dismissed: none. Deferred: remote control of a session's process (named
+  in §9 as out of scope).
+  Date/Author: 2026-10-13, the authoring session.
+- Decision: review round two (one blocker, thirteen should-fix) moved:
+  delivery settles in writer order with a settled prefix and one pending
+  event per writer, a member's record initialised at join, broadcasts
+  live-only and never to the sender (§4); reconciliation joins only live
+  sessions and never-recorded non-retired seats, so a retirement holds
+  (§2); a message has one destination project and mixed tags are refused
+  (§2); `src` is record uuid plus span index, exported per record as a
+  batch, with a first-use policy (§4); the sync lock covers only the
+  working-tree phases and the network phases are bounded (§8); the daemon
+  visits every project and syncs only mirrored ones (§8); derivation is a
+  child process (§8); the display merge keeps each writer in `seq` order
+  (§3); a session's lifecycle has one canonical writer (Terms, §3); attach
+  preflights secrets (§1); the duty order pushes last so a published state
+  crosses in the same tick (§8); the stub allots distinct uuids across
+  homes (M4); acceptance 5 also sets a line on the user-named member.
+  Rationale: the blocker was real (a single watermark forgets a failed
+  earlier event once a later one lands); the rest were decisions the
+  executor would have made alone, each with a failure the reviewer named.
+  Dismissed: none.
   Date/Author: 2026-10-13, the authoring session.
 
 ## Outcomes & Retrospective
