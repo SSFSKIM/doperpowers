@@ -9,19 +9,21 @@ ignores it elsewhere; the shell hooks beside this folder run everywhere.
 
 The `to-human` output style (`output-styles/to-human.md`) assumes a human who
 reads a report stream, not the transcript: the model sends them messages in
-`<message>`, what it needs from them in `<need-input>`, explanatory notes in
-`<insight>`, and leaves its working record unwrapped. The old `<to-human>`
-and `<essential>` marks read as aliases of `<message>`; tags in inline code
-or fenced blocks stay literal. This mod
+`<message>`, explanatory notes in `<insight>`, asks for what it needs from
+them through AskUserQuestion (the ask mod's, `async` when it can work on
+while they decide), and leaves its working record unwrapped. The old
+`<to-human>`, `<essential>` and `<need-input>` marks read as aliases of
+`<message>` (an old question's `<choice>` lines stay in its text, with no
+buttons); tags in inline code or fenced blocks stay literal. This mod
 makes the Claude Code terminal the consumer of those marks.
 
-Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report, the questions and their answers itself; this view passes every drawing hook through on non-terminal surfaces (a submitted answer still settles its question, for the terminal's view), and the streaming hook draws nothing.
+Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report itself; this view passes every drawing hook through on non-terminal surfaces, and the streaming hook draws nothing.
 
 Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under a colored
-  label: `message` in cyan, `need input` in magenta, `insight` in yellow.
+  label: `message` in Claude's orange, `insight` in yellow.
   On the terminal a
   span's body is the engine's own markdown drawing of the span's text (the
   block is handed back beneath the hook with that text in place of the
@@ -30,8 +32,8 @@ a mark, so a session without the output style is left alone. From then on:
   surface's own `Markdown` element instead: a render answer carries one
   props, so of several blocks handed back only the first draws there — Claude
   Desktop portals its native row into the first engine node and draws nothing
-  at the rest, which left every span after the first label-only and a
-  `need-input` question with its buttons and no question (2026-10-03). A
+  at the rest, which left every span after the first label-only
+  (2026-10-03). A
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
   unfolds the engine's drawing of the whole block, and the run of working
@@ -69,23 +71,6 @@ a mark, so a session without the output style is left alone. From then on:
   call and a `Workflow` of agents. `SendMessage` calls, received messages
   from agents, teammates or other sessions, and agent-finish notifications
   are working record. Unfolding the run or the full transcript reveals them.
-- A `need-input` span is a question the human answers from the terminal. The
-  options the model wrote as `<choice>…</choice>` lines (one of them
-  `<choice recommended>`) draw as buttons under the question, `★` on the
-  recommended one, with `[ reply… ]` last; a question with no options has
-  `[ reply… ]` alone. A press writes the person's box: a choice as the whole
-  answer, `reply` as its opening, both in the form `Answering "<the
-  question's first line>": <answer>`, and Enter sends it as the person's own
-  prompt. The answers to several questions go in one prompt: each question
-  has one line in the box (a duplicate the person pasted in is collapsed
-  into it), a second press on a question replaces its line, `reply` moves
-  the question's line to the end, where the cursor is, and whatever else
-  the person typed stays. (Nothing here submits: a prompt a
-  plugin submits enters under the plugin's name, framed as the plugin's
-  message to the model and labelled so in the transcript, by an origin no
-  hook may change.) Once a prompt in that form enters, each span it answers
-  reads `need input · answered: <answer>` and its buttons go; a resumed
-  session reads its answers back from the transcript.
 - Above the prompt, `to-human view · [ full transcript ]` switches the whole
   transcript to the engine's drawing; the same button then reads
   `[ report only ]`.
@@ -95,30 +80,26 @@ While a message streams, none of this is drawn yet: the engine mounts an
 cannot restyle text as it arrives. The shell hook beside this folder,
 `../to-human-stream.sh` on `MessageDisplay`, covers that stretch — it is
 handed each batch of newly completed lines and returns what to draw in its
-place, so a mark becomes the same colored label, a choice a line under `◇`
-(`◆` for the recommended one), and the working record dims as the message
-arrives. The engine runs up to three of a message's flushes
+place, so a mark becomes the same colored label and the working record dims
+as the message arrives. The engine runs up to three of a message's flushes
 at once and dispatches the last one the moment the message ends, so each
 flush records its index when it is done and the next waits for that record
 before reading which marks are open; without the wait, a short message's
 tail was drawn before the flush that closed its mark had finished, and came
 through undimmed. The hook's labels are what this module then reads: once
-the hook has run, the block's text carries those headers and markers instead
-of the tags, and `parse` takes either form (the tags when the hook is not
-installed, the headers when it is), with old `to human` and `essential`
-headers read as messages too. The two views line up, so the message
+the hook has run, the block's text carries those headers instead of the
+tags, and `parse` takes either form (the tags when the hook is not
+installed, the headers when it is), with old `to human`, `essential` and
+`need input` headers read as messages too (an old `◇`/`◆` choice line stays
+text). The two views line up, so the message
 settles into the fold without changing shape.
 
 The stored messages are untouched by both: the transcript on disk carries the
 tags as written, and the model reads what it wrote. The `ctrl+o` detailed
 transcript is drawn through the same hooks, so it folds too.
 
-Known limits: a literal mention of a tag in prose parses as a span, and a
-literal ◇ or ◆ followed by a space inside a need-input question or choice
-reads as a choice marker once the streaming hook has drawn it; unfold state
-lives in the module and resets on reload or a new session (answers do not:
-they are read from the transcript); a question is known by its first line, so
-two questions that open alike are answered together; a run's rows are known
+Known limits: a literal mention of a tag in prose parses as a span; unfold
+state lives in the module and resets on reload or a new session; a run's rows are known
 by the order they first drew in, so a resumed session that redraws history
 out of order can put a button on the wrong row until the next redraw.
 

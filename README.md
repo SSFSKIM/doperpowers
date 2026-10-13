@@ -95,7 +95,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 - `writing-skills` — create and test new skills that shape agent behavior
 
 **Output style**
-- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent sends messages in `<message>`, asks for input in `<need-input>`, and explains in `<insight>`; a reader shows only those marks, with old `<to-human>` and `<essential>` marks read as aliases of `<message>`. Select per launch with `"outputStyle": "to-human"`.
+- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent sends messages in `<message>`, explains in `<insight>`, and asks for input through AskUserQuestion — with `async: true` when it can work on while the human decides; a reader shows only those marks and the questions, with old `<to-human>`, `<essential>` and `<need-input>` marks read as aliases of `<message>`. Select per launch with `"outputStyle": "to-human"`.
 
 ---
 
