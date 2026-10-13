@@ -31,7 +31,10 @@ the tool works exactly as AskUserQuestion does and differs only by the
 `async` parameter; it is AskUserQuestion's superset and replaces
 `<need-input>`; and everything the dialog offers — the key bindings
 (←, →, Enter, Esc), the floating tab bar, what an agent can draw in each
-question (descriptions, previews), notes with `n` — is the same.
+question (descriptions, previews), notes with `n` — is the same. Where this
+spec falls short of that, it says so: a picture pasted into "Type
+something" (Design → Blocking → Images), and a tool already running beside
+a declined blocking ask (Design → Blocking).
 
 ## Progress
 
@@ -39,7 +42,7 @@ question (descriptions, previews), notes with `n` — is the same.
 - [x] (2026-10-13) Design approved in conversation; spec written.
 - [x] (2026-10-13 17:10Z) Engine reference from the extracted bundle folded in (facts 10–16).
 - [x] (2026-10-13 18:00Z) Independent spec review and buildability review, round one: all findings taken (Decision Log).
-- [ ] Review round two.
+- [x] (2026-10-13 18:40Z) Review round two: all findings taken; review converged (Decision Log).
 - [ ] M1 — The tool and blocking parity
 - [ ] M2 — Asking without waiting
 - [ ] M3 — `<need-input>` retired, the style, evals, acceptance
@@ -247,16 +250,20 @@ it catches; record which form the model sees in Surprises & Discoveries.
 
 ### Blocking (`async` false or absent)
 
-The tool's `tool.call` hook adds a pending entry (the question set) to the
-mod's list, calls `$.ui.ask` with the first question (its text, option
-labels, header, multiSelect), and awaits it. The mod's `tool.call` hook on
-`AskUserQuestion` sees that call and claims the oldest unclaimed entry
-whose first question's text is the call's one question — only when the
-dispatch's `next.origin.plugin` is this plugin (`doperpowers`), so a
-model's own call of the built-in can never claim an entry (fact 18's
-identity). It widens the call to the entry's set, and binds what `next`
-resolved to that entry; the tool reads its outcome from there. The tool
-returns:
+The tool's `tool.call` hook adds a pending entry (the question set and a
+token unique in the session, `ask-<n>`) to the mod's list, calls `$.ui.ask`
+with the first question's text and option labels and the token as the
+header, and awaits it. The mod's `tool.call` hook on `AskUserQuestion` sees
+that call and claims the entry whose token is the call's one header — only
+when the dispatch's `next.origin.plugin` is this plugin (`doperpowers`), so
+a model's own call of the built-in can never claim an entry (fact 18's
+identity). The token, not the question text, is the correlation: two
+concurrent asks with the same first question still each claim their own.
+It widens the call to the entry's set (the real headers with it), and
+binds what `next` resolved to that entry; the tool reads its outcome from
+there. (Should widening ever not happen, the human sees the token where
+the header goes — visible, harmless, and a sign to look in the debug log.)
+The tool returns:
 
 - answered: `{ result: <next's text> }` — the engine's own result text,
   verbatim (observed: `Your questions have been answered: "Which
@@ -276,9 +283,18 @@ returns:
   model request follows in that turn; nothing is drawn beyond the declined
   row (a stop-reason line, an `Interrupted` marker). Ending it inside the
   tool's own hook is out: the result is recorded after the hook returns,
-  and an abort there would replace it with an interruption. One accepted
-  difference: a tool running in parallel with the blocking ask in the same
-  batch finishes, where the built-in's abort would cut it. A refusal with
+  and an abort there would replace it with an interruption. Until that
+  boundary the refusal sets a **turn latch**: every later model-made
+  main-loop tool call of the same turn — one queued behind the ask in its
+  batch, a second ask — is refused before it runs with `Not run: the human
+  declined the question asked in this turn.`, where the built-in's abort
+  would have cancelled it; and a turn that ends with the latch set counts
+  as stopped by the human for delivery (Async → Delivery), whatever
+  `reason` its `turn.complete` carries — `preventContinuation` does not
+  abort, so the engine may report it as `answer`. The latch clears at the
+  next `turn.start`. One accepted difference: a tool already running in
+  parallel with the ask when the refusal lands finishes, where the
+  built-in's abort would cut it. A refusal with
   feedback ("Chat about this": fact 12) returns its text and the turn
   continues. Told apart by the text: fact 12's carries `To tell you how to
   proceed, the user said:`.
@@ -386,11 +402,22 @@ quotes. Route:
     results resolving together cannot both take it or both miss it.
   - the turn's `turn.complete` with `reason: 'answer'` → one
     `$.prompt.submit` carrying them all.
-  - a turn that ends otherwise — the human interrupted it, the mod ended it
-    after a blocking refusal, an error — leaves them held: a stop the human
-    made is not undone by a prompt the mod submits. They ride with the
-    human's next prompt, as `context` added by a `prompt.submit` hook, or go
-    out by the first two routes if the model runs again first.
+  - a turn that ends otherwise — the human interrupted it, the turn latch
+    was set by a blocking refusal, an error — leaves them held: a stop the
+    human made is not undone by a prompt the mod submits. They ride with
+    the human's next prompt, as `context` added by a `prompt.submit` hook,
+    or go out by the first two routes if the model runs again first.
+
+  Every route takes the held answers by one reservation: the queue's
+  current contents are moved out in one synchronous step, so no other
+  route can take them too. A route that cannot fail (a tool result's
+  `context`) is done when it returns. A route that can — `$.prompt.submit`
+  resolving `{ drop }` or rejecting, the human's prompt dropped by a later
+  hook (its `next` resolving `{ drop }`) — on failure puts its answers back
+  at the front of the queue, ahead of any answered meanwhile, keeps their
+  asks reading answered-but-undelivered (the row says `not delivered yet`),
+  toasts why, and lets the next route try again. An ask's row reads
+  delivered only after its route succeeded.
 
 Rejected: filling the prompt box for the human's Enter (fact 9, the
 `<need-input>` route). It delivers as the human's own words, mid-turn, but
@@ -575,7 +602,10 @@ Run in a scratch directory with the branch as the plugin:
    transcript containing an old `<need-input>…<choice>…</choice></need-input>`
    mark draws it under the message label, with no buttons.
 9. **Blocking refusals.** In a blocking ask, Esc: the model writes nothing
-   more in that turn and the call's result is fact 11's text; "Chat about
+   more in that turn and the call's result is fact 11's text. With the
+   prompt "Call mcp__doperpowers__AskUserQuestion (blocking) and, in the
+   same response, Write `x.txt` with `hi`", Esc on the dialog leaves no
+   `x.txt`. "Chat about
    this": the call's result begins with fact 11's first two sentences
    followed by `To tell you how to proceed, the user said:`, and the model
    goes on in the same turn.
@@ -635,8 +665,9 @@ all in Interfaces.
 
 Decisions here: the schema constant is the Interfaces one; the description
 read at `session.start` and the tool registered then, after the read; the
-claim rule (Design → Blocking: this plugin's origin, the oldest unclaimed
-entry, the matching first question); validation runs before any dialog; a
+claim rule (Design → Blocking: this plugin's origin and the entry's
+token); the turn latch (Design → Blocking); validation runs before any
+dialog; a
 refusal maps to the built-in's outcome, and the end-of-turn boundary is
 chosen by the probe Design → Blocking names, its verdict recorded in
 Surprises & Discoveries; the image check (Design → Blocking → Images). The
@@ -655,9 +686,12 @@ Proves: acceptance 1, 5, 6, 9, and 10's load check. Tests pin:
 verbatim texts; `describeAsk` appends the async paragraph to a given
 description; the AskUserQuestion hook claims only for this plugin's origin
 and a matching unclaimed entry, two pending entries with the same first
-question are claimed oldest first, and every other call — a model's call
+question each claim their own entry by token, even when the second raise
+reaches the hook first, and every other call — a model's call
 with a matching text included — is refused; a refusal without feedback
-ends the turn at the chosen boundary and one with feedback does not; the
+ends the turn at the chosen boundary and one with feedback does not; with
+the latch set, a model-made call later in the turn is refused before it
+runs and a held answer is not submitted at that turn's end; the
 tool's `inputSchema` has no `answers`/`annotations` and has `async`.
 
 ### M2 — Asking without waiting
@@ -699,7 +733,10 @@ origin is a plugin (the mod's nested AskUserQuestion, another plugin's
 call), never with `agentId` set, never on a deny — including the
 interleaving where ask A's answer is held while ask B's dialog settles;
 `turn.complete` with `reason: 'answer'` submits them, any other reason
-keeps them, and the human's next prompt carries them as `context`; Esc
+keeps them, and the human's next prompt carries them as `context`; a
+dropped or rejected submission (either route) puts its answers back ahead
+of any answered meanwhile, and a tool result resolving during a pending
+submission cannot deliver the reserved answers a second time; Esc
 keeps the ask open; "Chat about this" is delivered and closes the ask;
 `isAccepted` keeps a call whose result is `ASYNC_RESULT` and drops a
 validation refusal, a subagent refusal, a permission denial, and a call
@@ -912,6 +949,18 @@ dependencies.
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: review round two (2026-10-13) — the buildability review's one
+  finding (the parity test's key order) and the design review's three were
+  taken: a turn latch after a blocking refusal refuses the turn's later
+  model-made calls and keeps held answers for the human; every delivery
+  route reserves the held answers atomically and puts them back on a
+  dropped or rejected submission; a per-ask token in the `$.ui.ask` header
+  replaces question-text matching as the claim's correlation. Review
+  converged here: round two found narrower issues than round one, all
+  inside the design, and the branch review (high rung) follows the build.
+  Rationale: each was real; none moved the design's shape.
+  Date/Author: 2026-10-13, design session.
 
 - Decision: review round one (2026-10-13) — the design review and the
   buildability review both returned needs-attention; every finding was
