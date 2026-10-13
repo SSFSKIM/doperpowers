@@ -706,7 +706,7 @@ describe('surfaces', () => {
 
 describe('isRead', () => {
   test('questions and agent spawns stay visible while messaging is working record', async () => {
-    expect(['AskUserQuestion', 'Agent', 'Workflow'].map(isRead)).toEqual([true, true, true])
+    expect(['AskUserQuestion', 'mcp__doperpowers__AskUserQuestion', 'Agent', 'Workflow'].map(isRead)).toEqual([true, true, true, true])
     expect(['SendMessage', 'Bash', 'Read', 'Monitor', 'TaskOutput'].map(isRead)).toEqual([false, false, false, false, false])
   })
 })

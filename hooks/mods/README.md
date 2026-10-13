@@ -60,9 +60,11 @@ a mark, so a session without the output style is left alone. From then on:
   unfolded; otherwise nothing. The attachment rows the engine draws on its
   own (`Found N new diagnostic issues`) are not a render component a hook
   can reach, and still draw.
-- A question answered through `AskUserQuestion` draws as the engine draws it
-  (the question and the answer given) in the report itself: the answer is the
-  human's own words, and they read it as they read a mark.
+- A question asked through `AskUserQuestion`, or through the ask mod's
+  `mcp__doperpowers__AskUserQuestion` (an open async ask with its
+  `[ answer ]` included), draws as it would unfolded (the question and the
+  answer given) in the report itself: the answer is the human's own words,
+  and they read it as they read a mark.
 - Agent spawns stay in the report as the engine draws them: an `Agent`
   call and a `Workflow` of agents. `SendMessage` calls, received messages
   from agents, teammates or other sessions, and agent-finish notifications
@@ -259,9 +261,9 @@ something", "Chat about this" and the review page, and the call returns the
 engine's own answer text, byte for byte what the built-in returns for the same
 answers. The built-in is withdrawn while the tool exists: it waits behind tool
 search, its name alone in the model's view, and a call of it is refused with a
-sentence naming the new tool. (Asking with `async` true, so the model works on
-while the questions wait, arrives with the async half of this mod; until then
-such a call is asked as a blocking one.)
+sentence naming the new tool. An async ask (`async` true) returns at once and
+the model works on; the questions wait in the transcript behind an `[ answer ]`
+button, and pressing it opens the same dialog.
 
 A plugin cannot call AskUserQuestion; it reaches the dialog through
 `$.ui.ask`, which takes one question and raises an AskUserQuestion call that
@@ -323,6 +325,54 @@ The temp root is `claude-<uid>` under `CLAUDE_CODE_TMPDIR` or `/tmp`, found
 as the one such folder this process can read; the slug and session id come
 from the classic `SessionStart` payload.
 
+Every call of the tool draws in the transcript as the engine draws the
+built-in's: nothing while a blocking dialog is up, `⏺ User answered Claude's
+questions:` with one `· <question> → <answer>` row per answer once answered,
+`⏺ User declined to answer questions` with each question and its options once
+refused. (The engine's own row is out of reach: a `ToolUse` rewrite to the
+built-in's name draws a generic `AskUserQuestion(…)` line, and a `ToolResult`
+rewrite of the tool draws nothing; so the mod draws the same lines itself,
+reading the answers back from the engine's result text.) An open async ask,
+which the built-in never has, draws `⏺ Claude asked (answer when ready):`, one
+`· <header> — <question>` row per question and `[ answer ]`; once answered it
+draws the answers, with `not delivered yet` under them until the answer has
+reached the model. Above the prompt, while any ask is open, `2 open questions ·
+[ answer ]` opens the oldest, since the ask's own row scrolls away while the
+model works. That line is registered before the to-human view, whose band
+draws without passing on, so it draws above it; the rows are registered after
+the view, which keeps a question in the report.
+
+Answering an async ask runs the blocking path from the press: the dialog is
+raised inside the `ui.press` dispatch, as `$.ui.ask` requires, and queues
+behind any dialog already up. Esc there means "not now": nothing is delivered
+and the ask stays open. An answer, or "Chat about this" (its refusal text, the
+human asking to talk the questions over), closes the ask and is delivered as
+`The human responded to your async AskUserQuestion (call <id>): <the text the
+blocking call would have returned>`, with one `[Image source: <path>]` line per
+kept picture, since no route carries image bytes. While the session is idle it
+goes as a prompt of the plugin's at once (`$.prompt.submit`), which the model
+reads framed as the plugin's message. While a main-conversation turn runs it is
+held, and every held answer goes out together, once, by the first of: the
+result of the model's next call in the main loop (as `context`, which the model
+reads right after the result; never a plugin's own call, whose context the
+model never reads, nor a deny, nor a call the human's interrupt cut, whose
+context the engine drops); the turn's end when the model answered (one prompt
+carrying them all). A turn the human stopped (an interrupt, or a declined
+blocking ask, which ends the turn with reason `aborted`) or that an error ended
+keeps them: they ride with the human's next prompt as context, so a stop is not
+undone by a prompt the mod submits. Each route takes the held answers in one
+step; one that fails (a submission dropped or refused, the human's prompt
+dropped beneath) puts them back ahead of any answered meanwhile, toasts why, and
+leaves the next route to try.
+
+A resumed session rebuilds its async asks from the transcript (the classic
+`SessionStart` payload's path): every call of the tool with `async` true whose
+result is the async one and whose input is valid is an ask; it reads answered
+when a row the model read names its call in a delivery (a context attachment,
+a prompt the plugin submitted), else open. A transcript over the 4 MiB a read
+takes is searched with `grep` for the lines that can matter. `/clear` forgets
+the asks; a compaction keeps them.
+
 Known limits: a tool already running in parallel with the ask when the human
 declines it finishes, where the built-in's abort would cut it; the refusal
 reaches the model inside `<tool_use_error>`, the form every hook refusal takes,
@@ -332,7 +382,13 @@ cannot be placed leaves the answer text only, with a debug-log line; two
 pictures kept in one answer, or a picture on a multi-select question (whose
 answer the engine does not mark), are not sent; after a hot reload of the
 plugin the store is not known until the next session start, and pictures go
-as text only.
+as text only, and the async asks are forgotten (a resume reads them back); an
+answer held when the session ends is lost with the process, and its ask reads
+open on resume; an async picture reaches the model as a path it has to Read,
+and the store is the engine's temp directory, cleaned with old sessions, so a
+path delivered long after can be gone; the row reads its answers back from the
+engine's text, so a question text that also appears inside an earlier answer
+can misplace a row.
 
 ## secrets
 

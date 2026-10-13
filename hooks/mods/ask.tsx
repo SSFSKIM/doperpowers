@@ -445,6 +445,8 @@ export function resetAsk() {
   describedFrom = undefined
   store = undefined
   taken = new Set()
+  forgetAsyncAsks()
+  isTurnRunning = false
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -513,6 +515,364 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
   }
 }
 
+// Asking without waiting. An async ask returns at once and stands open in
+// the human's view; a press opens the same dialog, and the answer is handed
+// to the model: as a prompt of its own while the session is idle, else held
+// for the next result of the model's own calls, or the turn's end.
+
+/** What an async call returns at once. */
+export const ASYNC_RESULT =
+  'Your questions are waiting for the human; this call does not wait for them. Their answer will reach you in a later message that quotes each question. Go on with work that does not depend on it.'
+
+const DELIVERY_HEAD = 'The human responded to your async AskUserQuestion'
+const DELIVERY = /The human responded to your async AskUserQuestion \(call ([^)\s]+)\): /g
+
+/** The text a delivery carries: which call it answers, then what the blocking call would have returned. */
+export function deliveryText(toolUseId: string, engineText: string): string {
+  return `${DELIVERY_HEAD} (call ${toolUseId}): ${engineText}`
+}
+
+/** The deliveries a stored row's text holds: each call id with the text after its head, up to the next. */
+function deliveriesIn(text: string): { id: string; text: string }[] {
+  const heads = [...text.matchAll(DELIVERY)]
+  return heads.map((head, i) => ({
+    id: head[1] as string,
+    text: text.slice((head.index ?? 0) + head[0].length, heads[i + 1]?.index ?? text.length).trimEnd(),
+  }))
+}
+
+/** The call ids a stored row's text answers (delivery heads found in it). */
+export function deliveredIds(text: string): string[] {
+  return deliveriesIn(text).map((delivery) => delivery.id)
+}
+
+export type OpenAsk = {
+  id: string // the call's tool_use_id
+  questions: AskQuestion[]
+  status: 'open' | 'answered'
+  answer?: string // the engine's result text, once answered
+}
+
+/** A stored result's text: a string, or its text blocks joined. */
+function textOf(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((block): block is { text: string } => isRecord(block) && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('\n')
+  }
+  return ''
+}
+
+/**
+ * Whether a stored async call was accepted: its paired tool_result is
+ * ASYNC_RESULT and not an error, and its input passes validateQuestions.
+ */
+export function isAccepted(input: unknown, result: { content: unknown; is_error?: boolean } | undefined): boolean {
+  return result !== undefined && result.is_error !== true && textOf(result.content) === ASYNC_RESULT && validateQuestions(input) === undefined
+}
+
+/** The record's mark for a question answered with notes alone, which the result text reads as no option selected. */
+const NOTES_ONLY = '(notes only)'
+const NO_OPTION = '(no option selected)'
+/** The sentences that close the engine's summary of the answers. */
+const SUMMARY_ENDS = ['. You can now continue with these answers in mind.', '. Read the answers carefully']
+
+/**
+ * Each answered question and its answer, as the built-in's row lists them,
+ * read back from the engine's result text (`"<question>"="<answer>"`, a
+ * preview and notes after it, the questions joined by `, `).
+ */
+export function answerRows(questions: readonly { question: string }[], text: string): [string, string][] {
+  const ends = SUMMARY_ENDS.map((end) => text.lastIndexOf(end)).filter((at) => at >= 0)
+  const end = ends.length > 0 ? Math.min(...ends) : text.length
+  const found: { question: string; at: number; from: number }[] = []
+  let cursor = 0
+  for (const { question } of questions) {
+    const key = `"${question}"=`
+    const at = text.indexOf(key, cursor)
+    if (at >= 0 && at < end) {
+      found.push({ question, at, from: at + key.length })
+      cursor = at + key.length
+    }
+  }
+  return found.map(({ question, from }, i) => {
+    const next = found[i + 1]
+    const segment = text.slice(from, next === undefined ? end : next.at - ', '.length)
+    if (segment.startsWith(NO_OPTION)) {
+      return [question, NOTES_ONLY]
+    }
+    const close = [segment.indexOf('" selected preview:\n'), segment.indexOf('" notes: ')].find((at) => at > 0) ?? segment.lastIndexOf('"')
+    return [question, segment.slice(1, close > 0 ? close : undefined)]
+  })
+}
+
+/** The refusal's opening the engine writes when the human declines a dialog, Esc and "Chat about this" alike. */
+const REFUSAL = "The user doesn't want to proceed with this tool use."
+
+/** What an ask's transcript row draws. */
+export type AskRow =
+  | { kind: 'engine' } // the engine's own drawing of the call
+  | { kind: 'none' } // nothing: a dialog still up, or nothing answered
+  | { kind: 'open'; questions: AskQuestion[] } // an async ask waiting for the human
+  | { kind: 'answered'; rows: [string, string][]; isDelivered: boolean }
+  | { kind: 'declined'; questions: AskQuestion[]; isDelivered: boolean }
+
+/**
+ * The row of a call of the tool, as the engine draws the built-in's: nothing
+ * while a blocking dialog is up, the answers once answered, declined once
+ * refused; an open async ask, which the built-in never has, lists its
+ * questions. `ask` is the async ask the call made, when the mod knows it;
+ * `isDelivered` whether its answer has reached the model.
+ */
+export function askRow(
+  props: { input: unknown; output?: unknown; isRunning: boolean; isErrored: boolean; isInterrupted?: boolean },
+  ask?: OpenAsk,
+  isDelivered = true,
+): AskRow {
+  const questions = isRecord(props.input) && Array.isArray(props.input.questions) ? (props.input.questions as AskQuestion[]) : []
+  if (ask !== undefined) {
+    if (ask.status === 'open') {
+      return { kind: 'open', questions: ask.questions }
+    }
+    const answer = ask.answer ?? ''
+    return answer.startsWith(REFUSAL)
+      ? { kind: 'declined', questions: ask.questions, isDelivered }
+      : { kind: 'answered', rows: answerRows(ask.questions, answer), isDelivered }
+  }
+  if (props.isInterrupted === true) {
+    return { kind: 'engine' }
+  }
+  if (props.isRunning) {
+    return { kind: 'none' }
+  }
+  const text = textOf(props.output)
+  if (props.isErrored) {
+    return text.includes(REFUSAL) ? { kind: 'declined', questions, isDelivered: true } : { kind: 'engine' }
+  }
+  if (text === ASYNC_RESULT) {
+    return { kind: 'engine' }
+  }
+  const rows = answerRows(questions, text)
+  return rows.length === 0 ? { kind: 'none' } : { kind: 'answered', rows, isDelivered: true }
+}
+
+/**
+ * The async asks a transcript holds, in call order: each accepted call of the
+ * tool, answered when a row the model read delivers it (an attachment of a
+ * tool result's or a prompt's context, a user row the plugin submitted),
+ * else open.
+ */
+export function rebuildAsks(lines: readonly string[]): OpenAsk[] {
+  const calls: { id: string; input: Record<string, unknown> }[] = []
+  const results = new Map<string, { content: unknown; is_error?: boolean }>()
+  const answers = new Map<string, string>()
+  for (const line of lines) {
+    let row: unknown
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isRecord(row)) {
+      continue
+    }
+    const message = isRecord(row.message) ? row.message : {}
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (isRecord(block) && block.type === 'tool_use' && block.name === ASK_TOOL && isRecord(block.input) && block.input.async === true) {
+        calls.push({ id: String(block.id), input: block.input })
+      } else if (isRecord(block) && block.type === 'tool_result') {
+        results.set(String(block.tool_use_id), block as { content: unknown; is_error?: boolean })
+      }
+    }
+    for (const text of deliveryTexts(row)) {
+      for (const delivery of deliveriesIn(text)) {
+        answers.set(delivery.id, delivery.text)
+      }
+    }
+  }
+  return calls
+    .filter((call) => isAccepted(call.input, results.get(call.id)))
+    .map(({ id, input }) => {
+      const questions = input.questions as AskQuestion[]
+      const answer = answers.get(id)
+      return answer === undefined ? { id, questions, status: 'open' } : { id, questions, status: 'answered', answer }
+    })
+}
+
+/**
+ * The texts of a stored row that can carry a delivery, as the engine stores
+ * them: a context attachment's entries (a tool result's or a prompt's), and a
+ * user row's own text (a prompt the plugin submitted). Not the model's rows,
+ * which may quote one, nor a tool's output, nor the queue's record of a
+ * prompt that may never have entered.
+ */
+function deliveryTexts(row: Record<string, unknown>): string[] {
+  if (row.type === 'attachment' && isRecord(row.attachment) && row.attachment.type === 'hook_additional_context') {
+    const { content } = row.attachment
+    return (Array.isArray(content) ? content : [content]).filter((entry): entry is string => typeof entry === 'string')
+  }
+  const message = isRecord(row.message) ? row.message : {}
+  if (row.type !== 'user') {
+    return []
+  }
+  if (typeof message.content === 'string') {
+    return [message.content]
+  }
+  return (Array.isArray(message.content) ? message.content : [])
+    .filter((block): block is { type: 'text'; text: string } => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+}
+
+/** An answer on its way to the model: its ask and the delivery text. */
+type Delivery = { id: string; text: string }
+
+/** The session's async asks, oldest first. */
+let asks: OpenAsk[] = []
+/** Answers waiting for a route to the model, oldest first. */
+let held: Delivery[] = []
+/** Asks answered whose answer has not reached the model yet: held, or on a route that may still fail. */
+let undelivered = new Set<string>()
+/** Asks whose dialog is raised (open, or queued behind another). */
+let raisedAsks = new Set<string>()
+/** A main-conversation turn is running: an answer now is held, not submitted. */
+let isTurnRunning = false
+
+function forgetAsyncAsks() {
+  asks = []
+  held = []
+  undelivered = new Set()
+  raisedAsks = new Set()
+}
+
+/** The session's async asks, open and answered, oldest first. */
+export function asyncAsks(): readonly OpenAsk[] {
+  return asks
+}
+
+/** Takes every held answer, in one synchronous step, so no other route takes them too. */
+const takeHeld = () => held.splice(0)
+
+/** A route delivered `items`: their asks read delivered. */
+function delivered($: EngineInterface, items: readonly Delivery[]) {
+  items.forEach((item) => undelivered.delete(item.id))
+  $.ui.invalidate('ui.render')
+}
+
+/** A route failed: `items` go back ahead of any answered meanwhile, for the next route to try. */
+function putBack($: EngineInterface, items: readonly Delivery[], why: string) {
+  held.unshift(...items)
+  $.ui.toast(`An answer did not reach the model (${why}); it goes with the next message.`)
+  $.ui.log(`ask: a delivery failed, ${items.length} put back: ${why}`, { to: 'debug' })
+}
+
+/** Submits `items` as one prompt of the plugin's, which runs once the session is idle. Never awaited inside a hook: the turn it waits for may be the hook's own. */
+async function submitDeliveries($: EngineInterface, items: Delivery[]) {
+  try {
+    const entered = await $.prompt.submit({ text: items.map((item) => item.text).join('\n\n') })
+    if (entered.drop !== undefined) {
+      putBack($, items, entered.drop)
+      return
+    }
+    delivered($, items)
+  } catch (error) {
+    putBack($, items, message(error))
+  }
+}
+
+/** An ask answered: held while a turn runs, else submitted at once with whatever was held before it. */
+function deliver($: EngineInterface, item: Delivery) {
+  undelivered.add(item.id)
+  if (isTurnRunning) {
+    held.push(item)
+    return
+  }
+  void submitDeliveries($, [...takeHeld(), item])
+}
+
+/** A press: opens the ask's dialog, and hands an answer, or "Chat about this", to the model. Esc leaves it open. */
+async function answerAsk($: EngineInterface, id: string) {
+  const ask = asks.find((candidate) => candidate.id === id)
+  if (ask === undefined || ask.status !== 'open' || raisedAsks.has(id)) {
+    return
+  }
+  raisedAsks.add(id)
+  let outcome: DialogOutcome
+  try {
+    outcome = await openDialog($, ask.questions)
+  } catch (error) {
+    $.ui.log(`ask: ${message(error)}`, { to: 'debug' })
+    $.ui.toast(`The question could not be asked: ${message(error)}`)
+    return
+  } finally {
+    raisedAsks.delete(id)
+  }
+  if (outcome.kind === 'refused' && !outcome.hasFeedback) {
+    return
+  }
+  // No route carries picture bytes: each kept paste goes as its file, for the model to Read.
+  const answer = [outcome.text, ...(await imageLines($, outcome.images))].join('\n')
+  ask.status = 'answered'
+  ask.answer = answer
+  deliver($, { id, text: deliveryText(id, answer) })
+  $.ui.invalidate('ui.render')
+}
+
+/** The transcript's lines; one too large to read whole (over 4 MiB) is searched for the lines that can name an ask. */
+async function transcriptLines($: EngineInterface, path: string): Promise<string[]> {
+  try {
+    return (await $.fs.read(path)).split('\n')
+  } catch (error) {
+    try {
+      const { stdout } = await $.process.run(['grep', '-F', '-e', ASK_TOOL, '-e', ASYNC_RESULT, '-e', DELIVERY_HEAD, path])
+      return stdout.split('\n')
+    } catch (searchError) {
+      $.ui.log(`ask: the transcript could not be read (${message(error)}; ${message(searchError)}); no async ask is rebuilt`, { to: 'debug' })
+      return []
+    }
+  }
+}
+
+const ANSWER_KEY = 'ask-answer:'
+/** A button's own press does nothing: the `ui.press` hook answers it, where the engine can be reached. */
+const noop = () => {}
+
+/** `1 open question`, `2 open questions`: the questions of the asks still open. */
+export function openCount(open: readonly OpenAsk[]): string {
+  const count = open.reduce((sum, ask) => sum + ask.questions.length, 0)
+  return `${count} open ${count === 1 ? 'question' : 'questions'}`
+}
+
+/**
+ * The line above the prompt while an async ask is open: how many questions
+ * wait, and `[ answer ]` for the oldest, since the ask's own row scrolls away
+ * while the model works. Registered before the to-human view, whose band
+ * draws without calling on, so this one is outer and draws above it.
+ */
+export function registerAskBand(on: On) {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const inner = await next(e)
+    const open = asks.filter((ask) => ask.status === 'open')
+    const oldest = open[0]
+    if (oldest === undefined || e.props.hasSurvey) {
+      return inner
+    }
+    const { Box, Text, Button } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text dimColor>{openCount(open)} · </Text>
+          <Button key={`${ANSWER_KEY}${oldest.id}`} label="answer" onPress={noop} />
+        </Box>
+        {inner}
+      </Box>
+    )
+  })
+}
+
 /**
  * The pending entry an AskUserQuestion call claims: only this plugin's own
  * raise (an origin the host sets and no plugin can write), with one question
@@ -564,9 +924,11 @@ async function askStart($: EngineInterface) {
 
 /**
  * Registers the tool and serves it: a blocking ask opens the engine dialog
- * through `$.ui.ask` and returns the engine's own result text; the built-in
- * is withdrawn from the model, and a declined ask ends the model's turn as
- * the built-in's does.
+ * through `$.ui.ask` and returns the engine's own result text; an async ask
+ * returns at once and is answered from its `[ answer ]`, the answer handed
+ * to the model; the built-in is withdrawn from the model, and a declined ask
+ * ends the model's turn as the built-in's does. Registered after the
+ * to-human view, so its row hooks are inner to that view's.
  */
 export function registerAsk(on: On) {
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -578,16 +940,122 @@ export function registerAsk(on: On) {
 
   // Every SessionStart (agents.tsx holds the one registration a module may
   // make without a matcher): where this session's pasted pictures are kept.
-  on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async (_, e, next) => {
+  // A resumed session's async asks are read back from its transcript; a
+  // cleared one has none, and a compaction keeps them.
+  on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
     store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
+    if (e.source !== 'compact') {
+      forgetAsyncAsks()
+    }
+    if (e.source === 'resume' || e.source === 'fork') {
+      asks = rebuildAsks(await transcriptLines($, e.transcript_path))
+      $.ui.invalidate('ui.render')
+    }
     return next(e)
   }).catch((_, e, next) => next(e))
 
   // Every turn (compact holds the unmatched registration; a turn's id is
-  // never empty): a new turn starts unlatched.
+  // never empty; a subagent's run raises none): a new turn starts unlatched,
+  // and an answer given while it runs is held.
   on('turn.start', { turnId: /./ }, (_, e, next) => {
     isLatched = false
+    isTurnRunning = true
     return next(e)
+  })
+
+  // The main turn's end: what is held goes out as one prompt when the model
+  // answered; a turn the human stopped (interrupted, or latched by a declined
+  // ask, whatever its reason) or an error ended keeps it for their next
+  // prompt. Not awaited: the prompt runs once the session is idle, after
+  // this very turn.
+  on('turn.complete', { turnId: /./ }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) {
+      isTurnRunning = false
+      if (e.reason === 'answer' && !isLatched && held.length > 0) {
+        void submitDeliveries($, takeHeld())
+      } else if (held.length > 0 || isLatched) {
+        $.ui.log(`ask: the turn ended (${e.reason}${isLatched ? ', latched' : ''}); ${held.length} held for the next prompt`, { to: 'debug' })
+      }
+    }
+    return result
+  })
+
+  // The human's next prompt carries what is held, as context the model reads
+  // beside it; a prompt dropped beneath puts it back.
+  on('prompt.submit', { text: /^/ }, async ($, e, next) => {
+    if (held.length === 0) {
+      return next(e)
+    }
+    const items = takeHeld()
+    const result = await next({ ...e, context: [...(e.context ?? []), ...items.map((item) => item.text)] })
+    if (result.drop !== undefined) {
+      putBack($, items, result.drop)
+    } else {
+      delivered($, items)
+    }
+    return result
+  }).catch((_, e, next) => next(e))
+
+  // A press on an ask's `[ answer ]`, in its row or above the prompt: the
+  // dialog is raised from inside this dispatch, as the engine requires.
+  on('ui.press', { element: /^ask-answer:/ }, async ($, e, next) => {
+    const result = await next(e)
+    await answerAsk($, e.element.slice(ANSWER_KEY.length))
+    return result
+  })
+
+  // The tool's row draws what the engine draws for the built-in's, and an
+  // open async ask with its `[ answer ]`; its result row draws nothing beside it.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool !== ASK_TOOL) {
+      return next(e)
+    }
+    const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
+    const row = askRow(e.props, ask, !undelivered.has(e.props.tool_use_id))
+    if (row.kind === 'engine') {
+      return next(e)
+    }
+    const { Box, Text, Button } = $.ui.resolve(e)
+    if (row.kind === 'none') {
+      return <Box />
+    }
+    const lines =
+      row.kind === 'open'
+        ? row.questions.map((q) => `· ${q.header} — ${q.question}`)
+        : row.kind === 'answered'
+          ? row.rows.map(([question, answer]) => `· ${question} → ${answer}`)
+          : row.questions.map((q) => `· ${q.question} (${q.options.map((o) => o.label).join(' / ')})`)
+    const title = row.kind === 'open' ? 'Claude asked (answer when ready):' : row.kind === 'answered' ? "User answered Claude's questions:" : 'User declined to answer questions'
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text>⏺ {title}</Text>
+        <Box flexDirection="row">
+          <Text dimColor>{'  ⎿  '}</Text>
+          <Box flexDirection="column">
+            {lines.map((line) => (
+              <Text key={line} color="inactive">
+                {line}
+              </Text>
+            ))}
+            {row.kind === 'open' ? <Button key={`${ANSWER_KEY}${e.props.tool_use_id}`} label="answer" onPress={noop} /> : null}
+            {row.kind !== 'open' && !row.isDelivered ? <Text dimColor>not delivered yet</Text> : null}
+          </Box>
+        </Box>
+      </Box>
+    )
+  })
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.props.tool !== ASK_TOOL) {
+      return next(e)
+    }
+    const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
+    const row = askRow({ input: undefined, output: e.props.output, isRunning: false, isErrored: e.props.isErrored }, ask)
+    if (row.kind === 'engine') {
+      return next(e)
+    }
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   })
 
   // A turn latched by a declined ask ends at its next model request, unsent,
@@ -635,11 +1103,23 @@ export function registerAsk(on: On) {
   // Outermost on every call: after a declined ask, the turn's later model
   // calls are refused before they run, where the built-in's abort would have
   // cancelled them.
-  on('tool.call', (_, e, next) => {
+  //
+  // Held answers ride the result of the model's next call in the main loop,
+  // all together: never a plugin's own call (the mod's nested dialog, another
+  // plugin's), whose context the model never reads, never a deny, and never a
+  // call the human's interrupt cut (the engine stores no context for it). The
+  // queue is taken in the same synchronous step that builds the context.
+  on('tool.call', async ($, e, next) => {
     if (isLatched && isModelMainCall(next.origin, e)) {
       return { deny: LATCHED }
     }
-    return next(e)
+    const result = await next(e)
+    if (held.length === 0 || !isModelMainCall(next.origin, e) || result.deny !== undefined || next.signal.aborted) {
+      return result
+    }
+    const items = takeHeld()
+    delivered($, items)
+    return { ...result, context: [...(result.context ?? []), ...items.map((item) => item.text)] }
   }).catch((_, e, next) => next(e))
 
   // The mod's own raise is widened to its entry's whole set; every other call
@@ -670,9 +1150,15 @@ export function registerAsk(on: On) {
     if (invalid !== undefined) {
       return { deny: invalid }
     }
+    const { questions } = input as AskInput
+    if ((input as AskInput).async === true) {
+      asks.push({ id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' })
+      $.ui.invalidate('ui.render')
+      return { result: ASYNC_RESULT }
+    }
     let outcome: DialogOutcome
     try {
-      outcome = await openDialog($, (input as AskInput).questions)
+      outcome = await openDialog($, questions)
     } catch (error) {
       $.ui.log(`ask: ${message(error)}`, { to: 'debug' })
       return { deny: `The question could not be asked: ${message(error)}` }

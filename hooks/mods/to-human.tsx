@@ -1,5 +1,7 @@
 import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
 
+import { ASK_TOOL } from './ask'
+
 /**
  * The marks the `to-human` output style asks the model to write: a message
  * to the human, what the model needs from them, and an explanatory insight.
@@ -631,8 +633,8 @@ const ASK = 'need-input:'
  */
 type Press = { kind: 'answer'; question: Question; answer: string } | { kind: 'reply'; question: Question }
 
-/** Questions and agent spawns stay in the report; messaging is working record. */
-export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === 'Agent' || tool === 'Workflow'
+/** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
+export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === ASK_TOOL || tool === 'Agent' || tool === 'Workflow'
 
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked

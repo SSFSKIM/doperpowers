@@ -5,17 +5,26 @@ import type { AskQuestion } from '../../hooks/mods/ask'
 import {
   ASK_TOOL,
   ASYNC_PARAGRAPH,
+  ASYNC_RESULT,
   INPUT_SCHEMA,
   LATCHED,
   SUBAGENT_REFUSAL,
   WITHDRAWN,
+  answerRows,
+  askRow,
+  deliveredIds,
+  deliveryText,
   describeAsk,
   imageBlock,
   imageMarks,
   imageSourceLine,
+  isAccepted,
   mediaTypeOf,
   newImages,
+  asyncAsks,
+  rebuildAsks,
   registerAsk,
+  registerAskBand,
   resetAsk,
   slugOf,
   validateQuestions,
@@ -161,7 +170,20 @@ const FEATURES: AskQuestion = { question: 'Which features?', header: 'Features',
  * left out, the origin this plugin), the dialog answering `answer`.
  */
 function harness(
-  options: { builtin?: string | undefined; tmpdir?: string; dirs?: Record<string, string[]>; unreadable?: string[]; whileStarting?: () => Promise<unknown>; register?: () => Promise<void> } = {},
+  options: {
+    builtin?: string | undefined
+    tmpdir?: string
+    dirs?: Record<string, string[]>
+    unreadable?: string[]
+    whileStarting?: () => Promise<unknown>
+    register?: () => Promise<void>
+    /** What `$.prompt.submit` answers; entered by default. */
+    submit?: (text: string) => Promise<unknown>
+    /** Text files `$.fs.read` reads; one missing rejects. */
+    files?: Record<string, string>
+    /** What `$.process.run` prints. */
+    run?: (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string }>
+  } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
@@ -192,7 +214,29 @@ function harness(
       stat: async (path: string, opts?: { resolve?: boolean }) => ({ kind: 'file', size: 1, mtimeMs: 0, isLink: false, ...(opts?.resolve === true && { realPath: `/private${path}` }) }),
       read: async (path: string, opts?: { as?: string }) => {
         calls.push({ op: 'fs.read', args: { path, ...opts } })
+        if (opts?.as !== 'bytes') {
+          const text = options.files?.[path]
+          if (text === undefined) {
+            throw new Error(`ENOENT or too large: ${path}`)
+          }
+          return text
+        }
         return { base64: `bytes:${path}` }
+      },
+    },
+    process: {
+      run: async (argv: readonly string[]) => {
+        calls.push({ op: 'process.run', args: argv })
+        if (options.run === undefined) {
+          throw new Error('no such command')
+        }
+        return options.run(argv)
+      },
+    },
+    prompt: {
+      submit: async ({ text }: { text: string }) => {
+        calls.push({ op: 'prompt.submit', args: text })
+        return options.submit === undefined ? { text } : options.submit(text)
       },
     },
     tool: {
@@ -219,6 +263,7 @@ function harness(
     turn: { abort: async (args: unknown) => void calls.push({ op: 'turn.abort', args }) },
   }
   resetAsk()
+  registerAskBand(on)
   registerAsk(on)
   const engine = $ as unknown as EngineInterface
 
@@ -226,14 +271,14 @@ function harness(
     hooks.filter((h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v)))
 
   /** Runs `e` down the chain of `event`, outermost first; `bottom` answers beneath. */
-  const dispatch = (event: string, e: Record<string, unknown>, origin: Origin, bottom: (e: Record<string, unknown>) => unknown) => {
+  const dispatch = (event: string, e: Record<string, unknown>, origin: Origin, bottom: (e: Record<string, unknown>) => unknown, signal = new AbortController().signal) => {
     const chain = matching(event, e)
     const at = (i: number, input: Record<string, unknown>): unknown => {
       const hook = chain[i]
       if (hook === undefined) {
         return bottom(input)
       }
-      const next = Object.assign(async (inner: Record<string, unknown>) => at(i + 1, inner), { origin })
+      const next = Object.assign(async (inner: Record<string, unknown>) => at(i + 1, inner), { origin, signal })
       return hook.handler($, input, next)
     }
     return at(0, e)
@@ -247,8 +292,8 @@ function harness(
     dirs.set(folder, [...(dirs.get(folder) ?? []), ...names])
   }
 
-  const classicStart = (transcript_path: string, session_id: string) =>
-    dispatch('classic.SessionStart', { hook_event_name: 'SessionStart', source: 'startup', transcript_path, session_id, cwd: '/' }, MODEL, async () => ({}))
+  const classicStart = (transcript_path: string, session_id: string, source = 'startup') =>
+    dispatch('classic.SessionStart', { hook_event_name: 'SessionStart', source, transcript_path, session_id, cwd: '/' }, MODEL, async () => ({}))
 
   const turnStart = () => dispatch('turn.start', { text: '', turnId: 'turn-2' }, MODEL, async (e) => ({ turnId: e.turnId }))
 
@@ -279,12 +324,25 @@ function harness(
   const start = () => dispatch('session.start', { cwd: '/', surface: 'terminal', isInteractive: true }, { plugin: 'engine', tier: 'core' }, async () => ({ cwd: '/' }))
 
   /** A call of `tool` from `origin`; `ran` records whether the tool itself was reached. */
-  const call = async (tool: string, args: Record<string, unknown>, origin: Origin = MODEL, agentId?: string) => {
+  /** `interrupted`: the person's interrupt cuts the call while it runs, aborting the dispatch. */
+  const call = async (tool: string, args: Record<string, unknown>, origin: Origin = MODEL, agentId?: string, interrupted = false) => {
     const ran: Record<string, unknown>[] = []
-    const result = await dispatch('tool.call', { tool, tool_use_id: `toolu_${calls.length}`, ...args, ...(agentId !== undefined && { agentId }) }, origin, async (e) => {
-      ran.push(e)
-      return { ref: 9, result: 'ran', text: 'ran' }
-    })
+    const abort = new AbortController()
+    const e = { tool, tool_use_id: `toolu_${calls.length}`, ...args, ...(agentId !== undefined && { agentId }) }
+    const result = await dispatch(
+      'tool.call',
+      e,
+      origin,
+      async (inner) => {
+        ran.push(inner)
+        if (interrupted) {
+          abort.abort()
+          return { ref: 9, isError: true, result: undefined, text: 'interrupted' }
+        }
+        return { ref: 9, result: 'ran', text: 'ran' }
+      },
+      abort.signal,
+    )
     return { result: result as Answer, ran }
   }
 
@@ -333,7 +391,18 @@ function harness(
     return { answer: hook?.onFailure?.($, e, next), ran }
   }
 
-  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail }
+  const turnComplete = (reason: string, agentId?: string) =>
+    dispatch('turn.complete', { turnId: 'turn-1', reason, answer: '', durationMs: 1, isAborted: reason === 'aborted', ...(agentId !== undefined && { agentId }) }, MODEL, async () => ({ text: '' }))
+
+  /** The person's prompt through the prompt.submit hooks; `bottom` answers beneath (entered, by default). */
+  const prompt = (text: string, bottom: (e: Record<string, unknown>) => unknown = (e) => ({ text: e.text, context: e.context })) =>
+    dispatch('prompt.submit', { text, wait: false, origin: { kind: 'user' } }, MODEL, async (e) => bottom(e)) as Promise<{ text?: string; context?: string[]; drop?: string }>
+
+  const press = (element: string) => dispatch('ui.press', { element, component: 'ToolUse', requestId: 'r' }, MODEL, async () => ({}))
+
+  const submitted = () => calls.filter((c) => c.op === 'prompt.submit').map((c) => c.args as string)
+
+  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail, turnComplete, prompt, press, submitted }
 }
 
 describe('registerAsk: the tool and the built-in', () => {
@@ -450,16 +519,6 @@ describe('registerAsk: a blocking ask', () => {
     expect(shown.length).toBe(1)
     expect(shown[0]?.questions).toEqual([BACKEND, FEATURES])
     expect((await pending).result).toEqual({ result: 'The user answered: "Which backend?"="SQLite".' })
-  })
-
-  test('async true runs as a blocking ask until async asks exist', async () => {
-    const h = harness()
-    await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [FEATURES], async: true })
-    await h.settle()
-    expect(h.calls.find((c) => c.op === 'ui.ask')?.args).toEqual({ question: 'Which features?', options: ['Auth', 'Export'], header: 'ask-1', multiSelect: true })
-    await h.raise(0, answered('Your questions have been answered: x.'))
-    expect((await pending).result).toEqual({ result: 'Your questions have been answered: x.' })
   })
 
   test('two asks with the same first question each claim their own entry, the second raised first', async () => {
@@ -743,5 +802,423 @@ describe('when a hook fails', () => {
     const ask = { tool: ASK_TOOL, tool_use_id: 't', questions: [BACKEND] }
     expect(await h.fail('tool.call', ask, { kind: 'timeout' }).answer).toEqual({ deny: 'The question could not be asked: the hook ran out of time.' })
     expect(await h.fail('tool.call', ask, { kind: 're-entry', origin: MOD }).answer).toEqual({ ref: 9, result: 'ran', text: 'ran' })
+  })
+})
+
+const ANSWER = 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.'
+
+describe('the delivery text', () => {
+  test('the head names the call, then the engine text', async () => {
+    expect(deliveryText('toolu_1', ANSWER)).toBe(`The human responded to your async AskUserQuestion (call toolu_1): ${ANSWER}`)
+  })
+
+  // The stored forms, as a live session on 2.1.296 recorded them (2026-10-13).
+  test('the call ids round-trip through every form a delivery is stored in', async () => {
+    const one = deliveryText('toolu_A', ANSWER)
+    const two = deliveryText('toolu_B', 'The user answered: "Which features?"="Auth, Export". Read the answers carefully.')
+    // A tool result's context: an attachment whose content is the list of entries.
+    const result = { type: 'hook_additional_context', content: [one, two], hookName: 'tool.call', toolUseID: 'toolu_X-context', hookEvent: 'PostToolUse' }
+    expect(result.content.flatMap(deliveredIds)).toEqual(['toolu_A', 'toolu_B'])
+    // A prompt the plugin submitted: the engine's framing around the text.
+    const framed = `The doperpowers plugin sent a message:\n${one}\n\n${two}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.`
+    expect(deliveredIds(framed)).toEqual(['toolu_A', 'toolu_B'])
+    // A prompt.submit hook's context: the same attachment, under the prompt's hook.
+    const prompt = { type: 'hook_additional_context', content: [one], hookName: 'prompt.submit', toolUseID: 'hook-1', hookEvent: 'UserPromptSubmit' }
+    expect(prompt.content.flatMap(deliveredIds)).toEqual(['toolu_A'])
+    expect(deliveredIds('The human answered something else (call toolu_C).')).toEqual([])
+  })
+})
+
+describe('isAccepted', () => {
+  const input = { questions: [BACKEND], async: true }
+  test('a call whose result is the async result, not an error, with a valid input', async () => {
+    expect(isAccepted(input, { content: ASYNC_RESULT })).toBe(true)
+    expect(isAccepted(input, { content: [{ type: 'text', text: ASYNC_RESULT }] })).toBe(true)
+  })
+  test('not a validation refusal, a subagent refusal, a permission denial, or a call with no result', async () => {
+    const single = { questions: [question('Pick one?', 'One', ['Only'])], async: true }
+    expect(isAccepted(single, { content: `<tool_use_error>${validateQuestions(single)}</tool_use_error>`, is_error: true })).toBe(false)
+    expect(isAccepted(single, { content: ASYNC_RESULT })).toBe(false)
+    expect(isAccepted(input, { content: `<tool_use_error>${SUBAGENT_REFUSAL}</tool_use_error>`, is_error: true })).toBe(false)
+    expect(isAccepted(input, { content: 'Permission to use mcp__doperpowers__AskUserQuestion has been denied.', is_error: true })).toBe(false)
+    expect(isAccepted(input, { content: ASYNC_RESULT, is_error: true })).toBe(false)
+    expect(isAccepted(input, undefined)).toBe(false)
+  })
+})
+
+describe('an async ask', () => {
+  const ready = async () => {
+    const h = harness()
+    await h.start()
+    return h
+  }
+  /** An async ask accepted, then answered by a press; the human's Submit answers `answer`. */
+  const answer = async (h: ReturnType<typeof harness>, id: string, result: Answer) => {
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    const i = h.raises.length - 1
+    await h.raise(i, result)
+    await pressed
+    await h.settle()
+  }
+  test('returns at once with the async result, opens no dialog, and stands open', async () => {
+    const h = await ready()
+    const { result } = await h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: true })
+    expect(result).toEqual({ result: ASYNC_RESULT })
+    expect(h.raises).toEqual([])
+    expect(asyncAsks().map((a) => ({ status: a.status, questions: a.questions }))).toEqual([{ status: 'open', questions: [BACKEND, FEATURES] }])
+    expect(ASYNC_RESULT).toBe(
+      'Your questions are waiting for the human; this call does not wait for them. Their answer will reach you in a later message that quotes each question. Go on with work that does not depend on it.',
+    )
+  })
+
+  test('an invalid async ask is refused like a blocking one, and is no ask', async () => {
+    const h = await ready()
+    const input = { questions: [question('Pick one?', 'One', ['Only'])], async: true }
+    expect((await h.call(ASK_TOOL, input)).result).toEqual({ deny: validateQuestions(input) })
+    expect(asyncAsks()).toEqual([])
+  })
+
+  test('a press opens the engine dialog with the whole set; answered while idle, the answer is submitted at once', async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: true })
+    const [open] = asyncAsks()
+    const pressed = h.press(`ask-answer:${open?.id}`)
+    await h.settle()
+    const { shown } = await h.raise(0, answered(ANSWER))
+    await pressed
+    await h.settle()
+    expect(shown[0]?.questions).toEqual([BACKEND, FEATURES])
+    expect(h.submitted()).toEqual([deliveryText(open?.id ?? '', ANSWER)])
+    expect(asyncAsks()[0]).toMatchObject({ status: 'answered', answer: ANSWER })
+  })
+
+  test('a press on an ask whose dialog is already raised, or that is answered, does nothing', async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    const first = h.press(`ask-answer:${id}`)
+    await h.settle()
+    await h.press(`ask-answer:${id}`)
+    await h.settle()
+    expect(h.raises.length).toBe(1)
+    await h.raise(0, answered(ANSWER))
+    await first
+    await h.press(`ask-answer:${id}`)
+    await h.settle()
+    expect(h.raises.length).toBe(1)
+  })
+
+  test('Esc is "not now": nothing is delivered, the ask stays open, and a later press opens it again', async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    await answer(h, id, refused(ESC))
+    expect(h.submitted()).toEqual([])
+    expect(asyncAsks()[0]?.status).toBe('open')
+    // Esc on the mod's own dialog does not latch the turn.
+    expect((await h.call('Bash', { command: 'ls' })).ran.length).toBe(1)
+    await answer(h, id, answered(ANSWER))
+    expect(h.raises.length).toBe(2)
+    expect(h.submitted()).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test('"Chat about this" is delivered as the blocking call would have returned it, and closes the ask', async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    await answer(h, id, refused(CHAT))
+    expect(h.submitted()).toEqual([deliveryText(id, CHAT)])
+    expect(asyncAsks()[0]).toMatchObject({ status: 'answered', answer: CHAT })
+  })
+
+  test('pasted pictures the human kept follow the engine text, one source line each', async () => {
+    const FOLDER = '/tmp/claude-501/-work-repo/sess-1/images'
+    const h = await ready()
+    await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    const text = 'The user answered: "Which backend?"="like this (Image attached)". Read the answers carefully.'
+    await h.raise(0, answered(text, { 'Which backend?': 'like this (Image attached)' }))
+    await pressed
+    await h.settle()
+    expect(h.submitted()).toEqual([deliveryText(id, `${text}\n[Image source: /private${FOLDER}/1.png]`)])
+    expect(h.calls.some((c) => c.op === 'fs.read')).toBe(false)
+  })
+})
+
+describe('delivery while the model works', () => {
+  /** A running turn with an async ask answered in it: the answer is held. */
+  const held = async (text = ANSWER) => {
+    const h = harness()
+    await h.start()
+    await h.turnStart()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks().at(-1)?.id ?? ''
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    await h.raise(h.raises.length - 1, answered(text))
+    await pressed
+    await h.settle()
+    return { h, id }
+  }
+
+  test('held while a turn runs, then carried once on the next model-made result', async () => {
+    const { h, id } = await held()
+    expect(h.submitted()).toEqual([])
+    const first = await h.call('Bash', { command: 'sleep 60' })
+    expect(first.result).toEqual({ ref: 9, result: 'ran', text: 'ran', context: [deliveryText(id, ANSWER)] })
+    const second = await h.call('Bash', { command: 'echo second' })
+    expect(second.result).toEqual({ ref: 9, result: 'ran', text: 'ran' })
+    await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([])
+  })
+
+  test("not on a call the human's interrupt cut: the engine keeps no context there", async () => {
+    const { h, id } = await held()
+    expect((await h.call('Bash', { command: 'sleep 60' }, MODEL, undefined, true)).result).toEqual({ ref: 9, isError: true, result: undefined, text: 'interrupted' })
+    await h.turnComplete('aborted')
+    expect((await h.prompt('go on')).context).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test("never on a plugin's call, a subagent's, or a deny", async () => {
+    const { h, id } = await held()
+    expect((await h.call('Read', { file_path: 'a' }, OTHER)).result).toEqual({ ref: 9, result: 'ran', text: 'ran' })
+    expect((await h.call('Read', { file_path: 'a' }, MODEL, 'agent-1')).result).toEqual({ ref: 9, result: 'ran', text: 'ran' })
+    expect((await h.call('AskUserQuestion', { questions: [BACKEND] })).result).toEqual({ deny: WITHDRAWN })
+    expect((await h.call('Read', { file_path: 'a' })).result).toEqual({ ref: 9, result: 'ran', text: 'ran', context: [deliveryText(id, ANSWER)] })
+  })
+
+  test("two answers go out together, once each; ask A's answer held while ask B's dialog settles goes on the model's result, not B's nested call", async () => {
+    const h = harness()
+    await h.start()
+    await h.turnStart()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    await h.call(ASK_TOOL, { questions: [FEATURES], async: true })
+    const [a, b] = asyncAsks()
+    const pressA = h.press(`ask-answer:${a?.id}`)
+    const pressB = h.press(`ask-answer:${b?.id}`)
+    await h.settle()
+    await h.raise(0, answered('answer A'))
+    await pressA
+    await h.settle()
+    const nested = await h.raise(1, answered('answer B'))
+    expect(nested.result).not.toHaveProperty('context')
+    await pressB
+    await h.settle()
+    const { result } = await h.call('Bash', { command: 'sleep 40' })
+    expect(result).toEqual({ ref: 9, result: 'ran', text: 'ran', context: [deliveryText(a?.id ?? '', 'answer A'), deliveryText(b?.id ?? '', 'answer B')] })
+    expect((await h.call('Bash', { command: 'ls' })).result).not.toHaveProperty('context')
+  })
+
+  test("a blocking ask's own result carries an answer held while its dialog was up", async () => {
+    const h = harness()
+    await h.start()
+    await h.turnStart()
+    await h.call(ASK_TOOL, { questions: [FEATURES], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    const blocking = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    await h.raise(0, answered('answer A'))
+    await pressed
+    await h.settle()
+    await h.raise(1, answered('blocking answer'))
+    expect((await blocking).result).toEqual({ result: 'blocking answer', context: [deliveryText(id, 'answer A')] })
+  })
+
+  test('a turn the model answered submits what is held, in one prompt', async () => {
+    const { h, id } = await held()
+    await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test("a subagent's turn end is not the main turn's", async () => {
+    const { h } = await held()
+    await h.turnComplete('answer', 'agent-1')
+    await h.settle()
+    expect(h.submitted()).toEqual([])
+  })
+
+  test("a turn that ends otherwise keeps what is held, and the human's next prompt carries it as context", async () => {
+    for (const reason of ['aborted', 'error', 'refusal']) {
+      const { h, id } = await held()
+      await h.turnComplete(reason)
+      await h.settle()
+      expect(h.submitted()).toEqual([])
+      expect(await h.prompt('go on')).toEqual({ text: 'go on', context: [deliveryText(id, ANSWER)] })
+      expect(await h.prompt('and again')).toEqual({ text: 'and again', context: undefined })
+    }
+  })
+
+  test('a turn latched by a declined blocking ask keeps what is held, whatever its reason', async () => {
+    const { h, id } = await held()
+    const blocking = h.call(ASK_TOOL, { questions: [FEATURES] })
+    await h.settle()
+    await h.raise(h.raises.length - 1, refused(ESC))
+    expect((await blocking).result).toEqual({ deny: ESC })
+    await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([])
+    expect((await h.prompt('go on')).context).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test('a submission that is dropped or rejected puts its answers back ahead of any answered meanwhile', async () => {
+    for (const failure of [async () => ({ drop: 'a hook dropped it' }), async () => Promise.reject(new Error('refused'))]) {
+      let release: (v: unknown) => void = () => {}
+      const h = harness({ submit: () => new Promise((resolve) => (release = resolve)).then(failure) })
+      await h.start()
+      await h.turnStart()
+      await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+      await h.call(ASK_TOOL, { questions: [FEATURES], async: true })
+      const [a, b] = asyncAsks()
+      const pressA = h.press(`ask-answer:${a?.id}`)
+      await h.settle()
+      await h.raise(0, answered('answer A'))
+      await pressA
+      await h.turnComplete('answer')
+      await h.settle()
+      expect(h.submitted()).toEqual([deliveryText(a?.id ?? '', 'answer A')])
+      // While the submission is pending, a result does not carry its answer a second time.
+      await h.turnStart()
+      expect((await h.call('Bash', { command: 'ls' })).result).not.toHaveProperty('context')
+      const pressB = h.press(`ask-answer:${b?.id}`)
+      await h.settle()
+      await h.raise(1, answered('answer B'))
+      await pressB
+      release(undefined)
+      await h.settle()
+      expect(h.calls.some((c) => c.op === 'ui.toast')).toBe(true)
+      expect((await h.call('Bash', { command: 'ls' })).result).toEqual({
+        ref: 9,
+        result: 'ran',
+        text: 'ran',
+        context: [deliveryText(a?.id ?? '', 'answer A'), deliveryText(b?.id ?? '', 'answer B')],
+      })
+    }
+  })
+
+  test("the human's prompt dropped beneath puts its answers back", async () => {
+    const { h, id } = await held()
+    await h.turnComplete('aborted')
+    expect(await h.prompt('go on', () => ({ drop: 'blocked' }))).toEqual({ drop: 'blocked' })
+    expect((await h.prompt('again')).context).toEqual([deliveryText(id, ANSWER)])
+  })
+})
+
+describe('the rows', () => {
+  test("answerRows reads each answered question from the engine's text, previews and notes aside", async () => {
+    const text =
+      'The user answered: "Which backend?"="SQLite" selected preview:\n+--------+\n| SQLite |\n+--------+ notes: board db only, "Which features?"="Auth, Export". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.'
+    expect(answerRows([BACKEND, FEATURES], text)).toEqual([
+      ['Which backend?', 'SQLite'],
+      ['Which features?', 'Auth, Export'],
+    ])
+    expect(answerRows([BACKEND, FEATURES], ANSWER)).toEqual([['Which backend?', 'SQLite']])
+    expect(answerRows([BACKEND], 'The user answered: "Which backend?"=(no option selected) notes: later. Read the answers carefully.')).toEqual([['Which backend?', '(notes only)']])
+    expect(answerRows([BACKEND], 'The user answered: "Which backend?"="say "hi" (Image attached)". Read the answers carefully.\n[Image source: /x/1.png]')).toEqual([
+      ['Which backend?', 'say "hi" (Image attached)'],
+    ])
+    expect(answerRows([BACKEND], 'The user did not answer the questions.')).toEqual([])
+  })
+
+  const props = (over: Record<string, unknown>) => ({ input: { questions: [BACKEND, FEATURES] }, output: undefined, isRunning: false, isErrored: false, isInterrupted: false, ...over })
+
+  test('a blocking ask: nothing while its dialog is up, the answers once answered, declined once refused', async () => {
+    expect(askRow(props({ isRunning: true }))).toEqual({ kind: 'none' })
+    expect(askRow(props({ output: ANSWER }))).toEqual({ kind: 'answered', rows: [['Which backend?', 'SQLite']], isDelivered: true })
+    expect(askRow(props({ output: [{ type: 'text', text: ANSWER }, { type: 'image' }] }))).toEqual({ kind: 'answered', rows: [['Which backend?', 'SQLite']], isDelivered: true })
+    expect(askRow(props({ output: 'The user did not answer the questions.' }))).toEqual({ kind: 'none' })
+    expect(askRow(props({ isErrored: true, output: `<tool_use_error>${ESC}</tool_use_error>` }))).toEqual({ kind: 'declined', questions: [BACKEND, FEATURES], isDelivered: true })
+    expect(askRow(props({ isErrored: true, output: CHAT }))).toEqual({ kind: 'declined', questions: [BACKEND, FEATURES], isDelivered: true })
+  })
+
+  test("other errors, an interruption, and an async call the mod does not know draw as the engine's", async () => {
+    expect(askRow(props({ isErrored: true, output: `<tool_use_error>${SUBAGENT_REFUSAL}</tool_use_error>` }))).toEqual({ kind: 'engine' })
+    expect(askRow(props({ isInterrupted: true }))).toEqual({ kind: 'engine' })
+    expect(askRow(props({ output: ASYNC_RESULT }))).toEqual({ kind: 'engine' })
+  })
+
+  test('an async ask: open with its questions, then its answers, saying so until they reached the model', async () => {
+    const open = { id: 't', questions: [BACKEND], status: 'open' as const }
+    expect(askRow(props({ output: ASYNC_RESULT }), open)).toEqual({ kind: 'open', questions: [BACKEND] })
+    const done = { ...open, status: 'answered' as const, answer: ANSWER }
+    expect(askRow(props({ output: ASYNC_RESULT }), done, false)).toEqual({ kind: 'answered', rows: [['Which backend?', 'SQLite']], isDelivered: false })
+    expect(askRow(props({ output: ASYNC_RESULT }), done, true)).toEqual({ kind: 'answered', rows: [['Which backend?', 'SQLite']], isDelivered: true })
+    expect(askRow(props({ output: ASYNC_RESULT }), { ...open, status: 'answered', answer: CHAT }, true)).toEqual({ kind: 'declined', questions: [BACKEND], isDelivered: true })
+  })
+})
+
+describe('a resumed session', () => {
+  const T = '/p/-repo/s.jsonl'
+  const line = (row: unknown) => JSON.stringify(row)
+  const use = (id: string, input: unknown) => line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: ASK_TOOL, input }] } })
+  const result = (id: string, content: unknown, is_error?: boolean) =>
+    line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(is_error && { is_error }) }] } })
+  const single = { questions: [question('Pick one?', 'One', ['Only'])], async: true }
+  const lines = [
+    use('t-open', { questions: [BACKEND], async: true }),
+    result('t-open', ASYNC_RESULT),
+    use('t-done', { questions: [FEATURES], async: true }),
+    result('t-done', [{ type: 'text', text: ASYNC_RESULT }]),
+    use('t-bad', single),
+    result('t-bad', `<tool_use_error>${validateQuestions(single)}</tool_use_error>`, true),
+    use('t-blocking', { questions: [BACKEND] }),
+    result('t-blocking', ANSWER),
+    use('t-cut', { questions: [BACKEND], async: true }),
+    line({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [deliveryText('t-done', 'Your questions have been answered: "Which features?"="Auth". You can now continue with these answers in mind.')] } }),
+    // The model quoting a delivery is not one, nor the queue's record of a prompt that may never have entered.
+    line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: deliveryText('t-open', 'made up') }] } }),
+    line({ type: 'queue-operation', operation: 'enqueue', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', 'dropped')}` }),
+    line({ type: 'last-prompt', lastPrompt: `The doperpowers plugin sent a message: ${deliveryText('t-open', 'dropped')}` }),
+    // A tool's output that prints a delivery (a read of this transcript) is not one either.
+    result('t-cat', `{"content":["${deliveryText('t-open', 'printed')}"]}`),
+  ]
+
+  test('rebuildAsks keeps the accepted asks, open or answered by a later delivery', async () => {
+    expect(rebuildAsks(lines)).toEqual([
+      { id: 't-open', questions: [BACKEND], status: 'open' },
+      { id: 't-done', questions: [FEATURES], status: 'answered', answer: 'Your questions have been answered: "Which features?"="Auth". You can now continue with these answers in mind.' },
+    ])
+    const submittedRow = line({ type: 'user', message: { role: 'user', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', ANSWER)}` } })
+    expect(rebuildAsks([...lines, submittedRow])[0]).toEqual({ id: 't-open', questions: [BACKEND], status: 'answered', answer: ANSWER })
+    expect(rebuildAsks(['not json', ''])).toEqual([])
+  })
+
+  test('at a resumed SessionStart the asks are read back from the transcript', async () => {
+    const h = harness({ files: { [T]: lines.join('\n') } })
+    await h.start()
+    await h.classicStart(T, 's', 'resume')
+    expect(asyncAsks().map((a) => [a.id, a.status])).toEqual([
+      ['t-open', 'open'],
+      ['t-done', 'answered'],
+    ])
+    expect(h.calls.some((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toBe(true)
+  })
+
+  test('a transcript too large to read whole is searched for the lines that can matter', async () => {
+    const h = harness({ run: async () => ({ exitCode: 0, stdout: lines.join('\n') }) })
+    await h.start()
+    await h.classicStart(T, 's', 'resume')
+    expect(asyncAsks().length).toBe(2)
+    const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
+    expect(argv[0]).toBe('grep')
+    expect(argv.at(-1)).toBe(T)
+  })
+
+  test('/clear forgets the asks; a compaction keeps them', async () => {
+    const h = harness()
+    await h.start()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    await h.classicStart(T, 's', 'compact')
+    expect(asyncAsks().length).toBe(1)
+    await h.classicStart(T, 's2', 'clear')
+    expect(asyncAsks()).toEqual([])
   })
 })
