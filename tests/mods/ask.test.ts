@@ -182,7 +182,7 @@ function harness(
     /** Text files `$.fs.read` reads; one missing rejects. */
     files?: Record<string, string>
     /** What `$.process.run` prints. */
-    run?: (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string }>
+    run?: (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string; isStdoutTruncated: boolean }>
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -1104,6 +1104,17 @@ describe('delivery while the model works', () => {
     }
   })
 
+  test("the human's prompt rejected beneath puts its answers back before the failure goes on", async () => {
+    const { h, id } = await held()
+    await h.turnComplete('aborted')
+    await expect(
+      h.prompt('go on', () => {
+        throw new Error('a hook beneath broke')
+      }),
+    ).rejects.toThrow('a hook beneath broke')
+    expect((await h.prompt('again')).context).toEqual([deliveryText(id, ANSWER)])
+  })
+
   test("the human's prompt dropped beneath puts its answers back", async () => {
     const { h, id } = await held()
     await h.turnComplete('aborted')
@@ -1177,8 +1188,11 @@ describe('a resumed session', () => {
     line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: deliveryText('t-open', 'made up') }] } }),
     line({ type: 'queue-operation', operation: 'enqueue', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', 'dropped')}` }),
     line({ type: 'last-prompt', lastPrompt: `The doperpowers plugin sent a message: ${deliveryText('t-open', 'dropped')}` }),
-    // A tool's output that prints a delivery (a read of this transcript) is not one either.
+    // A tool's output that prints a delivery (a read of this transcript) is not one either,
+    // nor the human quoting one in a prompt of their own.
     result('t-cat', `{"content":["${deliveryText('t-open', 'printed')}"]}`),
+    line({ type: 'user', message: { role: 'user', content: `what does this mean? ${deliveryText('t-open', 'quoted')}` } }),
+    line({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: deliveryText('t-open', 'quoted') }] } }),
   ]
 
   test('rebuildAsks keeps the accepted asks, open or answered by a later delivery', async () => {
@@ -1203,13 +1217,42 @@ describe('a resumed session', () => {
   })
 
   test('a transcript too large to read whole is searched for the lines that can matter', async () => {
-    const h = harness({ run: async () => ({ exitCode: 0, stdout: lines.join('\n') }) })
+    const h = harness({ run: async () => ({ exitCode: 0, stdout: lines.join('\n'), isStdoutTruncated: false }) })
     await h.start()
     await h.classicStart(T, 's', 'resume')
     expect(asyncAsks().length).toBe(2)
     const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
     expect(argv[0]).toBe('grep')
     expect(argv.at(-1)).toBe(T)
+  })
+
+  test('the search patterns find exactly the stored forms resume reads', async () => {
+    const h = harness({ run: async () => ({ exitCode: 1, stdout: '', isStdoutTruncated: false }) })
+    await h.start()
+    await h.classicStart(T, 's', 'resume')
+    const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
+    const patterns = argv.filter((_, i) => argv[i - 1] === '-e')
+    const plugin = line({ type: 'user', message: { role: 'user', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', ANSWER)}` } })
+    const human = line({ type: 'user', message: { role: 'user', content: `see ${deliveryText('t-open', ANSWER)}` } })
+    const snapshot = line({ type: 'attachment', attachment: { type: 'prompt_snapshot', tools: [{ name: ASK_TOOL, description: 'd' }] } })
+    const found = (row: string) => patterns.some((pattern) => row.includes(pattern))
+    expect([...lines.slice(0, 4), lines[9] as string, plugin].map(found)).toEqual([true, true, true, true, true, true])
+    expect([human, snapshot].map(found)).toEqual([false, false])
+  })
+
+  test('no line found is no ask; a failed search or a cut one rebuilds nothing, with a debug line', async () => {
+    for (const [run, logged] of [
+      [{ exitCode: 1, stdout: '', isStdoutTruncated: false }, undefined],
+      [{ exitCode: 2, stdout: '', isStdoutTruncated: false }, 'could not be searched'],
+      [{ exitCode: 0, stdout: lines.slice(0, 4).join('\n'), isStdoutTruncated: true }, 'past what one search returns'],
+    ] as const) {
+      const h = harness({ run: async () => run })
+      await h.start()
+      await h.classicStart(T, 's', 'resume')
+      expect(asyncAsks()).toEqual([])
+      const logs = h.calls.filter((c) => c.op === 'ui.log').map((c) => String(c.args))
+      expect(logs.some((text) => logged !== undefined && text.includes(logged))).toBe(logged !== undefined)
+    }
   })
 
   test('/clear forgets the asks; a compaction keeps them', async () => {

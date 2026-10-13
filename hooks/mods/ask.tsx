@@ -525,6 +525,8 @@ export const ASYNC_RESULT =
   'Your questions are waiting for the human; this call does not wait for them. Their answer will reach you in a later message that quotes each question. Go on with work that does not depend on it.'
 
 const DELIVERY_HEAD = 'The human responded to your async AskUserQuestion'
+/** How the engine frames a prompt this plugin submitted, in the user row it stores. */
+const PLUGIN_PROMPT = 'The doperpowers plugin sent a message:\n'
 const DELIVERY = /The human responded to your async AskUserQuestion \(call ([^)\s]+)\): /g
 
 /** The text a delivery carries: which call it answers, then what the blocking call would have returned. */
@@ -705,10 +707,10 @@ export function rebuildAsks(lines: readonly string[]): OpenAsk[] {
 
 /**
  * The texts of a stored row that can carry a delivery, as the engine stores
- * them: a context attachment's entries (a tool result's or a prompt's), and a
- * user row's own text (a prompt the plugin submitted). Not the model's rows,
- * which may quote one, nor a tool's output, nor the queue's record of a
- * prompt that may never have entered.
+ * them: a context attachment's entries (a tool result's or a prompt's), and
+ * the text of a user row the plugin submitted. Not the model's rows or the
+ * human's own prompts, which may quote one, nor a tool's output, nor the
+ * queue's record of a prompt that may never have entered.
  */
 function deliveryTexts(row: Record<string, unknown>): string[] {
   if (row.type === 'attachment' && isRecord(row.attachment) && row.attachment.type === 'hook_additional_context') {
@@ -719,12 +721,14 @@ function deliveryTexts(row: Record<string, unknown>): string[] {
   if (row.type !== 'user') {
     return []
   }
-  if (typeof message.content === 'string') {
-    return [message.content]
-  }
-  return (Array.isArray(message.content) ? message.content : [])
-    .filter((block): block is { type: 'text'; text: string } => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text)
+  const texts =
+    typeof message.content === 'string'
+      ? [message.content]
+      : (Array.isArray(message.content) ? message.content : [])
+          .filter((block): block is { type: 'text'; text: string } => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+  // The plugin's own prompt, by the engine's framing; the human quoting a delivery is not one.
+  return texts.filter((text) => text.startsWith(PLUGIN_PROMPT))
 }
 
 /** An answer on its way to the model: its ask and the delivery text. */
@@ -821,18 +825,51 @@ async function answerAsk($: EngineInterface, id: string) {
   $.ui.invalidate('ui.render')
 }
 
-/** The transcript's lines; one too large to read whole (over 4 MiB) is searched for the lines that can name an ask. */
+/**
+ * The stored forms resume reads, as the engine writes them into the
+ * transcript (compact JSON, recorded live on 2.1.296): the tool's calls, its
+ * async results, and the two delivery forms. A search for these finds the
+ * rows that can name an ask, and not the large rows that merely mention the
+ * tool (the tool list a prompt snapshot carries).
+ */
+const STORED_FORMS = [
+  `"name":"${ASK_TOOL}","input":`,
+  ASYNC_RESULT,
+  `"type":"hook_additional_context","content":["${DELIVERY_HEAD}`,
+  `"content":${JSON.stringify(PLUGIN_PROMPT + DELIVERY_HEAD).slice(0, -1)}`,
+]
+
+/**
+ * The transcript's lines, or the lines that can name an ask in one too large
+ * to read whole (over 4 MiB). A search that fails, or whose output was cut at
+ * the same 4 MiB (it would drop the newest asks), rebuilds nothing rather
+ * than a part, with a debug line.
+ */
 async function transcriptLines($: EngineInterface, path: string): Promise<string[]> {
   try {
     return (await $.fs.read(path)).split('\n')
   } catch (error) {
-    try {
-      const { stdout } = await $.process.run(['grep', '-F', '-e', ASK_TOOL, '-e', ASYNC_RESULT, '-e', DELIVERY_HEAD, path])
-      return stdout.split('\n')
-    } catch (searchError) {
-      $.ui.log(`ask: the transcript could not be read (${message(error)}; ${message(searchError)}); no async ask is rebuilt`, { to: 'debug' })
+    const failed = (why: string) => {
+      $.ui.log(`ask: the transcript could not be read whole (${message(error)}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
       return []
     }
+    let search: Awaited<ReturnType<typeof $.process.run>>
+    try {
+      search = await $.process.run(['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path])
+    } catch (searchError) {
+      return failed(`could not be searched (${message(searchError)})`)
+    }
+    // grep: 0 lines found, 1 none, anything else a failure.
+    if (search.exitCode === 1) {
+      return []
+    }
+    if (search.exitCode !== 0) {
+      return failed(`could not be searched (grep exited ${search.exitCode})`)
+    }
+    if (search.isStdoutTruncated === true) {
+      return failed('its asks run past what one search returns')
+    }
+    return search.stdout.split('\n')
   }
 }
 
@@ -988,7 +1025,14 @@ export function registerAsk(on: On) {
       return next(e)
     }
     const items = takeHeld()
-    const result = await next({ ...e, context: [...(e.context ?? []), ...items.map((item) => item.text)] })
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next({ ...e, context: [...(e.context ?? []), ...items.map((item) => item.text)] })
+    } catch (error) {
+      // The failure policy below lets the prompt through without them: they wait for the next route.
+      putBack($, items, message(error))
+      throw error
+    }
     if (result.drop !== undefined) {
       putBack($, items, result.drop)
     } else {
