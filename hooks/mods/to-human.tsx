@@ -4,28 +4,21 @@ import { ASK_TOOL } from './ask'
 
 /**
  * The marks the `to-human` output style asks the model to write: a message
- * to the human, what the model needs from them, and an explanatory insight.
- * The old `to-human` and `essential` marks read as messages too. Everything
- * outside a mark is the model's working record.
+ * to the human and an explanatory insight. The old `to-human`, `essential`
+ * and `need-input` marks read as messages too (a `need-input` question's
+ * `<choice>` lines stay in its text). Everything outside a mark is the
+ * model's working record.
  */
-export type Kind = 'message' | 'need-input' | 'insight'
+export type Kind = 'message' | 'insight'
 
-/**
- * One option a `need-input` mark offers, as a `<choice>` line under the
- * question; `recommended` when the model marked it the one it would pick.
- */
-export type Choice = {
-  text: string
-  recommended: boolean
-}
+/** The marks that read as a message: the current one and its old aliases. */
+const MESSAGE_ALIASES: ReadonlySet<string> = new Set(['message', 'to-human', 'essential', 'need-input'])
 
 export type Span = {
   kind: Kind
   text: string
   /** True while the closing tag has not arrived: the span is still streaming. */
   isOpen: boolean
-  /** The options of a `need-input` span, lifted out of its text; absent when it offers none. */
-  choices?: Choice[]
 }
 
 export type Parsed = {
@@ -137,77 +130,6 @@ function readingOf(text: string, regions: readonly CodeRegion[]) {
   return { inCode, tokens, balanced: balanced && stack.length === 0 }
 }
 
-/** Raw choices use the same flat, code-aware tag pairing as MAWS grammar 2. */
-const CHOICE_TAG = /<choice(?: recommended)?>|<\/choice>/g
-
-function liftRawChoices(span: Span, inCode: (offset: number) => boolean, start: number) {
-  if (span.kind !== 'need-input') return
-  const choices: Choice[] = []
-  const marks = [...span.text.matchAll(CHOICE_TAG)].filter((mark) => !inCode(start + mark.index))
-  const opens: number[] = []
-  const flat: [RegExpExecArray, RegExpExecArray][] = []
-  for (let i = 0; i < marks.length; i++) {
-    if (marks[i]![0] !== '</choice>') opens.push(i)
-    else if (opens.length > 0) {
-      const open = opens.pop()!
-      // Nested or malformed choice markup is not a flat option; keep it literal.
-      if (opens.length === 0 && i === open + 1) flat.push([marks[open]!, marks[i]!])
-    }
-  }
-  let text = ''
-  let from = 0
-  for (const [open, close] of flat) {
-    const body = span.text.slice(open.index + open[0].length, close.index).trim()
-    if (body !== '') choices.push({ text: body, recommended: open[0] !== '<choice>' })
-    text += span.text.slice(from, open.index)
-    from = close.index + close[0].length
-    if (span.text[from] === '\n') from++
-  }
-  span.text = text + span.text.slice(from)
-  if (choices.length > 0) span.choices = choices
-}
-
-/**
- * A choice as the streaming hook drew it: text under `◇`, or `◆` for the
- * recommended one, running to the next marker or the end of its line (the
- * hook breaks the line before a marker, but a model may write two choices
- * on one line, and this reads the text the hook was given either way).
- */
-const MARKER = /([◇◆]) ([^\n]*?)(?=\s*[◇◆] |\n|$)/g
-
-/**
- * Lifts the choices out of a `need-input` span's text, in the form
- * `pattern` gives them, leaving the question. A span of another kind keeps
- * its text as it is.
- */
-function liftChoices(
-  span: Span,
-  pattern: RegExp,
-  isRecommended: (mark: string | undefined) => boolean,
-  inCode: (offset: number) => boolean = insideCode(codeRegions(span.text)),
-  start = 0,
-) {
-  if (span.kind !== 'need-input') {
-    return
-  }
-  const choices: Choice[] = []
-  span.text = span.text.replace(pattern, (whole: string, mark: string | undefined, text: string, offset: number) => {
-    // A rendered marker needs only its start outside code: the option's body
-    // may end in backticks. Raw choices are paired separately, token by token.
-    if (inCode(start + offset)) {
-      return whole
-    }
-    const trimmed = text.trim()
-    if (trimmed !== '') {
-      choices.push({ text: trimmed, recommended: isRecommended(mark) })
-    }
-    return ''
-  })
-  if (choices.length > 0) {
-    span.choices = choices
-  }
-}
-
 /**
  * Splits text still carrying its marks. Marks may nest (an `<insight>`
  * inside a `<message>`): each contiguous run of text under one mark is a
@@ -219,8 +141,7 @@ function parseMarked(text: string): Parsed {
     const glued = readingOf(text, regionsOf(text, GLUED))
     if (glued.balanced) reading = glued
   }
-  const { inCode, tokens } = reading
-  const starts = new Map<Span, number>()
+  const { tokens } = reading
   const spans: Span[] = []
   // One entry per open mark, innermost last; `span` is the entry's current
   // run of text, or null once an inner mark has interrupted it.
@@ -237,7 +158,6 @@ function parseMarked(text: string): Parsed {
     } else if (piece.trim() !== '') {
       top.span = { kind: top.kind, text: piece, isOpen: true }
       spans.push(top.span)
-      starts.set(top.span, last)
     }
   }
 
@@ -251,7 +171,7 @@ function parseMarked(text: string): Parsed {
   for (const match of tokens) {
     const [whole, slash] = match
     const tag = match[2] as string
-    const kind = (tag === 'to-human' || tag === 'essential' ? 'message' : tag) as Kind
+    const kind: Kind = MESSAGE_ALIASES.has(tag) ? 'message' : 'insight'
     const at = match.index ?? 0
     take(text.slice(last, at))
     last = at + whole.length
@@ -263,7 +183,6 @@ function parseMarked(text: string): Parsed {
       }
       const span: Span = { kind, text: '', isOpen: true }
       spans.push(span)
-      starts.set(span, last)
       open.push({ tag, kind, span })
     } else {
       const depth = open.map((entry) => entry.tag).lastIndexOf(tag)
@@ -279,7 +198,6 @@ function parseMarked(text: string): Parsed {
   take(text.slice(last))
 
   for (const span of spans) {
-    liftRawChoices(span, inCode, starts.get(span) ?? 0)
     span.text = span.text.trim()
   }
 
@@ -293,7 +211,8 @@ function parseMarked(text: string): Parsed {
  * What `to-human-stream.sh` leaves behind. That hook draws the marks while
  * the message streams, so by the time the message is whole its text carries
  * the hook's headers and dimmed record instead of the tags: a header is the
- * mark's label in its own bold color, a dimmed run is working record.
+ * mark's label in its own bold color, a dimmed run is working record. The
+ * old labels (`to human`, `essential`, `need input`) read as messages.
  *
  * The first group is the header's color, the second a dimmed run's text.
  */
@@ -307,7 +226,7 @@ const KIND_OF_COLOR: Record<string, Kind> = {
   '38;2;215;119;87': 'message',
   '36': 'message',
   '32': 'message',
-  '35': 'need-input',
+  '35': 'message',
   '33': 'insight',
 }
 
@@ -363,7 +282,6 @@ function parseRendered(text: string): Parsed | null {
   take(text.slice(last))
 
   for (const span of spans) {
-    liftChoices(span, MARKER, (mark) => mark === '◆')
     span.text = span.text.trim()
   }
 
@@ -487,97 +405,11 @@ export function runEnd(
 }
 
 /**
- * A question the model asked through a `need-input` mark: `id` names the
- * span (its message and its place in it), `head` is the line an answer
- * quotes, `choices` what it offered.
- */
-export type Question = {
-  id: string
-  head: string
-  choices: Choice[]
-}
-
-const HEAD_MAX = 120
-
-function cut(text: string, max: number): string {
-  const points = Array.from(text)
-  return points.length >= max ? `${points.slice(0, max - 1).join('')}…` : text
-}
-
-/**
- * The line an answer quotes to name its question: the question's first
- * non-blank line, with double quotes replaced before it is cut so the answer
- * form has one unambiguous closing quote.
- */
-export function questionHead(text: string): string {
-  const line = (text.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? '').replace(/"/g, "'")
-  return cut(line, HEAD_MAX)
-}
-
-/**
- * The prompt an answer is: the question's head, then the answer, so the
- * model reads which question it settles without a table to look it up in,
- * and a reader of the transcript sees the same. `answerOf` reads it back,
- * from a prompt a click submitted or one the person typed after `reply`
- * put the head in their box.
- */
-export function answerText(head: string, answer: string): string {
-  return `Answering "${head}": ${answer}`
-}
-
-/**
- * An answer's line, wherever it stands in the prompt, one per question
- * answered; what the person wrote on other lines is theirs and not echoed.
- * A head carries no double quote, so the first `":` closes it and the
- * answer may hold anything.
- */
-const ANSWER = /^Answering "([^"\n]*)": ?(.*)$/gm
-
-export type Answer = { head: string; answer: string }
-
-/** Every answer a prompt carries, in the order of its lines. */
-export function answersOf(text: string): Answer[] {
-  return Array.from(text.matchAll(ANSWER), (match) => ({
-    head: match[1] as string,
-    answer: (match[2] as string).trim(),
-  }))
-}
-
-/**
- * The prompt box after a press, so the answers to several questions go in
- * one prompt: each question has at most one line. Every line answering
- * `head` (a duplicate the person pasted or edited in included, which would
- * otherwise settle the question by the later line) gives way to one: the
- * choice pressed, where the first of them stood, or, when the press is
- * `reply` (no `answer`), the answer's opening at the end, where the cursor
- * is for the person to finish it; a question with no line yet gets one at
- * the end. Every other line, the other answers and whatever the person
- * typed, stays as it is.
- */
-export function withAnswer(box: string, head: string, answer?: string): string {
-  const line = answerText(head, answer ?? '')
-  const lines = box.trim() === '' ? [] : box.split('\n')
-  const answers = (l: string) => answersOf(l)[0]?.head === head
-  const at = lines.findIndex(answers)
-  const kept = lines.filter((l) => !answers(l))
-  if (answer !== undefined && at >= 0) {
-    kept.splice(at, 0, line)
-    return kept.join('\n')
-  }
-  if (kept[kept.length - 1] === '') {
-    kept.pop()
-  }
-  kept.push(line)
-  return kept.join('\n')
-}
-
-/**
  * A remote surface (the desktop app, VS Code, mobile) draws a span's body as
  * its own `Markdown`. A render answer carries one props, so of several blocks
  * handed back beneath the hook only the first can draw there: Claude Desktop
  * portals its native row into the first `engine` node and draws nothing at
- * the rest, which left every span after the first label-only and a
- * `need-input` question with buttons and no question (2026-10-03). The
+ * the rest, which left every span after the first label-only (2026-10-03). The
  * terminal draws the hook's whole tree in-process, so there the body stays
  * the engine's own drawing. `Markdown.text` takes at most 10000 characters
  * and no control character but tab and newline.
@@ -618,20 +450,11 @@ export function markdownBlocks(text: string): string[] {
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
   message: { label: 'message', color: 'claude' },
-  'need-input': { label: 'need input', color: 'magenta' },
   insight: { label: 'insight', color: 'yellow' },
 }
 
 const TOGGLE = 'to-human-toggle'
 const MODE = 'to-human-mode'
-const ASK = 'need-input:'
-
-/**
- * What a press on one of a question's buttons does: writes a choice as the
- * answer in the person's box, or writes the answer's opening for them to
- * finish.
- */
-type Press = { kind: 'answer'; question: Question; answer: string } | { kind: 'reply'; question: Question }
 
 /** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
 export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === ASK_TOOL || tool === 'Agent' || tool === 'Workflow'
@@ -680,8 +503,6 @@ function toggle(unfolded: Set<string>, id: string) {
     unfolded.add(id)
   }
 }
-
-const noop = () => {}
 
 /**
  * A row of working record, drawn as its run is. Folded, the row the run
@@ -736,25 +557,8 @@ async function recordRow<E extends RenderInput>(
   )
 }
 
-/**
- * Reads the answers the transcript holds into `answered`: every prompt of
- * the person's that names its questions, the latest per question.
- */
-async function readAnswers($: EngineInterface, answered: Map<string, string>) {
-  for (const message of await $.session.messages()) {
-    if (message.role !== 'user') {
-      continue
-    }
-    for (const { head, answer } of answersOf(message.text)) {
-      answered.set(head, answer)
-    }
-  }
-}
-
 // MAWS draws this channel itself when it advertises native support; the
 // terminal keeps this view. Every hook awaits the same read for this worker.
-// The prompt-submit hook is not gated: it draws nothing, and the terminal's
-// view reads the answers it settles.
 let maws: Promise<boolean> | undefined
 const native = async ($: EngineInterface, e: object) =>
   (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
@@ -767,8 +571,7 @@ const native = async ($: EngineInterface, e: object) =>
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
  * transcript by the band above the prompt. Agent spawns stay in the report;
- * agent messages and finish notifications are working record. A `need-input` span draws its
- * choices as buttons under the question, in the message itself.
+ * agent messages and finish notifications are working record.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
@@ -776,24 +579,12 @@ export function registerToHuman(on: On) {
   const view: View = { unfolded: new Set(), order: [], rowOf: new Map(), isFolding: () => hasSeenMark && !isFullTranscript }
   const { unfolded, isFolding } = view
 
-  // The answers the transcript holds, by the question's head, and what
-  // each question button does, by its key.
-  const answered = new Map<string, string>()
-  const presses = new Map<string, Press>()
-  let hasReadTranscript = false
-
   // Where the engine expands a group itself (`--verbose`, the ctrl+o
   // transcript) each call is a row of its own: which group's run a call's
   // row stands in, and which call is a group's last, whose row draws the
   // run's end in the group's place.
   const groupOf = new Map<string, string>()
   const lastOf = new Map<string, string>()
-
-  const keyOf = (question: Question, press: Press) => {
-    const key = `${ASK}${question.id}:${press.kind === 'answer' ? question.choices.findIndex((c) => c.text === press.answer) : press.kind}`
-    presses.set(key, press)
-    return key
-  }
 
   // The person's prompt breaks a run: the record before it and the record
   // after it are two, as the person reads them. Agent messages and background
@@ -840,19 +631,6 @@ export function registerToHuman(on: On) {
       // band) are cached; ask for them again now that the view folds.
       hasSeenMark = true
       $.ui.invalidate('ui.render')
-    }
-
-    // The questions this message asks, each once it is whole.
-    const asked = parsed.spans.map((span, i): Question | undefined =>
-      span.kind !== 'need-input' || span.isOpen
-        ? undefined
-        : { id: `${e.requestId}:${i}`, head: questionHead(span.text), choices: span.choices ?? [] },
-    )
-    if (!hasReadTranscript && asked.some((question) => question !== undefined)) {
-      // A resumed session's answers are in its transcript: read them once,
-      // the first time a question draws.
-      hasReadTranscript = true
-      await readAnswers($, answered)
     }
 
     if (!isFolding()) {
@@ -912,8 +690,6 @@ export function registerToHuman(on: On) {
       <Box flexDirection="column">
         {parsed.spans.map((span, i) => {
           const style = STYLE[span.kind]
-          const question = asked[i]
-          const answer = question ? answered.get(question.head) : undefined
           return (
             <Box flexDirection="column" marginBottom={i < last ? 1 : 0}>
               <Box>
@@ -922,25 +698,8 @@ export function registerToHuman(on: On) {
                   {style.label}
                   {span.isOpen ? ' …' : ''}
                 </Text>
-                {answer !== undefined ? <Text dimColor> · answered: {answer}</Text> : null}
               </Box>
               <Box paddingLeft={2}>{bodies[i]}</Box>
-              {question && answer === undefined ? (
-                <Box flexDirection="column" paddingLeft={2}>
-                  {question.choices.map((choice, n) => (
-                    <Box>
-                      <Button
-                        key={keyOf(question, { kind: 'answer', question, answer: choice.text })}
-                        label={`${n + 1}: ${choice.text}${choice.recommended ? ' ★' : ''}`}
-                        onPress={noop}
-                      />
-                    </Box>
-                  ))}
-                  <Box>
-                    <Button key={keyOf(question, { kind: 'reply', question })} label="reply…" dimColor onPress={noop} />
-                  </Box>
-                </Box>
-              ) : null}
             </Box>
           )
         })}
@@ -1059,50 +818,6 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     const result = await next(e)
     $.ui.invalidate('ui.render')
-    return result
-  })
-
-  // A question's buttons need the engine, which their closures cannot reach:
-  // the press is answered here, by what the key was drawn to do. A choice
-  // and `reply` both write the person's box, the choice as the whole answer
-  // and `reply` as its opening, each on a line of its own beside the
-  // answers already there, so one Enter sends them all as the person's own
-  // prompt. (A prompt a plugin submits enters under the plugin's name,
-  // framed as the plugin's message to the model and labelled so in the
-  // transcript, by an origin no hook may change; so nothing here submits.)
-  on('ui.press', async ($, e, next) => {
-    if (await native($, e)) return next(e)
-    const press = e.element.startsWith(ASK) ? presses.get(e.element) : undefined
-    if (!press) {
-      return next(e)
-    }
-    const result = await next(e)
-    const box = await $.prompt.read()
-    const text = withAnswer(box.text, press.question.head, press.kind === 'answer' ? press.answer : undefined)
-    const { isFilled } = await $.prompt.fill({ text })
-    if (!isFilled) {
-      $.ui.toast('The answer could not be put in the prompt')
-    }
-    return result
-  })
-
-  // An answer is a prompt that names its question, one line per question,
-  // as a choice or `reply` wrote them in the box, or as the person typed
-  // them; each question is settled once the prompt enters. (Not gated on
-  // MAWS: a submission carries no surface, this hook draws nothing, and an
-  // answer given either way is what the terminal's question reads.)
-  on('prompt.submit', async ($, e, next) => {
-    const found = answersOf(e.text)
-    if (found.length === 0) {
-      return next(e)
-    }
-    const result = await next(e)
-    if (result.drop === undefined) {
-      for (const { head, answer } of found) {
-        answered.set(head, answer)
-      }
-      $.ui.invalidate('ui.render')
-    }
     return result
   })
 }

@@ -10,14 +10,12 @@
 BEGIN {
   ESC = sprintf("%c", 27)
   DIM = ESC "[2m"; OFF = ESC "[0m"
-  LABEL["message"] = LABEL["to-human"] = LABEL["essential"] = "message"
-  COLOR["message"] = COLOR["to-human"] = COLOR["essential"] = ESC "[1;38;2;215;119;87m"
-  LABEL["need-input"] = "need input"; COLOR["need-input"] = ESC "[1;35m"
+  # The old to-human, essential and need-input marks draw as messages; a
+  # need-input question's <choice> lines stay in its text.
+  LABEL["message"] = LABEL["to-human"] = LABEL["essential"] = LABEL["need-input"] = "message"
+  COLOR["message"] = COLOR["to-human"] = COLOR["essential"] = COLOR["need-input"] = ESC "[1;38;2;215;119;87m"
   LABEL["insight"] = "insight"; COLOR["insight"] = ESC "[1;33m"
-  CHOICE = "\342\227\207 "
-  RECOMMENDED = "\342\227\206 "
   MARK = "</?(message|to-human|essential|need-input|insight)>"
-  TAG = "</?(message|to-human|essential|need-input|insight|choice( recommended)?)>"
   # JavaScript trim's whitespace, as complete UTF-8 alternatives (also works
   # in byte-oriented awk locales). Newline already separates source lines.
   BLANK = "^([ \t\r\013\014]|\302\240|\341\232\200|\342\200\200|\342\200\201|\342\200\202|\342\200\203|\342\200\204|\342\200\205|\342\200\206|\342\200\207|\342\200\210|\342\200\211|\342\200\212|\342\200\250|\342\200\251|\342\200\257|\342\201\237|\343\200\200|\357\273\277)*$"
@@ -74,7 +72,7 @@ function inlineSpans(mode, start, end, pending,    rest, pos, n, run, last, i, p
 }
 
 # Fence offsets are relative to the line. Mark tags at its edges are
-# transparent only for the glued reading; choices are never transparent.
+# transparent only for the glued reading.
 function opening(line, mode,    rest, offset, run, info) {
   rest = line; offset = 1
   match(rest, /^[ \t]*/); offset += RLENGTH; rest = substr(rest, RLENGTH + 1)
@@ -186,7 +184,7 @@ function body(text) {
 
 function draw(line, offset, mode,    out, rest, prefix, at, tag, kind, i, found, step) {
   rest = line
-  while (match(rest, TAG)) {
+  while (match(rest, MARK)) {
     at = offset + RSTART - 1
     step = RSTART + RLENGTH - 1
     tag = substr(rest, RSTART, RLENGTH)
@@ -199,14 +197,6 @@ function draw(line, offset, mode,    out, rest, prefix, at, tag, kind, i, found,
       continue
     }
     out = out body(prefix)
-    if (tag ~ /^<\/?choice/) {
-      if (depth > 0 && open[depth] == "need-input") {
-        if (tag != "</choice>" && out != "") out = out "\n"
-        if (tag == "<choice>") out = out CHOICE
-        else if (tag == "<choice recommended>") out = out RECOMMENDED
-      } else out = out body(tag)
-      continue
-    }
     if (substr(tag, 2, 1) == "/") {
       kind = substr(tag, 3, length(tag) - 3); found = 0
       for (i = depth; i >= 1; i--) if (open[i] == kind) { found = i; break }

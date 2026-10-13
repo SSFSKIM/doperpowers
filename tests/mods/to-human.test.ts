@@ -1,18 +1,7 @@
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import {
-  answerText,
-  answersOf,
-  isRead,
-  markdownBlocks,
-  parse,
-  promptRow,
-  questionHead,
-  runEnd,
-  runStart,
-  withAnswer,
-} from '../../hooks/mods/to-human'
+import { isRead, markdownBlocks, parse, promptRow, runEnd, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -54,10 +43,19 @@ describe('register', () => {
   })
 
   test('parse leaves an unclosed span open while it streams', async () => {
-    const parsed = parse('<need-input>Which branch')
+    const parsed = parse('<message>Which branch')
 
-    expect(parsed.spans).toEqual([{ kind: 'need-input', text: 'Which branch', isOpen: true }])
+    expect(parsed.spans).toEqual([{ kind: 'message', text: 'Which branch', isOpen: true }])
     expect(parsed.hasRecord).toBe(false)
+  })
+
+  test('parse reads old need-input marks as messages, their choice lines as text', async () => {
+    const question = 'Which backend?\n<choice recommended>Postgres: already running</choice>\n<choice>SQLite</choice>'
+    expect(parse(`<need-input>\n${question}\n</need-input>\nWorking.`)).toEqual({
+      spans: [{ kind: 'message', text: question, isOpen: false }],
+      hasRecord: true,
+    })
+    expect(parse('<need-input>Which branch').spans).toEqual([{ kind: 'message', text: 'Which branch', isOpen: true }])
   })
 
   test('parse lifts a mark nested inside another into a span of its own', async () => {
@@ -79,7 +77,7 @@ describe('register', () => {
     expect(parsed.spans).toEqual([
       { kind: 'message', text: 'Done.', isOpen: false },
       { kind: 'insight', text: 'Tests fail.', isOpen: false },
-      { kind: 'need-input', text: 'Which', isOpen: true },
+      { kind: 'message', text: 'Which', isOpen: true },
     ])
   })
 
@@ -180,10 +178,10 @@ describe('tags in code', () => {
     }
   })
 
-  test('quoted closers and choice tags do not end a mark or become buttons', async () => {
+  test('quoted closers do not end a mark', async () => {
     const question = 'Which form?\nWrite `<choice>A</choice>` lines.\n```\n</need-input>\n<choice>B</choice>\n```'
     expect(parse(`<need-input>${question}\n<choice recommended>Yes</choice>\n</need-input>`)).toEqual({
-      spans: [{ kind: 'need-input', text: question, isOpen: false, choices: [{ text: 'Yes', recommended: true }] }],
+      spans: [{ kind: 'message', text: `${question}\n<choice recommended>Yes</choice>`, isOpen: false }],
       hasRecord: false,
     })
   })
@@ -220,11 +218,11 @@ describe('tags in code', () => {
     for (const fence of ['```', '~~~']) {
       expect(parse(`<message>Run this:\n${fence}bash\nnpm test\n${fence}</message>\n<need-input>Go?</need-input>`)).toEqual({
         spans: [{ kind: 'message', text: `Run this:\n${fence}bash\nnpm test\n${fence}`, isOpen: false },
-          { kind: 'need-input', text: 'Go?', isOpen: false }], hasRecord: false,
+          { kind: 'message', text: 'Go?', isOpen: false }], hasRecord: false,
       })
     }
     expect(parse('<message>```bash\nnpm test\n```\n</message>\n<need-input>Go?</need-input>').spans).toEqual([
-      { kind: 'message', text: '```bash\nnpm test\n```', isOpen: false }, { kind: 'need-input', text: 'Go?', isOpen: false },
+      { kind: 'message', text: '```bash\nnpm test\n```', isOpen: false }, { kind: 'message', text: 'Go?', isOpen: false },
     ])
     const example = 'Example syntax:\n```text\n```</message>\n<need-input>Example only?</need-input>\n```\nEnd of example.'
     expect(parse(`<message>${example}</message>`)).toEqual({
@@ -232,12 +230,12 @@ describe('tags in code', () => {
     })
   })
 
-  test('rendered orange messages keep quoted tags and do not turn code choice markers into buttons', async () => {
+  test('rendered orange messages keep quoted tags; an old need-input header reads as a message with its markers as text', async () => {
     expect(parse(`\u001b[1;38;2;215;119;87mmessage\u001b[0m\n\n${sentence}\n`)).toEqual({
       spans: [{ kind: 'message', text: sentence, isOpen: false }], hasRecord: false,
     })
     expect(parse('\u001b[1;35mneed input\u001b[0m\n\nExample:\n```\n◇ literal\n```\n◆ Yes\n').spans).toEqual([
-      { kind: 'need-input', text: 'Example:\n```\n◇ literal\n```', isOpen: false, choices: [{ text: 'Yes', recommended: true }] },
+      { kind: 'message', text: 'Example:\n```\n◇ literal\n```\n◆ Yes', isOpen: false },
     ])
   })
 })
@@ -309,160 +307,6 @@ describe('runEnd', () => {
     const { order, rowOf } = rows(['r1', 'record'])
 
     expect(runEnd(order, rowOf, 'unseen')).toBe('unseen')
-  })
-})
-
-describe('choices', () => {
-  const choices = [
-    { text: 'SQLite: one file, no daemon', recommended: false },
-    { text: 'Postgres: already running for the board', recommended: true },
-  ]
-
-  test('parse lifts the choices out of a need-input span', async () => {
-    const parsed = parse(
-      '<need-input>\nWhich backend?\n<choice>SQLite: one file, no daemon</choice>\n' +
-        '<choice recommended>Postgres: already running for the board</choice>\n</need-input>',
-    )
-
-    expect(parsed.spans).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices }])
-  })
-
-  test('parse reads the choice markers the streaming hook drew', async () => {
-    const parsed = parse(
-      '\u001b[1;35mneed input\u001b[0m\n\nWhich backend?\n' +
-        '\u25c7 SQLite: one file, no daemon\n\u25c6 Postgres: already running for the board\n',
-    )
-
-    expect(parsed.spans).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices }])
-  })
-
-  test('raw choices pair only tag tokens outside code, ignoring quoted closing tags', async () => {
-    expect(parse('<need-input>Which?\n<choice>Keep `</choice>` literal.</choice>\n</need-input>')).toEqual({
-      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
-        { text: 'Keep `</choice>` literal.', recommended: false },
-      ] }], hasRecord: false,
-    })
-  })
-
-  test('raw choices ignore fenced closing tag examples before their real closer', async () => {
-    expect(parse('<need-input>Which?\n<choice recommended>Keep this example:\n```\n</choice>\n```\nliteral.</choice>\n</need-input>')).toEqual({
-      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
-        { text: 'Keep this example:\n```\n</choice>\n```\nliteral.', recommended: true },
-      ] }], hasRecord: false,
-    })
-  })
-
-  test('nested and unclosed raw choice markup stays literal under the flat option grammar', async () => {
-    const markup = '<choice>Outer <choice>Inner</choice></choice>\n<choice>Unclosed'
-    expect(parse(`<need-input>Which?\n${markup}</need-input>`)).toEqual({
-      spans: [{ kind: 'need-input', text: `Which?\n${markup}`, isOpen: false }], hasRecord: false,
-    })
-  })
-
-  test('rendered choices may end in inline code or consist entirely of it', async () => {
-    expect(parse('\u001b[1;35mneed input\u001b[0m\n\nWhich?\n◇ Use `main`\n◆ `npm test`\n')).toEqual({
-      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
-        { text: 'Use `main`', recommended: false }, { text: '`npm test`', recommended: true },
-      ] }], hasRecord: false,
-    })
-    expect(parse('<need-input>Which?\n<choice>Use `main`</choice>\n<choice recommended>`npm test`</choice>\n</need-input>')).toEqual({
-      spans: [{ kind: 'need-input', text: 'Which?', isOpen: false, choices: [
-        { text: 'Use `main`', recommended: false }, { text: '`npm test`', recommended: true },
-      ] }], hasRecord: false,
-    })
-    // A raw closing choice tag inside code cannot close the real choice.
-    expect(parse('<need-input>Example:\n<choice>Use `</choice>` literally.\n</need-input>')).toEqual({
-      spans: [{ kind: 'need-input', text: 'Example:\n<choice>Use `</choice>` literally.', isOpen: false }], hasRecord: false,
-    })
-  })
-
-  test('parse reads choices written on one line, in either form', async () => {
-    const inline = [
-      { text: 'SQLite', recommended: false },
-      { text: 'Postgres', recommended: true },
-    ]
-
-    expect(
-      parse('<need-input>Which backend? <choice>SQLite</choice> <choice recommended>Postgres</choice></need-input>').spans,
-    ).toEqual([{ kind: 'need-input', text: 'Which backend?', isOpen: false, choices: inline }])
-    expect(parse('[1;35mneed input[0m\n\nWhich backend? ◇ SQLite ◆ Postgres\n').spans).toEqual([
-      { kind: 'need-input', text: 'Which backend?', isOpen: false, choices: inline },
-    ])
-  })
-
-  test('a choice outside a need-input span is text', async () => {
-    const parsed = parse('<message>\nPick.\n<choice>A</choice>\n</message>')
-
-    expect(parsed.spans).toEqual([{ kind: 'message', text: 'Pick.\n<choice>A</choice>', isOpen: false }])
-  })
-})
-
-describe('answers', () => {
-  test('questionHead is the first line of the question, bounded', async () => {
-    expect(questionHead('\nWhich backend?\nMore detail.')).toBe('Which backend?')
-    expect(questionHead('Which "mode"?')).toBe("Which 'mode'?")
-    expect(questionHead('x'.repeat(200))).toBe('x'.repeat(119) + '\u2026')
-    expect(questionHead('x'.repeat(118) + '\ud83d\ude00y')).toBe('x'.repeat(118) + '\ud83d\ude00\u2026')
-  })
-
-  test('answerText names the question and the choice, and answersOf reads it back', async () => {
-    const text = answerText('Which backend?', 'Postgres')
-
-    expect(text).toBe('Answering "Which backend?": Postgres')
-    expect(answersOf(text)).toEqual([{ head: 'Which backend?', answer: 'Postgres' }])
-    expect(answersOf('Answering "Which backend?": ')).toEqual([{ head: 'Which backend?', answer: '' }])
-    expect(answersOf(answerText('Which format?', 'Use "fast": mode'))).toEqual([{ head: 'Which format?', answer: 'Use "fast": mode' }])
-    expect(answersOf('Just a prompt.')).toEqual([])
-    // The engine frames a prompt a plugin submitted; the transcript keeps the frame.
-    expect(
-      answersOf('The doperpowers plugin sent a message:\nAnswering "Which backend?": Postgres\n\nThis is how Claude Code surfaces a prompt.'),
-    ).toEqual([{ head: 'Which backend?', answer: 'Postgres' }])
-  })
-
-  test('answersOf reads every answer of a prompt, one per line, and leaves the other lines alone', async () => {
-    const text = 'Answering "Which backend?": Postgres\nAnswering "Which region?": eu-west\nAlso: keep the old data.'
-
-    expect(answersOf(text)).toEqual([
-      { head: 'Which backend?', answer: 'Postgres' },
-      { head: 'Which region?', answer: 'eu-west' },
-    ])
-  })
-
-  test('withAnswer gives each question one line of the box, so two answers go in one prompt', async () => {
-    const one = withAnswer('', 'Which backend?', 'Postgres')
-    const two = withAnswer(one, 'Which region?', 'eu-west')
-
-    expect(one).toBe('Answering "Which backend?": Postgres')
-    expect(two).toBe('Answering "Which backend?": Postgres\nAnswering "Which region?": eu-west')
-    // A second press on a question replaces its line where it stands.
-    expect(withAnswer(two, 'Which backend?', 'SQLite')).toBe(
-      'Answering "Which backend?": SQLite\nAnswering "Which region?": eu-west',
-    )
-  })
-
-  test('withAnswer puts a reply last, where the cursor is, and keeps what the person typed', async () => {
-    const typed = 'Answering "Which backend?": Postgres\nAnswering "Which region?": eu-west\nPlease keep the old data.'
-
-    // `reply` on an answered question moves its line to the end as the opening.
-    expect(withAnswer(typed, 'Which backend?', undefined)).toBe(
-      'Answering "Which region?": eu-west\nPlease keep the old data.\nAnswering "Which backend?": ',
-    )
-    // A choice pressed after a reply was typed leaves the typed reply as it is.
-    expect(withAnswer('Answering "Which backend?": my own', 'Which region?', 'eu-west')).toBe(
-      'Answering "Which backend?": my own\nAnswering "Which region?": eu-west',
-    )
-    // A box ending in a newline takes the line without a blank one before it.
-    expect(withAnswer('note to self\n', 'Which region?', 'eu-west')).toBe('note to self\nAnswering "Which region?": eu-west')
-    expect(withAnswer('  ', 'Which region?', 'eu-west')).toBe('Answering "Which region?": eu-west')
-  })
-
-  test('withAnswer collapses two lines for one question into the one pressed', async () => {
-    // A duplicate the person pasted or edited in would settle the question by
-    // its later line, over the choice just pressed.
-    const pasted = 'Answering "Q": old\nAnswering "Q": later\nnote'
-
-    expect(withAnswer(pasted, 'Q', 'new')).toBe('Answering "Q": new\nnote')
-    expect(withAnswer(pasted, 'Q', undefined)).toBe('note\nAnswering "Q": ')
   })
 })
 
@@ -599,11 +443,11 @@ describe('mixed', () => {
 
 describe('surfaces', () => {
   const PLUGIN = 'doperpowers-mods'
-  const TEXT =
-    '<message>One.</message>\n' +
-    '<need-input>Which branch?\n<choice recommended>main</choice>\n<choice>dev</choice>\n</need-input>'
+  // An old transcript's question: its mark reads as a message, its choice lines as text.
+  const QUESTION = 'Which branch?\n<choice recommended>main</choice>\n<choice>dev</choice>'
+  const TEXT = `<message>One.</message>\n<need-input>${QUESTION}\n</need-input>`
 
-  test('a remote surface draws every span body as its own Markdown, the question included', async ($, on) => {
+  test('a remote surface draws every span body as its own Markdown, an old question included', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     // The engine's own drawing beneath the mod, as the terminal case reads it.
@@ -620,13 +464,11 @@ describe('surfaces', () => {
     })
 
     expect(await ui.find({ type: 'Markdown', text: 'One.' })).toBeDefined()
-    expect(await ui.find({ type: 'Markdown', text: 'Which branch?' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', text: '1: main ★' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', text: '2: dev' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', text: 'reply…' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: QUESTION })).toBeDefined()
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
     // Nothing is handed back beneath the hook: a second block would not draw.
     expect(await ui.find({ type: 'Text', text: 'One.' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: 'Which branch?' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: QUESTION })).toBeUndefined()
   })
 
   test('MessageDisplay fenced record folds without losing the report or inventing a reply button', async ($, on) => {
@@ -643,7 +485,7 @@ describe('surfaces', () => {
     expect(await ui.find({ type: 'Text', text: '● need input' })).toBeUndefined()
   })
 
-  test('the terminal keeps the engine\'s own drawing of each span body', async ($, on) => {
+  test('the terminal keeps the engine\'s own drawing of each span body, under the message label', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     on('ui.render', (_, e) => ({
@@ -659,10 +501,11 @@ describe('surfaces', () => {
     })
 
     expect(await ui.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '  message' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'One.' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Which branch?' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: QUESTION })).toBeDefined()
     expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
-    expect(await ui.find({ type: 'Button', text: '1: main ★' })).toBeDefined()
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
   })
 
   test('without MAWS, the report band and its press still switch the desktop transcript', async ($, on) => {
@@ -683,7 +526,7 @@ describe('surfaces', () => {
         scroll: { offset: 0, bodyRows: 5 }, view: {},
       },
     })
-    expect(await message.find({ type: 'Markdown', text: 'Which branch?' })).toBeDefined()
+    expect(await message.find({ type: 'Markdown', text: QUESTION })).toBeDefined()
     expect(await band.find({ type: 'Button', text: 'full transcript' })).toBeDefined()
     await band.press({ key: 'to-human-mode' })
     expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
