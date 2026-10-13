@@ -980,6 +980,25 @@ dependencies.
 
 ## Surprises & Discoveries
 
+M3 (2026-10-13):
+
+- Observation: eval round 1 (the spec's one-line style summary) missed the
+  bar. S2-3 asked async and ended its turn "I've sent you the
+  package-manager question and will wait for your answer"; S1-3 wrote a
+  plain-text recommendation for step 2's storage instead of asking. Round 2
+  (the style paragraph alone revised: "for the work in front of you or for
+  a later step … not in a message", and "If the answer is the last thing
+  left in your turn, you are waiting on it, and `async` stays off" — the
+  old style's guard against asking and then waiting, restored) met it: S1
+  async 3/3, S2 blocking 3/3, S3 3/3, zero marks, zero built-in calls.
+- Observation: the before arm rarely produced a usable S1 question — one
+  `<need-input>` mark in three runs; in the other two the model referred to
+  a storage question "above" that it never wrote.
+- Observation: the engine writes a plugin tool's `tool_use` row to the
+  transcript only once the call resolves; the built-in's appears at once.
+  A transcript watcher (MAWS included) cannot see an open blocking ask of
+  the tool.
+
 M2 (2026-10-13), live on 2.1.296:
 
 - Observation: the engine's own AskUserQuestion row cannot be drawn for the
@@ -1085,6 +1104,16 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: M3 (2026-10-13) — the style paragraph's final copy is eval
+  round 2's (Surprises & Discoveries, M3); the tool's async paragraph is
+  unchanged, the style alone having met the bar; the style names the tool
+  `AskUserQuestion` (zero built-in calls in 18 after-runs); an old
+  `<need-input>` keeps its `<choice>` lines as literal text, and the old
+  stream-drawn `need input` header parses as a message; version 7.148.0.
+  Rationale: the eval is the evidence for behavior-shaping copy; the
+  alias reading needs no grammar.
+  Date/Author: 2026-10-13, M3 executor; folded by the plan-executor.
 
 - Decision: M2 review fixes (2026-10-13) — a rejected downstream prompt pass
   puts its reserved answers back (as a dropped one does); resume counts a
