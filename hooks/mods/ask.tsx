@@ -828,16 +828,24 @@ async function answerAsk($: EngineInterface, id: string) {
 /**
  * The stored forms resume reads, as the engine writes them into the
  * transcript (compact JSON, recorded live on 2.1.296): the tool's calls, its
- * async results, and the two delivery forms. A search for these finds the
+ * async results, and the delivery forms. A search for these finds the
  * rows that can name an ask, and not the large rows that merely mention the
  * tool (the tool list a prompt snapshot carries).
  */
 const STORED_FORMS = [
   `"name":"${ASK_TOOL}","input":`,
   ASYNC_RESULT,
+  // A context attachment's entries: the first, or one behind another hook's
+  // context (both routes append to what is there).
   `"type":"hook_additional_context","content":["${DELIVERY_HEAD}`,
+  `","${DELIVERY_HEAD}`,
   `"content":${JSON.stringify(PLUGIN_PROMPT + DELIVERY_HEAD).slice(0, -1)}`,
 ]
+
+/** The search for the stored forms in the transcript at `path`. */
+export function searchArgs(path: string): string[] {
+  return ['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path]
+}
 
 /**
  * The transcript's lines, or the lines that can name an ask in one too large
@@ -855,7 +863,7 @@ async function transcriptLines($: EngineInterface, path: string): Promise<string
     }
     let search: Awaited<ReturnType<typeof $.process.run>>
     try {
-      search = await $.process.run(['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path])
+      search = await $.process.run(searchArgs(path))
     } catch (searchError) {
       return failed(`could not be searched (${message(searchError)})`)
     }
