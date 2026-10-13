@@ -1105,6 +1105,21 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
 
 ## Decision Log
 
+- Decision: branch review (high rung, 2026-10-13) — resume rebuilds from
+  the whole transcript unless it holds a rewind record (`last-prompt` with
+  `explicit`/`rewound`); a rewound transcript is rebuilt as the engine
+  restores it (the leaf's `parentUuid` chain, `logicalParentUuid` across a
+  compact boundary, and `i1r`'s recovery of a response's sibling rows,
+  each call's results and their side rows); the "Chat about this" parser
+  reads a whole multi-line answer for its image mark. Known limits, in the
+  mod's README: the over-4-MiB search has no ancestry, and a rewind inside a
+  running session raises no hook-visible event, so the left branch's asks
+  stay in view until resume.
+  Rationale: the first ancestry fix dropped a same-response sibling result
+  (a normal-session regression); gating on a rewind keeps the normal path
+  as it was reviewed.
+  Date/Author: 2026-10-13, plan-executor, on the branch review.
+
 - Decision: M3 (2026-10-13) — the style paragraph's final copy is eval
   round 2's (Surprises & Discoveries, M3); the tool's async paragraph is
   unchanged, the style alone having met the bar; the style names the tool
@@ -1273,4 +1288,55 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-10-13, at finish. `mcp__doperpowers__AskUserQuestion` shipped as
+designed. A blocking ask opens the engine's own dialog, widened inside the
+mod, and returns the built-in's result text byte for byte (acceptance 1:
+the recorded results compared `IDENTICAL`). An async ask returns at once.
+Its questions wait in the human's view, in their row and in the band above
+the prompt. The answer reaches the model beside the next model-made tool
+result, or as a plugin prompt when the session is idle, or with the
+human's next prompt after a stop. The built-in is withdrawn, and
+`<need-input>` is retired to a read-alias of `<message>`. Acceptance 1–13
+passed live on the finished branch. The eval met its bar on the second
+style round: S1 async 3/3, S2 blocking 3/3, S3 3/3, with zero marks and
+zero built-in calls. In the before arm, the model produced a usable S1
+question in only one run of three.
+
+What moved during the build:
+- Images came into scope mid-build. Blocking asks carry kept pastes as
+  image blocks; async deliveries and "Chat about this" carry them as
+  `[Image source: <path>]` lines.
+- The engine facts the spec did not have were found by live probes and
+  recorded in Surprises & Discoveries:
+  - `$.tool.list()` truncates descriptions at 300 characters;
+  - `tool.describe` fires before registration settles;
+  - plugin tool input is not schema-checked;
+  - every hook deny is wrapped in `<tool_use_error>`;
+  - `context` on a cut call is dropped;
+  - a plugin tool's `tool_use` row is written only once the call resolves.
+- The turn-end boundary stayed `$.turn.abort` plus an empty step. The
+  probe showed the abort spares running work, and the no-abort variant
+  would run Stop hooks.
+- Reviews caught real losses at every frontier:
+  - removed pastes that would have been sent;
+  - answers lost on a rejected prompt pass;
+  - a human quote read as a delivery;
+  - a truncated search rebuilding silently;
+  - an abandoned rewind branch resurrected on resume;
+  - a same-response sibling result dropped by the first ancestry fix.
+
+Known limits, each recorded in `hooks/mods/README.md`:
+- a blocking refusal reads wrapped in `<tool_use_error>`;
+- a removed paste is sent if the human ends their own answer with the
+  engine's literal `(Image attached)`;
+- an async image arrives as a path the model Reads, and the path can
+  expire with the engine's temp store;
+- the over-4-MiB resume search has no ancestry and a 4 MiB output ceiling;
+- an in-session rewind leaves the abandoned branch's asks in view until
+  resume;
+- a hot reload drops the asks until the next start or resume.
+
+Lesson: the spec's style summary, written before any run, missed twice in
+round 1. The old style's guard sentence, dropped in the summary, was what
+the model needed. Behavior-shaping copy should be carried over from the
+validated text and trimmed, not re-summarized.
