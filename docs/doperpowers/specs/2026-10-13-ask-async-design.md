@@ -450,8 +450,8 @@ answers `isDeferred: true` with the description
 `Withdrawn in this session: ask through mcp__doperpowers__AskUserQuestion,
 which takes this tool's input plus async.`; and the mod's `tool.call` hook
 on `AskUserQuestion` refuses every call that does not claim a pending entry
-(Design → Blocking: this plugin's origin, an unclaimed entry, the matching
-first question), with that sentence. Rejected: a permission deny rule or
+(Design → Blocking: this plugin's origin, an unclaimed entry, the entry's
+token as the call's one header), with that sentence. Rejected: a permission deny rule or
 `disallowedTools` — `$.ui.ask` is a `tool.call` of AskUserQuestion through
 the permission check, so a rule that removed the built-in would remove the
 dialog with it; and a plugin cannot write a session's rules.
@@ -691,8 +691,9 @@ reaches the hook first, and every other call — a model's call
 with a matching text included — is refused; a refusal without feedback
 ends the turn at the chosen boundary and one with feedback does not; with
 the latch set, a model-made call later in the turn is refused before it
-runs and a held answer is not submitted at that turn's end; the
-tool's `inputSchema` has no `answers`/`annotations` and has `async`.
+runs; the tool's `inputSchema` has no `answers`/`annotations` and has
+`async`. (That a latched turn's end does not submit a held answer is M2's
+test: held answers arrive with M2.)
 
 ### M2 — Asking without waiting
 
@@ -733,7 +734,8 @@ origin is a plugin (the mod's nested AskUserQuestion, another plugin's
 call), never with `agentId` set, never on a deny — including the
 interleaving where ask A's answer is held while ask B's dialog settles;
 `turn.complete` with `reason: 'answer'` submits them, any other reason
-keeps them, and the human's next prompt carries them as `context`; a
+keeps them, as does a turn that ends with M1's turn latch set whatever
+its reason, and the human's next prompt carries them as `context`; a
 dropped or rejected submission (either route) puts its answers back ahead
 of any answered meanwhile, and a tool result resolving during a pending
 submission cannot deliver the reserved answers a second time; Esc
@@ -949,6 +951,16 @@ dependencies.
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: execution pre-flight (2026-10-13) — two readings settled before
+  M1: the Withdrawn section's claim rule now names the token (round two
+  replaced question-text matching; that paragraph still said "the matching
+  first question"); and the test that a latched turn's end does not submit
+  a held answer moves from M1's pins to M2's, since held answers do not
+  exist until M2 (M1 builds the latch; M2's delivery consults it).
+  Rationale: one rule for claims across the spec; each test where the code
+  it exercises lands.
+  Date/Author: 2026-10-13, plan-executor (controller).
 
 - Decision: review round two (2026-10-13) — the buildability review's one
   finding (the parity test's key order) and the design review's three were
