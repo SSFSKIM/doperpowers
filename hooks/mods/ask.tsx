@@ -379,7 +379,15 @@ async function imageBlocks($: EngineInterface, paths: readonly string[]) {
   return blocks
 }
 
-/** One `[Image: source: <path>]` line per picture, the path as it resolves on disk. */
+/**
+ * The engine's own line for an image known only by its file (no
+ * dimensions): what the model reads to open a picture with Read.
+ */
+export function imageSourceLine(path: string): string {
+  return `[Image source: ${path}]`
+}
+
+/** One `[Image source: <path>]` line per picture, the path as it resolves on disk. */
 async function imageLines($: EngineInterface, paths: readonly string[]): Promise<string[]> {
   return Promise.all(
     paths.map(async (path) => {
@@ -387,7 +395,7 @@ async function imageLines($: EngineInterface, paths: readonly string[]): Promise
         .stat(path, { resolve: true })
         .then((stat) => stat.realPath)
         .catch(() => undefined)
-      return `[Image: source: ${real ?? path}]`
+      return imageSourceLine(real ?? path)
     }),
   )
 }

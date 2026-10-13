@@ -317,7 +317,7 @@ answers account for every new file, all were kept, and the tool returns the
 engine's text block followed by one base64 image block per file, in number
 order; when they do not (a picture removed, or two kept in one answer), which
 were kept is unknown and none is sent, with a debug-log line. "Chat about
-this" keeps its refusal, which is text, and appends one `[Image: source:
+this" keeps its refusal, which is text, and appends one `[Image source:
 <path>]` line per kept picture (the file's real path) for the model to Read.
 The temp root is `claude-<uid>` under `CLAUDE_CODE_TMPDIR` or `/tmp`, found
 as the one such folder this process can read; the slug and session id come

@@ -12,6 +12,7 @@ import {
   describeAsk,
   imageBlock,
   imageMarks,
+  imageSourceLine,
   mediaTypeOf,
   newImages,
   registerAsk,
@@ -667,6 +668,10 @@ describe('pictures the human kept', () => {
     return h
   }
 
+  test("a picture's line is the engine's source-only form", async () => {
+    expect(imageSourceLine('/private/tmp/x/1.png')).toBe('[Image source: /private/tmp/x/1.png]')
+  })
+
   test('imageMarks counts the answers the engine marked as carrying a picture', async () => {
     expect(imageMarks(['(Image attached)', 'mine (Image attached)', 'SQLite', 'Auth, Export'])).toBe(2)
     expect(imageMarks([])).toBe(0)
@@ -699,7 +704,7 @@ describe('pictures the human kept', () => {
     h.paste(FOLDER, '1.png')
     const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: like this (Image attached)`
     await h.raise(0, refused(chat))
-    expect((await pending).result).toEqual({ deny: `${chat}\n[Image: source: /private${FOLDER}/1.png]` })
+    expect((await pending).result).toEqual({ deny: `${chat}\n[Image source: /private${FOLDER}/1.png]` })
   })
 
   test('"Chat about this" with a removed picture is the plain refusal', async () => {
