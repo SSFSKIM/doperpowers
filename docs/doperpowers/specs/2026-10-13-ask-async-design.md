@@ -37,6 +37,7 @@ question (descriptions, previews), notes with `n` — is the same.
 
 - [x] (2026-10-13 16:30Z) Engine probes: the dialog path, widening, blocking, delivery, withdrawal (Surprises & Discoveries).
 - [x] (2026-10-13) Design approved in conversation; spec written.
+- [x] (2026-10-13 17:10Z) Engine reference from the extracted bundle folded in (facts 10–16).
 - [ ] Independent spec review and buildability review.
 - [ ] M1 — The tool and blocking parity
 - [ ] M2 — Asking without waiting
@@ -116,6 +117,67 @@ Discoveries.
 9. `$.prompt.fill` + the human's Enter delivers mid-turn as the human's own
    words (`queued_command`, `origin: human`) — the route `<need-input>` used.
 
+What the built-in does, read from the extracted bundle
+(`~/claude-code-bundle/2.1.292/cli.pretty.js`, diffed against 2.1.296's
+binary: the dialog and result code are identical but for identifiers; the
+full study is `docs/doperpowers/specs/2026-10-13-ask-async-engine-reference.md`,
+background only — this section carries what binds):
+
+10. **Result text** (`mapToolResultToToolResultBlockParam`, L838029): per
+    answered question `"<question>"="<answer>"` (or `=(no option selected)`),
+    then ` selected preview:\n<preview>` and ` notes: <notes>` when present,
+    joined with `", "`. All answers plain option labels and no notes →
+    `Your questions have been answered: <summary>. You can now continue with
+    these answers in mind.`; free text or any notes → `The user answered:
+    <summary>. Read the answers carefully — they may request clarification,
+    changes, or that you not proceed — and follow what they actually say.`;
+    nothing answered → `The user did not answer the questions.`
+11. **Esc** (and Cancel on the review page, and Enter on an empty "Type
+    something") refuses the call: the model's tool result is `The user
+    doesn't want to proceed with this tool use. The tool use was rejected (eg.
+    if it was a file edit, the new_string was NOT written to the file). STOP
+    what you are doing and wait for the user to tell you how to proceed.`
+    and **the turn is aborted** (`cancelAndAbort`, L205856).
+12. **"Chat about this"** refuses with feedback: the result is the same
+    first two sentences, then `To tell you how to proceed, the user said:\n`
+    and a block beginning `The user wants to clarify these questions.` that
+    lists each question with the answer recorded so far. **The turn
+    continues.**
+13. **Validation** (zod, L837822): 1–4 questions; 2–4 options; `question`,
+    `header`, `label` and `description` required strings; question texts
+    unique and option labels unique within a question (`Question texts must
+    be unique, option labels must be unique within each question`); the
+    top-level object strict. The header's "max 12 chars" is description
+    only — never checked. Errors read `InputValidationError: …AskUserQuestion
+    failed due to the following issue(s):` with one line per issue
+    (`<tool_use_error>InputValidationError: [<steer>\n\n]AskUserQuestion
+    failed due to the following issue[s]:\n<issue lines></tool_use_error>`),
+    and a question with fewer than two options prepends this steer,
+    verbatim: `This call included a question with fewer than 2 options, so
+    it was rejected and the person never saw it. A question with a single
+    option has no decision in it. Do not retry this call and do not invent a
+    filler second option. Instead, state the one path you were going to
+    offer as the approach you are taking, then continue with the task. If
+    this call also contained questions with 2 to 4 options (each with
+    distinct labels), you may re-ask those questions alone in a new call. Ask
+    a question only when the person has at least two genuinely distinct
+    choices.`
+14. **Subagents never have it**: the subagent tool filter (`xl`, L6052)
+    drops every tool in a set that includes AskUserQuestion (`I(e)`,
+    L689962).
+15. **Transcript rows**: none while the dialog is open; answered →
+    `⏺ User answered Claude's questions:` then, under `⎿`, one dim row per
+    answer, `· <question> → <answer>`; refused → `⏺ User declined to answer
+    questions` then `· <question> (<opt> / <opt>)` per question.
+16. **A refusal of the mod's own ask** (probed): Esc on a dialog opened
+    from a `ui.press` hook while the model ran a 40-second command did not
+    abort the model's turn — the command finished and the model went on.
+    The widening hook's `next` resolved with an errored result whose
+    `result` read `Error: The user doesn't want to proceed with this tool
+    use. … STOP what you are doing and wait for the user to tell you how to
+    proceed.` (the engine's cancel-and-abort applies to the model's own
+    call, not to a plugin's).
+
 ## Design
 
 ### The tool
@@ -156,15 +218,17 @@ decision; M3's eval measures it):
 > that quotes each question. Leave it false when nothing useful can proceed
 > without the answer.
 
-**Validation**: the engine validates the widened input as it validates a
-model's call, so a blocking ask with a bad input gets the engine's own error.
-An async ask has no engine call at the time it is made, so the mod validates
-it at once against the rules the built-in enforces (1–4 questions, 2–4
-options each, a header of at most 12 characters, unique question texts,
-unique option labels within a question — confirm the exact set and error
-text against the engine reference, below), and returns the same error text
-the built-in would. The same validation runs before a blocking ask too, so
-both paths fail the same way before any dialog opens.
+**Validation**: an async ask has no engine call at the moment it is made,
+so the mod validates every ask at once, before any dialog, against the
+built-in's rules (fact 13) — and not the header length, which the built-in
+never checks — and returns the built-in's error form: the
+`InputValidationError` head naming `AskUserQuestion`, one line per issue,
+the uniqueness message verbatim, and the fewer-than-two-options steer
+verbatim. The wording of zod's own per-field messages is not pinned (the
+engine reference marks it inferred); the shape and the two verbatim texts
+are. If the engine validates a plugin tool's input against its
+`inputSchema` before the mod's hook runs, its message stands for the cases
+it catches; record which form the model sees in Surprises & Discoveries.
 
 ### Blocking (`async` false or absent)
 
@@ -179,13 +243,20 @@ question whose text is the pending set's first), widens it, and keeps what
   verbatim (observed: `Your questions have been answered: "Which
   backend?"="SQLite" selected preview: … , "Which layout?"="Stacked". You can
   now continue with these answers in mind.`);
-- refused at the dialog (Esc, "Chat about this", or whatever else the engine
-  reports as a refusal): the same outcome the built-in gives the model for
-  that refusal — the refusal's text from `next` as the tool's error, and, if
-  the engine ends or interrupts the turn on that refusal for the built-in,
-  the same through `$.turn` (confirm against the engine reference). The
-  principle: the model cannot tell this tool's blocking call from the
-  built-in's.
+- refused at the dialog: the refusal's text from `next`, verbatim, as the
+  tool's error result (fact 11 or 12). A refusal without the user's
+  feedback (Esc, Cancel, an empty "Type something": fact 11) also ends the
+  model's turn, as the engine ends it for the built-in — the engine does not
+  do it for a plugin's ask (fact 16), so the mod does, with
+  `$.turn.abort({ turnId })` for the turn `turn.start` handed it, once the
+  tool's result is recorded (the observable: the model writes nothing after
+  the refusal, and the transcript holds the refusal text as the call's
+  result). A refusal with feedback ("Chat about this": fact 12) returns its
+  text and the turn continues. Told apart by the text: fact 12's carries
+  `To tell you how to proceed, the user said:`.
+
+The principle: the model cannot tell this tool's blocking call from the
+built-in's — same dialog, same result text, same turn outcome.
 
 The pending widening is cleared in a `finally`, so a stale set never widens
 an unrelated ask. One ask's dialog is open at a time: a second ask (a press
@@ -201,14 +272,18 @@ The tool's `tool.call` hook validates, records the ask as open (its
 > them. Their answer will reach you in a later message that quotes each
 > question. Go on with work that does not depend on it.
 
-**Where the human sees it.** The call's row in the transcript draws the
-questions — each question's header chip and text — and `[ answer ]`; once
-answered, the row draws the answers the way the engine draws an answered
-AskUserQuestion row (try rewriting the `ToolUse` props to the built-in's —
-`tool: 'AskUserQuestion'`, the widened input, the result record — so the
-engine draws its own row; if the component refuses the rewrite, draw the
-same lines with the mod's own elements). In the to-human view the row stays
-in the report, as the built-in's does (`isRead` in `hooks/mods/to-human.tsx`).
+**Where the human sees it.** The call's transcript row (every ask, blocking
+or async; drawn by M2) draws what the engine draws for the built-in (fact 15): nothing while a
+blocking dialog is open; `⏺ User answered Claude's questions:` with its
+`· <question> → <answer>` rows once answered; `⏺ User declined to answer
+questions` with its rows once refused. First try rewriting the `ToolUse`
+props to the built-in's (`tool: 'AskUserQuestion'`, the input, the result
+record) so the engine draws its own row; if the component refuses the
+rewrite, draw the same lines with the mod's own elements. An open async ask
+is the one state the built-in has no row for: it draws `⏺ Claude asked
+(answer when ready):` with one dim `· <header> — <question>` row per
+question and `[ answer ]`. In the to-human view the row stays in the
+report, as the built-in's does (`isRead` in `hooks/mods/to-human.tsx`).
 Above the prompt, while any ask is open: `N open question(s) · [ answer ]`,
 the button opening the oldest — an async question scrolls away while the
 model works, and this keeps it reachable. The above-prompt line and the
@@ -230,18 +305,19 @@ widens and keeps `next`'s result. Then:
   This is the one place async differs from blocking, by meaning: in a
   blocking ask Esc refuses the call the model is waiting on; in an async ask
   nothing waits, and Esc means "not now".
-- "Chat about this" → if the engine reports it to the model's own call as
-  something other than the plain refusal (a follow-up flag, a distinct text
-  — confirm against the engine reference), that report is delivered as the
-  answer, exactly as the blocking call would have returned it, and the ask
-  turns answered; if it is indistinguishable from Esc at `next`, it behaves
-  as Esc.
+- "Chat about this" → its refusal text (fact 12: the user wants to clarify,
+  with the answers recorded so far) is delivered exactly as a blocking call
+  would have returned it, and the ask turns answered: the model learns the
+  human wants to talk these questions over, which is the button's meaning.
 
 **Delivery** carries exactly what the blocking call would have returned,
 headed by which ask it answers:
 
-> The human answered your async AskUserQuestion (call `<tool_use_id>`):
+> The human responded to your async AskUserQuestion (call `<tool_use_id>`):
 > `<the engine's result text>`
+
+("responded", not "answered": a "Chat about this" delivery is a refusal
+with the human's feedback, and the head is true of both.)
 
 The call id is for the mod (finding answered asks on resume); the model
 matches the answer to its questions by the question texts the engine's text
@@ -288,12 +364,12 @@ it arrives while the pending set is held), not by the call's origin.
 
 ### Subagents
 
-The engine hands every subagent every MCP tool (CLAUDE.md, `hooks/` row).
-A subagent's call of the new tool gets what a subagent's call of the
-built-in gets (confirm against the engine reference: refused or absent);
-if the built-in is unavailable to subagents, the call is refused with
-`AskUserQuestion is for the main conversation: report what you need to the
-agent that dispatched you.`, as `compact.tsx` refuses its tools. The agent
+Subagents never have the built-in (fact 14). The engine hands every
+subagent every MCP tool and a hook cannot filter the list per agent
+(CLAUDE.md, `hooks/` row), so a subagent's call of the new tool is refused
+in its `tool.call` hook (`e.agentId` set) with `AskUserQuestion is for the
+main conversation: report what you need to the agent that dispatched
+you.`, as `compact.tsx` refuses its tools. The agent
 definitions that withhold `AskUserQuestion` (`agents/plan-executor.md`,
 `agents/task-executor.md`) withhold `mcp__doperpowers__AskUserQuestion` too,
 and the definitions that withhold the compact tools (every agent under
@@ -349,15 +425,16 @@ Run in a scratch directory with the branch as the plugin:
    layout choice — and quote the result verbatim." The engine dialog opens at
    once with `←  ☐ <h1>  ☐ <h2>  ✔ Submit  →`, the preview box, and `Notes:
    press n to add notes`; `n` adds a note; Submit shows the review page. The
-   model quotes a result beginning `Your questions have been answered:` (or
-   whatever the built-in returns in this engine for the same answers — run the
-   same prompt once with the plugin off and compare) including the note.
+   model quotes the engine's result text (fact 10; with a note it begins
+   `The user answered:` and carries `notes: <note>`). Parity check: run the
+   same prompt and answers once with function hooks off (the built-in) and
+   compare the two results — identical.
 2. **Async mid-turn.** Prompt: "Ask me two questions with async true, then
    run `perl -e 'sleep 60'`, then `echo second`, then tell me whether an
    answer arrived, verbatim." The call returns at once; the row shows both
    questions and `[ answer ]`; above the prompt `2 open question(s) ·
    [ answer ]`. Pressing it while the command runs opens the same dialog;
-   after Submit the model's reply quotes `The human answered your async
+   after Submit the model's reply quotes `The human responded to your async
    AskUserQuestion (call toolu_…): …`, and the transcript has a
    `hook_additional_context` attachment carrying it. The row now draws the
    answers.
@@ -379,10 +456,15 @@ Run in a scratch directory with the branch as the plugin:
 8. **`<need-input>` gone.** The to-human style text has no `<need-input>`; a
    transcript containing an old `<need-input>…<choice>…</choice></need-input>`
    mark draws it under the message label, with no buttons.
-9. **Tests.** `tests/mods/run-mods-tests.sh`,
+9. **Blocking refusals.** In a blocking ask, Esc: the model writes nothing
+   more in that turn and the call's result is fact 11's text; "Chat about
+   this": the call's result begins with fact 11's first two sentences
+   followed by `To tell you how to proceed, the user said:`, and the model
+   goes on in the same turn.
+10. **Tests.** `tests/mods/run-mods-tests.sh`,
    `tests/claude-code/test-to-human-stream-hook.sh`, and
    `npx -p typescript@5 tsc -p hooks/mods/tsconfig.json` pass.
-10. **Eval.** M3's before/after runs meet its promotion bar.
+11. **Eval.** M3's before/after runs meet its promotion bar.
 
 ## Execution
 
@@ -409,11 +491,9 @@ Constraints for every milestone:
   button's 1-based column and row from `tmux capture-pane -p`).
 - Version: one minor bump with `scripts/bump-version.sh` in M3's last
   commit.
-- The engine reference for the facts this spec says to confirm is
-  `docs/doperpowers/specs/2026-10-13-ask-async-engine-reference.md` (from
-  the extracted 2.1.292 bundle, `~/claude-code-bundle/2.1.292/`); where it is
-  silent, a live probe decides, and the result goes into Surprises &
-  Discoveries.
+- The engine facts that bind are in "How the engine is reached"; where a
+  question they do not settle comes up, a live probe decides, and the result
+  goes into Surprises & Discoveries.
 
 ### M1 — The tool and blocking parity
 
@@ -435,15 +515,23 @@ Decisions here: the schema constant is the Interfaces one; the description
 read at `session.start` and the tool registered then, after the read; the
 match rule for the mod's own ask is "one question, its text equal to the
 pending set's first, while a set is pending"; validation runs before any
-dialog; a refusal maps to the built-in's outcome per the engine reference.
+dialog; a refusal maps to the built-in's outcome (Design → Blocking: the
+text verbatim; Esc's kind also ends the turn through `$.turn.abort`). The
+description read must be the engine's own text, not the withdrawal
+sentence this mod's `tool.describe` hook answers — check what
+`$.tool.list()` returns with that hook registered, and read before
+registering it if it matters. Until M2 the tool's row draws as the engine
+draws any plugin tool.
 
 Not touched: anything async (no open-ask state, no buttons, no delivery);
 `to-human.tsx`; the output style.
 
-Proves: acceptance 1, 5, 6. Tests pin: `validateQuestions` against each rule
+Proves: acceptance 1, 5, 6, 9. Tests pin: `validateQuestions` against each rule
 (count, options, header, duplicates) with the built-in's error text;
 `describeAsk` appends the async paragraph to a given description; the
 AskUserQuestion hook widens only a matching call and refuses every other;
+a refusal without feedback leads to an abort of the running turn and one
+with feedback does not;
 the tool's `inputSchema` has no `answers`/`annotations` and has `async`.
 
 ### M2 — Asking without waiting
@@ -461,7 +549,9 @@ Interfaces consumed: M1's `openDialog` and the widening hook. Exposed:
 `deliveryText`, `deliveredIds`, `ASYNC_RESULT`, `OpenAsk`, `askAbovePrompt`
 (what the above-prompt line draws, composed by whoever owns `AbovePrompt`).
 
-Decisions here: the delivery route table (Design → Async → Delivery); the
+Decisions here: the row drawing for every state (Design → Async → Where
+the human sees it), blocking included; the delivery route table (Design →
+Async → Delivery); the
 held answer is attached to at most one tool result and then cleared; a
 press while a dialog is open queues behind it (M1's dialog queue); the row
 drawing tries the engine's own AskUserQuestion row first; resume reads
@@ -474,10 +564,12 @@ mark, and nothing in M2 reads it).
 Proves: acceptance 2, 3, 4, 7. Tests pin: `deliveryText` and
 `deliveredIds` round-trip a call id through both stored forms (an attachment's
 `content` array and a user row's text, including the plugin's framing
-prefix); the delivery router chooses context while a main turn runs and
+prefix); the delivery head reads `The human responded to your async
+AskUserQuestion (call <id>): `; the delivery router chooses context while a main turn runs and
 submit when idle, and submits a held answer at `turn.complete`; an
 attachment goes onto a main-loop result only (never `agentId` set, never a
-denied result) and only once; Esc keeps the ask open.
+denied result) and only once; Esc keeps the ask open; a "Chat about this"
+refusal is delivered and closes the ask.
 
 ### M3 — `<need-input>` retired, the style, evals, acceptance
 
@@ -522,7 +614,7 @@ zero calls of the built-in across all runs. A miss below the bar revises the
 two paragraphs (style and async), reruns, and records each round in
 Surprises & Discoveries.
 
-Proves: acceptance 8, 9, 10, then runs acceptance 1–10 in order on the
+Proves: acceptance 8, 10, 11, then runs acceptance 1–11 in order on the
 finished branch.
 
 ## Interfaces and Dependencies
@@ -558,10 +650,14 @@ export type OpenAsk = {
   answer?: string            // the engine's result text, once answered
 }
 
+export type DialogOutcome =
+  | { kind: 'answered'; text: string; record: unknown }    // text: the engine's result text (fact 10)
+  | { kind: 'refused'; text: string; hasFeedback: boolean } // text: fact 11 or 12; hasFeedback: fact 12's form
+
 /**
- * Opens the engine dialog for `questions` and settles with next's result
- * from the widening hook: { text, record } when answered, { refusal } when
- * refused. Must be awaited inside a hook dispatch. Queues behind a dialog
+ * Opens the engine dialog for `questions` (pending widening, `$.ui.ask`
+ * with the first question) and settles with what the widening hook's `next`
+ * resolved. Must be awaited inside a hook dispatch. Queues behind a dialog
  * already open.
  */
 export function openDialog($: EngineInterface, questions: AskQuestion[]): Promise<DialogOutcome>
