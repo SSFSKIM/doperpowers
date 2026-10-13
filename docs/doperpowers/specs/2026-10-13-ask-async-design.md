@@ -344,9 +344,9 @@ on a multi-select question (whose answer is never marked).
   `[Image source: <path>]` line per kept paste, which the model Reads.
 - **Async**: no delivery route carries image bytes (`context` and a
   plugin's prompt are text, and a plugin prompt's images are not expanded),
-  so the delivery text appends one line per new file, `[Image: source:
-  <path>]` — the engine's own convention for a pasted image's file — and the
-  model opens it with Read.
+  so the delivery text appends one line per kept paste (the rule above),
+  `[Image source: <path>]` — the engine's own line for an image's source
+  file — and the model opens it with Read.
 - **Locating the store**: derived from what the engine gives the mod (the
   session id, the project slug, the temp root) or found by the store's own
   layout, never a hard-coded `/private/tmp/claude-<uid>`. Not found → the
