@@ -33,7 +33,9 @@ the tool works exactly as AskUserQuestion does and differs only by the
 (←, →, Enter, Esc), the floating tab bar, what an agent can draw in each
 question (descriptions, previews), notes with `n` — is the same. Where this
 spec falls short of that, it says so: a tool already running beside a
-declined blocking ask (Design → Blocking), and a picture pasted into an
+declined blocking ask (Design → Blocking); a blocking refusal's text,
+which the model reads wrapped in `<tool_use_error>` (every hook deny is,
+and a hook cannot mark a result as an error otherwise); and a picture pasted into an
 async ask's "Type something", which reaches the model as a file path it
 reads rather than as an image block (Design → Blocking → Images).
 
@@ -222,9 +224,10 @@ channel for collected answers, never the model's — plus:
 }
 ```
 
-**Description**: the built-in's own description, read at `session.start`
-from `$.tool.list()` (the entry named `AskUserQuestion`), followed by one
-paragraph on `async`. Reading it at runtime keeps the guidance the engine
+**Description**: the built-in's own description, captured from the
+built-in's `tool.describe` input as the engine raises it while the session
+starts (`$.tool.list()` cuts descriptions at 300 characters — M1 found it),
+followed by one paragraph on `async`. Reading it at runtime keeps the guidance the engine
 ships for its own tool (when to ask, the preview format) in step with the
 running engine. If `$.tool.list()` has no `AskUserQuestion` (a session that
 disallowed it), the mod registers nothing and withdraws nothing: the
@@ -476,9 +479,14 @@ While the tool is registered: a `tool.describe` hook on `AskUserQuestion`
 answers `isDeferred: true` with the description
 `Withdrawn in this session: ask through mcp__doperpowers__AskUserQuestion,
 which takes this tool's input plus async.`; and the mod's `tool.call` hook
-on `AskUserQuestion` refuses every call that does not claim a pending entry
-(Design → Blocking: this plugin's origin, an unclaimed entry, the entry's
-token as the call's one header), with that sentence. Rejected: a permission deny rule or
+on `AskUserQuestion` refuses, with that sentence, every call from the
+model (origin `engine`) or from this plugin that does not claim a pending
+entry (Design → Blocking: this plugin's origin, an unclaimed entry, the
+entry's token as the call's one header). Another plugin's `$.ui.ask` is
+that plugin's own dialog and passes. The withdrawal applies from the moment
+an interactive session starts — the engine describes the built-in once,
+before registration resolves, and caches it — and is lifted if registration
+fails. Rejected: a permission deny rule or
 `disallowedTools` — `$.ui.ask` is a `tool.call` of AskUserQuestion through
 the permission check, so a rule that removed the built-in would remove the
 dialog with it; and a plugin cannot write a session's rules.
@@ -855,7 +863,7 @@ export type AskOption = { label: string; description: string; preview?: string }
 export type AskQuestion = { question: string; header: string; options: AskOption[]; multiSelect: boolean }
 export type AskInput = { questions: AskQuestion[]; async?: boolean; metadata?: { source?: string } }
 
-/** The built-in's error text for the first rule `input` breaks, else undefined. */
+/** The built-in's error text for every rule `input` breaks (the engine's formatter), else undefined. */
 export function validateQuestions(input: unknown): string | undefined
 
 /** The model-facing description: the built-in's, then the async paragraph. */
@@ -878,7 +886,7 @@ export type OpenAsk = {
 }
 
 export type DialogOutcome =
-  | { kind: 'answered'; text: string; record: unknown }    // text: the engine's result text (fact 10)
+  | { kind: 'answered'; text: string; record: unknown; images: string[] } // text: fact 10; images: store files pasted during the dialog
   | { kind: 'refused'; text: string; hasFeedback: boolean } // text: fact 11 or 12; hasFeedback: fact 12's form
 
 /**
@@ -956,6 +964,42 @@ dependencies.
 
 ## Surprises & Discoveries
 
+M1 (2026-10-13), from the executor's live probes on 2.1.296:
+
+- Observation: the end-of-turn boundary after a refusal without feedback.
+  `classic.PostToolBatch` `preventContinuation` stores and draws a
+  `hook_stopped_continuation` row (`PostToolBatch hook stopped
+  continuation: Execution stopped by PostToolBatch hook`), failing the
+  third criterion; a `turn.step` hook that calls `$.turn.abort` and answers
+  an empty `end_turn` step sends no request and draws nothing. The
+  built-in's own Esc stores `[Request interrupted by user for tool use]`.
+- Observation: the engine does not check a plugin tool's input against its
+  `inputSchema`; the model sees the mod's validation error. Four invalid
+  calls gave byte-identical results to the built-in's — which prints zod's
+  raw issue JSON, not lines, when every issue is a size or uniqueness issue.
+- Observation: `$.tool.list()` cuts a description at 300 characters
+  (bundle `DOo = 300`); the built-in's `tool.describe` input carries all
+  1786.
+- Observation: `tool.describe` fires once while the session starts, before
+  `session.start` hooks settle, and its answer is cached.
+  Evidence: `session.start: raised` 20.975, built-in describe 21.078,
+  `$.tool.register … visible` 21.430.
+- Observation: one unmatched registration per event per module is
+  enforced at load (`on("turn.start") is registered twice without a
+  matcher`); a RegExp matcher takes another slot. The mod holds the
+  unmatched `tool.call` and `turn.step`.
+- Observation: every hook `deny` reaches the model wrapped in
+  `<tool_use_error>…</tool_use_error>` (`f4n`); a hook cannot answer
+  `isError`. The answered path is byte-identical to the built-in's.
+- Observation: images pass through a blocking ask. Evidence: result
+  `[('text', 'The user answered: "Which pattern?"="like this one (Image
+  attached)". …'), ('image', 'image/png', …)]`; the model described the
+  checkerboard.
+- Observation: the pasted-image store's real path is `/private/tmp/…`;
+  `$.fs.stat(path, { resolve: true }).realPath` gives the engine's spelling.
+- Observation: `deferred_tools_delta` still lists the plugin's own tools as
+  deferred though `tool.describe` keeps them inline (compact's too).
+
 - Observation: the engine refuses a plugin's own AskUserQuestion call and
   routes it to `$.ui.ask`, which takes one question.
   Evidence: `askprobe: tool.call: runs the AskUserQuestion tool: that is $.ui.ask (host check)`
@@ -993,6 +1037,19 @@ dependencies.
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: M1's gaps (2026-10-13) — the end-of-turn boundary is the
+  `turn.step` hook (criterion 3 ruled out `PostToolBatch`); the description
+  comes from the built-in's `tool.describe` input; the withdrawal starts at
+  session start and refuses only the model's calls and this plugin's stray
+  raises; validation reproduces the engine's formatter whole (zod JSON
+  included, every issue, the 20-issue cap); `async: true` ran as blocking
+  until M2; a refusal goes out as `{ deny }`; `DialogOutcome.answered`
+  carries `images` (paths) for M2's path lines; M2's delivery extends the
+  mod's one unmatched `tool.call` hook.
+  Rationale: each follows the spec's parity principle or an engine
+  constraint the probes found (Surprises & Discoveries, M1).
+  Date/Author: 2026-10-13, M1 executor; folded by the plan-executor.
 
 - Decision: images in scope (2026-10-13), replacing round one's known
   limit. A probe by the design session found the pasted-image store
