@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
 
 import { registerAgents } from './agents'
+import { registerAsk } from './ask'
 import { registerCompact } from './compact'
 import { registerKairos } from './kairos'
 import { registerToHuman } from './to-human'
@@ -12,6 +13,9 @@ import { registerToHuman } from './to-human'
  */
 export function register(on: On) {
   registerToHuman(on)
+  // After to-human: hooks registered later sit inside its own, where the
+  // ask's transcript rows must be.
+  registerAsk(on)
   // Before kairos: both draw in the footer's mode slot, and the agents button
   // wraps what kairos drew there.
   registerAgents(on)

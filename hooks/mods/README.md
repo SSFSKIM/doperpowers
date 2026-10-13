@@ -249,6 +249,80 @@ working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
 plugin-submitted prompt does.
 
+## ask (`ask.tsx`)
+
+The model asks the human through one tool, `mcp__doperpowers__AskUserQuestion`:
+the built-in AskUserQuestion's input plus `async`. A blocking ask (`async`
+false or absent) is AskUserQuestion: Claude Code's own dialog opens at once,
+with the tab bar across the questions, previews, notes with `n`, "Type
+something", "Chat about this" and the review page, and the call returns the
+engine's own answer text, byte for byte what the built-in returns for the same
+answers. The built-in is withdrawn while the tool exists: it waits behind tool
+search, its name alone in the model's view, and a call of it is refused with a
+sentence naming the new tool. (Asking with `async` true, so the model works on
+while the questions wait, arrives with the async half of this mod; until then
+such a call is asked as a blocking one.)
+
+A plugin cannot call AskUserQuestion; it reaches the dialog through
+`$.ui.ask`, which takes one question and raises an AskUserQuestion call that
+every hook of the plugin but the calling one sees. The tool's hook raises it
+with the first question and a token unique in the session as the header; the
+mod's own `tool.call` hook on AskUserQuestion claims the call whose one header
+is a pending token, only when the dispatch's origin is this plugin (an origin
+the host sets and no plugin can write), and widens it to the whole question
+set before the engine draws it. What that call's `next` resolves (the answer
+text, or the refusal) is the tool's outcome. Every other AskUserQuestion call
+from the model, or a stray one from this plugin, is refused; another plugin's
+own `$.ui.ask` passes.
+
+The tool's description is the built-in's own, as the engine computes it for
+its `tool.describe` while the session starts, followed by one paragraph on
+`async`; `$.tool.list()` gives only a tool's first 300 characters, which
+stand in should the built-in not have been described yet. The tool is
+registered at `session.start` of an interactive session and kept inline with a
+`tool.describe` answer of `isDeferred: false`; the built-in's `tool.describe`
+answers `isDeferred: true` with the withdrawal sentence, from the moment such
+a session starts (the engine describes the built-in then, and caches the
+answer for the session), and the built-in is put back should the tool fail to
+register. A headless session gets neither.
+
+Every ask is validated before any dialog against the built-in's rules (1–4
+questions, 2–4 options, the required strings, unique question texts and option
+labels; never the header length, which the built-in does not check), and a
+broken one gets the error the built-in's own validation would print, steer
+for a lone option included; the engine does not check a plugin tool's input
+against its schema, so this is the error the model reads. A subagent's call is
+refused (subagents never have the built-in), and the agent definitions under
+`agents/` withhold the tool.
+
+Declining a blocking ask ends the model's turn, as declining the built-in's
+does. Esc, Cancel on the review page, or Enter on an empty "Type something"
+returns the engine's refusal as the call's error result; the rest of the turn's
+model calls (one queued behind the ask in its batch, a second ask) are refused
+before they run with `Not run: the human declined the question asked in this
+turn.`, and the turn's next model request is not sent: a `turn.step` hook
+aborts the turn there (`$.turn.abort`), which records nothing and draws
+nothing beyond the call's row. "Chat about this" returns its refusal, with
+what the human answered so far, and the turn goes on. The next turn starts
+clear.
+
+Pictures pasted into "Type something" reach the model as images. The engine
+writes each paste into the session's pasted-image store
+(`<temp root>/<project slug>/<session id>/images/<n>.png`, the folder prompt
+pastes use) and answers `(Image attached)` in the text; the mod lists that
+folder before and after the dialog and returns the engine's text block
+followed by one base64 image block per new file, in number order. The temp
+root is `claude-<uid>` under `CLAUDE_CODE_TMPDIR` or `/tmp`, found as the one
+such folder this process can read; the slug and session id come from the
+classic `SessionStart` payload.
+
+Known limits: a tool already running in parallel with the ask when the human
+declines it finishes, where the built-in's abort would cut it; the refusal
+reaches the model inside `<tool_use_error>`, the form every hook refusal takes,
+where the built-in's is bare text; an image sits inside the tool result, where
+the built-in puts it beside it, which reads the same to the model; a store that
+cannot be placed leaves the answer text only, with a debug-log line.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
