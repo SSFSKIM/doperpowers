@@ -46,7 +46,7 @@ reads rather than as an image block (Design → Blocking → Images).
 - [x] (2026-10-13 17:10Z) Engine reference from the extracted bundle folded in (facts 10–16).
 - [x] (2026-10-13 18:00Z) Independent spec review and buildability review, round one: all findings taken (Decision Log).
 - [x] (2026-10-13 18:40Z) Review round two: all findings taken; review converged (Decision Log).
-- [ ] M1 — The tool and blocking parity
+- [x] (2026-10-13 17:29Z) M1 — The tool and blocking parity (review clean; one finding recorded as a known limit)
 - [ ] M2 — Asking without waiting
 - [ ] M3 — `<need-input>` retired, the style, evals, acceptance
 
@@ -324,9 +324,13 @@ dialog drops only the dialog's entry, and the file stays. Nothing a hook
 can reach names the kept ones; the only signal is the engine's `(Image
 attached)` mark, one per answer that kept at least one. So the pastes go
 to the model only when the count of marked answers equals the count of new
-files; otherwise none go, and a debug line says so — a removed picture is
-never sent, at the cost of dropping two pictures kept in one answer or one
-on a multi-select question (whose answer is never marked).
+files; otherwise none go, and a debug line says so. A removed picture is
+not sent, at the cost of dropping two pictures kept in one answer or one
+on a multi-select question (whose answer is never marked). One case the
+mark cannot tell apart: the mark is not reserved, so a human who removes a
+paste and then types an answer ending in `(Image attached)` themselves is
+read as having kept it — recorded as a known limit; only an engine signal
+for the kept attachments would close it.
 
 - **Blocking (parity)**: each new file is read with `$.fs.read(path, { as:
   'bytes' })`, its `media_type` taken from the extension, and the tool
@@ -896,8 +900,8 @@ export type OpenAsk = {
 }
 
 export type DialogOutcome =
-  | { kind: 'answered'; text: string; record: unknown; images: string[] } // text: fact 10; images: store files pasted during the dialog
-  | { kind: 'refused'; text: string; hasFeedback: boolean } // text: fact 11 or 12; hasFeedback: fact 12's form
+  | { kind: 'answered'; text: string; record: unknown; images: string[] } // text: fact 10; images: the kept pastes (Design → Blocking → Images)
+  | { kind: 'refused'; text: string; hasFeedback: boolean; images: string[] } // text: fact 11 or 12; hasFeedback: fact 12's form; images: kept pastes (Chat)
 
 /**
  * Opens the engine dialog for `questions` (a pending entry, `$.ui.ask` with
@@ -1056,6 +1060,18 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: M1 re-review (2026-10-13) — the remaining finding, a removed
+  paste sent when the human's own answer ends in the literal `(Image
+  attached)`, is recorded as a known limit (Design → Blocking → Images; the
+  PR's Unresolved Review Findings), not fixed: no hook-reachable signal
+  names the kept attachments, the case needs the human to type the engine's
+  marker after removing their own picture, and what it sends is the human's
+  own paste to the model they are working with. The interface's
+  `DialogOutcome` now names `images` on both kinds as the kept pastes.
+  Rationale: real but too narrow to justify dropping every pasted image; the
+  review converged with no other open finding.
+  Date/Author: 2026-10-13, plan-executor.
 
 - Decision: M1 review fixes (2026-10-13) — the kept-paste rule (Design →
   Blocking → Images: send only when marked answers equal new files, else
