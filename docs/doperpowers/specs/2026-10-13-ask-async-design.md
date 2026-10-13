@@ -973,6 +973,15 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   third criterion; a `turn.step` hook that calls `$.turn.abort` and answers
   an empty `end_turn` step sends no request and draws nothing. The
   built-in's own Esc stores `[Request interrupted by user for tool use]`.
+- Observation: at that boundary `$.turn.abort` spares running work, and the
+  empty step without it is not an abort. With a background shell and a
+  Monitor running, then a declined blocking ask, both kept writing through
+  each variant and through the built-in's own Esc (line counts 8 s after
+  Esc: built-in shell 19→27, Monitor 17→25; abort 22→30, 20→28; no-abort
+  24→32, 21→29). The no-abort variant ends the turn as an answered one:
+  Stop hooks run (`notify.sh stop`), a `stop_hook_summary` row is recorded,
+  `✻ Cooked for 14s · done` is drawn. The abort variant and the built-in run
+  no Stop hooks.
 - Observation: the engine does not check a plugin tool's input against its
   `inputSchema`; the model sees the mod's validation error. Four invalid
   calls gave byte-identical results to the built-in's — which prints zod's
@@ -1037,6 +1046,17 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: the turn ends by `$.turn.abort` plus the empty step (2026-10-13).
+  The design session preferred the no-abort variant on the premise that the
+  abort kills Monitors; the follow-up probe showed it does not at this
+  boundary, while the no-abort variant runs Stop hooks — a Stop hook
+  answering `block` would re-prompt the model into the turn the human
+  declined — and ends with reason `answer`. The abort matches the
+  built-in's outcome (no Stop hooks), so it stays.
+  Rationale: the preference's condition did not hold; parity of the turn's
+  outcome decides.
+  Date/Author: 2026-10-13, plan-executor, on the M1 executor's probe.
 
 - Decision: M1's gaps (2026-10-13) — the end-of-turn boundary is the
   `turn.step` hook (criterion 3 ruled out `PostToolBatch`); the description
