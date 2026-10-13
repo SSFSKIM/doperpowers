@@ -155,8 +155,8 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 
 | kind | fields | written by |
 | --- | --- | --- |
-| `say` | `from` alias, `to` `"*"` or a list of aliases, `text` | `sminos say` |
-| `human` | `from` `"human"`, `to` `"*"` or a list, `text` | operator `say` / `send` |
+| `say` | `from` alias, `to` `"*"` or a list of aliases, `text`, `wake` true for `@all` | `sminos say` |
+| `human` | `from` `"human"`, `to` `"*"` or a list, `text`, `wake` true for `@all` | operator `say` / `send` |
 | `message` | `from` alias, `to` `"host"`, `text` | the hook, from a `<message>` mark (`<to-human>`, `<essential>` read as aliases) |
 | `need-input` | `from` alias, `to` `"host"`, `text`, `choices` list of strings | the hook, from a `<need-input>` mark |
 | `joined` | `session` uuid, `alias`, `machine`, `cwd`, `worktree`, `role`, `by` alias or `""` | `sminos spawn` (with `by`), the hook on session start (`by` `""`), `seat add` |
@@ -193,15 +193,22 @@ at the start — and its routing becomes the project's:
 | --- | --- | --- | --- | --- | --- |
 | member | none | `say` to `*` | nobody | no | no |
 | member | `@a @b` | `say` to `[a, b]` | a and b | yes | yes |
+| member | `@all` | `say` to `*`, `wake` true | every live member | yes | no |
 | operator | none (`--in <project>` or the cwd's) | `human` to `*` | nobody | no | no |
 | operator | `@a` | `human` to `[a]` | a | yes | yes |
+| operator | `@all` | `human` to `*`, `wake` true | every live member | yes | no |
 
 An untagged message is a record: a member reads it at its next wake, when
-its preamble has it read the chat, or when it chooses to. Only an address
-pushes. The alternative, pushing untagged messages to every live member,
-was rejected on cost: a project with six idle sessions would start six
-turns, each loading its context, for one line of status. `@all` leaves
-with the host; a member that wants everyone woken tags them.
+its preamble has it read the chat, or when it chooses to. Only an address pushes, and `@all` is the address that means everyone: it
+pushes to every live member (an idle one starts a turn, a busy one reads at
+its next tool round) and resumes no stopped one — a sender who wants a
+stopped member back tags it. The alternative, pushing untagged messages to
+every live member, was rejected on cost: a project with six idle sessions
+would start six turns, each loading its context, for one line of status.
+The alternative to the tag, a `--wake` flag, was rejected because a flag
+leaves no trace in the message: the tag is in the text, so the record says
+which messages woke everyone. The preamble says what `@all` is for —
+something every member must act on now — and that status is untagged.
 
 `sminos send <alias> "…"` stays the direct verb to one seat and is recorded
 as `human` (operator) or `say` (member) to `[alias]`; it reaches a live
@@ -279,8 +286,8 @@ the chart draws no tree.
 
 Every spawn renders `references/spawn-preamble.md`, rewritten for the
 project family: who the seat is and in which project; read the chat first;
-untagged is recorded, `@alias` pushes; `<message>` is how it reaches the
-host; `sminos status` and `sminos charge`; spawn a sibling only for a
+untagged is recorded, `@alias` pushes, `@all` wakes every live member and is
+for what all must act on now; `<message>` is how it reaches the host; `sminos status` and `sminos charge`; spawn a sibling only for a
 separable standing responsibility, a subagent for anything else. The board
 pipeline's workers are spawned by `skills/issue-tracker/scripts/
 execute-dispatch.sh` and `review-dispatch.sh` without `--group` today and
@@ -341,9 +348,8 @@ remote; `sminos daemon install` writes a launchd agent
    `git add -A && git commit -qm "sync <machine> <ts>" && git push -q`,
    retrying a rejected push with another pull up to three times.
 2. **Deliver.** For each event from a writer on another machine, above the
-   `delivered/<writer>.json` watermark, whose `to` names a local member:
-   push a frame or resume, exactly as a local `say` would (§4); then advance
-   the watermark. An event to a member that is `gone` or `retired` here is
+   `delivered/<writer>.json` watermark, whose `to` names a local member, or whose `wake` is true: push a frame or
+   resume, exactly as a local `say` would (§4); then advance the watermark. An event to a member that is `gone` or `retired` here is
    skipped and the watermark advanced.
 3. **Publish.** For each local member, compute `state()` as today; when it
    differs from the last `state` published for that session and differed on
@@ -368,8 +374,7 @@ which is why Temporal, their choice for the loop, has no place here.
 ## 9. What leaves, what stays, what this is not
 
 Leaves: the host and family reach (`family_of`, `reach_of`,
-`is_family_seat`, `--team`, `@all`, `--parent`, `--group`, `retire
---cascade`), the per-host chat files under `chats/` and their in-place
+`is_family_seat`, `--team`, `--parent`, `--group`, `retire --cascade`), the per-host chat files under `chats/` and their in-place
 `delivered` maps, `chat_seen` on seat records, the `groups/` directory. `sminos
 migrate` imports each `chats/<host-seat-id>.jsonl` into the project of the
 host's `cwd` as `say` events under writer `legacy/<host-seat-id>`,
@@ -455,7 +460,8 @@ milestone, among seat records whose `cwd` resolves to the project, and M2
 extends it to seat-less members. Does not touch: membership (`list` still prints today's groups until M2), the hook,
 the daemon. Proves: acceptance 2 (local push half), the merge order and
 cursor behaviour pinned by tests: two writers' lines interleave by `ts`;
-`chat` advances the cursor and `-n` does not; a `say` to `*` pushes nothing.
+`chat` advances the cursor and `-n` does not; a `say` to `*` pushes nothing;
+`@all` pushes to every live member and resumes none.
 
 ### M2 — The project family
 
@@ -592,8 +598,7 @@ def tick(project: Project) -> dict                # {"synced": bool, "delivered"
 ```
 
 CLI verbs added: `project init|show|attach`, `charge`, `derive`, `record`,
-`daemon run|tick|install|status`. Removed: `--group`, `--parent`, `--team`,
-`retire --cascade`, `@all`. Hook: `hooks/smns-record.sh`, events `Stop`
+`daemon run|tick|install|status`. Removed: `--group`, `--parent`, `--team`, `retire --cascade`. Hook: `hooks/smns-record.sh`, events `Stop`
 and `SessionStart`, calling `"$CLAUDE_PLUGIN_ROOT/skills/sminos/scripts/sminos" record`.
 
 ## Surprises & Discoveries
@@ -632,6 +637,14 @@ and `SessionStart`, calling `"$CLAUDE_PLUGIN_ROOT/skills/sminos/scripts/sminos" 
   alternatives; the risk left is buildability and regressions in a
   3,000-line CLI with a 2,500-line test suite.
   Date/Author: 2026-10-13, the authoring session.
+- Decision: `@all` stays, as the one address meaning everyone — pushed to
+  every live member, no stopped member resumed — carried in the log as
+  `wake: true`.
+  Rationale: the owner asked for a way to wake the whole project chat; a
+  `--wake` flag was the alternative and lost because a tag is in the text
+  and a flag is not, so only the tag leaves the record saying which
+  messages woke everyone. The first draft had removed `@all` with the host.
+  Date/Author: 2026-10-13, the owner and the authoring session.
 
 ## Outcomes & Retrospective
 
