@@ -319,7 +319,14 @@ session's pasted-image store, the one prompt pastes use (`[Image #N]` is
 `N.png`; debug log `Stored image 1 to <temp root>/<project slug>/<session
 id>/images/1.png`). So the mod lists the store before `$.ui.ask` and again
 when it settles; the files that appeared are that dialog's pastes, in
-number order.
+number order. They are not what the human kept: removing a paste in the
+dialog drops only the dialog's entry, and the file stays. Nothing a hook
+can reach names the kept ones; the only signal is the engine's `(Image
+attached)` mark, one per answer that kept at least one. So the pastes go
+to the model only when the count of marked answers equals the count of new
+files; otherwise none go, and a debug line says so — a removed picture is
+never sent, at the cost of dropping two pictures kept in one answer or one
+on a multi-select question (whose answer is never marked).
 
 - **Blocking (parity)**: each new file is read with `$.fs.read(path, { as:
   'bytes' })`, its `media_type` taken from the extension, and the tool
@@ -332,6 +339,9 @@ number order.
   allows string | array | undefined), and the MCP image form `{ type:
   'image', data, mimeType }` (the API rejects it, `image.source: Field
   required`, and the engine strips it).
+- **"Chat about this"**: the built-in sends kept images with the feedback
+  refusal; a hook deny is text only, so the refusal text is followed by one
+  `[Image source: <path>]` line per kept paste, which the model Reads.
 - **Async**: no delivery route carries image bytes (`context` and a
   plugin's prompt are text, and a plugin prompt's images are not expanded),
   so the delivery text appends one line per new file, `[Image: source:
@@ -659,7 +669,7 @@ Run in a scratch directory with the branch as the plugin:
    the call's recorded result holds the text block and an image block, and
    the model describes the image.
 13. **A pasted image, async.** The same in an async ask's dialog: the
-   delivery carries `[Image: source: <path>]`, and the model Reads that
+   delivery carries `[Image source: <path>]`, and the model Reads that
    file and describes it.
 
 ## Execution
@@ -788,7 +798,7 @@ dropped or rejected submission (either route) puts its answers back ahead
 of any answered meanwhile, and a tool result resolving during a pending
 submission cannot deliver the reserved answers a second time; Esc
 keeps the ask open; "Chat about this" is delivered and closes the ask;
-an answer with pasted images carries one `[Image: source: <path>]` line per
+an answer with pasted images carries one `[Image source: <path>]` line per
 file after the engine's text;
 `isAccepted` keeps a call whose result is `ASYNC_RESULT` and drops a
 validation refusal, a subagent refusal, a permission denial, and a call
@@ -1047,6 +1057,17 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
 
 ## Decision Log
 
+- Decision: M1 review fixes (2026-10-13) — the kept-paste rule (Design →
+  Blocking → Images: send only when marked answers equal new files, else
+  none); "Chat about this" carries kept pastes as path lines after the
+  refusal text; the path line is the engine's own source-only form,
+  `[Image source: <path>]` (bundle `vEt`, `RX`), not `[Image: source: …]`,
+  which the engine uses only beside dimensions; every gating hook of the mod
+  has a `.catch` with a stated failure policy.
+  Rationale: a picture the human removed must never reach the model; the
+  design session asked for the engine's own convention.
+  Date/Author: 2026-10-13, plan-executor, on the M1 task review.
+
 - Decision: the turn ends by `$.turn.abort` plus the empty step (2026-10-13).
   The design session preferred the no-abort variant on the premise that the
   abort kills Monitors; the follow-up probe showed it does not at this
@@ -1075,7 +1096,7 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   limit. A probe by the design session found the pasted-image store
   (Design → Blocking → Images): a blocking ask returns the engine's text
   plus one base64 image block per file pasted during its dialog; an async
-  delivery appends `[Image: source: <path>]` per file for the model to Read.
+  delivery appends `[Image source: <path>]` per file for the model to Read.
   M1 builds the blocking half, M2 the async half; acceptance 12 and 13.
   Rationale: the human's condition is parity with the dialog, and the probe
   showed the blocking path can meet it and the async path can come close.
