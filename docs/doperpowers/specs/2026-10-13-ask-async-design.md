@@ -48,7 +48,7 @@ reads rather than as an image block (Design → Blocking → Images).
 - [x] (2026-10-13 18:40Z) Review round two: all findings taken; review converged (Decision Log).
 - [x] (2026-10-13 17:29Z) M1 — The tool and blocking parity (review clean; one finding recorded as a known limit)
 - [x] (2026-10-13 18:15Z) M2 — Asking without waiting (review clean)
-- [ ] M3 — `<need-input>` retired, the style, evals, acceptance
+- [x] (2026-10-13 19:01Z) M3 — `<need-input>` retired, the style, evals, acceptance (review clean)
 
 ## Terms
 
