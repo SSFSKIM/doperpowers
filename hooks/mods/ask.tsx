@@ -669,8 +669,22 @@ export function askRow(
   return rows.length === 0 ? { kind: 'none' } : { kind: 'answered', rows, isDelivered: true }
 }
 
+type Row = Record<string, unknown>
+
+/** A row that hangs beside the conversation's turns: an attachment, a notice, a meta prompt (the engine's `eL`). */
+const isSideRow = (row: Row) =>
+  row.type === 'attachment' ||
+  (row.type === 'system' && row.subtype !== 'compact_boundary') ||
+  (row.type === 'user' && row.isMeta === true && blocksOf(row, 'tool_result').length === 0)
+
+/** The blocks of a row's message of one type. */
+function blocksOf(row: Row, type: string): Record<string, unknown>[] {
+  const content = isRecord(row.message) ? row.message.content : undefined
+  return Array.isArray(content) ? content.filter((block): block is Record<string, unknown> => isRecord(block) && block.type === type) : []
+}
+
 /**
- * The rows of the conversation the engine resumes, oldest first: back from
+ * The rows of the conversation the engine resumes, in file order: back from
  * its leaf, parent by parent, across a compaction by the boundary's
  * `logicalParentUuid` (its `parentUuid` is null). A branch the human rewound
  * past stays in the file and is not on it. The leaf is the last row written,
@@ -678,9 +692,17 @@ export function askRow(
  * `last-prompt` record with `explicit: true` naming the row it went back to,
  * or no row when it went back past the first prompt (verified on two rewound
  * transcripts, 2.1.257 and 2.1.296; the writer is the bundle's `g_t`).
+ *
+ * The walk alone misses rows the engine restores beside it (its `i1r`): one
+ * model response is a row per block, sharing the response's id, and each tool
+ * result is parented to the row of its own call, so the results of all but
+ * the last call sit beside the chain, with whatever hangs off them (a context
+ * attachment carrying a delivery). As the engine does, each response on the
+ * chain brings its rows, their results, and the side rows under them, a run
+ * of attachments and notices that neither forks nor rejoins the chain.
  */
-function conversationOf(rows: readonly Record<string, unknown>[]): Record<string, unknown>[] {
-  const byUuid = new Map<string, Record<string, unknown>>()
+function conversationOf(rows: readonly Row[]): Row[] {
+  const byUuid = new Map<string, Row>()
   let leaf: string | undefined
   for (const row of rows) {
     if (typeof row.uuid === 'string' && row.isSidechain !== true) {
@@ -691,26 +713,87 @@ function conversationOf(rows: readonly Record<string, unknown>[]): Record<string
       leaf = typeof row.leafUuid === 'string' ? row.leafUuid : undefined
     }
   }
-  const conversation: Record<string, unknown>[] = []
-  const seen = new Set<string>()
-  for (let at = leaf; at !== undefined && !seen.has(at); ) {
+  const kept = new Set<string>()
+  const chain: Row[] = []
+  for (let at = leaf; at !== undefined && !kept.has(at); ) {
     const row = byUuid.get(at)
     if (row === undefined) {
       break
     }
-    seen.add(at)
-    conversation.push(row)
+    kept.add(at)
+    chain.push(row)
     at = typeof row.parentUuid === 'string' ? row.parentUuid : typeof row.logicalParentUuid === 'string' ? row.logicalParentUuid : undefined
   }
-  return conversation.reverse()
+
+  const responses = new Map<string, Row[]>() // a response's id: its rows
+  const callRow = new Map<string, Row>() // a tool call's id: the row that made it
+  const children = new Map<string, Row[]>() // a row's uuid: the rows parented to it
+  const resultsOf = new Map<string, Set<Row>>() // a call row's uuid: the results of its calls
+  const add = <K, V>(map: Map<K, V[]>, key: K, value: V) => map.set(key, [...(map.get(key) ?? []), value])
+  for (const row of byUuid.values()) {
+    if (typeof row.parentUuid === 'string') {
+      add(children, row.parentUuid, row)
+    }
+    const id = row.type === 'assistant' && isRecord(row.message) ? row.message.id : undefined
+    if (typeof id === 'string') {
+      add(responses, id, row)
+      blocksOf(row, 'tool_use').forEach((block) => callRow.set(String(block.id), row))
+    }
+  }
+  for (const row of byUuid.values()) {
+    const results = blocksOf(row, 'tool_result')
+    if (row.type !== 'user' || results.length === 0) {
+      continue
+    }
+    const owners = [row.parentUuid, row.sourceToolAssistantUUID, ...results.map((block) => callRow.get(String(block.tool_use_id))?.uuid)]
+    for (const owner of owners) {
+      if (typeof owner === 'string') {
+        resultsOf.set(owner, (resultsOf.get(owner) ?? new Set()).add(row))
+      }
+    }
+  }
+  /** A run of side rows from `row` down, or none: one that forks, rejoins the conversation, or reaches a turn is not beside it (the engine's `Vae`). */
+  const sideRun = (row: Row): Row[] => {
+    const run: Row[] = []
+    for (let at: Row | undefined = row; at !== undefined; ) {
+      if (kept.has(at.uuid as string) || !isSideRow(at)) {
+        return []
+      }
+      run.push(at)
+      const next: Row[] = (children.get(at.uuid as string) ?? []).filter((child) => !kept.has(child.uuid as string))
+      if (next.length > 1) {
+        return []
+      }
+      at = next[0]
+    }
+    return run
+  }
+  for (const row of chain) {
+    const id = row.type === 'assistant' && isRecord(row.message) ? row.message.id : undefined
+    if (typeof id !== 'string') {
+      continue
+    }
+    const response = responses.get(id) ?? [row]
+    const results = response.flatMap((call) => [...(resultsOf.get(call.uuid as string) ?? [])])
+    const restored = [...response, ...results]
+    restored.forEach((restoredRow) => kept.add(restoredRow.uuid as string))
+    for (const restoredRow of restored) {
+      for (const child of children.get(restoredRow.uuid as string) ?? []) {
+        sideRun(child).forEach((side) => kept.add(side.uuid as string))
+      }
+    }
+  }
+  return rows.filter((row) => typeof row.uuid === 'string' && kept.has(row.uuid))
 }
 
 /**
  * The async asks a transcript holds, in call order: each accepted call of the
  * tool, answered when a row the model read delivers it (an attachment of a
  * tool result's or a prompt's context, a user row the plugin submitted),
- * else open. Only the conversation the engine resumes counts; lines a search
- * found (`isWholeFile` false) carry no ancestry to follow, and all count.
+ * else open. Once the human rewound (the engine's `rewound` record), only the
+ * conversation the engine resumes counts; without a rewind every row of the
+ * file is on it. Lines a search found (`isWholeFile` false) carry no ancestry
+ * to follow, and all count.
  */
 export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { isWholeFile?: boolean } = {}): OpenAsk[] {
   const calls: { id: string; input: Record<string, unknown> }[] = []
@@ -724,7 +807,8 @@ export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { 
       return []
     }
   })
-  for (const row of isWholeFile ? conversationOf(parsed) : parsed) {
+  const isRewound = parsed.some((row) => row.type === 'last-prompt' && row.rewound === true)
+  for (const row of isWholeFile && isRewound ? conversationOf(parsed) : parsed) {
     const message = isRecord(row.message) ? row.message : {}
     for (const block of Array.isArray(message.content) ? message.content : []) {
       if (isRecord(block) && block.type === 'tool_use' && block.name === ASK_TOOL && isRecord(block.input) && block.input.async === true) {

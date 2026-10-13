@@ -347,10 +347,14 @@ dropped beneath) puts them back ahead of any answered meanwhile, toasts why, and
 leaves the next route to try.
 
 A resumed session rebuilds its async asks from the transcript (the classic
-`SessionStart` payload's path), from the conversation the engine resumes only:
+`SessionStart` payload's path). Without a rewind every row of the file is
+the conversation. Once the human rewound (the engine records it), only the
+conversation the engine resumes counts, rebuilt as the engine rebuilds it:
 back from its leaf parent by parent, across a compaction by the boundary's
-logical parent, so a branch the human rewound past, which stays in the file,
-is left out. Every call of the tool with `async` true whose
+logical parent, with the rows the engine restores beside that chain (the
+results of a response's earlier calls, parented to their own call, and the
+attachments under them); a branch the human rewound past, which stays in the
+file, is left out. Every call of the tool with `async` true whose
 result is the async one and whose input is valid is an ask; it reads answered
 when a row the model read names its call in a delivery (a context attachment,
 a prompt the plugin submitted, known by the engine's framing; never the

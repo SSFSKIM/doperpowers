@@ -1294,6 +1294,26 @@ describe('a resumed session', () => {
   const delivered = (uuid: string, parent: string, id: string) =>
     at(uuid, parent, { type: 'attachment', attachment: { type: 'hook_additional_context', content: [deliveryText(id, ANSWER)] } })
   const prompt = (uuid: string, parent: string | null) => at(uuid, parent, { type: 'user', message: { role: 'user', content: 'go on' } })
+  /** The engine's record of a rewind: the row it went back to, or none past the first prompt. */
+  const rewind = (leafUuid: string | null) => line({ type: 'last-prompt', leafUuid, explicit: true, rewound: true })
+  /**
+   * One model response with an async ask and a Bash call, as the engine writes
+   * it: a row per call sharing the response's id, each result parented to the
+   * row of its own call, so the chain goes on from the last result and the
+   * ask's result sits beside it. `deliveredOnResult`: a context attachment on
+   * the ask's result carries a delivery for `deliveredId`.
+   */
+  const twoCalls = (prefix: string, parent: string, id: string, q: AskQuestion, deliveredId?: string) => {
+    const response = { id: `msg_${prefix}`, role: 'assistant' }
+    return [
+      at(`${prefix}1`, parent, { type: 'assistant', message: { ...response, content: [{ type: 'tool_use', id, name: ASK_TOOL, input: { questions: [q], async: true } }] } }),
+      at(`${prefix}2`, `${prefix}1`, { type: 'assistant', message: { ...response, content: [{ type: 'tool_use', id: `${id}-bash`, name: 'Bash', input: { command: 'sleep 40' } }] } }),
+      at(`${prefix}3`, `${prefix}1`, { type: 'user', sourceToolAssistantUUID: `${prefix}1`, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: ASYNC_RESULT }] } }),
+      ...(deliveredId === undefined ? [] : [delivered(`${prefix}3c`, `${prefix}3`, deliveredId)]),
+      at(`${prefix}4`, `${prefix}2`, { type: 'user', sourceToolAssistantUUID: `${prefix}2`, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `${id}-bash`, content: 'done' }] } }),
+      at(`${prefix}5`, `${prefix}4`, { type: 'attachment', attachment: { type: 'output_style', style: 'x' } }),
+    ]
+  }
   // A, asked and accepted; then a branch the human rewound past: B asked, and A answered there.
   const rewound = [
     prompt('p1', null),
@@ -1307,17 +1327,49 @@ describe('a resumed session', () => {
 
   test('a branch the human rewound past is not the conversation: its asks and deliveries are left out', async () => {
     // Rewound to A's acceptance and went on from there.
-    expect(rebuildAsks([...rewound, prompt('p3', 'a2'), at('r1', 'p3', { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })])).toEqual([
-      { id: 't-A', questions: [BACKEND], status: 'open' },
-    ])
+    const wentOn = [...rewound, rewind('a2'), prompt('p3', 'a2'), at('r1', 'p3', { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })]
+    expect(rebuildAsks(wentOn)).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
     // Rewound and left at once: the engine's record of the rewind names the leaf.
-    expect(rebuildAsks([...rewound, line({ type: 'last-prompt', leafUuid: 'a2', explicit: true, rewound: true })])).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
+    expect(rebuildAsks([...rewound, rewind('a2')])).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
     // Rewound to before the first prompt (the engine writes no leaf) and left: no conversation, no ask.
-    expect(rebuildAsks([...rewound, line({ type: 'last-prompt', leafUuid: null, explicit: true, rewound: true })])).toEqual([])
+    expect(rebuildAsks([...rewound, rewind(null)])).toEqual([])
     // Not rewound: the latest record of the prompt names the row before it, and rows after it are still the conversation.
     expect(rebuildAsks([...rewound.slice(0, 4), line({ type: 'last-prompt', leafUuid: 'p2' }), ...rewound.slice(4)]).map((a) => [a.id, a.status])).toEqual([
       ['t-A', 'answered'],
       ['t-B', 'open'],
+    ])
+  })
+
+  test('an async ask beside another call in one response is an ask, rewound or not', async () => {
+    const response = [prompt('p1', null), ...twoCalls('m', 'p1', 't-A', BACKEND), prompt('p2', 'm5')]
+    expect(rebuildAsks(response)).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
+    // A later branch rewound past: the kept conversation still holds the ask, beside the chain as the engine restores it.
+    const later = [...response, call('b1', 'p2', 't-B', FEATURES), accepted('b2', 'b1', 't-B'), rewind('p2')]
+    expect(rebuildAsks(later)).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
+    // A result parented elsewhere (a hook's notice under its call) is known by the call it answers:
+    // the engine's own source record, or the call's id alone.
+    const reparented = (keep: (result: Record<string, unknown>) => Record<string, unknown>) =>
+      later.flatMap((stored) => {
+        const parsed = JSON.parse(stored) as Record<string, unknown>
+        if (parsed.uuid !== 'm3') return [stored]
+        return [at('m1h', 'm1', { type: 'attachment', attachment: { type: 'hook_success' } }), JSON.stringify(keep({ ...parsed, parentUuid: 'm1h' }))]
+      })
+    expect(rebuildAsks(reparented((result) => result))).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
+    expect(rebuildAsks(reparented(({ sourceToolAssistantUUID: _, ...result }) => result))).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
+  })
+
+  test('with a rewind, a delivery on a result beside the chain still closes its ask, and the side rows of a response come with it', async () => {
+    const kept = [
+      prompt('p1', null),
+      ...twoCalls('m', 'p1', 't-A', BACKEND),
+      prompt('p2', 'm5'),
+      ...twoCalls('n', 'p2', 't-C', FEATURES, 't-A'),
+      prompt('p3', 'n5'),
+    ]
+    const abandoned = [call('b1', 'p3', 't-B', { ...BACKEND, question: 'Which port?' }), accepted('b2', 'b1', 't-B'), delivered('b3', 'b2', 't-C')]
+    expect(rebuildAsks([...kept, ...abandoned, rewind('p3')]).map((a) => [a.id, a.status])).toEqual([
+      ['t-A', 'answered'],
+      ['t-C', 'open'],
     ])
   })
 
@@ -1333,6 +1385,12 @@ describe('a resumed session', () => {
       delivered('k3', 'k2', 't-C'),
     ]
     expect(rebuildAsks(compacted).map((a) => [a.id, a.status])).toEqual([
+      ['t-A', 'open'],
+      ['t-C', 'answered'],
+    ])
+    // With a rewind after the boundary, the walk back crosses it.
+    const branch = [call('b1', 'k3', 't-B', { ...BACKEND, question: 'Which port?' }), accepted('b2', 'b1', 't-B')]
+    expect(rebuildAsks([...compacted, ...branch, rewind('k3')]).map((a) => [a.id, a.status])).toEqual([
       ['t-A', 'open'],
       ['t-C', 'answered'],
     ])
