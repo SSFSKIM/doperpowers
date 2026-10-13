@@ -47,7 +47,7 @@ reads rather than as an image block (Design → Blocking → Images).
 - [x] (2026-10-13 18:00Z) Independent spec review and buildability review, round one: all findings taken (Decision Log).
 - [x] (2026-10-13 18:40Z) Review round two: all findings taken; review converged (Decision Log).
 - [x] (2026-10-13 17:29Z) M1 — The tool and blocking parity (review clean; one finding recorded as a known limit)
-- [ ] M2 — Asking without waiting
+- [x] (2026-10-13 18:15Z) M2 — Asking without waiting (review clean)
 - [ ] M3 — `<need-input>` retired, the style, evals, acceptance
 
 ## Terms
@@ -1085,6 +1085,18 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: M2 review fixes (2026-10-13) — a rejected downstream prompt pass
+  puts its reserved answers back (as a dropped one does); resume counts a
+  user row as a delivery only with the engine's plugin framing; the
+  over-4-MiB fallback searches the four stored forms resume reads
+  (`searchArgs`), a delivery in any context entry included, rebuilds nothing
+  and logs on a failed or truncated search, and is pinned by a real-grep
+  shell check (`tests/mods/test-ask-search.sh`, since the mods harness's `$`
+  has no fs or process). The 4 MiB ceiling on the filtered output is a
+  logged known limit.
+  Rationale: each was a real loss of an answer or of resume state.
+  Date/Author: 2026-10-13, plan-executor, on the M2 task review.
 
 - Decision: M2's gaps (2026-10-13) — the mod draws every row itself
   (answers read back from the engine's result text; "Chat about this" in
