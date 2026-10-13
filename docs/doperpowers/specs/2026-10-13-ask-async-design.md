@@ -32,9 +32,10 @@ the tool works exactly as AskUserQuestion does and differs only by the
 `<need-input>`; and everything the dialog offers — the key bindings
 (←, →, Enter, Esc), the floating tab bar, what an agent can draw in each
 question (descriptions, previews), notes with `n` — is the same. Where this
-spec falls short of that, it says so: a picture pasted into "Type
-something" (Design → Blocking → Images), and a tool already running beside
-a declined blocking ask (Design → Blocking).
+spec falls short of that, it says so: a tool already running beside a
+declined blocking ask (Design → Blocking), and a picture pasted into an
+async ask's "Type something", which reaches the model as a file path it
+reads rather than as an image block (Design → Blocking → Images).
 
 ## Progress
 
@@ -308,13 +309,39 @@ whatever else is open: the engine queues the dialogs (fact 17), so no hook
 of the mod waits on anything but `$.ui.ask` itself.
 
 **Images.** A picture pasted into "Type something" reaches the built-in's
-model as a content block beside the result (engine reference §8.1); the
-mod's outcome carries text. M1 checks whether the widened call's `next`
-carries those blocks and whether the tool's result can carry an image; if
-both, a blocking ask passes them through. Otherwise — and for every async
-delivery, whose `context` and prompt are text — the model reads the
-engine's `(Image attached)` and not the picture: a known limit, recorded in
-`hooks/mods/README.md`.
+model as a content block beside the result (engine reference §8.1). The
+widened call's `next` carries no bytes — its answer reads `(Image
+attached)` — but at paste time the engine writes each pasted image into the
+session's pasted-image store, the one prompt pastes use (`[Image #N]` is
+`N.png`; debug log `Stored image 1 to <temp root>/<project slug>/<session
+id>/images/1.png`). So the mod lists the store before `$.ui.ask` and again
+when it settles; the files that appeared are that dialog's pastes, in
+number order.
+
+- **Blocking (parity)**: each new file is read with `$.fs.read(path, { as:
+  'bytes' })`, its `media_type` taken from the extension, and the tool
+  returns an array of API content blocks — the engine's text block, then one
+  `{ type: 'image', source: { type: 'base64', media_type, data } }` per file
+  (probed: the model described the image). The built-in puts its images
+  beside the tool result; these sit inside it, which reads the same to the
+  model. No new files → the plain string, as before. Two result forms fail
+  and are not used: an object `{ content: [...] }` (the output-shape check
+  allows string | array | undefined), and the MCP image form `{ type:
+  'image', data, mimeType }` (the API rejects it, `image.source: Field
+  required`, and the engine strips it).
+- **Async**: no delivery route carries image bytes (`context` and a
+  plugin's prompt are text, and a plugin prompt's images are not expanded),
+  so the delivery text appends one line per new file, `[Image: source:
+  <path>]` — the engine's own convention for a pasted image's file — and the
+  model opens it with Read.
+- **Locating the store**: derived from what the engine gives the mod (the
+  session id, the project slug, the temp root) or found by the store's own
+  layout, never a hard-coded `/private/tmp/claude-<uid>`. Not found → the
+  text-only outcome, and a debug-log line saying so.
+
+Known limits, in `hooks/mods/README.md`: an async image arrives as a path
+the model has to Read; the store is the engine's temp directory, cleaned
+with old sessions, so a path delivered long after can be gone.
 
 ### Async (`async` true)
 
@@ -617,6 +644,15 @@ Run in a scratch directory with the branch as the plugin:
    loaded with no refusal — the engine's scanner, not TypeScript, decides
    whether the combined module loads.
 11. **Eval.** M3's before/after runs meet its promotion bar.
+12. **A pasted image, blocking.** In a blocking ask, type text into "Type
+   something" and paste a PNG (save the human's clipboard first, `pbpaste >
+   <file>`; `osascript -e 'set the clipboard to (read (POSIX file "<png>")
+   as «class PNGf»)'`; ctrl+v in the dialog; afterwards `pbcopy < <file>`):
+   the call's recorded result holds the text block and an image block, and
+   the model describes the image.
+13. **A pasted image, async.** The same in an async ask's dialog: the
+   delivery carries `[Image: source: <path>]`, and the model Reads that
+   file and describes it.
 
 ## Execution
 
@@ -670,7 +706,8 @@ token); the turn latch (Design → Blocking); validation runs before any
 dialog; a
 refusal maps to the built-in's outcome, and the end-of-turn boundary is
 chosen by the probe Design → Blocking names, its verdict recorded in
-Surprises & Discoveries; the image check (Design → Blocking → Images). The
+Surprises & Discoveries; the blocking image blocks and the store's location
+(Design → Blocking → Images). The
 description read must be the engine's own text, not the withdrawal
 sentence this mod's `tool.describe` hook answers — check what
 `$.tool.list()` returns with that hook registered, and read before
@@ -680,7 +717,7 @@ draws any plugin tool.
 Not touched: anything async (no open-ask state, no buttons, no delivery);
 `to-human.tsx`; the output style.
 
-Proves: acceptance 1, 5, 6, 9, and 10's load check. Tests pin:
+Proves: acceptance 1, 5, 6, 9, 12, and 10's load check. Tests pin:
 `validateQuestions` against each rule (counts, required fields, duplicates
 — and no header-length rule) with the built-in's error form and its two
 verbatim texts; `describeAsk` appends the async paragraph to a given
@@ -689,7 +726,10 @@ and a matching unclaimed entry, two pending entries with the same first
 question each claim their own entry by token, even when the second raise
 reaches the hook first, and every other call — a model's call
 with a matching text included — is refused; a refusal without feedback
-ends the turn at the chosen boundary and one with feedback does not; with
+ends the turn at the chosen boundary and one with feedback does not;
+store files that appeared during a dialog become image blocks after the
+text block, in number order, with `media_type` by extension, and no new
+files leave the plain string; with
 the latch set, a model-made call later in the turn is refused before it
 runs; the tool's `inputSchema` has no `answers`/`annotations` and has
 `async`. (That a latched turn's end does not submit a held answer is M2's
@@ -723,7 +763,7 @@ Not touched: the output style; the `<need-input>` machinery (M3 removes it
 — until then both exist, which is harmless: the style still teaches the
 mark, and nothing in M2 reads it).
 
-Proves: acceptance 2, 3, 4, 4a, 4b, 7, and 10's load check. Tests pin:
+Proves: acceptance 2, 3, 4, 4a, 4b, 7, 13, and 10's load check. Tests pin:
 `deliveryText` and `deliveredIds` round-trip a call id through every stored
 form (an attachment's `content` array, a plugin-submitted user row's text
 with its framing prefix, and the stored form of a `prompt.submit`
@@ -740,6 +780,8 @@ dropped or rejected submission (either route) puts its answers back ahead
 of any answered meanwhile, and a tool result resolving during a pending
 submission cannot deliver the reserved answers a second time; Esc
 keeps the ask open; "Chat about this" is delivered and closes the ask;
+an answer with pasted images carries one `[Image: source: <path>]` line per
+file after the engine's text;
 `isAccepted` keeps a call whose result is `ASYNC_RESULT` and drops a
 validation refusal, a subagent refusal, a permission denial, and a call
 with no result.
@@ -798,7 +840,7 @@ built-in. The before-runs are the baseline and are scored only to show what
 moved. A miss below the bar revises the two paragraphs (style and async),
 reruns the after arm, and records each round in Surprises & Discoveries.
 
-Proves: acceptance 8, 10, 11, then runs acceptance 1–11 (4a and 4b
+Proves: acceptance 8, 10, 11, then runs acceptance 1–13 (4a and 4b
 included) in order on the
 finished branch.
 
@@ -951,6 +993,17 @@ dependencies.
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: images in scope (2026-10-13), replacing round one's known
+  limit. A probe by the design session found the pasted-image store
+  (Design → Blocking → Images): a blocking ask returns the engine's text
+  plus one base64 image block per file pasted during its dialog; an async
+  delivery appends `[Image: source: <path>]` per file for the model to Read.
+  M1 builds the blocking half, M2 the async half; acceptance 12 and 13.
+  Rationale: the human's condition is parity with the dialog, and the probe
+  showed the blocking path can meet it and the async path can come close.
+  Date/Author: 2026-10-13, design session (relayed); folded by the
+  plan-executor.
 
 - Decision: execution pre-flight (2026-10-13) — two readings settled before
   M1: the Withdrawn section's claim rule now names the token (round two
