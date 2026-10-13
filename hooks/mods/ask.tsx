@@ -284,6 +284,30 @@ export function imageBlock(name: string, base64: string) {
   return { type: 'image' as const, source: { type: 'base64' as const, media_type: mediaTypeOf(name) ?? 'image/png', data: base64 } }
 }
 
+/** The engine's mark on an answer whose "Type something" kept a picture. */
+const IMAGE_MARK = '(Image attached)'
+
+/**
+ * How many answers the engine marked as carrying a picture. The store keeps
+ * every paste, also one the human removed in the dialog; the marks are what
+ * says pictures were kept, at least one per marked answer.
+ */
+export function imageMarks(answers: readonly string[]): number {
+  return answers.filter((answer) => answer.endsWith(IMAGE_MARK)).length
+}
+
+/**
+ * The answers a settled dialog recorded: the answered record's `answers`, or
+ * the `  Answer: …` lines "Chat about this" lists in its refusal.
+ */
+function answersOf(outcome: { kind: 'answered'; record: unknown } | { kind: 'refused'; text: string }): string[] {
+  if (outcome.kind === 'refused') {
+    return [...outcome.text.matchAll(/^ {2}Answer: (.*)$/gm)].map((match) => match[1] ?? '')
+  }
+  const answers = isRecord(outcome.record) && isRecord(outcome.record.answers) ? outcome.record.answers : {}
+  return Object.values(answers).filter((answer): answer is string => typeof answer === 'string')
+}
+
 /** Where this session's pasted pictures are kept: the per-user temp root, the project slug and the session id. */
 type Store = { slug: string; sessionId: string; root?: string | null }
 let store: Store | undefined
@@ -355,11 +379,24 @@ async function imageBlocks($: EngineInterface, paths: readonly string[]) {
   return blocks
 }
 
+/** One `[Image: source: <path>]` line per picture, the path as it resolves on disk. */
+async function imageLines($: EngineInterface, paths: readonly string[]): Promise<string[]> {
+  return Promise.all(
+    paths.map(async (path) => {
+      const real = await $.fs
+        .stat(path, { resolve: true })
+        .then((stat) => stat.realPath)
+        .catch(() => undefined)
+      return `[Image: source: ${real ?? path}]`
+    }),
+  )
+}
+
 // The dialog.
 
 export type DialogOutcome =
   | { kind: 'answered'; text: string; record: unknown; images: string[] } // text: the engine's result text; images: paths pasted in this dialog
-  | { kind: 'refused'; text: string; hasFeedback: boolean } // text: the refusal; hasFeedback: "Chat about this"
+  | { kind: 'refused'; text: string; hasFeedback: boolean; images: string[] } // text: the refusal; hasFeedback: "Chat about this"; images: kept with it
 
 /** "Chat about this" refuses with the human's words after this. */
 const FEEDBACK = 'To tell you how to proceed, the user said:'
@@ -407,11 +444,11 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 /** What the widened call's `next` resolved, as the tool reads it (no pictures yet). */
 function outcomeOf(result: { deny?: string; text?: string; result?: unknown; isError?: true }): DialogOutcome {
   if (result.deny !== undefined) {
-    return { kind: 'refused', text: result.deny, hasFeedback: false }
+    return { kind: 'refused', text: result.deny, hasFeedback: false, images: [] }
   }
   const text = result.text ?? (typeof result.result === 'string' ? result.result : '')
   if (result.isError === true) {
-    return { kind: 'refused', text, hasFeedback: text.includes(FEEDBACK) }
+    return { kind: 'refused', text, hasFeedback: text.includes(FEEDBACK), images: [] }
   }
   return { kind: 'answered', text, record: result.result, images: [] }
 }
@@ -448,7 +485,21 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
     }
     const pasted = newImages(before, await storedImages($, folder), taken)
     pasted.forEach((name) => taken.add(name))
-    return outcome.kind === 'answered' ? { ...outcome, images: pasted.map((name) => `${folder}/${name}`) } : outcome
+    // Only an answer or "Chat about this" carries pictures; Esc carries none.
+    if (pasted.length === 0 || (outcome.kind === 'refused' && !outcome.hasFeedback)) {
+      return outcome
+    }
+    // The marks say at least one picture per marked answer was kept. When
+    // they account for every paste, all were kept; otherwise which ones the
+    // human removed is unknown, and none is sent rather than a removed one.
+    const marks = imageMarks(answersOf(outcome))
+    if (marks !== pasted.length) {
+      $.ui.log(`ask: ${pasted.length} ${pasted.length === 1 ? 'picture was' : 'pictures were'} pasted and ${marks} ${marks === 1 ? 'answer carries' : 'answers carry'} one; which were kept is unknown, so none is sent`, {
+        to: 'debug',
+      })
+      return outcome
+    }
+    return { ...outcome, images: pasted.map((name) => `${folder}/${name}`) }
   } finally {
     entries = entries.filter((e) => e !== entry)
   }
@@ -522,7 +573,7 @@ export function registerAsk(on: On) {
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async (_, e, next) => {
     store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
     return next(e)
-  })
+  }).catch((_, e, next) => next(e))
 
   // Every turn (compact holds the unmatched registration; a turn's id is
   // never empty): a new turn starts unlatched.
@@ -581,7 +632,7 @@ export function registerAsk(on: On) {
       return { deny: LATCHED }
     }
     return next(e)
-  })
+  }).catch((_, e, next) => next(e))
 
   // The mod's own raise is widened to its entry's whole set; every other call
   // from the model, or a stray one from this plugin, is refused. Another
@@ -597,7 +648,10 @@ export function registerAsk(on: On) {
     const result = await next({ ...e, questions: entry.questions } as typeof e)
     entry.outcome = outcomeOf(result as Parameters<typeof outcomeOf>[0])
     return result
-  })
+  }).catch((_, e, next) =>
+    // Failed before passing the call on, the withdrawal still holds for the model.
+    !next.called && next.error.kind !== 're-entry' && isServing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
+  )
 
   on('tool.call', { tool: 'mcp__doperpowers__AskUserQuestion' }, async ($, e) => {
     if (e.agentId !== undefined) {
@@ -619,11 +673,17 @@ export function registerAsk(on: On) {
       if (!outcome.hasFeedback) {
         isLatched = true
       }
-      return { deny: outcome.text }
+      // A refusal is text: the pictures kept with "Chat about this" go as
+      // their files, one line each, for the model to Read.
+      const lines = await imageLines($, outcome.images)
+      return { deny: [outcome.text, ...lines].join('\n') }
     }
     // The built-in puts pasted pictures beside its result; here they sit in
     // it, after the engine's text, which reads the same to the model.
     const blocks = await imageBlocks($, outcome.images)
     return { result: blocks.length === 0 ? outcome.text : [{ type: 'text', text: outcome.text }, ...blocks] }
-  })
+  }).catch((_, e, next) =>
+    // Asked in place of this hook for its own dialog's call (re-entry): pass it on.
+    next.error.kind === 're-entry' ? next(e) : { deny: `The question could not be asked: the hook ${next.error.kind === 'timeout' ? 'ran out of time' : 'failed'}.` },
+  )
 }

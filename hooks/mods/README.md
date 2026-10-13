@@ -309,19 +309,30 @@ clear.
 Pictures pasted into "Type something" reach the model as images. The engine
 writes each paste into the session's pasted-image store
 (`<temp root>/<project slug>/<session id>/images/<n>.png`, the folder prompt
-pastes use) and answers `(Image attached)` in the text; the mod lists that
-folder before and after the dialog and returns the engine's text block
-followed by one base64 image block per new file, in number order. The temp
-root is `claude-<uid>` under `CLAUDE_CODE_TMPDIR` or `/tmp`, found as the one
-such folder this process can read; the slug and session id come from the
-classic `SessionStart` payload.
+pastes use) and marks the answer `(Image attached)`; the mod lists that
+folder before and after the dialog. The store keeps a paste the human then
+removed in the dialog, so the files alone do not say what was kept: the
+engine's marks do, at least one picture per marked answer. When the marked
+answers account for every new file, all were kept, and the tool returns the
+engine's text block followed by one base64 image block per file, in number
+order; when they do not (a picture removed, or two kept in one answer), which
+were kept is unknown and none is sent, with a debug-log line. "Chat about
+this" keeps its refusal, which is text, and appends one `[Image: source:
+<path>]` line per kept picture (the file's real path) for the model to Read.
+The temp root is `claude-<uid>` under `CLAUDE_CODE_TMPDIR` or `/tmp`, found
+as the one such folder this process can read; the slug and session id come
+from the classic `SessionStart` payload.
 
 Known limits: a tool already running in parallel with the ask when the human
 declines it finishes, where the built-in's abort would cut it; the refusal
 reaches the model inside `<tool_use_error>`, the form every hook refusal takes,
 where the built-in's is bare text; an image sits inside the tool result, where
 the built-in puts it beside it, which reads the same to the model; a store that
-cannot be placed leaves the answer text only, with a debug-log line.
+cannot be placed leaves the answer text only, with a debug-log line; two
+pictures kept in one answer, or a picture on a multi-select question (whose
+answer the engine does not mark), are not sent; after a hot reload of the
+plugin the store is not known until the next session start, and pictures go
+as text only.
 
 ## secrets
 

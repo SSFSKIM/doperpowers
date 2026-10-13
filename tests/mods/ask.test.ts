@@ -11,6 +11,7 @@ import {
   WITHDRAWN,
   describeAsk,
   imageBlock,
+  imageMarks,
   mediaTypeOf,
   newImages,
   registerAsk,
@@ -146,7 +147,7 @@ const ESC =
   "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 const CHAT =
   "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nThe user wants to clarify these questions."
-const answered = (text: string): Answer => ({ ref: 1, result: { answers: {} }, text })
+const answered = (text: string, answers: Record<string, string> = {}): Answer => ({ ref: 1, result: { questions: [], answers, annotations: {} }, text })
 const refused = (text: string): Answer => ({ isError: true, result: `Error: ${text}`, text })
 
 const BACKEND: AskQuestion = { question: 'Which backend?', header: 'Backend', multiSelect: false, options: [{ label: 'Postgres', description: 'd', preview: '+--+' }, option('SQLite')] }
@@ -161,11 +162,13 @@ const FEATURES: AskQuestion = { question: 'Which features?', header: 'Features',
 function harness(
   options: { builtin?: string | undefined; tmpdir?: string; dirs?: Record<string, string[]>; unreadable?: string[]; whileStarting?: () => Promise<unknown>; register?: () => Promise<void> } = {},
 ) {
-  const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
+  const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
     const matcher = rest.length > 1 ? (rest[0] as Matcher) : undefined
-    hooks.push({ event, matcher, handler })
+    const hook: (typeof hooks)[number] = { event, matcher, handler }
+    hooks.push(hook)
+    return { catch: (onFailure: Handler) => void (hook.onFailure = onFailure) }
   }) as unknown as On
   const calls: { op: string; args: unknown }[] = []
   const raises: { question: string; options: { options?: readonly string[]; header?: string; multiSelect?: true }; resolve: (v: string) => void; reject: (e: Error) => void }[] = []
@@ -184,6 +187,8 @@ function harness(
         return names.map((name) => ({ name, kind: dirs.has(`${path}/${name}`) ? 'dir' : 'file', size: 1, mtimeMs: 0, isLink: false }))
       },
       exists: async (path: string) => dirs.has(path),
+      // /tmp is a link to /private/tmp, as on macOS.
+      stat: async (path: string, opts?: { resolve?: boolean }) => ({ kind: 'file', size: 1, mtimeMs: 0, isLink: false, ...(opts?.resolve === true && { realPath: `/private${path}` }) }),
       read: async (path: string, opts?: { as?: string }) => {
         calls.push({ op: 'fs.read', args: { path, ...opts } })
         return { base64: `bytes:${path}` }
@@ -315,7 +320,19 @@ function harness(
     dispatch('tool.describe', { tool, description, isDeferred: true, provider: MODEL }, MODEL, async (e) => ({ description: e.description, isDeferred: e.isDeferred }))
 
   const registered = () => calls.filter((c) => c.op === 'tool.register').map((c) => c.args as { name: string; description: string; inputSchema: unknown })
-  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step }
+  /** Runs the `.catch` of the hook on `event` matching `e`, as the engine does when the hook failed. */
+  const fail = (event: string, e: Record<string, unknown>, failure: { kind: string; called?: boolean; origin?: Origin }) => {
+    const hook = matching(event, e).find((h) => h.matcher !== undefined) ?? matching(event, e)[0]
+    const ran: Record<string, unknown>[] = []
+    const next = Object.assign(async (inner: Record<string, unknown>) => (ran.push(inner), { ref: 9, result: 'ran', text: 'ran' }), {
+      origin: failure.origin ?? MODEL,
+      called: failure.called === true,
+      error: { kind: failure.kind },
+    })
+    return { answer: hook?.onFailure?.($, e, next), ran }
+  }
+
+  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail }
 }
 
 describe('registerAsk: the tool and the built-in', () => {
@@ -578,13 +595,14 @@ describe('pictures pasted into the dialog', () => {
     await h.start()
     await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
     h.paste(FOLDER, '1.png') // a prompt's paste, before the ask
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
     await h.settle()
     h.paste(FOLDER, '3.jpg', '2.png')
-    await h.raise(0, answered('The user answered: "Which backend?"="(Image attached)".'))
+    const text = 'The user answered: "Which backend?"="(Image attached)", "Which features?"="Auth, mine (Image attached)".'
+    await h.raise(0, answered(text, { 'Which backend?': '(Image attached)', 'Which features?': 'mine (Image attached)' }))
     expect((await pending).result).toEqual({
       result: [
-        { type: 'text', text: 'The user answered: "Which backend?"="(Image attached)".' },
+        { type: 'text', text },
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: `bytes:${FOLDER}/2.png` } },
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: `bytes:${FOLDER}/3.jpg` } },
       ],
@@ -609,10 +627,10 @@ describe('pictures pasted into the dialog', () => {
     const second = h.call(ASK_TOOL, { questions: [FEATURES] })
     await h.settle()
     h.paste(FOLDER, '1.png')
-    await h.raise(0, answered('first'))
+    await h.raise(0, answered('first', { 'Which backend?': 'x (Image attached)' }))
     await first
     h.paste(FOLDER, '2.png')
-    await h.raise(1, answered('second'))
+    await h.raise(1, answered('second', { 'Which features?': '(Image attached)' }))
     const blocks = (await second).result as { result: { type: string; source?: { data: string } }[] }
     expect(blocks.result.map((b) => b.source?.data ?? b.type)).toEqual(['text', `bytes:${FOLDER}/2.png`])
   })
@@ -624,7 +642,7 @@ describe('pictures pasted into the dialog', () => {
     const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
     await h.settle()
     h.paste('/scratch/claude-77/-repo/s/images', '1.png')
-    await h.raise(0, answered('answer'))
+    await h.raise(0, answered('answer', { 'Which backend?': '(Image attached)' }))
     expect(((await pending).result as { result: unknown[] }).result.length).toBe(2)
   })
 
@@ -637,5 +655,88 @@ describe('pictures pasted into the dialog', () => {
     await h.raise(0, answered('answer'))
     expect((await pending).result).toEqual({ result: 'answer' })
     expect(h.calls.some((c) => c.op === 'ui.log' && String(c.args).includes('temp root was not found'))).toBe(true)
+  })
+})
+
+describe('pictures the human kept', () => {
+  const FOLDER = '/tmp/claude-501/-work-repo/sess-1/images'
+  const ready = async () => {
+    const h = harness()
+    await h.start()
+    await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
+    return h
+  }
+
+  test('imageMarks counts the answers the engine marked as carrying a picture', async () => {
+    expect(imageMarks(['(Image attached)', 'mine (Image attached)', 'SQLite', 'Auth, Export'])).toBe(2)
+    expect(imageMarks([])).toBe(0)
+  })
+
+  test('a picture pasted and then removed is not sent', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    h.paste(FOLDER, '1.png') // the store keeps it; the dialog dropped it
+    await h.raise(0, answered('The user answered: "Which backend?"="like this".', { 'Which backend?': 'like this' }))
+    expect((await pending).result).toEqual({ result: 'The user answered: "Which backend?"="like this".' })
+    expect(h.calls.some((c) => c.op === 'fs.read')).toBe(false)
+  })
+
+  test('more pastes than marked answers: which were kept is unknown, so none is sent and the debug log says so', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    h.paste(FOLDER, '1.png', '2.png') // one removed, or both kept in one answer: the mod cannot tell
+    await h.raise(0, answered('The user answered: "Which backend?"="x (Image attached)".', { 'Which backend?': 'x (Image attached)' }))
+    expect((await pending).result).toEqual({ result: 'The user answered: "Which backend?"="x (Image attached)".' })
+    expect(h.calls.some((c) => c.op === 'ui.log' && String(c.args).includes('2 pictures were pasted and 1 answer carries one'))).toBe(true)
+  })
+
+  test('"Chat about this" keeps the refusal and names each kept picture by its real path, one line each', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: like this (Image attached)`
+    await h.raise(0, refused(chat))
+    expect((await pending).result).toEqual({ deny: `${chat}\n[Image: source: /private${FOLDER}/1.png]` })
+  })
+
+  test('"Chat about this" with a removed picture is the plain refusal', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: like this`
+    await h.raise(0, refused(chat))
+    expect((await pending).result).toEqual({ deny: chat })
+  })
+
+  test('Esc sends no pictures', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    await h.raise(0, refused(ESC))
+    expect((await pending).result).toEqual({ deny: ESC })
+  })
+})
+
+describe('when a hook fails', () => {
+  test('the withdrawal holds for the model; another call, or a raise already passed on, goes on', async () => {
+    const h = harness()
+    await h.start()
+    const e = { tool: 'AskUserQuestion', tool_use_id: 't', questions: [BACKEND] }
+    expect(await h.fail('tool.call', e, { kind: 'throw' }).answer).toEqual({ deny: WITHDRAWN })
+    expect((await h.fail('tool.call', e, { kind: 'throw', origin: MOD }).answer)).toEqual({ ref: 9, result: 'ran', text: 'ran' })
+    expect((await h.fail('tool.call', e, { kind: 'throw', called: true }).answer)).toEqual({ ref: 9, result: 'ran', text: 'ran' })
+  })
+
+  test("the tool's own failure is a refusal naming it; asked in its place for its dialog's call, it passes the call on", async () => {
+    const h = harness()
+    await h.start()
+    const ask = { tool: ASK_TOOL, tool_use_id: 't', questions: [BACKEND] }
+    expect(await h.fail('tool.call', ask, { kind: 'timeout' }).answer).toEqual({ deny: 'The question could not be asked: the hook ran out of time.' })
+    expect(await h.fail('tool.call', ask, { kind: 're-entry', origin: MOD }).answer).toEqual({ ref: 9, result: 'ran', text: 'ran' })
   })
 })
