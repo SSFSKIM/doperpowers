@@ -509,8 +509,13 @@ Run in a scratch directory with the branch as the plugin:
    mcp__doperpowers__AskUserQuestion with exactly this input and nothing
    else: `<P>`". The engine dialog opens at once with `←  ☐ Backend
    ☐ Features  ✔ Submit  →`, the preview box, and `Notes: press n to add
-   notes`. Answer with fixed keys: `n`, type `board db only`, Enter; ↓ to
-   SQLite, Enter; Enter on Auth, ↓↓ Enter on Export, then Next; Submit. Then
+   notes`. Answer with fixed keys: ↓ to SQLite first, then `n`, type
+   `board db only`, Enter (that Enter commits the highlighted SQLite with its
+   note and moves to Features — a note's Enter answers the question, so the
+   highlight must be on SQLite before `n`); on Features, Enter on Auth, ↓↓
+   Enter on Export, then ↓ to the row under the options (`Next` or `Submit`,
+   whichever the engine labels it) and Enter; on the review page, `Submit
+   answers`. Then
    the same with function hooks off (the built-in), prompt "Call
    AskUserQuestion with exactly this input and nothing else: `<P>`", same
    keys. Compare the two calls' recorded `tool_result` content in the
@@ -525,8 +530,10 @@ Run in a scratch directory with the branch as the plugin:
                    print(json.dumps(b.get('content')))
        PY
 
-   The two texts are identical (fact 10's `The user answered: …` form, with
-   `notes: board db only`).
+   The two texts are identical, and each is fact 10's `The user answered:`
+   form carrying `"Which backend?"="SQLite"`, ` selected preview:` with the
+   SQLite box, ` notes: board db only`, and `"Which features?"="Auth,
+   Export"`.
 2. **Async mid-turn.** Prompt: "Ask me two questions with async true, then
    run `perl -e 'sleep 60'`, then `echo second`, then tell me whether an
    answer arrived, verbatim." The call returns at once; the row shows both
