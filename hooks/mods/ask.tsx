@@ -297,12 +297,19 @@ export function imageMarks(answers: readonly string[]): number {
 }
 
 /**
+ * One answer of the list "Chat about this" writes in its refusal: the whole
+ * answer after `  Answer: `, newlines included (the engine puts the human's
+ * text in as typed), up to the question's notes, the next question, or the end.
+ */
+const CHAT_ANSWER = /^ {2}Answer: ([\s\S]*?)(?=\n {2}User notes: |\n- "|(?![\s\S]))/gm
+
+/**
  * The answers a settled dialog recorded: the answered record's `answers`, or
- * the `  Answer: …` lines "Chat about this" lists in its refusal.
+ * the answers "Chat about this" lists in its refusal.
  */
 function answersOf(outcome: { kind: 'answered'; record: unknown } | { kind: 'refused'; text: string }): string[] {
   if (outcome.kind === 'refused') {
-    return [...outcome.text.matchAll(/^ {2}Answer: (.*)$/gm)].map((match) => match[1] ?? '')
+    return [...outcome.text.matchAll(CHAT_ANSWER)].map((match) => match[1] ?? '')
   }
   const answers = isRecord(outcome.record) && isRecord(outcome.record.answers) ? outcome.record.answers : {}
   return Object.values(answers).filter((answer): answer is string => typeof answer === 'string')
@@ -663,25 +670,61 @@ export function askRow(
 }
 
 /**
+ * The rows of the conversation the engine resumes, oldest first: back from
+ * its leaf, parent by parent, across a compaction by the boundary's
+ * `logicalParentUuid` (its `parentUuid` is null). A branch the human rewound
+ * past stays in the file and is not on it. The leaf is the last row written,
+ * unless the engine set the leaf explicitly after it: a rewind writes a
+ * `last-prompt` record with `explicit: true` naming the row it went back to,
+ * or no row when it went back past the first prompt (verified on two rewound
+ * transcripts, 2.1.257 and 2.1.296; the writer is the bundle's `g_t`).
+ */
+function conversationOf(rows: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  const byUuid = new Map<string, Record<string, unknown>>()
+  let leaf: string | undefined
+  for (const row of rows) {
+    if (typeof row.uuid === 'string' && row.isSidechain !== true) {
+      byUuid.set(row.uuid, row)
+      leaf = row.uuid
+    } else if (row.type === 'last-prompt' && row.explicit === true) {
+      // A rewind's record; no leaf when it went back past the first prompt.
+      leaf = typeof row.leafUuid === 'string' ? row.leafUuid : undefined
+    }
+  }
+  const conversation: Record<string, unknown>[] = []
+  const seen = new Set<string>()
+  for (let at = leaf; at !== undefined && !seen.has(at); ) {
+    const row = byUuid.get(at)
+    if (row === undefined) {
+      break
+    }
+    seen.add(at)
+    conversation.push(row)
+    at = typeof row.parentUuid === 'string' ? row.parentUuid : typeof row.logicalParentUuid === 'string' ? row.logicalParentUuid : undefined
+  }
+  return conversation.reverse()
+}
+
+/**
  * The async asks a transcript holds, in call order: each accepted call of the
  * tool, answered when a row the model read delivers it (an attachment of a
  * tool result's or a prompt's context, a user row the plugin submitted),
- * else open.
+ * else open. Only the conversation the engine resumes counts; lines a search
+ * found (`isWholeFile` false) carry no ancestry to follow, and all count.
  */
-export function rebuildAsks(lines: readonly string[]): OpenAsk[] {
+export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { isWholeFile?: boolean } = {}): OpenAsk[] {
   const calls: { id: string; input: Record<string, unknown> }[] = []
   const results = new Map<string, { content: unknown; is_error?: boolean }>()
   const answers = new Map<string, string>()
-  for (const line of lines) {
-    let row: unknown
+  const parsed = lines.flatMap((line) => {
     try {
-      row = JSON.parse(line)
+      const row: unknown = JSON.parse(line)
+      return isRecord(row) ? [row] : []
     } catch {
-      continue
+      return []
     }
-    if (!isRecord(row)) {
-      continue
-    }
+  })
+  for (const row of isWholeFile ? conversationOf(parsed) : parsed) {
     const message = isRecord(row.message) ? row.message : {}
     for (const block of Array.isArray(message.content) ? message.content : []) {
       if (isRecord(block) && block.type === 'tool_use' && block.name === ASK_TOOL && isRecord(block.input) && block.input.async === true) {
@@ -848,14 +891,16 @@ export function searchArgs(path: string): string[] {
 }
 
 /**
- * The transcript's lines, or the lines that can name an ask in one too large
- * to read whole (over 4 MiB). A search that fails, or whose output was cut at
- * the same 4 MiB (it would drop the newest asks), rebuilds nothing rather
- * than a part, with a debug line.
+ * The async asks the transcript at `path` holds. One too large to read whole
+ * (over 4 MiB) is searched for the lines that can name an ask, which carry no
+ * ancestry: the asks of a branch the human rewound past count there too. A
+ * search that fails, or whose output was cut at the same 4 MiB (it would drop
+ * the newest asks), rebuilds nothing rather than a part, with a debug line.
  */
-async function transcriptLines($: EngineInterface, path: string): Promise<string[]> {
+async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
+  let text: string
   try {
-    return (await $.fs.read(path)).split('\n')
+    text = await $.fs.read(path)
   } catch (error) {
     const failed = (why: string) => {
       $.ui.log(`ask: the transcript could not be read whole (${message(error)}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
@@ -877,8 +922,9 @@ async function transcriptLines($: EngineInterface, path: string): Promise<string
     if (search.isStdoutTruncated === true) {
       return failed('its asks run past what one search returns')
     }
-    return search.stdout.split('\n')
+    return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
   }
+  return rebuildAsks(text.split('\n'))
 }
 
 const ANSWER_KEY = 'ask-answer:'
@@ -993,7 +1039,7 @@ export function registerAsk(on: On) {
       forgetAsyncAsks()
     }
     if (e.source === 'resume' || e.source === 'fork') {
-      asks = rebuildAsks(await transcriptLines($, e.transcript_path))
+      asks = await readAsks($, e.transcript_path)
       $.ui.invalidate('ui.render')
     }
     return next(e)

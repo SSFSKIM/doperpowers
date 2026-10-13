@@ -766,6 +766,26 @@ describe('pictures the human kept', () => {
     expect((await pending).result).toEqual({ deny: `${chat}\n[Image source: /private${FOLDER}/1.png]` })
   })
 
+  test('"Chat about this" reads a whole answer, over several lines, for its mark', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: first line\nsecond line (Image attached)\n- "Which features?"\n  (No answer provided)`
+    await h.raise(0, refused(chat))
+    expect((await pending).result).toEqual({ deny: `${chat}\n[Image source: /private${FOLDER}/1.png]` })
+  })
+
+  test('"Chat about this" with notes after an answer: the answer ends where the notes begin', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: this (Image attached)\n  User notes: later (Image attached)`
+    await h.raise(0, refused(chat))
+    expect((await pending).result).toEqual({ deny: `${chat}\n[Image source: /private${FOLDER}/1.png]` })
+  })
+
   test('"Chat about this" with a removed picture is the plain refusal', async () => {
     const h = await ready()
     const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
@@ -1168,10 +1188,20 @@ describe('the rows', () => {
 
 describe('a resumed session', () => {
   const T = '/p/-repo/s.jsonl'
+  // The conversation's rows, each the child of the one written before it, as
+  // the engine stores them; `line` is a metadata row, which carries no uuid.
+  let rowCount = 0
+  let lastUuid: string | null = null
   const line = (row: unknown) => JSON.stringify(row)
-  const use = (id: string, input: unknown) => line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: ASK_TOOL, input }] } })
+  const row = (r: Record<string, unknown>) => {
+    const uuid = `u${++rowCount}`
+    const stored = JSON.stringify({ parentUuid: lastUuid, uuid, ...r })
+    lastUuid = uuid
+    return stored
+  }
+  const use = (id: string, input: unknown) => row({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: ASK_TOOL, input }] } })
   const result = (id: string, content: unknown, is_error?: boolean) =>
-    line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(is_error && { is_error }) }] } })
+    row({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(is_error && { is_error }) }] } })
   const single = { questions: [question('Pick one?', 'One', ['Only'])], async: true }
   const lines = [
     use('t-open', { questions: [BACKEND], async: true }),
@@ -1183,16 +1213,16 @@ describe('a resumed session', () => {
     use('t-blocking', { questions: [BACKEND] }),
     result('t-blocking', ANSWER),
     use('t-cut', { questions: [BACKEND], async: true }),
-    line({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [deliveryText('t-done', 'Your questions have been answered: "Which features?"="Auth". You can now continue with these answers in mind.')] } }),
+    row({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [deliveryText('t-done', 'Your questions have been answered: "Which features?"="Auth". You can now continue with these answers in mind.')] } }),
     // The model quoting a delivery is not one, nor the queue's record of a prompt that may never have entered.
-    line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: deliveryText('t-open', 'made up') }] } }),
+    row({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: deliveryText('t-open', 'made up') }] } }),
     line({ type: 'queue-operation', operation: 'enqueue', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', 'dropped')}` }),
     line({ type: 'last-prompt', lastPrompt: `The doperpowers plugin sent a message: ${deliveryText('t-open', 'dropped')}` }),
     // A tool's output that prints a delivery (a read of this transcript) is not one either,
     // nor the human quoting one in a prompt of their own.
     result('t-cat', `{"content":["${deliveryText('t-open', 'printed')}"]}`),
-    line({ type: 'user', message: { role: 'user', content: `what does this mean? ${deliveryText('t-open', 'quoted')}` } }),
-    line({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: deliveryText('t-open', 'quoted') }] } }),
+    row({ type: 'user', message: { role: 'user', content: `what does this mean? ${deliveryText('t-open', 'quoted')}` } }),
+    row({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: deliveryText('t-open', 'quoted') }] } }),
   ]
 
   test('rebuildAsks keeps the accepted asks, open or answered by a later delivery', async () => {
@@ -1200,7 +1230,7 @@ describe('a resumed session', () => {
       { id: 't-open', questions: [BACKEND], status: 'open' },
       { id: 't-done', questions: [FEATURES], status: 'answered', answer: 'Your questions have been answered: "Which features?"="Auth". You can now continue with these answers in mind.' },
     ])
-    const submittedRow = line({ type: 'user', message: { role: 'user', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', ANSWER)}` } })
+    const submittedRow = row({ type: 'user', message: { role: 'user', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', ANSWER)}` } })
     expect(rebuildAsks([...lines, submittedRow])[0]).toEqual({ id: 't-open', questions: [BACKEND], status: 'answered', answer: ANSWER })
     expect(rebuildAsks(['not json', ''])).toEqual([])
   })
@@ -1253,6 +1283,67 @@ describe('a resumed session', () => {
       const logs = h.calls.filter((c) => c.op === 'ui.log').map((c) => String(c.args))
       expect(logs.some((text) => logged !== undefined && text.includes(logged))).toBe(logged !== undefined)
     }
+  })
+
+  /** A row of a conversation with its ancestry spelled out. */
+  const at = (uuid: string, parentUuid: string | null, r: Record<string, unknown>) => JSON.stringify({ parentUuid, uuid, ...r })
+  const call = (uuid: string, parent: string | null, id: string, q: AskQuestion) =>
+    at(uuid, parent, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: ASK_TOOL, input: { questions: [q], async: true } }] } })
+  const accepted = (uuid: string, parent: string, id: string) =>
+    at(uuid, parent, { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: ASYNC_RESULT }] } })
+  const delivered = (uuid: string, parent: string, id: string) =>
+    at(uuid, parent, { type: 'attachment', attachment: { type: 'hook_additional_context', content: [deliveryText(id, ANSWER)] } })
+  const prompt = (uuid: string, parent: string | null) => at(uuid, parent, { type: 'user', message: { role: 'user', content: 'go on' } })
+  // A, asked and accepted; then a branch the human rewound past: B asked, and A answered there.
+  const rewound = [
+    prompt('p1', null),
+    call('a1', 'p1', 't-A', BACKEND),
+    accepted('a2', 'a1', 't-A'),
+    prompt('p2', 'a2'),
+    call('b1', 'p2', 't-B', FEATURES),
+    accepted('b2', 'b1', 't-B'),
+    delivered('b3', 'b2', 't-A'),
+  ]
+
+  test('a branch the human rewound past is not the conversation: its asks and deliveries are left out', async () => {
+    // Rewound to A's acceptance and went on from there.
+    expect(rebuildAsks([...rewound, prompt('p3', 'a2'), at('r1', 'p3', { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })])).toEqual([
+      { id: 't-A', questions: [BACKEND], status: 'open' },
+    ])
+    // Rewound and left at once: the engine's record of the rewind names the leaf.
+    expect(rebuildAsks([...rewound, line({ type: 'last-prompt', leafUuid: 'a2', explicit: true, rewound: true })])).toEqual([{ id: 't-A', questions: [BACKEND], status: 'open' }])
+    // Rewound to before the first prompt (the engine writes no leaf) and left: no conversation, no ask.
+    expect(rebuildAsks([...rewound, line({ type: 'last-prompt', leafUuid: null, explicit: true, rewound: true })])).toEqual([])
+    // Not rewound: the latest record of the prompt names the row before it, and rows after it are still the conversation.
+    expect(rebuildAsks([...rewound.slice(0, 4), line({ type: 'last-prompt', leafUuid: 'p2' }), ...rewound.slice(4)]).map((a) => [a.id, a.status])).toEqual([
+      ['t-A', 'answered'],
+      ['t-B', 'open'],
+    ])
+  })
+
+  test('a compaction does not cut the conversation: the boundary goes on through its logical parent', async () => {
+    const compacted = [
+      prompt('p1', null),
+      call('a1', 'p1', 't-A', BACKEND),
+      accepted('a2', 'a1', 't-A'),
+      call('c1', 'a2', 't-C', FEATURES),
+      accepted('c2', 'c1', 't-C'),
+      at('k1', null, { type: 'system', subtype: 'compact_boundary', logicalParentUuid: 'c2', content: 'Conversation compacted' }),
+      at('k2', 'k1', { type: 'user', isCompactSummary: true, message: { role: 'user', content: 'Summary.' } }),
+      delivered('k3', 'k2', 't-C'),
+    ]
+    expect(rebuildAsks(compacted).map((a) => [a.id, a.status])).toEqual([
+      ['t-A', 'open'],
+      ['t-C', 'answered'],
+    ])
+  })
+
+  test('the lines a search found carry no ancestry to follow: every one counts', async () => {
+    const found = rewound.filter((_, i) => i !== 0 && i !== 3)
+    expect(rebuildAsks(found, { isWholeFile: false }).map((a) => [a.id, a.status])).toEqual([
+      ['t-A', 'answered'],
+      ['t-B', 'open'],
+    ])
   })
 
   test('/clear forgets the asks; a compaction keeps them', async () => {

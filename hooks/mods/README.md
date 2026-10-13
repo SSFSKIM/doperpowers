@@ -347,7 +347,10 @@ dropped beneath) puts them back ahead of any answered meanwhile, toasts why, and
 leaves the next route to try.
 
 A resumed session rebuilds its async asks from the transcript (the classic
-`SessionStart` payload's path): every call of the tool with `async` true whose
+`SessionStart` payload's path), from the conversation the engine resumes only:
+back from its leaf parent by parent, across a compaction by the boundary's
+logical parent, so a branch the human rewound past, which stays in the file,
+is left out. Every call of the tool with `async` true whose
 result is the async one and whose input is valid is an ask; it reads answered
 when a row the model read names its call in a delivery (a context attachment,
 a prompt the plugin submitted, known by the engine's framing; never the
@@ -371,7 +374,12 @@ open on resume; an async picture reaches the model as a path it has to Read,
 and the store is the engine's temp directory, cleaned with old sessions, so a
 path delivered long after can be gone; the row reads its answers back from the
 engine's text, so a question text that also appears inside an earlier answer
-can misplace a row.
+can misplace a row; the lines a search of a transcript over 4 MiB finds carry
+no ancestry, so there a branch the human rewound past counts as the
+conversation (its asks come back, its deliveries close theirs); and a rewind
+inside a running session raises no event a hook sees, so the asks of the
+branch it left stay in the row's and the band's view until the session is
+resumed.
 
 ## secrets
 

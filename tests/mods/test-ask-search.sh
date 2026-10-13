@@ -35,13 +35,14 @@ const rows = [
   { type: 'attachment', attachment: { type: 'prompt_snapshot', tools: [{ name: ASK_TOOL, description: 'd' }] } },
   { type: 'user', message: { role: 'user', content: \`see \${deliveryText('t-open', 'quoted')}\` } },
 ]
-const lines = rows.map((row) => JSON.stringify(row))
+// One conversation, each row the child of the one before it, as the engine stores them.
+const lines = rows.map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : \`u\${i - 1}\`, uuid: \`u\${i}\`, ...row }))
 const path = '$work/transcript.jsonl'
 writeFileSync(path, lines.join('\n') + '\n')
 const [command, ...args] = searchArgs(path)
 const found = execFileSync(command as string, args, { encoding: 'utf8' }).split('\n')
 const whole = rebuildAsks(lines).map((a) => [a.id, a.status])
-const searched = rebuildAsks(found).map((a) => [a.id, a.status])
+const searched = rebuildAsks(found, { isWholeFile: false }).map((a) => [a.id, a.status])
 const expected = [['t-first', 'answered'], ['t-tool', 'answered'], ['t-prompt', 'answered'], ['t-plugin', 'answered'], ['t-open', 'open']]
 const leftOut = found.filter((line) => line.includes('prompt_snapshot') || line.includes('"see '))
 let failed = 0
