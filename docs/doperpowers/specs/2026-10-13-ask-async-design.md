@@ -381,7 +381,7 @@ is the one state the built-in has no row for: it draws `⏺ Claude asked
 (answer when ready):` with one dim `· <header> — <question>` row per
 question and `[ answer ]`. In the to-human view the row stays in the
 report, as the built-in's does (`isRead` in `hooks/mods/to-human.tsx`).
-Above the prompt, while any ask is open: `N open question(s) · [ answer ]`,
+Above the prompt, while any ask is open: `N open question(s) · [ answer ]` (drawn pluralized: `1 open question`, `2 open questions`),
 the button opening the oldest — an async question scrolls away while the
 model works, and this keeps it reachable.
 
@@ -629,7 +629,9 @@ Run in a scratch directory with the branch as the plugin:
    true, then ask question B with async true, then run `perl -e 'sleep 40'`,
    then tell me verbatim every answer you received." While the command runs,
    answer A, then answer B. The model quotes both deliveries, each once; the
-   transcript holds each `(call <id>)` once.
+   transcript holds each `(call <id>)` once in the rows the model reads
+   (`user` and `attachment` rows; the `queue-operation` and `last-prompt`
+   metadata rows copy a submitted prompt).
 4b. **A stop is not undone.** Ask with async true, then let the model run
    `perl -e 'sleep 60'`; answer the ask, then interrupt the turn (Esc on the
    prompt) before the command ends. No new turn starts on its own. Type
@@ -978,6 +980,29 @@ dependencies.
 
 ## Surprises & Discoveries
 
+M2 (2026-10-13), live on 2.1.296:
+
+- Observation: the engine's own AskUserQuestion row cannot be drawn for the
+  tool. A `ToolUse` rewrite to `tool: 'AskUserQuestion'` drew a generic
+  `⏺ AskUserQuestion(questions: …)` line; a `ToolResult` rewrite drew
+  nothing, even in ctrl+o. The built-in draws its answered and declined
+  rows from its result renderers, where `tool` is read-only. The mod draws
+  the same lines itself.
+- Observation: a `prompt.submit` hook's `context` is stored as a
+  `hook_additional_context` attachment (`hookName: "prompt.submit"`,
+  `hookEvent: "UserPromptSubmit"`), the same type a tool result's gets.
+- Observation: a latched turn ends with `turn.complete` reason `aborted`; an
+  interrupted turn too.
+- Observation: `context` added to an interrupted tool call's result is
+  dropped (the cut call's result is the refusal, no attachment stored);
+  `next.signal.aborted` marks it. The tool-result route skips such results.
+- Observation: a plugin-submitted prompt is stored framed on both sides
+  (`The doperpowers plugin sent a message:\n<text>\n\nThis is how Claude Code
+  surfaces …`), with copies in `queue-operation` and `last-prompt` rows.
+- Observation: a hot reload resets the async asks with all module state;
+  `classic.SessionStart` is not re-raised, so they rebuild only at the next
+  start or resume.
+
 M1 (2026-10-13), from the executor's live probes on 2.1.296:
 
 - Observation: the end-of-turn boundary after a refusal without feedback.
@@ -1060,6 +1085,20 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: M2's gaps (2026-10-13) — the mod draws every row itself
+  (answers read back from the engine's result text; "Chat about this" in
+  the built-in's declined form); the band pluralizes; the tool-result route
+  skips results the human's interrupt cut; an idle submit carries any
+  answers already held; the `prompt.submit` route attaches held answers to
+  any prompt entering while they are held; resume reads deliveries only from
+  rows the model read (context attachments, user rows); a transcript over
+  the 4 MiB read limit is searched through `grep` via `$.process.run`;
+  `/clear` forgets the asks, compaction keeps them; submissions are never
+  awaited inside a hook.
+  Rationale: each follows the spec's parity and delivery intent under an
+  engine constraint M2 found (Surprises & Discoveries, M2).
+  Date/Author: 2026-10-13, M2 executor; folded by the plan-executor.
 
 - Decision: M1 re-review (2026-10-13) — the remaining finding, a removed
   paste sent when the human's own answer ends in the literal `(Image
