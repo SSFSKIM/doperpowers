@@ -31,6 +31,7 @@ member too, seat-less, from the first call that reads its project.
     sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
     sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin)
     sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
+    sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
@@ -461,7 +462,7 @@ JOINABLE_KINDS = ("interactive", "bg")
 HEADLESS_ENTRYPOINT = "sdk"
 _PROJECTS = {}
 _HOMES = set()
-_VIEWS = {}  # project id → (members, seat rows), per invocation; a lifecycle append drops it
+_VIEWS = {}  # project id → View, per invocation; a lifecycle append drops it
 
 
 def projects_root():
@@ -632,9 +633,9 @@ def project_path(project, *parts):
     return path
 
 
-def known_projects():
+def known_projects(all_seats=None):
     """Every project this machine knows: those with a home here, and those of
-    the seats it holds."""
+    the seats it holds (`all_seats`: a seat read the caller already made)."""
     out = {}
     for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
         try:
@@ -645,7 +646,7 @@ def known_projects():
             continue
         if valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid:
             out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""))
-    for s in seats():
+    for s in seats() if all_seats is None else all_seats:
         p = seat_project(s)
         if p:
             out.setdefault(p.id, p)
@@ -1165,19 +1166,20 @@ def _projection(events):
     return info
 
 
-def charge_of(member, events):
+def charge_of(member, events, title=True):
     """(line, source): what a member is in charge of, the first present of
     (§5) the latest `set` in-charge line, the name the human gave it, the
     latest `derived` line, and — on this machine only — its transcript's
     latest title; ("", "") when none is. A set or derived line written
     empty is no line. `events` is the log, or any part of it holding the
-    member's in-charge events, each writer's in seq order."""
+    member's in-charge events, each writer's in seq order. With title=False
+    the transcript is not read (the daemon's tick has no use for the line)."""
     mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") == member.session]
     for source in ("set", "name", "derived", "title"):
         if source == "name":
             line = member.alias if member.name_source == "user" else ""
         elif source == "title":
-            line = transcript_title(member.session) if member.local and member.session else ""
+            line = transcript_title(member.session) if title and member.local and member.session else ""
         else:
             e = latest_across_writers([x for x in mine if x.get("source") == source])
             line = str(e.get("text") or "").strip() if e else ""
@@ -1199,7 +1201,7 @@ def ts_age(ts):
     return max(0.0, time.time() - then)
 
 
-def _member(sid, r, seat, peer, local):
+def _member(sid, r, seat, peer, local, title=True):
     """One row of the projection: what the log says of the session, and, on
     this machine, its seat record and its process."""
     j = (r or {}).get("joined") or {}
@@ -1231,8 +1233,17 @@ def _member(sid, r, seat, peer, local):
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
         by=(r or {}).get("by") or "", worktree=seat["worktree"] if seat else str(j.get("worktree") or ""),
         seat=seat)
-    charge, source = charge_of(m, (r or {}).get("in_charge") or [])
+    charge, source = charge_of(m, (r or {}).get("in_charge") or [], title)
     return m._replace(charge=charge, charge_source=source)
+
+
+class View(NamedTuple):
+    members: list         # the members, newest join first
+    rows: list            # the seats no member stands for (vacant, retired, or replaced), newest first
+    retired: list         # (alias, short, reason) of seat-less sessions the log holds as retired
+    events: list          # the log as read, with what reconciliation appended
+    info: dict            # _projection(events)
+    reconciled: int       # how many events reconciliation appended
 
 
 def project_view(project):
@@ -1240,24 +1251,36 @@ def project_view(project):
     reconciling this machine's sessions into the log; and the project's seats
     no member stands for (vacant, retired, or replaced), newest first. One
     log_read; cached for the invocation until a lifecycle event is appended."""
-    if project.id in _VIEWS:
-        return _VIEWS[project.id][:2]
-    all_seats = seats()
+    return view_of(project)[:2]
+
+
+def view_of(project, all_seats=None, titles=True):
+    """The whole View project_view draws from. `all_seats`: a seat read the
+    caller already made (the daemon's tick reads once for every project).
+    With titles=False no member's
+    in-charge line falls back to its transcript's title (the daemon's tick,
+    every few seconds, reads no transcript for a line it never shows); such a
+    view is not cached, so no view that shows lines ever lacks one."""
+    if titles and project.id in _VIEWS:
+        return _VIEWS[project.id]
+    all_seats = seats() if all_seats is None else all_seats
     by_session = {s["current"]: s for s in all_seats if s["current"]}
     local = _local_sessions(project, all_seats)
     events = log_read(project)
-    events = events + _reconcile(project, events, local, by_session)
+    appended = _reconcile(project, events, local, by_session)
+    events = events + appended
     info = _projection(events)
     internal = internal_pids()
     forks = {r.get("sessionId") for r in peer_records() if str(r.get("pid")) in internal}
     joined = [(sid, r) for sid, r in info.items()
               if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks]
     joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
-    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local) for sid, r in joined]
+    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles)
+           for sid, r in joined]
     sessions = {m.session for m in out}
     rest = sorted((s for s in all_seats if (not s["current"] or s["current"] not in sessions)
                    and (p := seat_project(s)) and p.id == project.id), key=lambda s: s["updated"], reverse=True)
-    rows = [_member(s["current"], info.get(s["current"]), s, None, True) if s["current"] else
+    rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles) if s["current"] else
             Member(session="", short="", alias=s["alias"], name_source="seat", machine=host_name(), local=True,
                    state=state(s), state_age=None, charge="", charge_source="", status=s["now"], by="",
                    worktree=s["worktree"], seat=s)
@@ -1267,8 +1290,10 @@ def project_view(project):
     retired = [(str((r["renamed"] or r["joined"]).get("alias") or sid[:8]), sid[:8], str(r["latest"].get("reason") or ""))
                for sid, r in info.items()
                if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session]
-    _VIEWS[project.id] = (out, rows, retired)
-    return out, rows
+    view = View(out, rows, retired, events, info, len(appended))
+    if titles:
+        _VIEWS[project.id] = view
+    return view
 
 
 def members(project):
@@ -1280,8 +1305,7 @@ def retired_sessions(project):
     """(alias, short, reason) of the project's seat-less sessions whose
     membership the log holds as retired — `ended` with their process, or
     retired by hand."""
-    project_view(project)
-    return _VIEWS[project.id][2]
+    return view_of(project).retired
 
 
 def reconcile(project):
@@ -1307,6 +1331,20 @@ def owed(project, member):
     if not session:
         return []
     return _owed(log_read(project, to_session=session), session, delivered_load(project, session))
+
+
+def nudge_daemon():
+    """Ask this machine's `daemon run` for a tick now rather than at its next
+    interval: a message to another machine's member is pushed at once. A
+    touch of daemon/nudge, which the loop watches; nothing when no daemon
+    ever ran here (the directory is the loop's to make)."""
+    path = os.path.join(root(), "daemon", "nudge")
+    try:
+        with open(path, "a"):
+            pass
+        os.utime(path)
+    except OSError:
+        pass
 
 
 def daemon_log(line):
@@ -1633,8 +1671,10 @@ def cmd_say(a):
     for r in recipients:
         member = by_session.get(r["session"])
         if member is not None and not member.local:
-            # Owed to it in the log; its own machine's daemon delivers it.
+            # Owed to it in the log; its own machine's daemon delivers it,
+            # once this machine's daemon has pushed it: ask for that now.
             print("%s: recorded (on %s)" % (r["alias"], member.machine))
+            nudge_daemon()
             continue
         result = deliver_next(dest, member) if member else {"outcomes": []}
         mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
@@ -2561,73 +2601,15 @@ def project_init(a):
     print("project %s (%s) at %s — commit it, so every clone is the same project" % (name, data["project"], path))
 
 
-def git_in(log, *args, timeout=None):
-    return subprocess.run(["git", "-C", log, *args], capture_output=True, text=True, timeout=timeout,
-                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-
-
-def git_must(log, *args):
-    """A git step attach cannot go on without: its failure ends the attach."""
-    p = git_in(log, *args)
-    if p.returncode != 0:
-        die("git %s in %s failed: %s" % (" ".join(args[:2]), log, " ".join((p.stderr or p.stdout).split())[:300]), 1)
-    return p
-
-
-def commit_log(log, message):
-    """Commit whatever the appenders wrote; the caller holds `.sync.lock`
-    exclusive. A first commit is made even with nothing to commit."""
-    git_must(log, "add", "-A")
-    if git_in(log, "rev-parse", "--verify", "-q", "HEAD").returncode == 0 and \
-            not git_must(log, "status", "--porcelain").stdout.strip():
-        return
-    git_must(log, "commit", "-q", "--allow-empty", "-m", message)
-
-
 def project_attach(a):
-    """Adopt the existing log/ as a git working tree of the project's remote:
-    init, first commit, remote, fetch, integrate (unrelated histories are
-    expected on first attach). With the remote unreachable it stops after the
-    remote is set, leaving the first sync to the daemon."""
+    """Adopt the existing log/ as a working tree of the project's remote —
+    the mirror's first half; sminos_daemon owns the mirror."""
     p = resolve_project(os.path.abspath(a.dir or os.getcwd()))
     if p is None:
         die("no project here to attach", EXIT_UNKNOWN)
     if not p.remote:
         die("project %s names no remote in its .smns: nothing to attach to" % p.name)
-    log = os.path.dirname(writer_path(p, writer_id()))
-    with flocked(os.path.join(log, ".sync-op.lock")):
-        with flocked(os.path.join(log, ".sync.lock")):
-            if not os.path.isdir(os.path.join(log, ".git")):
-                git_must(log, "init", "-q", "-b", "main")
-            git_must(log, "config", "user.name", "sminos")
-            git_must(log, "config", "user.email", "sminos@%s" % host_name())
-            exclude = os.path.join(log, ".git", "info", "exclude")
-            os.makedirs(os.path.dirname(exclude), exist_ok=True)
-            with open(exclude, "w") as f:
-                f.write("# locks are this machine's, never the mirror's\n*.lock\n")
-            commit_log(log, "sminos: %s attaches %s" % (host_name(), p.name))
-            if git_in(log, "remote", "get-url", "origin").returncode == 0:
-                git_must(log, "remote", "set-url", "origin", p.remote)
-            else:
-                git_must(log, "remote", "add", "origin", p.remote)
-        try:
-            fetch = git_in(log, "fetch", "-q", "origin", timeout=30)
-            fetched, why = fetch.returncode == 0, (fetch.stderr or fetch.stdout).strip()
-        except subprocess.TimeoutExpired:
-            fetched, why = False, "timed out after 30s"
-        if not fetched:
-            print("attached %s to %s; the remote is unreachable for now (%s) — the daemon syncs once it answers" % (
-                p.name, p.remote, " ".join(why.split())[:200]))
-            return
-        with flocked(os.path.join(log, ".sync.lock")):
-            # Appends made during the fetch are committed before anything is
-            # integrated, so no event is ever outside a commit.
-            commit_log(log, "sminos: %s before integrating" % host_name())
-            if git_in(log, "rev-parse", "--verify", "-q", "origin/main").returncode == 0:
-                merge = git_in(log, "merge", "-q", "--no-edit", "--allow-unrelated-histories", "origin/main")
-                if merge.returncode != 0:
-                    die("integrating %s into %s failed: %s" % (p.remote, log, (merge.stderr or merge.stdout).strip()), 1)
-    print("attached %s to %s" % (p.name, p.remote))
+    daemon_module().attach(p)
 
 
 def resolve_seat(q):
@@ -2828,16 +2810,23 @@ def agents_refresh():
     return agents_json()
 
 
-def refresh_caches():
-    """Forget everything cached from the harness — the agents rows, the peer
-    registry, and process start times — so a long-lived reader (the chart TUI)
-    sees the fleet as it is now rather than as it was at launch."""
+def forget_caches():
+    """Forget everything cached for the invocation — the agents rows, the peer
+    registry, process start times, resolved projects and their views — so a
+    long-lived process (the chart TUI, the daemon's loop) sees the fleet as it
+    is now rather than as it was at launch. Nothing is read until asked."""
     global _AGENTS_LOADED, _PEERS
     _AGENTS_LOADED = False
     _PEERS = None
     _PSTART.clear()
     _PROJECTS.clear()
+    _HOMES.clear()
     _VIEWS.clear()
+
+
+def refresh_caches():
+    """forget_caches, then the harness's agents rows read afresh."""
+    forget_caches()
     return agents_json()
 
 
@@ -4720,6 +4709,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
     if not m.local:
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
         print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
+        nudge_daemon()
         return
     peer = peer_for_session(m.session)
     if not peer:
@@ -5191,6 +5181,23 @@ def chart_module():
     return sibling_module("sminos_chart")
 
 
+def daemon_module():
+    return sibling_module("sminos_daemon")
+
+
+def tick(project):
+    """One daemon tick of one project (§8): integrate, reconcile, publish,
+    deliver, push. {"integrated", "reconciled", "published", "delivered",
+    "pushed"}, plus "to" (the aliases delivered to) and "error"."""
+    return daemon_module().tick(project)
+
+
+def cmd_daemon(a):
+    if not a.op:
+        die("usage: sminos daemon run [--interval N] | tick | install | status")
+    daemon_module().cmd_daemon(a)
+
+
 def cmd_chart(a):
     """The members as boxes, flat: one project's in a column, or — for every
     project — each project a rounded box with its members beside it; hidden
@@ -5358,6 +5365,14 @@ def build_parser():
         po = psub.add_parser(op, add_help=False)
         po.add_argument("dir", nargs="?", default="")
         po.set_defaults(fn=cmd_project)
+
+    dm = sub.add_parser("daemon", add_help=False)
+    dsub = dm.add_subparsers(dest="op")
+    dr = dsub.add_parser("run", add_help=False)
+    dr.add_argument("--interval", type=float, default=5.0)
+    for op in ("tick", "install", "status"):
+        dsub.add_parser(op, add_help=False)
+    dm.set_defaults(fn=cmd_daemon)
 
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The sminos daemon, one per machine: syncs each project's mirror, delivers
+  what is owed to this machine's members, publishes their state. Rendered by
+  `sminos daemon install` into ~/Library/LaunchAgents/{{LABEL}}.plist; the
+  placeholders are filled from the installing environment. Load it with
+  `launchctl bootstrap gui/$(id -u) <that file>`.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{SMINOS_CLI}}</string>
+    <string>daemon</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+{{ENV}}
+  </dict>
+  <key>StandardOutPath</key><string>{{LOG}}</string>
+  <key>StandardErrorPath</key><string>{{LOG}}</string>
+</dict>
+</plist>

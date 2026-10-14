@@ -92,6 +92,8 @@ export SMINOS_UUID_POLL=5
 export DAEMON_BOOT_ID="boot-current"
 export DAEMON_HOST="testhost"
 export SMINOS_NO_EXEC=1
+# The daemon's hourly derivation starts a child; only the case that pins it turns it on.
+export SMINOS_DERIVE_EVERY=0
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME/.claude/sessions" "$WORK" "$STUB_STATE/agents" "$STUB_STATE/log"
 
@@ -148,6 +150,9 @@ while [ $i -lt ${#args[@]} ]; do
   i=$((i + 1))
 done
 
+# Session uuids come from a counter, shared across homes through STUB_COUNTER
+# (two homes on one machine must never mint the same uuid).
+counter="${STUB_COUNTER:-$STUB_STATE/counter}"
 tx_path() { printf '%s/.claude/projects/%s/%s.jsonl' "$HOME" "$(printf '%s' "$PWD" | sed 's#/#-#g')" "$1"; }
 write_asst() {
   local f; f="$(tx_path "$1")"; mkdir -p "$(dirname "$f")"
@@ -167,7 +172,7 @@ PY
 # list the project's members while it runs.
 if [ $fork -eq 1 ]; then
   echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no)" >> "$STUB_STATE/log/calls.log"
-  n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
+  n=$(cat "$counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$counter"
   fork_uuid="${session_id:-$(printf '%08x' "$n")-f0f0-4000-8000-00000000f0f0}"
   parent="$(ls "$HOME"/.claude/projects/*/"$resume_uuid.jsonl" 2>/dev/null | head -1 || true)"
   f="$(tx_path "$fork_uuid")"; mkdir -p "$(dirname "$f")"
@@ -180,6 +185,8 @@ if [ $fork -eq 1 ]; then
     "$fork_uuid" "$f" "$PWD" "$1" "$2" | CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" "$STUB_PLUGIN_ROOT/hooks/smns-record.sh"; }
   hook SessionStart fork
   [ "${STUB_FORK_CRASH:-0}" = "1" ] && exit 3
+  # STUB_FORK_SLEEP: a model call that takes this many seconds.
+  [ -n "${STUB_FORK_SLEEP:-}" ] && sleep "$STUB_FORK_SLEEP"
   python3 - "$f" "$answer" <<'PY'
 import json, sys
 open(sys.argv[1], 'a').write(json.dumps({"type": "assistant", "uuid": "f0f0f0f0-answer", "isSidechain": False,
@@ -204,7 +211,7 @@ if [ $has_bg -eq 1 ]; then
     echo "stub: simulated --bg launch failure" >&2
     exit 1
   fi
-  n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
+  n=$(cat "$counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$counter"
   short=$(printf '%08x' "$n")
   uuid="${short}-e808-4cad-a7e0-c1e6447bad28"
   # `--bg --resume <id>` with NO other flag wakes the session itself (same
@@ -281,9 +288,12 @@ export PATH="$STUB_BIN:$CODEX_BIN:$PATH"
 export STUB_PLUGIN_ROOT="$REPO_ROOT" STUB_SMINOS="$SMINOS"
 
 # A stand-in for a live session's inbox socket: appends every frame it
-# receives to inbox.received, one connection at a time, forever.
+# receives to inbox.received, one connection at a time, forever. While
+# <received>.hold exists, a frame is written and marked (<received>.held), but
+# its ack waits for the hold to lift: a deliverer killed in that window has
+# pushed without settling.
 cat > "$TEST_ROOT/sockserver.py" <<'PY'
-import os, socket, sys
+import os, socket, sys, time
 path, out = sys.argv[1], sys.argv[2]
 try:
     os.unlink(path)
@@ -302,6 +312,10 @@ while True:
         buf += chunk
     with open(out, "ab") as f:
         f.write(buf)
+    if os.path.exists(out + ".hold"):
+        open(out + ".held", "w").close()
+        while os.path.exists(out + ".hold"):
+            time.sleep(0.02)
     try:
         c.sendall(b"ok\n")
     except OSError:
@@ -2510,6 +2524,18 @@ live_peer() { # name session status
     "$SOCK_PID" "$2" "$1" "$3" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/pl-$1.json"
 }
 inbox() { cat "$TEST_ROOT/in-$1.received"; }
+frames() { # name → each frame the inbox received, decoded, newlines shown as " / "
+  python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    if l.strip():
+        print(json.loads(l)["message"]["content"].replace("\n", " / "))' "$TEST_ROOT/in-$1.received" 2>/dev/null || true
+}
+bodies() { # name → each received frame's text below its header line, one frame a line
+  python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    if l.strip():
+        print(json.loads(l)["message"]["content"].split("\n", 1)[-1])' "$TEST_ROOT/in-$1.received" 2>/dev/null || true
+}
 run_in() { # dir cmd... — run, from another directory
   local dir="$1"; shift
   set +e; OUT="$(cd "$dir" && "$@" 2>&1)"; RC=$?; set -e
@@ -2981,6 +3007,35 @@ wait "$d1"; wait "$d2"
 python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SH" once "$REC" >/dev/null
 assert_equals "$(grep '^sent:' "$REC" | tr '\n' ' ')" "sent:ten sent:eleven sent:twelve " "concurrent deliverers push each event once, in writer order"
 assert_equals "$(head -1 "$REC")" "fail:ten" "the first attempt at 10 failed and held 11 back"
+# The same through the real mechanisms: a writer's event 10 fails in its own
+# fast path (a resume that does not launch); then its event 11 goes out on
+# the sender's fast path while a real `daemon tick` delivers at once. (The
+# in-process race above stays: it stages a failure inside the race itself.)
+SQ=0d00000d-0000-4000-8000-00000000000d
+WQ=0e00000e-0000-4000-8000-00000000000e
+"$SMINOS" seat add demo q --session "$SQ" >/dev/null
+mkdir -p "$HOME/.claude/projects/q-proj"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/q-proj/$SQ.jsonl"   # q is stopped: a tag resumes it
+python3 - "$SMINOS_PY" "$DEMO" "$WQ" <<'PY_FILLQ'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+for _ in range(9):
+    mod.log_append(p, mod.writer_id(sys.argv[3]), "say", **{"from": "w", "to": "*", "text": "filler"})
+PY_FILLQ
+STUB_FAIL_BG=1 CLAUDE_CODE_SESSION_ID="$WQ" run "$SMINOS" say "@q ten"
+assert_contains "$OUT" "q: failed:resume failed" "event 10's push fails in the fast path: the resume does not launch"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$WQ.jsonl")" '"seq": 10, "kind": "say"' "it is the writer's event 10"
+start_inbox q
+live_peer q "$SQ" idle
+CLAUDE_CODE_SESSION_ID="$WQ" "$SMINOS" say "@q eleven" > "$TEST_ROOT/q-say.out" 2>&1 & qs=$!
+"$SMINOS" daemon tick > "$TEST_ROOT/q-tick.out" 2>&1 & qt=$!
+wait "$qs" || true; wait "$qt" || true
+assert_equals "$(bodies q | grep -e '^@q ten$' -e '^@q eleven$' | tr '\n' ' ')" "@q ten @q eleven " \
+  "with the fast path and a daemon tick at once, 10 and 11 each arrive once, 11 never before 10"
+assert_equals "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[sys.argv[2]]; print(d["settled"], d["pending"])' \
+  "$SMINOS_HOME/projects/$DEMO/delivered/$SQ.json" "testhost/$WQ")" "11 None" "and both are settled"
+rm -f "$HOME/.claude/sessions/pl-q.json"
 
 # attach adopts the existing log/; an unreachable remote is not an error.
 P3="$TEST_ROOT/remote-repo"
@@ -3205,8 +3260,12 @@ run "$SMINOS" retire pc
 assert_rc 0 "$RC" "retire a seat"
 assert_equals "$(events_of "$PC")" "joined in-charge retired:retire " "retire records retired"
 run "$SMINOS" list
+run "$SMINOS" daemon tick
+assert_rc 0 "$RC" "a daemon tick runs over the project"
 run "$SMINOS" list
-assert_equals "$(events_of "$PC")" "joined in-charge retired:retire " "a retired seat stays retired across repeated lists, though its session still answers"
+run "$SMINOS" daemon tick
+assert_equals "$(events_of "$PC")" "joined in-charge retired:retire " "a retired seat stays retired across repeated lists and ticks, though its session still answers"
+run "$SMINOS" list
 assert_not_contains "$OUT" "  pc " "and is folded away"
 rm -f "$HOME/.claude/sessions/pf-pc.json"
 run "$SMINOS" fill pc "again"
@@ -3305,16 +3364,8 @@ assert_equals "$(field "$PC" now)" "parsing" "beside the local now line"
 run "$SMINOS" list
 assert_contains "$OUT" "· now: reading the schema" "list shows a member's status"
 
-# status from one home reaches the other's list once the writer file is
-# copied across (replication is a copy, §3; M4 repeats this through the mirror).
-H2="$TEST_ROOT/pf-home2"
-mkdir -p "$H2/.claude/sessions" "$H2/sminos/projects/$PF/log"
-chmod 700 "$H2/sminos"
-cp "$PFLOG/testhost.$IB.jsonl" "$H2/sminos/projects/$PF/log/"
-REMOTE_ROW="$(HOME="$H2" SMINOS_HOME="$H2/sminos" DAEMON_HOST=h2 "$SMINOS" list --json | python3 -c 'import json, sys
-r = next(d for d in json.load(sys.stdin) if d["session"] == sys.argv[1])
-print(r["status"], r["machine"], r["local"])' "$IB")"
-assert_equals "$REMOTE_ROW" "reading the schema testhost False" "the other home lists the member, remote, with its status"
+# A status set in one home reaching the other's list is pinned through the
+# real mirror, in "the mirror and the daemon".
 
 # A seat-less member's membership ends with its process, as it began with it:
 # the next reading verb retires it (reason ended) and it re-joins when it runs
@@ -4035,6 +4086,431 @@ for ep in cli:6c000009 claude-vscode:6d00000a; do
 done
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/hp-"*.json
+
+# ---- the mirror and the daemon ----------------------------------------------------
+# A project whose .smns names a remote mirrors its log through it; one daemon
+# per machine syncs, delivers what is owed to its members, and publishes their
+# state (spec 2026-10-13, §8, M4). Two homes on one machine stand for two
+# machines: each its own HOME (harness sessions, transcripts), SMINOS_HOME,
+# stub harness state and machine name; the stub mints session uuids from one
+# shared counter. With SMINOS_TRANSCRIPT=1 the acceptance steps print as a
+# transcript.
+echo "the mirror and the daemon:"
+unset CLAUDE_CODE_SESSION_ID
+MD="$TEST_ROOT/md"
+mkdir -p "$MD"
+export STUB_COUNTER="$MD/uuid-counter"
+for h in h1 h2 h3 solo inst; do
+  mkdir -p "$MD/$h/.claude/sessions" "$MD/$h/stub/agents" "$MD/$h/stub/log" "$MD/$h/sminos"
+  chmod 700 "$MD/$h/sminos"
+done
+H1=(HOME="$MD/h1" SMINOS_HOME="$MD/h1/sminos" DAEMON_HOST=h1 STUB_STATE="$MD/h1/stub")
+H2=(HOME="$MD/h2" SMINOS_HOME="$MD/h2/sminos" DAEMON_HOST=h2 STUB_STATE="$MD/h2/stub")
+H3=(HOME="$MD/h3" SMINOS_HOME="$MD/h3/sminos" DAEMON_HOST=h2 STUB_STATE="$MD/h3/stub")   # a second machine named h2
+SOLO=(HOME="$MD/solo" SMINOS_HOME="$MD/solo/sminos" DAEMON_HOST=solo STUB_STATE="$MD/solo/stub")
+md_peer() { # home name session status [kind] [cwd] — a live harness session in that home, its own inbox
+  [ -S "$TEST_ROOT/in-md-$2.sock" ] || start_inbox "md-$2"
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"derived","kind":"%s","status":"%s","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$3" "$2" "${5:-bg}" "$4" "${6:-$RR}" "$TEST_ROOT/in-md-$2.sock" > "$MD/$1/.claude/sessions/$2.json"
+}
+md_inbox() { cat "$TEST_ROOT/in-md-$1.received" 2>/dev/null || true; }
+tscript() { # the command as the acceptance reads it, then what it printed
+  [[ "${SMINOS_TRANSCRIPT:-0}" == 1 ]] || return 0
+  printf '    $ %s\n' "$1"
+  [ -z "$2" ] || printf '%s\n' "$2" | sed 's/^/      /'
+}
+clock() { python3 -c 'import time; print(time.time())'; }
+since() { python3 -c 'import sys, time; print("%.1f" % (time.time() - float(sys.argv[1])))' "$1"; }
+seq_of() { python3 -c 'import json, sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["seq"])' "$1"; }
+
+# Acceptance 6. A scratch repository R, its .smns naming a local bare repository.
+REMOTE="$MD/remote.git"
+gitq init -q --bare "$REMOTE"
+RR="$MD/R"
+mkdir -p "$RR"
+gitq init -q "$RR"
+cd "$RR"
+run env "${H1[@]}" "$SMINOS" project init --name demo --remote "$REMOTE"
+tscript "env \$H1 sminos project init --name demo --remote $REMOTE" "$OUT"
+assert_rc 0 "$RC" "project init names the remote"
+gitq -C "$RR" add .smns
+gitq -C "$RR" commit -qm smns
+MDP="$(smns_id "$RR")"
+LOG1="$MD/h1/sminos/projects/$MDP/log"
+LOG2="$MD/h2/sminos/projects/$MDP/log"
+run env "${H1[@]}" "$SMINOS" spawn a "wait for instructions"
+tscript "env \$H1 sminos spawn a \"wait for instructions\"" "$OUT"
+A="$(banner_uuid "$OUT")"
+run env "${H2[@]}" "$SMINOS" spawn b "wait for instructions"
+tscript "env \$H2 sminos spawn b \"wait for instructions\"" "$OUT"
+B="$(banner_uuid "$OUT")"
+assert_contains "$A" "-e808-" "a spawns under h1"
+assert_contains "$B" "-e808-" "b spawns under h2"
+if [[ -n "$A" && "$A" != "$B" ]]; then pass "the two homes mint distinct session uuids before anything replicates"; else
+  fail "the two homes mint distinct session uuids before anything replicates"; echo "    a=$A b=$B"; fi
+md_peer h1 a "$A" idle
+md_peer h2 b "$B" busy
+run env "${H1[@]}" "$SMINOS" daemon tick
+tscript "env \$H1 sminos daemon tick" "$OUT"
+assert_rc 0 "$RC" "h1 ticks"
+assert_contains "$OUT" "demo: synced · reconciled 0 · published 1 · delivered 0 · pushed" "its first tick attaches the mirror, publishes a's state, and pushes"
+assert_contains "$(gitq -C "$REMOTE" ls-tree -r --name-only main)" "h1.$A.jsonl" "a's file is on the remote"
+assert_contains "$(gitq -C "$REMOTE" ls-tree -r --name-only main)" "machines/h1.json" "with h1's claim on its name"
+run env "${H2[@]}" "$SMINOS" project attach
+tscript "env \$H2 sminos project attach" "$OUT"
+assert_rc 0 "$RC" "h2 attaches"
+assert_contains "$OUT" "attached demo to $REMOTE" "and says so"
+assert_file_exists "$LOG2/h1.$A.jsonl" "the attach brings h1's files"
+assert_file_exists "$LOG2/h2.$B.jsonl" "beside h2's own"
+run env "${H2[@]}" "$SMINOS" daemon tick
+tscript "env \$H2 sminos daemon tick" "$OUT"
+assert_contains "$OUT" "demo: synced · reconciled 0 · published 1 · delivered 0 · pushed" "h2 ticks: b's state published and pushed"
+assert_not_contains "$OUT" "migrated" "the daemon's own files are no seat records"
+assert_equals "$(printf '%s\n' "$OUT" | grep -c ': ')" 1 "and make no project of their own"
+run env "${H1[@]}" "$SMINOS" daemon tick
+tscript "env \$H1 sminos daemon tick" "$OUT"
+run env "${H1[@]}" "$SMINOS" list
+tscript "env \$H1 sminos list" "$OUT"
+assert_contains "$OUT" "demo" "after one h2 tick and one h1 tick, list under h1 shows the project"
+B_ROW="$(printf '%s\n' "$OUT" | grep '^  b ' || true)"
+assert_contains "$B_ROW" "busy @h2 " "with b on h2, its state, and the state's age"
+assert_contains "$(printf '%s\n' "$OUT" | grep '^  a ' || true)" "idle" "and a, local, by its live word"
+CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b hello"
+tscript "env \$H1 CLAUDE_CODE_SESSION_ID=<a> sminos say \"@b hello\"" "$OUT"
+assert_rc 0 "$RC" "a says @b from h1"
+assert_contains "$OUT" "b: recorded (on h2)" "recorded for b's machine to deliver"
+run env "${H1[@]}" "$SMINOS" daemon tick
+tscript "env \$H1 sminos daemon tick" "$OUT"
+assert_contains "$OUT" "pushed" "one h1 tick pushes it"
+assert_equals "$(md_inbox b)" "" "and it reaches no socket until h2 ticks"
+run env "${H2[@]}" "$SMINOS" daemon tick
+tscript "env \$H2 sminos daemon tick" "$OUT"
+assert_contains "$OUT" "delivered 1 to b" "h2's tick delivers it to b"
+assert_contains "$(frames md-b)" "[sminos chat demo ${A:0:8}:" "b's socket receives the frame, the event's id in it"
+assert_contains "$(frames md-b)" "from a → @you] / @b hello" "from a, carrying the text"
+run env "${H2[@]}" "$SMINOS" daemon tick
+tscript "env \$H2 sminos daemon tick" "$OUT"
+assert_contains "$OUT" "delivered 0" "a second h2 tick delivers nothing more"
+assert_equals "$(bodies md-b | grep -c '^@b hello$')" 1 "b holds the frame once"
+md_peer h2 b "$B" idle
+run env "${H2[@]}" "$SMINOS" daemon tick
+tscript "env \$H2 sminos daemon tick    # b went idle" "$OUT"
+assert_contains "$OUT" "published 0" "one tick of a new word publishes nothing"
+run env "${H2[@]}" "$SMINOS" daemon tick
+tscript "env \$H2 sminos daemon tick" "$OUT"
+assert_contains "$OUT" "published 1" "the second publishes it"
+run env "${H1[@]}" "$SMINOS" daemon tick
+tscript "env \$H1 sminos daemon tick" "$OUT"
+run env "${H1[@]}" "$SMINOS" list
+tscript "env \$H1 sminos list" "$OUT"
+assert_contains "$(printf '%s\n' "$OUT" | grep '^  b ' || true)" "idle @h2 " "after b went idle for two h2 ticks and one h1 tick, list under h1 shows b idle @h2"
+
+# M2's status across homes, through the mirror: a status set under h1 is in
+# h2's list --json after a sync.
+run env "${H1[@]}" "$SMINOS" status a "reading the schema"
+assert_rc 0 "$RC" "the operator sets a's status under h1"
+run env "${H1[@]}" "$SMINOS" daemon tick
+run env "${H2[@]}" "$SMINOS" daemon tick
+A_ROW="$(env "${H2[@]}" "$SMINOS" list --json | python3 -c 'import json, sys
+r = next(d for d in json.load(sys.stdin) if d["session"] == sys.argv[1])
+print(r["status"], r["machine"], r["local"], r["state"])' "$A")"
+assert_equals "$A_ROW" "reading the schema h1 False idle" "h2's list --json shows a remote, on h1, with its status and published state"
+
+# Both daemons running: the same say lands within two seconds.
+env "${H1[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h1.out" 2>&1 & RUN1=$!
+env "${H2[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h2.out" 2>&1 & RUN2=$!
+sleep 1.5
+T0="$(clock)"
+CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b while both daemons run"
+for _ in $(seq 1 120); do grep -q 'while both daemons run' "$TEST_ROOT/in-md-b.received" 2>/dev/null && break; sleep 0.05; done
+LANDED="$(since "$T0")"
+tscript "env \$H1 sminos daemon run --interval 1 & env \$H2 sminos daemon run --interval 1 &" ""
+tscript "env \$H1 CLAUDE_CODE_SESSION_ID=<a> sminos say \"@b while both daemons run\"" "$OUT
+(landed in b's socket after ${LANDED}s)"
+if grep -q 'while both daemons run' "$TEST_ROOT/in-md-b.received" && python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 2.0)' "$LANDED"; then
+  pass "with daemon run --interval 1 under both homes the say lands within two seconds (${LANDED}s)"
+else fail "with daemon run --interval 1 under both homes the say lands within two seconds"; echo "    took ${LANDED}s"; fi
+run env "${H1[@]}" "$SMINOS" daemon run --interval 1
+assert_rc 1 "$RC" "a second run in the same home is refused"
+assert_contains "$OUT" "a daemon already runs" "saying one runs"
+run env "${H1[@]}" "$SMINOS" daemon status
+assert_contains "$OUT" "daemon: running (pid $RUN1" "daemon status names the running loop"
+assert_contains "$OUT" "demo: last tick " "and the last tick per project"
+kill "$RUN1"; wait "$RUN1" || true
+run env "${H1[@]}" "$SMINOS" daemon status
+assert_contains "$OUT" "daemon: not running here" "once stopped, status says so"
+# The sender's machine does not wait out its interval: a say to a remote member
+# asks the local loop for a tick at once.
+env "${H1[@]}" "$SMINOS" daemon run --interval 60 > "$MD/run-h1-slow.out" 2>&1 & RUN1=$!
+sleep 1.5
+T0="$(clock)"
+CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b nudged"
+for _ in $(seq 1 120); do grep -q 'nudged' "$TEST_ROOT/in-md-b.received" 2>/dev/null && break; sleep 0.05; done
+NUDGED="$(since "$T0")"
+if grep -q 'nudged' "$TEST_ROOT/in-md-b.received" && python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 3.0)' "$NUDGED"; then
+  pass "a say to a remote member has the sender's daemon push at once, whatever its interval (${NUDGED}s)"
+else fail "a say to a remote member has the sender's daemon push at once, whatever its interval"; echo "    took ${NUDGED}s"; fi
+kill "$RUN1" "$RUN2"; wait "$RUN1" "$RUN2" || true
+assert_contains "$(cat "$MD/run-h2.out")" "delivered 1 to b" "the loop says what it delivered"
+
+# The sync invariant: an append after a successful sync, while the other home
+# publishes, syncs on the next tick with both histories intact.
+run env "${H1[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" say "after the sync"
+md_peer h2 b "$B" waiting
+run env "${H2[@]}" "$SMINOS" daemon tick
+run env "${H2[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "published 1 · delivered 0 · pushed" "meanwhile h2 publishes and pushes"
+H2_HEAD="$(gitq -C "$LOG2" rev-parse HEAD)"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "demo: synced" "h1's next tick syncs"
+assert_contains "$OUT" "pushed" "and pushes"
+H1_SAY="$(gitq -C "$LOG1" log -S'after the sync' --format=%H | tail -1)"
+run env "${H2[@]}" "$SMINOS" daemon tick
+assert_contains "$(cat "$LOG2/h1.human.jsonl")" "after the sync" "h1's append reaches h2"
+assert_contains "$(cat "$LOG1/h2.$B.jsonl")" '"state": "waiting"' "h2's publication reaches h1"
+if gitq -C "$REMOTE" merge-base --is-ancestor "$H1_SAY" main && gitq -C "$REMOTE" merge-base --is-ancestor "$H2_HEAD" main; then
+  pass "the remote holds both histories"; else fail "the remote holds both histories"; fi
+assert_equals "$(gitq -C "$LOG1" status --porcelain)" "" "h1's mirror is clean: every event is in a commit"
+
+# A state flip lasting one tick is not published.
+STATES_BEFORE="$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")"
+md_peer h1 a "$A" busy
+run env "${H1[@]}" "$SMINOS" daemon tick
+md_peer h1 a "$A" idle
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "a state flip lasting one tick is not published"
+md_peer h1 a "$A" busy
+run env "${H1[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$(tail -1 "$LOG1/h1.$A.jsonl")" '"kind": "state", "session": "'"$A"'", "state": "busy", "machine": "h1"' "one that holds for two ticks is"
+md_peer h1 a "$A" idle
+
+# A second machine under a claimed name refuses to run, and writes nothing to the remote.
+REMOTE_HEAD="$(gitq -C "$REMOTE" rev-parse main)"
+run env "${H3[@]}" "$SMINOS" project attach
+assert_rc 1 "$RC" "attach under a name another instance claimed is refused"
+assert_contains "$OUT" "the machine name h2 is claimed by another instance" "saying the name is claimed"
+run env "${H3[@]}" "$SMINOS" daemon tick
+assert_rc 1 "$RC" "a claimed machine name refuses to run: tick"
+assert_contains "$OUT" "refuses to run" "saying so"
+run env "${H3[@]}" "$SMINOS" daemon run --interval 1
+assert_rc 1 "$RC" "and run"
+assert_equals "$(gitq -C "$REMOTE" rev-parse main)" "$REMOTE_HEAD" "nothing of it reached the remote"
+assert_contains "$(cat "$MD/h3/sminos/daemon.log")" "refused: the machine name h2 is claimed" "the refusal is in daemon.log"
+
+# A stalled remote: the fetch and the push wait outside .sync.lock, so a
+# fetch that hangs blocks no say and no Stop export; what they append during
+# it is committed and integrated in the same exclusive phase. The remote is
+# reached over a stand-in ssh that waits while a gate file exists.
+cat > "$MD/fake-ssh" <<'SSH'
+#!/bin/sh
+# ssh, as GIT_SSH_VARIANT=simple calls it (host, command): run the command here.
+[ -z "${SSH_ENTERED:-}" ] || : > "$SSH_ENTERED"
+while [ -n "${SSH_GATE:-}" ] && [ -f "$SSH_GATE" ]; do sleep 0.05; done
+exec sh -c "$2"
+SSH
+chmod +x "$MD/fake-ssh"
+export GIT_SSH_COMMAND="$MD/fake-ssh" GIT_SSH_VARIANT=simple
+STALL="$MD/stall.git"
+gitq init -q --bare "$STALL"
+SR="$MD/SR"
+mkdir -p "$SR"
+gitq init -q "$SR"
+cd "$SR"
+run env "${H1[@]}" "$SMINOS" project init --name stall --remote "ssh://stall$STALL"
+gitq -C "$SR" add .smns
+gitq -C "$SR" commit -qm smns
+STP="$(smns_id "$SR")"
+SLOG="$MD/h1/sminos/projects/$STP/log"
+SS=5a000005-0000-4000-8000-00000000005a
+STX="$MD/h1/.claude/projects/st/$SS.jsonl"
+mkdir -p "$(dirname "$STX")"
+tx "$STX" prompt 5b000001 "start"
+md_peer h1 sess "$SS" idle interactive "$SR"
+md_hook() { # event session cwd transcript [source] — the hook under h1
+  set +e
+  HOOK_OUT="$(printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"%s"}' \
+    "$2" "$4" "$3" "$1" "${5:-}" | env "${H1[@]}" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$HOOK" 2>&1)"
+  HOOK_RC=$?
+  set -e
+}
+md_hook SessionStart "$SS" "$SR" "$STX" startup
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "stall: synced" "a project mirrored over ssh syncs"
+run env "${H2[@]}" "$SMINOS" project attach
+run env "${H2[@]}" "$SMINOS" say "from h2 before the stall"
+run env "${H2[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "stall: synced" "the other home pushes to it"
+GATE="$MD/ssh-gate"
+touch "$GATE"
+rm -f "$MD/ssh-entered"
+env "${H1[@]}" SSH_GATE="$GATE" SSH_ENTERED="$MD/ssh-entered" "$SMINOS" daemon tick > "$MD/stalled-tick.out" 2>&1 & STALLED=$!
+for _ in $(seq 1 100); do [ -f "$MD/ssh-entered" ] && break; sleep 0.05; done
+assert_file_exists "$MD/ssh-entered" "h1's tick is inside a fetch that hangs"
+T0="$(clock)"
+run env "${H1[@]}" "$SMINOS" say "said while the fetch hangs"
+SAY_TOOK="$(since "$T0")"
+assert_rc 0 "$RC" "a say during the hung fetch records"
+if python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 2.0)' "$SAY_TOOK"; then pass "unblocked (${SAY_TOOK}s)"; else
+  fail "unblocked"; echo "    took ${SAY_TOOK}s"; fi
+tx "$STX" asst 5b000002 "<message>exported while the fetch hangs</message>"
+T0="$(clock)"
+md_hook Stop "$SS" "$SR" "$STX"
+STOP_TOOK="$(since "$T0")"
+assert_contains "$(cat "$SLOG/h1.$SS.jsonl")" "exported while the fetch hangs" "a Stop export during the hung fetch records the message"
+if python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 2.0)' "$STOP_TOOK"; then pass "unblocked (${STOP_TOOK}s)"; else
+  fail "unblocked"; echo "    took ${STOP_TOOK}s"; fi
+if kill -0 "$STALLED" 2>/dev/null; then pass "while the tick still waits on the fetch"; else fail "while the tick still waits on the fetch"; fi
+rm -f "$GATE"
+wait "$STALLED" || true
+assert_contains "$(cat "$MD/stalled-tick.out")" "stall: synced" "released, the tick integrates"
+SAID="$(gitq -C "$SLOG" log -S'said while the fetch hangs' --format=%H | tail -1)"
+EXPORTED="$(gitq -C "$SLOG" log -S'exported while the fetch hangs' --format=%H | tail -1)"
+# The commit holding both appends is the merge's first parent: committed in the
+# phase that merged, not after it.
+MERGES="$(gitq -C "$SLOG" rev-list --merges --parents HEAD)"
+if [[ -n "$SAID" && "$SAID" == "$EXPORTED" ]] && grep -q "^[0-9a-f]* $SAID " <<<"$MERGES"; then
+  pass "what was appended during the fetch is committed before the remote is merged, in the same phase"
+else fail "what was appended during the fetch is committed before the remote is merged, in the same phase"
+  echo "    said=$SAID exported=$EXPORTED"; gitq -C "$SLOG" log --graph --format='%h %p %s' | sed 's/^/    /'; fi
+assert_contains "$(cat "$SLOG/h2.human.jsonl")" "from h2 before the stall" "the other home's history is integrated"
+assert_contains "$(gitq -C "$STALL" log -p main)" "said while the fetch hangs" "and h1's append is pushed"
+# A fetch past its bound is abandoned, and the tick goes on.
+touch "$GATE"
+T0="$(clock)"
+run env "${H1[@]}" SSH_GATE="$GATE" SMINOS_GIT_TIMEOUT=1 "$SMINOS" daemon tick
+TOOK="$(since "$T0")"
+rm -f "$GATE"
+assert_contains "$OUT" "stall: not synced" "a fetch that hangs past its bound is abandoned"
+assert_contains "$OUT" "demo: synced" "and the tick goes on with the other projects"
+if python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 5.0)' "$TOOK"; then pass "within its bound (${TOOK}s for 1s)"; else
+  fail "within its bound"; echo "    took ${TOOK}s"; fi
+assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "timed out after 1s" "daemon.log says why"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "stall: synced" "the next tick syncs again"
+unset GIT_SSH_COMMAND GIT_SSH_VARIANT
+cd "$RR"
+
+# One machine, a project with no remote: the daemon delivers what the fast
+# path left owed. x and y are seats; a seat whose session is down is resumed
+# by a tag, and a resume that does not launch is a failed push.
+LR2="$MD/solo-repo"
+mkdir -p "$LR2"
+gitq init -q "$LR2"
+cd "$LR2"
+run env "${SOLO[@]}" "$SMINOS" spawn x "wait"
+X="$(banner_uuid "$OUT")"
+run env "${SOLO[@]}" "$SMINOS" spawn y "wait"
+Y="$(banner_uuid "$OUT")"
+SOLOP=local-solo-repo
+md_peer solo x "$X" idle bg "$LR2"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@x @y both of you"
+assert_contains "$OUT" "x: sent" "an event to two local members reaches the first"
+assert_contains "$OUT" "y: failed" "and the second's push fails"
+md_peer solo y "$Y" idle bg "$LR2"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "solo-repo: reconciled 0 · delivered 1 to y" "a later tick delivers it to the second"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "delivered 0" "and nothing more"
+assert_equals "$(bodies md-x | grep -c 'both of you$')" 1 "the first received it once"
+assert_equals "$(bodies md-y | grep -c 'both of you$')" 1 "the second once"
+
+# A daemon restarted between the push and the record delivers at most once more.
+rm -f "$MD/solo/.claude/sessions/y.json"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@y restart me"
+assert_contains "$OUT" "y: failed" "an event to y is owed"
+md_peer solo y "$Y" idle bg "$LR2"
+touch "$TEST_ROOT/in-md-y.received.hold"
+rm -f "$TEST_ROOT/in-md-y.received.held"
+env "${SOLO[@]}" "$SMINOS" daemon tick > /dev/null 2>&1 & DOOMED=$!
+disown "$DOOMED"
+for _ in $(seq 1 100); do [ -f "$TEST_ROOT/in-md-y.received.held" ] && break; sleep 0.05; done
+assert_file_exists "$TEST_ROOT/in-md-y.received.held" "a tick pushes to y"
+kill -9 "$DOOMED"
+for _ in $(seq 1 100); do kill -0 "$DOOMED" 2>/dev/null || break; sleep 0.05; done
+rm -f "$TEST_ROOT/in-md-y.received.hold"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "delivered 1 to y" "killed before settling it, the restarted daemon pushes it again"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "delivered 0" "and then never again"
+assert_equals "$(bodies md-y | grep -c '^@y restart me$')" 2 "at most once more: two frames in all"
+# A push that keeps failing is retried each tick and given up on the 60th
+# attempt: settled, with a line in daemon.log naming the event and the member.
+rm -f "$MD/solo/.claude/sessions/y.json"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@y never arrives"
+GIVEUP_SEQ="$(seq_of "$MD/solo/sminos/projects/$SOLOP/log/solo.human.jsonl")"
+python3 - "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json" <<'PY_ATTEMPTS'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["solo/human"]["attempts"] = 58
+json.dump(d, open(sys.argv[1], "w"))
+PY_ATTEMPTS
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "delivered 0" "the 59th attempt fails"
+assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json")" '"pending": '"$GIVEUP_SEQ"', "attempts": 59' "and stays pending"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json")" '"settled": '"$GIVEUP_SEQ"', "pending": null' "the 60th settles it"
+assert_contains "$(cat "$MD/solo/sminos/daemon.log")" "gave up delivering solo/human:$GIVEUP_SEQ (solo-repo) to $Y after 60 attempts" "with a line in daemon.log"
+CALLS_BEFORE="$(grep -c -- "--resume $Y" "$MD/solo/stub/log/calls.log")"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_equals "$(grep -c -- "--resume $Y" "$MD/solo/stub/log/calls.log")" "$CALLS_BEFORE" "and it is never tried again"
+
+# daemon run: an owed event in a remote-less project is delivered while a
+# derivation child sleeps (one at a time), and a session that appears after
+# the loop started is seen.
+rm -f "$MD/solo/.claude/sessions/y.json"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@y from before the run"
+assert_contains "$OUT" "y: failed" "another event to y is owed"
+SL=5c000005-0000-4000-8000-00000000005c
+SLX="$MD/solo/.claude/projects/sl/$SL.jsonl"
+mkdir -p "$(dirname "$SLX")"
+for i in 1 2 3 4 5 6 7 8 9 10; do tx "$SLX" prompt "5d0000$i" "prompt $i"; tx "$SLX" asst "5e0000$i" "answer $i"; done
+md_peer solo sleeper "$SL" idle interactive "$LR2"
+env "${SOLO[@]}" STUB_FAIL_BG=1 SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=10 STUB_FORK_RESULT="watches the sleepy fixture" \
+  "$SMINOS" daemon run --interval 1 > "$MD/run-solo.out" 2>&1 & RUNS=$!
+for _ in $(seq 1 100); do grep -q '^fork-env:' "$MD/solo/stub/log/calls.log" 2>/dev/null && break; sleep 0.05; done
+assert_contains "$(cat "$MD/solo/stub/log/calls.log")" "fork-env:internal=1" "run starts derive --all, whose fork sleeps"
+md_peer solo y "$Y" idle bg "$LR2"
+for _ in $(seq 1 100); do grep -q 'from before the run' "$TEST_ROOT/in-md-y.received" && break; sleep 0.05; done
+assert_contains "$(md_inbox y)" "from before the run" "run delivers an owed event in a project with no remote"
+assert_not_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl")" '"source": "derived"' "while the derivation child still sleeps"
+NC=5f00000f-0000-4000-8000-00000000005f
+md_peer solo newcomer "$NC" idle interactive "$LR2"
+for _ in $(seq 1 100); do grep -q '"kind": "joined"' "$MD/solo/sminos/projects/$SOLOP/log/solo.$NC.jsonl" 2>/dev/null && break; sleep 0.05; done
+assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$NC.jsonl" 2>/dev/null)" '"kind": "joined"' "run sees a session that appeared after it started"
+assert_equals "$(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log")" 1 "one derivation in flight at a time, though one is due every second"
+kill "$RUNS"; wait "$RUNS" || true
+assert_contains "$(cat "$MD/run-solo.out")" "delivered 1 to y" "the loop reports the delivery"
+for _ in $(seq 1 300); do grep -q '"source": "derived"' "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl" && break; sleep 0.05; done
+assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl")" '"text": "watches the sleepy fixture", "source": "derived"' "the derivation finishes on its own"
+cd "$RR"
+
+# daemon install writes the launchd agent under the HOME it is given and loads nothing.
+mkdir -p "$MD/inst/.claude" "$MD/lc"
+printf '{"env": {"ANTHROPIC_BASE_URL": "x", "ANTHROPIC_AUTH_TOKEN": "y"}}\n' > "$MD/inst/.claude/clodex-settings.json"
+printf '#!/bin/sh\necho "$*" >> "%s/launchctl.calls"\n' "$MD" > "$MD/lc/launchctl"
+chmod +x "$MD/lc/launchctl"
+run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" ANTHROPIC_BASE_URL=http://gateway.test "$SMINOS" daemon install
+assert_rc 0 "$RC" "daemon install succeeds"
+PLIST="$MD/inst/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist"
+assert_file_exists "$PLIST" "it writes the agent under the HOME it is given"
+assert_contains "$OUT" "launchctl bootstrap gui/" "and says how to load it"
+assert_file_absent "$MD/launchctl.calls" "loading nothing itself"
+assert_equals "$(python3 - "$PLIST" "$MD/inst/sminos" "$SMINOS" <<'PY_PLIST'
+import os, plistlib, sys
+d = plistlib.load(open(sys.argv[1], "rb"))
+env = d["EnvironmentVariables"]
+print(d["Label"], d["ProgramArguments"][1:], os.path.realpath(d["ProgramArguments"][0]) == os.path.realpath(sys.argv[3]),
+      env["SMINOS_HOME"] == sys.argv[2], env.get("ANTHROPIC_BASE_URL"), "ANTHROPIC_AUTH_TOKEN" in env,
+      bool(env.get("PATH")), d["KeepAlive"], d["RunAtLoad"])
+PY_PLIST
+)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True http://gateway.test False True True True" \
+  "a well-formed plist: daemon run through this CLI, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
+run env "${H1[@]}" "$SMINOS" daemon
+assert_rc 2 "$RC" "daemon with no verb is a usage error"
+cd "$WORK"
+unset STUB_COUNTER
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
