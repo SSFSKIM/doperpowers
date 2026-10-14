@@ -1719,24 +1719,6 @@ Dispatch scripts: one `--brief` each.
   commit, because a stale ref lock fails every later fetch and the
   commit is never reached.
   Date/Author: 2026-10-14, the branch-review fix wave.
-- Decision: a renamed machine carries what it wrote under its old name
-  and never pushed. Renaming is the recovery the claim refusal names.
-  Before each commit of the mirror, the daemon looks at the files named
-  for another machine that are in this machine's unpushed work: staged,
-  or changed in a commit of its own that `origin/main` lacks. Every
-  event in such a file that is not in the remote's version of it moves
-  to this machine's writer for the same session, or for the human. The
-  writer and `machine` are rewritten, seq continues that writer's, and
-  ts is kept. The file under the old name goes back to the remote's
-  version, or is removed. Delivery records and read cursors move with
-  the events. An event settled under the old writer stays settled when
-  the new writer owes that member nothing; otherwise it is owed again,
-  a duplicate rather than a loss. The old writer's entry keeps only
-  what this machine pushed itself. A record in use defers the carry to
-  the next sync. Nothing pushed is rewritten. The alternative, a
-  refusal naming the files to move, lost because an operator cannot
-  rewrite the writer inside every line.
-  Date/Author: 2026-10-14, the branch-review fix wave.
 
 - Decision: the branch review round. The xhigh panel on c90a0ed8 against
   main (58bd8273) returned 11 confirmed findings, all P2. Each was fixed

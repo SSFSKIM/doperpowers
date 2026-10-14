@@ -34,7 +34,6 @@ nothing); `status` prints the last tick per project.
 
 import contextlib
 import fcntl
-import glob
 import json
 import os
 import re
@@ -216,10 +215,9 @@ def check_claim(log):
     if held and held != mine:
         raise MachineClaimed(
             "the machine name %s is claimed by another instance (%s) in %s — two machines under one name would "
-            "write the same files, so this daemon refuses to run. Give this machine its own name (DAEMON_HOST): what "
-            "it wrote here as %s, never pushed, moves to the new name at its next sync. Or, if the claim is this "
-            "machine's own from an earlier $SMINOS_HOME, remove machines/%s.json from the remote"
-            % (name, held[:8], log, name, name))
+            "write the same files, so this daemon refuses to run. Give this machine its own name (DAEMON_HOST), or, "
+            "if the claim is this machine's own from an earlier $SMINOS_HOME, remove machines/%s.json from the "
+            "remote" % (name, held[:8], log, name))
 
 
 def write_claim(log):
@@ -240,190 +238,12 @@ def write_claim(log):
 
 def commit_log(log, message):
     """Commit whatever the appenders wrote; the caller holds `.sync.lock`
-    exclusive. What this machine wrote under another name and never pushed
-    is carried to its own name first. A first commit is made even with
-    nothing to commit."""
+    exclusive. A first commit is made even with nothing to commit."""
     git_ok(log, "add", "-A")
-    if carry_renamed(log):
-        git_ok(log, "add", "-A")
     if git(log, "rev-parse", "--verify", "-q", "HEAD").returncode == 0 and \
             not git_ok(log, "status", "--porcelain").stdout.strip():
         return
     git_ok(log, "commit", "-q", "--allow-empty", "-m", message)
-
-
-# ------------------------------------------------------------- a renamed machine
-#
-# A machine writes only files named for itself (§8). One that was renamed —
-# refused under a name another instance claims, given its own through
-# DAEMON_HOST — still holds what it wrote under the old name, and a process
-# started under that name may go on writing it. Pushed under the old name
-# those events would be another machine's, or collide with its files; so
-# before each commit, what this machine wrote under another name and never
-# pushed is carried to its own: appended to its own writer of the same
-# session (or the human), the writer and machine rewritten, seq continuing
-# that writer's. The file under the old name goes back to what the remote
-# holds, or away. Nothing pushed is rewritten.
-
-
-def file_machine(name):
-    """The machine a top-level writer file is named for (`<machine>.human.jsonl`,
-    `<machine>.<session-uuid>.jsonl`), else ""."""
-    stem = name[:-len(".jsonl")] if name.endswith(".jsonl") and "/" not in name else ""
-    machine, _, rest = stem.rpartition(".")
-    return machine if rest == "human" or sminos.UUID_RE.match(rest) else ""
-
-
-def unpushed_names(log):
-    """The files this machine changed and has not pushed: staged now, or in
-    a commit of its own (not a merge) that origin/main lacks. A file another
-    machine wrote changes here only through a merge."""
-    if git(log, "rev-parse", "--verify", "-q", "HEAD").returncode != 0:
-        listed = git_ok(log, "ls-files", "-z").stdout
-    else:
-        listed = git_ok(log, "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD").stdout
-        upstream = git(log, "rev-parse", "--verify", "-q", "origin/main").returncode == 0
-        listed += git_ok(log, "log", "--no-merges", "--no-renames", "--name-only", "-z", "--format=",
-                         "origin/main..HEAD" if upstream else "HEAD").stdout
-    return {n.strip("\n") for n in listed.split("\0") if n.strip("\n")}
-
-
-def carry_renamed(log):
-    """Carry what this machine wrote under another name and never pushed to
-    its own name; the caller holds `.sync.lock` exclusive, so no appender
-    writes meanwhile. True when it moved anything."""
-    me = sminos.host_name()
-    plan = []
-    for name in sorted(unpushed_names(log)):
-        old_machine = file_machine(name)
-        path = os.path.join(log, name)
-        if old_machine in ("", me, "legacy") or not os.path.isfile(path):
-            continue
-        shown = git(log, "show", "origin/main:" + name)
-        theirs = shown.stdout if shown.returncode == 0 else None
-        with open(path, encoding="utf-8", errors="replace") as f:
-            local = f.read()
-        pushed = set((theirs or "").split("\n"))
-        old = old_machine + "/" + name[len(old_machine) + 1:-len(".jsonl")]
-        events = sorted((e for e in map(sminos.parse_event, (l for l in local.split("\n") if l not in pushed))
-                         if e and e["writer"] == old), key=lambda e: e["seq"])
-        # Pushed earlier under the old name, by this machine: what its records
-        # say of that part still holds.
-        keep = None
-        if theirs and local.startswith(theirs):
-            keep = max((e["seq"] for e in map(sminos.parse_event, theirs.split("\n")) if e), default=0)
-        if events:
-            plan.append((path, theirs, keep, old, me + old[len(old_machine):], events))
-    if not plan:
-        return False
-    with contextlib.ExitStack() as held:
-        records = reader_records(os.path.dirname(log), {old for _, _, _, old, _, _ in plan}, held)
-        for path, theirs, keep, old, new, events in plan:
-            carry(log, path, theirs, keep, old, new, events, records)
-    return True
-
-
-def reader_records(home, writers, held):
-    """The delivery records and read cursors that name any of `writers`, each
-    under its own lock — taken without waiting (a delivery in flight holds
-    one while it waits for .sync.lock, which this sync holds): a busy one
-    defers the carry to the next sync. {path: record}."""
-    out = {}
-    for sub in ("delivered", "cursors"):
-        for path in sorted(glob.glob(os.path.join(home, sub, "*.json"))):
-            try:
-                with open(path) as f:
-                    rec = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if not (isinstance(rec, dict) and writers & set(rec)):
-                continue
-            lf = held.enter_context(open(path[:-len(".json")] + ".lock", "a"))
-            try:
-                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                raise SyncFailed("carrying events written under an old name waits: %s is in use" % path)
-            held.callback(fcntl.flock, lf, fcntl.LOCK_UN)
-            with open(path) as f:
-                out[path] = json.load(f)
-    return out
-
-
-def carry(log, path, theirs, keep, old, new, events, records):
-    """Append `events` (writer `old`, never pushed) to writer `new`, then put
-    the old file back to what the remote holds, or remove it; and move what
-    the delivery records and read cursors say of them along. `keep`: the last
-    seq of the old writer this machine pushed itself, when it did."""
-    target = os.path.join(log, new.replace("/", ".") + ".jsonl")
-    try:
-        with open(target, encoding="utf-8", errors="replace") as f:
-            prior = [e for e in map(sminos.parse_event, f.read().split("\n")) if e]
-    except FileNotFoundError:
-        prior = []
-    base = max((e["seq"] for e in prior), default=0)
-    old_machine, me = old.split("/", 1)[0], new.split("/", 1)[0]
-    renumbered = {}
-    lines = []
-    for i, e in enumerate(events, 1):
-        renumbered[e["seq"]] = base + i
-        e = {**e, "writer": new, "seq": base + i}
-        if e.get("machine") == old_machine:
-            e["machine"] = me
-        lines.append(json.dumps(e, ensure_ascii=False) + "\n")
-    fd = os.open(target, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "r+b") as f:
-        end = f.seek(0, os.SEEK_END)
-        if end:
-            f.seek(end - 1)
-            if f.read(1) != b"\n":
-                f.write(b"\n")
-        f.write("".join(lines).encode())
-    if theirs is None:
-        os.unlink(path)
-    else:
-        git_ok(log, "checkout", "origin/main", "--", os.path.basename(path))
-    for rpath, rec in records.items():
-        if old not in rec:
-            continue
-        if os.path.basename(os.path.dirname(rpath)) == "delivered":
-            move_delivery(rec, old, new, renumbered, base, prior, keep, os.path.basename(rpath)[:-len(".json")])
-        else:
-            move_cursor(rec, old, new, renumbered, base, keep)
-        sminos.write_json(rpath, rec)
-    sminos.daemon_log("carried %d event(s) of %s, written here under that name and never pushed, to %s (seq %d-%d)"
-                      % (len(events), old, new, base + 1, base + len(events)))
-
-
-def move_delivery(rec, old, new, renumbered, base, prior, keep, reader):
-    """A recipient's delivery record: what it said was settled of the old
-    writer stays settled under the new one, when every event of the new
-    writer owed to it is settled already (else the carried events are owed
-    again). The old writer's entry keeps only the part this machine pushed,
-    and goes when it pushed none: the old name may be another machine's."""
-    o, n = rec.pop(old), rec.get(new) or {"settled": 0, "pending": None, "attempts": 0}
-    if keep is not None and isinstance(o, dict):
-        pending = o.get("pending") if type(o.get("pending")) is int and o["pending"] <= keep else None
-        rec[old] = {"settled": min(int(o.get("settled") or 0), keep), "pending": pending,
-                    "attempts": int(o.get("attempts") or 0) if pending else 0}
-    if not (isinstance(o, dict) and isinstance(n, dict)) or n.get("pending") is not None or any(
-            e["seq"] > int(n.get("settled") or 0) and sminos.addressed_to(e, reader) for e in prior):
-        return
-    done = sum(1 for s in renumbered if s <= int(o.get("settled") or 0))
-    n = {"settled": base + done, "pending": None, "attempts": 0}
-    if o.get("pending") in renumbered:
-        n.update(pending=renumbered[o["pending"]], attempts=int(o.get("attempts") or 0))
-    rec[new] = n
-
-
-def move_cursor(rec, old, new, renumbered, base, keep):
-    """A reader's cursor: what it had read of the old writer stays read, when
-    it had read all of the new one; of the old one, the part this machine
-    pushed."""
-    o = rec.pop(old)
-    if keep is not None and type(o) is int:
-        rec[old] = min(o, keep)
-    if type(o) is int and int(rec.get(new) or 0) >= base:
-        rec[new] = base + sum(1 for s in renumbered if s <= o)
 
 
 def attached(project, log):
