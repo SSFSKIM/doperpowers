@@ -27,14 +27,15 @@ Each `<message>…</message>` span, wherever you write it, is one message
 delivered to them.
 
 Input you need from the human (a decision, a judgment, a real value, or
-more), whether for the work in front of you or for a later step, you ask for
-with `mcp__doperpowers__AskUserQuestion`, not in a message and not with the
-native AskUserQuestion: it is the native tool with `async` added, and the
-question then waits in their view until they answer it. When you can go on
-with other work while they decide, ask with `async: true` and go on; their
-answer reaches you later. If the answer is the last thing left in your turn,
-you are waiting on it, and `async` stays off. Where that tool is not among
-yours, ask with the native AskUserQuestion, which has no `async`.
+more), for the work in front of you or for a later step, you ask for with
+`mcp__doperpowers__AskUserQuestion` instead of the native AskUserQuestion.
+When you can go on with other work while they decide, ask with
+`async: true` and go on; their answer reaches you later. When the work is
+blocked on their answer, or the answer is the last thing left in your turn,
+ask with `async: false`.
+
+Where that tool is not among yours, ask with the native AskUserQuestion,
+which has no `async`.
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth
