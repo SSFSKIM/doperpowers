@@ -3527,6 +3527,45 @@ assert_rc 0 "$RC" "alias#short picks the seat-less one"
 assert_contains "$(inbox dupe)" "the session one" "and reaches it"
 rm -f "$HOME/.claude/sessions/pf-dupe.json"
 "$SMINOS" remove pf-repo/dupe >/dev/null
+# alias#short names a session, and keeps naming it through the verb: a refill
+# of the seat between the name's resolution and the verb's lifecycle lock is
+# refused, never carried out on the replacement (§2: an address is a session).
+BS1=4d000019-0000-4000-8000-00000000004d
+BS2=4e00001a-0000-4000-8000-00000000004e
+"$SMINOS" seat add pf-repo bound --session "$BS1" >/dev/null
+pf_peer bound "$BS1" idle seat
+start_inbox bound2   # the replacement's inbox
+refill_under() { # seat-id new-session cli-args... — the verb, the seat refilled just before its lock is had
+  set +e
+  OUT="$(python3 - "$SMINOS_PY" "$@" 2>&1 <<'PY_REFILL'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+seat_id, new = sys.argv[2], sys.argv[3]
+lock_seat = mod.lock_seat
+def refilled_first(s, *args, **kwargs):
+    locks = lock_seat(s, *args, **kwargs)
+    if s["seat_id"] == seat_id:
+        mod.meta_set(seat_id, {"current": new})
+    return locks
+mod.lock_seat = refilled_first
+mod.main(sys.argv[4:])
+PY_REFILL
+)"
+  RC=$?
+  set -e
+}
+printf '{"pid":%s,"sessionId":"%s","name":"bound","nameSource":"seat","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$BS2" "$R" "$TEST_ROOT/in-bound2.sock" > "$HOME/.claude/sessions/pf-bound2.json"
+refill_under "$BS1" "$BS2" send "bound#${BS1:0:8}" "for the first session only"
+assert_rc 4 "$RC" "a send to alias#short whose session left the seat before the lock is refused"
+assert_contains "$OUT" "no send: session ${BS1:0:8} left seat pf-repo/bound, which now holds ${BS2:0:8}" "saying the named session left the seat"
+assert_equals "$(inbox bound2)$(inbox bound)" "" "nothing reaches the replacement, nor anyone"
+assert_not_contains "$(log_of "$PF")" "for the first session only" "and nothing is recorded"
+refill_under "$BS1" "$BS1" retire "bound#${BS2:0:8}"
+assert_rc 4 "$RC" "so is a retire of alias#short whose session left the seat"
+assert_equals "$(field "$BS1" status)" "idle" "leaving the seat as it is"
+rm -f "$HOME/.claude/sessions/pf-bound.json" "$HOME/.claude/sessions/pf-bound2.json"
+"$SMINOS" remove pf-repo/bound >/dev/null
 # A fan-out resume that launched stands, though its re-join cannot be recorded:
 # the frame settles, a warning says what failed, and the next recipient is
 # still delivered.

@@ -1647,6 +1647,15 @@ Dispatch scripts: one `--brief` each.
   them.
   Date/Author: 2026-10-14, the controller's and the authoring session's
   rulings, built by the M6 executor.
+- Decision: a name that binds a session binds it through the verb.
+  `alias#short`, and a session id that is not the seat's own id, name a
+  session (§2). `send` and `retire` check, under the seat's lifecycle lock,
+  that the seat still holds it, and refuse with the reason when a refill put
+  another session there. A bare alias or the seat's id names the seat, and
+  the verb acts on whatever session the seat holds under the lock, as
+  before. `retire` was included because it re-reads the seat under the same
+  lock and had the same gap.
+  Date/Author: 2026-10-14, the branch-review fix wave (review 1).
 
 ## Outcomes & Retrospective
 

@@ -2734,10 +2734,15 @@ def resolve_seat(q):
 
 
 def find_target(q):
-    """What a member verb (send, status, retire) names: ("seat", seat) for a
-    seat; ("member", project, member) for a member that holds no seat here;
-    else exit 4 — ambiguous (named so they can be told apart) or unknown.
-    ("none",) when nothing answers.
+    """What a member verb (send, status, retire) names: ("seat", seat, session)
+    for a seat; ("member", project, member) for a member that holds no seat
+    here; else exit 4 — ambiguous (named so they can be told apart) or
+    unknown. ("none",) when nothing answers. A seat's `session` is the one the
+    name bound — `alias#short`, or a session id that is not the seat's own id —
+    and "" when the name named the seat: a verb that re-reads the seat under
+    its lifecycle lock refuses when the seat no longer holds that session
+    (locked_fresh), so a refill in between cannot take the bound session's
+    place.
 
     A full id — a seat id or session id — names its seat directly, and so
     does `group/alias` when the qualifier is a group and no project. Any other
@@ -2755,7 +2760,7 @@ def find_target(q):
             die(ambiguous_seat(q, res), EXIT_UNKNOWN)
         if kind == "ok":
             reconcile(seat_project(res))  # the verb reads the project; no liveness probe needed
-            return ("seat", res)
+            return ("seat", res, q if res["current"] == q and res["seat_id"] != q else "")
         return None
 
     def group_seat(group, alias):
@@ -2796,7 +2801,7 @@ def find_target(q):
     if not found:
         return (proj and not short and group_seat(proj, name)) or ("none",)
     project, m = found[0]
-    return ("seat", m.seat) if m.seat else ("member", project, m)
+    return ("seat", m.seat, m.session if short or name == m.session else "") if m.seat else ("member", project, m)
 
 
 def ambiguous_seat(q, hits):
@@ -4636,13 +4641,15 @@ def compose_frame(sender, msg_id, msg):
     return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
 
 
-def send_to_seat(s0, text, msg_id, wait, record=None):
+def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the socket delivery, and the status write, so a
     concurrent fill/resume/retire cannot slip between them. A live seat takes
     the frame on its inbox socket and is recorded `working`; a stopped one is
     resumed with the frame as its message; vacant, retired, and gone seats
-    are refused, pointing at the verb that can reach them.
+    are refused, pointing at the verb that can reach them. Given `session`,
+    the one the name bound (find_target), a seat that no longer holds it is
+    refused.
 
     `record(seat)`, when given, appends the message to the seat's project log
     once the seat is known reachable and returns its SendDelivery (or None
@@ -4651,11 +4658,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None):
     record is settled on sent, woken, or uncertain and noted as failed
     otherwise — so a send that dies on the way is the daemon's to retry."""
     refuse_codex(s0)
-    locks = lock_seat(s0)
-    s = reload_seat(s0["seat_id"])
-    if s is None:
-        unlock(locks)
-        die("seat %s/%s vanished before the send could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
+    locks, s = locked_fresh(s0, "send", session)
     refuse_codex(s)
     ref = "%s/%s" % (s["group"], s["alias"])
     # ONE liveness probe (pid alive AND socket answers) decides both the word
@@ -4915,7 +4918,8 @@ def _send(a):
         res = target[1]
         if sid and res["current"] == sid:
             die("you cannot send to yourself")
-        send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, sender, frm, a.msg, msg_id))
+        send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, sender, frm, a.msg, msg_id),
+                     session=target[2])
         return
     if target[0] == "member":
         project, m = target[1], target[2]
@@ -5150,13 +5154,20 @@ def unlink_seat_files(seat_id):
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def locked_fresh(s0, verb):
-    """Take the seat's lifecycle locks and re-load the record; (locks, seat)."""
+def locked_fresh(s0, verb, session=""):
+    """Take the seat's lifecycle locks and re-load the record; (locks, seat).
+    Given `session`, the one a name bound (find_target), a seat that no
+    longer holds it is refused: an address names a session, and a refill
+    after the name was resolved must not put another session in its place."""
     locks = lock_seat(s0)
     s = reload_seat(s0["seat_id"])
     if s is None:
         unlock(locks)
         die("seat %s/%s vanished before the %s could start" % (s0["group"], s0["alias"], verb), EXIT_UNKNOWN)
+    if session and s["current"] != session:
+        unlock(locks)
+        die("no %s: session %s left seat %s/%s, which now holds %s — name the seat to reach whoever holds it" % (
+            verb, session[:8], s["group"], s["alias"], s["current"][:8] or "no session"), EXIT_UNKNOWN)
     return locks, s
 
 
@@ -5167,7 +5178,7 @@ def cmd_retire(a):
     if target[0] == "none":
         die("no seat or member matching '%s'" % a.seat, EXIT_UNKNOWN)
     if target[0] == "seat":
-        _retire_one(target[1], a.purge)
+        _retire_one(target[1], a.purge, target[2])
         return
     project, m = target[1], target[2]
     if not m.local:
@@ -5192,8 +5203,8 @@ def cmd_retire(a):
         print("retired %s (session %s; it holds no seat, so nothing is kept)" % (m.alias, m.short))
 
 
-def _retire_one(s0, purge):
-    locks, s = locked_fresh(s0, "retire")
+def _retire_one(s0, purge, session=""):
+    locks, s = locked_fresh(s0, "retire", session)
     try:
         stop_session(s)
         if s["engine"] == "codex":
