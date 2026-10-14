@@ -29,10 +29,6 @@ delivered to them.
 Input you need from the human (a decision, a judgment, a real value, or
 more), for the work in front of you or for a later step, you ask for with
 `mcp__doperpowers__AskUserQuestion` instead of the native AskUserQuestion.
-When you can go on with other work while they decide, ask with
-`async: true` and go on; their answer reaches you later. When the work is
-blocked on their answer, or the answer is the last thing left in your turn,
-ask with `async: false`.
 
 Where that tool is not among yours, ask with the ask tool your host offers,
 else the native AskUserQuestion, which has no `async`.

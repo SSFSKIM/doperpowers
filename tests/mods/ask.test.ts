@@ -131,7 +131,7 @@ describe('the tool as the model reads it', () => {
   test('the description is the built-in one, then the async paragraph', async () => {
     expect(describeAsk('Use this tool only when blocked.')).toBe(`Use this tool only when blocked.\n\n${ASYNC_PARAGRAPH}`)
     expect(ASYNC_PARAGRAPH).toBe(
-      '`async`: set it to true when you can go on with other work while the human decides. The call then returns at once; the questions wait in the human\'s view until they answer, and their answer reaches you in a later message that quotes each question. Leave it false when nothing useful can proceed without the answer.',
+      '`async`: set it to true when you can go on with other work while the human decides. The call then returns at once; the questions wait in the human\'s view until they answer, and their answer reaches you in a later message that quotes each question. Leave it false when the work is blocked by the answer, nothing useful can proceed without the answer, or the answer is the last thing left in your turn.',
     )
   })
 

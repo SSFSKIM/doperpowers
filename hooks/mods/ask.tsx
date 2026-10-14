@@ -14,7 +14,7 @@ export type AskQuestion = { question: string; header: string; options: AskOption
 export type AskInput = { questions: AskQuestion[]; async?: boolean; metadata?: { source?: string } }
 
 export const ASYNC_PARAGRAPH =
-  "`async`: set it to true when you can go on with other work while the human decides. The call then returns at once; the questions wait in the human's view until they answer, and their answer reaches you in a later message that quotes each question. Leave it false when nothing useful can proceed without the answer."
+  "`async`: set it to true when you can go on with other work while the human decides. The call then returns at once; the questions wait in the human's view until they answer, and their answer reaches you in a later message that quotes each question. Leave it false when the work is blocked by the answer, nothing useful can proceed without the answer, or the answer is the last thing left in your turn."
 
 /** What the built-in answers while this tool stands in for it, as its description and as its refusal. */
 export const WITHDRAWN = "Withdrawn in this session: ask through mcp__doperpowers__AskUserQuestion, which takes this tool's input plus async."

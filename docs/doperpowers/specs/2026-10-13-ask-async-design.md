@@ -237,8 +237,9 @@ decision; M3's eval measures it):
 > `async`: set it to true when you can go on with other work while the human
 > decides. The call then returns at once; the questions wait in the human's
 > view until they answer, and their answer reaches you in a later message
-> that quotes each question. Leave it false when nothing useful can proceed
-> without the answer.
+> that quotes each question. Leave it false when the work is blocked by the
+> answer, nothing useful can proceed without the answer, or the answer is the
+> last thing left in your turn.
 
 **Validation**: an async ask has no engine call at the moment it is made,
 so the mod validates every ask at once, before any dialog, against the
@@ -1104,6 +1105,21 @@ M1 (2026-10-13), from the executor's live probes on 2.1.296:
   color answer arrived during the session`.
 
 ## Decision Log
+
+- Decision: after the merge (7.148.1–7.149.4, 2026-10-14), with the human:
+  the to-human style names `mcp__doperpowers__AskUserQuestion` over the
+  native tool, its fallback is "the ask tool your host offers, else the
+  native AskUserQuestion"; `<insight>` is retired like `<need-input>`
+  (contract 4, `<message>` the one mark); "not in a message" is dropped (a
+  quick question may be a message — the human's call, against an eval run
+  where one of three asked in a message instead); the "last thing left in
+  your turn" rule moves from the style into the tool's async paragraph, so
+  it holds wherever the tool is offered, and the style keeps only which
+  tool to ask with. Under MAWS (`MAWS_NATIVE_TO_HUMAN`) the mod registers
+  nothing: MAWS offers `mcp__maws__ask` and withholds the built-in itself.
+  Rejected: one tool name in both hosts (forwarding to `mcp__maws__ask`),
+  which would hide MAWS's text, file, folder and repository questions.
+  Date/Author: 2026-10-14, design session, with the human.
 
 - Decision: branch review (high rung, 2026-10-13) — resume rebuilds from
   the whole transcript unless it holds a rewind record (`last-prompt` with
