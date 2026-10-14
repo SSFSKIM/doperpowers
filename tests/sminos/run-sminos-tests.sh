@@ -4484,6 +4484,16 @@ kill "$RUNS"; wait "$RUNS" || true
 assert_contains "$(cat "$MD/run-solo.out")" "delivered 1 to y" "the loop reports the delivery"
 for _ in $(seq 1 300); do grep -q '"source": "derived"' "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl" && break; sleep 0.05; done
 assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl")" '"text": "watches the sleepy fixture", "source": "derived"' "the derivation finishes on its own"
+# A harness rename is recorded in a project with no remote too: the only
+# record of a name change.
+printf '{"pid":%s,"sessionId":"%s","name":"night-shift","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$NC" "$LR2" "$TEST_ROOT/in-md-newcomer.sock" > "$MD/solo/.claude/sessions/newcomer.json"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "solo-repo: reconciled 0 · published 1" "a tick in a project with no remote publishes a harness rename"
+assert_contains "$(tail -1 "$MD/solo/sminos/projects/$SOLOP/log/solo.$NC.jsonl")" '"kind": "renamed", "session": "'"$NC"'", "alias": "night-shift", "name_source": "user"' "as renamed, with the name's source"
+assert_not_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$NC.jsonl")" '"kind": "state"' "and no state: only another machine reads that"
+run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "solo-repo: reconciled 0 · delivered 0" "once"
 cd "$RR"
 
 # daemon install writes the launchd agent under the HOME it is given and loads nothing.
@@ -4507,6 +4517,36 @@ print(d["Label"], d["ProgramArguments"][1:], os.path.realpath(d["ProgramArgument
 PY_PLIST
 )" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True http://gateway.test False True True True" \
   "a well-formed plist: daemon run through this CLI, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
+assert_equals "$(mode_of "$PLIST")" "0600" "readable only by its owner: it may carry the gateway's token"
+# A CLI running from the versioned plugin cache installs the marketplace
+# clone's CLI, which plugin updates keep; with no clone known, itself.
+CACHE="$MD/inst/.claude/plugins/cache/doperpowers/doperpowers/9.9.9"
+MKT="$MD/inst/.claude/plugins/marketplaces/doperpowers"
+mkdir -p "$CACHE/skills" "$MKT/skills/sminos/scripts"
+cp -R "$REPO_ROOT/skills/sminos" "$CACHE/skills/"
+printf '#!/bin/sh\n' > "$MKT/skills/sminos/scripts/sminos"
+chmod +x "$MKT/skills/sminos/scripts/sminos"
+printf '{"doperpowers": {"installLocation": "%s", "autoUpdate": true}}\n' "$MKT" > "$MD/inst/.claude/plugins/known_marketplaces.json"
+plist_cli() { python3 -c 'import os, plistlib, sys; print(os.path.realpath(plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"][0]))' "$PLIST"; }
+real() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
+assert_rc 0 "$RC" "install from the plugin cache succeeds"
+assert_equals "$(plist_cli)" "$(real "$MKT/skills/sminos/scripts/sminos")" "and runs the marketplace clone's CLI, not the versioned cache's"
+rm "$MD/inst/.claude/plugins/known_marketplaces.json"
+run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
+assert_equals "$(plist_cli)" "$(real "$CACHE/skills/sminos/scripts/sminos")" "with no marketplace clone known, it runs itself"
+assert_file_absent "$MD/launchctl.calls" "still loading nothing"
+# run notices new code: a change to its own scripts ends the loop with exit 0,
+# for launchd's KeepAlive to restart it on the new code.
+env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" "$CACHE/skills/sminos/scripts/sminos" daemon run --interval 1 > "$MD/run-code.out" 2>&1 & RUNC=$!
+sleep 1.5
+touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"
+for _ in $(seq 1 100); do kill -0 "$RUNC" 2>/dev/null || break; sleep 0.05; done
+if kill -0 "$RUNC" 2>/dev/null; then fail "run exits once its code changes"; kill "$RUNC"; wait "$RUNC" || true; else
+  set +e; wait "$RUNC"; RUNC_RC=$?; set -e
+  assert_rc 0 "$RUNC_RC" "run exits 0 once its code changes"
+fi
+assert_contains "$(cat "$MD/run-code.out")" "its code changed" "saying why"
 run env "${H1[@]}" "$SMINOS" daemon
 assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"

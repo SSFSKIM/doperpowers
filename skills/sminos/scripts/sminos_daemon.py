@@ -22,7 +22,8 @@ every project known here, each in the order of §8:
                  attaches a mirror it has not seen before
   2. reconcile   as every reading verb does
   3. publish     (mirrored projects) `state` once a word has held for two
-                 ticks, the first at once; `renamed` on a harness rename
+                 ticks, the first at once; (every project) `renamed` on a
+                 harness rename
   4. deliver     everything owed to a local member, through deliver_next
   5. push        (mirrored projects) commit what the tick appended, push
   6. derive      once an hour, `derive --all` as a child it does not wait on
@@ -344,31 +345,43 @@ def daemon_record(project):
 
 
 def publish_state(project, view, record):
-    """Duty 3: for each local member, a `state` event when its word differs
-    from the last one published for it and differed on the previous tick too
-    (one tick of persistence drops the flip inside a tool round) — the first
-    word at once, so another machine never waits on an unpublished member;
-    and a `renamed` when a seat-less member's harness name moved. Into the
-    session's own file. Returns how many events it appended."""
+    """Duty 3, for a mirrored project: for each local member, a `state` event
+    when its word differs from the last one published for it and differed on
+    the previous tick too (one tick of persistence drops the flip inside a
+    tool round) — the first word at once, so another machine never waits on
+    an unpublished member. Into the session's own file. Only another machine
+    reads a published word (a local view computes it live), so a project with
+    no remote publishes none. Returns how many events it appended."""
     before = set(record.get("differed") or [])
     differed, n = set(), 0
     for m in view.members:
         if not (m.local and m.session):
             continue
-        r = view.info.get(m.session) or {}
-        last = (r.get("state") or {}).get("state")
+        last = ((view.info.get(m.session) or {}).get("state") or {}).get("state")
         if m.state != last:
             if last is None or m.session in before:
                 n += len(sminos.lifecycle(project, m.session, "state", required=False,
                                           state=m.state, machine=sminos.host_name()))
             else:
                 differed.add(m.session)
+    record["differed"] = sorted(differed)
+    return n
+
+
+def publish_renames(project, view):
+    """Duty 3, for every project: a `renamed` when a seat-less local member's
+    harness name (or its source) moved from the last one the log holds. Rare,
+    and the only record of a name change — a line derived from a name the
+    human set leaves no `in-charge` of its own. Returns how many it appended."""
+    n = 0
+    for m in view.members:
+        if not (m.local and m.session) or m.seat is not None:
+            continue
+        r = view.info.get(m.session) or {}
         known = r.get("renamed") or r.get("joined") or {}
-        if m.seat is None and known and (m.alias, m.name_source) != (
-                str(known.get("alias") or ""), str(known.get("name_source") or "")):
+        if known and (m.alias, m.name_source) != (str(known.get("alias") or ""), str(known.get("name_source") or "")):
             n += len(sminos.lifecycle(project, m.session, "renamed", required=False,
                                       alias=m.alias, name_source=m.name_source))
-    record["differed"] = sorted(differed)
     return n
 
 
@@ -406,6 +419,7 @@ def tick(project, all_seats=None):
     out["reconciled"] = view.reconciled
     if project.remote:
         out["published"] = publish_state(project, view, record)
+    out["published"] += publish_renames(project, view)
     out["delivered"], out["to"] = deliver_owed(project, view)
     if out["integrated"]:
         try:
@@ -428,7 +442,7 @@ def tick_line(project, out):
     if project.remote:
         bits.append("synced" if out.get("integrated") else "not synced")
     bits.append("reconciled %d" % (out.get("reconciled") or 0))
-    if project.remote:
+    if project.remote or out.get("published"):
         bits.append("published %d" % (out.get("published") or 0))
     to = out.get("to") or []
     bits.append("delivered %d%s" % (out.get("delivered") or 0, (" to " + ", ".join(to)) if to else ""))
@@ -530,6 +544,18 @@ def run_lock_path():
     return daemon_path("run.lock")
 
 
+def own_code():
+    """The scripts this loop runs, with their mtimes: when one changes (a plugin
+    update), the loop ends and launchd's KeepAlive starts it on the new code."""
+    out = {}
+    for path in (os.path.realpath(sminos.__file__), os.path.realpath(__file__)):
+        try:
+            out[path] = os.stat(path).st_mtime_ns
+        except OSError:
+            out[path] = None
+    return out
+
+
 def nudged_at():
     """When a sender last asked for a tick now (sminos.nudge_daemon); 0 if never."""
     try:
@@ -541,7 +567,8 @@ def nudged_at():
 def cmd_run(a):
     """The loop: a tick every `--interval` seconds (from one tick's start to
     the next), or at once when a sender touched daemon/nudge since the last
-    one began. SIGTERM ends it after the tick in hand."""
+    one began. SIGTERM ends it after the tick in hand; so does a change to its
+    own scripts, exiting 0 for launchd to restart it on the new code."""
     interval = a.interval
     if interval <= 0:
         sminos.die("--interval is a number of seconds above 0")
@@ -560,6 +587,7 @@ def cmd_run(a):
     # then the loop.
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sminos.daemon_log("daemon run started (pid %d, every %gs)" % (os.getpid(), interval))
+    code = own_code()
     while not stop:
         started, nudge = time.time(), nudged_at()
         try:
@@ -570,6 +598,11 @@ def cmd_run(a):
         except Exception as e:  # noqa: BLE001 — the loop outlives one bad tick
             sminos.daemon_log("tick failed: %r" % e)
         sys.stdout.flush()
+        if own_code() != code:
+            sminos.daemon_log("daemon run (pid %d): its code changed; exiting for a restart on the new code"
+                              % os.getpid())
+            print("%s its code changed: exiting, to be restarted on the new code" % sminos.now())
+            return
         while not stop and time.time() - started < interval and nudged_at() == nudge:
             time.sleep(0.05)
     sminos.daemon_log("daemon run stopped (pid %d)" % os.getpid())
@@ -601,6 +634,26 @@ def launchd_env():
     return env
 
 
+def installed_cli():
+    """The CLI the launchd agent runs: a path that outlives plugin updates. A
+    CLI running from the plugin cache lives under a versioned directory an
+    update prunes, so the agent runs the marketplace clone instead (its
+    `installLocation` in ~/.claude/plugins/known_marketplaces.json, kept up to
+    date by the harness); anything else — a development checkout — is
+    stable as it is, and runs itself."""
+    here = os.path.realpath(sminos.LAUNCHER)
+    plugins = os.path.join(sminos.home_dir(), ".claude", "plugins")
+    if not here.startswith(os.path.realpath(os.path.join(plugins, "cache")) + os.sep):
+        return here
+    try:
+        with open(os.path.join(plugins, "known_marketplaces.json")) as f:
+            location = str(((json.load(f) or {}).get("doperpowers") or {}).get("installLocation") or "")
+    except (OSError, ValueError, AttributeError):
+        location = ""
+    stable = os.path.join(location, "skills", "sminos", "scripts", "sminos") if location else ""
+    return stable if stable and os.path.isfile(stable) else here
+
+
 def cmd_install(_a):
     """Write the launchd agent. Loading it is the operator's step: nothing
     here calls launchctl."""
@@ -608,13 +661,14 @@ def cmd_install(_a):
         text = f.read()
     entries = "\n".join("    <key>%s</key><string>%s</string>" % (escape(k), escape(v))
                         for k, v in sorted(launchd_env().items()))
-    for key, value in (("LABEL", escape(LABEL)), ("SMINOS_CLI", escape(sminos.LAUNCHER)),
+    for key, value in (("LABEL", escape(LABEL)), ("SMINOS_CLI", escape(installed_cli())),
                        ("ENV", entries), ("LOG", escape(os.path.join(sminos.root(), "daemon.out")))):
         text = text.replace("{{%s}}" % key, value)
     path = plist_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(text)
+    os.chmod(path, 0o600)  # it may carry the gateway route's token
     print("wrote %s\nload it:   launchctl bootstrap gui/$(id -u) %s\nunload it: launchctl bootout gui/$(id -u)/%s"
           % (path, path, LABEL))
 
