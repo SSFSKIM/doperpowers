@@ -3949,6 +3949,35 @@ PY_HOLD
   assert_equals "$(cat "$POS")" "$POS_BEFORE" "and keeping the export position"
 done
 assert_contains "$(tail -1 "$SMINOS_HOME/daemon.log")" "record: gave up after 1s" "the give-up is a line in daemon.log"
+# A SessionStart cut short while it joins (the session file's lock held) has
+# set the export position first: the first Stop exports the whole first turn,
+# not only the trailing run past its last user-role record.
+HJ=5c00000c-0000-4000-8000-00000000005c
+TJ="$TXD/$HJ.jsonl"
+hp_peer hj "$HJ" user interactive
+rm -f "$TEST_ROOT/held" "$TEST_ROOT/release"
+python3 - "$HPLOG/testhost.$HJ.jsonl.lock" "$TEST_ROOT/held" "$TEST_ROOT/release" <<'PY_HOLD' & holder=$!
+import fcntl, os, sys, time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(sys.argv[2], 'w').close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+PY_HOLD
+for _ in $(seq 1 100); do [ -f "$TEST_ROOT/held" ] && break; sleep .05; done
+SMNS_RECORD_TIMEOUT=1 hook_run SessionStart "$HJ" "$R3" "$TJ" startup
+touch "$TEST_ROOT/release"; wait "$holder"
+assert_rc 0 "$HOOK_RC" "a SessionStart whose join outlasts the hook's bound exits 0"
+assert_equals "$(hp_events "$HJ")" "" "without joining"
+assert_file_exists "$SMINOS_HOME/projects/$HP/cursors/export/$HJ.json" "having set the export position first"
+tx "$TJ" prompt f1000001 "go"
+tx "$TJ" asst f1000002 '<message>early in the first turn</message>'
+tx "$TJ" result f1000003 toolu_f1 "ok"
+tx "$TJ" asst f1000004 '<message>end of the first turn</message>'
+hook_run Stop "$HJ" "$R3" "$TJ"
+assert_contains "$(hp_events "$HJ")" "joined " "its first Stop joins it"
+assert_contains "$(hp_events "$HJ")" "message:f1000002#0 message:f1000004#0" "and exports the whole first turn, a tool result in between"
+rm -f "$HOME/.claude/sessions/hp-hj.json"
 # With migrate's lock held elsewhere, the hook neither migrates nor exports.
 rm -f "$TEST_ROOT/held" "$TEST_ROOT/release"
 python3 - "$HOME/.claude/.agora-migrate.lock" "$TEST_ROOT/held" "$TEST_ROOT/release" <<'PY_HOLD' & holder=$!

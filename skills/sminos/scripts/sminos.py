@@ -2205,13 +2205,15 @@ def record_session(project, session, tpath, event, last_message=""):
     """The hook's work for one session (§4). Membership on sight, as
     reconciliation decides it: a seat whose record is not retired, or a
     session the harness records as `interactive` or `bg`, and never an
-    internal fork. SessionStart joins a member and sets its export position;
-    Stop joins it if it is not yet (its harness record may not have existed
-    at its start) and exports. A session the harness has not registered yet
-    at its start is not joined on no evidence, but its position is set, so
-    its first turn counts whole at its Stop. A session that is not a member
-    records nothing. At Stop, the export first waits a little for the turn's
-    last message to reach the transcript (await_flush)."""
+    internal fork. SessionStart sets a member's export position, then joins
+    it: the position first, so a join cut short by the hook's bound (a lock
+    held elsewhere) still leaves the first Stop a position rather than the
+    trailing-run fallback. Stop joins it if it is not yet (its harness record
+    may not have existed at its start) and exports. A session the harness
+    has not registered yet at its start is not joined on no evidence, but its
+    position is set, so its first turn counts whole at its Stop. A session
+    that is not a member records nothing. At Stop, the export first waits a
+    little for the turn's last message to reach the transcript (await_flush)."""
     seat = next((s for s in seats() if s["current"] == session), None)
     peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
     if peer is not None and str(peer.get("pid")) in internal_pids():
@@ -2222,13 +2224,12 @@ def record_session(project, session, tpath, event, last_message=""):
         return
     if not joinable(seat, peer):
         return
+    if event == "SessionStart":
+        position_init(project, session, tpath)
     own = _own_events(project, session)
     if latest_membership(own) != "joined":
         join_on_sight(project, session, seat, peer, True)
         own = _own_events(project, session)
-    if event == "SessionStart":
-        position_init(project, session, tpath)
-        return
     if event != "Stop" or latest_membership(own) != "joined":
         return
     alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
