@@ -89,14 +89,18 @@ hours. The daemon runs `derive --all` hourly.
 
 ## The operator surface
 
-From a terminal, or a session acting for the human, the operator
-addresses any project known on this machine. `human` is the operator's
-identity, not a seat; its messages are recorded as from `human`.
+The CLI's identity is the caller's session. Inside a Claude Code session
+(`CLAUDE_CODE_SESSION_ID` set) every verb speaks as that member, and a
+`say` is recorded under its alias; it reaches another project by tagging
+`@<project>/<alias>`. Run with no session — the human at a terminal, a
+script, launchd — the caller is the operator, `human`, not a seat: its
+messages are recorded as from `human`, and it may name any project known
+on this machine.
 
     sminos list [project] [--all] [--state W] [--json]   # the cwd's project; every project from no project, or with --all
     sminos chat [project] [-n N] [--since TS] [--json]   # the project chat
     sminos chat [project] --host [-n N] [--since TS]     # what the members sent their human
-    sminos say [--in <project>] "…"                      # as the operator; tags as above
+    sminos say [--in <project>] "…"                      # --in is the operator's; tags as above
     sminos send <member|session name|codex thread> "…" [--wait]
     sminos resume <seat> "…"          # process-level continuation from this environment
     sminos reply <seat>               # latest reply, including a pending question
@@ -132,10 +136,10 @@ environment (the board pipeline's credentials ride it), so prefer `send`
 for a working seat.
 
 A member on another machine is reached by `say` and `send` (delivered by
-its machine's daemon) and described by `charge` and `status`; `send
+its machine's daemon) and described by `charge` and `status`. `send
 --wait`, `reply`, `resume`, `fill`, `attach`, `retire`, `meta`, and
-`derive` act on this machine's processes and records, and refuse a
-remote member with `<alias> is on <machine>`.
+`derive` act on this machine's processes and records, so they do nothing
+for a remote member; run them on its machine.
 
 `list` prints one heading per project, newest member first: the alias
 (`#short` when another member shares it), the state word (for a remote
@@ -211,10 +215,6 @@ NAME` (it runs in `<repo>/.claude/worktrees/NAME` on branch
 `worktree-NAME`, and `fill`, `send`, `reply`, and `attach` follow it). Its
 work is a committed branch, not merged. `retire` never deletes a worktree
 or branch.
-
-**Spawn-prompt hygiene.** Seats run unattended, so the prompt does the
-guardrail work: state the scope, name the deliverable, and say what the
-seat should do with a decision above its scope.
 
 **Long turns.** Nothing here kills a turn. `DAEMON_TIMEOUT` (default
 18000s, 0 = forever) bounds only how long `--wait` watches; when it
