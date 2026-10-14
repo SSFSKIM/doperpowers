@@ -1067,6 +1067,28 @@ Dispatch scripts: one `--brief` each.
 - Decision: the host-bound question event is `question`, not `need-input`:
   the mark it was named after is gone, and the event is a question.
   Date/Author: 2026-10-13, the owner.
+- Decision: execution pre-flight (the controller, before M1). Four
+  mandated tests name a mechanism a later milestone builds; each is pinned
+  in its own milestone through what exists there and re-pinned when the
+  mechanism lands. M1's "fast path and a daemon tick run at once" is two
+  concurrent `deliver_next` calls for one recipient (the tick calls the
+  same operation, §4); M4 repeats it through `daemon tick`. M2's "stays
+  retired across repeated `list` and `tick` calls" uses the reading verbs
+  in M2 and adds `tick` in M4. M2's "`status` from one home visible from
+  the other after a sync" copies the writer's file between the homes'
+  `log/` (replication is a copy, §3); M4 repeats it through the mirror.
+  M2's "hook `joined` … under a clock stepped back" uses a reconciliation
+  `joined` in M2 (same writer, same file) and the hook's once M3 lands.
+  `project attach` is built whole in M1 (repository init, first commit,
+  remote, fetch tolerated offline), since M1 pins its offline test; M4's
+  "attach's mirror half" is the sync that follows it. The milestone text's
+  `delivered_record` is the Interfaces section's `delivered_settle` /
+  `delivered_fail` pair; the Interfaces section governs. In M1, before
+  `Member` exists, a seat record stands in for a member wherever delivery
+  needs one; M2 replaces it with `Member`.
+  Rationale: each test's intent survives intact at its milestone, and no
+  milestone builds ahead of its plan to satisfy a test.
+  Date/Author: 2026-10-13, the plan-executor (controller).
 
 ## Outcomes & Retrospective
 
