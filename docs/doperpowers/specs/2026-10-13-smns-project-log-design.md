@@ -256,8 +256,9 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | --- | --- | --- |
 | `say` | `from` alias, `to` `"*"` or a list of `{session, alias}`, `text`, `wake` true for `@all` (whose `to` is the list of members live at submission) | `sminos say`, a member's `send` |
 | `human` | `from` `"human"`, `to` as `say`, `text`, `wake` true for `@all` | operator `say` / `send` |
-| `message` | `from` alias, `to` `"host"`, `text`, `src` transcript record uuid | the hook, from a `<message>` mark (`<to-human>`, `<essential>` read as aliases) |
-| `need-input` | `from` alias, `to` `"host"`, `text`, `choices` list of strings, `src` | the hook, from a `<need-input>` mark |
+| `message` | `from` alias, `to` `"host"`, `text`, `src` transcript record uuid plus span index | the hook, from a `<message>` mark — the one mark since 7.149.0; `<to-human>`, `<essential>`, `<need-input>`, `<insight>` read as its aliases |
+| `need-input` | `from` alias, `to` `"host"`, `text` the question texts, `choices` the option labels, `src` the call's `tool_use_id` | the hook, from a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async` true whose paired `tool_result` is the tool's accepted result (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`) |
+| `answered` | `from` alias, `src` the call id, `text` the engine's result text | the hook, from the delivery row quoting `The human responded to your async AskUserQuestion (call <id>)` |
 | `joined` | `session` uuid, `alias`, `name_source` `user`/`derived`/`seat`, `machine`, `cwd`, `worktree`, `role`, `seat` seat id or `""`, `by` alias or `""` | `spawn` (with `by`), `fill`/`resume` of a retired seat, the hook on session start, reconciliation, `seat add` |
 | `retired` | `session`, `by`, `reason` `retire`/`replaced` | `sminos retire`; `spawn`/`fill` into an occupied seat |
 | `in-charge` | `session`, `text`, `source` `set` or `derived` | `sminos charge`, `spawn --brief`, `sminos derive` |
@@ -374,7 +375,14 @@ when `SMNS_INTERNAL` is set in its environment (§5) or `cwd` resolves to no
 project. On `Stop`, `record` reads the transcript from its end back to the record
 named in `cursors/export/<session-uuid>.json` (a record uuid and its byte
 offset; the whole file is never read — an architect session's reaches
-155MB), extracts marks from the assistant records above it, appends them with `src` `<record-uuid>#<span-index>` — one record's spans
+155MB), extracts from the records above it the `<message>` spans of assistant
+records, the async asks (a `tool_use` of `mcp__doperpowers__AskUserQuestion`
+with `async` true and its accepted `tool_result` — the engine writes a
+plugin tool's row only once the call resolves, which for an async ask is at
+once, so the row is there when `Stop` fires) and their deliveries (the row
+whose text carries the delivery head, in whichever form the ask design
+stores it), appends them with `src` `<record-uuid>#<span-index>` for a
+span and the call id for an ask or its answer — one record's spans
 through `log_append_batch`, which takes the locks once, checks `src`
 inside them, and appends the spans together; the position advanced only
 after the batch — and skips any `src` already present, so a Stop that fires twice, a turn
@@ -398,11 +406,14 @@ before a peer frame interrupted it, is not exported.
 Mark extraction is a Python port of the grammar `hooks/mods/to-human.tsx`
 applies for display, not its `TAG` regex alone: tags inside inline code
 and fenced code are literal, nested marks are distinct runs, an unclosed
-mark runs to the end of the text, and `<choice>` lines are lifted only
-where the display parser lifts them. Parity fixtures ported from
-`tests/mods/` pin it: a backticked `<message>example</message>` is not a
-message to the host. `sminos chat --host` prints `message` and
-`need-input` events; it is the human's view of what every session sent them.
+mark runs to the end of the text, and every alias reads as `message`.
+Parity fixtures ported from `tests/mods/` pin it: a backticked
+`<message>example</message>` is not a message to the host. A blocking ask
+— the native `AskUserQuestion`, or the plugin's with `async` false — is not
+an event: the session is `waiting`, which the daemon publishes as its
+state, and the human goes to the session. `sminos chat --host` prints
+`message`, `need-input`, and `answered` events, an open ask marked as
+such; it is the human's view of what every session sent them.
 
 The output style itself does not change. Its first sentence, "The human does
 not watch this session", stays as written: it is what keeps the working
@@ -640,7 +651,10 @@ otherwise.
 3. `a` writes `<message>done with the parser</message>` in a turn, and in
    the same turn `` `<message>not this</message>` `` inside backticks.
    After the turn, `sminos chat --host` prints `a: done with the parser`
-   and nothing for the backticked one.
+   and nothing for the backticked one. `a` then calls
+   `mcp__doperpowers__AskUserQuestion` with `async` true and one question
+   with two options; `chat --host` shows the question with both labels,
+   open; after the human answers, it shows the answer under it.
 4. In `a`: `sminos spawn c "wait for instructions"`. `list` shows `c` with
    `· by a`. `sminos retire a` leaves `c` live in `list`. A third session
    renamed `/rename c` makes `list` show both as `c#<short>`, and `sminos
@@ -777,21 +791,23 @@ fork (environment marker, pid marker, transcript deletion), and the
 Touches `hooks/hooks.json`, `hooks/smns-record.sh` (new), `sminos.py`
 (`cmd_record`, `cmd_charge`, `cmd_derive`, `charge_of`, `extract_marks`),
 tests (fixture transcripts with marks, including a backticked tag, a
-fenced block, a nested `need-input` inside a `message`, an unclosed mark,
-and a peer frame as a user-role record mid-turn; the stub `claude` gains
+fenced block, a nested alias mark inside a `message`, an unclosed mark, a
+peer frame as a user-role record mid-turn, an async ask's `tool_use` and
+`tool_result` with a later delivery row, and a blocking ask; the stub `claude` gains
 `-p --resume --fork-session`, printing a JSON with `result` and
 `session_id`, creating the fork's transcript file, and running the hook
 script with a `SessionStart` and a `Stop` payload the way the harness
-would). Interfaces: produces `charge_of`, `extract_marks`; consumes
-`members`, `log_append`. Decisions: the export position is the uuid and byte offset of the last
+would). Interfaces: produces `charge_of`, `extract_marks`, `extract_asks`;
+consumes `members`, `log_append_batch`. Decisions: the export position is the uuid and byte offset of the last
 exported assistant record, initialised at `SessionStart` to the file's end
 only when absent, kept across `resume`, and, when missing at `Stop`, set
 by the trailing-run policy of §4; export consumes `log_append_batch`,
 never nested single appends; `derive`'s fork runs with a 120-second timeout and a
 failure prints the stderr tail and writes nothing. Does not touch: the
-daemon; the output style. Proves: acceptance 3, 5; tests pin that a
-`<to-human>` span records as `message`, that `need-input` choices are
-lifted, that the backticked and fenced tags record nothing, that a Stop replayed over the same transcript appends nothing, that an export killed after the first of two spans in one record appends
+daemon; the output style. Proves: acceptance 3, 5; tests pin that a `<to-human>` span records as `message`, that an async
+ask records `need-input` with its option labels and its delivery records
+`answered` with the same `src` while a blocking ask records nothing, that
+the backticked and fenced tags record nothing, that a Stop replayed over the same transcript appends nothing, that an export killed after the first of two spans in one record appends
 only the second on retry, that a mark left unexported by a process that
 died is exported once after `SessionStart(resume)` and the next `Stop`, that a first `Stop` with no position followed by a peer
 frame exports the trailing run and nothing earlier, that a user-named
@@ -916,7 +932,8 @@ class Member(NamedTuple):
 def members(project: Project) -> list[Member]          # ignores $SMINOS_HOME/internal/<pid> sessions
 def reconcile(project: Project) -> int                 # joined events appended for unrecorded local sessions
 def charge_of(member: Member, events: list[dict]) -> tuple[str, str]
-def extract_marks(text: str) -> list[dict]             # [{"kind": "message"|"need-input", "text": str, "choices": [str]}], code-aware
+def extract_marks(text: str) -> list[dict]             # [{"kind": "message", "text": str}], code-aware; every alias is a message
+def extract_asks(records: list[dict]) -> list[dict]    # [{"kind": "need-input", "src": call id, "text": [str], "choices": [str]} | {"kind": "answered", "src": call id, "text": str}]
 def tick(project: Project) -> dict                     # {"integrated": bool, "reconciled": int, "published": int, "delivered": int, "pushed": bool}
 ```
 
@@ -1039,8 +1056,17 @@ Dispatch scripts: one `--brief` each.
   Rationale: the blocker was an ordering hole, not a new mechanism; the
   audience-in-the-event choice was the one semantic the reviewer asked
   the spec to make rather than leave, and it is the simplest of the
-  options (no cross-writer time comparison, no initialisation state).
-  Dismissed: none.
+  options (no cross-writer time comparison, no initialisation state).  Dismissed: none.
+  Date/Author: 2026-10-13, the authoring session.
+- Revision: the `need-input` event's source. The `<need-input>` mark was
+  retired in doperpowers 7.148.0 (PR #191) and `<insight>` in 7.149.0, so
+  `<message>` is the one mark and the others its aliases; an async question
+  is now a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async`
+  true (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`). The
+  event keeps its name and fields (`text` the questions, `choices` the
+  option labels) with `src` the call id, and gains a settlement, `answered`,
+  from the delivery row. No decision changed; the source moved under the
+  spec. Noticed by the ask-async session and relayed to this one.
   Date/Author: 2026-10-13, the authoring session.
 
 ## Outcomes & Retrospective
