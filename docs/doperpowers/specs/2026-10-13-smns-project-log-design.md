@@ -132,7 +132,7 @@ Every project known to a machine has `$SMINOS_HOME/projects/<id>/`:
       cursors/<session-uuid>.json       what a reader has read: {"<writer>": <seq>}   (local only)
       cursors/export/<session-uuid>.json  the hook's export position in the transcript (§4)   (local only)      delivered/<session-uuid>.json     per writer, the settled prefix and the pending event (§4)   (local only)
 
-and `$SMINOS_HOME/machine.json` holds this machine's random instance id,
+and `$SMINOS_HOME/daemon/machine.json` holds this machine's random instance id,
 written on first use, and `$SMINOS_HOME/internal/<pid>` marks an internal
 fork's process (§5).
 
@@ -537,7 +537,7 @@ repository on a machine the project's machines reach (the Tailscale host,
 the Hetzner box) avoids any hosted API's limits, and GitHub works too. Each
 machine writes only files named with its own machine name, so integrating
 the remote never conflicts. Two machines with the same host name would:
-`$SMINOS_HOME/machine.json` holds a random instance id, pushed at attach as
+`$SMINOS_HOME/daemon/machine.json` holds a random instance id, pushed at attach as
 `log/machines/<machine>.json`; a daemon that finds its name claimed by
 another instance id refuses to run and says so.
 
@@ -563,8 +563,10 @@ invariant the executor chooses the git commands; `stash` is not among them
 top-level `*.jsonl` of `log/`, so `machines/` is invisible to it.
 
 `sminos daemon run [--interval 5]` loops `sminos daemon tick` over every
-project known locally — the sync duties only for those with a remote, the
-rest for all, so a remote-less project's owed deliveries are retried too —
+project known locally — the sync and publish duties only for those with a
+remote (a local view reads liveness directly, so a published `state` in a
+local project would only grow its log), the rest for all, so a remote-less
+project's owed deliveries are retried too —
 `tick` being one iteration, used by tests;
 `sminos daemon install` writes a launchd agent
 (`~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`, modelled on
@@ -970,6 +972,13 @@ Dispatch scripts: one `--brief` each.
   Evidence: both independent reviewers reproduced it on a scratch bare
   remote and clone — appending a second line to a committed writer file
   made the pull exit 128. The sync invariant (§8) commits first.
+- Observation: `$SMINOS_HOME`'s root `*.json` files are the seat-record
+  namespace, which sminos and the board scripts share, so no other kind
+  of file may live there.
+  Evidence: in an M4 test run, a root `machine.json` produced `sminos:
+  migrated: stamped group on 1 record(s)` and a phantom `fleet` project.
+- Observation: a frame's body is the event's whole text, leading tags
+  included (`@b hello`).
 - Observation: harness registration races the `SessionStart` hooks, so a
   hook can run before `~/.claude/sessions/<pid>.json` exists.
   Evidence: in bundle 2.1.292 (`cli.pretty.js` near line 16028), the
@@ -1423,6 +1432,63 @@ Dispatch scripts: one `--brief` each.
   `daemon.log`, and redone by a later call. Callers that pass no deadline
   block as before.
   Date/Author: 2026-10-14, the controller, from the M3 task review.
+- Decision: M4's gaps, resolved by its executor (e4204b38).
+  - The daemon's machine-local files are under `$SMINOS_HOME/daemon/`:
+    `machine.json`, `state.json`, `run.lock`, `nudge`. §1 and §8 are
+    revised. A root `machine.json` was read as a seat record, because
+    the root's `*.json` files are the seat records sminos and the board
+    scripts glob. `daemon.log` stays at the root.
+  - The mirror and the daemon are a sibling module, `sminos_daemon.py`
+    (`sync_in`/`sync_out`, `deliver_owed`, `publish_state`). `tick`
+    stays in `sminos.py` as a wrapper. Its result dict also carries `to`
+    and `error`.
+  - Publishing (duty 3) runs only for projects with a remote (§8
+    revised). A member's first state is published at once; after that, a
+    word must hold for two ticks before it is published, which filters
+    flips but does not hold back the first word.
+  - A `say` or `send` to a remote member touches `daemon/nudge`, and
+    `run` ticks at once. Without the nudge, the worst case for acceptance
+    6's two-second bound is two intervals plus git (2.3 s measured);
+    with it, 0.8–1.0 s. A file's mtime was chosen over a signal, because
+    a stale pid could signal an unrelated process.
+  - `project attach` also pushes, so the machine claim crosses at attach.
+    A tick pushes only if it integrated, so an unreachable remote costs
+    one 30 s bound, not two. Integration merges and never rebases. Git
+    runs with `-c commit.gpgsign=false` in its own process group, and a
+    timeout kills the group, so a hung ssh child cannot outlive the bound.
+  - The tick's views skip the transcript-title fallback.
+  - `run` stops on SIGTERM after the tick in hand; the per-project
+    handler had swallowed an exit raised mid-tick. The daemon drops
+    `CLAUDE_CODE_SESSION_ID` from its environment. `daemon status`
+    probes the run lock with a shared lock.
+  - `daemon install` writes the plist and prints the `launchctl` lines
+    without running them. The plist carries `SMINOS_HOME`, `PATH`,
+    `DAEMON_HOST`, and the gateway route, with `KeepAlive` and a
+    60-second `ThrottleInterval`. It is modelled on
+    `skills/issue-tracker/references/sweep-setup.md`, because the
+    `worker-host` §8 names no longer exists in the tree.
+  - Test knobs: `SMINOS_GIT_TIMEOUT`, `SMINOS_DERIVE_EVERY`,
+    `SMINOS_TRANSCRIPT=1` (prints acceptance 6 as a transcript), and
+    the stub's `STUB_COUNTER` and `STUB_FORK_SLEEP`.
+  Re-pins: M1's concurrent-delivery test now runs a real `daemon tick`
+  beside the sender's fast path. The in-process stand-in is kept, because
+  only it fails inside the race itself. M2's stays-retired test now runs
+  `daemon tick` between its `list` calls. M2's cross-home `status` test
+  now runs through the real mirror, and its file-copy stand-in is
+  removed.
+  Date/Author: 2026-10-14, the M4 executor, folded by the controller.
+- Decision: the launchd plist runs a stable path. When the running CLI
+  is under the plugin cache, `daemon install` points the plist at the
+  marketplace clone (`installLocation` in
+  `~/.claude/plugins/known_marketplaces.json`, auto-updated). A dev
+  checkout keeps its own path. `daemon run` exits 0 after a tick once
+  its own scripts' mtimes change, so `KeepAlive` restarts it on the new
+  code. The plist holds the gateway values in plaintext at mode 0600.
+  That is accepted: it is a local operator file, like the harness's own
+  settings.
+  Rationale: the cache path is versioned, so a plugin update would leave
+  the daemon running the old code, or a path that no longer exists.
+  Date/Author: 2026-10-14, the controller.
 
 ## Outcomes & Retrospective
 
