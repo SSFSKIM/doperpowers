@@ -3831,19 +3831,16 @@ def import_chats(lock_until=None):
 
 
 def render_preamble(project, alias, by=""):
-    """The spawn preamble every spawn renders (§6). {{PROJECT}}, {{ALIAS}},
-    {{BY}} (the spawner, or "the operator"), and {{SMINOS_CLI}} are filled;
-    {{GROUP}} and the root form of the family sentence keep the earlier text
-    rendering until it is rewritten for the project family."""
+    """The spawn preamble every spawn renders (§6), with {{PROJECT}},
+    {{ALIAS}}, {{BY}} (the spawner, or "the operator"), and {{SMINOS_CLI}}
+    filled."""
     try:
         with open(PREAMBLE_PATH) as f:
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
-    t = t.replace(', a member of the\nfamily "{{PARENT}}" hosts.', ', the root of your\nown family.', 1)
-    return (t.replace("{{PROJECT}}", project).replace("{{GROUP}}", project).replace("{{ALIAS}}", alias)
-             .replace("{{BY}}", by or "the operator").replace("{{PARENT}}", "none")
-             .replace("{{SMINOS_CLI}}", LAUNCHER))
+    return (t.replace("{{PROJECT}}", project).replace("{{ALIAS}}", alias)
+             .replace("{{BY}}", by or "the operator").replace("{{SMINOS_CLI}}", LAUNCHER))
 
 
 def compose_task(task, brief, preamble):
