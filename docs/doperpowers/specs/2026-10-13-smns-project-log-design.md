@@ -42,7 +42,7 @@ machines.
 - [x] M3 — Messages to the host and the in-charge line (2026-10-14, reviewed clean after three fix waves and two rulings; 09775a35..2fc95340)
 - [x] M4 — The mirror and the daemon (2026-10-14, reviewed clean after one fix wave and one ruling; e4204b38..e7e55aef)
 - [x] M5 — The skill and the preamble, as behavior (2026-10-14, reviewed clean after one fix wave; 7009154f..619308dc)
-- [ ] M6 — Docs, acceptance, version
+- [x] M6 — Docs, acceptance, version (2026-10-14, reviewed clean; live acceptance found and fixed F1–F3; c98ba037..9b8fc8b2)
 
 ## Terms
 
@@ -1650,4 +1650,71 @@ Dispatch scripts: one `--brief` each.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-10-14, at the end of execution and before the branch review.
+
+**What shipped.** Everything §1–§8 promise, as revised by the Decision
+Log, is built and passes:
+- a project identified by a committed `.smns`;
+- the per-writer append-only log, with in-order delivery for every
+  sending path;
+- the host-less family, with membership derived and reconciled on sight
+  and ending with the process;
+- the hook that turns `<message>` marks and async asks into host events,
+  bounded so it never holds a turn;
+- the in-charge line, with `charge` and a `derive` that leaves no trace;
+- the git mirror and a per-machine daemon, with a stable launchd install;
+- the skill and the preamble, rewritten and evaluated.
+
+The dispatch scripts changed only by `--brief`. The sminos suite went
+from 860 assertions to 1485. Both dispatch suites gained a contract test
+that runs the real CLI. Version 7.153.0.
+
+**Against the purpose.** The acceptance was run live in real interactive
+sessions, not only on the stub. Steps 1–5 passed in tmux-driven
+sessions that loaded this branch. The two-home daemon delivered 40 timed
+messages, the slowest in 1.53 s, each exactly once (step 6 on the stub
+harness, since a temporary HOME cannot authenticate a real `claude`).
+The live run was the first time a session read the new preamble, and it
+found three defects the stub could not show: the Stop/flush race (F1),
+a retire that reconciliation undid (F2), and a seat that did not
+inherit `SMINOS_HOME` (F3). All three are fixed and pinned by tests.
+The fixes were not re-run live, so a second live pass is the remaining
+confirmation.
+
+**What the reviews moved.** Every milestone needed at least one fix
+wave. The recurring theme was a contract that held in the common path
+and broke at an edge:
+- delivery order across the direct verb and the fan-out;
+- the hook's promise never to block a turn, which took three waves to
+  reach every lock it waits on;
+- name resolution that silently preferred a seat;
+- two-tick persistence that forgot its candidate word.
+
+Only the controller's reviewers saw these; the design's three rounds of
+spec review could not have. The design survived intact: no owner ruling
+was reopened. The changes were revisions the design's intent settled,
+each logged.
+
+**Lessons.**
+- A dev run without an isolated `SMINOS_HOME` rewrote the operator's
+  real registry in M1. The same failure reappeared at the spawn boundary
+  in M6 (F3). A tool whose first run migrates state should make its
+  home explicit at every process boundary it creates, not only at its
+  own entry.
+- Probing the real harness for a few seconds settled questions a
+  bundle read left open: whether `-p` runs register (they do, as
+  `interactive`), whether `--session-id` pins a fork, and whether
+  `--tools` swallows a prompt.
+- M5's eval showed that half the target behaviors already held on the
+  old text, and that the one new rule the preamble needed was not in
+  §6's list. It came from a failure the eval exposed (scenario d).
+
+**Left behind.**
+- The async questions of a MAWS session (§9). MAWS sessions are the ones
+  most affected.
+- A seat whose cwd moved after it joined is listed under both projects
+  by a `list` run from a directory in no project.
+- Seats spawned before F3 carry no `SMINOS_HOME` in their settings, and a
+  resume cannot add it.
+- The `~/.claude.json` trust entry that the acceptance run's trust
+  dialog added for `/private/tmp/smns-acc/R` is the human's to remove.
