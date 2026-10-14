@@ -2,8 +2,8 @@
 # A stub harness (`claude`) for the dispatch suites' contract tests, which run
 # the real sminos CLI under it. Put this directory first on PATH and point
 # $CT_HARNESS at a scratch directory: `--bg` launches answer with the harness
-# banner and leave a row `agents --json` lists; everything else succeeds
-# quietly.
+# banner, leave a row `agents --json` lists, and log their argv to
+# $CT_HARNESS/launches.log; everything else succeeds quietly.
 set -euo pipefail
 case "${1:-}" in
   agents) python3 -c 'import glob, json, os, sys
@@ -13,6 +13,7 @@ print(json.dumps([json.load(open(p)) for p in sorted(glob.glob(os.path.join(sys.
   *) exit 0 ;;
 esac
 mkdir -p "$CT_HARNESS/agents"
+printf '%s\n' "$*" >> "$CT_HARNESS/launches.log"
 name=""; wt=""; prev=""
 for a in "$@"; do
   case "$prev" in -n) name="$a" ;; --worktree) wt="$a" ;; esac

@@ -1018,6 +1018,15 @@ else
   fail "the worker is a member of its repository's project, in charge of its ticket, spawned by the operator"
   echo "    got: $ct_row"
 fi
+# `claude --bg` gives the worker its supervisor's environment, so the registry
+# the dispatcher runs under reaches the worker only through its launch settings.
+ct_home="$(sed -n 's/.*--settings \([^ ]*\).*/\1/p' "$CT/harness/launches.log" 2>/dev/null | tail -1 \
+  | xargs -I{} python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["env"]["SMINOS_HOME"])' {} 2>/dev/null || true)"
+if [ "$ct_home" = "$CT/registry" ]; then
+  pass "the worker launches with the dispatcher's SMINOS_HOME in its settings"
+else
+  fail "the worker launches with the dispatcher's SMINOS_HOME in its settings"; echo "    got: '$ct_home'"
+fi
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

@@ -107,6 +107,8 @@ on this machine.
     sminos attach <seat>              # attach to the seat's session
     sminos fill <seat> "…" [--resume] # fresh session, or continue the saved one
     sminos retire <member> [--purge]  # stop and record retired; purge removes a seat's record
+                                      # (a session its human opened runs on in its terminal,
+                                      # retired until it is resumed as a new process)
     sminos remove <seat>              # stop and delete the record
     sminos sync [seat] [--all]        # reconcile the recorded status with the harness
     sminos chart [project] [--all]    # the members as boxes, grouped by project
@@ -197,7 +199,10 @@ something.
 `DAEMON_CLAUDE_EFFORT`) select a gateway route and are recorded so
 `fill --resume` and `send` restore them; a plain-route spawn scrubs the
 gateway's transport variables from the child so a seat cannot start on
-one provider and continue on another.
+one provider and continue on another. A seat spawned while `SMINOS_HOME`
+is set is handed it through its launch settings (merged with `--settings`
+into one file under `$SMINOS_HOME/settings/`): `claude --bg` gives a seat
+the harness supervisor's environment, not its spawner's.
 
 **Permissions.** Seats run `--permission-mode auto`. Never add
 `--dangerously-skip-permissions` to dodge overnight prompts — a gated

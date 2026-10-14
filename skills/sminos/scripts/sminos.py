@@ -1095,20 +1095,66 @@ def joinable(seat, peer):
             and not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT))
 
 
+def _ts_epoch(ts):
+    """A log `ts` (UTC, milliseconds) as epoch seconds, or None."""
+    s = str(ts or "")
+    try:
+        whole = calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+    frac = re.match(r"\.(\d+)", s[19:])
+    return whole + (float("0." + frac.group(1)) if frac else 0.0)
+
+
+def process_started(rec):
+    """When a harness record's process started, in epoch seconds: its
+    `startedAt` (ms), else its `procStart` read as UTC (same_process); None
+    when neither is there."""
+    started = rec.get("startedAt")
+    if isinstance(started, (int, float)) and not isinstance(started, bool) and started > 0:
+        return started / 1000.0
+    parsed = _parse_lstart(rec.get("procStart"))
+    return calendar.timegm(parsed) if parsed else None
+
+
+def retirement_holds(events, peer):
+    """Whether a seat-less session's `retire` still holds against the process
+    its harness record shows. A retirement holds for the life of the process
+    that ran when it was recorded: an interactive session has nothing the
+    harness can stop, so its process runs on in its human's terminal, and
+    re-joining it on sight would undo the retire at the next reading verb.
+    The record shows a different process when its pid differs from the one
+    the retirement recorded, or when it started after the retirement (a
+    resume opens a new process, so a resumed session re-joins, §2). A
+    retirement for any other reason (`ended`: its process was not seen) does
+    not hold against a running process."""
+    last = next((e for e in reversed(events) if e["kind"] in MEMBERSHIP), None)
+    if not last or last["kind"] != "retired" or last.get("reason") != "retire":
+        return False
+    peer = peer or {}
+    if last.get("pid") not in (None, "") and str(last["pid"]) != str(peer.get("pid")):
+        return False
+    started, retired = process_started(peer), _ts_epoch(last.get("ts"))
+    return started is None or retired is None or started <= retired
+
+
 def join_on_sight(project, sid, seat, peer, running):
     """joined for a session seen on this machine, when it is joinable and
     the log does not already hold it as a member: a running session whose
     latest membership is absent or retired (a live process is evidence of
     activation), a seat that is not running only when it has no membership
-    event at all. Checked again under the session file's lock, the seat
-    record re-read there, so a concurrent retire cannot be undone. Shared by
-    reconciliation and the hook (§2, §4)."""
+    event at all; a seat-less session retired by `retire` only once a new
+    process runs it (retirement_holds). Checked again under the session
+    file's lock, the seat record re-read there, so a concurrent retire cannot
+    be undone. Shared by reconciliation and the hook (§2, §4)."""
     if not joinable(seat, peer):
         return []
 
     def guard(evs):
         last = latest_membership(evs)
         if (last == "joined") if running else (last is not None):
+            return False
+        if not seat and retirement_holds(evs, peer):
             return False
         fresh = reload_seat(seat["seat_id"]) if seat else None
         return not (seat and (fresh is None or fresh["status"] == "retired"))
@@ -2036,6 +2082,78 @@ def position_init(project, session, tpath):
         write_json(path, pos)
 
 
+def _records_past(project, session, tpath):
+    """(records, start, held): the transcript's complete main-chain records
+    past the session's export position, as (offset, record), the offset they
+    start at, and whether the position held (else the trailing run, §4);
+    None when the transcript cannot be opened."""
+    pos = _position_load(project, session)
+    try:
+        f = open(tpath, "rb")
+    except OSError:
+        return None
+    with f:
+        end = _complete_end(f)
+        start = _resume_at(f, pos, end) if pos else None
+        held = start is not None
+        if not held:
+            start = _trailing_run(f, end)
+        f.seek(start)
+        records, at = [], start
+        while at < end:
+            line = f.readline()
+            r = _record(line)
+            if r is not None and not r.get("isSidechain"):
+                records.append((at, r))
+            at += len(line)
+    return records, start, held
+
+
+# The harness queues transcript writes and flushes them every 100 ms, and
+# starts the Stop hooks without a flush first (bundle 2.1.292, the write
+# queue's FLUSH_INTERVAL_MS and the Stop dispatch): a Stop can read the
+# transcript before the turn's last records are on it. Seen live (M6
+# acceptance): one mark in 24 exported a turn late.
+FLUSH_WAIT = 2.0
+FLUSH_POLL = 0.1
+
+
+def _holds_last_message(records, text):
+    """Whether an assistant message among the records reads `text`: its text
+    blocks joined by newlines, as the harness writes a Stop payload's
+    `last_assistant_message`. One message's blocks may span several records
+    (one per block), joined by their message id."""
+    texts, order = {}, []
+    for _, r in records:
+        if r.get("type") != "assistant":
+            continue
+        message = r.get("message") if isinstance(r.get("message"), dict) else {}
+        key = message.get("id") or r.get("uuid")
+        if key not in texts:
+            texts[key] = []
+            order.append(key)
+        texts[key] += [str(b.get("text") or "") for b in _blocks(r, "text")]
+    return any("\n".join(texts[k]).strip() == text for k in order)
+
+
+def await_flush(project, session, tpath, last_message, until):
+    """Before a Stop's export: wait, polling, until the turn's last assistant
+    message (the payload's `last_assistant_message`) is on the transcript past
+    the export position, or until `until` (epoch seconds). True when it is
+    there; at the deadline the export takes what is there, and the next Stop
+    the rest."""
+    text = str(last_message or "").strip()
+    if not text:
+        return True
+    while True:
+        past = _records_past(project, session, tpath)
+        if past is not None and _holds_last_message(past[0], text):
+            return True
+        if time.time() + FLUSH_POLL > until:
+            return False
+        time.sleep(FLUSH_POLL)
+
+
 def export_host(project, session, tpath, alias):
     """Append what the transcript holds for the host past the session's export
     position, as one batch, then advance the position to the last assistant
@@ -2044,25 +2162,10 @@ def export_host(project, session, tpath, alias):
     trailing run of assistant records is exported (§4). Exports of a session
     are serialised by its export lock, taken before the log's locks."""
     with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
-        pos = _position_load(project, session)
-        try:
-            f = open(tpath, "rb")
-        except OSError:
+        past = _records_past(project, session, tpath)
+        if past is None:
             return 0
-        with f:
-            end = _complete_end(f)
-            start = _resume_at(f, pos, end) if pos else None
-            held = start is not None
-            if not held:
-                start = _trailing_run(f, end)
-            f.seek(start)
-            records, at = [], start
-            while at < end:
-                line = f.readline()
-                r = _record(line)
-                if r is not None and not r.get("isSidechain"):
-                    records.append((at, r))
-                at += len(line)
+        records, start, held = past
         events = host_events([r for _, r in records], alias)
         if events:
             log_append_batch(project, writer_id(session), events)
@@ -2092,7 +2195,7 @@ def _own_events(project, session):
         return []
 
 
-def record_session(project, session, tpath, event):
+def record_session(project, session, tpath, event, last_message=""):
     """The hook's work for one session (§4). Membership on sight, as
     reconciliation decides it: a seat whose record is not retired, or a
     session the harness records as `interactive` or `bg`, and never an
@@ -2101,7 +2204,8 @@ def record_session(project, session, tpath, event):
     at its start) and exports. A session the harness has not registered yet
     at its start is not joined on no evidence, but its position is set, so
     its first turn counts whole at its Stop. A session that is not a member
-    records nothing."""
+    records nothing. At Stop, the export first waits a little for the turn's
+    last message to reach the transcript (await_flush)."""
     seat = next((s for s in seats() if s["current"] == session), None)
     peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
     if peer is not None and str(peer.get("pid")) in internal_pids():
@@ -2125,12 +2229,17 @@ def record_session(project, session, tpath, event):
     if not alias:
         named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
         alias = str(named[-1]["alias"]) if named else session[:8]
+    until = time.time() + FLUSH_WAIT
+    if _RECORD_DEADLINE is not None:
+        until = min(until, _RECORD_DEADLINE - 0.5)
+    await_flush(project, session, tpath, last_message, until)
     export_host(project, session, tpath, alias)
 
 
 # The hook is bounded in time (§4: it never blocks a turn): its waits are,
 # never a migration step. See run_record.
 RECORD_TIMEOUT = 5
+_RECORD_DEADLINE = None   # run_record's, for the flush wait to end inside it
 
 
 class RecordTimeout(BaseException):
@@ -2169,8 +2278,9 @@ def run_record():
     keeps waiting on the same locks."""
     if os.environ.get("SMNS_INTERNAL"):
         return
+    global _RECORD_DEADLINE
     seconds = float(os.environ.get("SMNS_RECORD_TIMEOUT") or RECORD_TIMEOUT)
-    deadline = time.time() + seconds
+    deadline = _RECORD_DEADLINE = time.time() + seconds
     try:
         migrate(lock_until=deadline)
     except LockBusy:
@@ -2211,7 +2321,7 @@ def cmd_record(_a):
     try:
         project = resolve_project(cwd)
         if project is not None:
-            record_session(project, session, tpath, event)
+            record_session(project, session, tpath, event, str(payload.get("last_assistant_message") or ""))
     except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
         try:
             daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
@@ -3871,6 +3981,54 @@ def claude_args(alias, model, settings, effort, worktree=""):
     return args
 
 
+def launch_settings(settings):
+    """The settings a fresh seat launches with: the caller's, plus, when
+    SMINOS_HOME (or the legacy DAEMON_HOME) is set, `env.SMINOS_HOME` naming
+    this registry.
+
+    `claude --bg` hands the launch to the harness's supervisor, which claims
+    a pre-started process: the seat's environment is the supervisor's, not
+    this process's (observed live, harness 2.1.299: a seat spawned with
+    SMINOS_HOME set printed none). A seat whose sminos calls and hook ran
+    against the default registry would talk to a different family, and under
+    a test registry would migrate the human's real one. A seat takes one
+    settings source, so a caller's `--settings` (a file or a JSON object) is
+    merged into one file, written under this registry's `settings/` and
+    named by its content: a resume keeps the launch's options, this path
+    among them. Only the argv changes: the route a seat runs on is still
+    decided by the caller's own settings (launch_env)."""
+    home = os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
+    if not home:
+        return settings
+    merged = {}
+    if settings:
+        text = settings
+        if not settings.lstrip().startswith("{"):
+            try:
+                with open(os.path.expanduser(settings)) as f:
+                    text = f.read()
+            except OSError as e:
+                die("--settings %s: %s" % (settings, e.strerror or e), EXIT_USAGE)
+        try:
+            merged = json.loads(text)
+        except ValueError:
+            merged = None
+        if not isinstance(merged, dict):
+            die("--settings %s: not a JSON object" % settings, EXIT_USAGE)
+    env = merged.get("env") if isinstance(merged.get("env"), dict) else {}
+    merged["env"] = {**env, "SMINOS_HOME": root()}
+    body = json.dumps(merged, indent=2, sort_keys=True) + "\n"
+    path = os.path.join(root(), "settings", hashlib.sha256(body.encode()).hexdigest()[:16] + ".json")
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    return path
+
+
 def env_default(value, env_name):
     return value if value is not None else os.environ.get(env_name, "")
 
@@ -3962,7 +4120,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     by = caller_alias()
     preamble = render_preamble(project.name, alias, by)
     task_text = compose_task(task, brief or "", preamble)
-    short, banner = run_claude_bg(claude_args(alias, model, settings, effort, worktree) + [task_text], cwd, settings)
+    short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree) + [task_text],
+                                  cwd, settings)
     if not short:
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
@@ -5016,14 +5175,21 @@ def cmd_retire(a):
     if a.purge:
         die("%s holds no seat: there is no record to purge" % m.alias)
     # A session sminos did not spawn: its harness row, if the harness lists
-    # it, is what stops it. It stays retired unless its process is seen live
-    # again (resumed by its human), which re-joins it.
+    # it with an id (a background session), is what stops it. An interactive
+    # session has none, and runs on in its human's terminal. Either way the
+    # retirement names the process it saw, and holds for that process's life
+    # (retirement_holds): only a new process — a resume — re-joins it.
     agents_refresh()
     row = agent_row(session_id=m.session)
-    if row and row.get("id"):
-        claude_stop(row["id"])
-    lifecycle(project, m.session, "retired", by=caller_alias(), reason="retire")
-    print("retired %s (session %s; it holds no seat, so nothing is kept)" % (m.alias, m.short))
+    stopped = bool(row and row.get("id")) and claude_stop(row["id"])
+    proc = session_running(m.session)
+    lifecycle(project, m.session, "retired", by=caller_alias(), reason="retire",
+              **({"pid": proc.get("pid")} if proc else {}))
+    if proc and not stopped:
+        print("retired %s (session %s): %s's session keeps running in its terminal; it re-joins when resumed as a "
+              "new process" % (m.alias, m.short, m.alias))
+    else:
+        print("retired %s (session %s; it holds no seat, so nothing is kept)" % (m.alias, m.short))
 
 
 def _retire_one(s0, purge):

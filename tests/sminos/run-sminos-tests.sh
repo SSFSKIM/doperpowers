@@ -690,12 +690,63 @@ assert_rc 0 "$RC" "gateway spawn exits 0"
 G_UUID="$(banner_uuid "$OUT")"
 assert_equals "$(field "$G_UUID" settings)" "$GW" "DAEMON_CLAUDE_SETTINGS persisted as settings"
 assert_equals "$(field "$G_UUID" effort)" "high" "DAEMON_CLAUDE_EFFORT persisted as effort"
-assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--settings $GW --effort high" "gateway flags reach the launch"
+launch_settings_of() { # the --settings value of the last --bg launch
+  grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1 | sed -n 's/.*--settings \([^ ]*\).*/\1/p'
+}
+settings_json() { # file key → that key of the settings file, as JSON
+  python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1])).get(sys.argv[2]), sort_keys=True))' "$1" "$2"
+}
+GW_LAUNCH="$(launch_settings_of)"
+assert_contains "$GW_LAUNCH" "$SMINOS_HOME/settings/" "a seat launched under a set SMINOS_HOME gets settings written under it"
+assert_equals "$(settings_json "$GW_LAUNCH" env)" \
+  "{\"ANTHROPIC_AUTH_TOKEN\": \"tok\", \"ANTHROPIC_BASE_URL\": \"http://gw\", \"CLAUDE_CODE_SUBAGENT_MODEL\": \"m\", \"PATH\": \"/nope\", \"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
+  "the caller's settings merged with the spawner's SMINOS_HOME"
+assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--settings $GW_LAUNCH --effort high" "gateway flags reach the launch"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "base=http://gw;token=fixture-token" "gateway route keeps the transport env"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "runner=;" "RUNNER_TRACKING_ID is always stripped"
 run "$SMINOS" spawn plain2 "PLAIN-2"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "base=;token=;sub=;keep=keep;runner=;path=set" "plain route scrubs the gateway env keys, keeps PATH and unrelated vars"
+PLAIN_LAUNCH="$(launch_settings_of)"
+assert_equals "$(settings_json "$PLAIN_LAUNCH" env)" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
+  "a plain-route seat's settings carry only the spawner's SMINOS_HOME, the route still the caller's"
+assert_equals "$(field "$(banner_uuid "$OUT")" settings)" "" "and its record keeps the plain route"
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR RUNNER_TRACKING_ID
+# A caller's --settings given inline (a JSON object) is merged the same way.
+run "$SMINOS" spawn inlineset "IN-1" --settings '{"model": "x", "env": {"SMINOS_HOME": "/elsewhere"}}'
+assert_rc 0 "$RC" "spawn with inline JSON settings exits 0"
+assert_equals "$(settings_json "$(launch_settings_of)" model)" '"x"' "an inline settings object is kept"
+assert_equals "$(settings_json "$(launch_settings_of)" env)" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" "and its SMINOS_HOME is the spawner's"
+"$SMINOS" remove work/inlineset >/dev/null
+run "$SMINOS" spawn badset "B" --settings "$TEST_ROOT/no-such-settings.json"
+assert_rc 2 "$RC" "a --settings file that cannot be read is a usage error"
+assert_contains "$OUT" "no-such-settings.json" "naming it"
+# `claude --bg` gives a seat its supervisor's environment, not its spawner's:
+# what the seat sees of SMINOS_HOME is what its settings carry. A seat
+# spawned under a non-default registry, its hook and a CLI call run in that
+# environment, writes into that registry and nowhere else.
+ISO_HOME="$TEST_ROOT/iso-home"; ISO_REG="$TEST_ROOT/iso-registry"; ISO_REPO="$TEST_ROOT/iso-repo"
+mkdir -p "$ISO_HOME/.claude/sessions" "$ISO_REG" "$ISO_REPO"; chmod 700 "$ISO_REG"
+git -c init.defaultBranch=main init -q "$ISO_REPO"
+SUITE_REG_BEFORE="$(find "$SMINOS_HOME" -type f ! -name '*.lock' | sort)"
+run env HOME="$ISO_HOME" SMINOS_HOME="$ISO_REG" "$SMINOS" spawn isoseat "wait" --cwd "$ISO_REPO"
+assert_rc 0 "$RC" "a seat spawns under a non-default registry"
+ISO_U="$(banner_uuid "$OUT")"
+ISO_SET="$(launch_settings_of)"
+SEAT_REG="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["env"]["SMINOS_HOME"])' "$ISO_SET" 2>/dev/null || true)"
+assert_equals "$SEAT_REG" "$ISO_REG" "its launch settings name the spawner's registry"
+ISO_TX="$ISO_HOME/.claude/projects/iso/$ISO_U.jsonl"
+mkdir -p "$(dirname "$ISO_TX")"
+printf '%s\n' '{"type":"user","uuid":"iso00001","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"go"}}' \
+  '{"type":"assistant","uuid":"iso00002","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"<message>from the isolated seat</message>"}]}}' > "$ISO_TX"
+seat_env() { env -u SMINOS_HOME -u DAEMON_HOME HOME="$ISO_HOME" SMINOS_HOME="$SEAT_REG" CLAUDE_CODE_SESSION_ID="$ISO_U" "$@"; }
+printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"Stop"}' "$ISO_U" "$ISO_TX" "$ISO_REPO" \
+  | seat_env CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$REPO_ROOT/hooks/smns-record.sh"
+(cd "$ISO_REPO" && seat_env "$SMINOS" status isoseat "reading the brief" > /dev/null 2>&1) || true
+assert_contains "$(cat "$ISO_REG"/projects/*/log/*.jsonl 2>/dev/null)" "from the isolated seat" "the seat's hook records into the spawner's registry"
+assert_contains "$(cat "$ISO_REG"/projects/*/log/*.jsonl 2>/dev/null)" "reading the brief" "and so does its CLI"
+assert_file_absent "$ISO_HOME/.claude/sminos" "the default registry under the seat's HOME is never created"
+SUITE_REG_AFTER="$(find "$SMINOS_HOME" -type f ! -name '*.lock' | sort)"
+assert_equals "$SUITE_REG_AFTER" "$SUITE_REG_BEFORE" "and no other registry gains a file"
 
 run "$SMINOS" spawn wtworker "WT-1" --worktree "feat x"
 assert_rc 0 "$RC" "worktree spawn exits 0"
@@ -3269,6 +3320,46 @@ assert_rc 0 "$RC" "#short picks one"
 assert_contains "$(inbox pc2)" "only you" "and delivers to a seat-less member over its socket"
 rm -f "$HOME/.claude/sessions/pf-pc2.json"
 
+# A session its human opened has nothing the harness can stop (`claude
+# agents` gives it no id): its retirement holds for the life of the process
+# that ran when it was recorded, and a new process (a resume) re-joins it.
+IT=1f00000a-0000-4000-8000-00000000002a
+start_inbox it
+it_record() { # pid startedAt-ms — the harness record of the session's process
+  printf '{"pid":%s,"sessionId":"%s","name":"it","nameSource":"user","kind":"interactive","startedAt":%s,"status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$1" "$IT" "$2" "$R" "$TEST_ROOT/in-it.sock" > "$HOME/.claude/sessions/pf-it.json"
+}
+ms_ago() { python3 -c 'import sys, time; print(int((time.time() - float(sys.argv[1])) * 1000))' "$1"; }
+it_record "$SOCK_PID" "$(ms_ago 120)"
+run "$SMINOS" list
+assert_equals "$(events_of "$IT")" "joined " "an interactive session joins on sight"
+run "$SMINOS" retire it
+assert_rc 0 "$RC" "retire takes an interactive member"
+assert_contains "$OUT" "it's session keeps running in its terminal; it re-joins when resumed as a new process" \
+  "saying its session keeps running and when it comes back"
+assert_contains "$(tail -1 "$PFLOG/testhost.$IT.jsonl")" "\"reason\": \"retire\", \"pid\": $SOCK_PID" "the retirement names the process it saw"
+run "$SMINOS" list
+run "$SMINOS" daemon tick
+run "$SMINOS" list
+assert_equals "$(events_of "$IT")" "joined retired:retire " "a retired live interactive session stays retired across lists and ticks"
+assert_not_contains "$OUT" "  it " "and is not listed"
+tx_it="$HOME/.claude/projects/pl-proj/$IT.jsonl"
+printf '{"type":"assistant","uuid":"it000001","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"<message>still here</message>"}]}}\n' > "$tx_it"
+hook_run Stop "$IT" "$R" "$tx_it"
+assert_equals "$(events_of "$IT")" "joined retired:retire " "nor does its Stop hook re-join it"
+start_inbox it-next
+NEWPID="${EXTRA_PIDS[${#EXTRA_PIDS[@]}-1]}"
+it_record "$NEWPID" "$(ms_ago 0)"
+run "$SMINOS" list
+assert_equals "$(events_of "$IT")" "joined retired:retire joined " "the same session under a new process re-joins"
+assert_contains "$OUT" "  it " "and lists again"
+run "$SMINOS" retire it
+it_record "$NEWPID" "$(ms_ago -1)"
+run "$SMINOS" list
+assert_equals "$(events_of "$IT")" "joined retired:retire joined retired:retire joined " "so does a process with the same pid that started after the retirement"
+rm -f "$HOME/.claude/sessions/pf-it.json" "$tx_it"
+run "$SMINOS" list
+
 # Occupancy: a fresh fill displaces; a resume of a retired seat re-joins.
 run "$SMINOS" retire pc
 assert_rc 0 "$RC" "retire a seat"
@@ -3618,6 +3709,9 @@ elif kind == "deliver-prompt":
            "The doperpowers plugin sent a message:\n" + HEAD % (args[1], args[2]) + "\n\nThis is how Claude Code "
            "surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. "
            "Address the message above."}}
+elif kind == "asst-part":   # uuid message-id thinking|text text: one block of a message the harness writes per block
+    block = {"type": "thinking", "thinking": args[3]} if args[2] == "thinking" else {"type": "text", "text": args[3]}
+    rec = {"type": "assistant", "message": {"id": args[1], "role": "assistant", "content": [block]}}
 elif kind == "title":
     rec, base = {"type": "ai-title", "aiTitle": args[0]}, {}
 elif kind == "sidechain":
@@ -3911,6 +4005,46 @@ run "$SMINOS" chat hostdemo --host
 assert_contains "$OUT" 'hb answered (call toolu_orphan): Your questions have been answered: "Old?"="Yes".' "an answer with no question in the log is shown on its own"
 run "$SMINOS" chat hostdemo --host --kind message
 assert_rc 2 "$RC" "chat --host takes no --kind"
+# The harness flushes its transcript every 100 ms and starts the Stop hooks
+# without a flush: the turn's last record can land after the hook started.
+# The Stop payload's last_assistant_message is what the hook waits for.
+hook_stop_last() { # session cwd transcript last-message
+  python3 -c 'import json, sys
+print(json.dumps({"session_id": sys.argv[1], "cwd": sys.argv[2], "transcript_path": sys.argv[3],
+                  "hook_event_name": "Stop", "last_assistant_message": sys.argv[4]}))' "$1" "$2" "$3" "$4" \
+    | CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$HOOK" > /dev/null 2>&1
+}
+tx "$TB" prompt b2000001 "one more"
+hook_stop_last "$HB" "$R3" "$TB" "<message>flushed late</message>" & LATE=$!
+sleep 0.4
+tx "$TB" asst b2000002 '<message>flushed late</message>'
+wait "$LATE"
+assert_equals "$(grep -c 'flushed late' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "a Stop whose last message lands after the hook started waits for it and exports it"
+# A message the harness writes as one record per block (thinking, then text)
+# is found by its text blocks joined, as the payload carries it.
+tx "$TB" prompt b2000003 "and another"
+hook_stop_last "$HB" "$R3" "$TB" $'<message>two blocks</message>\nsecond paragraph' & LATE=$!
+sleep 0.3
+tx "$TB" asst-part b2000004 msg_two thinking "considering"
+tx "$TB" asst-part b2000005 msg_two text "<message>two blocks</message>"
+sleep 0.3
+tx "$TB" asst-part b2000006 msg_two text "second paragraph"
+wait "$LATE"
+assert_equals "$(grep -c '"text": "two blocks"' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "a message split into one record per block is found by its joined text"
+# At the deadline the export takes what is there; the next Stop the rest.
+tx "$TB" prompt b2000007 "last"
+tx "$TB" asst b2000008 '<message>on disk in time</message>'
+T0="$(python3 -c 'import time; print(time.time())')"
+hook_stop_last "$HB" "$R3" "$TB" "<message>still in the queue</message>"
+TOOK="$(python3 -c 'import sys, time; print("%.1f" % (time.time() - float(sys.argv[1])))' "$T0")"
+assert_equals "$(grep -c 'on disk in time' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "a last message that never lands: the export takes what is there"
+if python3 -c 'import sys; sys.exit(not (1.5 <= float(sys.argv[1]) < 4.5))' "$TOOK"; then
+  pass "after waiting out the flush bound, inside the record budget (${TOOK}s)"
+else fail "after waiting out the flush bound, inside the record budget"; echo "    took ${TOOK}s"; fi
+assert_not_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "still in the queue" "nothing is recorded for the one not yet on disk"
+tx "$TB" asst b2000009 '<message>still in the queue</message>'
+hook_run Stop "$HB" "$R3" "$TB"
+assert_equals "$(grep -c 'still in the queue' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "the next Stop exports it once it is on disk"
 # The window is chosen before grouping: an answer given now to a question
 # asked long ago shows, its question beneath it, by default and since today.
 HQ=6f00000a-0000-4000-8000-00000000006f
