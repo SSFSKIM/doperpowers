@@ -1011,6 +1011,16 @@ Dispatch scripts: one `--brief` each.
 
   Limit: each subject plays one simulated turn and states what it would
   do. No live seat has read the preamble yet.
+  Added from the task review (619308dc): scenario (a2), routine news.
+  api-gw merges a change that no peer has to act on now, and the chat
+  shows a peer using `@all` for routine news. It is graded separately,
+  because (a)'s subjects had passed through `status` or a `<message>`
+  without issuing any untagged `say`. Old text: 0/3, all three used
+  `@all`, each reasoning "I'm a root with no children, so an untagged
+  `say` would reach nobody". Final text: 3/3 used an untagged `say`, with
+  no words added: "an untagged say records the news without starting a
+  turn in any member. @all or @maws-45 would interrupt sessions for
+  nothing."
 - Observation: `$SMINOS_HOME`'s root `*.json` files are the seat-record
   namespace, which sminos and the board scripts share, so no other kind
   of file may live there.
