@@ -322,6 +322,9 @@ every member must act on now — and that status is untagged.
 `sminos send <alias> "…"` stays the direct verb to one seat and is recorded
 as `human` (operator) or `say` (member) to that session; it reaches a live
 local member over its socket and resumes a stopped one, exactly as today.
+Its delivery goes through the recipient's delivery record like any other
+event's (below): the verb pushes at once and fails loudly, and an
+interrupted or failed push stays owed.
 
 **Delivery.** Delivery is a function of the log: an event is owed to a
 member until the member's delivery record settles it, and settlement is
@@ -375,9 +378,9 @@ once, so the row is there when `Stop` fires) and their deliveries (the row
 whose text carries the delivery head, in whichever form the ask design
 stores it), appends them with `src` `<record-uuid>#<span-index>` for a
 span and the call id for an ask or its answer — one record's spans
-through `log_append_batch`, which takes the locks once, checks `src`
+through `log_append_batch`, which takes the locks once, checks `(kind, src)`
 inside them, and appends the spans together; the position advanced only
-after the batch — and skips any `src` already present, so a Stop that fires twice, a turn
+after the batch — and skips any `(kind, src)` already present (a `question` and its `answered` share the call id), so a Stop that fires twice, a turn
 interrupted and resumed, or an export that died after the first span of a
 record exports each mark once. Exports are serialised by `cursors/export/<session-uuid>.lock`. Locks are
 taken in one order everywhere: the export lock, then `.sync.lock` shared,
@@ -902,7 +905,7 @@ class Project(NamedTuple):
 def resolve_project(cwd: str) -> Project | None        # None: no project (§1)
 def writer_id(session_uuid: str | None = None) -> str   # "<machine>/<uuid>" | "<machine>/human"; a session's lifecycle always under its own id
 def log_append(project: Project, writer: str, kind: str, **fields) -> dict   # ts (ms), seq under the file lock, .sync.lock shared
-def log_append_batch(project: Project, writer: str, events: list[dict], skip_src: bool = True) -> list[dict]   # the locks once; drops events whose src is present
+def log_append_batch(project: Project, writer: str, events: list[dict], skip_src: bool = True) -> list[dict]   # the locks once; drops events whose (kind, src) is present
 def log_read(project: Project, since: dict | None = None, kinds: tuple = (), to_session: str | None = None) -> list[dict]
 def cursor_load(project: Project, session_uuid: str) -> dict
 def cursor_save(project: Project, session_uuid: str, cursor: dict) -> None
@@ -1139,6 +1142,27 @@ Dispatch scripts: one `--brief` each.
   Rationale: the routing table of §4 makes `human` the operator's kind,
   and the design reads as one document only if §9 agrees with it.
   Date/Author: 2026-10-14, the controller, at the authoring session's request.
+- Decision: M1's task review moved four things. (1) `send` no longer
+  carries a `direct` exemption. Its event is owed and settled through the
+  recipient's delivery record like any other, in writer order. The verb
+  keeps its immediate push or resume, `--wait`, and its loud failure. A
+  push the sender never made, or one that failed, stays owed for the
+  daemon. This supersedes the `direct: true` line of the M1 entry above,
+  and M4 needs no separate case for a remote recipient. (2) An append
+  failure stops the verb before it delivers anything: a delivered message
+  must be in the log. (3) The batch's idempotency key is `(kind, src)`,
+  not `src`. A `question` and its `answered` share the call id, so `src`
+  alone would have dropped every answer (§4 revised). (4) A cursor save
+  merges the per-writer maxima with the file under its lock, so
+  overlapping reads cannot move a cursor backwards. Also: an operator's
+  `send --from X` keeps `from: "human"` in the log and carries `X`
+  separately, and `attach` fails clearly when a local git step fails.
+  Rationale: (1) and (2) are §4's "delivery is a function of the log"
+  applied to the direct verb. The exemption had made a crash between
+  append and push lose a message, and it let a send overtake an earlier
+  pending event. (3) is a contradiction inside the spec that M3 would
+  have hit.
+  Date/Author: 2026-10-14, the controller, from the M1 task review.
 
 ## Outcomes & Retrospective
 
