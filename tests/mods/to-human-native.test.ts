@@ -49,8 +49,9 @@ describe('MAWS native to-human', () => {
     // guard on AbovePrompt could look like a pass-through simply because
     // there was nothing to do yet.
     calls.length = 0
+    const drawing = hooks.filter((hook) => hook.event === 'ui.render' || hook.event === 'ui.press')
     for (const surface of ['desktop', 'vscode', 'mobile', undefined]) {
-      await Promise.all(hooks.map(async (hook) => {
+      await Promise.all(drawing.map(async (hook) => {
         const e: Event = {
           ...(surface !== undefined && { surface }),
           ...hook.matcher,
@@ -74,9 +75,11 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
-    // Every hook draws, so every one is gated: none is left that answers a
-    // question or a prompt.
-    expect(hooks.map((hook) => hook.event).filter((event) => event !== 'ui.render' && event !== 'ui.press')).toEqual([])
+    // Every hook but one draws, so every one is gated: none is left that
+    // answers a question or a prompt. The one, `turn.complete`, draws
+    // nothing; it learns an error's text for the terminal's report, which
+    // MAWS leaves to the view.
+    expect(hooks.map((hook) => hook.event).filter((event) => event !== 'ui.render' && event !== 'ui.press')).toEqual(['turn.complete'])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
 })

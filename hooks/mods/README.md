@@ -67,9 +67,17 @@ a mark, so a session without the output style is left alone. From then on:
   answer given) in the report itself: the answer is the human's own words,
   and they read it as they read a mark.
 - Agent spawns stay in the report as the engine draws them: an `Agent`
-  call and a `Workflow` of agents. `SendMessage` calls, received messages
-  from agents, teammates or other sessions, and agent-finish notifications
-  are working record. Unfolding the run or the full transcript reveals them.
+  call and a `Workflow` of agents, and the notification that one of them
+  failed (`Agent "…" failed: …`). `SendMessage` calls, received messages
+  from agents, teammates or other sessions, and the other agent-finish
+  notifications are working record. Unfolding the run or the full
+  transcript reveals them.
+- An API error that ends the main turn (retries spent, the context limit,
+  a usage limit) stays in the report as the engine draws it: the model does
+  not answer after it, so no message of its own could tell the human. The
+  row's props do not mark it an error; the mod learns its text from
+  `turn.complete` (`reason: "error"`) and the transcript's last assistant
+  message, and redraws.
 - Above the prompt, `to-human view · [ full transcript ]` switches the whole
   transcript to the engine's drawing; the same button then reads
   `[ report only ]`.
