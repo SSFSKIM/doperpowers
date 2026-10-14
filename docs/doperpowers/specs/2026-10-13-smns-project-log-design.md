@@ -966,7 +966,8 @@ Dispatch scripts: one `--brief` each.
   Evidence: 2026-10-13, an M1 self-check run of `sminos.py project show`
   without `SMINOS_HOME` renamed the two real `chats/*.jsonl` to
   `.imported` and created `projects/local-doperpowers/`. Restoring them
-  was escalated to the human. Every later dispatch isolates `HOME` and
+  was escalated to the human; restored 2026-10-14 on the human's
+  approval. Every later dispatch isolates `HOME` and
   `SMINOS_HOME`, and M6's docs say the import is one-way.
 - Observation: `SMINOS_FAMILY_ONLY=1` (the suite's focused mode) was
   already broken at baseline. M1 fixed it: it now passes 314/314.
