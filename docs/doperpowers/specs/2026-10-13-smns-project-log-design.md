@@ -1392,7 +1392,24 @@ Dispatch scripts: one `--brief` each.
   prompt must follow `--output-format json`: `--tools` takes several
   values, and a prompt placed right after `--tools ""` is swallowed
   ("Input must be provided…").
+  As built (7788bd13), `derive` also deletes the transcript of the
+  `session_id` the fork reports when it differs from the minted one,
+  never the parent's.
   Date/Author: 2026-10-14, the controller.
+- Decision: M3's task review moved three things (91b7cfa6).
+  - `sminos record` runs under one timer for the whole call,
+    `migrate()` included: `SMNS_RECORD_TIMEOUT`, 5 s by default. At the
+    deadline it writes a line to `daemon.log` and exits 0, leaving the
+    export position where it was, so the next `Stop` retries. The
+    hook's "never blocks a turn" (§4) had been false under a held lock:
+    the old hook hung for 554 s in the test. No other verb arms the
+    timer. A timer was chosen over per-lock deadlines because
+    `migrate()` takes its exclusive lock outside the shared helper.
+  - `chat --host` applies its window (`-n`, default 30, or `--since`)
+    to all host events before grouping. An answer whose question falls
+    outside the window is shown in place, with its question as context.
+  - `chat --host` reconciles before it reads.
+  Date/Author: 2026-10-14, the controller, from the M3 task review.
 
 ## Outcomes & Retrospective
 
