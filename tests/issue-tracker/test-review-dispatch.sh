@@ -2696,6 +2696,55 @@ _stamp_meta u2 retired_from failure
 assert_equals "$(mode_of "$DAEMON_HOME/u2.json")" "600" "any narrowed meta keeps the mode it already had"
 rm -f "$DAEMON_HOME/u1.json" "$DAEMON_HOME/u2.json"
 
+echo "the contract with the real sminos CLI:"
+# Every case above stubs sminos itself; this one runs the real CLI, with a stub
+# harness (`claude`) under it, and asserts what the board consumes of a spawn:
+# the banner the dispatcher parses, the seat record board-bind binds by that
+# identity, and the reviewer's in-charge line in its project's family.
+reset_state
+CT="$TEST_ROOT/contract"; mkdir -p "$CT/bin" "$CT/harness/agents" "$CT/registry"
+cat > "$CT/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+# A stub harness: `--bg` launches answer with the harness banner and a row
+# `agents --json` lists; everything else succeeds quietly.
+set -euo pipefail
+case "${1:-}" in
+  agents) python3 -c 'import glob, json, os, sys
+print(json.dumps([json.load(open(p)) for p in sorted(glob.glob(os.path.join(sys.argv[1], "*.json")))]))' "$CT_HARNESS/agents"
+          exit 0 ;;
+  --bg) ;;
+  *) exit 0 ;;
+esac
+name=""; wt=""; prev=""
+for a in "$@"; do
+  case "$prev" in -n) name="$a" ;; --worktree) wt="$a" ;; esac
+  prev="$a"
+done
+n=$(( $(cat "$CT_HARNESS/counter" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CT_HARNESS/counter"
+short="$(printf 'c0%06x' "$n")"
+cwd="$PWD"; [ -z "$wt" ] || cwd="$PWD/.claude/worktrees/$wt"
+printf '{"id":"%s","sessionId":"%s-0000-4000-8000-00000000c0de","kind":"background","name":"%s","state":"done","status":"idle","cwd":"%s"}' \
+  "$short" "$short" "$name" "$cwd" > "$CT_HARNESS/agents/$short.json"
+echo "backgrounded · $short · $name"
+STUB
+chmod +x "$CT/bin/claude"
+REAL_SMINOS="$REPO_ROOT/skills/sminos/scripts/sminos"
+out="$(env -u CLAUDE_CODE_SESSION_ID CT_HARNESS="$CT/harness" SMINOS_CLI="$REAL_SMINOS" DAEMON_HOME="$CT/registry" SMINOS_HOME="$CT/registry" \
+  PATH="$CT/bin:$PATH" "$DISPATCH" 5 2>&1)" || true
+ct_uuid="$(printf '%s\n' "$out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+if [[ -n "$ct_uuid" && -f "$CT/registry/$ct_uuid.json" ]]; then
+  pass "the spawn banner's bracket names the seat record, as the dispatcher parses it"
+else
+  fail "the spawn banner's bracket names the seat record, as the dispatcher parses it"; echo "    out: $out"
+fi
+assert_contains "$(cat "$CT/registry/$ct_uuid.json" 2>/dev/null)" '"ticket": "7"' "board-bind binds the PR's ticket to that record"
+ct_row="$(cd "$LOCAL_REPO" && SMINOS_HOME="$CT/registry" PATH="$CT/bin:$PATH" CT_HARNESS="$CT/harness" "$REAL_SMINOS" list --json 2>/dev/null \
+  | python3 -c 'import json, sys
+row = next((d for d in json.load(sys.stdin) if (d["seat"] or {}).get("seat_id") == sys.argv[1]), {})
+print("%s|%s|%s|%s" % (row.get("alias"), row.get("charge"), row.get("charge_source"), row.get("by")))' "$ct_uuid")"
+assert_equals "$ct_row" "review-pr-5|review PR #5|set|" \
+  "the reviewer is a member of its repository's project, in charge of its PR, spawned by the operator"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES test(s) FAILED"; exit 1

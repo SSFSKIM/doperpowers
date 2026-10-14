@@ -3,7 +3,7 @@
 
 The chart (sminos_chart) is drawn in the middle of the screen; a header carries
 the fleet counts and refresh time, a panel under the chart describes the
-focused seat (or lists its project's chat), and a footer shows the keys, the
+focused member (or lists its project's chat), and a footer shows the keys, the
 send line being typed, or a short flash message.
 
 Everything that decides is a pure function over one `state` dict:
@@ -34,14 +34,14 @@ HELP_LINES = [
     "keys",
     "",
     "↑ ↓ (k j) — move between boxes in the same column",
-    "→ (l) — into the first child · ← (h) — back to the parent",
+    "→ (l) — from a project into its first member · ← (h) — back to the project",
     "home / end — first / last root box",
-    "enter — on a seat: open its conversation (claude attach) in a new tmux window, or switch to that window if it is open",
-    "enter — on a group: collapse / expand its seats",
-    "s — type a message for the focused seat; enter sends it (sminos send: a live seat over its inbox socket, a stopped one resumed), esc cancels",
-    "b — toggle the bottom panel: seat detail ↔ the focused seat's project chat",
+    "enter — on a member: open its conversation (claude attach) in a new tmux window, or switch to that window if it is open",
+    "enter — on a project: collapse / expand its members",
+    "s — type a message for the focused member; enter sends it (sminos send: a live member over its inbox socket, a stopped seat resumed), esc cancels",
+    "b — toggle the bottom panel: member detail ↔ the focused project's chat",
     "tab — move the keys into the chat list (enter opens a message, tab back)",
-    "a — show / hide retired and gone seats",
+    "a — show / hide retired and gone members",
     "r — refresh from the harness now (it also refreshes every few seconds)",
     "? — this help · q — quit (tmux windows opened by enter stay open)",
     "",
@@ -54,10 +54,14 @@ SPECIAL = {"enter", "esc", "tab", "backspace", "space", "up", "down", "left", "r
 # --------------------------------------------------------------------- state
 
 
-def new_state(group=None, show_all=False, width=120, height=40, no_tmux=False):
+def new_state(project="", show_all=False, width=120, height=40, no_tmux=False):
+    """`project` names the one project to show; without it the caller's
+    project, or — from no project, or with --all (`show_all` at launch) —
+    every project, each a box."""
     return {
-        "group": group, "show_all": show_all, "width": width, "height": height, "no_tmux": no_tmux,
-        "roots": [], "meta": {"groups": 0, "seats": 0, "live": 0, "hidden": 0, "hidden_roots": 0, "hidden_groups": 0},
+        "project": project, "every": show_all, "boxed": False, "title": project or "fleet",
+        "show_all": show_all, "width": width, "height": height, "no_tmux": no_tmux,
+        "roots": [], "meta": {"projects": 0, "members": 0, "live": 0, "hidden": 0, "hidden_projects": 0},
         "lay": {"boxes": [], "by_id": {}, "edges": [], "width": 0, "height": 0}, "parent": {},
         "collapsed": set(), "focus": None, "ox": 0, "oy": 0,
         "panel": "detail", "panel_focus": False, "chat_cursor": 0,
@@ -81,16 +85,22 @@ def flash(state, msg):
 
 def attach_short(seat):
     """The id `claude attach` takes for a seat's current session: the harness
-    row's id when the harness knows the session, else the recorded short."""
+    row's id when the harness knows the session, else the recorded short. A
+    member that holds no seat has none: sminos did not start its session."""
+    if not seat:
+        return ""
     row = sminos.harness_row(seat) if seat.get("current") else None
     return str((row or {}).get("id") or seat.get("short") or "")
 
 
-def take_snapshot(group, show_all):
-    """sminos_chart.snapshot plus, on every seat node, the short id Enter would
-    attach to — resolved here, from the same cached harness read that tells a
-    stopped seat from a gone one."""
-    roots, meta = chart.snapshot(group, show_all)
+def take_snapshot(state):
+    """sminos_chart.snapshot of the projects the screen shows, chosen again
+    each time (a project can appear while it runs), plus, on every member
+    node, the short id Enter would attach to — resolved here, from the same
+    cached harness read that tells a stopped seat from a gone one."""
+    projects, state["boxed"] = sminos.view_projects(state["project"], state["every"])
+    state["title"] = "fleet" if state["boxed"] else projects[0].name
+    roots, meta = chart.snapshot(projects, state["show_all"], state["boxed"])
 
     def walk(n):
         if n["kind"] == "seat":
@@ -126,7 +136,7 @@ def refresh(state):
 
 def resnapshot(state):
     """Re-read the registry with the caches as they are (cheap; what `a` uses)."""
-    state["roots"], state["meta"] = take_snapshot(state["group"], state["show_all"])
+    state["roots"], state["meta"] = take_snapshot(state)
     state["refreshed_at"] = state["clock"]()
     state["refreshing"] = False
     state["loaded"] = True
@@ -162,11 +172,9 @@ def ensure_visible(state, center=False):
 
 
 def chat_project(state):
-    """The project whose chat the panel shows: the focused seat's."""
+    """The project whose chat the panel shows: the focused box's."""
     node = focused_node(state)
-    if node is None or node["kind"] != "seat":
-        return None
-    return sminos.seat_project(node["seat"])
+    return node["project"] if node is not None else None
 
 
 def chat_messages(state):
@@ -276,7 +284,7 @@ def handle_key(state, key, actions):
     elif key == "enter":
         if node is None:
             return
-        if node["kind"] == "group":
+        if node["kind"] == "project":
             if node["id"] in state["collapsed"]:
                 state["collapsed"].discard(node["id"])
             else:
@@ -285,15 +293,15 @@ def handle_key(state, key, actions):
         else:
             actions.attach(node)
     elif key == "s":
-        if node is None or node["kind"] == "group":
-            flash(state, "move to a seat to send it a message")
+        if node is None or node["kind"] == "project":
+            flash(state, "move to a member to send it a message")
         elif node["state"] == "gone":
-            ref = "%s/%s" % (node["seat"]["group"], node["seat"]["alias"])
+            ref = node["ref"]
             flash(state, "%s is gone — no transcript for its session on this machine; sminos fill %s \"<task>\" or "
                   "sminos retire %s" % (node["label"], ref, ref))
         elif node["state"] in ("vacant", "retired"):
-            flash(state, "%s is %s — nothing to send to; sminos fill %s/%s \"<task>\" fills it" % (
-                node["label"], node["state"], node["seat"]["group"], node["seat"]["alias"]))
+            flash(state, "%s is %s — nothing to send to; sminos fill %s \"<task>\" fills it" % (
+                node["label"], node["state"], node["ref"]))
         else:
             # A stopped seat too: the send resumes it.
             state["input"], state["input_target"] = "", node["id"]
@@ -316,18 +324,18 @@ def handle_key(state, key, actions):
 def attach_target(node):
     """(short, reason): the id Enter attaches to, or why it cannot."""
     if node["kind"] != "seat":
-        return "", "move to a seat to open its conversation"
-    seat = node["seat"]
-    ref = "%s/%s" % (seat["group"], seat["alias"])
+        return "", "move to a member to open its conversation"
     if node["state"] == "vacant":
-        return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], ref)
+        return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], node["ref"])
+    if node["seat"] is None:
+        return "", "%s holds no seat — its session is its human's own; open it where it runs" % node["label"]
     if not node.get("short"):
         return "", "%s has no short id to attach to — the harness no longer lists its session" % node["label"]
     return node["short"], ""
 
 
 def send_argv(node, text):
-    return [sminos.LAUNCHER, "send", "%s/%s" % (node["seat"]["group"], node["seat"]["alias"]), text]
+    return [sminos.LAUNCHER, "send", node["ref"], text]
 
 
 def first_line(p):
@@ -350,7 +358,7 @@ class HeadlessActions:
         cmd = "claude attach %s" % short
         if not self.state["no_tmux"] and os.environ.get("TMUX"):
             cmd = "tmux new-window -n %s %s" % (node["label"], cmd)
-        # The qualified id, not the bare alias: two groups may hold the same
+        # The qualified id, not the bare alias: two projects may hold the same
         # one, and it is what RealActions keys its open windows by.
         self.state["actions"].append("attach %s %s → %s" % (node["id"], short, cmd))
         flash(self.state, "would run: " + cmd)
@@ -385,8 +393,8 @@ class RealActions:
             flash(st, "run in another terminal: claude attach %s" % short)
             return
         alias = node["label"]
-        # Keyed by the seat's qualified id: two groups may hold the same alias,
-        # and a bare-alias key would send one group's Enter to the other's
+        # Keyed by the member's qualified id: two projects may hold the same
+        # alias, and a bare-alias key would send one's Enter to the other's
         # conversation window.
         key = node["id"]
         try:
@@ -408,7 +416,7 @@ class RealActions:
 
     def send(self, node, text):
         st = self.state
-        flash(st, "sending to %s/%s…" % (node["seat"]["group"], node["label"]))
+        flash(st, "sending to %s…" % node["id"])
         argv = send_argv(node, text)
 
         def go():
@@ -444,7 +452,7 @@ class Refresher(threading.Thread):
             self.events.put(("refreshing",))
             try:
                 sminos.refresh_caches()
-                roots, meta = take_snapshot(self.state["group"], self.state["show_all"])
+                roots, meta = take_snapshot(self.state)
                 self.events.put(("snapshot", roots, meta))
             except Exception as e:  # a failed read must not kill the screen
                 self.events.put(("flash", "refresh failed: %s" % e))
@@ -493,35 +501,38 @@ def detail_lines(state, node, w):
         if not state["loaded"]:
             return ["loading the fleet from the harness…"]
         if m["hidden"] and not state["show_all"]:
-            return ["nothing to show — %d seat(s) are hidden (retired or gone)" % m["hidden"],
+            return ["nothing to show — %d member(s) are hidden (retired or gone)" % m["hidden"],
                     "press a to show them"]
-        return ["no seats yet — sminos spawn <alias> \"<task>\" --group <group> creates the first"]
-    if node["kind"] == "group":
-        g = node["label"]
-        lines = ["group %s · %d seats · %d live%s" % (g, node["seats"], node["alive"],
+        return ["no members yet — open a session in a project, or sminos spawn <alias> \"<task>\""]
+    if node["kind"] == "project":
+        lines = ["project %s · %d members · %d live%s" % (node["label"], node["members"], node["alive"],
                  (" · %d hidden" % node["hidden"]) if node["hidden"] else "")]
-        roots = ", ".join(c["label"] for c in node["children"])
-        lines.append("roots: " + (roots or "(none visible)"))
+        names = ", ".join(c["label"] for c in node["children"])
+        lines.append("members: " + (names or "(none visible)"))
         lines.append("enter collapses / expands · b shows the chat")
         return lines
-    s = node["seat"]
-    head = "%s/%s" % (s["group"], s["alias"])
-    if s.get("role"):
+    s, m = node["seat"], node["member"]
+    head = "%s/%s" % (node["project"].name, node["label"])
+    if s and s.get("role"):
         head += " · %s" % s["role"].upper()
-    head += " · seat %s" % s["seat_id"][:8]
-    if s.get("current"):
-        head += " · session %s" % s["current"][:8]
-    if s.get("parent"):
-        head += " · under %s" % s["parent"]
+    head += (" · seat %s" % s["seat_id"][:8]) if s else " · no seat"
+    if m["session"]:
+        head += " · session %s" % m["short"]
+    if m["by"]:
+        head += " · by %s" % m["by"]
     state_line = chart.glyph_line(node)
+    if not m["local"]:
+        state_line += " · on %s" % m["machine"]
     if node.get("short"):
         state_line += " · short %s" % node["short"]
-    if s.get("updated"):
+    if s and s.get("updated"):
         state_line += " · updated %s" % s["updated"]
-    lines = [head, state_line, "now: " + (s.get("now") or "-"), "brief: " + (s.get("brief") or "-"),
-             "cwd: " + (s.get("cwd") or "-") + ((" (worktree %s)" % s["worktree"]) if s.get("worktree") else "")]
-    reply = sminos.reply_text(s["seat_id"]).strip()
-    lines.append("reply: " + (" ".join(reply.split()) if reply else "-"))
+    lines = [head, state_line, "now: " + (m["status"] or "-"),
+             "in charge of: " + (m["charge"] or (s or {}).get("brief") or "-")]
+    if s:
+        lines.append("cwd: " + (s.get("cwd") or "-") + ((" (worktree %s)" % s["worktree"]) if s.get("worktree") else ""))
+        reply = sminos.reply_text(s["seat_id"]).strip()
+        lines.append("reply: " + (" ".join(reply.split()) if reply else "-"))
     return [chart.fit(x, w).rstrip() for x in lines]
 
 
@@ -531,11 +542,11 @@ def paint(state, screen):
     r = regions(state)
     st = state["styles"]
     m = state["meta"]
-    title = "sminos · " + (state["group"] or "fleet")
+    title = "sminos · " + state["title"]
     bits = [title]
-    if state["group"] is None:
-        bits.append("%d groups" % m["groups"])
-    bits += ["%d seats" % m["seats"], "%d live" % m["live"]]
+    if state["boxed"]:
+        bits.append("%d projects" % m["projects"])
+    bits += ["%d members" % m["members"], "%d live" % m["live"]]
     if state["show_all"]:
         bits.append("all shown · a")
     elif m["hidden"]:
@@ -679,7 +690,7 @@ def drive(state, tok):
 
 
 def run_headless(a):
-    state = new_state(a.group, a.all, a.width or 120, a.height or 40, no_tmux=a.no_tmux)
+    state = new_state(a.project, a.all, a.width or 120, a.height or 40, no_tmux=a.no_tmux)
     refresh(state)
     actions = HeadlessActions(state)
     for tok in parse_keys(a.keys):
@@ -743,7 +754,7 @@ def init_styles(curses):
     try:
         curses.use_default_colors()
         colours = [("busy", curses.COLOR_GREEN), ("idle", curses.COLOR_CYAN), ("waiting", curses.COLOR_YELLOW),
-                   ("stopped", curses.COLOR_WHITE), ("group", curses.COLOR_BLUE),
+                   ("stopped", curses.COLOR_WHITE), ("project", curses.COLOR_BLUE),
                    ("flash", curses.COLOR_YELLOW)]
         for i, (name, col) in enumerate(colours, 1):
             curses.init_pair(i, col, -1)
@@ -844,7 +855,7 @@ def cmd_tui(a):
         run_headless(a)
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        sminos.die("sminos tui needs a terminal — for text use: sminos chart%s" % ((" " + a.group) if a.group else ""),
+        sminos.die("sminos tui needs a terminal — for text use: sminos chart%s" % ((" " + a.project) if a.project else ""),
                   sminos.EXIT_USAGE)
     if not a.no_tmux and not os.environ.get("TMUX"):
         if not shutil.which("tmux"):
@@ -852,5 +863,5 @@ def cmd_tui(a):
                       "install tmux, or pass --no-tmux to run here (enter then prints the attach command)",
                       sminos.EXIT_UNKNOWN)
         enter_tmux(sys.argv[1:])
-    state = new_state(a.group, a.all, no_tmux=a.no_tmux)
+    state = new_state(a.project, a.all, no_tmux=a.no_tmux)
     run_curses(state)

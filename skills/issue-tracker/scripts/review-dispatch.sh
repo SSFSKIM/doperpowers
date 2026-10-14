@@ -1029,6 +1029,12 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> [worktree-name]
   # taken for an operator's own seat.
   local dispatch_mark
   dispatch_mark="$([ -n "${CLAIM_JOURNAL:-}" ] && basename "$CLAIM_JOURNAL" .json || echo true)"
+  # The reviewer's in-charge line in its project's family: what it reviews.
+  local brief="review ticket #$issue"
+  case "$name" in
+    review-pr-*)   brief="review PR #${name#review-pr-}" ;;
+    review-epic-*) brief="review epic #${name#review-epic-}" ;;
+  esac
 
   # ONE worker harness and ONE route: a Claude-harness seat, with --model the
   # whole of the route. The QAgent tier is sol/high by design — pinned, not
@@ -1041,7 +1047,7 @@ _spawn_reviewer() {  # <name> <ticket|""> <prompt> <worktree> [worktree-name]
   spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT="${REVIEW_EFFORT:-high}" \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$wt" --worktree "$wt_name" \
     --model "${REVIEW_MODEL:-sol}" --role QAGENT \
-    --stamp "board_dispatch=$dispatch_mark")" \
+    --stamp "board_dispatch=$dispatch_mark" --brief "$brief")" \
     || { echo "$name: review stand-in spawn failed" >&2; return 1; }
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"

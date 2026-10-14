@@ -446,7 +446,7 @@ PY
     BOARD_REPO="$BOARD_REPO" \
     DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-    --model "$model" --role "$role" --stamp "board_dispatch=$nonce")" \
+    --model "$model" --role "$role" --stamp "board_dispatch=$nonce" --brief "ticket #$C_TICKET")" \
     || { echo "#$C_TICKET: worker spawn failed — releasing run $C_RUN_ID" >&2
          _api_end_run "$C_RUN_ID" abandoned
          rm -f "$claims_dir/$nonce.json" "$body_file"; return 1; }
@@ -966,7 +966,7 @@ PY
   [ "$lane" != "architect" ] || model="${ARCHITECT_MODEL:-fable}"
   spawn_out="$(DAEMON_CLAUDE_SETTINGS='' DAEMON_CLAUDE_EFFORT='' \
     "$SMINOS_CLI" spawn "$name" "$prompt" --cwd "$LOCAL_REPO" --worktree "$name" \
-    --model "$model")" \
+    --model "$model" --brief "ticket #$n: $T_TITLE")" \
     || { echo "#$n: worker spawn failed" >&2; _surf_unlock "$surf_locked"; return 1; }
   printf '%s\n' "$spawn_out"
   uuid="$(printf '%s\n' "$spawn_out" | extract_spawn_uuid)"
