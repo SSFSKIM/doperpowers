@@ -442,6 +442,9 @@ MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
 # session on its machine appends it to that session's file.
 LIFECYCLE = MEMBERSHIP + ("renamed", "state", "in-charge", "status")
+# The harness session kinds that are members on sight; any other (another
+# tool's headless run) is not.
+JOINABLE_KINDS = ("interactive", "bg")
 _PROJECTS = {}
 _HOMES = set()
 _VIEWS = {}  # project id → (members, seat rows), per invocation; a lifecycle append drops it
@@ -1019,15 +1022,36 @@ def _reconcile(project, events, local, by_session):
     event at all. A seat whose record is retired is never re-joined here — a
     session still answering after `retire` stopped it is not a revival; only
     fill, resume, and send revive. Each check is repeated under the session
-    file's lock, so a concurrent retire cannot be undone."""
-    latest = {}
+    file's lock, so a concurrent retire cannot be undone.
+
+    A seat-less session joins on sight only when the harness records it as
+    `interactive` or `bg`: another tool's headless run is no member. And the
+    absence of the process ends what its presence began: a seat-less member
+    of this machine whose session no longer runs is retired, reason `ended`,
+    and re-joins if it runs again. A seat's lifecycle stays with retire, fill,
+    and resume."""
+    latest, joined = {}, {}
     for e in events:
         if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
             latest[e["session"]] = e["kind"]
+            if e["kind"] == "joined":
+                joined[e["session"]] = e
     out = []
+    for sid, e in joined.items():
+        if (latest[sid] != "joined" or sid in by_session or sid in local
+                or str(e.get("machine") or "") != host_name() or peer_for_session(sid)):
+            continue
+
+        def ended(evs, sid=sid):
+            return (latest_membership(evs) == "joined" and not peer_for_session(sid)
+                    and not any(s["current"] == sid for s in seats()))
+
+        out += lifecycle(project, sid, "retired", guard=ended, by="", reason="ended")
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
         if seat and seat["status"] == "retired":
+            continue
+        if not seat and str((peer or {}).get("kind") or "") not in JOINABLE_KINDS:
             continue
         if (latest.get(sid) == "joined") if peer else (sid in latest):
             continue
@@ -1128,7 +1152,7 @@ def project_view(project):
     no member stands for (vacant, retired, or replaced), newest first. One
     log_read; cached for the invocation until a lifecycle event is appended."""
     if project.id in _VIEWS:
-        return _VIEWS[project.id]
+        return _VIEWS[project.id][:2]
     all_seats = seats()
     by_session = {s["current"]: s for s in all_seats if s["current"]}
     local = _local_sessions(project, all_seats)
@@ -1149,13 +1173,26 @@ def project_view(project):
                    state=state(s), state_age=None, charge="", charge_source="", status=s["now"], by="",
                    worktree=s["worktree"], seat=s)
             for s in rest]
-    _VIEWS[project.id] = (out, rows)
+    # Seat-less sessions the log holds as retired, by alias: what a tag that
+    # names one is told.
+    retired = [(str((r["renamed"] or r["joined"]).get("alias") or sid[:8]), sid[:8], str(r["latest"].get("reason") or ""))
+               for sid, r in info.items()
+               if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session]
+    _VIEWS[project.id] = (out, rows, retired)
     return out, rows
 
 
 def members(project):
     """The project's members (see project_view)."""
     return project_view(project)[0]
+
+
+def retired_sessions(project):
+    """(alias, short, reason) of the project's seat-less sessions whose
+    membership the log holds as retired — `ended` with their process, or
+    retired by hand."""
+    project_view(project)
+    return _VIEWS[project.id][2]
 
 
 def reconcile(project):
@@ -1306,15 +1343,23 @@ def candidate_labels(found, qualify):
     return ", ".join(sorted(("%s/" % p.name if qualify else "") + "%s#%s" % (m.alias, m.short) for p, m in found))
 
 
-def unreachable_hint(name, short, projects):
-    """Why a name no member answers to still names a seat: retired or vacant."""
+def unreachable_hint(raw, name, short, projects):
+    """The refusal for a tag no member answers to that still names someone: a
+    retired or vacant seat, or a seat-less session whose membership ended
+    (it is never resumed, so an untagged line is how to leave it a note)."""
     for p in projects:
         for s in project_seats(p):
             if s["alias"] == name and s["current"][:8].startswith(short):
                 if s["status"] == "retired":
-                    return "is retired; re-fill it to reach it"
+                    return "%s is retired; re-fill it to reach it" % raw
                 if not s["current"]:
-                    return "is vacant — fill it to reach it"
+                    return "%s is vacant — fill it to reach it" % raw
+        for alias, sh, reason in retired_sessions(p):
+            if alias == name and sh.startswith(short):
+                if reason == "ended":
+                    return ("%s: %s's session ended; say it untagged to leave a note — it reads the chat when "
+                            "it is resumed" % (raw, alias))
+                return "%s is retired; it re-joins when its session runs again" % raw
     return ""
 
 
@@ -1357,9 +1402,9 @@ def resolve_tags(project, text):
         if len(found) > 1:
             die("ambiguous %s matches: %s" % (t["raw"], candidate_labels(found, len(scope) > 1)), EXIT_UNKNOWN)
         if not found:
-            hint = unreachable_hint(t["name"], t["short"], scope)
+            hint = unreachable_hint(t["raw"], t["name"], t["short"], scope)
             if hint:
-                die("%s %s" % (t["raw"], hint), EXIT_UNKNOWN)
+                die(hint, EXIT_UNKNOWN)
             die("no member %s in %s" % (t["raw"], "project %s" % scope[0].name if len(scope) == 1 else
                                         "any project known here"), EXIT_UNKNOWN)
         p, m = found[0]

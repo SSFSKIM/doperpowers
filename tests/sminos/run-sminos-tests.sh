@@ -1903,7 +1903,9 @@ assert_not_contains "$OUT" "attach org/intern" "enter on a vacant seat attaches 
 assert_contains "$OUT" "intern is vacant — no session to attach; sminos fill org/intern" "the footer explains the vacant seat and names the fill command"
 run $TUI --keys "down,down,enter" --no-tmux
 assert_contains "$OUT" "→ claude attach cc000002" "--no-tmux still records the plain attach command"
-run $TUI --keys a
+# Tall enough for all six boxes: the two vacant seats order by their
+# whole-second `updated`, so which comes last is not fixed.
+run "$SMINOS" tui org --headless --width 110 --height 60 --keys a
 assert_contains "$OUT" "old-worker" "a shows the folded retired seat"
 assert_contains "$OUT" "all shown · a" "the header notes that hidden members are shown"
 run $TUI --keys "a,a"
@@ -3249,6 +3251,35 @@ REMOTE_ROW="$(HOME="$H2" SMINOS_HOME="$H2/sminos" DAEMON_HOST=h2 "$SMINOS" list 
 r = next(d for d in json.load(sys.stdin) if d["session"] == sys.argv[1])
 print(r["status"], r["machine"], r["local"])' "$IB")"
 assert_equals "$REMOTE_ROW" "reading the schema testhost False" "the other home lists the member, remote, with its status"
+
+# A seat-less member's membership ends with its process, as it began with it:
+# the next reading verb retires it (reason ended) and it re-joins when it runs
+# again. Only interactive and bg sessions are members on sight.
+IE=2d00000d-0000-4000-8000-00000000002d
+pf_peer closer "$IE" idle user
+run "$SMINOS" list
+assert_contains "$OUT" "closer" "a live interactive session lists"
+rm -f "$HOME/.claude/sessions/pf-closer.json"   # its session exits
+run "$SMINOS" list
+assert_not_contains "$OUT" "closer" "once its session exits, the next reading verb ends its membership"
+assert_equals "$(events_of "$IE")" "joined retired:ended " "recording retired, reason ended, in its own file"
+assert_contains "$(tail -1 "$PFLOG/testhost.$IE.jsonl")" '"by": "", "reason": "ended"' "by no one"
+run "$SMINOS" say "@closer are you there"
+assert_rc 4 "$RC" "a tag to it while it is closed is refused"
+assert_contains "$OUT" "@closer: closer's session ended; say it untagged to leave a note" "saying its session ended and how to leave it a note"
+pf_peer closer "$IE" idle user                  # resumed outside sminos
+run "$SMINOS" list
+assert_contains "$OUT" "closer" "when it runs again it lists again"
+assert_equals "$(events_of "$IE")" "joined retired:ended joined " "re-joined under the same uuid"
+rm -f "$HOME/.claude/sessions/pf-closer.json"
+HL=2e00000e-0000-4000-8000-00000000002e
+start_inbox headless
+printf '{"pid":%s,"sessionId":"%s","name":"headless","kind":"sdk","status":"busy","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$HL" "$R" "$TEST_ROOT/in-headless.sock" > "$HOME/.claude/sessions/pf-headless.json"
+run "$SMINOS" list
+assert_not_contains "$OUT" "headless" "a session of another kind (a tool's headless run) is not a member on sight"
+assert_file_absent "$PFLOG/testhost.$HL.jsonl" "and is never joined"
+rm -f "$HOME/.claude/sessions/pf-headless.json"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/pf-"*.json
 
