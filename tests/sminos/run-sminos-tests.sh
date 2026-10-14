@@ -3704,6 +3704,36 @@ assert_equals "$(grep -c 'written before the crash' "$HPLOG/testhost.$HA.jsonl")
 hook_run Stop "$HA" "$R3" "$TA"
 assert_equals "$(grep -c 'written before the crash' "$HPLOG/testhost.$HA.jsonl")" "1" "and never again"
 
+# The hook never blocks a turn: with the export lock, or the log's lock for
+# the session's file, held by a stalled process, it gives up in time, appends
+# nothing, and keeps the position; the next Stop exports.
+tx "$TA" asst a6000001 '<message>while a lock is held</message>'
+POS="$SMINOS_HOME/projects/$HP/cursors/export/$HA.json"
+POS_BEFORE="$(cat "$POS")"
+for held in "export lock:$SMINOS_HOME/projects/$HP/cursors/export/$HA.lock" "log lock:$HPLOG/testhost.$HA.jsonl.lock"; do
+  rm -f "$TEST_ROOT/held" "$TEST_ROOT/release"
+  python3 - "${held#*:}" "$TEST_ROOT/held" "$TEST_ROOT/release" <<'PY_HOLD' & holder=$!
+import fcntl, os, sys, time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(sys.argv[2], 'w').close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+PY_HOLD
+  for _ in $(seq 1 100); do [ -f "$TEST_ROOT/held" ] && break; sleep .05; done
+  t0=$(date +%s)
+  SMNS_RECORD_TIMEOUT=1 hook_run Stop "$HA" "$R3" "$TA"
+  elapsed=$(( $(date +%s) - t0 ))
+  touch "$TEST_ROOT/release"; wait "$holder"
+  assert_rc 0 "$HOOK_RC" "with the ${held%%:*} held, the hook exits 0"
+  assert_equals "$(( elapsed < 4 ))" "1" "promptly (${elapsed}s for a 1s bound)"
+  assert_not_contains "$(cat "$HPLOG/testhost.$HA.jsonl")" "while a lock is held" "appending nothing"
+  assert_equals "$(cat "$POS")" "$POS_BEFORE" "and keeping the export position"
+done
+assert_contains "$(tail -1 "$SMINOS_HOME/daemon.log")" "record: gave up after 1s" "the give-up is a line in daemon.log"
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(grep -c 'while a lock is held' "$HPLOG/testhost.$HA.jsonl")" "1" "once the locks are free, the next Stop exports"
+
 # No position at all (the plugin arrived mid-session): the first Stop exports
 # the trailing run of assistant records and nothing before the peer frame.
 HB=5b000002-0000-4000-8000-00000000005b
@@ -3729,6 +3759,41 @@ run "$SMINOS" chat hostdemo --host
 assert_contains "$OUT" 'hb answered (call toolu_orphan): Your questions have been answered: "Old?"="Yes".' "an answer with no question in the log is shown on its own"
 run "$SMINOS" chat hostdemo --host --kind message
 assert_rc 2 "$RC" "chat --host takes no --kind"
+# The window is chosen before grouping: an answer given now to a question
+# asked long ago shows, its question beneath it, by default and since today.
+HQ=6f00000a-0000-4000-8000-00000000006f
+python3 - "$HPLOG/testhost.$HQ.jsonl" "$HQ" <<'PY_OLDQ'
+import datetime, json, sys
+w = "testhost/" + sys.argv[2]
+t = datetime.datetime.now(datetime.timezone.utc)
+now = t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (t.microsecond // 1000)
+rows = [{"ts": "2000-01-01T00:00:00.000Z", "kind": "question", "from": "hq", "to": "host", "text": ["Old question?"],
+         "choices": ["Yes", "No"], "src": "toolu_old"}]
+rows += [{"ts": "2000-01-02T00:00:%02d.000Z" % i, "kind": "message", "from": "hq", "to": "host", "text": "filler %d" % i,
+          "src": "q%d#0" % i} for i in range(35)]
+rows += [{"ts": now, "kind": "answered", "from": "hq", "src": "toolu_old", "text": "Your questions have been answered: \"Old question?\"=\"Yes\"."}]
+with open(sys.argv[1], "w") as f:
+    for seq, r in enumerate(rows, 1):
+        f.write(json.dumps({"ts": r.pop("ts"), "writer": w, "seq": seq, **r}) + "\n")
+PY_OLDQ
+TODAY="$(date -u +%Y-%m-%d)"
+for window in "" "--since $TODAY"; do
+  # shellcheck disable=SC2086
+  run "$SMINOS" chat hostdemo --host $window
+  assert_contains "$OUT" 'hq answered (call toolu_old): Your questions have been answered: "Old question?"="Yes".' "an answer whose question is outside the window shows (${window:-default})"
+  assert_contains "$OUT" "    to: Old question? (asked 2000-01-01 00:00)" "with its question beneath it (${window:-default})"
+  assert_not_contains "$OUT" "hq asks" "and the question itself stays outside the window (${window:-default})"
+done
+run "$SMINOS" chat hostdemo --host --since "$TODAY" --json
+assert_contains "$(printf '%s\n' "$OUT" | grep toolu_old | head -1)" '"kind": "question"' "--json gives the question first, as context"
+assert_contains "$(printf '%s\n' "$OUT" | grep toolu_old | tail -1)" '"kind": "answered"' "then the answer"
+assert_not_contains "$OUT" "filler" "and nothing else outside the window"
+rm -f "$HPLOG/testhost.$HQ.jsonl"
+# Every reading chat reconciles first, the host view too.
+HR=7a00000b-0000-4000-8000-00000000007a
+hp_peer hr "$HR" derived interactive
+run "$SMINOS" chat hostdemo --host
+assert_equals "$(hp_events "$HR")" "joined " "a first host read joins a live session"
 
 # Who is not a member records nothing: another tool's headless run, a session
 # in no project, an internal fork.
@@ -3837,11 +3902,15 @@ FORK_ID="$(sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' <<<"$FORK_ARGV")"
 assert_file_absent "$HPLOG/testhost.$FORK_ID.jsonl" "and the hook recorded nothing for the fork"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "not derived" "a session derived within six hours is not derived again"
-for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TA" prompt "a90000$i" "prompt $i"; done
-run "$SMINOS" derive ha
-assert_contains "$OUT" "not derived" "a user-named session is never derived"
+# A user-named session with prompts enough and no line set: its name is its line.
+HU=6e000009-0000-4000-8000-00000000006e
+hp_peer hu "$HU" user interactive
+for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TXD/$HU.jsonl" prompt "u90000$i" "prompt $i"; done
+run "$SMINOS" derive hu
+assert_contains "$OUT" "hu: not derived — its human named it" "a user-named session is never derived"
 run "$SMINOS" derive --all
-assert_equals "$(grep -c '"source": "derived"' "$HPLOG/testhost.$HA.jsonl")" "1" "nor by --all: ha holds only the derived line written by hand above"
+assert_contains "$OUT" "hu: not derived — its human named it" "nor by --all"
+assert_not_contains "$(cat "$HPLOG/testhost.$HU.jsonl")" "in-charge" "and holds no line"
 # A fork that fails prints its stderr's tail and writes nothing.
 HE=6a000007-0000-4000-8000-00000000006a
 TE="$TXD/$HE.jsonl"

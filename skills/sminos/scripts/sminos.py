@@ -87,6 +87,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1684,11 +1685,11 @@ def cmd_chat(a):
     project = find_project(a.project) if a.project else caller_project(caller_seat() if sid else None)
     if project is None:
         die("chat outside a project: run it in a project's directory, or name one: sminos chat <project>")
+    reconcile(project)
     if a.host:
         chat_host(project, a)
         return
     kinds = tuple(a.kind) if a.kind else CHAT_KINDS
-    reconcile(project)
     events = log_read(project)
     pool = [e for e in events if e["kind"] in kinds]
     earlier = 0
@@ -2084,10 +2085,51 @@ def record_session(project, session, tpath, event):
     export_host(project, session, tpath, alias)
 
 
+# The hook's whole call, migrate included, is bounded: §4's hook never blocks
+# a turn, and every lock on its path is a blocking flock.
+RECORD_TIMEOUT = 5
+
+
+class RecordTimeout(BaseException):
+    """The hook's time ran out, most likely behind a lock a stalled holder
+    keeps. A BaseException, so no `except Exception` on the way swallows it."""
+
+
+def _record_expired(_signum, _frame):
+    raise RecordTimeout()
+
+
+def run_record():
+    """`sminos record` within SMNS_RECORD_TIMEOUT seconds (default 5): an
+    interval timer ends the call wherever it waits — migrate's lock, the
+    export lock, the log's locks. The export position moves only after its
+    batch is appended, so a cut-short export leaves it where it was and the
+    next Stop retries; a batch cut mid-write is completed then, since the
+    batch drops what the file already holds. Only this verb is bounded: every
+    other caller of the same locks keeps waiting for them."""
+    if os.environ.get("SMNS_INTERNAL"):
+        return
+    seconds = float(os.environ.get("SMNS_RECORD_TIMEOUT") or RECORD_TIMEOUT)
+    previous = signal.signal(signal.SIGALRM, _record_expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        migrate()
+        cmd_record(None)
+    except RecordTimeout:
+        try:
+            daemon_log("record: gave up after %gs, a lock it needs held elsewhere; the next Stop retries" % seconds)
+        except (OSError, RecordTimeout):
+            pass
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def cmd_record(_a):
     """The hook's verb: one Stop or SessionStart payload on stdin. Records
     nothing for an internal fork, a session in no project, or a non-member;
-    a failure is a line in daemon.log, never an exit that blocks a turn."""
+    a failure is a line in daemon.log, never an exit that blocks a turn
+    (run_record bounds it in time)."""
     if os.environ.get("SMNS_INTERNAL"):
         return
     try:
@@ -2111,54 +2153,79 @@ def cmd_record(_a):
             pass
 
 
-def host_line(e, answer=None):
-    """One host event as `chat --host` prints it; a question with its answer
-    under it, or marked open."""
+def _asked(question):
+    text = question.get("text")
+    return " / ".join(str(t) for t in text) if isinstance(text, list) else str(text or "")
+
+
+def host_line(e, related=None):
+    """One host event as `chat --host` prints it. A question carries its
+    answer (`related`) under it, or is marked open; an answer printed apart
+    from its question names the call, with the question (`related`) beneath
+    it as context when the log holds it."""
     head = "%s %s" % (e["ts"][11:19], e.get("from", ""))
     if e["kind"] == "question":
-        text = e.get("text")
-        asked = " / ".join(str(t) for t in text) if isinstance(text, list) else str(text or "")
-        out = ["%s asks%s: %s" % (head, "" if answer else " (open)", asked)]
+        out = ["%s asks%s: %s" % (head, "" if related else " (open)", _asked(e))]
         if e.get("choices"):
             out.append("    choices: " + " · ".join(str(c) for c in e["choices"]))
-        if answer:
-            lines = str(answer.get("text") or "").split("\n")
+        if related:
+            lines = str(related.get("text") or "").split("\n")
             out += ["    answered: " + lines[0]] + ["      " + line for line in lines[1:]]
         return "\n".join(out)
     if e["kind"] == "answered":
         head = "%s answered (call %s)" % (head, e.get("src", ""))
     lines = str(e.get("text") or "").split("\n")
-    return "\n".join(["%s: %s" % (head, lines[0])] + ["    " + line for line in lines[1:]])
+    out = ["%s: %s" % (head, lines[0])] + ["    " + line for line in lines[1:]]
+    if e["kind"] == "answered" and related:
+        out.append("    to: %s (asked %s %s)" % (_asked(related), related["ts"][:10], related["ts"][11:16]))
+    return "\n".join(out)
 
 
 def chat_host(project, a):
-    """What the members sent their human: messages, and questions with their
-    answers under them, an open one marked open. A view, not a cursor read:
-    the last 30 (-n N, --since TS); the reader's chat cursor never moves."""
+    """What the members sent their human: messages, questions, and answers.
+    A view, not a cursor read: the last 30 host events (-n N), or those since
+    a time (--since TS), chosen before anything is grouped; the reader's chat
+    cursor never moves. A question shows its answer under it, or is marked
+    open; an answer whose question falls outside the window is shown where it
+    falls, its question beneath it as context (with --json, the question
+    first)."""
     events = log_read(project, kinds=HOST_KINDS)
-    asked = {e["src"] for e in events if e["kind"] == "question" and e.get("src")}
-    answers = {}
+    questions, answers = {}, {}
     for e in events:
-        if e["kind"] == "answered" and e.get("src") in asked:
+        if e.get("src") and e["kind"] == "question":
+            questions.setdefault(e["src"], e)
+        elif e.get("src") and e["kind"] == "answered":
             answers.setdefault(e["src"], e)
-    pool = [e for e in events if e["kind"] != "answered" or e.get("src") not in asked]
     if a.since is not None:
         since = normalize_ts(a.since)
-        window, head = [e for e in pool if e["ts"] >= since], "since %s" % a.since
+        window, head = [e for e in events if e["ts"] >= since], "since %s" % a.since
     else:
         n = a.n if a.n is not None else 30
-        window, head = pool[-n:], "last %d of %d" % (min(n, len(pool)), len(pool))
+        window, head = events[-n:], "last %d of %d" % (min(n, len(events)), len(events))
+    shown = {id(e) for e in window}
+
+    def context(e):
+        """An answer's question, when the window does not hold it."""
+        q = questions.get(e.get("src"))
+        return q if e["kind"] == "answered" and q is not None and id(q) not in shown else None
+
     if a.json:
         for e in window:
+            if context(e):
+                print(json.dumps(context(e), ensure_ascii=False))
             print(json.dumps(e, ensure_ascii=False))
-            if e["kind"] == "question" and e.get("src") in answers:
-                print(json.dumps(answers[e["src"]], ensure_ascii=False))
         return
     print("host %s · %s" % (project.name, head))
-    if len(pool) > len(window) and a.since is None:
-        print("+%d earlier — sminos chat %s --host -n %d" % (len(pool) - len(window), project.name, len(pool)))
+    if len(events) > len(window) and a.since is None:
+        print("+%d earlier — sminos chat %s --host -n %d" % (len(events) - len(window), project.name, len(events)))
     for e in window:
-        print(host_line(e, answers.get(e.get("src")) if e["kind"] == "question" else None))
+        if e["kind"] == "answered" and not context(e) and e.get("src") in questions \
+                and answers.get(e["src"]) is e:
+            continue  # printed under its question
+        if e["kind"] == "question":
+            print(host_line(e, answers.get(e.get("src"))))
+        else:
+            print(host_line(e, context(e)))
     if not window:
         print("(no messages to the host)")
 
@@ -5281,6 +5348,9 @@ def main(argv=None):
         did = migrate(quiet=True)
         if did and not a.quiet:
             print("sminos: migrated: %s" % "; ".join(did))
+        return
+    if a.cmd == "record":
+        run_record()
         return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":
