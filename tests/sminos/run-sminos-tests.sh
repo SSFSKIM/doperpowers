@@ -4464,6 +4464,57 @@ run env "${H3[@]}" "$SMINOS" daemon run --interval 1
 assert_rc 1 "$RC" "and run"
 assert_equals "$(gitq -C "$REMOTE" rev-parse main)" "$REMOTE_HEAD" "nothing of it reached the remote"
 assert_contains "$(cat "$MD/h3/sminos/daemon.log")" "refused: the machine name h2 is claimed" "the refusal is in daemon.log"
+# The recovery the refusal names works. Two registries under one name, twin:
+# the second, refused before it ever pushed, is renamed twin2 and syncs. What
+# it wrote as twin moves to twin2, its delivery records along; nothing the
+# first pushed is rewritten.
+TW1=(HOME="$MD/tw1" SMINOS_HOME="$MD/tw1/sminos" DAEMON_HOST=twin STUB_STATE="$MD/tw1/stub")
+TW2=(HOME="$MD/tw2" SMINOS_HOME="$MD/tw2/sminos" DAEMON_HOST=twin STUB_STATE="$MD/tw2/stub")
+TW2R=(HOME="$MD/tw2" SMINOS_HOME="$MD/tw2/sminos" DAEMON_HOST=twin2 STUB_STATE="$MD/tw2/stub")
+for h in tw1 tw2; do
+  mkdir -p "$MD/$h/.claude/sessions" "$MD/$h/stub/agents" "$MD/$h/stub/log" "$MD/$h/sminos"
+  chmod 700 "$MD/$h/sminos"
+done
+TWR="$MD/twin.git"
+gitq init -q --bare "$TWR"
+TR="$MD/TR"
+mkdir -p "$TR"
+gitq init -q "$TR"
+cd "$TR"
+run env "${TW1[@]}" "$SMINOS" project init --name twins --remote "$TWR"
+gitq -C "$TR" add .smns
+gitq -C "$TR" commit -qm smns
+TWP="$(smns_id "$TR")"
+run env "${TW1[@]}" "$SMINOS" say "from the first twin"
+run env "${TW1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "twins: synced" "the first registry named twin syncs and pushes"
+TW1_FILE="$(gitq -C "$TWR" rev-parse main:twin.human.jsonl)"
+TM=7a000007-0000-4000-8000-00000000007a
+md_peer tw2 tm "$TM" idle bg "$TR"
+run env "${TW2[@]}" "$SMINOS" say "@tm before the rename"
+assert_contains "$OUT" "tm: sent" "the second, also twin, delivers to its own member"
+run env "${TW2[@]}" "$SMINOS" daemon tick
+assert_rc 1 "$RC" "and is refused at its first sync"
+assert_contains "$OUT" "never pushed, moves to the new name at its next sync" "the refusal says what a rename does with what it wrote"
+run env "${TW2R[@]}" "$SMINOS" say "@tm after the rename"
+assert_contains "$OUT" "tm: sent" "renamed twin2, it speaks under the new name before it syncs"
+run env "${TW2R[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "twins: synced · reconciled 0 · published 1 · delivered 0 · pushed" "renamed, it syncs and pushes, delivering nothing twice"
+assert_equals "$(bodies md-tm | grep -c 'before the rename$')" 1 "its member holds the message from before the rename once"
+assert_equals "$(gitq -C "$TWR" rev-parse main:twin.human.jsonl)" "$TW1_FILE" "the first twin's file on the remote is untouched"
+assert_equals "$(gitq -C "$TWR" show main:twin2.human.jsonl | python3 -c 'import json, sys
+print([(e["writer"], e["seq"], e["text"]) for e in map(json.loads, sys.stdin)])')" \
+  "[('twin2/human', 1, '@tm after the rename'), ('twin2/human', 2, '@tm before the rename')]" \
+  "what it said as twin is twin2's on the remote, after what it said as twin2"
+assert_contains "$(gitq -C "$TWR" show "main:twin2.$TM.jsonl")" '"kind": "joined", "session": "'"$TM"'"' "its member's file moved to twin2 too"
+assert_contains "$(gitq -C "$TWR" show "main:twin2.$TM.jsonl")" '"machine": "twin2"' "naming the machine it runs on"
+assert_equals "$(gitq -C "$TWR" ls-tree --name-only main | grep -c "^twin\.$TM")" 0 "and nothing of it is left under twin"
+assert_contains "$(cat "$MD/tw2/sminos/daemon.log")" "carried 1 event(s) of twin/human" "daemon.log says what moved"
+run env "${TW1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "twins: synced" "the first twin syncs after it"
+assert_contains "$(cat "$MD/tw1/sminos/projects/$TWP/log/twin2.human.jsonl")" "before the rename" "and receives what the second wrote before its rename"
+assert_file_absent "$MD/tw1/sminos/projects/$TWP/log/twin.$TM.jsonl" "taking no member of the second for its own"
+cd "$RR"
 
 # A stalled remote: the fetch and the push wait outside .sync.lock, so a
 # fetch that hangs blocks no say and no Stop export; what they append during
