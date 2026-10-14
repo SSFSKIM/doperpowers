@@ -3733,6 +3733,54 @@ assert_contains "$OUT" "attach pfdemo/bgone bb00b001 → claude attach bb00b001"
 run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/ib,enter"
 assert_contains "$OUT" "ib holds no seat, and the harness offers no session to attach to" "and says why it cannot, for an interactive terminal's"
 rm -f "$HOME/.claude/sessions/pf-bgone.json" "$STUB_STATE/agents/bb00b001" "$PFLOG/h2.$FAR.jsonl"
+# A box is keyed by its project's id and its seat's, never by names: two
+# projects both named same, each with a seat worker, are two boxes, and the
+# keys reach each one's own session.
+C4="$TEST_ROOT/c4"
+C4E=(HOME="$C4/home" SMINOS_HOME="$C4/sminos" STUB_STATE="$C4/stub")
+mkdir -p "$C4/home/.claude/sessions" "$C4/stub/agents" "$C4/stub/log"
+C4W=()
+for i in 1 2; do
+  mkdir -p "$C4/p$i"
+  gitq init -q "$C4/p$i"
+  run_in "$C4/p$i" env "${C4E[@]}" "$SMINOS" project init --name same
+  S="4c00000$i-0000-4000-8000-00000000004c"
+  { echo "short=c4c4c40$i"; echo "uuid=$S"; echo "name=worker"; echo "state=working"; echo "status=idle"; echo "cwd=$C4/p$i"; } > "$C4/stub/agents/c4c4c40$i"
+  printf '{"pid":%s,"sessionId":"%s","name":"worker","kind":"background","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$S" "$C4/p$i" "$SOCK" > "$C4/home/.claude/sessions/w$i.json"
+  run_in "$C4/p$i" env "${C4E[@]}" "$SMINOS" seat add "g$i" worker --session "$S"
+  C4W+=("$(smns_id "$C4/p$i")")
+done
+FIRST="$(printf '%s\n' "${C4W[@]}" | sort | head -1)"
+if [[ "$FIRST" == "${C4W[0]}" ]]; then C4A=c4c4c401 C4B=c4c4c402; else C4A=c4c4c402 C4B=c4c4c401; fi
+run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "right,enter"
+assert_contains "$OUT" "attach same/worker $C4A → claude attach $C4A" "two projects named alike: enter in the first reaches the first's seat"
+run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "down,right,enter"
+assert_contains "$OUT" "attach same/worker $C4B → claude attach $C4B" "and in the second, the second's"
+run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "right,left"
+assert_contains "$OUT" "--- focus: same#${FIRST:0:8}" "left from the first's member returns to the first project"
+# The tui sends by the exact id: a seat work/parser and a seat-less session
+# also named parser, in the project work, are each reached from their own box
+# (by group/alias, the seat's name would answer to both).
+C5="$TEST_ROOT/c5"
+C5E=(HOME="$C5/home" SMINOS_HOME="$C5/sminos" STUB_STATE="$C5/stub")
+mkdir -p "$C5/home/.claude/sessions" "$C5/stub/agents" "$C5/stub/log" "$C5/work"
+gitq init -q "$C5/work"
+for who in seat free; do
+  S="$( [ "$who" = seat ] && echo 5c000001 || echo 5c000002 )-0000-4000-8000-00000000005c"
+  start_inbox "c5-$who"
+  { echo "short=${S:0:8}"; echo "uuid=$S"; echo "name=parser"; echo "kind=background"; echo "state=working"; echo "status=idle"; echo "cwd=$C5/work"; } > "$C5/stub/agents/${S:0:8}"
+  printf '{"pid":%s,"sessionId":"%s","name":"parser","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$S" "$C5/work" "$TEST_ROOT/in-c5-$who.sock" > "$C5/home/.claude/sessions/c5-$who.json"
+done
+run_in "$C5/work" env "${C5E[@]}" "$SMINOS" seat add work parser --session 5c000001-0000-4000-8000-00000000005c
+run_in "$C5/work" env "${C5E[@]}" "$SMINOS" tui --headless --width 120 --height 40 --keys "!focus:work/parser#5c000001,s,text:to the seat,enter"
+assert_contains "$OUT" "send parser#5c000001 to the seat → rc=0" "the seat is reached from its box, though a seat-less member shares its name"
+assert_contains "$(inbox c5-seat)" "to the seat" "the frame lands in the seat's session"
+assert_not_contains "$(inbox c5-free)" "to the seat" "and not in the other's"
+run_in "$C5/work" env "${C5E[@]}" "$SMINOS" tui --headless --width 120 --height 40 --keys "!focus:work/parser#5c000002,s,text:to the free one,enter"
+assert_contains "$OUT" "send parser#5c000002 to the free one → rc=0" "the seat-less one, by its session"
+assert_contains "$(inbox c5-free)" "to the free one" "reaching its own session"
 
 # A lifecycle event is part of its verb: a failed append exits 1, saying the
 # local operation completed and the log write failed.
@@ -4623,6 +4671,57 @@ run env "${H3[@]}" "$SMINOS" daemon run --interval 1
 assert_rc 1 "$RC" "and run"
 assert_equals "$(gitq -C "$REMOTE" rev-parse main)" "$REMOTE_HEAD" "nothing of it reached the remote"
 assert_contains "$(cat "$MD/h3/sminos/daemon.log")" "refused: the machine name h2 is claimed" "the refusal is in daemon.log"
+# The recovery the refusal names works. Two registries under one name, twin:
+# the second, refused before it ever pushed, is renamed twin2 and syncs. What
+# it wrote as twin moves to twin2, its delivery records along; nothing the
+# first pushed is rewritten.
+TW1=(HOME="$MD/tw1" SMINOS_HOME="$MD/tw1/sminos" DAEMON_HOST=twin STUB_STATE="$MD/tw1/stub")
+TW2=(HOME="$MD/tw2" SMINOS_HOME="$MD/tw2/sminos" DAEMON_HOST=twin STUB_STATE="$MD/tw2/stub")
+TW2R=(HOME="$MD/tw2" SMINOS_HOME="$MD/tw2/sminos" DAEMON_HOST=twin2 STUB_STATE="$MD/tw2/stub")
+for h in tw1 tw2; do
+  mkdir -p "$MD/$h/.claude/sessions" "$MD/$h/stub/agents" "$MD/$h/stub/log" "$MD/$h/sminos"
+  chmod 700 "$MD/$h/sminos"
+done
+TWR="$MD/twin.git"
+gitq init -q --bare "$TWR"
+TR="$MD/TR"
+mkdir -p "$TR"
+gitq init -q "$TR"
+cd "$TR"
+run env "${TW1[@]}" "$SMINOS" project init --name twins --remote "$TWR"
+gitq -C "$TR" add .smns
+gitq -C "$TR" commit -qm smns
+TWP="$(smns_id "$TR")"
+run env "${TW1[@]}" "$SMINOS" say "from the first twin"
+run env "${TW1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "twins: synced" "the first registry named twin syncs and pushes"
+TW1_FILE="$(gitq -C "$TWR" rev-parse main:twin.human.jsonl)"
+TM=7a000007-0000-4000-8000-00000000007a
+md_peer tw2 tm "$TM" idle bg "$TR"
+run env "${TW2[@]}" "$SMINOS" say "@tm before the rename"
+assert_contains "$OUT" "tm: sent" "the second, also twin, delivers to its own member"
+run env "${TW2[@]}" "$SMINOS" daemon tick
+assert_rc 1 "$RC" "and is refused at its first sync"
+assert_contains "$OUT" "never pushed, moves to the new name at its next sync" "the refusal says what a rename does with what it wrote"
+run env "${TW2R[@]}" "$SMINOS" say "@tm after the rename"
+assert_contains "$OUT" "tm: sent" "renamed twin2, it speaks under the new name before it syncs"
+run env "${TW2R[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "twins: synced · reconciled 0 · published 1 · delivered 0 · pushed" "renamed, it syncs and pushes, delivering nothing twice"
+assert_equals "$(bodies md-tm | grep -c 'before the rename$')" 1 "its member holds the message from before the rename once"
+assert_equals "$(gitq -C "$TWR" rev-parse main:twin.human.jsonl)" "$TW1_FILE" "the first twin's file on the remote is untouched"
+assert_equals "$(gitq -C "$TWR" show main:twin2.human.jsonl | python3 -c 'import json, sys
+print([(e["writer"], e["seq"], e["text"]) for e in map(json.loads, sys.stdin)])')" \
+  "[('twin2/human', 1, '@tm after the rename'), ('twin2/human', 2, '@tm before the rename')]" \
+  "what it said as twin is twin2's on the remote, after what it said as twin2"
+assert_contains "$(gitq -C "$TWR" show "main:twin2.$TM.jsonl")" '"kind": "joined", "session": "'"$TM"'"' "its member's file moved to twin2 too"
+assert_contains "$(gitq -C "$TWR" show "main:twin2.$TM.jsonl")" '"machine": "twin2"' "naming the machine it runs on"
+assert_equals "$(gitq -C "$TWR" ls-tree --name-only main | grep -c "^twin\.$TM")" 0 "and nothing of it is left under twin"
+assert_contains "$(cat "$MD/tw2/sminos/daemon.log")" "carried 1 event(s) of twin/human" "daemon.log says what moved"
+run env "${TW1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "twins: synced" "the first twin syncs after it"
+assert_contains "$(cat "$MD/tw1/sminos/projects/$TWP/log/twin2.human.jsonl")" "before the rename" "and receives what the second wrote before its rename"
+assert_file_absent "$MD/tw1/sminos/projects/$TWP/log/twin.$TM.jsonl" "taking no member of the second for its own"
+cd "$RR"
 
 # A stalled remote: the fetch and the push wait outside .sync.lock, so a
 # fetch that hangs blocks no say and no Stop export; what they append during
@@ -4714,6 +4813,30 @@ if python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 5.0)' "$TOOK"; then pas
 assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "timed out after 1s" "daemon.log says why"
 run env "${H1[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "stall: synced" "the next tick syncs again"
+# A git killed mid-step leaves its lock in the mirror, and every sync after it
+# would fail on that lock. One older than the git bound is a leftover (no git
+# of the daemon's runs while it holds the sync): removed and logged. A fresh
+# one is left alone.
+run env "${H2[@]}" "$SMINOS" say --in demo "moves the remote past a stale lock"
+run env "${H2[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" say --in demo "said past a stale lock"
+mkdir -p "$LOG1/.git/refs/remotes/origin"
+: > "$LOG1/.git/index.lock"
+: > "$LOG1/.git/refs/remotes/origin/main.lock"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "demo: not synced" "a fresh git lock in the mirror is left alone: the sync waits on it"
+assert_file_exists "$LOG1/.git/index.lock" "the lock stays"
+python3 -c 'import os, sys, time
+t = time.time() - 120
+for p in sys.argv[1:]:
+    os.utime(p, (t, t))' "$LOG1/.git/index.lock" "$LOG1/.git/refs/remotes/origin/main.lock"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "demo: synced" "one older than the git bound is a leftover: removed, and the sync goes on"
+assert_file_absent "$LOG1/.git/index.lock" "the stale index lock is gone"
+assert_file_absent "$LOG1/.git/refs/remotes/origin/main.lock" "and the stale ref lock a killed fetch would leave"
+assert_contains "$(cat "$LOG1/h2.human.jsonl")" "moves the remote past a stale lock" "the fetch brings the other home's append"
+assert_contains "$(gitq -C "$REMOTE" log -p main)" "said past a stale lock" "and this home's append is committed and pushed"
+assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "index.lock, a git lock 120s old" "daemon.log names each lock removed"
 unset GIT_SSH_COMMAND GIT_SSH_VARIANT
 cd "$RR"
 
@@ -4871,6 +4994,13 @@ PY_PLIST
 )" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True http://gateway.test False True True True" \
   "a well-formed plist: daemon run through this CLI, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
 assert_equals "$(mode_of "$PLIST")" "0600" "readable only by its owner: it may carry the gateway's token"
+# A first install, before any verb made the registry: launchd opens daemon.out
+# in it before the daemon runs, so the install makes it.
+run env HOME="$MD/fresh-inst" SMINOS_HOME="$MD/fresh-inst/sminos" PATH="$MD/lc:$PATH" "$SMINOS" daemon install
+assert_rc 0 "$RC" "a first install, with no registry yet, succeeds"
+FRESH_LOG="$(python3 -c 'import plistlib, sys; d = plistlib.load(open(sys.argv[1], "rb")); print(d["StandardOutPath"], d["StandardErrorPath"])' "$MD/fresh-inst/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist")"
+assert_equals "$FRESH_LOG" "$MD/fresh-inst/sminos/daemon.out $MD/fresh-inst/sminos/daemon.out" "its output paths are in the registry"
+assert_equals "$(mode_of "$MD/fresh-inst/sminos" 2>/dev/null || echo absent)" "0700" "which the install made, its owner's only"
 # A CLI running from the versioned plugin cache installs the marketplace
 # clone's CLI, which plugin updates keep; with no clone known, itself.
 CACHE="$MD/inst/.claude/plugins/cache/doperpowers/doperpowers/9.9.9"
