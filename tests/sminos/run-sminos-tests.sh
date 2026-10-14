@@ -135,11 +135,12 @@ esac
 
 args=("$@")
 prompt="${args[$((${#args[@]} - 1))]}"
-has_bg=0; fork=0; name=""; resume_uuid=""; worktree=""; i=0
+has_bg=0; fork=0; session_id=""; name=""; resume_uuid=""; worktree=""; i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
     --bg) has_bg=1 ;;
     --fork-session) fork=1 ;;
+    --session-id) i=$((i + 1)); session_id="${args[$i]}" ;;
     -n) i=$((i + 1)); name="${args[$i]}" ;;
     --resume) i=$((i + 1)); resume_uuid="${args[$i]}" ;;
     --worktree) i=$((i + 1)); worktree="${args[$i]}" ;;
@@ -160,12 +161,14 @@ PY
 # `-p --resume <id> --fork-session …` (derive's internal fork): a copy of the
 # parent's transcript as a new session, registered while it runs, the hook run
 # at its start and stop as the harness would, and the JSON result on stdout.
-# STUB_FORK_RESULT is its answer, STUB_FORK_FAIL=1 a failed run, and
-# STUB_FORK_LIST=1 has it list the project's members while it runs.
+# `--session-id` pins the fork's id, as the real harness honours it.
+# STUB_FORK_RESULT is its answer, STUB_FORK_FAIL=1 a failed run,
+# STUB_FORK_CRASH=1 a crash that prints nothing, and STUB_FORK_LIST=1 has it
+# list the project's members while it runs.
 if [ $fork -eq 1 ]; then
   echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no)" >> "$STUB_STATE/log/calls.log"
   n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
-  fork_uuid="$(printf '%08x' "$n")-f0f0-4000-8000-00000000f0f0"
+  fork_uuid="${session_id:-$(printf '%08x' "$n")-f0f0-4000-8000-00000000f0f0}"
   parent="$(ls "$HOME"/.claude/projects/*/"$resume_uuid.jsonl" 2>/dev/null | head -1 || true)"
   f="$(tx_path "$fork_uuid")"; mkdir -p "$(dirname "$f")"
   if [ -n "$parent" ]; then cp "$parent" "$f"; else : > "$f"; fi
@@ -176,6 +179,7 @@ if [ $fork -eq 1 ]; then
   hook() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"%s"}' \
     "$fork_uuid" "$f" "$PWD" "$1" "$2" | CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" "$STUB_PLUGIN_ROOT/hooks/smns-record.sh"; }
   hook SessionStart fork
+  [ "${STUB_FORK_CRASH:-0}" = "1" ] && exit 3
   python3 - "$f" "$answer" <<'PY'
 import json, sys
 open(sys.argv[1], 'a').write(json.dumps({"type": "assistant", "uuid": "f0f0f0f0-answer", "isSidechain": False,
@@ -3824,10 +3828,13 @@ assert_contains "$(cat "$STUB_STATE/fork-list.json")" '"alias": "hd"' "while the
 assert_equals "$(host_count)" "$HOST_BEFORE" "the host stream has no new line"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "the fork's transcript is deleted"
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "internal=1 marker=yes" "the fork runs with SMNS_INTERNAL set and its pid marked before it starts"
-assert_contains "$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)" "-p --resume $HD --fork-session --tools  --output-format json In one line: what is this session in charge of" \
-  "the fork is the headless resume the design names"
+FORK_ARGV="$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)"
+if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
+  pass "the fork is the headless resume the design names, its id pinned, the prompt last"
+else fail "the fork is the headless resume the design names, its id pinned, the prompt last"; echo "    in: $FORK_ARGV"; fi
 assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker is removed"
-assert_equals "$(find "$HPLOG" -name '*f0f0*' | wc -l | tr -d ' ')" "0" "and the hook recorded nothing for the fork"
+FORK_ID="$(sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' <<<"$FORK_ARGV")"
+assert_file_absent "$HPLOG/testhost.$FORK_ID.jsonl" "and the hook recorded nothing for the fork"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "not derived" "a session derived within six hours is not derived again"
 for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TA" prompt "a90000$i" "prompt $i"; done
@@ -3847,6 +3854,29 @@ assert_contains "$OUT" "stub: the fork exploded" "printing the tail of its stder
 assert_not_contains "$(cat "$HPLOG/testhost.$HE.jsonl")" "in-charge" "and writing nothing"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "its transcript is deleted all the same"
 assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker"
+STUB_FORK_CRASH=1 run "$SMINOS" derive he
+assert_rc 1 "$RC" "a fork that crashes without printing anything exits 1"
+assert_not_contains "$(cat "$HPLOG/testhost.$HE.jsonl")" "in-charge" "writing nothing"
+assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "and leaves no transcript: its id was pinned before it started"
+# A headless or SDK run registers as interactive with an sdk-* entrypoint: no
+# member, whatever its kind — neither reconciliation nor the hook joins it.
+HH=6b000008-0000-4000-8000-00000000006b
+printf '{"pid":%s,"sessionId":"%s","name":"headless","kind":"interactive","entrypoint":"sdk-cli","status":"busy","cwd":"%s"}\n' \
+  "$SOCK_PID" "$HH" "$R3" > "$HOME/.claude/sessions/hp-headless.json"
+run "$SMINOS" list --all
+assert_not_contains "$OUT" "headless" "an sdk-cli run is not listed, though its kind reads interactive"
+assert_file_absent "$HPLOG/testhost.$HH.jsonl" "nor joined by reconciliation"
+tx "$TXD/$HH.jsonl" asst h1000001 '<message>from a headless run</message>'
+hook_run SessionStart "$HH" "$R3" "$TXD/$HH.jsonl" startup
+hook_run Stop "$HH" "$R3" "$TXD/$HH.jsonl"
+assert_file_absent "$HPLOG/testhost.$HH.jsonl" "nor joined by the hook, and it exports nothing"
+assert_rc 0 "$HOOK_RC" "the hook exits 0 for it"
+for ep in cli:6c000009 claude-vscode:6d00000a; do
+  printf '{"pid":%s,"sessionId":"%s-0000-4000-8000-00000000006c","name":"ide","kind":"interactive","entrypoint":"%s","status":"idle","cwd":"%s"}\n' \
+    "$SOCK_PID" "${ep#*:}" "${ep%%:*}" "$R3" > "$HOME/.claude/sessions/hp-ide-${ep#*:}.json"
+  run "$SMINOS" list --json
+  assert_contains "$OUT" "${ep#*:}-0000" "an interactive session from entrypoint ${ep%%:*} still joins"
+done
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/hp-"*.json
 

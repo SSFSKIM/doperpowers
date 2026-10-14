@@ -450,9 +450,12 @@ MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
 # session on its machine appends it to that session's file.
 LIFECYCLE = MEMBERSHIP + ("renamed", "state", "in-charge", "status")
-# The harness session kinds that are members on sight; any other (another
-# tool's headless run) is not.
+# The harness session kinds that are members on sight; any other is not.
 JOINABLE_KINDS = ("interactive", "bg")
+# A headless or SDK run (`claude -p`, the agent SDKs) registers as
+# `interactive` too (harness 2.1.299: `kind: "interactive", entrypoint:
+# "sdk-cli"`); its entrypoint is what tells it apart, and it is no member.
+HEADLESS_ENTRYPOINT = "sdk"
 _PROJECTS = {}
 _HOMES = set()
 _VIEWS = {}  # project id → (members, seat rows), per invocation; a lifecycle append drops it
@@ -1078,10 +1081,13 @@ def _reconcile(project, events, local, by_session):
 def joinable(seat, peer):
     """Whether a session of this machine is a member on sight: a seat whose
     record is not retired, or a seat-less session the harness records as
-    `interactive` or `bg` (another tool's headless run is no member)."""
+    `interactive` or `bg` whose entrypoint is no headless or SDK run (`sdk-*`:
+    another tool's `claude -p` is no member, whatever its kind)."""
     if seat:
         return seat["status"] != "retired"
-    return str((peer or {}).get("kind") or "") in JOINABLE_KINDS
+    peer = peer or {}
+    return (str(peer.get("kind") or "") in JOINABLE_KINDS
+            and not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT))
 
 
 def join_on_sight(project, sid, seat, peer, running):
@@ -2303,9 +2309,13 @@ def sweep_internal():
 def derive_line(project, m):
     """Fork the member's session headless and return its one-line answer.
     The fork starts behind a gate: its pid is marked internal before it can
-    register; its transcript and the marker are deleted whatever the outcome."""
-    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--tools", "", "--output-format", "json",
-            DERIVE_PROMPT]
+    register. Its session id is minted here (`--session-id`), so its
+    transcript is known and deleted whatever the outcome — an answer, a
+    crash, a timeout — and so is the marker. The prompt comes last: `--tools`
+    takes several values and would swallow a prompt right after it."""
+    fork = str(uuidlib.uuid4())
+    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--session-id", fork, "--tools", "",
+            "--output-format", "json", DERIVE_PROMPT]
     gate_r, gate_w = os.pipe()
     marker = ""
     out = err = ""
@@ -2356,9 +2366,8 @@ def derive_line(project, m):
     finally:
         if gate_w != -1:
             os.close(gate_w)
-        fork = str((obj or {}).get("session_id") or "")
-        if UUID_RE.match(fork) and fork != m.session:
-            path = transcript_path(fork)
+        for sid in {fork, str((obj or {}).get("session_id") or "")}:
+            path = transcript_path(sid) if UUID_RE.match(sid) and sid != m.session else ""
             if path:
                 os.unlink(path)
         if marker:
