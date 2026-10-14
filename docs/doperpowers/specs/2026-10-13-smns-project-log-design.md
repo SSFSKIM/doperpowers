@@ -959,6 +959,19 @@ Dispatch scripts: one `--brief` each.
   Evidence: both independent reviewers reproduced it on a scratch bare
   remote and clone — appending a second line to a committed writer file
   made the pull exit 128. The sync invariant (§8) commits first.
+- Observation: `migrate` runs before every verb, so any run of a working
+  copy's CLI without a temporary `SMINOS_HOME` performs the one-way chat
+  import on the operator's real registry.
+  Evidence: 2026-10-13, an M1 self-check run of `sminos.py project show`
+  without `SMINOS_HOME` renamed the two real `chats/*.jsonl` to
+  `.imported` and created `projects/local-doperpowers/`. Restoring them
+  was escalated to the human. Every later dispatch isolates `HOME` and
+  `SMINOS_HOME`, and M6's docs say the import is one-way.
+- Observation: `SMINOS_FAMILY_ONLY=1` (the suite's focused mode) was
+  already broken at baseline. M1 fixed it: it now passes 314/314.
+- Observation: `git rev-parse --git-common-dir` prints a relative path
+  (`../../.git`) when run from a subdirectory. Resolution joins it with
+  the directory given to `-C`.
 
 ## Decision Log
 
@@ -1089,6 +1102,35 @@ Dispatch scripts: one `--brief` each.
   Rationale: each test's intent survives intact at its milestone, and no
   milestone builds ahead of its plan to satisfy a test.
   Date/Author: 2026-10-13, the plan-executor (controller).
+- Decision: M1's gaps, resolved by its executor (detail in commit
+  7f3f8b9f). `now(ms=True)` only for the log's `ts`: seat records keep
+  whole seconds, because the board compares `updated` as strings and the
+  dispatch scripts may change only by `--brief`. A seat recorded in a
+  directory that is no project belongs to `local-<basename(cwd)>`: §1's
+  `spawn --cwd` exception, read off the record. `send` appends before it
+  delivers, and its event carries `direct: true` and is never owed: the
+  verb delivers it itself, keeping `--wait` and its loud failure (M4
+  records a `send` to a remote member without `direct`, so the remote
+  daemon owes it). "`settled + 1`" (§4) is the next event in the
+  member's owed sequence: an event not addressed to the member settles
+  by passing. Legacy writers are never owed. The default `chat` and the
+  frame's `unread` count `say` and `human` only (M3's `--host` adds the
+  host kinds); cursor mode leaves out the reader's own events and
+  advances past the whole log, while `-n` and `--since` leave the cursor
+  where it is. The operator's cursor and delivery key is `human`. Tags:
+  bare names are `[\w.-]+`, so Korean names work; `#short` matches a hex
+  prefix; `@short` must be all eight characters; a match that is retired
+  or vacant is refused with a hint. `--team` leaves `say` and `chat` now.
+  `project show` exits 4 when there is no project. A malformed `.smns`
+  warns and resolution walks on upward. `attach` keeps the lock files out
+  through `.git/info/exclude`, commits as `sminos`, and uses the branch
+  `main`. The legacy import writes the operator's lines as kind `human`
+  (the routing table's kind; §9 says `say`), and leaves alone a chat
+  whose host record is gone. The TUI chat panel reads the focused seat's
+  project log.
+  Rationale: each follows the nearest design decision; none changes a
+  ruling.
+  Date/Author: 2026-10-13, the M1 executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
