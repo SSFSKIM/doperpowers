@@ -1248,6 +1248,39 @@ Dispatch scripts: one `--brief` each.
   another tool's headless run in the repository does not become a
   member. The internal-fork marker stays for `derive`.
   Date/Author: 2026-10-14, the controller.
+- Decision: M2's task review moved the following (fix commits faa23f6c,
+  48721e99).
+  - `send`, `status`, and `retire` resolve a bare name the way a tag
+    resolves. They reconcile first, then match against every member and
+    every vacant or retired seat, so a seat and a seat-less session that
+    share an alias are refused as ambiguous instead of the seat being
+    chosen silently. Matches are de-duplicated by seat id. A seat id, a
+    session id, or `group/alias` still names a seat directly.
+  - From inside a project, an unresolved bare name is refused, with a
+    pointer to `<project>/<name>`. The unrecorded raw harness-name route
+    is left only for a directory in no project, and only to sessions in
+    no project, which have no log to record into.
+  - Membership on sight, and its end (`ended`), follow the process: the
+    pid is alive and is the recorded process. Delivery and a seat's state
+    word still go by the socket.
+  - `status` and the `set` in-charge line take each writer's latest
+    event by `seq`, then the latest `ts` across those candidates (§3).
+  - Chart and TUI boxes draw §7's facts: state as `list` prints it, the
+    in-charge line, `now:` status, and `by`.
+  - TUI Enter attaches to a seat-less member when the harness offers a
+    non-interactive session for it, and otherwise says why it cannot.
+  - A lifecycle append that fails makes `retire` and `remove` exit 1,
+    saying the local operation completed and the log write failed: the
+    retired seat record blocks repair by reconciliation. A `spawn` or a
+    fresh `fill` instead warns loudly and exits 0. Its worker is already
+    running, an exit 1 would make execute-dispatch release the run and
+    leave the worker unbound, and reconciliation re-joins the seat on the
+    next reading verb, without its `by` and its in-charge line.
+  - The dispatch suites share one stub harness,
+    `tests/issue-tracker/stub-harness/claude`, put on `PATH`.
+  Deferred as minor: from a directory in no project, `list` shows a seat
+  whose cwd moved after it joined under both projects.
+  Date/Author: 2026-10-14, the controller, from the M2 task review.
 
 ## Outcomes & Retrospective
 
