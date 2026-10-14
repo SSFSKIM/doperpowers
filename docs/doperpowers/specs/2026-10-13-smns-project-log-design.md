@@ -973,6 +973,38 @@ Dispatch scripts: one `--brief` each.
   Evidence: both independent reviewers reproduced it on a scratch bare
   remote and clone — appending a second line to a committed writer file
   made the pull exit 128. The sync invariant (§8) commits first.
+- Observation: M5's eval. Four scenarios were run on the old text
+  (commit af0511a2) and on the rewrite, with 30 opus subjects in all.
+  Transcripts and verdicts are in
+  `docs/doperpowers/specs/2026-10-13-smns-project-log-m5-evals.md`.
+
+  | scenario | old | v1 | v2 | v3 | final |
+  | --- | --- | --- | --- | --- | --- |
+  | (a) untagged status, `@all` for a blocking change | 2/2 | 2/2 | | | 2/2 |
+  | (b) the human through `<message>` | 2/2 | 2/2 | | | 2/2 |
+  | (c) sibling for standing work, no session for bounded work | 0/2 | 2/2 | 2/2 (one misread) | 3/3 | 2/2 |
+  | (d) a board worker escalates by parking | 1/2 | 0/2 | | | 3/3 |
+
+  Evidence:
+  - (a) and (b) already pass on the old text, because the old `@all`
+    and the output style already produce the behavior. Final, a-final-2:
+    "every live member has to act on it right away, so I sent it with
+    @all", with the `<message>` to the human "since no tag reaches him".
+  - (c) fails on the old text through parent framing. c-old-1: "maws-bench
+    (my child seat …)"; c-old-2: "I spawned it as my own child … Fixture
+    updates come to me to merge". Every subject on the rewrite spawned a
+    sibling with `--brief` and claimed no parentage. c-v1-2: "A spawned
+    session would leave a standing member behind after a one-afternoon
+    job." A v2 misread ("a subagent of the session that owns it" read as
+    the owner of the area) was fixed in v3.
+  - (d) fails through a side channel that invites the answer outside the
+    ticket. d-old-2: "Please ask Hyun and reply with his answer"; d-v1-1:
+    "have the answer go on #231 or to me". The final text's conditional
+    fixed it, 3/3. d-final-2: "please have the answer go on the ticket; I
+    resume from there."
+
+  Limit: each subject plays one simulated turn and states what it would
+  do. No live seat has read the preamble yet.
 - Observation: `$SMINOS_HOME`'s root `*.json` files are the seat-record
   namespace, which sminos and the board scripts share, so no other kind
   of file may live there.
@@ -1515,6 +1547,22 @@ Dispatch scripts: one `--brief` each.
     path would have reinstated the failure the stable-path ruling
     removes.
   Date/Author: 2026-10-14, the controller, from the M4 task review.
+- Decision: M5's gaps, resolved by its executor (7009154f).
+  - The preamble (39 lines) carries one rule §6 did not list. When the
+    task names where its questions are answered (a ticket), the answer
+    comes back there, and a `say` or `<message>` about the question
+    points there. It is keyed to an observable fact, not a ban, and it
+    took scenario (d) from 0/2 to 3/3.
+  - In (c), the bar is that a bounded task starts no new session.
+    Handing it to the member already in charge of that area passes ("to
+    the owner"). It starts no session and keeps §2's ruling, so no text
+    was added against it.
+  - The examples are the spec's own, so a pass is not a copy of a
+    scenario's answer. `seat add` is documented as optional. `spawn
+    --stamp` and `--no-wait` are left to `--help` as pipeline internals.
+  Left for M6: `render_preamble`'s dead `{{GROUP}}`/`{{PARENT}}`
+  replacements and its stale docstring.
+  Date/Author: 2026-10-14, the M5 executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
