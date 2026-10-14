@@ -605,7 +605,8 @@ Leaves: the host and family reach (`family_of`, `reach_of`,
 per-host chat files under `chats/` and their in-place `delivered` maps,
 `chat_seen` on seat records, the `groups/` directory. `sminos migrate`
 imports each `chats/<host-seat-id>.jsonl` into the project of the host's
-`cwd` as `say` events under writer `legacy/<host-seat-id>`, preserving
+`cwd` under writer `legacy/<host-seat-id>` — a member's lines as `say`
+events, the operator's as `human` (the routing table's kinds) — preserving
 `ts`, `from`, and tags as `to` resolved against the seats of that time
 (unresolvable tags stay as text); existing seat records keep working, their
 project resolved from `cwd`, their sessions joined by reconciliation.
@@ -1131,6 +1132,12 @@ Dispatch scripts: one `--brief` each.
   Rationale: each follows the nearest design decision; none changes a
   ruling.
   Date/Author: 2026-10-13, the M1 executor, folded by the controller.
+- Revision: §9's import sentence now says what M1 built. A member's
+  lines are imported as `say` and the operator's as `human`; the text
+  had said every line was `say`.
+  Rationale: the routing table of §4 makes `human` the operator's kind,
+  and the design reads as one document only if §9 agrees with it.
+  Date/Author: 2026-10-14, the controller, at the authoring session's request.
 
 ## Outcomes & Retrospective
 
