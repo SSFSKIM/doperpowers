@@ -244,14 +244,14 @@ def handle_key(state, key, actions):
             # opened, never to whatever is focused now: a refresh that lands
             # while the operator is typing rebuilds the layout, and a target
             # that retired or went away moves the focus elsewhere.
-            text, target = state["input"].strip(), state["input_target"]
+            text, (target, target_name) = state["input"].strip(), state["input_target"]
             state["input"], state["input_target"] = None, None
             box = state["lay"]["by_id"].get(target)
             node = box["node"] if box else None
             if not text:
                 pass
             elif node is None or node["kind"] != "seat":
-                flash(state, "%s is no longer on the chart — nothing was sent" % (target or "the seat"))
+                flash(state, "%s is no longer on the chart — nothing was sent" % target_name)
             else:
                 actions.send(node, text)
         elif key == "backspace":
@@ -310,7 +310,7 @@ def handle_key(state, key, actions):
                 node["label"], node["state"], node["ref"]))
         else:
             # A stopped seat too: the send resumes it.
-            state["input"], state["input_target"] = "", node["id"]
+            state["input"], state["input_target"] = "", (node["id"], node["name"])
     elif key == "a":
         state["show_all"] = not state["show_all"]
         resnapshot(state)
@@ -367,9 +367,8 @@ class HeadlessActions:
         cmd = "claude attach %s" % short
         if not self.state["no_tmux"] and os.environ.get("TMUX"):
             cmd = "tmux new-window -n %s %s" % (node["label"], cmd)
-        # The qualified id, not the bare alias: two projects may hold the same
-        # one, and it is what RealActions keys its open windows by.
-        self.state["actions"].append("attach %s %s → %s" % (node["id"], short, cmd))
+        # The qualified name, not the bare alias: two projects may hold the same one.
+        self.state["actions"].append("attach %s %s → %s" % (node["name"], short, cmd))
         flash(self.state, "would run: " + cmd)
 
     def send(self, node, text):
@@ -402,16 +401,16 @@ class RealActions:
             flash(st, "run in another terminal: claude attach %s" % short)
             return
         alias = node["label"]
-        # Keyed by the member's qualified id: two projects may hold the same
-        # alias, and a bare-alias key would send one's Enter to the other's
-        # conversation window.
+        # Keyed by the member's id, never a name: two projects may hold the
+        # same alias, or the same name, and a name key would send one's Enter
+        # to the other's conversation window.
         key = node["id"]
         try:
             wins = self._tmux("list-windows", "-F", "#{window_id}").stdout.split()
             wid = st["attached"].get(key)
             if wid and wid in wins:
                 p = self._tmux("select-window", "-t", wid)
-                flash(st, "switched to %s (tmux window %s)" % (key, wid) if p.returncode == 0 else first_line(p))
+                flash(st, "switched to %s (tmux window %s)" % (node["name"], wid) if p.returncode == 0 else first_line(p))
                 return
             p = self._tmux("new-window", "-P", "-F", "#{window_id}", "-n", alias, "claude", "attach", short)
             if p.returncode != 0:
@@ -425,7 +424,7 @@ class RealActions:
 
     def send(self, node, text):
         st = self.state
-        flash(st, "sending to %s…" % node["id"])
+        flash(st, "sending to %s…" % node["name"])
         argv = send_argv(node, text)
 
         def go():
@@ -609,7 +608,7 @@ def paint(state, screen):
     if state["input"] is not None:
         # The captured target, not the current focus — they differ when a
         # refresh moves the focus while the operator is typing.
-        prompt = "send → %s ▏" % (state["input_target"] or "?")
+        prompt = "send → %s ▏" % state["input_target"][1]
         footer = prompt + state["input"]
         if chart.dwidth(footer) > w - 1:  # keep the tail visible while typing
             footer = prompt + state["input"][-(max(1, w - 1 - chart.dwidth(prompt)) // 2):]
@@ -679,13 +678,15 @@ def parse_keys(spec):
 def drive(state, tok):
     """A `!`-prefixed token in --keys is an instruction to the DRIVER, not a
     keystroke: it reaches past the keymap to do what only the refresh thread
-    does in a live screen. `!focus:<id>` moves the focus (what a rebuild does
-    when the focused seat disappears) and `!drop:<id>` removes a box from the
-    layout (what a snapshot does when a seat is retired mid-turn). Returns
-    True when the token was a driver instruction."""
+    does in a live screen. `!focus:<box>` moves the focus (what a rebuild does
+    when the focused seat disappears) and `!drop:<box>` removes a box from the
+    layout (what a snapshot does when a seat is retired mid-turn); a box is
+    named by its qualified name or its id. Returns True when the token was a
+    driver instruction."""
     if not tok.startswith("!"):
         return False
     verb, _, arg = tok[1:].partition(":")
+    arg = next((b["node"]["id"] for b in state["lay"]["boxes"] if arg in (b["node"]["id"], b["node"]["name"])), arg)
     if verb == "focus":
         state["focus"] = arg
     elif verb == "drop":
@@ -709,7 +710,8 @@ def run_headless(a):
     scr = chart.GridScreen(state["width"], state["height"])
     paint(state, scr)
     print(scr.text())
-    print("--- focus: %s" % (state["focus"] or "-"))
+    node = focused_node(state)
+    print("--- focus: %s" % (node["name"] if node else state["focus"] or "-"))
     print("--- actions:")
     for line in state["actions"]:
         print(line)

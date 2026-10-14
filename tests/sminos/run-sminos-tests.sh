@@ -3623,6 +3623,32 @@ assert_contains "$OUT" "attach pfdemo/bgone bb00b001 → claude attach bb00b001"
 run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/ib,enter"
 assert_contains "$OUT" "ib holds no seat, and the harness offers no session to attach to" "and says why it cannot, for an interactive terminal's"
 rm -f "$HOME/.claude/sessions/pf-bgone.json" "$STUB_STATE/agents/bb00b001" "$PFLOG/h2.$FAR.jsonl"
+# A box is keyed by its project's id and its seat's, never by names: two
+# projects both named same, each with a seat worker, are two boxes, and the
+# keys reach each one's own session.
+C4="$TEST_ROOT/c4"
+C4E=(HOME="$C4/home" SMINOS_HOME="$C4/sminos" STUB_STATE="$C4/stub")
+mkdir -p "$C4/home/.claude/sessions" "$C4/stub/agents" "$C4/stub/log"
+C4W=()
+for i in 1 2; do
+  mkdir -p "$C4/p$i"
+  gitq init -q "$C4/p$i"
+  run_in "$C4/p$i" env "${C4E[@]}" "$SMINOS" project init --name same
+  S="4c00000$i-0000-4000-8000-00000000004c"
+  { echo "short=c4c4c40$i"; echo "uuid=$S"; echo "name=worker"; echo "state=working"; echo "status=idle"; echo "cwd=$C4/p$i"; } > "$C4/stub/agents/c4c4c40$i"
+  printf '{"pid":%s,"sessionId":"%s","name":"worker","kind":"background","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$S" "$C4/p$i" "$SOCK" > "$C4/home/.claude/sessions/w$i.json"
+  run_in "$C4/p$i" env "${C4E[@]}" "$SMINOS" seat add "g$i" worker --session "$S"
+  C4W+=("$(smns_id "$C4/p$i")")
+done
+FIRST="$(printf '%s\n' "${C4W[@]}" | sort | head -1)"
+if [[ "$FIRST" == "${C4W[0]}" ]]; then C4A=c4c4c401 C4B=c4c4c402; else C4A=c4c4c402 C4B=c4c4c401; fi
+run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "right,enter"
+assert_contains "$OUT" "attach same/worker $C4A → claude attach $C4A" "two projects named alike: enter in the first reaches the first's seat"
+run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "down,right,enter"
+assert_contains "$OUT" "attach same/worker $C4B → claude attach $C4B" "and in the second, the second's"
+run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "right,left"
+assert_contains "$OUT" "--- focus: same#${FIRST:0:8}" "left from the first's member returns to the first project"
 
 # A lifecycle event is part of its verb: a failed append exits 1, saying the
 # local operation completed and the log write failed.

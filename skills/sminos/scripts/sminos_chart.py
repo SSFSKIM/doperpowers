@@ -79,10 +79,13 @@ def is_dead(st):
 def member_node(project, m, label):
     """One member's box, carrying the facts `list` prints (§7): the in-charge
     line, `now:` the status, `by` the spawner, and for a member on another
-    machine `@machine age` beside its word. `ref` is the name `sminos send`
-    and `fill` take for it: a seat's group/alias, else the session id."""
+    machine `@machine age` beside its word. `id` keys the box by the
+    project's id and the seat's (or the session's) — names repeat across
+    projects; `name` is the qualified one shown. `ref` is the name `sminos
+    send` and `fill` take for it: a seat's group/alias, else the session id."""
     seat = m.seat
-    return {"kind": "seat", "id": "%s/%s" % (project.name, label), "label": label,
+    return {"kind": "seat", "id": "%s/%s" % (project.id, seat["seat_id"] if seat else m.session),
+            "name": "%s/%s" % (project.name, label), "label": label,
             "role": (seat or {}).get("role") or "", "state": m.state, "word": sminos.state_column(m),
             "charge": sminos.charge_shown(m), "now": m.status, "by": m.by, "dead": is_dead(m.state),
             "children": [], "hidden": 0, "seat": sminos.public_seat(seat) if seat else None,
@@ -119,8 +122,8 @@ def snapshot(projects, show_all=False, boxed=True):
         if not nodes and not show_all:
             meta["hidden_projects"] += 1
             continue
-        pid = p.name if names.count(p.name) == 1 else "%s#%s" % (p.name, p.id[:8])
-        roots.append({"kind": "project", "id": pid, "label": p.name, "role": "", "state": "", "word": "",
+        name = p.name if names.count(p.name) == 1 else "%s#%s" % (p.name, p.id[:8])
+        roots.append({"kind": "project", "id": p.id, "name": name, "label": p.name, "role": "", "state": "", "word": "",
                       "charge": "", "now": "", "by": "", "dead": False, "children": nodes, "hidden": hidden, "members": n, "alive": live,
                       "project": p})
     return roots, meta
