@@ -680,14 +680,15 @@ def _append(project, writer, events, skip_src=False):
         with os.fdopen(fd, "r+b") as f:
             if skip_src:
                 f.seek(0)
-                present = {x["src"] for x in map(parse_event, f.read().decode("utf-8", "replace").split("\n"))
+                # (kind, src): a question and its answer share the call id.
+                present = {(x["kind"], x["src"]) for x in map(parse_event, f.read().decode("utf-8", "replace").split("\n"))
                            if x and x.get("src") is not None}
                 kept = []
                 for e in events:
-                    src = e.get("src")
-                    if src is None or src not in present:
-                        if src is not None:
-                            present.add(src)
+                    key = (e["kind"], e.get("src"))
+                    if key[1] is None or key not in present:
+                        if key[1] is not None:
+                            present.add(key)
                         kept.append(e)
                 events = kept
             if not events:
@@ -715,8 +716,9 @@ def log_append(project, writer, kind, **fields):
 
 def log_append_batch(project, writer, events, skip_src=True):
     """Several events of one writer under one taking of the locks; with
-    skip_src, an event whose `src` the file already holds is dropped inside
-    them, so a retried export appends each source once."""
+    skip_src, an event whose (kind, src) the file already holds is dropped
+    inside them, so a retried export appends each source once. `src` is a
+    correlation id: a `question` and its `answered` share one."""
     return _append(project, writer, events, skip_src)
 
 
@@ -765,7 +767,14 @@ def cursor_load(project, session_uuid):
 
 
 def cursor_save(project, session_uuid, cursor):
-    write_json(project_path(project, "cursors", reader_key(session_uuid) + ".json"), cursor)
+    """Advance a reader's cursor to `cursor`, merged per writer with what is
+    persisted under the cursor's lock: overlapping reads never move it back."""
+    path = project_path(project, "cursors", reader_key(session_uuid) + ".json")
+    with flocked(path[:-len(".json")] + ".lock"):
+        merged = cursor_load(project, session_uuid)
+        for writer, seq in cursor.items():
+            merged[writer] = max(merged.get(writer, 0), int(seq))
+        write_json(path, merged)
 
 
 # Delivery records: per recipient session, per writer, the seq up to which
@@ -828,10 +837,9 @@ def member_session(member):
 
 
 def _owed(events, session, record):
-    # Imported history was delivered by the old chat, and a `direct` event by
-    # the sender's own `send`: neither is owed.
+    # Imported history was delivered by the old chat: it is never owed.
     return [e for e in events
-            if not e["writer"].startswith("legacy/") and not e.get("direct")
+            if not e["writer"].startswith("legacy/")
             and writer_session(e["writer"]) != session and addressed_to(e, session)
             and e["seq"] > _delivery(record, e["writer"])["settled"]]
 
@@ -883,14 +891,22 @@ def deliver_next(project, member):
     return result
 
 
-def push_event(project, member, session, e, events, cursor):
-    """Push one event to one member as a chat frame. An addressed event resumes
-    a stopped member; an @all (`wake`) reaches only the live."""
+def frame_of(project, e, events, session, cursor):
+    """The frame an event is pushed as. A `send` keeps its own frame (its id
+    is what `send --wait` looks for), its sender shown as the `--from`
+    override when it had one; anything else is a chat frame."""
+    if e.get("msg_id"):
+        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
-    frame = compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
-                               "@all" if e.get("wake") else "@you", unread, str(e.get("text") or ""))
-    return push_member(member, frame, not e.get("wake"), session=session)
+    return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
+                              "@all" if e.get("wake") else "@you", unread, str(e.get("text") or ""))
+
+
+def push_event(project, member, session, e, events, cursor):
+    """Push one event to one member. An addressed event resumes a stopped
+    member; an @all (`wake`) reaches only the live."""
+    return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session)
 
 
 def compose_chat_frame(project_name, ref, sender, target, unread, text):
@@ -1265,16 +1281,22 @@ def git_in(log, *args, timeout=None):
                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 
+def git_must(log, *args):
+    """A git step attach cannot go on without: its failure ends the attach."""
+    p = git_in(log, *args)
+    if p.returncode != 0:
+        die("git %s in %s failed: %s" % (" ".join(args[:2]), log, " ".join((p.stderr or p.stdout).split())[:300]), 1)
+    return p
+
+
 def commit_log(log, message):
     """Commit whatever the appenders wrote; the caller holds `.sync.lock`
     exclusive. A first commit is made even with nothing to commit."""
-    git_in(log, "add", "-A")
+    git_must(log, "add", "-A")
     if git_in(log, "rev-parse", "--verify", "-q", "HEAD").returncode == 0 and \
-            not git_in(log, "status", "--porcelain").stdout.strip():
+            not git_must(log, "status", "--porcelain").stdout.strip():
         return
-    p = git_in(log, "commit", "-q", "--allow-empty", "-m", message)
-    if p.returncode != 0:
-        die("git commit in %s failed: %s" % (log, (p.stderr or p.stdout).strip()), 1)
+    git_must(log, "commit", "-q", "--allow-empty", "-m", message)
 
 
 def project_attach(a):
@@ -1291,20 +1313,18 @@ def project_attach(a):
     with flocked(os.path.join(log, ".sync-op.lock")):
         with flocked(os.path.join(log, ".sync.lock")):
             if not os.path.isdir(os.path.join(log, ".git")):
-                init = git_in(log, "init", "-q", "-b", "main")
-                if init.returncode != 0:
-                    die("git init in %s failed: %s" % (log, init.stderr.strip()), 1)
-            git_in(log, "config", "user.name", "sminos")
-            git_in(log, "config", "user.email", "sminos@%s" % host_name())
+                git_must(log, "init", "-q", "-b", "main")
+            git_must(log, "config", "user.name", "sminos")
+            git_must(log, "config", "user.email", "sminos@%s" % host_name())
             exclude = os.path.join(log, ".git", "info", "exclude")
             os.makedirs(os.path.dirname(exclude), exist_ok=True)
             with open(exclude, "w") as f:
                 f.write("# locks are this machine's, never the mirror's\n*.lock\n")
             commit_log(log, "sminos: %s attaches %s" % (host_name(), p.name))
             if git_in(log, "remote", "get-url", "origin").returncode == 0:
-                git_in(log, "remote", "set-url", "origin", p.remote)
+                git_must(log, "remote", "set-url", "origin", p.remote)
             else:
-                git_in(log, "remote", "add", "origin", p.remote)
+                git_must(log, "remote", "add", "origin", p.remote)
         try:
             fetch = git_in(log, "fetch", "-q", "origin", timeout=30)
             fetched, why = fetch.returncode == 0, (fetch.stderr or fetch.stdout).strip()
@@ -2826,7 +2846,7 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
+def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_launched=None):
     """Process-level continuation of a seat's session.
 
     A live current turn is stopped first (`claude stop`, then a bounded wait
@@ -2846,6 +2866,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     dies). If the banner says a copy started, or the harness reports a
     different session id, the copy is stopped, the record is left untouched,
     and the command fails loudly.
+
+    `on_launched`, when given, is called once the message is in a launched
+    process — confirmed, or uncertain because no session id came back — and
+    before any wait: `send` settles its delivery record there.
     """
     if s["engine"] == "codex":
         raise ResumeRefused(legacy_codex_refusal(s))
@@ -2916,6 +2940,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     polled = poll_uuid(short)
     if not polled:
         meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
+        if on_launched:
+            on_launched()  # launched with the message: delivery is uncertain, not failed
         if quiet:
             unlock(locks)
             return "woken?"
@@ -2923,6 +2949,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     uuid, state, _cwd = polled
     if uuid != cur:
         copy_started(uuid)
+    if on_launched:
+        on_launched()
     turns = int(s["turns"] or "0") + 1
     # model/settings/effort stay as recorded at spawn/fill: the resumed session
     # runs on its saved options, whatever this call was passed.
@@ -3035,7 +3063,14 @@ def send_to_seat(s0, text, msg_id, wait, record=None):
     concurrent fill/resume/retire cannot slip between them. A live seat takes
     the frame on its inbox socket and is recorded `working`; a stopped one is
     resumed with the frame as its message; vacant, retired, and gone seats
-    are refused, pointing at the verb that can reach them."""
+    are refused, pointing at the verb that can reach them.
+
+    `record(seat)`, when given, appends the message to the seat's project log
+    once the seat is known reachable and returns its SendDelivery (or None
+    when the seat has no project): the push then carries every earlier event
+    of the same writer still owed to the seat, in order, and the delivery
+    record is settled on sent, woken, or uncertain and noted as failed
+    otherwise — so a send that dies on the way is the daemon's to retry."""
     refuse_codex(s0)
     locks = lock_seat(s0)
     s = reload_seat(s0["seat_id"])
@@ -3054,10 +3089,27 @@ def send_to_seat(s0, text, msg_id, wait, record=None):
     if st == "gone":
         die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
             "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
-    if record:
-        record(s)
+    delivery = record(s) if record else None
+    if delivery:
+        if not delivery.queue:
+            # A concurrent deliverer pushed it between the append and our lock.
+            delivery.release()
+            unlock(locks)
+            print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
+            return
+        text = delivery.text
+    settle = delivery.settle if delivery else None
+
+    def resume(locks):
+        try:
+            resume_session(s, text, wait, locks, verb="sent to", on_launched=settle)
+        except ResumeRefused:
+            if delivery:
+                delivery.fail()
+            raise
+
     if not peer:
-        resume_session(s, text, wait, locks, verb="sent to")
+        resume(locks)
         return
     sock = socket_path_of(peer)
     row = harness_row(s)
@@ -3071,12 +3123,16 @@ def send_to_seat(s0, text, msg_id, wait, record=None):
             # Nothing reached the peer (the session exited between the
             # liveness check and the write): fall through to the resume path.
             warn("inbox socket delivery to %s failed before the frame was written (%s); resuming instead" % (ref, e))
-            resume_session(s, text, wait, locks, verb="sent to")
+            resume(locks)
             return
+        if delivery:
+            delivery.settle()  # uncertain after a write: never pushed again
         unlock(locks)
         die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
             "resuming and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
                 ref, e, msg_id), 1)
+    if delivery:
+        delivery.settle()
     wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
     # The watcher's guard: the generation right after our write, read while
     # the lifecycle lock is still held.
@@ -3143,20 +3199,56 @@ def refuse_wait(target):
     die("--wait needs a seat: '%s' is not one, so there is no record to watch — send without --wait" % target)
 
 
-def record_send(s, sender, text):
+class SendDelivery:
+    """One `send` through the recipient's delivery record: holds
+    delivered/<session>.lock from choosing to settling, and carries, in writer
+    order, every event of the sender's writer still owed to the seat up to and
+    including this send — an earlier pending one goes first, in the same push."""
+
+    def __init__(self, project, session, writer, event):
+        self.project, self.session, self.writer = project, session, writer
+        self.lock = open(project_path(project, "delivered", reader_key(session) + ".lock"), "a")
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        events = log_read(project)
+        self.queue = [e for e in _owed(events, session, delivered_load(project, session))
+                      if e["writer"] == writer and e["seq"] <= event["seq"]]
+        cursor = cursor_load(project, session)
+        self.text = "\n\n".join(frame_of(project, e, events, session, cursor) for e in self.queue)
+
+    def settle(self):
+        for e in self.queue:
+            delivered_settle(self.project, self.session, self.writer, e["seq"])
+        self.queue = []
+        self.release()
+
+    def fail(self):
+        if self.queue:
+            delivered_fail(self.project, self.session, self.writer, self.queue[0]["seq"])
+        self.release()
+
+    def release(self):
+        if not self.lock.closed:
+            self.lock.close()
+
+
+def record_send(s, sender, via, text, msg_id):
     """`send` is recorded in the target's project log — `human` from the
-    operator, `say` from a session — to the one session it reaches, marked
-    `direct`: the sender's own verb delivers it, so it is never owed."""
+    operator, `say` from a session — to the one session it reaches, then
+    delivered through that session's delivery record (SendDelivery). A message
+    the log cannot hold is not sent: the failure exits non-zero first."""
     project = seat_project(s)
     if project is None or not s["current"]:
-        return
+        return None
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    writer = writer_id(sid or None)
+    fields = {"from": sender, "to": [{"session": s["current"], "alias": s["alias"]}], "text": text, "msg_id": msg_id}
+    if via and via != sender:
+        fields["via"] = via
     try:
-        log_append(project, writer_id(sid or None), "say" if sid else "human",
-                   **{"from": sender, "to": [{"session": s["current"], "alias": s["alias"]}],
-                      "text": text, "direct": True})
+        event = log_append(project, writer, "say" if sid else "human", **fields)
+        return SendDelivery(project, s["current"], writer, event)
     except OSError as e:
-        warn("the send is not recorded in %s's log: %s" % (project.name, e))
+        die("send not delivered: it could not be recorded in %s's log (%s)" % (project.name, e), 1)
 
 
 def _send(a):
@@ -3193,7 +3285,9 @@ def _send(a):
         die(ambiguous_seat(a.target, res), EXIT_UNKNOWN)
     if kind == "ok":
         require_reach(caller, res, a.target)
-        send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, frm, a.msg))
+        sender = "human" if not os.environ.get("CLAUDE_CODE_SESSION_ID") else (
+            (caller or {}).get("alias") or default_from(""))
+        send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, sender, frm, a.msg, msg_id))
         return
     if is_family_seat(caller):
         die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)

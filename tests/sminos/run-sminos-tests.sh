@@ -1064,7 +1064,8 @@ printf '{"uuid":"%s","name":"bearer-one","group":"grp","status":"working","run_b
 chmod 600 "$SMINOS_HOME/66666666-ffff-4000-8000-000000000006.json"
 chmod 640 "$SMINOS_HOME/$P_UUID.json"
 chmod 755 "$SMINOS_HOME"
-"$SMINOS" meta set bearer-one status blocked >/dev/null
+run "$SMINOS" meta set bearer-one status blocked
+assert_contains "$OUT" "sminos: migrated: tightened the root to 0700; tightened 1 file(s) to 0600" "the next run says what it tightened"
 "$SMINOS" meta set plainworker status blocked >/dev/null
 assert_equals "$(mode_of "$SMINOS_HOME/66666666-ffff-4000-8000-000000000006.json")" "0600" "a bearer-carrying record stays 0600 across writes"
 assert_equals "$(mode_of "$SMINOS_HOME/$P_UUID.json")" "0600" "a record left wider than 0600 is tightened on the next run"
@@ -1525,7 +1526,7 @@ assert_equals "$RES_OUT" "refused absent" "a create=False write on a missing rec
 # failure is injected into send_frame, so no timing race decides the outcome.
 printf '{"pid":%s,"sessionId":"1a1adddd-abab-4000-8000-0000001adddd","name":"rawname","kind":"interactive","status":"idle","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$SOCK" > "$HOME/.claude/sessions/rawname.json"
-RAW_CODES="$(python3 - "$REPO_ROOT/skills/sminos/scripts" <<'PY'
+RAW_CODES="$(python3 - "$REPO_ROOT/skills/sminos/scripts" 2>"$TEST_ROOT/raw-codes.err" <<'PY'
 import argparse, sys
 sys.path.insert(0, sys.argv[1])
 import sminos
@@ -1543,6 +1544,8 @@ print(" ".join(codes))
 PY
 )"
 assert_equals "$RAW_CODES" "4 1" "raw-name send: failure before the write exits 4, after the write exits 1"
+assert_contains "$(cat "$TEST_ROOT/raw-codes.err")" "session 'rawname' went away mid-send (injected) — not live" "the failure before the write says the session is not live"
+assert_contains "$(cat "$TEST_ROOT/raw-codes.err")" "delivery to session 'rawname' is UNCERTAIN" "the failure after the write says delivery is uncertain"
 rm -f "$HOME/.claude/sessions/rawname.json"
 
 # retire hint for a legacy codex record.
@@ -2751,7 +2754,71 @@ p = mod.find_project(sys.argv[2])
 print(len(mod.owed(p, mod.reload_seat(sys.argv[3]))))
 PY_OWED
 )"
-assert_equals "$OWED" 0 "a sent message is not owed to its recipient again"
+assert_equals "$OWED" 0 "a sent message is settled in its recipient's delivery record"
+owed_count() { # session → events owed to the seat holding it
+  python3 - "$SMINOS_PY" "$DEMO" "$1" <<'PY_OWEDN'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+print(len(mod.owed(mod.find_project(sys.argv[2]), mod.reload_seat(sys.argv[3]))))
+PY_OWEDN
+}
+last_frame() { python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["message"]["content"])' "$TEST_ROOT/in-$1.received"; }
+DEMO_HUMAN="$SMINOS_HOME/projects/$DEMO/log/testhost.human.jsonl"
+# --from signs the frame; the log keeps who sent it.
+: > "$TEST_ROOT/in-b.received"
+run "$SMINOS" send demo/b "signed" --from sweep
+assert_contains "$(inbox b)" "[sminos message from sweep id=" "--from signs the frame"
+assert_contains "$(tail -1 "$DEMO_HUMAN")" '"kind": "human", "from": "human"' "the log keeps the operator as the sender"
+assert_contains "$(tail -1 "$DEMO_HUMAN")" '"via": "sweep"' "and carries the override beside it"
+# A send that dies between its append and its push stays owed, and a later
+# deliver_next pushes it with its own frame.
+: > "$TEST_ROOT/in-b.received"
+python3 - "$SMINOS_PY" "$SB" <<'PY_WINDOW'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+mod.record_send(mod.reload_seat(sys.argv[2]), "human", "", "lost in the window", "deadbeef").release()
+PY_WINDOW
+assert_equals "$(owed_count "$SB")" 1 "a send that died between append and push is still owed"
+assert_equals "$(inbox b)" "" "and was not pushed"
+python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_LATER' >/dev/null
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+print(mod.deliver_next(mod.find_project(sys.argv[2]), mod.reload_seat(sys.argv[3])))
+PY_LATER
+assert_contains "$(inbox b)" "[sminos message from human id=deadbeef]" "a later deliver_next delivers it with its own frame"
+assert_equals "$(owed_count "$SB")" 0 "and settles it"
+# A send that follows an earlier pending event of its writer carries it first, in one push.
+python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_PENDING'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, w = mod.find_project(sys.argv[2]), mod.writer_id()
+e = mod.log_append(p, w, "human", **{"from": "human", "to": [{"session": sys.argv[3], "alias": "b"}], "text": "earlier pending"})
+mod.delivered_fail(p, sys.argv[3], w, e["seq"])
+PY_PENDING
+: > "$TEST_ROOT/in-b.received"
+run "$SMINOS" send demo/b "after pending"
+assert_rc 0 "$RC" "a send behind a pending event delivers"
+assert_equals "$(last_frame b | python3 -c 'import sys; c = sys.stdin.read(); print(-1 < c.find("earlier pending") < c.find("after pending"))')" True "the earlier pending event goes first, in the same push"
+assert_equals "$(owed_count "$SB")" 0 "and both are settled"
+# A message the log cannot hold is not sent.
+chmod 400 "$DEMO_HUMAN"
+: > "$TEST_ROOT/in-b.received"
+run "$SMINOS" send demo/b "unrecordable"
+chmod 600 "$DEMO_HUMAN"
+assert_rc 1 "$RC" "a send that cannot be recorded fails"
+assert_contains "$OUT" "could not be recorded" "and says why"
+assert_equals "$(inbox b)" "" "and delivers nothing"
+# Overlapping chat reads: an older snapshot saved last never moves a cursor back.
+CURSOR_RACE="$(python3 - "$SMINOS_PY" "$DEMO" <<'PY_RACE'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, reader = mod.find_project(sys.argv[2]), "0e00000e-0000-4000-8000-00000000000e"
+mod.cursor_save(p, reader, {"w/one": 5, "w/two": 2})   # the newer read saves first
+mod.cursor_save(p, reader, {"w/one": 3, "w/two": 4})   # the older snapshot saves last
+print(json.dumps(mod.cursor_load(p, reader), sort_keys=True))
+PY_RACE
+)"
+assert_equals "$CURSOR_RACE" '{"w/one": 5, "w/two": 4}' "overlapping reads merge per writer, never moving a cursor back"
 
 # The merged display: per-writer streams in seq order, heads by (ts, writer).
 MERGE="$SMINOS_HOME/projects/merge-test"
@@ -2804,6 +2871,17 @@ print([e["seq"] for e in first], [e["seq"] for e in again], [e["seq"] for e in p
 PY_BATCH
 )"
 assert_equals "$BATCH" "[1, 2] [3] [4, 5]" "a batch drops the events whose src the file holds, and never one without a src"
+QA="$(python3 - "$SMINOS_PY" "$DEMO" <<'PY_QA'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, w = mod.find_project(sys.argv[2]), "testhost/0f00000f-0000-4000-8000-00000000000f"
+question = {"kind": "question", "src": "toolu_1", "text": ["Pick?"], "choices": ["a", "b"]}
+answered = {"kind": "answered", "src": "toolu_1", "text": "a"}
+print(len(mod.log_append_batch(p, w, [question])), len(mod.log_append_batch(p, w, [answered])),
+      len(mod.log_append_batch(p, w, [question, answered])))
+PY_QA
+)"
+assert_equals "$QA" "1 1 0" "an answer shares its question's src and is still appended, once"
 
 # Delivery settles in order per writer: event 10 failing holds back event 11.
 DELIVERY_TEST="$TEST_ROOT/deliver_test.py"
@@ -2913,6 +2991,11 @@ run_in "$P3" "$SMINOS" chat -n 10
 assert_contains "$OUT" "from h9" "the merged log reads both machines"
 run_in "$PR" "$SMINOS" project attach
 assert_rc 2 "$RC" "attach of a project without a remote is refused"
+chmod 500 "$SMINOS_HOME/projects/$MIRRORED/log/.git"
+run_in "$P3" "$SMINOS" project attach
+chmod 700 "$SMINOS_HOME/projects/$MIRRORED/log/.git"
+assert_rc 1 "$RC" "a git step that fails ends the attach"
+assert_contains "$OUT" "git config user.name in" "naming the step that failed"
 
 # migrate imports the former per-host family chats as legacy writers.
 HOST_ID="$SA"
