@@ -3090,19 +3090,26 @@ def send_to_seat(s0, text, msg_id, wait, record=None):
         die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
             "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
     delivery = record(s) if record else None
-    if delivery:
-        if not delivery.queue:
-            # A concurrent deliverer pushed it between the append and our lock.
-            delivery.release()
-            unlock(locks)
-            print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
-            return
-        text = delivery.text
+    if delivery and not delivery.queue:
+        # A concurrent deliverer pushed it between the append and our lock: no
+        # second push, but --wait still waits on this message's id.
+        delivery.release()
+        row = harness_row(s)
+        was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (
+            not peer or peer.get("status") != "busy")
+        guard = same_gen(current_gen(s["seat_id"]))
+        unlock(locks)
+        print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
+        if wait:
+            wait_socket_turn(s, msg_id, was_idle, guard)
+            print_reply_block(s["seat_id"])
+        return
     settle = delivery.settle if delivery else None
 
     def resume(locks):
         try:
-            resume_session(s, text, wait, locks, verb="sent to", on_launched=settle)
+            resume_session(s, delivery.payload(False) if delivery else text, wait, locks,
+                           verb="sent to", on_launched=settle)
         except ResumeRefused:
             if delivery:
                 delivery.fail()
@@ -3117,7 +3124,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None):
     # the peer record's own status — never from normalising an empty state.
     was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
     try:
-        send_frame(sock, text)
+        send_frame(sock, delivery.payload(True) if delivery else text)
     except SendFailed as e:
         if e.phase == "before":
             # Nothing reached the peer (the session exited between the
@@ -3209,11 +3216,19 @@ class SendDelivery:
         self.project, self.session, self.writer = project, session, writer
         self.lock = open(project_path(project, "delivered", reader_key(session) + ".lock"), "a")
         fcntl.flock(self.lock, fcntl.LOCK_EX)
-        events = log_read(project)
-        self.queue = [e for e in _owed(events, session, delivered_load(project, session))
+        self.events = log_read(project)
+        self.queue = [e for e in _owed(self.events, session, delivered_load(project, session))
                       if e["writer"] == writer and e["seq"] <= event["seq"]]
-        cursor = cursor_load(project, session)
-        self.text = "\n\n".join(frame_of(project, e, events, session, cursor) for e in self.queue)
+        self.cursor = cursor_load(project, session)
+        self.skipped = []
+
+    def payload(self, live):
+        """The text of the one push. Ordinary delivery's policy applies: an
+        @all (`wake`) reaches only the live, so to a stopped member it is
+        settled by passing and left out of the resume."""
+        self.skipped = [e for e in self.queue if e.get("wake") and not live]
+        return "\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor)
+                             for e in self.queue if e not in self.skipped)
 
     def settle(self):
         for e in self.queue:
@@ -3222,8 +3237,14 @@ class SendDelivery:
         self.release()
 
     def fail(self):
-        if self.queue:
-            delivered_fail(self.project, self.session, self.writer, self.queue[0]["seq"])
+        # The skipped broadcasts ahead of the first pushed event settle; that
+        # event is the one pending.
+        for e in self.queue:
+            if e in self.skipped:
+                delivered_settle(self.project, self.session, self.writer, e["seq"])
+                continue
+            delivered_fail(self.project, self.session, self.writer, e["seq"])
+            break
         self.release()
 
     def release(self):
@@ -3285,6 +3306,8 @@ def _send(a):
         die(ambiguous_seat(a.target, res), EXIT_UNKNOWN)
     if kind == "ok":
         require_reach(caller, res, a.target)
+        if os.environ.get("CLAUDE_CODE_SESSION_ID") and res["current"] == os.environ["CLAUDE_CODE_SESSION_ID"]:
+            die("you cannot send to yourself")
         sender = "human" if not os.environ.get("CLAUDE_CODE_SESSION_ID") else (
             (caller or {}).get("alias") or default_from(""))
         send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, sender, frm, a.msg, msg_id))

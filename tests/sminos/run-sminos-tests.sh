@@ -2819,6 +2819,61 @@ print(json.dumps(mod.cursor_load(p, reader), sort_keys=True))
 PY_RACE
 )"
 assert_equals "$CURSOR_RACE" '{"w/one": 5, "w/two": 4}' "overlapping reads merge per writer, never moving a cursor back"
+# A session cannot send to its own seat.
+CLAUDE_CODE_SESSION_ID="$SB" run "$SMINOS" send demo/b "to myself"
+assert_rc 2 "$RC" "a send to your own seat is refused"
+assert_contains "$OUT" "you cannot send to yourself" "with the reason"
+# A send another deliverer settled first still waits for the turn under --wait.
+printf 'short=bbbb0b02\nuuid=%s\nname=b\nkind=interactive\nstate=\nstatus=idle\ncwd=%s\n' "$SB" "$PR" > "$STUB_STATE/agents/bbbb0b02"
+: > "$TEST_ROOT/in-b.received"
+python3 - "$SMINOS_PY" "$DEMO" "$SB" > "$TEST_ROOT/race-wait.out" 2>&1 <<'PY_RACE_WAIT' &
+import argparse, importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+append = mod.log_append
+def append_then_deliver(project, writer, kind, **fields):
+    e = append(project, writer, kind, **fields)
+    if fields.get("msg_id"):  # a concurrent deliverer gets there first
+        mod.deliver_next(project, mod.reload_seat(sys.argv[3]))
+    return e
+mod.log_append = append_then_deliver
+mod.cmd_send(argparse.Namespace(target="demo/b", msg="raced", frm="", wait=True))
+PY_RACE_WAIT
+RACEW=$!
+for _ in $(seq 1 100); do grep -q 'id=' "$TEST_ROOT/in-b.received" && break; sleep 0.05; done
+RACE_ID="$(grep -o 'id=[0-9a-f]\{8\}' "$TEST_ROOT/in-b.received" | tail -1 | cut -d= -f2)"
+sleep 0.3
+if kill -0 "$RACEW" 2>/dev/null; then pass "send --wait is still waiting for the turn the other deliverer started"
+else fail "send --wait is still waiting for the turn the other deliverer started"; fi
+python3 - "$HOME/.claude/projects/pl-proj/$SB.jsonl" "$RACE_ID" <<'PY_TURN'
+import json, sys
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "[sminos message from human id=%s]\nraced" % sys.argv[2]}}) + "\n")
+    f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "RACED " + sys.argv[2]}]}}) + "\n")
+PY_TURN
+wait "$RACEW" || true
+assert_equals "$(grep -c 'raced' "$TEST_ROOT/in-b.received")" 1 "the settled send is not pushed twice"
+assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "delivered by a concurrent delivery" "send says who delivered it"
+assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "--- reply ---" "and still prints the reply block"
+assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "RACED $RACE_ID" "with the turn's reply"
+# A pending @all is settled, not replayed, when a send resumes a stopped member.
+python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_WAKE'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, w = mod.find_project(sys.argv[2]), mod.writer_id()
+e = mod.log_append(p, w, "human", **{"from": "human", "to": [{"session": sys.argv[3], "alias": "b"}],
+                                    "text": "@all stale broadcast", "wake": True})
+mod.delivered_fail(p, sys.argv[3], w, e["seq"])  # it failed while b was live
+PY_WAKE
+mv "$HOME/.claude/sessions/pl-b.json" "$TEST_ROOT/pl-b.json.aside"   # b stops
+: > "$STUB_STATE/log/calls.log"
+run "$SMINOS" send demo/b "after a broadcast"
+assert_rc 0 "$RC" "a send to a stopped member behind a pending @all delivers"
+assert_contains "$OUT" "via --bg --resume" "by resuming it"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "after a broadcast" "the resume carries the send"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stale broadcast" "but not the broadcast a stopped member is never resumed for"
+assert_equals "$(owed_count "$SB")" 0 "the broadcast is settled by passing"
+mv "$TEST_ROOT/pl-b.json.aside" "$HOME/.claude/sessions/pl-b.json"
+rm -f "$STUB_STATE/agents/bbbb0b02"
 
 # The merged display: per-writer streams in seq order, heads by (ts, writer).
 MERGE="$SMINOS_HOME/projects/merge-test"
