@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# A stub harness (`claude`) for the dispatch suites' contract tests, which run
+# the real sminos CLI under it. Put this directory first on PATH and point
+# $CT_HARNESS at a scratch directory: `--bg` launches answer with the harness
+# banner and leave a row `agents --json` lists; everything else succeeds
+# quietly.
+set -euo pipefail
+case "${1:-}" in
+  agents) python3 -c 'import glob, json, os, sys
+print(json.dumps([json.load(open(p)) for p in sorted(glob.glob(os.path.join(sys.argv[1], "*.json")))]))' "$CT_HARNESS/agents"
+          exit 0 ;;
+  --bg) ;;
+  *) exit 0 ;;
+esac
+mkdir -p "$CT_HARNESS/agents"
+name=""; wt=""; prev=""
+for a in "$@"; do
+  case "$prev" in -n) name="$a" ;; --worktree) wt="$a" ;; esac
+  prev="$a"
+done
+n=$(( $(cat "$CT_HARNESS/counter" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CT_HARNESS/counter"
+short="$(printf 'c0%06x' "$n")"
+cwd="$PWD"; [ -z "$wt" ] || cwd="$PWD/.claude/worktrees/$wt"
+printf '{"id":"%s","sessionId":"%s-0000-4000-8000-00000000c0de","kind":"background","name":"%s","state":"done","status":"idle","cwd":"%s"}' \
+  "$short" "$short" "$name" "$cwd" > "$CT_HARNESS/agents/$short.json"
+echo "backgrounded · $short · $name"

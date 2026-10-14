@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 
 GLYPH = {"busy": "●", "idle": "○", "waiting": "◐", "stopped": "■", "gone": "✕", "vacant": "◌", "retired": "⊘"}
-BOX_LINES = 3
+BOX_LINES = 4
 
 # ------------------------------------------------------------- display width
 
@@ -77,12 +77,14 @@ def is_dead(st):
 
 
 def member_node(project, m, label):
-    """One member's box. `ref` is the name `sminos send` and `fill` take for
-    it: a seat's group/alias, else the session id."""
+    """One member's box, carrying the facts `list` prints (§7): the in-charge
+    line, `now:` the status, `by` the spawner, and for a member on another
+    machine `@machine age` beside its word. `ref` is the name `sminos send`
+    and `fill` take for it: a seat's group/alias, else the session id."""
     seat = m.seat
-    now = m.status or (sminos.now_or_reply(seat, m.state) if seat else "") or m.charge
     return {"kind": "seat", "id": "%s/%s" % (project.name, label), "label": label,
-            "role": (seat or {}).get("role") or "", "state": m.state, "now": now, "dead": is_dead(m.state),
+            "role": (seat or {}).get("role") or "", "state": m.state, "word": sminos.state_column(m),
+            "charge": m.charge, "now": m.status, "by": m.by, "dead": is_dead(m.state),
             "children": [], "hidden": 0, "seat": sminos.public_seat(seat) if seat else None,
             "member": sminos.member_json(m), "project": project,
             "ref": "%s/%s" % (seat["group"], seat["alias"]) if seat else m.session}
@@ -118,8 +120,8 @@ def snapshot(projects, show_all=False, boxed=True):
             meta["hidden_projects"] += 1
             continue
         pid = p.name if names.count(p.name) == 1 else "%s#%s" % (p.name, p.id[:8])
-        roots.append({"kind": "project", "id": pid, "label": p.name, "role": "", "state": "", "now": "",
-                      "dead": False, "children": nodes, "hidden": hidden, "members": n, "alive": live,
+        roots.append({"kind": "project", "id": pid, "label": p.name, "role": "", "state": "", "word": "",
+                      "charge": "", "now": "", "by": "", "dead": False, "children": nodes, "hidden": hidden, "members": n, "alive": live,
                       "project": p})
     return roots, meta
 
@@ -128,21 +130,25 @@ def snapshot(projects, show_all=False, boxed=True):
 
 
 def node_lines(node, collapsed=()):
-    """The box's three content lines as (left, right) pairs; `right` is
-    right-aligned on the same line (a seat's ROLE)."""
+    """The box's four content lines as (left, right) pairs; `right` is
+    right-aligned on the same line (a seat's ROLE). A member: its name, its
+    word, its in-charge line, then `now:` its status and `by` its spawner."""
     if node["kind"] == "project":
         counts = "%d members · %d live" % (node["members"], node["alive"])
         if node["id"] in collapsed and node["children"]:
             counts = "▸ " + counts
-        return [(node["label"], ""), (counts, ""), (("+%d hidden" % node["hidden"]) if node["hidden"] else "", "")]
-    tail = node["now"] or (("+%d hidden" % node["hidden"]) if node["hidden"] else "")
-    return [(node["label"], (node["role"] or "").upper()), (glyph_line(node), ""), (tail, "")]
+        return [(node["label"], ""), (counts, ""), (("+%d hidden" % node["hidden"]) if node["hidden"] else "", ""),
+                ("", "")]
+    tail = " · ".join(x for x in (("now: " + node["now"]) if node["now"] else "",
+                                  ("by " + node["by"]) if node["by"] else "") if x)
+    return [(node["label"], (node["role"] or "").upper()), (glyph_line(node), ""), (node["charge"], ""), (tail, "")]
 
 
 def glyph_line(node):
-    """The state glyph and word; a remote member with no published word yet
-    reads "?"."""
-    return "%s %s" % (GLYPH.get(node["state"], "?"), node["state"] or "?")
+    """The state glyph and the word as `list` prints it: for a member on
+    another machine, `@machine age` beside its last published word ("?"
+    before it published one)."""
+    return "%s %s" % (GLYPH.get(node["state"], "?"), node.get("word") or node["state"] or "?")
 
 
 def line_need(left, right):

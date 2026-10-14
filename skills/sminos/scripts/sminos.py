@@ -969,17 +969,26 @@ def latest_membership(events):
     return next((e["kind"] for e in reversed(events) if e["kind"] in MEMBERSHIP), None)
 
 
-def lifecycle(project, session, kind, guard=None, **fields):
+class LogWriteFailed(Exception):
+    """A required lifecycle event could not be appended. The verb's local
+    operation already happened; main() exits 1 saying both."""
+
+
+def lifecycle(project, session, kind, guard=None, required=True, **fields):
     """Append one lifecycle event for a session on this machine to the
     session's own file: a session's lifecycle has one writer, so its order is
-    its seq. A logging failure warns — what the verb did to the session and its
-    record has already happened."""
+    its seq. A failure raises LogWriteFailed — the event is part of the verb —
+    except for reconciliation's own appends (`required=False`), which a
+    reading verb only warns about and the next one retries."""
     if project is None or not session:
         return []
     try:
         return _append(project, writer_id(session), [{"kind": kind, "session": session, **fields}], guard=guard)
     except OSError as e:
-        warn("%s of %s not recorded in %s's log: %s" % (kind, session[:8], project.name, e))
+        msg = "recording %s of %s in %s's log failed: %s" % (kind, session[:8], project.name, e)
+        if required:
+            raise LogWriteFailed(msg)
+        warn(msg)
         return []
 
 
@@ -996,8 +1005,8 @@ def join_seat(seat, by=""):
 
 def _local_sessions(project, all_seats):
     """This machine's evidence of sessions in the project: {session: {"seat",
-    "peer"}} for every seat whose cwd resolves to it and every live harness
-    session working in it, internal forks aside."""
+    "peer"}} for every seat whose cwd resolves to it and every harness session
+    whose process runs in it, internal forks aside."""
     local = {}
     for s in all_seats:
         if s["current"] and (p := seat_project(s)) and p.id == project.id:
@@ -1010,7 +1019,7 @@ def _local_sessions(project, all_seats):
         if str(rec.get("pid")) in internal:
             continue
         p = resolve_project(cwd)
-        if p is not None and p.id == project.id and peer_live(rec):
+        if p is not None and p.id == project.id and peer_running(rec):
             local.setdefault(sid, {})["peer"] = rec
     return local
 
@@ -1039,14 +1048,14 @@ def _reconcile(project, events, local, by_session):
     out = []
     for sid, e in joined.items():
         if (latest[sid] != "joined" or sid in by_session or sid in local
-                or str(e.get("machine") or "") != host_name() or peer_for_session(sid)):
+                or str(e.get("machine") or "") != host_name() or session_running(sid)):
             continue
 
         def ended(evs, sid=sid):
-            return (latest_membership(evs) == "joined" and not peer_for_session(sid)
+            return (latest_membership(evs) == "joined" and not session_running(sid)
                     and not any(s["current"] == sid for s in seats()))
 
-        out += lifecycle(project, sid, "retired", guard=ended, by="", reason="ended")
+        out += lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
         if seat and seat["status"] == "retired":
@@ -1068,7 +1077,7 @@ def _reconcile(project, events, local, by_session):
         else:
             fields = joined_fields(str(peer.get("name") or sid[:8]), str(peer.get("nameSource") or "derived"),
                                    str(peer.get("cwd") or ""))
-        out += lifecycle(project, sid, "joined", guard=guard, **fields)
+        out += lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
     return out
 
 
@@ -1076,7 +1085,9 @@ def _projection(events):
     """Per session, what the log says of it: its latest membership event and
     latest joined (by seq, in its own file), the first non-empty `by`, its
     latest rename and published state (its own file), and its set in-charge
-    line and status (the later ts, whoever wrote them)."""
+    line and status: each writer's latest by seq (authoritative within a
+    writer), the later ts between writers (§3). `events` holds each writer's
+    stream in seq order, so the last one seen of a writer is its latest."""
     info = {}
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -1084,7 +1095,7 @@ def _projection(events):
             continue
         own = writer_session(e["writer"]) == sid
         r = info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
-                                  "charge": None, "status": None})
+                                  "charge": {}, "status": {}})
         if kind in MEMBERSHIP or kind in ("renamed", "state"):
             if not own:
                 continue
@@ -1097,10 +1108,13 @@ def _projection(events):
             else:
                 r[kind] = e
         elif kind == "in-charge":
-            if e.get("source") == "set" and (r["charge"] is None or e["ts"] >= r["charge"]["ts"]):
-                r["charge"] = e
-        elif r["status"] is None or e["ts"] >= r["status"]["ts"]:
-            r["status"] = e
+            if e.get("source") == "set":
+                r["charge"][e["writer"]] = e
+        else:
+            r["status"][e["writer"]] = e
+    for r in info.values():
+        for k in ("charge", "status"):
+            r[k] = max(r[k].values(), key=lambda e: e["ts"]) if r[k] else None
     return info
 
 
@@ -1130,7 +1144,8 @@ def _member(sid, r, seat, peer, local):
         published = (r or {}).get("state") or {}
         state_word, age = str(published.get("state") or ""), (ts_age(published["ts"]) if published else None)
     elif seat:
-        state_word = seat_state(seat, peer) if (peer or not needs_probe(seat)) else state(seat)
+        # A seat's word is the one its route reads: the inbox must answer.
+        state_word = state(seat)
     elif peer:
         state_word = peer_state(peer)
     else:
@@ -1318,11 +1333,10 @@ def is_all(tag):
     return tag["name"] == "all" and not tag["project"] and not tag["short"]
 
 
-def match_members(name, short, projects, bare_short=True):
-    """The (project, member) pairs a name answers to among the projects' members:
-    their alias (with `short`, an alias whose short starts so), their session
-    id, and — for a tag (`@short`), not a CLI target — their bare short. A
-    retired member answers to nothing."""
+def match_members(name, short, projects):
+    """The (project, member) pairs a tag's name answers to among the projects'
+    members: their alias (with `short`, an alias whose short starts so), their
+    short (`@short`), or their session id. A retired member answers to nothing."""
     found = []
     for p in projects:
         for m in members(p):
@@ -1331,7 +1345,7 @@ def match_members(name, short, projects, bare_short=True):
             if short:
                 hit = m.alias == name and m.short.startswith(short)
             else:
-                hit = name in (m.alias, m.session) or (bare_short and name == m.short)
+                hit = name in (m.alias, m.short, m.session)
             if hit:
                 found.append((p, m))
     return found
@@ -1433,17 +1447,6 @@ def caller_scope():
     """The project a bare name resolves in: the calling seat's, else the
     working directory's; None from a directory that is no project."""
     return caller_project(caller_seat() if os.environ.get("CLAUDE_CODE_SESSION_ID") else None)
-
-
-def find_member(q, scope):
-    """The (project, member) pairs a target name answers to: `project/alias`
-    in that project, else in `scope` (every project known here when None);
-    `alias#short` tells two apart; a bare short does not, as no id prefix names
-    a seat. Returns (pairs, the projects searched)."""
-    proj, _, name = q.rpartition("/")
-    name, _, short = name.partition("#")
-    projects = name_scope(scope, proj)
-    return match_members(name, short, projects, bare_short=False), projects
 
 
 class ResumeRefused(Exception):
@@ -1777,16 +1780,46 @@ def find_target(q):
     """What a member verb (send, status, retire) names: ("seat", seat) for a
     seat; ("member", project, member) for a member that holds no seat here;
     else exit 4 — ambiguous (named so they can be told apart) or unknown.
-    ("none",) lets send fall back to a raw session name."""
+    ("none",) when nothing answers.
+
+    An exact address — a seat id, a session id, `group/alias` — names its
+    seat directly. A name is resolved as a tag is: its projects (the one it
+    names, else the caller's, else every project known here) are reconciled,
+    and the name is matched against every member and every seat no member
+    stands for (vacant, retired), so a seat and a seat-less session sharing
+    an alias are refused as ambiguous rather than the seat being taken."""
     scope = caller_scope()
-    kind, res = find_seat(q, scope)
-    if kind == "ok":
-        return ("seat", res)
-    if kind == "ambiguous":
-        die(ambiguous_seat(q, res), EXIT_UNKNOWN)
-    found, searched = find_member(q, scope)
+    if UUID_RE.match(q) or ("/" in q and "#" not in q):
+        kind, res = find_seat(q)
+        if kind == "ok":
+            reconcile(seat_project(res))  # the verb reads the project; no liveness probe needed
+            return ("seat", res)
+        if kind == "ambiguous":
+            die(ambiguous_seat(q, res), EXIT_UNKNOWN)
+    proj, _, rest = q.rpartition("/")
+    name, _, short = rest.partition("#")
+    projects = known_projects() if UUID_RE.match(q) else name_scope(scope, proj)
+    found, seen = [], set()
+    for p in projects:
+        ms, rows = project_view(p)
+        for m in ms + rows:
+            if short:
+                hit = bool(m.short) and m.alias == name and m.short.startswith(short)
+            else:
+                hit = name == m.alias or (bool(m.session) and name == m.session)
+            # One seat is one target, though its session joined one project
+            # and its record now resolves to another (a cwd that moved).
+            key = m.seat["seat_id"] if m.seat else m.session
+            if hit and key not in seen:
+                seen.add(key)
+                found.append((p, m))
     if len(found) > 1:
-        die("ambiguous '%s' matches: %s" % (q, candidate_labels(found, len(searched) > 1)), EXIT_UNKNOWN)
+        if all(m.seat for _, m in found):
+            die(ambiguous_seat(q, [m.seat for _, m in found]), EXIT_UNKNOWN)
+        labels = sorted("%s/%s" % (m.seat["group"], m.seat["alias"]) if m.seat else
+                        ("%s/" % p.name if len(projects) > 1 else "") + "%s#%s" % (m.alias, m.short)
+                        for p, m in found)
+        die("ambiguous '%s' matches: %s" % (q, ", ".join(labels)), EXIT_UNKNOWN)
     if not found:
         return ("none",)
     project, m = found[0]
@@ -2020,6 +2053,19 @@ def peer_live(rec):
     if not same_process(rec):
         return False
     return socket_ok(socket_path_of(rec))
+
+
+def peer_running(rec):
+    """The record's process runs: its pid is alive and is the process the
+    record described. Membership follows the process (§2); whether its inbox
+    answers is delivery's question (peer_live), not membership's."""
+    return pid_alive(rec.get("pid")) and same_process(rec)
+
+
+def session_running(session_id):
+    """A harness record for the session whose process runs, or None."""
+    return next((r for r in peer_records() if session_id and r.get("sessionId") == session_id and peer_running(r)),
+                None)
 
 
 def peer_for_session(session_id):
@@ -3072,12 +3118,19 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         meta_set(rec_id, {"current": uuid, "cwd": runcwd or cwd, "host": host_name(),
                           "boot_id": boot_id(), "updated": now()})
     project = seat_project({"cwd": runcwd or cwd, "group": group})
-    if prev and prev["current"] and prev["current"] != uuid:
-        lifecycle(seat_project(prev), prev["current"], "retired", by=by, reason="replaced")
-    lifecycle(project, uuid, "joined", **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "",
-                                                       rec_id, by))
-    if brief:
-        lifecycle(project, uuid, "in-charge", text=brief, source="set")
+    # The events are part of the spawn, but the session already runs: a failed
+    # append is reported after the banner, so whoever parses it still finds
+    # the seat it launched.
+    log_failed = None
+    try:
+        if prev and prev["current"] and prev["current"] != uuid:
+            lifecycle(seat_project(prev), prev["current"], "retired", by=by, reason="replaced")
+        lifecycle(project, uuid, "joined", **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "",
+                                                           rec_id, by))
+        if brief:
+            lifecycle(project, uuid, "in-charge", text=brief, source="set")
+    except LogWriteFailed as e:
+        log_failed = e
     status = "working"
     if state in TERMINAL:
         # Don't blindly claim working — a fast first turn may already be over.
@@ -3094,9 +3147,11 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
     print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
-        verb, group, alias, short, rec_id, status, wt, short))
+        verb, group, alias, short, rec_id, status, wt, short), flush=True)
     if wait:
         print_reply_block(rec_id)
+    if log_failed:
+        raise log_failed
 
 
 def cmd_spawn(a):
@@ -3289,9 +3344,11 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     point a seat whose session was retired re-joins the project's family.
     """
     def launched():
-        join_seat(s, by=caller_alias())
+        # The delivery settles first: a failed re-join (LogWriteFailed) must
+        # not leave a launched message owed, to be pushed again.
         if on_launched:
             on_launched()
+        join_seat(s, by=caller_alias())
 
     if s["engine"] == "codex":
         raise ResumeRefused(legacy_codex_refusal(s))
@@ -3767,8 +3824,18 @@ def _send(a):
         return
     if a.wait:
         refuse_wait(a.target)
-    # Only when NO seat matched: fall back to a raw live harness-session name.
-    peers = live_name_holders(a.target)  # live already means the socket answers
+    # Nothing in the project answers. From inside a project a bare name never
+    # reaches past it: another project's member is <project>/<alias>, and a
+    # message to it is recorded in that project's log.
+    scope = caller_scope()
+    if scope is not None and not UUID_RE.match(a.target.lower()):
+        die("no member '%s' in project %s — a member of another project is <project>/%s" % (
+            a.target, scope.name, a.target), EXIT_UNKNOWN)
+    # From no project, the one unrecorded route: a live session that is in no
+    # project either (any session in a project answered above, as a member),
+    # by its harness name. There is no log for it to be recorded in.
+    peers = [r for r in live_name_holders(a.target)
+             if not (isinstance(r.get("cwd"), str) and r["cwd"] and resolve_project(r["cwd"]))]
     if len(peers) == 1:
         try:
             send_frame(socket_path_of(peers[0]), text)
@@ -3917,8 +3984,11 @@ def cmd_status(a):
         else:
             # Another machine's session file is that machine's to write: the
             # line goes in this caller's own file, and the later ts wins (§3).
-            _append(project, writer_id(os.environ.get("CLAUDE_CODE_SESSION_ID") or None),
-                    [{"kind": "status", "session": m.session, "text": line}])
+            try:
+                _append(project, writer_id(os.environ.get("CLAUDE_CODE_SESSION_ID") or None),
+                        [{"kind": "status", "session": m.session, "text": line}])
+            except OSError as e:
+                die("status of %s not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
         print("%s now: %s" % (m.alias, line or "(cleared)"))
         return
     s = target[1]
@@ -4052,19 +4122,6 @@ def cmd_remove(a):
 
 
 # --------------------------------------------------------------------- views
-
-
-def now_or_reply(s, st):
-    """What a seat is doing, for a view that already read its state word `st`:
-    its own status line; for a waiting seat without one, what the session
-    waits for; else the first words of its latest reply."""
-    if s["now"]:
-        return s["now"]
-    if st == "waiting":
-        waiting_for = " ".join(str((peer_for_session(s["current"]) or {}).get("waitingFor") or "").split())
-        if waiting_for:
-            return waiting_for
-    return " ".join(reply_text(s["seat_id"]).split())[:46]
 
 
 def view_projects(q, every=False):
@@ -4417,7 +4474,10 @@ def main(argv=None):
             die("usage: sminos project init [--name N] [--remote URL] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
-    a.fn(a)
+    try:
+        a.fn(a)
+    except LogWriteFailed as e:
+        die("%s completed, but %s" % (a.cmd, e), 1)
 
 
 if __name__ == "__main__":

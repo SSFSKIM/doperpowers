@@ -1825,10 +1825,10 @@ r = next(i for i, row in enumerate(rows) if marker in row)
 i = rows[r].index(marker)
 li = rows[r].rindex("│", 0, i); ri = rows[r].index("│", i)
 L, R = col(rows[r], li), col(rows[r], ri)
-ok = all(at_col(rows[r + k], L) == "│" and at_col(rows[r + k], R) == "│" for k in (1, 2))
+ok = all(at_col(rows[r + k], L) == "│" and at_col(rows[r + k], R) == "│" for k in (1, 2, 3))
 ok = ok and at_col(rows[r - 1], L) in "┌┏╭" and at_col(rows[r - 1], R) in "┐┓╮"
-ok = ok and at_col(rows[r + 3], L) in "└┗╰" and at_col(rows[r + 3], R) in "┘┛╯"
-print("aligned" if ok else "misaligned:\n" + "\n".join(rows[r - 1:r + 4]))
+ok = ok and at_col(rows[r + 4], L) in "└┗╰" and at_col(rows[r + 4], R) in "┘┛╯"
+print("aligned" if ok else "misaligned:\n" + "\n".join(rows[r - 1:r + 5]))
 PY
 
 run "$SMINOS" chart org --width 120
@@ -3202,10 +3202,19 @@ mod.main(["retire", hk])
 retired = hk not in {m.session for m in mod.members(p)}
 mod.main(["fill", hk, "back", "--resume"])
 rejoined = hk in {m.session for m in mod.members(p)}
+mod.now = real_now
+mod.main(["status", hk, "first"])
+mod.lifecycle(p, hk, "in-charge", text="first line", source="set")
+mod.now = lambda ms=False: "2001-01-01T00:00:00.000Z" if ms else real_now(ms)
+mod.main(["status", hk, "second"])
+mod.lifecycle(p, hk, "in-charge", text="second line", source="set")
+m = next(x for x in mod.members(p) if x.session == hk)
+print(m.status, m.charge)
 print(joined, retired, rejoined)
 PY_CLOCK
 )"
 assert_equals "$(printf '%s\n' "$CLOCK" | tail -1)" "True True True" "joined, retired, re-joined in seq order though the later two carry earlier ts"
+assert_equals "$(printf '%s\n' "$CLOCK" | tail -2 | head -1)" "second second line" "a writer's later status and in-charge line win by seq, though they carry an earlier ts"
 
 # Reach is the project: a name resolves in the working directory's project;
 # from no project, across every project known here.
@@ -3280,6 +3289,120 @@ run "$SMINOS" list
 assert_not_contains "$OUT" "headless" "a session of another kind (a tool's headless run) is not a member on sight"
 assert_file_absent "$PFLOG/testhost.$HL.jsonl" "and is never joined"
 rm -f "$HOME/.claude/sessions/pf-headless.json"
+
+# A seat and a seat-less session that share an alias: every member verb
+# refuses the name as ambiguous, as a tag is refused, and #short picks one.
+DS=2f00000f-0000-4000-8000-00000000002f
+DL=3a000010-0000-4000-8000-00000000003a
+run "$SMINOS" seat add pf-repo dupe --session "$DS"
+pf_peer dupe "$DL" idle user
+for verb in "send dupe hi" "status dupe busy" "retire dupe"; do
+  run "$SMINOS" $verb
+  assert_rc 4 "$RC" "$verb: a name a seat and a seat-less session share is refused"
+  assert_contains "$OUT" "pf-repo/dupe" "$verb: naming the seat"
+  assert_contains "$OUT" "dupe#${DL:0:8}" "$verb: and the session"
+done
+assert_not_contains "$(field "$DS" status)" "retired" "the refused retire touched nothing"
+run "$SMINOS" send "dupe#${DL:0:4}" "the session one"
+assert_rc 0 "$RC" "alias#short picks the seat-less one"
+assert_contains "$(inbox dupe)" "the session one" "and reaches it"
+rm -f "$HOME/.claude/sessions/pf-dupe.json"
+"$SMINOS" remove pf-repo/dupe >/dev/null
+# send and status reconcile the project before they resolve: a session no
+# reading verb has seen yet is joined, then reached.
+FR=3b000011-0000-4000-8000-00000000003b
+pf_peer fresh "$FR" idle user
+run "$SMINOS" send fresh "first contact"
+assert_rc 0 "$RC" "a send before any list reaches a session that just opened"
+assert_equals "$(events_of "$FR")" "joined " "joining it first"
+FR2=3c000012-0000-4000-8000-00000000003c
+pf_peer fresh2 "$FR2" idle user
+CLAUDE_CODE_SESSION_ID="$FR2" run "$SMINOS" status fresh2 "starting"
+assert_rc 0 "$RC" "so does a status"
+assert_equals "$(events_of "$FR2")" "joined status " "joined before its status is recorded"
+rm -f "$HOME/.claude/sessions/pf-fresh.json" "$HOME/.claude/sessions/pf-fresh2.json"
+# From inside a project a bare name never reaches past it, recorded or not.
+FA=3d000013-0000-4000-8000-00000000003d
+pf_peer faraway "$FA" idle user "$P4"
+run "$SMINOS" send faraway "across"
+assert_rc 4 "$RC" "a bare name of another project's live session is refused"
+assert_contains "$OUT" "<project>/faraway" "pointing at the qualified name"
+assert_equals "$(inbox faraway)" "" "and nothing is sent"
+run "$SMINOS" send pf-second/faraway "across, qualified"
+assert_rc 0 "$RC" "the qualified name reaches it"
+assert_contains "$(log_of local-pf-second)" "across, qualified" "recorded in its project's log"
+rm -f "$HOME/.claude/sessions/pf-faraway.json"
+# Membership follows the process, not the inbox: a running session whose
+# socket does not answer stays a member.
+MU=3e000014-0000-4000-8000-00000000003e
+printf '{"pid":%s,"sessionId":"%s","name":"mute","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s/no-such.sock"}\n' \
+  "$SOCK_PID" "$MU" "$R" "$TEST_ROOT" > "$HOME/.claude/sessions/pf-mute.json"
+run "$SMINOS" list
+assert_contains "$OUT" "mute" "a running session whose inbox does not answer joins"
+run "$SMINOS" list
+assert_contains "$OUT" "mute" "and stays a member"
+assert_equals "$(events_of "$MU")" "joined " "with no retired (ended) for an unanswering inbox"
+rm -f "$HOME/.claude/sessions/pf-mute.json"
+run "$SMINOS" list   # its process is gone now: its membership ends
+
+# The chart and the tui draw what list prints (§7): the in-charge line,
+# `now:` the status, `by` the spawner, and a remote member's @machine age.
+CLAUDE_CODE_SESSION_ID="$IB" run "$SMINOS" spawn helper "t" --brief "helps the parser"
+HELPER="$(banner_uuid "$OUT")"
+"$SMINOS" status helper "drafting" >/dev/null
+pf_peer helper "$HELPER" idle seat
+FAR=3f000015-0000-4000-8000-00000000003f
+python3 - "$PFLOG/h2.$FAR.jsonl" "$FAR" <<'PY_FAR'
+import datetime, json, sys
+t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=3)
+ts = t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (t.microsecond // 1000)
+w, s = "h2/" + sys.argv[2], sys.argv[2]
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"ts": "2026-01-01T00:00:00.000Z", "writer": w, "seq": 1, "kind": "joined", "session": s,
+                        "alias": "far", "name_source": "user", "machine": "h2", "cwd": "/elsewhere", "worktree": "",
+                        "role": "", "seat": "", "by": ""}) + "\n")
+    f.write(json.dumps({"ts": ts, "writer": w, "seq": 2, "kind": "state", "session": s, "state": "idle",
+                        "machine": "h2"}) + "\n")
+PY_FAR
+run "$SMINOS" chart pfdemo --width 200
+assert_contains "$OUT" "helps the parser" "a chart box carries the in-charge line"
+assert_contains "$OUT" "now: drafting · by ib" "then now: the status and by the spawner"
+assert_contains "$OUT" "○ idle @h2 3m" "a remote member's word carries its machine and age"
+run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/helper"
+assert_contains "$OUT" "now: drafting · by ib" "the tui draws the same boxes"
+run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/far"
+assert_contains "$OUT" "○ idle @h2 3m" "with the remote member's machine and age"
+run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/far,enter"
+assert_contains "$OUT" "far is on h2 — attach to it there" "enter on a remote member says where it runs"
+# Enter attaches to a seat-less local member when the harness offers an
+# attachable session, and says why not otherwise.
+BG=4a000016-0000-4000-8000-00000000004a
+start_inbox bgone
+printf '{"pid":%s,"sessionId":"%s","name":"bgone","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$BG" "$R" "$TEST_ROOT/in-bgone.sock" > "$HOME/.claude/sessions/pf-bgone.json"
+{ echo "short=bb00b001"; echo "uuid=$BG"; echo "name=bgone"; echo "kind=background"; echo "state=working"; echo "status=idle"; echo "cwd=$R"; } > "$STUB_STATE/agents/bb00b001"
+run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/bgone,enter"
+assert_contains "$OUT" "attach pfdemo/bgone bb00b001 → claude attach bb00b001" "enter attaches to a seat-less member the harness can attach to"
+run "$SMINOS" tui pfdemo --headless --width 200 --height 90 --keys "!focus:pfdemo/ib,enter"
+assert_contains "$OUT" "ib holds no seat, and the harness offers no session to attach to" "and says why it cannot, for an interactive terminal's"
+rm -f "$HOME/.claude/sessions/pf-bgone.json" "$STUB_STATE/agents/bb00b001" "$PFLOG/h2.$FAR.jsonl"
+
+# A lifecycle event is part of its verb: a failed append exits 1, saying the
+# local operation completed and the log write failed.
+RFS=4b000017-0000-4000-8000-00000000004b
+"$SMINOS" seat add pf-repo rfail --session "$RFS" >/dev/null
+chmod 400 "$PFLOG/testhost.$RFS.jsonl"
+run "$SMINOS" retire pf-repo/rfail
+chmod 600 "$PFLOG/testhost.$RFS.jsonl"
+assert_rc 1 "$RC" "a retire whose event cannot be recorded exits 1"
+assert_contains "$OUT" "retire completed, but recording retired of ${RFS:0:8} in pfdemo's log failed" "saying the retire happened and the log write did not"
+assert_equals "$(field "$RFS" status)" "retired" "the local retire stands"
+chmod 500 "$PFLOG"
+run "$SMINOS" spawn sfail "t"
+chmod 700 "$PFLOG"
+assert_rc 1 "$RC" "a spawn whose joined cannot be recorded exits 1"
+assert_contains "$OUT" "seat spawned: pf-repo/sfail" "after its banner, so the seat it launched can still be found"
+assert_contains "$OUT" "spawn completed, but recording joined of" "saying the spawn happened and the log write did not"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/pf-"*.json
 

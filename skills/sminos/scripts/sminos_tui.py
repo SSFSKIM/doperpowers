@@ -83,14 +83,20 @@ def flash(state, msg):
     state["flash"] = (str(msg), state["clock"]())
 
 
-def attach_short(seat):
-    """The id `claude attach` takes for a seat's current session: the harness
-    row's id when the harness knows the session, else the recorded short. A
-    member that holds no seat has none: sminos did not start its session."""
-    if not seat:
+def attach_short(node):
+    """The id `claude attach` takes for a member's session. A seat: the
+    harness row's id when the harness knows the session, else the recorded
+    short. A seat-less member on this machine: its harness row's id, when the
+    harness lists the session as one it can attach to — not an interactive
+    terminal's, which only its own terminal holds. Another machine's: none."""
+    seat, member = node["seat"], node["member"]
+    if seat:
+        row = sminos.harness_row(seat) if seat.get("current") else None
+        return str((row or {}).get("id") or seat.get("short") or "")
+    if not member["local"] or not member["session"]:
         return ""
-    row = sminos.harness_row(seat) if seat.get("current") else None
-    return str((row or {}).get("id") or seat.get("short") or "")
+    row = sminos.agent_row(session_id=member["session"])
+    return str(row.get("id") or "") if row and row.get("kind") != "interactive" else ""
 
 
 def take_snapshot(state):
@@ -104,7 +110,7 @@ def take_snapshot(state):
 
     def walk(n):
         if n["kind"] == "seat":
-            n["short"] = attach_short(n["seat"])
+            n["short"] = attach_short(n)
         for c in n["children"]:
             walk(c)
     for r in roots:
@@ -327,8 +333,11 @@ def attach_target(node):
         return "", "move to a member to open its conversation"
     if node["state"] == "vacant":
         return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], node["ref"])
-    if node["seat"] is None:
-        return "", "%s holds no seat — its session is its human's own; open it where it runs" % node["label"]
+    if node["seat"] is None and not node.get("short"):
+        if not node["member"]["local"]:
+            return "", "%s is on %s — attach to it there" % (node["label"], node["member"]["machine"])
+        return "", ("%s holds no seat, and the harness offers no session to attach to — an interactive terminal's "
+                    "session is open only where it runs" % node["label"])
     if not node.get("short"):
         return "", "%s has no short id to attach to — the harness no longer lists its session" % node["label"]
     return node["short"], ""
@@ -521,8 +530,6 @@ def detail_lines(state, node, w):
     if m["by"]:
         head += " · by %s" % m["by"]
     state_line = chart.glyph_line(node)
-    if not m["local"]:
-        state_line += " · on %s" % m["machine"]
     if node.get("short"):
         state_line += " · short %s" % node["short"]
     if s and s.get("updated"):
