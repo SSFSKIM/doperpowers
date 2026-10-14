@@ -409,14 +409,15 @@ export function runEnd(
 }
 
 /**
- * A remote surface (the desktop app, VS Code, mobile) draws a span's body as
- * its own `Markdown`. A render answer carries one props, so of several blocks
- * handed back beneath the hook only the first can draw there: Claude Desktop
+ * A span's body is drawn as its own `Markdown`, on every surface. A render
+ * answer to a remote surface carries one props, so of several blocks handed
+ * back beneath the hook only the first can draw there: Claude Desktop
  * portals its native row into the first `engine` node and draws nothing at
- * the rest, which left every span after the first label-only (2026-10-03). The
- * terminal draws the hook's whole tree in-process, so there the body stays
- * the engine's own drawing. `Markdown.text` takes at most 10000 characters
- * and no control character but tab and newline.
+ * the rest, which left every span after the first label-only (2026-10-03).
+ * The terminal drew the engine's block until 2026-10-14, but that block
+ * carries the engine's row margin, a blank line between the label and the
+ * body. `Markdown.text` took at most 10000 characters and takes no control
+ * character but tab and newline.
  */
 const MARKDOWN_MAX = 10000
 
@@ -540,7 +541,7 @@ async function recordRow<E extends RenderInput>(
 
   if (!view.unfolded.has(start)) {
     return opens && start === id ? (
-      <Box>
+      <Box marginTop={1}>
         <Text dimColor>{bullet}</Text>
         <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
       </Box>
@@ -694,29 +695,21 @@ export function registerToHuman(on: On) {
     const last = parsed.spans.length - 1
 
     // A span's body is markdown as the model wrote it (a table, a list, a
-    // code fence). On the terminal it is drawn by the engine: the block is
-    // handed back beneath this hook with the span's text in place of the
-    // whole, and no bullet, since the label above carries it. The bullet is
-    // the engine's two-column gutter, so the body is padded by as much to sit
-    // where the transcript's text does. A remote surface draws it as its own
-    // `Markdown` instead, one block per span, since only the first block
-    // handed back would draw there (see `markdownBlocks`).
-    const bodies = await Promise.all(
-      parsed.spans.map((span) =>
-        e.surface === 'terminal'
-          ? next({ ...e, props: { ...e.props, text: span.text, isFirstOfReply: false } })
-          : Promise.resolve(
-              <Box flexDirection="column">
-                {markdownBlocks(span.text).map((block) => (
-                  <Markdown text={block} />
-                ))}
-              </Box>,
-            ),
-      ),
-    )
+    // code fence), drawn as the surface draws a reply's text (see
+    // `markdownBlocks`), directly under its label. The bullet is the engine's
+    // two-column gutter, so the body is padded by as much to sit where the
+    // transcript's text does. The row stands one line below the row above,
+    // as the engine's rows do.
+    const bodies = parsed.spans.map((span) => (
+      <Box flexDirection="column">
+        {markdownBlocks(span.text).map((block) => (
+          <Markdown text={block} />
+        ))}
+      </Box>
+    ))
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" marginTop={1}>
         {parsed.spans.map((span, i) => {
           const style = STYLE[span.kind]
           return (
@@ -734,7 +727,7 @@ export function registerToHuman(on: On) {
         })}
         {parsed.hasRecord ? (
           // The one button of this message's record and of the run after it.
-          <Box paddingLeft={2}>
+          <Box paddingLeft={2} marginTop={1}>
             <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
           </Box>
         ) : null}
@@ -826,7 +819,7 @@ export function registerToHuman(on: On) {
     const { Box, Text, Button } = $.ui.resolve(e)
 
     return (
-      <Box>
+      <Box marginTop={1}>
         <Text dimColor>to-human view · </Text>
         <Button
           key={MODE}

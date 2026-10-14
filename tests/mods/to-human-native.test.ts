@@ -43,7 +43,9 @@ describe('MAWS native to-human', () => {
       return { type: 'Text', children: [(e.props as { text: string }).text] }
     })
     expect(report).toMatchObject({ type: 'Box' })
-    expect(bodies).toEqual(['One.', 'Which branch?\n<choice>main</choice>'])
+    // The terminal draws each body as its own Markdown; nothing is handed back.
+    expect(JSON.stringify(report)).toContain('"One."')
+    expect(bodies).toEqual([])
 
     // A marked terminal row primes the folding state: otherwise a missing
     // guard on AbovePrompt could look like a pass-through simply because
