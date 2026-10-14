@@ -1415,9 +1415,13 @@ Dispatch scripts: one `--brief` each.
   duplicated the posts. `record` now takes migrate's lock with a bounded
   non-blocking retry and exits 0 if the lock is busy. The migration
   steps run with no alarm armed, and the alarm is armed only around the
-  export, for whatever time is left. Deferred as minor: on a machine not
-  yet migrated, a migration step can still wait without bound on
-  `.metalock` or `.sync.lock`, which it takes inside the step.
+  export, for whatever time is left. Fix wave 3 (2fc95340) closes the
+  remaining gap. On the record path, the deadline also bounds each
+  migration step's own lock: `.metalock` through `meta_set`, the
+  node-file conversion, and `.sync.lock` for a chat import. A step that
+  cannot take its lock is skipped before it mutates anything, logged to
+  `daemon.log`, and redone by a later call. Callers that pass no deadline
+  block as before.
   Date/Author: 2026-10-14, the controller, from the M3 task review.
 
 ## Outcomes & Retrospective
