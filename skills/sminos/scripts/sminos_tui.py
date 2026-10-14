@@ -302,12 +302,12 @@ def handle_key(state, key, actions):
         if node is None or node["kind"] == "project":
             flash(state, "move to a member to send it a message")
         elif node["state"] == "gone":
-            ref = node["ref"]
+            ref = seat_name(node)
             flash(state, "%s is gone — no transcript for its session on this machine; sminos fill %s \"<task>\" or "
                   "sminos retire %s" % (node["label"], ref, ref))
         elif node["state"] in ("vacant", "retired"):
             flash(state, "%s is %s — nothing to send to; sminos fill %s \"<task>\" fills it" % (
-                node["label"], node["state"], node["ref"]))
+                node["label"], node["state"], seat_name(node)))
         else:
             # A stopped seat too: the send resumes it.
             state["input"], state["input_target"] = "", (node["id"], node["name"])
@@ -327,12 +327,19 @@ def handle_key(state, key, actions):
 # ------------------------------------------------------------------ actions
 
 
+def seat_name(node):
+    """What a hint names a member by, for the operator to type: a seat's
+    group/alias (what `fill` takes), else its session id."""
+    seat = node["seat"]
+    return "%s/%s" % (seat["group"], seat["alias"]) if seat else node["ref"]
+
+
 def attach_target(node):
     """(short, reason): the id Enter attaches to, or why it cannot."""
     if node["kind"] != "seat":
         return "", "move to a member to open its conversation"
     if node["state"] == "vacant":
-        return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], node["ref"])
+        return "", "%s is vacant — no session to attach; sminos fill %s \"<task>\"" % (node["label"], seat_name(node))
     if node["seat"] is None and not node.get("short"):
         if not node["member"]["local"]:
             return "", "%s is on %s — attach to it there" % (node["label"], node["member"]["machine"])

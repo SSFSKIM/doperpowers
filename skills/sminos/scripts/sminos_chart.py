@@ -81,8 +81,9 @@ def member_node(project, m, label):
     line, `now:` the status, `by` the spawner, and for a member on another
     machine `@machine age` beside its word. `id` keys the box by the
     project's id and the seat's (or the session's) — names repeat across
-    projects; `name` is the qualified one shown. `ref` is the name `sminos
-    send` and `fill` take for it: a seat's group/alias, else the session id."""
+    projects; `name` is the qualified one shown. `ref` is what `sminos send`
+    takes for it: exactly the seat's id, else the session's — a seat's
+    group/alias can name a seat-less member too."""
     seat = m.seat
     return {"kind": "seat", "id": "%s/%s" % (project.id, seat["seat_id"] if seat else m.session),
             "name": "%s/%s" % (project.name, label), "label": label,
@@ -90,7 +91,7 @@ def member_node(project, m, label):
             "charge": sminos.charge_shown(m), "now": m.status, "by": m.by, "dead": is_dead(m.state),
             "children": [], "hidden": 0, "seat": sminos.public_seat(seat) if seat else None,
             "member": sminos.member_json(m), "project": project,
-            "ref": "%s/%s" % (seat["group"], seat["alias"]) if seat else m.session}
+            "ref": seat["seat_id"] if seat else m.session}
 
 
 def project_members(project, show_all=False):

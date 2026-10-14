@@ -3649,6 +3649,28 @@ run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height
 assert_contains "$OUT" "attach same/worker $C4B → claude attach $C4B" "and in the second, the second's"
 run_in "$C4" env "${C4E[@]}" "$SMINOS" tui --all --headless --width 120 --height 60 --keys "right,left"
 assert_contains "$OUT" "--- focus: same#${FIRST:0:8}" "left from the first's member returns to the first project"
+# The tui sends by the exact id: a seat work/parser and a seat-less session
+# also named parser, in the project work, are each reached from their own box
+# (by group/alias, the seat's name would answer to both).
+C5="$TEST_ROOT/c5"
+C5E=(HOME="$C5/home" SMINOS_HOME="$C5/sminos" STUB_STATE="$C5/stub")
+mkdir -p "$C5/home/.claude/sessions" "$C5/stub/agents" "$C5/stub/log" "$C5/work"
+gitq init -q "$C5/work"
+for who in seat free; do
+  S="$( [ "$who" = seat ] && echo 5c000001 || echo 5c000002 )-0000-4000-8000-00000000005c"
+  start_inbox "c5-$who"
+  { echo "short=${S:0:8}"; echo "uuid=$S"; echo "name=parser"; echo "kind=background"; echo "state=working"; echo "status=idle"; echo "cwd=$C5/work"; } > "$C5/stub/agents/${S:0:8}"
+  printf '{"pid":%s,"sessionId":"%s","name":"parser","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$S" "$C5/work" "$TEST_ROOT/in-c5-$who.sock" > "$C5/home/.claude/sessions/c5-$who.json"
+done
+run_in "$C5/work" env "${C5E[@]}" "$SMINOS" seat add work parser --session 5c000001-0000-4000-8000-00000000005c
+run_in "$C5/work" env "${C5E[@]}" "$SMINOS" tui --headless --width 120 --height 40 --keys "!focus:work/parser#5c000001,s,text:to the seat,enter"
+assert_contains "$OUT" "send parser#5c000001 to the seat → rc=0" "the seat is reached from its box, though a seat-less member shares its name"
+assert_contains "$(inbox c5-seat)" "to the seat" "the frame lands in the seat's session"
+assert_not_contains "$(inbox c5-free)" "to the seat" "and not in the other's"
+run_in "$C5/work" env "${C5E[@]}" "$SMINOS" tui --headless --width 120 --height 40 --keys "!focus:work/parser#5c000002,s,text:to the free one,enter"
+assert_contains "$OUT" "send parser#5c000002 to the free one → rc=0" "the seat-less one, by its session"
+assert_contains "$(inbox c5-free)" "to the free one" "reaching its own session"
 
 # A lifecycle event is part of its verb: a failed append exits 1, saying the
 # local operation completed and the log write failed.
