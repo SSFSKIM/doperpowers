@@ -32,6 +32,7 @@ every project known here, each in the order of §8:
 nothing); `status` prints the last tick per project.
 """
 
+import contextlib
 import fcntl
 import json
 import os
@@ -126,6 +127,41 @@ def log_dir(project):
 
 def lock(log, name, exclusive=True):
     return sminos.flocked(os.path.join(log, name), exclusive)
+
+
+@contextlib.contextmanager
+def sync_op(log):
+    """One sync of a project at a time (`log/.sync-op.lock`), the mirror's
+    stale git locks cleared first."""
+    with lock(log, ".sync-op.lock"):
+        clear_stale_locks(log)
+        yield
+
+
+def clear_stale_locks(log):
+    """Remove git's lock files in the mirror older than the git bound. The
+    caller holds .sync-op.lock, so no git of ours runs in the mirror: such a
+    lock was left by a git killed mid-step (the bound's own kill, a daemon
+    killed in a commit), and every sync after it would fail on it — a stale
+    index.lock stops the commit, a stale ref lock the fetch. A fresh one is
+    left alone."""
+    gitdir, bound = os.path.join(log, ".git"), git_timeout()
+    for d, dirs, files in os.walk(gitdir):
+        if d == gitdir and "objects" in dirs:
+            dirs.remove("objects")  # git keeps no lock there worth a walk every tick
+        for f in files:
+            if not f.endswith(".lock"):
+                continue
+            path = os.path.join(d, f)
+            try:
+                age = time.time() - os.stat(path).st_mtime
+                if age <= bound:
+                    continue
+                os.unlink(path)
+            except OSError:
+                continue
+            sminos.daemon_log("removed %s, a git lock %ds old (past the %gs git bound) left by a git killed mid-step"
+                              % (path, age, bound))
 
 
 # ------------------------------------------------------------- the instance
@@ -289,7 +325,7 @@ def push(project, log):
 def sync_in(project):
     """Duty 1: attach on first sight, fetch, integrate."""
     log = log_dir(project)
-    with lock(log, ".sync-op.lock"):
+    with sync_op(log):
         if not attached(project, log):
             prepare(project, log)
         fetch(log)
@@ -299,7 +335,7 @@ def sync_in(project):
 def sync_out(project):
     """Duty 5: commit what this tick appended and push it."""
     log = log_dir(project)
-    with lock(log, ".sync-op.lock"):
+    with sync_op(log):
         return push(project, log)
 
 
@@ -310,7 +346,7 @@ def attach(project):
     is set, leaving the first sync to the daemon."""
     log = log_dir(project)
     try:
-        with lock(log, ".sync-op.lock"):
+        with sync_op(log):
             prepare(project, log)
             try:
                 fetch(log)

@@ -1647,6 +1647,16 @@ Dispatch scripts: one `--brief` each.
   them.
   Date/Author: 2026-10-14, the controller's and the authoring session's
   rulings, built by the M6 executor.
+- Decision: a git lock file in a mirror's `.git` older than the git bound
+  (30 s, `SMINOS_GIT_TIMEOUT`) is stale. It is removed at the start of
+  each sync operation, under `.sync-op.lock`, with a line in
+  `daemon.log`; a younger one is left alone. While `.sync-op.lock` is
+  held no git of the daemon's runs in the mirror, so such a lock is left
+  by a git killed mid-step: the bound's own kill, or a daemon killed in
+  a commit. The cleanup runs before the fetch, not only before the
+  commit, because a stale ref lock fails every later fetch and the
+  commit is never reached.
+  Date/Author: 2026-10-14, the branch-review fix wave.
 
 ## Outcomes & Retrospective
 

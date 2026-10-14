@@ -4555,6 +4555,30 @@ if python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 5.0)' "$TOOK"; then pas
 assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "timed out after 1s" "daemon.log says why"
 run env "${H1[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "stall: synced" "the next tick syncs again"
+# A git killed mid-step leaves its lock in the mirror, and every sync after it
+# would fail on that lock. One older than the git bound is a leftover (no git
+# of the daemon's runs while it holds the sync): removed and logged. A fresh
+# one is left alone.
+run env "${H2[@]}" "$SMINOS" say --in demo "moves the remote past a stale lock"
+run env "${H2[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" say --in demo "said past a stale lock"
+mkdir -p "$LOG1/.git/refs/remotes/origin"
+: > "$LOG1/.git/index.lock"
+: > "$LOG1/.git/refs/remotes/origin/main.lock"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "demo: not synced" "a fresh git lock in the mirror is left alone: the sync waits on it"
+assert_file_exists "$LOG1/.git/index.lock" "the lock stays"
+python3 -c 'import os, sys, time
+t = time.time() - 120
+for p in sys.argv[1:]:
+    os.utime(p, (t, t))' "$LOG1/.git/index.lock" "$LOG1/.git/refs/remotes/origin/main.lock"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "demo: synced" "one older than the git bound is a leftover: removed, and the sync goes on"
+assert_file_absent "$LOG1/.git/index.lock" "the stale index lock is gone"
+assert_file_absent "$LOG1/.git/refs/remotes/origin/main.lock" "and the stale ref lock a killed fetch would leave"
+assert_contains "$(cat "$LOG1/h2.human.jsonl")" "moves the remote past a stale lock" "the fetch brings the other home's append"
+assert_contains "$(gitq -C "$REMOTE" log -p main)" "said past a stale lock" "and this home's append is committed and pushed"
+assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "index.lock, a git lock 120s old" "daemon.log names each lock removed"
 unset GIT_SSH_COMMAND GIT_SSH_VARIANT
 cd "$RR"
 
