@@ -37,7 +37,7 @@ machines.
 
 ## Progress
 
-- [ ] M1 — Project identity and the log
+- [x] M1 — Project identity and the log (2026-10-14, reviewed clean after two fix waves; 7f3f8b9f..eb6a5ede)
 - [ ] M2 — The project family
 - [ ] M3 — Messages to the host and the in-charge line
 - [ ] M4 — The mirror and the daemon
