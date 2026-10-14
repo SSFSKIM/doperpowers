@@ -10,8 +10,8 @@ step 7 ran the suites.
 | --- | --- |
 | 1. `list` shows both sessions with no `seat add` | pass |
 | 2. untagged is recorded, `@b` delivers, `@all` wakes | pass |
-| 3. `<message>` and an async ask reach `chat --host` | pass, with finding F1 |
-| 4. spawn provenance, retiring the spawner, ambiguous `@c` | pass, with finding F2 |
+| 3. `<message>` and an async ask reach `chat --host` | pass, with finding F1 (fixed, `38e94907`) |
+| 4. spawn provenance, retiring the spawner, ambiguous `@c` | pass, with findings F2 and F3 (fixed, `38e94907`) |
 | 5. `charge` and `derive` | pass, with a note on the 120-character cut |
 | 6. two homes, the mirror, the daemon, under two seconds | pass (stub harness) |
 | 7. the three suites | pass |
@@ -349,7 +349,7 @@ real ones: two real machines were not available to this run.
 
 ## Findings
 
-- **F1: a Stop can run before the turn's last record is on disk.** a's
+- **F1 (fixed in `38e94907`, below): a Stop can run before the turn's last record is on disk.** a's
   first `<message>` (record `375c7176`, written 16:02:53.993) was exported at
   a's next Stop (16:04:07), 73 s late. The other 23 marks in the run were
   exported 0.1–0.2 s after they were written. a's first Stop did run
@@ -363,7 +363,7 @@ real ones: two real machines were not available to this run.
   is a deterministic signal: when it holds a mark and no assistant record
   past the position carries that text, `record` can poll briefly for the
   flush within its 5 s budget.
-- **F2: `retire` of an interactive member does not hold.** `sminos retire a`
+- **F2 (fixed in `38e94907`, below): `retire` of an interactive member does not hold.** `sminos retire a`
   recorded `retired` (seq 16), but the harness lists an interactive session
   with `id: null` (`claude agents --json --all`), so `claude stop` had
   nothing to stop. The next reading verb (b's `list`, 2 s later)
@@ -372,7 +372,7 @@ real ones: two real machines were not available to this run.
   options: refuse `retire` for a member with no stoppable harness row and
   say its human closes it, or have reconciliation re-join a session retired
   by `retire` only if its process started after the retirement.
-- **F3: a spawned seat does not inherit `SMINOS_HOME`.** `claude --bg` hands
+- **F3 (fixed in `38e94907`, below): a spawned seat does not inherit `SMINOS_HOME`.** `claude --bg` hands
   the launch to the harness's supervisor, which claims a pre-started spare,
   so the seat's environment is the supervisor's, not the spawner's. With
   the default home this is invisible. With a non-default `SMINOS_HOME`, a
@@ -387,6 +387,90 @@ real ones: two real machines were not available to this run.
   the sessions it was given to. So c had no `smns-record.sh` hook. It was a
   member through its seat record, and its CLI was this branch's (the
   preamble names the worktree's launcher).
+
+## Fixes from the live run
+
+All three are fixed in `38e94907`. The suite pins each fix through the
+stub harness. Against the code before the fix, these tests fail 20 of 1484
+assertions. The 21st RED failure, "reading chat is the first sminos
+instruction", comes from running the RED copy under `/tmp` rather than from
+any code change. With the fix, all 1484 assertions pass.
+
+- **F1, fixed.** At Stop, `record` now waits, polling every 100 ms, until
+  the payload's `last_assistant_message` appears on the transcript past the
+  export position. It then exports. The message's text blocks are joined by
+  newline, and a message written as one record per block is matched by its
+  message id. The wait ends after at most 2 s, and always 0.5 s before the
+  record budget runs out. At that deadline `record` exports whatever is on
+  the transcript, and the next Stop exports the rest, as before. Tests
+  cover four cases:
+  - a last message appended 0.4 s after the hook started is exported by
+    that Stop;
+  - a message split across thinking and text records is found;
+  - a last message that never lands ends the wait at the bound (2.3 s
+    measured) and exports what is there;
+  - the next Stop then exports the missing message once.
+- **F2, fixed. The ruling: a retirement holds for the life of the process
+  that ran when it was recorded.**
+  - `retire` of a seat-less member now records the pid of the process it
+    saw.
+  - Reconciliation and the hook re-join that session only when its harness
+    record shows a different pid, or a `startedAt` (else `procStart`) later
+    than the retirement. A resume opens a new process, so it re-joins.
+  - When the process runs on, `retire` prints "`<alias>`'s session keeps
+    running in its terminal; it re-joins when resumed as a new process".
+  - The hold applies only to `reason: retire`. An `ended` retirement means
+    the process was not seen, so a running process it later sees is not
+    the one it ended.
+
+  Tests:
+  - a retired live interactive session stays retired across two `list`s, a
+    `daemon tick`, and its own Stop hook;
+  - the same session id under a new pid re-joins;
+  - so does the same pid with a later `startedAt`.
+- **F3, fixed.**
+  - Whenever `SMINOS_HOME` (or `DAEMON_HOME`) is set, `spawn` and a fresh
+    `fill` launch the seat with settings carrying `env.SMINOS_HOME`. A
+    caller's `--settings`, given as a file or as inline JSON, is merged into
+    one file under `$SMINOS_HOME/settings/`, named by its content.
+  - The seat record keeps the caller's own `settings`, so the route stays
+    the caller's: an empty value is still the plain route and still scrubs
+    the gateway env.
+  - `resume` and `fill --resume` take no flags, because a flag makes the
+    harness start a copy. A resumed session keeps the settings it launched
+    with: checked live on 2.1.299, a `--bg` session launched with a settings
+    `env` printed the same `SMINOS_HOME` after `claude stop` and a flagless
+    `claude --bg --resume`, and the harness said it "woke session … with
+    its saved options (-n, --permission-mode, --settings, --model)". The
+    probe session was then removed with `claude rm`, and its transcript and
+    scratch directory were deleted.
+  - A seat spawned before this fix has no such settings, and a resume
+    cannot add them.
+
+  Tests:
+  - the launch argv carries a settings file under the spawner's registry,
+    which merges a gateway settings file's `env` with `SMINOS_HOME`;
+  - a plain-route seat's settings carry only `SMINOS_HOME`, and its record
+    keeps the plain route;
+  - inline JSON settings are merged, with the spawner's `SMINOS_HOME`
+    winning;
+  - an unreadable `--settings` is a usage error;
+  - a seat spawned under a non-default registry (a fresh HOME), with its
+    Stop hook and a `status` call run in its own environment (`SMINOS_HOME`
+    taken only from its settings), writes into that registry. No default
+    registry appears under its HOME, and the suite's own registry gains no
+    file;
+  - the board dispatch path goes through `sminos spawn`, so
+    `test-execute-dispatch.sh`'s contract test now asserts that the
+    worker's launch settings carry the dispatcher's `SMINOS_HOME`. Its
+    stub harness logs launch argv. The assertion fails before the fix.
+
+After the fixes:
+- `run-sminos-tests.sh` 1484/1484, with clean output;
+- both dispatch suites pass;
+- `tests/mods/run-mods-tests.sh` 172 pass, 0 fail;
+- `lint-shell.sh` rc 0;
+- `ruff --select F,E9` clean.
 
 ## Cleanup
 
