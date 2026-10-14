@@ -2124,36 +2124,49 @@ FLUSH_WAIT = 2.0
 FLUSH_POLL = 0.1
 
 
-def _holds_last_message(records, text):
-    """Whether an assistant message among the records reads `text`: its text
-    blocks joined by newlines, as the harness writes a Stop payload's
-    `last_assistant_message`. One message's blocks may span several records
-    (one per block), joined by their message id."""
-    texts, order = {}, []
-    for _, r in records:
-        if r.get("type") != "assistant":
-            continue
-        message = r.get("message") if isinstance(r.get("message"), dict) else {}
-        key = message.get("id") or r.get("uuid")
-        if key not in texts:
-            texts[key] = []
-            order.append(key)
-        texts[key] += [str(b.get("text") or "") for b in _blocks(r, "text")]
-    return any("\n".join(texts[k]).strip() == text for k in order)
+def _last_message_text(tpath):
+    """The text of the transcript's last message, read from its end, when that
+    message is an assistant's: its text blocks joined by newlines, as the
+    harness writes a Stop payload's `last_assistant_message` (one message's
+    blocks may span several records, one per block, joined by their message
+    id). None when the last message is a user-role record — a prompt, a tool
+    result, a peer frame: the turn's answer is not on the transcript yet — or
+    when the transcript cannot be read. Records of other types and sidechain
+    records are passed over."""
+    try:
+        f = open(tpath, "rb")
+    except OSError:
+        return None
+    key, texts = None, []
+    with f:
+        for _, line in _lines_backward(f, _complete_end(f)):
+            r = _record(line)
+            if not r or r.get("isSidechain") or r.get("type") not in ("user", "assistant"):
+                continue
+            if r["type"] == "user":
+                break
+            message = r.get("message") if isinstance(r.get("message"), dict) else {}
+            k = message.get("id") or r.get("uuid")
+            if key is not None and k != key:
+                break
+            key = k
+            texts[:0] = [str(b.get("text") or "") for b in _blocks(r, "text")]
+    return "\n".join(texts) if key is not None else None
 
 
-def await_flush(project, session, tpath, last_message, until):
-    """Before a Stop's export: wait, polling, until the turn's last assistant
-    message (the payload's `last_assistant_message`) is on the transcript past
-    the export position, or until `until` (epoch seconds). True when it is
-    there; at the deadline the export takes what is there, and the next Stop
-    the rest."""
+def await_flush(tpath, last_message, until):
+    """Before a Stop's export: wait, polling, until the transcript's last
+    message is the turn's answer — an assistant message reading the payload's
+    `last_assistant_message` — or until `until` (epoch seconds). The same text
+    earlier in the transcript is not the answer: a mark the turn repeats is
+    still waited for. True when it is there; at the deadline the export takes
+    what is there, and the next Stop the rest."""
     text = str(last_message or "").strip()
     if not text:
         return True
     while True:
-        past = _records_past(project, session, tpath)
-        if past is not None and _holds_last_message(past[0], text):
+        last = _last_message_text(tpath)
+        if last is not None and last.strip() == text:
             return True
         if time.time() + FLUSH_POLL > until:
             return False
@@ -2239,7 +2252,7 @@ def record_session(project, session, tpath, event, last_message=""):
     until = time.time() + FLUSH_WAIT
     if _RECORD_DEADLINE is not None:
         until = min(until, _RECORD_DEADLINE - 0.5)
-    await_flush(project, session, tpath, last_message, until)
+    await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
 
 

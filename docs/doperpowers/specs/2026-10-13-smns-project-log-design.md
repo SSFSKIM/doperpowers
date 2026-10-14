@@ -1665,6 +1665,19 @@ Dispatch scripts: one `--brief` each.
   taken before the retire, and retiring an interactive session leaves its
   process running (§2).
   Date/Author: 2026-10-14, the branch-review fix wave (review 2).
+- Decision: F1's flush wait now matches only the turn's own answer. It
+  ends when the transcript's last message, read from its end over
+  main-chain user and assistant records, is an assistant message whose text
+  blocks read the payload's `last_assistant_message`. A user-role record
+  after it (a prompt, a tool result, a peer frame) means the answer is not
+  on disk yet. Before this, the wait matched any equal message past the
+  export position, so an earlier identical mark ended it while the answer
+  was still in the queue. Looking only at the last assistant message would
+  not fix that: the earlier mark is the last assistant message until the
+  answer lands. The bounds are unchanged: 2 s, and 0.5 s before the record
+  budget. A user-type record the harness wrote after the answer would cost
+  the full 2 s, and nothing would be lost.
+  Date/Author: 2026-10-14, the branch-review fix wave (review 4).
 
 ## Outcomes & Retrospective
 

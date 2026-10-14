@@ -4126,6 +4126,16 @@ assert_equals "$(grep -c '"text": "two blocks"' "$HPLOG/testhost.$HB.jsonl" || t
 if python3 -c 'import sys; sys.exit(not float(sys.argv[1]) < 0.8)' "$TOOK"; then
   pass "the wait ends as soon as the whole message is on the transcript (${TOOK}s after its last block)"
 else fail "the wait ends as soon as the whole message is on the transcript"; echo "    took ${TOOK}s after its last block"; fi
+# The wait is for the turn's own answer: the same mark earlier, not yet
+# exported, does not end it while a tool result stands after it.
+tx "$TB" prompt b2000011 "again"
+tx "$TB" asst b2000012 '<message>Done.</message>'
+tx "$TB" result b2000013 toolu_b2 "ok"
+hook_stop_last "$HB" "$R3" "$TB" "<message>Done.</message>" & LATE=$!
+sleep 0.6
+tx "$TB" asst b2000014 '<message>Done.</message>'
+wait "$LATE"
+assert_contains "$(hp_events "$HB")" "message:b2000012#0 message:b2000014#0" "an earlier identical mark does not end the wait: the turn's answer is exported by its own Stop"
 # At the deadline the export takes what is there; the next Stop the rest.
 tx "$TB" prompt b2000007 "last"
 tx "$TB" asst b2000008 '<message>on disk in time</message>'
