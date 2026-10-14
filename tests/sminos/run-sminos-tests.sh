@@ -542,28 +542,37 @@ assert_equals "$(field "$R_UUID" short)" "$R_SHORT" "short recorded"
 assert_equals "$(field "$R_UUID" status)" "idle" "a first turn that already ended records idle"
 assert_equals "$(field "$R_UUID" turns)" "1" "turn 1 recorded"
 assert_equals "$(field "$R_UUID" cwd)" "$WORK" "cwd recorded from the harness row"
-assert_contains "$(field "$R_UUID" task)" 'You are seat "researcher" in sminos group "work", the root of your' "every spawn renders the preamble, naming its project"
+assert_contains "$(field "$R_UUID" task)" 'You are "researcher", a member of the project "work", spawned by' "every spawn renders the preamble, naming its project"
+assert_contains "$(field "$R_UUID" task)" 'the operator. Every session working in this project is a member' "and its spawner: the operator's spawn says so"
+assert_not_contains "$(field "$R_UUID" task)" '{{' "and leaves no placeholder"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS chat -n 30" "spawned seat reads family chat before acting"
 assert_equals "$(field "$R_UUID" task | grep -m1 '^    .*/sminos \(chat\|say\|status\|spawn\) ')" "    $SMINOS chat -n 30" "reading chat is the first sminos instruction"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"done with X; PR #12\"" "preamble teaches a report to the host"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@sibling your change renames a column I read\"" "preamble teaches targeted family messages"
-assert_contains "$(field "$R_UUID" task)" 'Tags address only at the start of a message; an @ later' "member preamble teaches that only leading tags address"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS spawn <alias> \"<task>\" [--role <role>] [--worktree <name>]" "preamble teaches inherited family spawning"
-assert_contains "$(field "$R_UUID" task)" 'ListAgents and SendMessage' "preamble points outside-family contact to native tools"
+assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"merged #12\"" "preamble teaches an untagged record"
+assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@<alias> your change renames a column I read\"" "preamble teaches a message addressed to one member"
+assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@all main is being rebased, stop pushing\"" "preamble teaches @all"
+assert_contains "$(field "$R_UUID" task)" 'keep it for what every member must act on' "and what @all is for"
+assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "member preamble teaches that only leading tags address"
+assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
+assert_contains "$(field "$R_UUID" task)" '<message>…</message> in your reply' "preamble sends the human a <message>, not a say"
+assert_contains "$(field "$R_UUID" task)" "$SMINOS charge \"" "preamble teaches the in-charge line"
+assert_contains "$(field "$R_UUID" task)" "$SMINOS status researcher \"what you are doing now\"" "and the status line, under the seat's own alias"
+assert_contains "$(field "$R_UUID" task)" "$SMINOS spawn <alias> \"<task>\" --brief \"<its standing line>\" [--worktree <name>]" "preamble teaches spawning a sibling with its line"
+assert_not_contains "$(field "$R_UUID" task)" 'ListAgents' "preamble no longer routes outside a family: the project is the reach"
+assert_not_contains "$(field "$R_UUID" task)" '--team' "nor teaches a team chat"
 assert_not_contains "$(field "$R_UUID" task)" 'sminos topology' "spawned seat does not read removed topology view"
 assert_not_contains "$(field "$R_UUID" task)" 'sminos post' "spawned seat does not use removed board post"
 assert_contains "$(field "$R_UUID" task)" "Your task follows." "preamble separates protocol from task"
 assert_contains "$(field "$R_UUID" task)" "PING-scope-42" "task text follows the preamble"
 assert_file_exists "$SMINOS_HOME/$R_UUID.reply.txt" "reply of an already-finished first turn is recorded"
 assert_contains "$(cat "$SMINOS_HOME/$R_UUID.reply.txt")" "ANSWER:" "recorded reply comes from the transcript"
-assert_contains "$(grep 'bg-env:You are seat' "$STUB_STATE/log/calls.log" | tail -1)" "path=set" "PATH survives the plain-route launch"
+assert_contains "$(grep 'bg-env:You are "' "$STUB_STATE/log/calls.log" | tail -1)" "path=set" "PATH survives the plain-route launch"
 assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--permission-mode auto -n researcher" "launch uses auto permission mode and the alias as display name"
 
 run "$SMINOS" spawn plainworker "NOGROUP-1"
 assert_rc 0 "$RC" "a second spawn"
 P_UUID="$(banner_uuid "$OUT")"
 assert_equals "$(field "$P_UUID" group)" "work" "group derived from the cwd"
-assert_contains "$(field "$P_UUID" task)" 'You are seat "plainworker"' "every spawn renders the preamble"
+assert_contains "$(field "$P_UUID" task)" 'You are "plainworker", a member of the project' "every spawn renders the preamble"
 assert_equals "$(field "$P_UUID" preamble)" "1" "and records that it did"
 
 # One name: the alias is the harness name, so there is no second address to give.
@@ -1088,7 +1097,7 @@ assert_contains "$OUT" "seat filled: work/researcher" "fill reports the seat"
 NEWCUR="$(field "$R_UUID" current)"
 if [ "$NEWCUR" != "$R_UUID" ]; then pass "fresh fill gives the seat a new session while keeping the seat id"; else fail "fresh fill gives the seat a new session while keeping the seat id"; fi
 assert_not_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--resume" "fresh fill does not resume"
-assert_contains "$(field "$R_UUID" task)" 'You are seat "researcher"' "fresh fill re-renders the preamble for a wired seat"
+assert_contains "$(field "$R_UUID" task)" 'You are "researcher", a member of the project' "fresh fill re-renders the preamble for a wired seat"
 assert_contains "$(field "$R_UUID" task)" "FRESH-START" "fresh fill carries the new task"
 assert_equals "$(field "$R_UUID" turns)" "1" "fresh fill resets turns"
 run "$SMINOS" fill researcher "CONTINUE" --resume
@@ -2065,10 +2074,10 @@ recv_size() { wc -c < "$RECEIVED" | tr -d ' '; }
 run "$SMINOS" spawn root-alone 'ROOT-TASK'
 assert_rc 0 "$RC" "a seat spawns into the project"
 ROOT_ID="$(banner_uuid "$OUT")"
-assert_contains "$(field "$ROOT_ID" task)" 'You are seat "root-alone" in sminos group "fam-work", the root of your' "every spawn renders the preamble, naming the project"
+assert_contains "$(field "$ROOT_ID" task)" 'You are "root-alone", a member of the project "fam-work", spawned by' "every spawn renders the preamble, naming the project"
 assert_not_contains "$(field "$ROOT_ID" task)" '"none"' "the preamble never invents a none host"
 assert_not_contains "$(field "$ROOT_ID" task)" '{{' "and leaves no placeholder"
-assert_contains "$(field "$ROOT_ID" task)" 'Tags address only at the start of a message; an @ later' "the preamble teaches that only leading tags address"
+assert_contains "$(field "$ROOT_ID" task)" 'only the tags that open a message' "the preamble teaches that only leading tags address"
 export CLAUDE_CODE_SESSION_ID="$ROOT_ID"
 run "$SMINOS" chat -n 30
 assert_rc 0 "$RC" "a seat alone in its project reads the chat as the preamble says"
@@ -2196,6 +2205,7 @@ C="$(seat_id_of c)"
 assert_equals "$(field "$C" parent)" "" "a sibling records no parent"
 assert_equals "$(field "$C" group)" work "its group derives from its cwd, not from its spawner"
 assert_contains "$(field "$C" task)" "$SMINOS chat -n 30" "its preamble begins with the chat instruction"
+assert_contains "$(field "$C" task)" 'a. Every session working in this project is a member' "and names the member that spawned it"
 # A member's own messages are never its unread: a's note is not counted in the
 # frame a receives for the report of the seat it spawned.
 printf '{"pid":%s,"sessionId":"%s","name":"a","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$A" "$SOCK" > "$HOME/.claude/sessions/a.json"
@@ -4515,9 +4525,13 @@ with open(sys.argv[1], "w") as f:
             e["ts"] = "2000-01-01T00:00:00.000Z"   # the derived line is old: a derivation is due again
         f.write(json.dumps(e) + "\n")
 PY_STALE
-env "${SOLO[@]}" SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=3 "$SMINOS" daemon tick > /dev/null 2>&1 & TA=$!
-env "${SOLO[@]}" SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=3 "$SMINOS" daemon tick > /dev/null 2>&1 & TB=$!
-wait "$TA" "$TB" || true
+env "${SOLO[@]}" SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=3 "$SMINOS" daemon tick > "$TEST_ROOT/md-tick-a.out" 2>&1 & TA=$!
+env "${SOLO[@]}" SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=3 "$SMINOS" daemon tick > "$TEST_ROOT/md-tick-b.out" 2>&1 & TB=$!
+set +e; wait "$TA"; TA_RC=$?; wait "$TB"; TB_RC=$?; set -e
+assert_rc 0 "$TA_RC" "the first of two concurrent ticks exits 0"
+assert_rc 0 "$TB_RC" "the second exits 0"
+assert_contains "$(cat "$TEST_ROOT/md-tick-a.out")" "solo-repo: reconciled" "the first ticked the project"
+assert_contains "$(cat "$TEST_ROOT/md-tick-b.out")" "solo-repo: reconciled" "the second ticked the project"
 for _ in $(seq 1 100); do [ "$(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log")" -gt "$FORKS_BEFORE" ] && break; sleep 0.05; done
 sleep 0.5
 assert_equals "$(( $(grep -c 'derive --all started' "$MD/solo/sminos/daemon.log") - STARTS_BEFORE ))" 1 "two ticks at once start exactly one derive between them"
