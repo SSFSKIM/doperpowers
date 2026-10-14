@@ -975,6 +975,59 @@ if [ "$rc" -ne 0 ]; then pass "an unknown review floor exits non-zero"; else
   fail "an unknown review floor exits non-zero"; fi
 assert_not_contains "$(cat "$SPAWN_LOG")" "spawn:" "...and nothing is spawned"
 
+echo "execute-dispatch: the contract with the real sminos CLI"
+# Every case above stubs sminos itself; this one runs the real CLI, with a stub
+# harness (`claude`) under it, and asserts what the board consumes of a spawn:
+# the banner the dispatcher parses, the seat record board-bind binds by that
+# identity, and the worker's in-charge line in its project's family.
+CT="$TEST_ROOT/contract"; mkdir -p "$CT/harness" "$CT/registry"
+# The stub harness shared with the other dispatch suite.
+CT_BIN="$REPO_ROOT/tests/issue-tracker/stub-harness"
+python3 - <<'PY'
+import json, os
+s = json.load(open(os.environ["MOCK_GH_STATE"]))
+s["issues"]["31"] = {"number": 31, "id": "ID_31", "title": "Contract the seat",
+                     "body": "body of #31", "state": "OPEN", "stateReason": None,
+                     "labels": ["status:ready-for-implementer", "priority:P1"],
+                     "assignees": [], "parent": None, "blockedBy": [],
+                     "closesPRs": [], "xrefPRs": [], "comments": [],
+                     "createdAt": "2026-07-18T00:00:00Z",
+                     "updatedAt": "2026-07-18T00:00:00Z",
+                     "url": "https://github.com/test/repo/issues/31"}
+s["next"] = 32
+json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
+PY
+REAL_SMINOS="$REPO_ROOT/skills/sminos/scripts/sminos"
+rc=0; out="$(env -u CLAUDE_CODE_SESSION_ID CT_HARNESS="$CT/harness" SMINOS_CLI="$REAL_SMINOS" DAEMON_HOME="$CT/registry" SMINOS_HOME="$CT/registry" \
+  PATH="$CT_BIN:$PATH" "$DISPATCH" 31 2>&1)" || rc=$?
+assert_contains "$out" "dispatched #31" "the dispatch through the real CLI succeeds"
+ct_uuid="$(printf '%s\n' "$out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
+if [ -n "$ct_uuid" ] && [ -f "$CT/registry/$ct_uuid.json" ]; then
+  pass "the spawn banner's bracket names the seat record, as the dispatcher parses it"
+else
+  fail "the spawn banner's bracket names the seat record, as the dispatcher parses it"; echo "    out: $out"
+fi
+assert_contains "$(cat "$CT/registry/$ct_uuid.json" 2>/dev/null)" '"ticket": "31"' "board-bind binds the ticket to that record"
+ct_row="$(cd "$CLONE" && SMINOS_HOME="$CT/registry" PATH="$CT_BIN:$PATH" CT_HARNESS="$CT/harness" "$REAL_SMINOS" list --json 2>/dev/null \
+  | python3 -c 'import json, sys
+row = next((d for d in json.load(sys.stdin) if (d["seat"] or {}).get("seat_id") == sys.argv[1]), {})
+print("%s|%s|%s|%s" % (row.get("alias"), row.get("charge"), row.get("charge_source"), row.get("by")))' "$ct_uuid")"
+if [ "$ct_row" = "31-contract-the-seat|ticket #31: Contract the seat|set|" ]; then
+  pass "the worker is a member of its repository's project, in charge of its ticket, spawned by the operator"
+else
+  fail "the worker is a member of its repository's project, in charge of its ticket, spawned by the operator"
+  echo "    got: $ct_row"
+fi
+# `claude --bg` gives the worker its supervisor's environment, so the registry
+# the dispatcher runs under reaches the worker only through its launch settings.
+ct_home="$(sed -n 's/.*--settings \([^ ]*\).*/\1/p' "$CT/harness/launches.log" 2>/dev/null | tail -1 \
+  | xargs -I{} python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["env"]["SMINOS_HOME"])' {} 2>/dev/null || true)"
+if [ "$ct_home" = "$CT/registry" ]; then
+  pass "the worker launches with the dispatcher's SMINOS_HOME in its settings"
+else
+  fail "the worker launches with the dispatcher's SMINOS_HOME in its settings"; echo "    got: '$ct_home'"
+fi
+
 echo
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES test(s) FAILED"

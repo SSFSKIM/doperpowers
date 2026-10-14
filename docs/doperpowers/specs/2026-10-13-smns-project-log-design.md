@@ -37,12 +37,12 @@ machines.
 
 ## Progress
 
-- [ ] M1 — Project identity and the log
-- [ ] M2 — The project family
-- [ ] M3 — Messages to the host and the in-charge line
-- [ ] M4 — The mirror and the daemon
-- [ ] M5 — The skill and the preamble, as behavior
-- [ ] M6 — Docs, acceptance, version
+- [x] M1 — Project identity and the log (2026-10-14, reviewed clean after two fix waves; 7f3f8b9f..eb6a5ede)
+- [x] M2 — The project family (2026-10-14, reviewed clean after two fix waves and two rulings; 5dd82ba4..0ed8f8fb)
+- [x] M3 — Messages to the host and the in-charge line (2026-10-14, reviewed clean after three fix waves and two rulings; 09775a35..2fc95340)
+- [x] M4 — The mirror and the daemon (2026-10-14, reviewed clean after one fix wave and one ruling; e4204b38..e7e55aef)
+- [x] M5 — The skill and the preamble, as behavior (2026-10-14, reviewed clean after one fix wave; 7009154f..619308dc)
+- [x] M6 — Docs, acceptance, version (2026-10-14, reviewed clean; live acceptance found and fixed F1–F3; c98ba037..9b8fc8b2)
 
 ## Terms
 
@@ -132,7 +132,7 @@ Every project known to a machine has `$SMINOS_HOME/projects/<id>/`:
       cursors/<session-uuid>.json       what a reader has read: {"<writer>": <seq>}   (local only)
       cursors/export/<session-uuid>.json  the hook's export position in the transcript (§4)   (local only)      delivered/<session-uuid>.json     per writer, the settled prefix and the pending event (§4)   (local only)
 
-and `$SMINOS_HOME/machine.json` holds this machine's random instance id,
+and `$SMINOS_HOME/daemon/machine.json` holds this machine's random instance id,
 written on first use, and `$SMINOS_HOME/internal/<pid>` marks an internal
 fork's process (§5).
 
@@ -187,7 +187,18 @@ harness), so they appear in the log without a restart and reach other
 machines through the mirror. A retired seat with no process is not
 reconciled: it stays retired until `fill`, `resume`, or `send` revives it,
 which appends `joined` (§3). The hook (§4) does the same at session start;
-all of it is idempotent by the membership rule.
+all of it is idempotent by the membership rule. Symmetrically, a seat-less
+local member whose harness session is no longer live is retired by
+reconciliation (`reason` `ended`): its activation is over, and a closed
+session kept as a member would hold its alias ambiguous forever. Resuming
+it re-joins it on sight. Only a harness session whose record's `kind` is
+`interactive` or `bg`, and whose `entrypoint` does not start with `sdk`,
+joins on sight, so another tool's headless run in the directory is not a
+member. A `retire` of a seat-less session holds for the life of the
+process that was running when it was recorded. Nobody can stop the
+terminal session the human opened, so reconciliation re-joins it only as
+a different process (another pid, or a later start). A resume re-joins,
+and the retire is not undone a moment later.
 
 There is no host seat. A seat that spawns another is recorded as its
 spawner (§6) and nothing more: it does not integrate the other's work, is
@@ -252,7 +263,7 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | `question` | `from` alias, `to` `"host"`, `text` the question texts, `choices` the option labels, `src` the call's `tool_use_id` | the hook, from a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async` true whose paired `tool_result` is the tool's accepted result (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`) |
 | `answered` | `from` alias, `src` the call id, `text` the engine's result text | the hook, from the delivery row quoting `The human responded to your async AskUserQuestion (call <id>)` |
 | `joined` | `session` uuid, `alias`, `name_source` `user`/`derived`/`seat`, `machine`, `cwd`, `worktree`, `role`, `seat` seat id or `""`, `by` alias or `""` | `spawn` (with `by`), `fill`/`resume` of a retired seat, the hook on session start, reconciliation, `seat add` |
-| `retired` | `session`, `by`, `reason` `retire`/`replaced` | `sminos retire`; `spawn`/`fill` into an occupied seat |
+| `retired` | `session`, `by`, `reason` `retire`/`replaced`/`ended` | `sminos retire`, `remove`; `spawn`/`fill` into an occupied seat; reconciliation, for a seat-less session no longer live (`ended`) |
 | `in-charge` | `session`, `text`, `source` `set` or `derived` | `sminos charge`, `spawn --brief`, `sminos derive` |
 | `status` | `session`, `text` | `sminos status` |
 | `renamed` | `session`, `alias`, `name_source` | the daemon, on a harness name change, into the session's file |
@@ -322,6 +333,9 @@ every member must act on now — and that status is untagged.
 `sminos send <alias> "…"` stays the direct verb to one seat and is recorded
 as `human` (operator) or `say` (member) to that session; it reaches a live
 local member over its socket and resumes a stopped one, exactly as today.
+Its delivery goes through the recipient's delivery record like any other
+event's (below): the verb pushes at once and fails loudly, and an
+interrupted or failed push stays owed.
 
 **Delivery.** Delivery is a function of the log: an event is owed to a
 member until the member's delivery record settles it, and settlement is
@@ -375,9 +389,9 @@ once, so the row is there when `Stop` fires) and their deliveries (the row
 whose text carries the delivery head, in whichever form the ask design
 stores it), appends them with `src` `<record-uuid>#<span-index>` for a
 span and the call id for an ask or its answer — one record's spans
-through `log_append_batch`, which takes the locks once, checks `src`
+through `log_append_batch`, which takes the locks once, checks `(kind, src)`
 inside them, and appends the spans together; the position advanced only
-after the batch — and skips any `src` already present, so a Stop that fires twice, a turn
+after the batch — and skips any `(kind, src)` already present (a `question` and its `answered` share the call id), so a Stop that fires twice, a turn
 interrupted and resumed, or an export that died after the first span of a
 record exports each mark once. Exports are serialised by `cursors/export/<session-uuid>.lock`. Locks are
 taken in one order everywhere: the export lock, then `.sync.lock` shared,
@@ -435,7 +449,7 @@ beside its state. Sources, in order; the first present wins:
 `sminos derive [<alias> | --all]` asks a session what it is in charge of
 without interrupting it, by forking it headless:
 
-    claude -p --resume <session-uuid> --fork-session --tools "" --output-format json \
+    claude -p --resume <session-uuid> --fork-session --session-id <fork-uuid> --tools "" --output-format json \
       "In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
 
 Verified 2026-10-13 on a live transcript (Surprises & Discoveries): the fork
@@ -527,7 +541,7 @@ repository on a machine the project's machines reach (the Tailscale host,
 the Hetzner box) avoids any hosted API's limits, and GitHub works too. Each
 machine writes only files named with its own machine name, so integrating
 the remote never conflicts. Two machines with the same host name would:
-`$SMINOS_HOME/machine.json` holds a random instance id, pushed at attach as
+`$SMINOS_HOME/daemon/machine.json` holds a random instance id, pushed at attach as
 `log/machines/<machine>.json`; a daemon that finds its name claimed by
 another instance id refuses to run and says so.
 
@@ -553,8 +567,11 @@ invariant the executor chooses the git commands; `stash` is not among them
 top-level `*.jsonl` of `log/`, so `machines/` is invisible to it.
 
 `sminos daemon run [--interval 5]` loops `sminos daemon tick` over every
-project known locally — the sync duties only for those with a remote, the
-rest for all, so a remote-less project's owed deliveries are retried too —
+project known locally — the sync duties and the publishing of `state`
+only for those with a remote (a local view reads liveness directly, so a
+published `state` in a local project would only grow its log), the rest —
+`renamed` included, the log's only record of a name change — for all, so a
+remote-less project's owed deliveries are retried too —
 `tick` being one iteration, used by tests;
 `sminos daemon install` writes a launchd agent
 (`~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`, modelled on
@@ -605,7 +622,8 @@ Leaves: the host and family reach (`family_of`, `reach_of`,
 per-host chat files under `chats/` and their in-place `delivered` maps,
 `chat_seen` on seat records, the `groups/` directory. `sminos migrate`
 imports each `chats/<host-seat-id>.jsonl` into the project of the host's
-`cwd` as `say` events under writer `legacy/<host-seat-id>`, preserving
+`cwd` under writer `legacy/<host-seat-id>` — a member's lines as `say`
+events, the operator's as `human` (the routing table's kinds) — preserving
 `ts`, `from`, and tags as `to` resolved against the seats of that time
 (unresolvable tags stay as text); existing seat records keep working, their
 project resolved from `cwd`, their sessions joined by reconciliation.
@@ -622,7 +640,11 @@ stays in its own files.
 Not here: the chief-of-staff agent (a reader of the log on the human's
 behalf; whether a resident session or a per-event routine is decided when
 the log is in use), inbound Slack or mail, a human seat, remote control of
-a session's process, any change to the board loop or to `decomposing`.
+a session's process, any change to the board loop or to `decomposing`,
+and the async questions of a MAWS session. Under `MAWS_NATIVE_TO_HUMAN`,
+the plugin's ask tool is not registered, and `mcp__maws__ask` (blocking
+false), whose answer shape this repository does not own, carries them.
+They reach neither the log nor `chat --host` (residue).
 
 ## Acceptance
 
@@ -901,7 +923,7 @@ class Project(NamedTuple):
 def resolve_project(cwd: str) -> Project | None        # None: no project (§1)
 def writer_id(session_uuid: str | None = None) -> str   # "<machine>/<uuid>" | "<machine>/human"; a session's lifecycle always under its own id
 def log_append(project: Project, writer: str, kind: str, **fields) -> dict   # ts (ms), seq under the file lock, .sync.lock shared
-def log_append_batch(project: Project, writer: str, events: list[dict], skip_src: bool = True) -> list[dict]   # the locks once; drops events whose src is present
+def log_append_batch(project: Project, writer: str, events: list[dict], skip_src: bool = True) -> list[dict]   # the locks once; drops events whose (kind, src) is present
 def log_read(project: Project, since: dict | None = None, kinds: tuple = (), to_session: str | None = None) -> list[dict]
 def cursor_load(project: Project, session_uuid: str) -> dict
 def cursor_save(project: Project, session_uuid: str, cursor: dict) -> None
@@ -959,6 +981,149 @@ Dispatch scripts: one `--brief` each.
   Evidence: both independent reviewers reproduced it on a scratch bare
   remote and clone — appending a second line to a committed writer file
   made the pull exit 128. The sync invariant (§8) commits first.
+- Observation: the harness can start `Stop` hooks before the turn's last
+  transcript record is written.
+  Evidence: in the live acceptance run (2026-10-14), 1 mark in 24 was
+  exported one `Stop` late, 73 s. Transcript writes are queued behind a
+  100 ms flush (`FLUSH_INTERVAL_MS = 100`, bundle 2.1.292,
+  `cli.pretty.js` near 819427), and the Stop hooks start without a
+  flush. Before the F1 fix, a mark in a session's last turn would have
+  waited for a resume.
+- Observation: a `claude --bg` seat does not inherit its spawner's
+  environment, so a non-default `SMINOS_HOME` did not reach it: its hook
+  and CLI would have used the operator's real registry and run the
+  one-way import there. This is the M1 incident's failure, at the spawn
+  boundary.
+  Evidence: a live probe in M6. A flagless `claude --bg --resume` does
+  keep the launch's `--settings` and its env (2.1.299).
+- Observation: `claude agents` lists an interactive session with `id:
+  null`, so sminos has nothing it can stop. Evidence: the M6 live run,
+  where `retire a` was undone by reconciliation 2 s later until F2.
+- Observation: M5's eval. Four scenarios were run on the old text
+  (commit af0511a2) and on the rewrite, with 30 opus subjects in all.
+  Transcripts and verdicts are in
+  `docs/doperpowers/specs/2026-10-13-smns-project-log-m5-evals.md`.
+
+  | scenario | old | v1 | v2 | v3 | final |
+  | --- | --- | --- | --- | --- | --- |
+  | (a) untagged status, `@all` for a blocking change | 2/2 | 2/2 | | | 2/2 |
+  | (b) the human through `<message>` | 2/2 | 2/2 | | | 2/2 |
+  | (c) sibling for standing work, no session for bounded work | 0/2 | 2/2 | 2/2 (one misread) | 3/3 | 2/2 |
+  | (d) a board worker escalates by parking | 1/2 | 0/2 | | | 3/3 |
+
+  Evidence:
+  - (a) and (b) already pass on the old text, because the old `@all`
+    and the output style already produce the behavior. Final, a-final-2:
+    "every live member has to act on it right away, so I sent it with
+    @all", with the `<message>` to the human "since no tag reaches him".
+  - (c) fails on the old text through parent framing. c-old-1: "maws-bench
+    (my child seat …)"; c-old-2: "I spawned it as my own child … Fixture
+    updates come to me to merge". Every subject on the rewrite spawned a
+    sibling with `--brief` and claimed no parentage. c-v1-2: "A spawned
+    session would leave a standing member behind after a one-afternoon
+    job." A v2 misread ("a subagent of the session that owns it" read as
+    the owner of the area) was fixed in v3. In 3 of the 7 rewrite runs,
+    the bounded task went to the member already in charge of that area.
+    Those are passes, not failures. §6's rule exists so that bounded
+    work does not create new sessions, and handing it to the session
+    that holds the area is the intended collaboration: a session is in
+    charge of a responsibility, and a sibling stepping into that area
+    with its own subagent would be the worse outcome.
+  - (d) fails through a side channel that invites the answer outside the
+    ticket. d-old-2: "Please ask Hyun and reply with his answer"; d-v1-1:
+    "have the answer go on #231 or to me". The final text's conditional
+    fixed it, 3/3. d-final-2: "please have the answer go on the ticket; I
+    resume from there."
+
+  Limit: each subject plays one simulated turn and states what it would
+  do. No live seat has read the preamble yet.
+  Added from the task review (619308dc): scenario (a2), routine news.
+  api-gw merges a change that no peer has to act on now, and the chat
+  shows a peer using `@all` for routine news. It is graded separately,
+  because (a)'s subjects had passed through `status` or a `<message>`
+  without issuing any untagged `say`. Old text: 0/3, all three used
+  `@all`, each reasoning "I'm a root with no children, so an untagged
+  `say` would reach nobody". Final text: 3/3 used an untagged `say`, with
+  no words added: "an untagged say records the news without starting a
+  turn in any member. @all or @maws-45 would interrupt sessions for
+  nothing."
+- Observation: `$SMINOS_HOME`'s root `*.json` files are the seat-record
+  namespace, which sminos and the board scripts share, so no other kind
+  of file may live there.
+  Evidence: in an M4 test run, a root `machine.json` produced `sminos:
+  migrated: stamped group on 1 record(s)` and a phantom `fleet` project.
+- Observation: a frame's body is the event's whole text, leading tags
+  included (`@b hello`).
+- Observation: harness registration races the `SessionStart` hooks, so a
+  hook can run before `~/.claude/sessions/<pid>.json` exists.
+  Evidence: in bundle 2.1.292 (`cli.pretty.js` near line 16028), the
+  registration `T8t(...)` is started without an `await` and is followed
+  at once by `startSessionStartHooks()`.
+- Observation: a headless `claude -p` run registers as a harness session
+  with `kind: "interactive"`, and only `entrypoint` sets it apart.
+  Evidence: 2026-10-14, harness 2.1.299. A `-p` run in /tmp wrote
+  `~/.claude/sessions/<pid>.json` with `kind: "interactive", entrypoint:
+  "sdk-cli"`. In the bundle, `kind` is `CLAUDE_CODE_SESSION_KIND`
+  (`bg`/`daemon`/`daemon-worker`) or else `"interactive"`.
+- Observation: `--session-id <uuid>` works together with `--fork-session`
+  and pins the fork's id. `--tools` takes several values and swallows a
+  prompt that follows it directly.
+  Evidence: 2026-10-14, harness 2.1.299. The fork returned the pinned
+  `session_id` and wrote `<uuid>.jsonl`. `claude -p --tools "" "<prompt>"`
+  answered "Input must be provided either through stdin or as a prompt
+  argument".
+- Observation: a live async ask has exactly the transcript shapes
+  `ask.tsx` reads. The `tool_use` carries `"async": true`, the
+  `tool_result` content is `ASYNC_RESULT`, and the delivery row is a
+  plugin prompt (`origin: {"kind": "plugin", "name": "doperpowers"}`)
+  framed by the engine. `queue-operation` rows copy the delivery text and
+  are not deliveries.
+  Evidence: live rows from harness 2.1.296, read by the M3 executor.
+- Observation: the hook takes about 110–130 ms a run, also on a 207 MB
+  transcript, because it reads only the tail past the position.
+- Observation: `migrate` runs before every verb, so any run of a working
+  copy's CLI without a temporary `SMINOS_HOME` performs the one-way chat
+  import on the operator's real registry.
+  Evidence: 2026-10-13, an M1 self-check run of `sminos.py project show`
+  without `SMINOS_HOME` renamed the two real `chats/*.jsonl` to
+  `.imported` and created `projects/local-doperpowers/`. Restoring them
+  was escalated to the human; restored 2026-10-14 on the human's
+  approval. Every later dispatch isolates `HOME` and
+  `SMINOS_HOME`, and M6's docs say the import is one-way.
+- Observation: lifecycle events share a session's writer file with its
+  messages, so a member's first message is not `seq` 1, and a seat added
+  with `--session` holds `joined` at `seq` 1. M2 rewrote the M1
+  assertions that pinned literal seqs to read the file's last seq.
+- Observation: the dispatch suites inherit `CLAUDE_CODE_SESSION_ID` from
+  the session running them, so through the real CLI `by` names that
+  session. That is correct in production: `by` names whoever ran the
+  dispatch. The contract tests unset it.
+- Observation: a seat record written by board-bind is wider than 0600, so
+  the next sminos call prints `migrated: tightened 1 file(s) to 0600`.
+  This predates this work.
+- Observation: `SMINOS_FAMILY_ONLY=1` (the suite's focused mode) was
+  already broken at baseline. M1 fixed it: it now passes 314/314.
+- Observation: `git rev-parse --git-common-dir` prints a relative path
+  (`../../.git`) when run from a subdirectory. Resolution joins it with
+  the directory given to `-C`.
+
+- Observation: a mark written while a session was retired is exported at
+  the first `Stop` after its resume: a resume keeps the export position
+  (§4) and the hook exports nothing for a non-member. The event's `ts` is
+  the export time; the mark's own time stays recoverable through `src`.
+  Evidence: the second live pass, 2026-10-14 (acceptance record). Left as
+  residue.
+- Observation: the xhigh branch review (a sweep, four scalpels, one
+  verifier) confirmed 11 findings, every one reproduced in a scratch
+  registry, and all were contract edges the common path never crosses: a
+  name bound to a session re-read as a seat under the lock; a delivery
+  snapshot older than a retire; the export position set after a join that
+  can time out; a flush wait satisfied by an earlier identical message; a
+  session bound by another project's seat; a legacy chat imported without
+  its lock; an install that never creates its own root; a stale git lock
+  no tick removes; a rename recovery that strands the unpushed stream;
+  view keys made of names. None contradicted the design. The round went
+  to one fix wave of two workers split by file.
 
 ## Decision Log
 
@@ -1067,7 +1232,609 @@ Dispatch scripts: one `--brief` each.
 - Decision: the host-bound question event is `question`, not `need-input`:
   the mark it was named after is gone, and the event is a question.
   Date/Author: 2026-10-13, the owner.
+- Decision: execution pre-flight (the controller, before M1). Four
+  mandated tests name a mechanism a later milestone builds; each is pinned
+  in its own milestone through what exists there and re-pinned when the
+  mechanism lands. M1's "fast path and a daemon tick run at once" is two
+  concurrent `deliver_next` calls for one recipient (the tick calls the
+  same operation, §4); M4 repeats it through `daemon tick`. M2's "stays
+  retired across repeated `list` and `tick` calls" uses the reading verbs
+  in M2 and adds `tick` in M4. M2's "`status` from one home visible from
+  the other after a sync" copies the writer's file between the homes'
+  `log/` (replication is a copy, §3); M4 repeats it through the mirror.
+  M2's "hook `joined` … under a clock stepped back" uses a reconciliation
+  `joined` in M2 (same writer, same file) and the hook's once M3 lands.
+  `project attach` is built whole in M1 (repository init, first commit,
+  remote, fetch tolerated offline), since M1 pins its offline test; M4's
+  "attach's mirror half" is the sync that follows it. The milestone text's
+  `delivered_record` is the Interfaces section's `delivered_settle` /
+  `delivered_fail` pair; the Interfaces section governs. In M1, before
+  `Member` exists, a seat record stands in for a member wherever delivery
+  needs one; M2 replaces it with `Member`.
+  Rationale: each test's intent survives intact at its milestone, and no
+  milestone builds ahead of its plan to satisfy a test.
+  Date/Author: 2026-10-13, the plan-executor (controller).
+  Re-pinned 2026-10-14 (M3, 09775a35): the clock-stepped-back ordering
+  test now starts from the hook's real `joined`, sent as a `SessionStart`
+  payload through `hooks/smns-record.sh`. The reconciliation stand-in was
+  removed. The hook joins through the same `join_on_sight` function, so
+  the stand-in proved nothing the real test does not.
+- Decision: M1's gaps, resolved by its executor (detail in commit
+  7f3f8b9f). `now(ms=True)` only for the log's `ts`: seat records keep
+  whole seconds, because the board compares `updated` as strings and the
+  dispatch scripts may change only by `--brief`. A seat recorded in a
+  directory that is no project belongs to `local-<basename(cwd)>`: §1's
+  `spawn --cwd` exception, read off the record. `send` appends before it
+  delivers, and its event carries `direct: true` and is never owed: the
+  verb delivers it itself, keeping `--wait` and its loud failure (M4
+  records a `send` to a remote member without `direct`, so the remote
+  daemon owes it). "`settled + 1`" (§4) is the next event in the
+  member's owed sequence: an event not addressed to the member settles
+  by passing. Legacy writers are never owed. The default `chat` and the
+  frame's `unread` count `say` and `human` only (M3's `--host` adds the
+  host kinds); cursor mode leaves out the reader's own events and
+  advances past the whole log, while `-n` and `--since` leave the cursor
+  where it is. The operator's cursor and delivery key is `human`. Tags:
+  bare names are `[\w.-]+`, so Korean names work; `#short` matches a hex
+  prefix; `@short` must be all eight characters; a match that is retired
+  or vacant is refused with a hint. `--team` leaves `say` and `chat` now.
+  `project show` exits 4 when there is no project. A malformed `.smns`
+  warns and resolution walks on upward. `attach` keeps the lock files out
+  through `.git/info/exclude`, commits as `sminos`, and uses the branch
+  `main`. The legacy import writes the operator's lines as kind `human`
+  (the routing table's kind; §9 says `say`), and leaves alone a chat
+  whose host record is gone. The TUI chat panel reads the focused seat's
+  project log.
+  Rationale: each follows the nearest design decision; none changes a
+  ruling.
+  Date/Author: 2026-10-13, the M1 executor, folded by the controller.
+- Revision: §9's import sentence now says what M1 built. A member's
+  lines are imported as `say` and the operator's as `human`; the text
+  had said every line was `say`.
+  Rationale: the routing table of §4 makes `human` the operator's kind,
+  and the design reads as one document only if §9 agrees with it.
+  Date/Author: 2026-10-14, the controller, at the authoring session's request.
+- Decision: M1's task review moved four things. (1) `send` no longer
+  carries a `direct` exemption. Its event is owed and settled through the
+  recipient's delivery record like any other, in writer order. The verb
+  keeps its immediate push or resume, `--wait`, and its loud failure. A
+  push the sender never made, or one that failed, stays owed for the
+  daemon. This supersedes the `direct: true` line of the M1 entry above,
+  and M4 needs no separate case for a remote recipient. (2) An append
+  failure stops the verb before it delivers anything: a delivered message
+  must be in the log. (3) The batch's idempotency key is `(kind, src)`,
+  not `src`. A `question` and its `answered` share the call id, so `src`
+  alone would have dropped every answer (§4 revised). (4) A cursor save
+  merges the per-writer maxima with the file under its lock, so
+  overlapping reads cannot move a cursor backwards. Also: an operator's
+  `send --from X` keeps `from: "human"` in the log and carries `X`
+  separately, and `attach` fails clearly when a local git step fails.
+  Rationale: (1) and (2) are §4's "delivery is a function of the log"
+  applied to the direct verb. The exemption had made a crash between
+  append and push lose a message, and it let a send overtake an earlier
+  pending event. (3) is a contradiction inside the spec that M3 would
+  have hit.
+  Date/Author: 2026-10-14, the controller, from the M1 task review.
+- Decision: how the fix wave built (1), in commit d08376c1. An earlier
+  pending event of the same sender rides in the send's own push (one
+  socket write, or one resume), not in a separate push, under ordinary
+  delivery's policy for the route taken: a resume leaves out a pending
+  `@all` and settles it by passing. A send event
+  carries `msg_id`, so a retry reuses the send's frame. A resume settles
+  through an `on_launched` callback that fires before any `--wait`; a
+  resume that returns no session id counts as uncertain and settles. A
+  send that a concurrent deliverer already pushed is not pushed again,
+  but its `--wait` still waits on the recorded id and prints the reply
+  (fix wave 2, eb6a5ede, reversing wave 1's skip). A session's `send` to
+  its own seat exits 2. Lock order for `send`: the seat's lifecycle lock, then
+  `delivered/<session>.lock`. A deliverer coming the other way takes the
+  lifecycle lock without blocking, so the two orders cannot deadlock.
+  Date/Author: 2026-10-14, the M1 executor, folded by the controller.
+- Decision: M2's gaps, resolved by its executor (commit 5dd82ba4).
+  - Reconciliation never re-joins a session whose seat record is retired,
+    even while its process still answers. `retire` stops the process
+    asynchronously, and a `list` in that window would undo the retire.
+    The seat record is this machine's verdict, and §2 already names
+    `fill`, `resume`, and `send` as the ways back. The check repeats
+    under the session file's lock, and `retire` writes the record before
+    the event.
+  - A seat's `group` stays as its alias namespace and lifecycle-lock key
+    on this machine, derived from the cwd. `seat add <group> <alias>`
+    keeps its positional argument, `group/alias` still addresses a seat
+    (banners keep it; the board parses it), and `project/alias` is added
+    beside it.
+  - A bare name resolves only in the caller's project (the caller seat's
+    project, else the cwd's), and across every project only from a
+    directory that is no project. CLI targets (`send`, `status`,
+    `retire`) do not take a bare eight-character short; tags do.
+  - `retire` takes a seat-less member: it stops the session through its
+    harness row and records `retired`. `--purge` is refused for one, and
+    a remote member is refused as §2 says. `remove` records `retired`.
+  - A seat-less member is never resumed. A tag to a stopped one is
+    recorded, and `send` to one that is not live exits 4: resuming the
+    human's interactive session as a background one would be wrong.
+  - `status` set on a remote member goes into the caller's own writer
+    file, and the later `ts` wins (§3).
+  - Every spawn renders the preamble, filling `{{PROJECT}}`, `{{ALIAS}}`,
+    `{{BY}}`, and `{{SMINOS_CLI}}` for M5's text.
+  - A seat's brief becomes a `set` in-charge line for every session the
+    seat launches.
+  - `list` with no argument shows the caller's project, or every project
+    from a directory that is no project; `--all` shows every project with
+    nothing folded. The chart and the TUI select projects the same way.
+  - A remote member with no published state shows `?`.
+  - A seat record with no cwd belongs to `local-<group>`.
+  - `by` is the caller seat's alias, else its harness name, and `""` for
+    the operator.
+  - The API lane briefs are `ticket #<n>`, `review ticket #<n>`, and
+    `review epic #<n>`, because that lane has no title or PR number in
+    hand.
+  - `chat` reconciles before it reads.
+  Date/Author: 2026-10-14, the M2 executor, folded by the controller.
+- Decision: two rulings on M2's concerns (§2, §3 table revised).
+  (1) A seat-less local member whose harness session is no longer live is
+  retired by reconciliation with `reason` `ended`, and re-joins when it
+  is resumed. Folding such members out of `list` was the alternative. It
+  lost because a closed session that stays a member keeps its alias
+  ambiguous for every later tag, and the §2 clause re-joining a resumed
+  session already assumes a closed one is retired. (2) Only a harness
+  record of `kind` `interactive` or `bg` joins on sight. The harness
+  records `kind` (this machine, 2026-10-14: 21 `interactive`, 1 `bg`), so
+  another tool's headless run in the repository does not become a
+  member. The internal-fork marker stays for `derive`.
+  Date/Author: 2026-10-14, the controller.
+- Decision: M2's task review moved the following (fix commits faa23f6c,
+  48721e99).
+  - `send`, `status`, and `retire` resolve a bare name the way a tag
+    resolves. They reconcile first, then match against every member and
+    every vacant or retired seat, so a seat and a seat-less session that
+    share an alias are refused as ambiguous instead of the seat being
+    chosen silently. Matches are de-duplicated by seat id. A seat id, a
+    session id, or `group/alias` still names a seat directly.
+  - From inside a project, an unresolved bare name is refused, with a
+    pointer to `<project>/<name>`. The unrecorded raw harness-name route
+    is left only for a directory in no project, and only to sessions in
+    no project, which have no log to record into.
+  - Membership on sight, and its end (`ended`), follow the process: the
+    pid is alive and is the recorded process. Delivery and a seat's state
+    word still go by the socket.
+  - `status` and the `set` in-charge line take each writer's latest
+    event by `seq`, then the latest `ts` across those candidates (§3).
+  - Chart and TUI boxes draw §7's facts: state as `list` prints it, the
+    in-charge line, `now:` status, and `by`.
+  - TUI Enter attaches to a seat-less member when the harness offers a
+    non-interactive session for it, and otherwise says why it cannot.
+  - A lifecycle append that fails makes `retire` and `remove` exit 1,
+    saying the local operation completed and the log write failed: the
+    retired seat record blocks repair by reconciliation. A `spawn` or a
+    fresh `fill` instead warns loudly and exits 0. Its worker is already
+    running, an exit 1 would make execute-dispatch release the run and
+    leave the worker unbound, and reconciliation re-joins the seat on the
+    next reading verb, without its `by` and its in-charge line.
+  - The dispatch suites share one stub harness,
+    `tests/issue-tracker/stub-harness/claude`, put on `PATH`.
+  Deferred as minor: from a directory in no project, `list` shows a seat
+  whose cwd moved after it joined under both projects.
+  Date/Author: 2026-10-14, the controller, from the M2 task review.
+- Decision: M2 fix wave 2 (0ed8f8fb).
+  - Only a full seat or session id, or `group/alias` whose qualifier is
+    no known project, names a seat directly. `<project>/<alias>`, by
+    project name or id, resolves member-wide like a tag. A qualifier that
+    is both a project and a group is read as the project first, and as
+    the group only when the project has no match.
+  - Once a resume on a `say` fan-out has launched with the frame, the
+    delivery is settled and the fan-out continues. A failure to record
+    the re-join is then only a warning. A direct `send` still exits 1, but
+    only after settling.
+  - The spawn warning names only the event that failed and what that
+    event carries.
+  Date/Author: 2026-10-14, the M2 executor, folded by the controller.
+- Decision: M3's gaps, resolved by its executor (09775a35).
+  - The hook passes the payload whole to `sminos record` on stdin. The
+    shell reads only `cwd`, for the quick exit when there is no project.
+  - When the harness record is missing at `SessionStart` (registration
+    races the hooks, see Surprises), the hook sets the export position
+    but does not join; `Stop` or any reading verb joins later. Polling
+    for the record was rejected because it would delay every session's
+    start.
+  - The hook's membership test is reconciliation's (`joinable`,
+    `join_on_sight`): a retired seat is not joined, and both the pid
+    marker and `SMNS_INTERNAL` mark an internal fork.
+  - Export is one `log_append_batch` per `Stop` over the whole range.
+    The position is `{uuid, offset}`, with offset the start of that
+    record's line. It advances to the last assistant record whose async
+    asks all have their results in the range, so a question is never
+    split from the result that accepts it. If the record is not at its
+    offset, it is searched for from the end. A position that does not
+    hold falls back to the trailing-run policy. The trailing run is
+    everything after the last record of type `user`.
+  - Sidechain records are never exported: a subagent's marks are not the
+    session's message to its human.
+  - `answered` is recorded for any delivery, even when its question is
+    not in the log, with the engine's plugin-prompt framing cut off. An
+    accepted ask is a non-error result whose text is exactly the tool's
+    `ASYNC_RESULT`. `choices` is one flat list of labels and `text` the
+    list of questions, as the Interfaces section types them.
+  - `chat --host` is a view of the last 30 (with `-n`, `--since`, and
+    `--json`) and never moves the chat cursor. A shared cursor would
+    mark host messages read when a member's `chat` advanced past them.
+    `--host --kind` is refused.
+  - `charge_source` values: `set`, `name` (§5 source 2), `derived`,
+    `title` (source 4), or `""`. An empty `set` or `derived` line counts
+    as absent, so `charge <m> ""` clears it. `list` and the chart do not
+    repeat a user-set name as the line; `--json` and the TUI carry it.
+    `charge` with one argument sets the session's own line, with two it
+    takes the member and the line, and with more it exits 2. A remote
+    member's line goes into the caller's file.
+  - `derive`: a member that does not qualify prints "not derived —
+    <reason>" and exits 0. `--all` covers every local member of every
+    project. The fork starts behind a shell gate, `read` then `exec`, so
+    the pid marker is written before `claude` can register. It runs in
+    the session's cwd so that `--resume` finds the transcript. A human
+    prompt is a `user` record whose `origin` is absent or `human`, and
+    which is not meta, not a sidechain, and not a tool result.
+    `SMINOS_DERIVE_TIMEOUT` exists for tests. The `ai-title` lookup
+    reads only the transcript's last 8 MiB.
+  - The mark grammar is its own module, `sminos_marks.py`, checked
+    against the mod's 47 parse fixtures.
+  Date/Author: 2026-10-14, the M3 executor, folded by the controller.
+- Decision: two rulings on M3's concerns.
+  (1) A seat-less harness record whose `entrypoint` starts with `sdk`
+  never joins on sight, whatever its `kind`, in reconciliation and in
+  the hook. Evidence (2026-10-14, harness 2.1.299): a plain `claude -p`
+  run registered `~/.claude/sessions/<pid>.json` with `kind:
+  "interactive"` and `entrypoint: "sdk-cli"`. The harness writes `kind`
+  as `CLAUDE_CODE_SESSION_KIND` or else `interactive`, so the M2 `kind`
+  rule alone admitted headless runs.
+  (2) `derive` mints the fork's uuid in advance and passes it as
+  `--session-id` beside `--fork-session`. It deletes `<uuid>.jsonl`
+  whatever the outcome. Evidence: the same harness returned the pinned
+  `session_id` and wrote `<uuid>.jsonl`. Before this, a fork that
+  crashed without printing JSON left its transcript behind. Also, the
+  prompt must follow `--output-format json`: `--tools` takes several
+  values, and a prompt placed right after `--tools ""` is swallowed
+  ("Input must be provided…").
+  As built (7788bd13), `derive` also deletes the transcript of the
+  `session_id` the fork reports when it differs from the minted one,
+  never the parent's.
+  Date/Author: 2026-10-14, the controller.
+- Decision: M3's task review moved three things (91b7cfa6).
+  - `sminos record` runs under one timer for the whole call,
+    `migrate()` included: `SMNS_RECORD_TIMEOUT`, 5 s by default. At the
+    deadline it writes a line to `daemon.log` and exits 0, leaving the
+    export position where it was, so the next `Stop` retries. The
+    hook's "never blocks a turn" (§4) had been false under a held lock:
+    the old hook hung for 554 s in the test. No other verb arms the
+    timer. A timer was chosen over per-lock deadlines because
+    `migrate()` takes its exclusive lock outside the shared helper.
+  - `chat --host` applies its window (`-n`, default 30, or `--since`)
+    to all host events before grouping. An answer whose question falls
+    outside the window is shown in place, with its question as context.
+  - `chat --host` reconciles before it reads.
+  Revised by fix wave 2 (8136a2e8): the timer bounds only waiting, never
+  a migration step. Under the alarm, `_append_board` could be cut off
+  between appending posts and deleting their source, and the retry then
+  duplicated the posts. `record` now takes migrate's lock with a bounded
+  non-blocking retry and exits 0 if the lock is busy. The migration
+  steps run with no alarm armed, and the alarm is armed only around the
+  export, for whatever time is left. Fix wave 3 (2fc95340) closes the
+  remaining gap. On the record path, the deadline also bounds each
+  migration step's own lock: `.metalock` through `meta_set`, the
+  node-file conversion, and `.sync.lock` for a chat import. A step that
+  cannot take its lock is skipped before it mutates anything, logged to
+  `daemon.log`, and redone by a later call. Callers that pass no deadline
+  block as before.
+  Date/Author: 2026-10-14, the controller, from the M3 task review.
+- Decision: M4's gaps, resolved by its executor (e4204b38).
+  - The daemon's machine-local files are under `$SMINOS_HOME/daemon/`:
+    `machine.json`, `state.json`, `run.lock`, `nudge`. §1 and §8 are
+    revised. A root `machine.json` was read as a seat record, because
+    the root's `*.json` files are the seat records sminos and the board
+    scripts glob. `daemon.log` stays at the root.
+  - The mirror and the daemon are a sibling module, `sminos_daemon.py`
+    (`sync_in`/`sync_out`, `deliver_owed`, `publish_state`). `tick`
+    stays in `sminos.py` as a wrapper. Its result dict also carries `to`
+    and `error`.
+  - Publishing (duty 3) runs only for projects with a remote (§8
+    revised). A member's first state is published at once; after that, a
+    word must hold for two ticks before it is published, which filters
+    flips but does not hold back the first word.
+  - A `say` or `send` to a remote member touches `daemon/nudge`, and
+    `run` ticks at once. Without the nudge, the worst case for acceptance
+    6's two-second bound is two intervals plus git (2.3 s measured);
+    with it, 0.8–1.0 s. A file's mtime was chosen over a signal, because
+    a stale pid could signal an unrelated process.
+  - `project attach` also pushes, so the machine claim crosses at attach.
+    A tick pushes only if it integrated, so an unreachable remote costs
+    one 30 s bound, not two. Integration merges and never rebases. Git
+    runs with `-c commit.gpgsign=false` in its own process group, and a
+    timeout kills the group, so a hung ssh child cannot outlive the bound.
+  - The tick's views skip the transcript-title fallback.
+  - `run` stops on SIGTERM after the tick in hand; the per-project
+    handler had swallowed an exit raised mid-tick. The daemon drops
+    `CLAUDE_CODE_SESSION_ID` from its environment. `daemon status`
+    probes the run lock with a shared lock.
+  - `daemon install` writes the plist and prints the `launchctl` lines
+    without running them. The plist carries `SMINOS_HOME`, `PATH`,
+    `DAEMON_HOST`, and the gateway route, with `KeepAlive` and a
+    60-second `ThrottleInterval`. It is modelled on
+    `skills/issue-tracker/references/sweep-setup.md`, because the
+    `worker-host` §8 names no longer exists in the tree.
+  - Test knobs: `SMINOS_GIT_TIMEOUT`, `SMINOS_DERIVE_EVERY`,
+    `SMINOS_TRANSCRIPT=1` (prints acceptance 6 as a transcript), and
+    the stub's `STUB_COUNTER` and `STUB_FORK_SLEEP`.
+  Re-pins: M1's concurrent-delivery test now runs a real `daemon tick`
+  beside the sender's fast path. The in-process stand-in is kept, because
+  only it fails inside the race itself. M2's stays-retired test now runs
+  `daemon tick` between its `list` calls. M2's cross-home `status` test
+  now runs through the real mirror, and its file-copy stand-in is
+  removed.
+  Date/Author: 2026-10-14, the M4 executor, folded by the controller.
+- Decision: the launchd plist runs a stable path. When the running CLI
+  is under the plugin cache, `daemon install` points the plist at the
+  marketplace clone (`installLocation` in
+  `~/.claude/plugins/known_marketplaces.json`, auto-updated). A dev
+  checkout keeps its own path. `daemon run` exits 0 after a tick once
+  its own scripts' mtimes change, so `KeepAlive` restarts it on the new
+  code. The plist holds the gateway values in plaintext at mode 0600.
+  That is accepted: it is a local operator file, like the harness's own
+  settings.
+  Rationale: the cache path is versioned, so a plugin update would leave
+  the daemon running the old code, or a path that no longer exists.
+  Date/Author: 2026-10-14, the controller.
+- Revision: only `state` is published just for projects with a remote.
+  `renamed` is published for every project the daemon visits (§8
+  revised). This narrows the M4 entry above.
+  Rationale: a rename is rare and does not grow the log. It is also the
+  only record of a name change, because an in-charge line taken from a
+  user-set name leaves no `in-charge` row, and a later reader of a local
+  project should still see it.
+  Date/Author: 2026-10-14, the authoring session, folded by the controller.
+- Decision: M4's task review moved three things (e7e55aef).
+  - Two-tick persistence keeps the candidate word, in a session → word
+    map in `projects/<id>/daemon.json`. A word is published only when
+    it equals the previous tick's candidate. Before this, idle → busy →
+    waiting published `waiting` after a single tick.
+  - One derivation in flight per machine, across processes:
+    `$SMINOS_HOME/daemon/derive.lock` is held across the eligibility
+    check, the child's start, and the recording of its pid. Any
+    process's check sees the live child by that pid. `daemon tick` does
+    not take the run lock, so a lock local to one process was not
+    enough.
+  - `daemon install` run from the plugin cache, with no usable
+    marketplace clone, exits 1 before it writes the plist. The message
+    says what is missing and how to restore it. A fallback to the cache
+    path would have reinstated the failure the stable-path ruling
+    removes.
+  Date/Author: 2026-10-14, the controller, from the M4 task review.
+- Decision: M5's gaps, resolved by its executor (7009154f).
+  - The preamble (39 lines) carries one rule §6 did not list. When the
+    task names where its questions are answered (a ticket), the answer
+    comes back there, and a `say` or `<message>` about the question
+    points there. It is keyed to an observable fact, not a ban, and it
+    took scenario (d) from 0/2 to 3/3.
+  - In (c), the bar is that a bounded task starts no new session.
+    Handing it to the member already in charge of that area passes ("to
+    the owner"). It starts no session and keeps §2's ruling, so no text
+    was added against it.
+  - The examples are the spec's own, so a pass is not a copy of a
+    scenario's answer. `seat add` is documented as optional. `spawn
+    --stamp` and `--no-wait` are left to `--help` as pipeline internals.
+  Left for M6: `render_preamble`'s dead `{{GROUP}}`/`{{PARENT}}`
+  replacements and its stale docstring.
+  Date/Author: 2026-10-14, the M5 executor, folded by the controller.
+- Decision: M6. origin/main (7.152.1, 8 commits) was merged into the
+  branch (c98ba037), not rebased. Nothing conflicted, and main changed
+  neither the mark grammar, its fixtures, nor the three shapes
+  `extract_asks` reads. Version 7.153.0. The sminos description went
+  into CLAUDE.md's `skills/` row, which had no sminos line before.
+  Acceptance ran live in tmux, in real sessions loading this branch with
+  `--plugin-dir`, and is recorded in
+  `docs/doperpowers/specs/2026-10-13-smns-project-log-acceptance.md`.
+  Step 4 ran after step 5, so that `retire a` follows `charge a`. `retire
+  a` was run from b, so that a did not stop its own process mid-tool.
+  Date/Author: 2026-10-14, the M6 executor, folded by the controller.
+- Decision: three defects found by the live acceptance run, fixed in
+  38e94907.
+  (F1) At `Stop`, `record` polls every 100 ms until the payload's
+  `last_assistant_message` is on the transcript past the export
+  position. It stops polling at 2 s, or 0.5 s before the record budget
+  ends, then exports what it finds; the next `Stop` takes the rest.
+  §4's "the row is there when `Stop` fires" was not reliable (see
+  Surprises).
+  (F2) The retirement holds for the life of the process `retire` saw
+  (§2 revised). `retire` records that process's pid, and reconciliation
+  and the hook re-join the session only when the harness shows a
+  different pid or a later start. The hold applies only to `reason:
+  retire`: an `ended` retirement means no process was seen, and holding
+  it could lock out a live session after a misread of the sessions
+  directory. The CLI prints "<alias>'s session keeps running in its
+  terminal; it re-joins when resumed as a new process". Refusing the
+  retire was the alternative. It lost because it would make `retire`
+  mean one thing for seats and another for sessions, and acceptance 4
+  retires an interactive session.
+  (F3) `spawn` and a fresh `fill` launch the seat with settings that
+  carry `env.SMINOS_HOME`. These are merged with any `--settings` the
+  caller passed into one file under `$SMINOS_HOME/settings/`, named by
+  its content. The spawner's `SMINOS_HOME` wins. The seat record keeps
+  the caller's own settings. A flagless `claude --bg --resume` keeps the
+  launch's settings and env (verified live on 2.1.299), so `resume`
+  needs nothing more. The board's dispatch scripts launch through
+  `sminos spawn` and are covered; their contract test asserts it. A seat
+  spawned before this fix has no such settings, and a resume cannot add
+  them.
+  Date/Author: 2026-10-14, the controller's and the authoring session's
+  rulings, built by the M6 executor.
+- Decision: a name that binds a session binds it through the verb.
+  `alias#short`, and a session id that is not the seat's own id, name a
+  session (§2). `send` and `retire` check, under the seat's lifecycle lock,
+  that the seat still holds it, and refuse with the reason when a refill put
+  another session there. A bare alias or the seat's id names the seat, and
+  the verb acts on whatever session the seat holds under the lock, as
+  before. `retire` was included because it re-reads the seat under the same
+  lock and had the same gap.
+  Date/Author: 2026-10-14, the branch-review fix wave (review 1).
+- Decision: a seat-less member whose own file shows it retired when an
+  event is pushed gets no push, and the event settles as `recorded`. That
+  is what a retired seat's owed event already did, and it follows §4: a
+  seat-less session is never resumed, and a retired one reads the chat if it
+  comes back. The check reads the session's own file at each push, under
+  `delivered/<session>.lock`. The deliverer's member may be a snapshot
+  taken before the retire, and retiring an interactive session leaves its
+  process running (§2).
+  Date/Author: 2026-10-14, the branch-review fix wave (review 2).
+- Decision: F1's flush wait now matches only the turn's own answer. It
+  ends when the transcript's last message, read from its end over
+  main-chain user and assistant records, is an assistant message whose text
+  blocks read the payload's `last_assistant_message`. A user-role record
+  after it (a prompt, a tool result, a peer frame) means the answer is not
+  on disk yet. Before this, the wait matched any equal message past the
+  export position, so an earlier identical mark ended it while the answer
+  was still in the queue. Looking only at the last assistant message would
+  not fix that: the earlier mark is the last assistant message until the
+  answer lands. The bounds are unchanged: 2 s, and 0.5 s before the record
+  budget. A user-type record the harness wrote after the answer would cost
+  the full 2 s, and nothing would be lost.
+  Date/Author: 2026-10-14, the branch-review fix wave (review 4).
+- Decision: in a project's projection, a session is bound by that
+  project's own seat (one whose cwd resolves to it) when it has one.
+  Reconciliation and the hook use the same rule. The legacy conversion keeps
+  one session in seats of several groups, which can belong to different
+  projects. A retired seat of another project therefore neither names the
+  member, nor gives it its state, nor blocks the member's join on sight.
+  When the project holds no seat for the session, the seat holding it
+  elsewhere still binds it: a seat whose cwd moved keeps standing for its
+  session, one seat one target (`find_target`). Binding only by the
+  project's own seats was tried first. It made a moved seat's session a
+  seat-less member in its old project, which no reconciliation retires
+  while a seat holds it, and turned that seat's name ambiguous.
+  Date/Author: 2026-10-14, the branch-review fix wave (review 5).
+- Decision: a git lock file in a mirror's `.git` older than the git bound
+  (30 s, `SMINOS_GIT_TIMEOUT`) is stale. It is removed at the start of
+  each sync operation, under `.sync-op.lock`, with a line in
+  `daemon.log`; a younger one is left alone. While `.sync-op.lock` is
+  held no git of the daemon's runs in the mirror, so such a lock is left
+  by a git killed mid-step: the bound's own kill, or a daemon killed in
+  a commit. The cleanup runs before the fetch, not only before the
+  commit, because a stale ref lock fails every later fetch and the
+  commit is never reached.
+  Date/Author: 2026-10-14, the branch-review fix wave.
+
+- Decision: the branch review round. The xhigh panel on c90a0ed8 against
+  main (58bd8273) returned 11 confirmed findings, all P2. Each was fixed
+  in one wave with a test that fails before its fix: wave A on
+  `sminos.py` (4ce9d92f..a6c65050), wave B on the daemon, chart and TUI
+  (6935aa97..ed017197, merged at e2879418; its rename carry withdrawn,
+  see below); the fixers' own decisions are
+  the entries above. The fix range is re-reviewed at the high rung. Left
+  for `docs/doperpowers/TECH-DEBT.md`: a `send` to a seat-less member has
+  the retire race of review 2 in a shorter window; two seats of one
+  project holding one session resolve to the one whose seat id sorts
+  last; seat records keep `host` set to the old name after a machine
+  rename; the refusal's other recovery (removing `machines/<name>.json`
+  from the remote for a registry rebuilt under the same name) still
+  conflicts when the rebuilt registry wrote same-named files before
+  attaching; the carry adds about four git calls per commit of the
+  mirror; a late export carries the export time as `ts`.
+  Rationale: every finding was real, reproduced, and small enough to fix
+  in place; what was left is bounded and named.
+  Date/Author: 2026-10-14, the authoring session.
+
+- Decision: the machine-rename carry (review finding scalpel-1#2) is
+  withdrawn. The fix wave's carry rewrote unpushed writer files under the
+  new name; the high-rung re-review reproduced four defects in it (a push
+  acknowledged remotely but not locally rewritten and deleted; a first
+  delivery in flight ignored by its reader exclusion; a crash between the
+  file switch and the record migration leaving records that suppress
+  another machine's events; carried lifecycle events appended after newer
+  ones, undoing a retirement). The refusal now states the two recoveries
+  that hold, and the collision goes to `docs/doperpowers/TECH-DEBT.md`. The
+  durable fix is naming writer files by the machine's instance id rather
+  than its name (§3), a design change for its own initiative. Rationale: a
+  recovery that can lose or reorder events is worse than a stranded
+  pre-attach stream reported honestly; two machines with one name is rare
+  in the owner's fleet.
+  Date/Author: 2026-10-14, the authoring session, from the high-rung re-review.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-10-14, at the end of execution and before the branch review.
+
+**What shipped.** Everything §1–§8 promise, as revised by the Decision
+Log, is built and passes:
+- a project identified by a committed `.smns`;
+- the per-writer append-only log, with in-order delivery for every
+  sending path;
+- the host-less family, with membership derived and reconciled on sight
+  and ending with the process;
+- the hook that turns `<message>` marks and async asks into host events,
+  bounded so it never holds a turn;
+- the in-charge line, with `charge` and a `derive` that leaves no trace;
+- the git mirror and a per-machine daemon, with a stable launchd install;
+- the skill and the preamble, rewritten and evaluated.
+
+The dispatch scripts changed only by `--brief`. The sminos suite went
+from 860 assertions to 1485. Both dispatch suites gained a contract test
+that runs the real CLI. Version 7.153.0.
+
+**Against the purpose.** The acceptance was run live in real interactive
+sessions, not only on the stub. Steps 1–5 passed in tmux-driven
+sessions that loaded this branch. The two-home daemon delivered 40 timed
+messages, the slowest in 1.53 s, each exactly once (step 6 on the stub
+harness, since a temporary HOME cannot authenticate a real `claude`).
+The live run was the first time a session read the new preamble, and it
+found three defects the stub could not show: the Stop/flush race (F1),
+a retire that reconciliation undid (F2), and a seat that did not
+inherit `SMINOS_HOME` (F3). All three are fixed and pinned by tests.
+A second live pass on 2026-10-14 confirmed all three on the real
+harness: 12 of 12 marks exported on their own Stop, a retire that held
+across lists, a tick and the session's own Stop, and a spawned seat that
+wrote only its spawner's registry.
+
+**What the reviews moved.** Every milestone needed at least one fix
+wave. The recurring theme was a contract that held in the common path
+and broke at an edge:
+- delivery order across the direct verb and the fan-out;
+- the hook's promise never to block a turn, which took three waves to
+  reach every lock it waits on;
+- name resolution that silently preferred a seat;
+- two-tick persistence that forgot its candidate word.
+
+Only the controller's reviewers saw these; the design's three rounds of
+spec review could not have. The design survived intact: no owner ruling
+was reopened. The changes were revisions the design's intent settled,
+each logged.
+
+**The branch review.** The xhigh panel confirmed 11 findings on the
+finished branch, all reproduced, all contract edges, none against the
+design; one fix wave of two workers closed them with 61 new assertions,
+and the fix range got its own review at the high rung.
+
+**Lessons.**
+- A dev run without an isolated `SMINOS_HOME` rewrote the operator's
+  real registry in M1. The same failure reappeared at the spawn boundary
+  in M6 (F3). A tool whose first run migrates state should make its
+  home explicit at every process boundary it creates, not only at its
+  own entry.
+- Probing the real harness for a few seconds settled questions a
+  bundle read left open: whether `-p` runs register (they do, as
+  `interactive`), whether `--session-id` pins a fork, and whether
+  `--tools` swallows a prompt.
+- M5's eval showed that half the target behaviors already held on the
+  old text, and that the one new rule the preamble needed was not in
+  §6's list. It came from a failure the eval exposed (scenario d).
+
+**Left behind.**
+- The async questions of a MAWS session (§9). MAWS sessions are the ones
+  most affected.
+- A seat whose cwd moved after it joined is listed under both projects
+  by a `list` run from a directory in no project.
+- Seats spawned before F3 carry no `SMINOS_HOME` in their settings, and a
+  resume cannot add it.
+- The `~/.claude.json` trust entry that the acceptance run's trust
+  dialog added for `/private/tmp/smns-acc/R` is the human's to remove.
+- A late export (a mark written while retired, or one a Stop missed)
+  carries the export time as `ts`; the mark's own time is in `src`.
+- After a machine rename, seat records keep the old `host`; the
+  rebuilt-registry recovery still conflicts; a `send` to a seat-less
+  member keeps a short retire race. All in `docs/doperpowers/TECH-DEBT.md`.

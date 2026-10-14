@@ -1,49 +1,58 @@
 #!/usr/bin/env python3
 """sminos — one fleet registry for Claude Code sessions.
 
-The unit is the SEAT: a named position in a GROUP, with a role, that a Claude
-Code session fills. A seat outlives the process that fills it: when the session
-stops or dies the seat stays, with its role, brief, and history, and can be
-filled again (`fill --resume` continues the same session id; `fill` spawns a
-fresh one). Every background session spawned through sminos is a seat, board
-pipeline workers included, so `list` is the fleet for an operator and a
-family seat's family for that seat.
+The unit is the PROJECT (a committed .smns, else the owning repository) and
+its family: every session working under it is a MEMBER, with no join step and
+no host — the human is the host. A SEAT is a named position, with a role and a
+brief, that a session sminos spawned fills; it outlives the process that fills
+it and can be filled again (`fill --resume` continues the same session id;
+`fill` spawns a fresh one). Every background session spawned through sminos is
+a seat, board pipeline workers included. A session the human opened is a
+member too, seat-less, from the first call that reads its project.
 
-    sminos spawn    <alias> <task> [--group G] [--parent P] [--role R] [--brief B]
-                   [--cwd C] [--worktree W] [--model M] [--settings S] [--effort E]
-                   [--wait]
-    sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--session S]
+    sminos spawn    <alias> <task> [--role R] [--brief B] [--cwd C] [--worktree W]
+                   [--model M] [--settings S] [--effort E] [--wait]
+    sminos seat add <group> <alias> [--role R] [--brief B] [--session S]
     sminos fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
     sminos resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
                    A resumed background session keeps its SAVED options (name, permission
                    mode, model, settings, effort): --model/--settings/--effort are accepted
                    on resume for argv compatibility but ignored — use fill without --resume
                    to change them.
-    sminos send     <seat|session name|codex thread> <msg> [--wait] [--from F]
-                   # a live seat: inbox socket; a stopped one: resumed. A live session by
+    sminos send     <member|session name|codex thread> <msg> [--wait] [--from F]
+                   # a live member: inbox socket; a stopped seat: resumed. A live session by
                    # name, or a codex thread (its id, or codex:<id|exact name>, through
                    # codex's queue); --wait needs a seat.
-    sminos say      [--in <host>] [--team] <text>
-    sminos chat     [<host>] [-n N] [--since ID] [--team] [--json]
+    sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
+                   @short / @project/alias: delivered; @all: every live member
+    sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
+    sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
+    sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
+    sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
+    sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin)
+    sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
+    sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
-    sminos status   <seat> <one line>                     # the agent's own "now" line
-    sminos retire   <seat> [--purge] [--cascade]           # stop; keep (or purge) the record
+    sminos status   <member> <one line>                   # the member's own "now" line
+    sminos retire   <member> [--purge]                    # stop; keep (or purge) a seat's record
     sminos remove   <seat>                                # stop and delete the record
-    sminos list     [group] [--state W] [--json] [--all] # W: busy idle waiting stopped gone vacant retired;
+    sminos list     [project] [--state W] [--json] [--all]  # the working directory's project; every project
+                   from none or with --all. W: busy idle waiting stopped gone vacant retired;
                    retired and gone fold into a "+N hidden" tail until --all or --state names them
-    sminos chart    [group] [--all] [--width N]          # box organisation chart as text (fleet without a group)
-    sminos tui      [group] [--all] [--no-tmux]          # the chart, interactive, inside tmux: arrows move, enter attaches
+    sminos chart    [project] [--all] [--width N]        # the members as boxes, grouped by project
+    sminos tui      [project] [--all] [--no-tmux]        # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
     sminos migrate  [--quiet]                             # (also runs implicitly)
     sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
 
-A seat's one name is its alias. A seat sminos spawns runs under it as its
-harness name; a session joined with `seat add --session` keeps the harness
-name it already had, which sminos never delivers by. Aliases are unique
-within a group, not across groups: a seat is addressed by `group/alias`, or
-by a bare alias when exactly one seat has it.
-Scripts may also pass a full seat id or a full session id.
+A member's name is its alias: a seat's alias (a seat sminos spawns runs under
+it as its harness name), or a seat-less session's harness name. Aliases are
+display names and can collide; `alias#short` (the session's first eight hex
+digits) tells two apart. A bare name resolves in the working directory's
+project (a seat's own, for a seat), `project/alias` in another, and from a
+directory that is no project across every project known here; a seat also
+answers to `group/alias`. Scripts may pass a full seat id or session id.
 
 Messaging is one verb, `send`: to a live seat it writes a frame to the
 session's inbox socket — the socket the harness's native cross-session
@@ -56,8 +65,11 @@ the process-level continuation the board pipeline relays through: a fresh
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
-writes them directly under the shared flock file .metalock. Family chats live
-at chats/<host-seat-id>.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the reserved operator identity.
+writes them directly under the shared flock file .metalock. A project (a
+committed .smns, else the owning git repository) keeps its append-only event
+log, one file per writer, at projects/<id>/log/, with each reader's cursor and
+each recipient's delivery record beside it. Names are [A-Za-z0-9._-]{1,64};
+`human` is the reserved operator identity.
 
 Exit codes: 0 ok, 1 harness failure, 2 usage (including `wake`, folded into
 `send`), 4 unknown seat/group, a target `send` cannot reach (not live, or a
@@ -70,11 +82,13 @@ import datetime
 import fcntl
 import glob
 import hashlib
+import heapq
 import importlib
 import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -82,13 +96,17 @@ import tempfile
 import time
 import uuid as uuidlib
 from contextlib import contextmanager
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 # Fleet state is private to the agent fleet: everything this CLI creates is
 # 700/600. All agents run as the same OS user, so nothing needs group/other.
 os.umask(0o077)
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+import sminos_marks  # noqa: E402 — the mark grammar of hooks/mods/to-human.tsx, ported
+
 LAUNCHER = os.path.join(SCRIPT_DIR, "sminos")
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
@@ -135,8 +153,13 @@ def root():
     return os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME") or default_root()
 
 
-def now():
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def now(ms=False):
+    """UTC ISO-8601. The log's `ts` carries milliseconds (ms=True); seat
+    records keep whole seconds, the shape the board pipeline compares."""
+    t = datetime.datetime.now(datetime.timezone.utc)
+    if ms:
+        return t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (t.microsecond // 1000)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def die(msg, code=EXIT_USAGE) -> NoReturn:
@@ -196,7 +219,7 @@ def _write_record(path, data):
     os.replace(tmp, path)
 
 
-def meta_set(seat_id, fields, remove=(), bump=True, create=True):
+def meta_set(seat_id, fields, remove=(), bump=True, create=True, lock_until=None):
     """Merge fields into a seat record (creating it if absent, unless create=False).
 
     The read-modify-write is serialized across processes with an advisory flock
@@ -210,12 +233,14 @@ def meta_set(seat_id, fields, remove=(), bump=True, create=True):
     `meta set` are NOT lifecycle writes (bump=False): an agent updating its
     status mid-turn must not make the turn's watcher refuse to record the reply.
     create=False (status / meta set) refuses to resurrect a record that
-    a concurrent remove just deleted. Returns True iff it wrote.
+    a concurrent remove just deleted. Returns True iff it wrote. With
+    lock_until (the record hook's migration), the lock is waited for only until
+    then: LockBusy, the record untouched.
     """
     path = meta_path(seat_id)
     os.makedirs(root(), exist_ok=True)
     with open(os.path.join(root(), ".metalock"), "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+        flock_until(lf, lock_until)
         try:
             try:
                 with open(path) as f:
@@ -362,15 +387,16 @@ def seats(group=None):
     return out
 
 
-def find_seat(q):
+def find_seat(q, scope=None):
     """Resolve a query to a seat WITHOUT printing or exiting.
 
     Returns ("ok", seat) | ("none", None) | ("ambiguous", [seats]). Order:
-    `group/alias`; an exact seat id or session id (how scripts address a
-    seat); a bare alias when exactly one seat has it. Nothing is matched by
-    prefix and the harness short id names no seat, so a short alias such as
-    `a` is never lost to an id that happens to start with it. An alias two
-    groups share stays ambiguous.
+    `group/alias`, else `project/alias` (by the project's name or id); an
+    exact seat id or session id (how scripts address a seat); a bare alias
+    when exactly one seat has it — among the seats of `scope`, the caller's
+    project, when one is given. Nothing is matched by prefix and the harness
+    short id names no seat, so a short alias such as `a` is never lost to an
+    id that happens to start with it.
     """
     if not q:
         return "none", None
@@ -378,10 +404,14 @@ def find_seat(q):
     if "/" in q:
         g, a = q.split("/", 1)
         hits = [s for s in all_seats if s["group"] == g and s["alias"] == a]
-        return ("ok", hits[0]) if len(hits) == 1 else ("none", None)
+        if not hits:
+            hits = [s for s in all_seats if s["alias"] == a and (p := seat_project(s)) and g in (p.id, p.name)]
+        if len(hits) > 1:
+            return "ambiguous", hits
+        return ("ok", hits[0]) if hits else ("none", None)
     stages = (
         lambda s: q in (s["seat_id"], s["current"]),
-        lambda s: s["alias"] == q,
+        lambda s: s["alias"] == q and (scope is None or seat_project(s).id == scope.id),
     )
     for match in stages:
         hits = [s for s in all_seats if match(s)]
@@ -392,24 +422,1196 @@ def find_seat(q):
     return "none", None
 
 
-# ------------------------------------------------------------- family chats
+# --------------------------------------------------------- projects and the log
+#
+# A project is the unit of shared work state: a committed `.smns` names it; a
+# git repository without one is a local project named after its owning
+# repository; any other directory is no project. Everything that crosses
+# sessions is one event in the project's append-only log — one file per
+# writer under $SMINOS_HOME/projects/<id>/log/, so a file has one writer and
+# replication is a copy. Delivery is the deliverer's own record (delivered/),
+# never a rewrite of the log. Design: docs/doperpowers/specs/
+# 2026-10-13-smns-project-log-design.md.
 
-REACH_HINT = ("is outside your family (parent, siblings, children). To reach another session "
-              "use the native ListAgents and SendMessage tools.")
-TAG = re.compile(r"@[A-Za-z0-9._-]+")
+
+class Project(NamedTuple):
+    id: str          # uuid from .smns, or "local-<name>"
+    name: str
+    remote: str      # "" for a local project
+    root: str        # directory holding .smns, or the owning repository
+    home: str        # $SMINOS_HOME/projects/<id>
+
+
+SMNS = ".smns"
+# The conversation `chat` shows and a frame's `unread` counts.
+CHAT_KINDS = ("say", "human")
+# A push that failed before anything was written is retried this many times,
+# then settled with a line in $SMINOS_HOME/daemon.log.
+DELIVERY_ATTEMPTS = 60
+PUSHED = ("sent", "woken", "sent?", "woken?")
+# A session's membership is its latest of these, in its own file, by seq.
+MEMBERSHIP = ("joined", "retired")
+# The facts about a session the projection reads; whoever writes one for a
+# session on its machine appends it to that session's file.
+LIFECYCLE = MEMBERSHIP + ("renamed", "state", "in-charge", "status")
+# The harness session kinds that are members on sight; any other is not.
+JOINABLE_KINDS = ("interactive", "bg")
+# A headless or SDK run (`claude -p`, the agent SDKs) registers as
+# `interactive` too (harness 2.1.299: `kind: "interactive", entrypoint:
+# "sdk-cli"`); its entrypoint is what tells it apart, and it is no member.
+HEADLESS_ENTRYPOINT = "sdk"
+_PROJECTS = {}
+_HOMES = set()
+_VIEWS = {}  # project id → View, per invocation; a lifecycle append drops it
+
+
+def projects_root():
+    return os.path.join(root(), "projects")
+
+
+def safe_name(name):
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64]
+    return name if valid_name(name) else ""
+
+
+def _owning_repo_fs(d):
+    """owning_repo read off the filesystem, no process: the nearest `.git`
+    upward — a directory names its checkout; a file (a linked worktree)
+    points at its gitdir, whose `commondir` leads to the main checkout's.
+    None when the layout is not one of those, for the caller to ask git."""
+    while True:
+        dot = os.path.join(d, ".git")
+        if os.path.isdir(dot):
+            return d
+        if os.path.isfile(dot):
+            try:
+                with open(dot) as f:
+                    line = f.readline().strip()
+            except OSError:
+                return None
+            if not line.startswith("gitdir:"):
+                return None
+            gitdir = os.path.join(d, line[len("gitdir:"):].strip())
+            try:
+                with open(os.path.join(gitdir, "commondir")) as f:
+                    common = os.path.join(gitdir, f.read().strip())
+            except FileNotFoundError:
+                common = gitdir
+            except OSError:
+                return None
+            return os.path.dirname(os.path.abspath(common))
+        parent = os.path.dirname(d)
+        if parent == d:
+            return ""
+        d = parent
+
+
+def owning_repo(cwd):
+    """The owning repository of a directory — for a linked worktree, the main
+    checkout, through the common git dir — asked of its nearest existing
+    ancestor, so a removed worktree still resolves. "" outside git. Read off
+    the filesystem when it can be: every reading verb resolves the cwd of
+    every seat and live session, and a process per directory adds up."""
+    d = os.path.abspath(cwd)
+    while not os.path.isdir(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return ""
+        d = parent
+    repo = _owning_repo_fs(d)
+    if repo is not None:
+        return repo
+    try:
+        p = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    common = p.stdout.strip() if p.returncode == 0 else ""
+    if not common:
+        return ""
+    if not os.path.isabs(common):
+        common = os.path.join(d, common)
+    return os.path.dirname(os.path.abspath(common))
+
+
+def make_project(pid, name, remote, root_dir):
+    return Project(pid, name, remote, root_dir, os.path.join(projects_root(), pid))
+
+
+def read_smns(path):
+    """(id, name, remote) from a .smns, or None — with a warning — when it is
+    unreadable or names no valid id: a broken file in one repository must not
+    stop every verb that resolves a seat living there."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError) as e:
+        warn("ignoring unreadable %s: %s" % (path, e))
+        return None
+    pid = str(d.get("project") or "") if isinstance(d, dict) else ""
+    if not valid_name(pid):
+        warn("ignoring %s: it names no valid project id" % path)
+        return None
+    return pid, str(d.get("name") or pid), str(d.get("remote") or "")
+
+
+def resolve_project(cwd):
+    """The project of a directory: the first .smns walking up; else the local
+    project of the owning git repository; else None (no project)."""
+    cwd = os.path.abspath(os.path.expanduser(cwd or "."))
+    if cwd in _PROJECTS:
+        return _PROJECTS[cwd]
+    project, d = None, cwd
+    while True:
+        smns = read_smns(os.path.join(d, SMNS)) if os.path.isfile(os.path.join(d, SMNS)) else None
+        if smns:
+            project = make_project(smns[0], smns[1], smns[2], d)
+            break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    if project is None:
+        repo = owning_repo(cwd)
+        if repo:
+            name = safe_name(os.path.basename(repo)) or "repo"
+            project = make_project("local-" + name, name, "", repo)
+    _PROJECTS[cwd] = project
+    return project
+
+
+def seat_project(seat):
+    """A seat's project, from its recorded cwd. A seat spawned where there is
+    no project belongs to the local project named after that directory: the
+    seat record is the explicit registration automatic discovery never makes.
+    A record with no cwd at all (written by hand, or before cwd was recorded)
+    belongs to the local project named after its group, so it stays in view."""
+    if not seat:
+        return None
+    cwd = str(seat.get("cwd") or "")
+    if not cwd:
+        name = safe_name(str(seat.get("group") or "")) or "fleet"
+        return make_project("local-" + name, name, "", "")
+    project = resolve_project(cwd)
+    if project is None:
+        name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
+        project = make_project("local-" + name, name, "", os.path.abspath(cwd))
+    return project
+
+
+def write_json(path, data, mode=0o600):
+    """Atomic replace: a reader sees the old file or the new one, never half."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def project_path(project, *parts):
+    """A path under the project's home; the first use creates the home and
+    records project.json (the .smns as last resolved, plus its root)."""
+    if project.id not in _HOMES:
+        os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
+        info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
+        path = os.path.join(project.home, "project.json")
+        try:
+            with open(path) as f:
+                same = json.load(f) == info
+        except (OSError, ValueError):
+            same = False
+        if not same:
+            write_json(path, info)
+        _HOMES.add(project.id)
+    path = os.path.join(project.home, *parts)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    return path
+
+
+def known_projects(all_seats=None):
+    """Every project this machine knows: those with a home here, and those of
+    the seats it holds (`all_seats`: a seat read the caller already made)."""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            pid = str(d["project"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid:
+            out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""))
+    for s in seats() if all_seats is None else all_seats:
+        p = seat_project(s)
+        if p:
+            out.setdefault(p.id, p)
+    return list(out.values())
+
+
+def find_project(q, required=True):
+    """A project known locally, by id or by name; with required=False, None
+    when none is (an ambiguous name still exits)."""
+    known = known_projects()
+    for match in (lambda p: p.id == q, lambda p: p.name == q):
+        hits = [p for p in known if match(p)]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in hits))),
+                EXIT_UNKNOWN)
+    if not required:
+        return None
+    die("no project '%s' is known on this machine" % q, EXIT_UNKNOWN)
+
+
+def caller_project(caller=None):
+    """The project a call speaks in by default: the caller seat's, else the
+    working directory's (None: no project)."""
+    return seat_project(caller) if caller else resolve_project(os.getcwd())
+
+
+# Writers: one appender each. `<machine>/<session-uuid>` for a session,
+# `<machine>/human` for the operator, `legacy/<host-seat-id>` for an imported
+# family chat. The file name replaces `/` with `.`.
+
+
+def writer_id(session_uuid=None):
+    return "%s/%s" % (host_name(), session_uuid or "human")
+
+
+def writer_session(writer):
+    last = writer.rsplit("/", 1)[-1]
+    return last if UUID_RE.match(last) else ""
+
+
+def writer_short(writer):
+    session = writer_session(writer)
+    return session[:8] if session else writer
+
+
+def event_ref(e):
+    return "%s:%d" % (writer_short(e["writer"]), e["seq"])
+
+
+def writer_path(project, writer):
+    return project_path(project, "log", writer.replace("/", ".") + ".jsonl")
+
+
+@contextmanager
+def flocked(path, exclusive=True, lock_until=None):
+    """flock held for the block; with lock_until, LockBusy if it cannot be had by then."""
+    with open(path, "a") as lock:
+        flock_until(lock, lock_until, exclusive)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def parse_event(line):
+    """One well-formed event, or None: a malformed line is skipped on read and
+    never rewritten."""
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return None
+    if not (isinstance(e, dict) and isinstance(e.get("writer"), str) and isinstance(e.get("ts"), str)
+            and isinstance(e.get("kind"), str) and type(e.get("seq")) is int):
+        return None
+    return e
+
+
+def _last_seq(f):
+    """The seq of the last well-formed line of an open writer file; 0 if none.
+    Reads backwards from the end: a long-lived writer's file is never read whole."""
+    end = f.seek(0, os.SEEK_END)
+    size = 1 << 16
+    while True:
+        start = max(0, end - size)
+        f.seek(start)
+        lines = f.read(end - start).split(b"\n")
+        if start:
+            lines = lines[1:]  # the first may be the tail of an earlier line
+        for line in reversed(lines):
+            e = parse_event(line.decode("utf-8", "replace")) if line.strip() else None
+            if e:
+                return e["seq"]
+        if not start:
+            return 0
+        size *= 4
+
+
+def _append(project, writer, events, skip_src=False, guard=None):
+    """Append events to the writer's file under `.sync.lock` shared (git never
+    rewrites log/ while an appender writes) and the file's own lock (seq is the
+    last line's plus one). With `guard`, the file's events are read under the
+    lock and nothing is appended unless guard(events) holds — a check and its
+    append no other appender can come between. Returns the events as written."""
+    if any(e["kind"] in LIFECYCLE for e in events):
+        _VIEWS.pop(project.id, None)
+    path = writer_path(project, writer)
+    log = os.path.dirname(path)
+    with flocked(os.path.join(log, ".sync.lock"), exclusive=False), flocked(path + ".lock"):
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "r+b") as f:
+            if guard is not None:
+                f.seek(0)
+                if not guard([x for x in map(parse_event, f.read().decode("utf-8", "replace").split("\n")) if x]):
+                    return []
+            if skip_src:
+                f.seek(0)
+                # (kind, src): a question and its answer share the call id.
+                present = {(x["kind"], x["src"]) for x in map(parse_event, f.read().decode("utf-8", "replace").split("\n"))
+                           if x and x.get("src") is not None}
+                kept = []
+                for e in events:
+                    key = (e["kind"], e.get("src"))
+                    if key[1] is None or key not in present:
+                        if key[1] is not None:
+                            present.add(key)
+                        kept.append(e)
+                events = kept
+            if not events:
+                return []
+            seq = _last_seq(f)
+            out = []
+            for fields in events:
+                seq += 1
+                rest = {k: v for k, v in fields.items() if k != "kind"}
+                out.append({"ts": now(ms=True), "writer": writer, "seq": seq, "kind": fields["kind"], **rest})
+            end = f.seek(0, os.SEEK_END)
+            if end:
+                # An interrupted append can leave a fragment without its
+                # newline; end it so this event is a line of its own.
+                f.seek(end - 1)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in out).encode())
+    return out
+
+
+def log_append(project, writer, kind, **fields):
+    return _append(project, writer, [{"kind": kind, **fields}])[0]
+
+
+def log_append_batch(project, writer, events, skip_src=True):
+    """Several events of one writer under one taking of the locks; with
+    skip_src, an event whose (kind, src) the file already holds is dropped
+    inside them, so a retried export appends each source once. `src` is a
+    correlation id: a `question` and its `answered` share one."""
+    return _append(project, writer, events, skip_src)
+
+
+def addressed_to(e, session):
+    to = e.get("to")
+    return isinstance(to, list) and any(isinstance(r, dict) and r.get("session") == session for r in to)
+
+
+def log_read(project, since=None, kinds=(), to_session=None):
+    """The project's events: each writer's stream in seq order (authoritative
+    within a writer), merged by taking the next line from whichever stream's
+    head has the earlier (ts, writer). Only the top-level *.jsonl are read."""
+    streams = {}
+    for path in sorted(glob.glob(os.path.join(project.home, "log", "*.jsonl"))):
+        try:
+            f = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with f:
+            for line in f:
+                e = parse_event(line)
+                if (e is None or (since and e["seq"] <= int(since.get(e["writer"], 0)))
+                        or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
+                    continue
+                streams.setdefault(e["writer"], []).append(e)
+    for stream in streams.values():
+        stream.sort(key=lambda e: e["seq"])
+    return list(heapq.merge(*streams.values(), key=lambda e: (e["ts"], e["writer"])))
+
+
+def reader_key(session_uuid):
+    key = session_uuid or "human"
+    if not valid_name(key):
+        die("not a session id: %s" % key)
+    return key
+
+
+def cursor_load(project, session_uuid):
+    """What a reader has read: {writer: seq}."""
+    try:
+        with open(os.path.join(project.home, "cursors", reader_key(session_uuid) + ".json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {str(w): int(s) for w, s in d.items() if type(s) is int} if isinstance(d, dict) else {}
+
+
+def cursor_save(project, session_uuid, cursor):
+    """Advance a reader's cursor to `cursor`, merged per writer with what is
+    persisted under the cursor's lock: overlapping reads never move it back."""
+    path = project_path(project, "cursors", reader_key(session_uuid) + ".json")
+    with flocked(path[:-len(".json")] + ".lock"):
+        merged = cursor_load(project, session_uuid)
+        for writer, seq in cursor.items():
+            merged[writer] = max(merged.get(writer, 0), int(seq))
+        write_json(path, merged)
+
+
+# Delivery records: per recipient session, per writer, the seq up to which
+# every event owed to it is settled, and the one pending event that failed
+# with its attempt count. A deliverer never settles past an unsettled event of
+# the same writer, so a later success cannot bury an earlier failure.
+
+
+def delivered_load(project, session_uuid):
+    try:
+        with open(os.path.join(project.home, "delivered", reader_key(session_uuid) + ".json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for w, v in (d.items() if isinstance(d, dict) else ()):
+        if isinstance(v, dict):
+            pending = v.get("pending")
+            out[str(w)] = {"settled": int(v.get("settled") or 0),
+                           "pending": pending if type(pending) is int else None,
+                           "attempts": int(v.get("attempts") or 0)}
+    return out
+
+
+def _delivery(record, writer):
+    return record.get(writer) or {"settled": 0, "pending": None, "attempts": 0}
+
+
+def _next_check(record, writer, seq):
+    w = _delivery(record, writer)
+    if seq <= w["settled"] or (w["pending"] is not None and seq != w["pending"]):
+        raise ValueError("delivery of %s:%d out of order (settled %d, pending %s)" % (
+            writer, seq, w["settled"], w["pending"]))
+    return w
+
+
+def delivered_settle(project, session_uuid, writer, seq):
+    """Settle the writer's next owed event — every event between the settled
+    prefix and seq is not owed to this session, so the prefix moves to seq.
+    The caller holds delivered/<session>.lock."""
+    record = delivered_load(project, session_uuid)
+    _next_check(record, writer, seq)
+    record[writer] = {"settled": seq, "pending": None, "attempts": 0}
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+
+
+def delivered_fail(project, session_uuid, writer, seq):
+    """Note a failed attempt at the writer's next owed event; returns the count."""
+    record = delivered_load(project, session_uuid)
+    w = _next_check(record, writer, seq)
+    attempts = w["attempts"] + 1 if w["pending"] == seq else 1
+    record[writer] = {"settled": w["settled"], "pending": seq, "attempts": attempts}
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    return attempts
+
+
+# --------------------------------------------------------------- the family
+#
+# A member is a session whose latest membership event (joined/retired, in its
+# own file, by seq) is joined — plus, on this machine, every live harness
+# session and every seat whose cwd resolves to the project, joined into the log
+# on sight by reconcile(). Derived, never declared. There is no host and no
+# tree: `by` is the spawner, recorded as provenance and nothing more.
+
+
+class Member(NamedTuple):
+    session: str
+    short: str
+    alias: str
+    name_source: str      # seat | user | derived
+    machine: str
+    local: bool
+    state: str            # one of STATES; for a remote member its last published word, or ""
+    state_age: float | None
+    charge: str
+    charge_source: str    # set | name | derived | title | "" (charge_of)
+    status: str
+    by: str
+    worktree: str
+    seat: dict | None     # the seat record this session fills, when it is a seat on this machine
+
+
+def member_json(m, project=None):
+    """A member as list --json carries it: no task body, no credential."""
+    d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
+         "machine": m.machine, "local": m.local, "state": m.state, "state_age": m.state_age,
+         "charge": m.charge, "charge_source": m.charge_source, "by": m.by, "status": m.status,
+         "worktree": m.worktree, "seat": public_seat(m.seat) if m.seat else None}
+    if project is not None:
+        d = {"project": project.name, "project_id": project.id, **d}
+    return d
+
+
+def member_label(m, rows):
+    """A member's display name: its alias, with #short when another row of the
+    project shares it."""
+    shared = sum(1 for r in rows if r.alias == m.alias) > 1
+    return "%s#%s" % (m.alias, m.short) if shared and m.short else m.alias
+
+
+def internal_pids():
+    """Pids `derive` marked as its own headless forks: never members (§5)."""
+    try:
+        return {n for n in os.listdir(os.path.join(root(), "internal")) if n.isdigit()}
+    except OSError:
+        return set()
+
+
+def caller_alias():
+    """Who a lifecycle event names as its actor (`by`): the calling session's
+    seat alias (a provisional seat's too), else its harness name; "" for the
+    operator."""
+    if not os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return ""
+    caller = caller_seat()
+    return caller["alias"] if caller else default_from("")
+
+
+def joined_fields(alias, name_source, cwd, worktree="", role="", seat="", by=""):
+    return {"alias": alias, "name_source": name_source, "machine": host_name(), "cwd": cwd,
+            "worktree": worktree, "role": role, "seat": seat, "by": by}
+
+
+def latest_membership(events):
+    """The kind of the last joined/retired among a session's own events, or None."""
+    return next((e["kind"] for e in reversed(events) if e["kind"] in MEMBERSHIP), None)
+
+
+class LogWriteFailed(Exception):
+    """A required lifecycle event could not be appended. The verb's local
+    operation already happened; main() exits 1 saying both."""
+
+
+def lifecycle(project, session, kind, guard=None, required=True, **fields):
+    """Append one lifecycle event for a session on this machine to the
+    session's own file: a session's lifecycle has one writer, so its order is
+    its seq. A failure raises LogWriteFailed — the event is part of the verb —
+    except for reconciliation's own appends (`required=False`), which a
+    reading verb only warns about and the next one retries."""
+    if project is None or not session:
+        return []
+    try:
+        return _append(project, writer_id(session), [{"kind": kind, "session": session, **fields}], guard=guard)
+    except OSError as e:
+        msg = "recording %s of %s in %s's log failed: %s" % (kind, session[:8], project.name, e)
+        if required:
+            raise LogWriteFailed(msg)
+        warn(msg)
+        return []
+
+
+def join_seat(seat, by=""):
+    """joined for the session a seat holds, unless its latest membership
+    already is: how fill --resume, resume, and send revive a retired seat."""
+    if not seat or not seat["current"]:
+        return []
+    return lifecycle(seat_project(seat), seat["current"], "joined",
+                     guard=lambda evs: latest_membership(evs) != "joined",
+                     **joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"],
+                                     seat["seat_id"], by))
+
+
+def seats_by_session(project, all_seats):
+    """{session: seat}: the seat that binds a session in the project's
+    projection. The legacy conversion can leave one session in seats of
+    several projects, and there the project's own seat (its cwd resolves to
+    the project) binds it, never another project's. A session the project
+    holds no seat for is bound by the seat that holds it elsewhere: a seat
+    whose cwd moved still stands for the session it holds, one seat one
+    target (find_target)."""
+    out, own = {}, set()
+    for s in all_seats:
+        sid = s["current"]
+        if not sid:
+            continue
+        mine = (p := seat_project(s)) is not None and p.id == project.id
+        if mine or sid not in own:
+            out[sid] = s
+            if mine:
+                own.add(sid)
+    return out
+
+
+def _local_sessions(project, all_seats):
+    """This machine's evidence of sessions in the project: {session: {"seat",
+    "peer"}} for every seat whose cwd resolves to it and every harness session
+    whose process runs in it, internal forks aside."""
+    local = {}
+    for s in all_seats:
+        if s["current"] and (p := seat_project(s)) and p.id == project.id:
+            local.setdefault(s["current"], {})["seat"] = s
+    internal = internal_pids()
+    for rec in peer_records():
+        sid, cwd = rec.get("sessionId"), rec.get("cwd")
+        if not (isinstance(sid, str) and UUID_RE.match(sid) and isinstance(cwd, str) and cwd):
+            continue
+        if str(rec.get("pid")) in internal:
+            continue
+        p = resolve_project(cwd)
+        if p is not None and p.id == project.id and peer_running(rec):
+            local.setdefault(sid, {})["peer"] = rec
+    return local
+
+
+def _reconcile(project, events, local, by_session):
+    """Append joined for this machine's sessions the log does not hold as
+    members: a live session whose latest membership is absent or retired (a
+    live process is evidence of activation), and a seat with no membership
+    event at all. A seat whose record is retired is never re-joined here — a
+    session still answering after `retire` stopped it is not a revival; only
+    fill, resume, and send revive. Each check is repeated under the session
+    file's lock, so a concurrent retire cannot be undone.
+
+    A seat-less session joins on sight only when the harness records it as
+    `interactive` or `bg`: another tool's headless run is no member. And the
+    absence of the process ends what its presence began: a seat-less member
+    of this machine whose session no longer runs is retired, reason `ended`,
+    and re-joins if it runs again. A seat's lifecycle stays with retire, fill,
+    and resume."""
+    latest, joined = {}, {}
+    for e in events:
+        if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
+            latest[e["session"]] = e["kind"]
+            if e["kind"] == "joined":
+                joined[e["session"]] = e
+    out = []
+    for sid, e in joined.items():
+        if (latest[sid] != "joined" or sid in by_session or sid in local
+                or str(e.get("machine") or "") != host_name() or session_running(sid)):
+            continue
+
+        def ended(evs, sid=sid):
+            return (latest_membership(evs) == "joined" and not session_running(sid)
+                    and not any(s["current"] == sid for s in seats()))
+
+        out += lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
+    for sid, ev in local.items():
+        seat, peer = by_session.get(sid), ev.get("peer")
+        if (latest.get(sid) == "joined") if peer else (sid in latest):
+            continue
+        out += join_on_sight(project, sid, seat, peer, bool(peer))
+    return out
+
+
+def joinable(seat, peer):
+    """Whether a session of this machine is a member on sight: a seat whose
+    record is not retired, or a seat-less session the harness records as
+    `interactive` or `bg` whose entrypoint is no headless or SDK run (`sdk-*`:
+    another tool's `claude -p` is no member, whatever its kind)."""
+    if seat:
+        return seat["status"] != "retired"
+    peer = peer or {}
+    return (str(peer.get("kind") or "") in JOINABLE_KINDS
+            and not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT))
+
+
+def _ts_epoch(ts):
+    """A log `ts` (UTC, milliseconds) as epoch seconds, or None."""
+    s = str(ts or "")
+    try:
+        whole = calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+    frac = re.match(r"\.(\d+)", s[19:])
+    return whole + (float("0." + frac.group(1)) if frac else 0.0)
+
+
+def process_started(rec):
+    """When a harness record's process started, in epoch seconds: its
+    `startedAt` (ms), else its `procStart` read as UTC (same_process); None
+    when neither is there."""
+    started = rec.get("startedAt")
+    if isinstance(started, (int, float)) and not isinstance(started, bool) and started > 0:
+        return started / 1000.0
+    parsed = _parse_lstart(rec.get("procStart"))
+    return calendar.timegm(parsed) if parsed else None
+
+
+def retirement_holds(events, peer):
+    """Whether a seat-less session's `retire` still holds against the process
+    its harness record shows. A retirement holds for the life of the process
+    that ran when it was recorded: an interactive session has nothing the
+    harness can stop, so its process runs on in its human's terminal, and
+    re-joining it on sight would undo the retire at the next reading verb.
+    The record shows a different process when its pid differs from the one
+    the retirement recorded, or when it started after the retirement (a
+    resume opens a new process, so a resumed session re-joins, §2). A
+    retirement for any other reason (`ended`: its process was not seen) does
+    not hold against a running process."""
+    last = next((e for e in reversed(events) if e["kind"] in MEMBERSHIP), None)
+    if not last or last["kind"] != "retired" or last.get("reason") != "retire":
+        return False
+    peer = peer or {}
+    if last.get("pid") not in (None, "") and str(last["pid"]) != str(peer.get("pid")):
+        return False
+    started, retired = process_started(peer), _ts_epoch(last.get("ts"))
+    return started is None or retired is None or started <= retired
+
+
+def join_on_sight(project, sid, seat, peer, running):
+    """joined for a session seen on this machine, when it is joinable and
+    the log does not already hold it as a member: a running session whose
+    latest membership is absent or retired (a live process is evidence of
+    activation), a seat that is not running only when it has no membership
+    event at all; a seat-less session retired by `retire` only once a new
+    process runs it (retirement_holds). Checked again under the session
+    file's lock, the seat record re-read there, so a concurrent retire cannot
+    be undone. Shared by reconciliation and the hook (§2, §4)."""
+    if not joinable(seat, peer):
+        return []
+
+    def guard(evs):
+        last = latest_membership(evs)
+        if (last == "joined") if running else (last is not None):
+            return False
+        if not seat and retirement_holds(evs, peer):
+            return False
+        fresh = reload_seat(seat["seat_id"]) if seat else None
+        return not (seat and (fresh is None or fresh["status"] == "retired"))
+
+    if seat:
+        fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"])
+    else:
+        fields = joined_fields(str(peer.get("name") or sid[:8]), str(peer.get("nameSource") or "derived"),
+                               str(peer.get("cwd") or ""))
+    return lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+
+
+def latest_across_writers(events):
+    """Each writer's latest event by seq (authoritative within a writer),
+    then the later ts between writers (§3); None for no events. `events` holds
+    each writer's stream in seq order, so the last one seen of a writer is its
+    latest."""
+    last = {}
+    for e in events:
+        last[e["writer"]] = e
+    return max(last.values(), key=lambda e: e["ts"]) if last else None
+
+
+def _projection(events):
+    """Per session, what the log says of it: its latest membership event and
+    latest joined (by seq, in its own file), the first non-empty `by`, its
+    latest rename and published state (its own file), its in-charge events
+    (for charge_of), and its status: each writer's latest by seq, the later
+    ts between writers (§3)."""
+    info = {}
+    for e in events:
+        sid, kind = e.get("session"), e["kind"]
+        if kind not in LIFECYCLE or not isinstance(sid, str) or not sid:
+            continue
+        own = writer_session(e["writer"]) == sid
+        r = info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
+                                  "in_charge": [], "status": []})
+        if kind in MEMBERSHIP or kind in ("renamed", "state"):
+            if not own:
+                continue
+            if kind in MEMBERSHIP:
+                r["latest"] = e
+                if kind == "joined":
+                    r["joined"] = e
+                    if not r["by"] and e.get("by"):
+                        r["by"] = str(e["by"])
+            else:
+                r[kind] = e
+        elif kind == "in-charge":
+            r["in_charge"].append(e)
+        else:
+            r["status"].append(e)
+    for r in info.values():
+        r["status"] = latest_across_writers(r["status"])
+    return info
+
+
+def charge_of(member, events, title=True):
+    """(line, source): what a member is in charge of, the first present of
+    (§5) the latest `set` in-charge line, the name the human gave it, the
+    latest `derived` line, and — on this machine only — its transcript's
+    latest title; ("", "") when none is. A set or derived line written
+    empty is no line. `events` is the log, or any part of it holding the
+    member's in-charge events, each writer's in seq order. With title=False
+    the transcript is not read (the daemon's tick has no use for the line)."""
+    mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") == member.session]
+    for source in ("set", "name", "derived", "title"):
+        if source == "name":
+            line = member.alias if member.name_source == "user" else ""
+        elif source == "title":
+            line = transcript_title(member.session) if title and member.local and member.session else ""
+        else:
+            e = latest_across_writers([x for x in mine if x.get("source") == source])
+            line = str(e.get("text") or "").strip() if e else ""
+        if line:
+            return line, source
+    return "", ""
+
+
+def charge_shown(m):
+    """The in-charge line a row draws: not a name the alias column already shows."""
+    return "" if m.charge_source == "name" else m.charge
+
+
+def ts_age(ts):
+    try:
+        then = calendar.timegm(time.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+    return max(0.0, time.time() - then)
+
+
+def _member(sid, r, seat, peer, local, title=True):
+    """One row of the projection: what the log says of the session, and, on
+    this machine, its seat record and its process."""
+    j = (r or {}).get("joined") or {}
+    alias, name_source = str(j.get("alias") or ""), str(j.get("name_source") or "")
+    if r and r["renamed"]:
+        alias, name_source = str(r["renamed"].get("alias") or alias), str(r["renamed"].get("name_source") or name_source)
+    if seat:
+        alias, name_source = seat["alias"], "seat"
+    elif peer and peer.get("name"):
+        alias, name_source = str(peer["name"]), str(peer.get("nameSource") or name_source or "derived")
+    machine = str(j.get("machine") or "")
+    local = local or bool(seat) or not machine or machine == host_name()
+    age = None
+    if not local:
+        published = (r or {}).get("state") or {}
+        state_word, age = str(published.get("state") or ""), (ts_age(published["ts"]) if published else None)
+    elif seat:
+        # A seat's word is the one its route reads: the inbox must answer.
+        state_word = state(seat)
+    elif peer:
+        state_word = peer_state(peer)
+    else:
+        state_word = "stopped" if transcript_path(sid) else "gone"
+    status = (r or {}).get("status")
+    m = Member(
+        session=sid, short=sid[:8], alias=alias or sid[:8], name_source=name_source,
+        machine=host_name() if local else machine, local=local, state=state_word, state_age=age,
+        charge="", charge_source="",
+        status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
+        by=(r or {}).get("by") or "", worktree=seat["worktree"] if seat else str(j.get("worktree") or ""),
+        seat=seat)
+    charge, source = charge_of(m, (r or {}).get("in_charge") or [], title)
+    return m._replace(charge=charge, charge_source=source)
+
+
+class View(NamedTuple):
+    members: list         # the members, newest join first
+    rows: list            # the seats no member stands for (vacant, retired, or replaced), newest first
+    retired: list         # (alias, short, reason) of seat-less sessions the log holds as retired
+    events: list          # the log as read, with what reconciliation appended
+    info: dict            # _projection(events)
+    reconciled: int       # how many events reconciliation appended
+
+
+def project_view(project):
+    """(members, seat rows): the project's members, newest join first, after
+    reconciling this machine's sessions into the log; and the project's seats
+    no member stands for (vacant, retired, or replaced), newest first. One
+    log_read; cached for the invocation until a lifecycle event is appended."""
+    return view_of(project)[:2]
+
+
+def view_of(project, all_seats=None, titles=True):
+    """The whole View project_view draws from. `all_seats`: a seat read the
+    caller already made (the daemon's tick reads once for every project).
+    With titles=False no member's
+    in-charge line falls back to its transcript's title (the daemon's tick,
+    every few seconds, reads no transcript for a line it never shows); such a
+    view is not cached, so no view that shows lines ever lacks one."""
+    if titles and project.id in _VIEWS:
+        return _VIEWS[project.id]
+    all_seats = seats() if all_seats is None else all_seats
+    by_session = seats_by_session(project, all_seats)
+    local = _local_sessions(project, all_seats)
+    events = log_read(project)
+    appended = _reconcile(project, events, local, by_session)
+    events = events + appended
+    info = _projection(events)
+    internal = internal_pids()
+    forks = {r.get("sessionId") for r in peer_records() if str(r.get("pid")) in internal}
+    joined = [(sid, r) for sid, r in info.items()
+              if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks]
+    joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
+    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles)
+           for sid, r in joined]
+    sessions = {m.session for m in out}
+    rest = sorted((s for s in all_seats if (not s["current"] or s["current"] not in sessions)
+                   and (p := seat_project(s)) and p.id == project.id), key=lambda s: s["updated"], reverse=True)
+    rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles) if s["current"] else
+            Member(session="", short="", alias=s["alias"], name_source="seat", machine=host_name(), local=True,
+                   state=state(s), state_age=None, charge="", charge_source="", status=s["now"], by="",
+                   worktree=s["worktree"], seat=s)
+            for s in rest]
+    # Seat-less sessions the log holds as retired, by alias: what a tag that
+    # names one is told.
+    retired = [(str((r["renamed"] or r["joined"]).get("alias") or sid[:8]), sid[:8], str(r["latest"].get("reason") or ""))
+               for sid, r in info.items()
+               if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session]
+    view = View(out, rows, retired, events, info, len(appended))
+    if titles:
+        _VIEWS[project.id] = view
+    return view
+
+
+def members(project):
+    """The project's members (see project_view)."""
+    return project_view(project)[0]
+
+
+def retired_sessions(project):
+    """(alias, short, reason) of the project's seat-less sessions whose
+    membership the log holds as retired — `ended` with their process, or
+    retired by hand."""
+    return view_of(project).retired
+
+
+def reconcile(project):
+    """Join this machine's unrecorded sessions in the project; how many."""
+    _VIEWS.pop(project.id, None)
+    all_seats = seats()
+    return len(_reconcile(project, log_read(project), _local_sessions(project, all_seats),
+                          seats_by_session(project, all_seats)))
+
+
+def _owed(events, session, record):
+    # Imported history was delivered by the old chat: it is never owed.
+    return [e for e in events
+            if not e["writer"].startswith("legacy/")
+            and writer_session(e["writer"]) != session and addressed_to(e, session)
+            and e["seq"] > _delivery(record, e["writer"])["settled"]]
+
+
+def owed(project, member):
+    """The events owed to a member, each writer's in seq order from its
+    settled prefix."""
+    session = member.session
+    if not session:
+        return []
+    return _owed(log_read(project, to_session=session), session, delivered_load(project, session))
+
+
+def nudge_daemon():
+    """Ask this machine's `daemon run` for a tick now rather than at its next
+    interval: a message to another machine's member is pushed at once. A
+    touch of daemon/nudge, which the loop watches; nothing when no daemon
+    ever ran here (the directory is the loop's to make)."""
+    path = os.path.join(root(), "daemon", "nudge")
+    try:
+        with open(path, "a"):
+            pass
+        os.utime(path)
+    except OSError:
+        pass
+
+
+def daemon_log(line):
+    with open(os.path.join(root(), "daemon.log"), "a") as f:
+        f.write("%s %s\n" % (now(ms=True), line))
+
+
+def deliver_next(project, member):
+    """The one delivery operation, for the sender's fast path and the daemon
+    alike. Under delivered/<session>.lock, from choosing through the push to
+    the settlement: per writer, push the owed events in seq order, settling
+    each, and stop that writer at the first failure (it stays pending, retried
+    by the next call, and is settled with a daemon.log line after
+    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}."""
+    session = member.session
+    result = {"delivered": 0, "pending": 0, "outcomes": []}
+    if not session:
+        return result
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        events = log_read(project)
+        streams = {}
+        for e in _owed(events, session, delivered_load(project, session)):
+            streams.setdefault(e["writer"], []).append(e)
+        cursor = cursor_load(project, session)
+        for writer, queue in streams.items():
+            for i, e in enumerate(queue):
+                outcome = push_event(project, member, session, e, events, cursor)
+                result["outcomes"].append((e, outcome))
+                if outcome.startswith("failed"):
+                    if delivered_fail(project, session, writer, e["seq"]) < DELIVERY_ATTEMPTS:
+                        result["pending"] += len(queue) - i
+                        break
+                    daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
+                        event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
+                elif outcome in PUSHED:
+                    result["delivered"] += 1
+                delivered_settle(project, session, writer, e["seq"])
+    return result
+
+
+def frame_of(project, e, events, session, cursor):
+    """The frame an event is pushed as. A `send` keeps its own frame (its id
+    is what `send --wait` looks for), its sender shown as the `--from`
+    override when it had one; anything else is a chat frame."""
+    if e.get("msg_id"):
+        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""))
+    unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and
+                 writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
+    return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
+                              "@all" if e.get("wake") else "@you", unread, str(e.get("text") or ""))
+
+
+def push_event(project, member, session, e, events, cursor):
+    """Push one event to one member. An addressed event resumes a stopped
+    member; an @all (`wake`) reaches only the live. A seat-less member's
+    membership is read again from its own file first: `member` may be a
+    snapshot taken before a `retire`, which leaves an interactive session's
+    process running (§2), and a retired member is pushed nothing — the event
+    settles as recorded, as it does for a retired seat."""
+    if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
+        return "recorded"
+    return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session)
+
+
+def compose_chat_frame(project_name, ref, sender, target, unread, text):
+    return "[sminos chat %s %s from %s → %s%s]\n%s" % (
+        project_name, ref, sender, target, (" | unread %d" % unread) if unread else "", text)
+
+
+# ------------------------------------------------------------------ addressing
+
+TAG_RE = re.compile(r'@(?:"([^"\n]+)"|([\w.-]+(?:/[\w.-]+)?))(?:#([0-9a-f]{1,8}))?')
+SPACE_RE = re.compile(r"\s*")
 
 
 def leading_tags(text):
-    """The `@name` tokens that open a message, trailing `,:;` stripped. Only
-    this leading run addresses anyone: an @ later in the text (a quoted alias,
-    an error message naming a seat) is just text."""
-    tags = []
-    for token in text.split():
-        token = token.rstrip(",:;")
-        if not TAG.fullmatch(token):
-            break
-        tags.append(token)
-    return tags
+    """The tags that open a message — `@name`, `@"name with spaces"`,
+    `@name#short`, `@short`, each optionally `project/`-qualified — trailing
+    `,:;` allowed. Only this leading run addresses anyone: an @ later in the
+    text (a quoted alias, an error message naming a seat) is just text.
+    Returns [{"raw", "project", "name", "short"}]."""
+    tags, pos = [], 0
+    while True:
+        pos = SPACE_RE.match(text, pos).end()
+        m = TAG_RE.match(text, pos)
+        if not m:
+            return tags
+        end = m.end()
+        while end < len(text) and text[end] in ",:;":
+            end += 1
+        if end < len(text) and not text[end].isspace():
+            return tags
+        project, _, name = (m.group(1) or m.group(2)).rpartition("/")
+        tags.append({"raw": m.group(0), "project": project, "name": name, "short": m.group(3) or ""})
+        pos = end
+
+
+def project_seats(project):
+    """The seats whose cwd resolves to the project."""
+    return [s for s in seats() if (p := seat_project(s)) and p.id == project.id]
+
+
+def is_all(tag):
+    return tag["name"] == "all" and not tag["project"] and not tag["short"]
+
+
+def match_members(name, short, projects):
+    """The (project, member) pairs a tag's name answers to among the projects'
+    members: their alias (with `short`, an alias whose short starts so), their
+    short (`@short`), or their session id. A retired member answers to nothing."""
+    found = []
+    for p in projects:
+        for m in members(p):
+            if m.state == "retired":
+                continue
+            if short:
+                hit = m.alias == name and m.short.startswith(short)
+            else:
+                hit = name in (m.alias, m.short, m.session)
+            if hit:
+                found.append((p, m))
+    return found
+
+
+def candidate_labels(found, qualify):
+    """The candidates a name was ambiguous between, each as the name that tells
+    it apart: alias#short, behind its project when several were searched."""
+    return ", ".join(sorted(("%s/" % p.name if qualify else "") + "%s#%s" % (m.alias, m.short) for p, m in found))
+
+
+def unreachable_hint(raw, name, short, projects):
+    """The refusal for a tag no member answers to that still names someone: a
+    retired or vacant seat, or a seat-less session whose membership ended
+    (it is never resumed, so an untagged line is how to leave it a note)."""
+    for p in projects:
+        for s in project_seats(p):
+            if s["alias"] == name and s["current"][:8].startswith(short):
+                if s["status"] == "retired":
+                    return "%s is retired; re-fill it to reach it" % raw
+                if not s["current"]:
+                    return "%s is vacant — fill it to reach it" % raw
+        for alias, sh, reason in retired_sessions(p):
+            if alias == name and sh.startswith(short):
+                if reason == "ended":
+                    return ("%s: %s's session ended; say it untagged to leave a note — it reads the chat when "
+                            "it is resumed" % (raw, alias))
+                return "%s is retired; it re-joins when its session runs again" % raw
+    return ""
+
+
+def name_scope(project, explicit=""):
+    """The projects a name is looked up in: the one it names, else the
+    speaker's, else — from a directory that is no project — every project
+    known here."""
+    if explicit:
+        return [find_project(explicit)]
+    return [project] if project is not None else known_projects()
+
+
+def resolve_tags(project, text):
+    """Resolve a message's leading tags at submission. Returns (destination,
+    recipients [{session, alias}], text, wake). The destination is the
+    sender's project, or the one the tags name (from no project, the one the
+    names are found in); tags naming two projects are refused, as are a tag
+    matching no member and one matching several (named as alias#short).
+    `@all` is the members live at submission."""
+    tags = leading_tags(text)
+    if not tags:
+        return project, [], text, False
+    if any(is_all(t) for t in tags):
+        if len(tags) != 1:
+            die("@all stands alone")
+        if project is None:
+            die("@all needs a project: say it in a project's directory, or with --in <project>")
+        live = [m for m in members(project) if m.state in FILLED]
+        return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
+
+    def one_project(projects):
+        if len(projects) > 1:
+            die("one message, one project: the tags name %s" % ", ".join(sorted(p.name for p in projects.values())))
+
+    one_project({p.id: p for t in tags for p in [find_project(t["project"]) if t["project"] else project] if p})
+    destinations, recipients = {}, []
+    for t in tags:
+        scope = name_scope(project, t["project"])
+        found = match_members(t["name"], t["short"], scope)
+        if len(found) > 1:
+            die("ambiguous %s matches: %s" % (t["raw"], candidate_labels(found, len(scope) > 1)), EXIT_UNKNOWN)
+        if not found:
+            hint = unreachable_hint(t["raw"], t["name"], t["short"], scope)
+            if hint:
+                die(hint, EXIT_UNKNOWN)
+            die("no member %s in %s" % (t["raw"], "project %s" % scope[0].name if len(scope) == 1 else
+                                        "any project known here"), EXIT_UNKNOWN)
+        p, m = found[0]
+        destinations[p.id] = p
+        if all(r["session"] != m.session for r in recipients):
+            recipients.append({"session": m.session, "alias": m.alias})
+    one_project(destinations)
+    return next(iter(destinations.values())), recipients, text, False
 
 
 def caller_seat():
@@ -426,131 +1628,10 @@ def caller_seat():
     return None
 
 
-def is_family_seat(seat):
-    return bool(seat and seat["preamble"])
-
-
-def family_of(host):
-    return host, sorted((s for s in seats(host["group"]) if s["parent"] == host["alias"]),
-                        key=lambda s: s["alias"])
-
-
-def reach_of(seat):
-    group = seats(seat["group"])
-    return {s["seat_id"] for s in group if s["seat_id"] == seat["seat_id"] or
-            s["parent"] == seat["alias"] or
-            (seat["parent"] and (s["alias"] == seat["parent"] or s["parent"] == seat["parent"]))}
-
-
-def require_reach(caller, target, name=None):
-    if is_family_seat(caller) and target["seat_id"] not in reach_of(caller):
-        die("%s %s" % (name or target["alias"], REACH_HINT), EXIT_UNKNOWN)
-
-
-def chat_path(host_seat_id):
-    return os.path.join(root(), "chats", host_seat_id + ".jsonl")
-
-
-@contextmanager
-def chat_lock(host_seat_id):
-    directory = os.path.join(root(), "chats")
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    with open(os.path.join(directory, host_seat_id + ".lock"), "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-
-
-def chat_read(host_seat_id):
-    try:
-        with open(chat_path(host_seat_id)) as f:
-            records = []
-            for line in f:
-                try:
-                    record = json.loads(line)
-                    if isinstance(record, dict) and isinstance(record.get("id"), int):
-                        records.append(record)
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return []
-    return sorted(records, key=lambda record: record["id"])
-
-
-def chat_append(host_seat_id, record):
-    with chat_lock(host_seat_id):
-        record = {**record, "id": max((r["id"] for r in chat_read(host_seat_id)), default=0) + 1,
-                  "ts": now(), "delivered": {}}
-        fd = os.open(chat_path(host_seat_id), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "r+b") as f:
-            # An interrupted append can leave a fragment without its newline;
-            # end it so this record is a line of its own.
-            end = f.seek(0, os.SEEK_END)
-            if end:
-                f.seek(end - 1)
-                if f.read(1) != b"\n":
-                    f.write(b"\n")
-            f.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
-        return record
-
-
-def chat_update(host_seat_id, msg_id, delivered):
-    with chat_lock(host_seat_id):
-        path = chat_path(host_seat_id)
-        # Preserve corrupt lines while rewriting: they are skipped by chat_read,
-        # but neither a slow writer nor a malformed line should erase history.
-        with open(path) as f:
-            lines = f.readlines()
-        updated = []
-        for line in lines:
-            try:
-                item = json.loads(line)
-                if item.get("id") == msg_id:
-                    item["delivered"] = delivered
-                    line = json.dumps(item, ensure_ascii=False) + "\n"
-            except (ValueError, AttributeError):
-                pass
-            updated.append(line)
-        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".chat-", text=True)
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.writelines(updated)
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-
-
-def seen_advance(seat_id, host_seat_id, msg_id, expected_short=None):
-    os.makedirs(root(), exist_ok=True)
-    with open(os.path.join(root(), ".metalock"), "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        # Promotion renames the provisional file under this same lock. Match
-        # the caller again while locked, never create a vanished provisional.
-        s = reload_seat(seat_id)
-        if s is None and expected_short:
-            caller = caller_seat()
-            # Only a promotion of this caller's provisional short can redirect
-            # the write; an arbitrary missing id must remain a no-op.
-            s = caller if caller and caller["short"] == expected_short and is_family_seat(caller) else None
-        if s:
-            seen = s.get("chat_seen") if isinstance(s.get("chat_seen"), dict) else {}
-            seen[host_seat_id] = max(int(seen.get(host_seat_id, 0)), msg_id)
-            _write_record(meta_path(s["seat_id"]), {**s, "chat_seen": seen})
-
-
-def unread_for(host_seat_id, member_alias, watermark, below_id):
-    """Messages the member has neither read nor been pushed; its own are never unread."""
-    return sum(1 for r in chat_read(host_seat_id)
-               if watermark < r["id"] < below_id and r.get("from") != member_alias and
-               r.get("delivered", {}).get(member_alias) not in ("sent", "woken"))
-
-
-def compose_chat_frame(host_alias, msg_id, sender, targets, unread, text):
-    return "[sminos chat %s #%d from %s → %s%s]\n%s" % (
-        host_alias, msg_id, sender, targets, (" | unread %d" % unread) if unread else "", text)
+def caller_scope():
+    """The project a bare name resolves in: the calling seat's, else the
+    working directory's; None from a directory that is no project."""
+    return caller_project(caller_seat() if os.environ.get("CLAUDE_CODE_SESSION_ID") else None)
 
 
 class ResumeRefused(Exception):
@@ -560,7 +1641,25 @@ class ResumeRefused(Exception):
         self.code = code
 
 
-def push_member(member, text, tagged):
+def push_member(member, text, tagged, session=None):
+    """Push one frame to a member: its inbox socket when live; for a seat, a
+    resume when it is stopped and the message is addressed to it (`tagged`).
+    A session sminos did not spawn is never resumed: it is the human's to
+    reopen, and reads the chat when it is back. Given `session`, a seat that
+    now holds another session is not this message's recipient: delivery goes
+    by session id, so a replacement cannot misroute it."""
+    session = session or member.session
+    if member.seat is None:
+        peer = peer_for_session(session)
+        if not peer:
+            return "recorded"
+        try:
+            send_frame(socket_path_of(peer), text)
+            return "sent"
+        except SendFailed as e:
+            return "sent?" if e.phase == "after" else "failed:%s" % e
+    seat_id = member.seat["seat_id"]
+
     def unreachable(s):
         # Decided on the record as it is now, never on the fan-out's snapshot:
         # an earlier member's resume can outlast a later member's retirement.
@@ -568,9 +1667,9 @@ def push_member(member, text, tagged):
             if s is not None and tagged:
                 warn("%s is retired; re-fill it to reach it" % s["alias"])
             return True
-        return False
+        return bool(session) and s["current"] != session
 
-    fresh = reload_seat(member["seat_id"])
+    fresh = reload_seat(seat_id)
     if unreachable(fresh):
         return "recorded"
     if fresh["engine"] == "codex":
@@ -599,7 +1698,7 @@ def push_member(member, text, tagged):
         # The lifecycle lock spans the recheck and the resume, so a concurrent
         # retire either finishes first (and is seen) or waits for the resume.
         locks = lock_seat(fresh, refusal=ResumeRefused)
-        fresh = reload_seat(member["seat_id"])
+        fresh = reload_seat(seat_id)
         if unreachable(fresh) or not fresh["current"]:
             return "recorded"
         return resume_session(fresh, text, False, locks, quiet=True)
@@ -609,135 +1708,1141 @@ def push_member(member, text, tagged):
         unlock(locks)
 
 
+# ------------------------------------------------------------------ say / chat
+
+
 def cmd_say(a):
-    caller = caller_seat()
-    if caller:
+    """Record a message in a project's log, and deliver it to whom it tags."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if sid:
         if a.in_:
-            die("--in is for an operator, not a seat")
-        parent = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None)
-        own = family_of(caller)[1]
-        tags = leading_tags(a.text)
-        if "@all" in tags and len(tags) != 1:
-            die("@all stands alone")
-        if "@%s" % caller["alias"] in tags:
-            die("you cannot tag yourself")
-        parent_members = ([parent] + family_of(parent)[1]) if parent else []
-        selected = set(tags) - {"@all"}
-        up = {"@" + s["alias"] for s in parent_members if s["seat_id"] != caller["seat_id"]}
-        down = {"@" + s["alias"] for s in own if s["seat_id"] != caller["seat_id"]}
-        if selected - up - down:
-            die("%s %s" % (next(iter(sorted(selected - up - down))), REACH_HINT), EXIT_UNKNOWN)
-        if selected & up and selected & down:
-            die("one message, one family")
-        if a.team and selected & up:
-            die("--team cannot name a parent or sibling: one message, one family")
-        host = caller if (selected & down or a.team or not parent) else parent
-        if not host or (host["seat_id"] == caller["seat_id"] and not own):
-            die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
-        members = [host] + family_of(host)[1]
-        targets = [s for s in members if s["seat_id"] != caller["seat_id"] and
-                   ("@all" in tags or "@" + s["alias"] in selected or
-                    (not selected and (host["seat_id"] == caller["seat_id"] or
-                                       s["seat_id"] == host["seat_id"])))]
-        mode = ("tagged" if selected else "team" if host["seat_id"] == caller["seat_id"] else
-                "all" if tags else "host")
-        explicit = bool(selected)
-        target_label = " ".join(sorted(selected)) if explicit else host["alias"] if mode == "host" else "all"
-        sender = caller["alias"]
+            die("--in is for an operator, not a session — tag @<project>/<name> to speak into another project")
+        caller = caller_seat()
+        home = caller_project(caller)
+        sender = caller["alias"] if caller else default_from("")
+        writer, kind = writer_id(sid), "say"
     else:
-        if not a.in_:
-            die("say from an operator requires --in <host>")
-        host = resolve_seat(a.in_)
-        members = [host] + family_of(host)[1]
-        tags = leading_tags(a.text)
-        if "@all" in tags and len(tags) != 1:
-            die("@all stands alone")
-        selected = set(tags) - {"@all"}
-        if selected - {"@" + s["alias"] for s in members}:
-            die("%s %s" % (next(iter(sorted(selected - {"@" + s["alias"] for s in members}))), REACH_HINT), EXIT_UNKNOWN)
-        targets = [s for s in members if not selected or "@" + s["alias"] in selected]
-        mode, sender, explicit = ("tagged" if selected else "all" if tags else "operator"), "human", bool(selected)
-        target_label = " ".join(sorted(selected)) if selected else "all"
+        home = find_project(a.in_) if a.in_ else caller_project()
+        sender, writer, kind = "human", writer_id(), "human"
+    dest, recipients, _text, wake = resolve_tags(home, a.text)
+    if dest is None:
+        die("say outside a project: run it in a project's directory, or name one with --in <project>")
+    if sid:
+        if wake:
+            recipients = [r for r in recipients if r["session"] != sid]
+        elif any(r["session"] == sid for r in recipients):
+            die("you cannot tag yourself")
+    fields = {"from": sender, "to": recipients if (recipients or wake) else "*", "text": a.text}
+    if wake:
+        fields["wake"] = True
     try:
-        record = chat_append(host["seat_id"], {"from": sender, "to": [s["alias"] for s in targets],
-                                               "mode": mode, "text": a.text})
-    except OSError as e:
-        die("chat could not be recorded: %s" % e, 1)
-    delivered = {}
-    for member in targets:
-        current = reload_seat(member["seat_id"]) or member
-        watermark = (current.get("chat_seen") or {}).get(host["seat_id"], 0)
-        unread = unread_for(host["seat_id"], member["alias"], int(watermark), record["id"])
-        frame = compose_chat_frame(host["alias"], record["id"], sender, target_label, unread, a.text)
-        delivered[member["alias"]] = push_member(member, frame, explicit)
-        print("%s: %s" % (member["alias"], delivered[member["alias"]]))
-    try:
-        chat_update(host["seat_id"], record["id"], delivered)
-    except OSError as e:
-        warn("chat message #%d was recorded but delivery outcomes could not be saved: %s" % (record["id"], e))
+        e = log_append(dest, writer, kind, **fields)
+    except OSError as err:
+        die("say could not be recorded: %s" % err, 1)
+    print("recorded %s in %s" % (event_ref(e), dest.name))
+    by_session = {m.session: m for m in members(dest)}
+    for r in recipients:
+        member = by_session.get(r["session"])
+        if member is not None and not member.local:
+            # Owed to it in the log; its own machine's daemon delivers it,
+            # once this machine's daemon has pushed it: ask for that now.
+            print("%s: recorded (on %s)" % (r["alias"], member.machine))
+            nudge_daemon()
+            continue
+        result = deliver_next(dest, member) if member else {"outcomes": []}
+        mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
+        if mine:
+            print("%s: %s" % (r["alias"], mine[0]))
+            continue
+        held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
+        print("%s: pending%s" % (r["alias"], " behind an earlier undelivered message (%s)" % held if held else ""))
+
+
+def target_label(e):
+    to = e.get("to")
+    if to == "*":
+        return "*"
+    if e.get("wake"):
+        return "@all"
+    if isinstance(to, list):
+        return " ".join("@" + str(r.get("alias") or "?") for r in to if isinstance(r, dict)) or "-"
+    return str(to or "-")
+
+
+def chat_line(e):
+    lines = str(e.get("text") or "").split("\n")
+    out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target_label(e), lines[0])]
+    out += ["    " + line for line in lines[1:]]
+    return "\n".join(out)
+
+
+TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d)(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,3}))?)?)?Z?$")
+
+
+def normalize_ts(ts):
+    """A user-given time as the log's ts shape, so string order is time order."""
+    m = TS_RE.match(ts.strip())
+    if not m:
+        die("--since takes an ISO-8601 UTC time such as 2026-10-13T08:00:00Z: %s" % ts)
+    day, hh, mm, ss, ms = m.groups()
+    return "%sT%s:%s:%s.%sZ" % (day, hh or "00", mm or "00", ss or "00", (ms or "0").ljust(3, "0"))
 
 
 def cmd_chat(a):
-    if a.n < 1 or (a.since is not None and a.since < 0):
-        die("chat -n must be positive and --since must not be negative")
-    caller = caller_seat()
-    if caller:
-        if a.host:
-            die("a seat's chat takes no <host> argument")
-        if a.team:
-            host = caller
-        else:
-            host = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None) or caller
-        if host["seat_id"] == caller["seat_id"] and not family_of(host)[1]:
-            print("no family yet: spawn a child, or you were spawned without a parent")
-            return
+    """Read a project's chat. With no flags: what is above the reader's
+    cursor (at most 30, then +N earlier), advancing it; -n tails and --since
+    reads from a time, neither moving it. --host reads what the members sent
+    their human instead (chat_host)."""
+    if a.n is not None and a.n < 1:
+        die("chat -n must be positive")
+    if a.host and a.kind:
+        die("chat --host reads the host kinds (%s); it takes no --kind" % ", ".join(HOST_KINDS))
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    project = find_project(a.project) if a.project else caller_project(caller_seat() if sid else None)
+    if project is None:
+        die("chat outside a project: run it in a project's directory, or name one: sminos chat <project>")
+    reconcile(project)
+    if a.host:
+        chat_host(project, a)
+        return
+    kinds = tuple(a.kind) if a.kind else CHAT_KINDS
+    events = log_read(project)
+    pool = [e for e in events if e["kind"] in kinds]
+    earlier = 0
+    if a.since is not None:
+        since = normalize_ts(a.since)
+        window, head = [e for e in pool if e["ts"] >= since], "since %s" % a.since
+    elif a.n is not None:
+        window, head = pool[-a.n:], "last %d of %d" % (min(a.n, len(pool)), len(pool))
     else:
-        if a.team:
-            die("--team is for a seat's own chat")
-        if not a.host:
-            die("chat from an operator requires <host>")
-        host = resolve_seat(a.host)
-    members = [host] + family_of(host)[1]
-    records = chat_read(host["seat_id"])
-    selected = ([r for r in records if r["id"] > a.since] if a.since is not None
-                else records[-a.n:])
+        cursor = cursor_load(project, sid)
+        mine = writer_id(sid or None)
+        above = [e for e in pool if e["writer"] != mine and e["seq"] > cursor.get(e["writer"], 0)]
+        window = above[-30:]
+        earlier = len(above) - len(window)
+        head = "%d new" % len(above)
+        advanced = dict(cursor)
+        for e in events:
+            advanced[e["writer"]] = max(advanced.get(e["writer"], 0), e["seq"])
+        if advanced != cursor:
+            cursor_save(project, sid, advanced)
     if a.json:
-        for r in selected:
-            print(json.dumps(r, ensure_ascii=False))
+        for e in window:
+            print(json.dumps(e, ensure_ascii=False))
+        if earlier:
+            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, project.name, len(window) + earlier))
+        return
+    print("chat %s · %s" % (project.name, head))
+    if earlier:
+        print("+%d earlier — sminos chat %s -n %d" % (earlier, project.name, len(window) + earlier))
+    for e in window:
+        print(chat_line(e))
+    if not window:
+        print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
+
+
+# ------------------------------------------------------------ messages to the host
+#
+# What a session sends its human — a <message> mark, an async ask, the answer
+# the human gave it — reaches the project's log through the Stop and
+# SessionStart hook (hooks/smns-record.sh → `sminos record`), read from the
+# session's transcript past its export position (§4). Every event carries a
+# `src`, and the batch drops a (kind, src) already present, so replaying an
+# export appends nothing.
+
+HOST_KINDS = ("message", "question", "answered")
+ASK_TOOL = "mcp__doperpowers__AskUserQuestion"
+# What the tool returns for an async call it accepted (hooks/mods/ask.tsx).
+ASYNC_RESULT = ("Your questions are waiting for the human; this call does not wait for them. Their answer will "
+                "reach you in a later message that quotes each question. Go on with work that does not depend on it.")
+# A delivery of the human's answer, in whichever row the engine stored it.
+DELIVERY_RE = re.compile(r"The human responded to your async AskUserQuestion \(call ([^)\s]+)\): ")
+PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
+# The engine's framing after the text of a prompt a plugin submitted.
+PLUGIN_FRAMING = "\n\nThis is how Claude Code surfaces a prompt a plugin submits"
+
+
+def extract_marks(text):
+    """[{"kind": "message", "text"}]: the marked spans of one assistant text,
+    read as the to-human mod reads them (sminos_marks): tags in code are
+    literal, nested marks are runs of their own, an unclosed mark runs to the
+    end, and every alias is a message."""
+    return [{"kind": s["kind"], "text": s["text"]} for s in sminos_marks.parse(text)["spans"] if s["text"]]
+
+
+def _blocks(record, kind):
+    """A transcript record's content blocks of one type; a string content is
+    one text block."""
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if kind == "text" else []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == kind] if isinstance(content, list) else []
+
+
+def _result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def _delivery_texts(record):
+    """The texts of a record that can deliver an answer, as ask.tsx reads
+    them: a context attachment's entries, and a prompt the plugin submitted.
+    Never the model's own rows, a tool's output, or the human quoting one."""
+    if record.get("type") == "attachment":
+        att = record.get("attachment")
+        if isinstance(att, dict) and att.get("type") == "hook_additional_context":
+            content = att.get("content")
+            return [t for t in (content if isinstance(content, list) else [content]) if isinstance(t, str)]
+        return []
+    if record.get("type") != "user":
+        return []
+    return [t for t in (b.get("text") for b in _blocks(record, "text"))
+            if isinstance(t, str) and t.startswith(PLUGIN_PROMPT)]
+
+
+def _deliveries(text):
+    """(call id, answer) for each delivery head in a text: the answer is the
+    engine's result text, up to the next head, without the engine's framing."""
+    heads = list(DELIVERY_RE.finditer(text))
+    out = []
+    for i, head in enumerate(heads):
+        answer = text[head.end():heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        cut = answer.find(PLUGIN_FRAMING)
+        out.append((head.group(1), (answer[:cut] if cut >= 0 else answer).rstrip()))
+    return out
+
+
+def _ask_events(records):
+    """(record index, event) for the async asks the records hold, in record
+    order: a `question` for each tool_use of the tool with `async` true whose
+    paired tool_result is the tool's accepted result, and an `answered` for
+    each delivery. A blocking ask — the plugin's without async, or the native
+    AskUserQuestion — is no event: the session waits, and the human goes to it."""
+    calls, results, out = [], {}, []
+    for i, r in enumerate(records):
+        for b in _blocks(r, "tool_use"):
+            inp = b.get("input")
+            if b.get("name") == ASK_TOOL and isinstance(inp, dict) and inp.get("async") is True and b.get("id"):
+                calls.append((i, str(b["id"]), inp))
+        for b in _blocks(r, "tool_result"):
+            results[str(b.get("tool_use_id") or "")] = b
+        for text in _delivery_texts(r):
+            out += [(i, {"kind": "answered", "src": call, "text": answer}) for call, answer in _deliveries(text)]
+    for i, call, inp in calls:
+        res = results.get(call)
+        if res is None or res.get("is_error") is True or _result_text(res.get("content")) != ASYNC_RESULT:
+            continue
+        questions = [q for q in inp.get("questions") or [] if isinstance(q, dict)]
+        out.append((i, {"kind": "question", "text": [str(q.get("question") or "") for q in questions],
+                        "choices": [str(o.get("label") or "") for q in questions
+                                    for o in q.get("options") or [] if isinstance(o, dict)], "src": call}))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def extract_asks(records):
+    """The async asks and their answers the transcript records hold, in order:
+    {"kind": "question", "src": call id, "text": [questions], "choices": [labels]}
+    and {"kind": "answered", "src": call id, "text": the engine's result text}."""
+    return [e for _, e in _ask_events(records)]
+
+
+def host_events(records, alias):
+    """The events a run of transcript records holds for the host, in record
+    order, ready for log_append_batch: each marked span of an assistant record
+    as a `message` (src `<record uuid>#<span index>`), each accepted async ask
+    as a `question`, each delivery of an answer as `answered` (src the call id)."""
+    out = []
+    for i, r in enumerate(records):
+        if r.get("type") != "assistant" or not isinstance(r.get("uuid"), str) or not r["uuid"]:
+            continue
+        spans = [s for b in _blocks(r, "text") for s in extract_marks(str(b.get("text") or ""))]
+        out += [(i, {"kind": "message", "from": alias, "to": "host", "text": s["text"], "src": "%s#%d" % (r["uuid"], n)})
+                for n, s in enumerate(spans)]
+    for i, e in _ask_events(records):
+        if e["kind"] == "question":
+            out.append((i, {"kind": "question", "from": alias, "to": "host", "text": e["text"],
+                            "choices": e["choices"], "src": e["src"]}))
+        else:
+            out.append((i, {"kind": "answered", "from": alias, "src": e["src"], "text": e["text"]}))
+    out.sort(key=lambda x: x[0])
+    return [e for _, e in out]
+
+
+# The transcript is read by byte offset and never whole: an architect
+# session's reaches 155MB. Only complete lines count; the line being written
+# is the next reader's.
+
+
+def _record(line):
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return None
+    return r if isinstance(r, dict) else None
+
+
+def _complete_end(f):
+    """The offset just past the file's last newline."""
+    pos = f.seek(0, os.SEEK_END)
+    while pos > 0:
+        size = min(1 << 16, pos)
+        f.seek(pos - size)
+        at = f.read(size).rfind(b"\n")
+        if at >= 0:
+            return pos - size + at + 1
+        pos -= size
+    return 0
+
+
+def _lines_backward(f, end, budget=None):
+    """(offset, line) for the complete lines before `end`, the last first;
+    with `budget`, reading at most that many bytes."""
+    pos, head = end, b""
+    while pos > 0 and (budget is None or end - pos < budget):
+        size = min(1 << 16, pos)
+        pos -= size
+        f.seek(pos)
+        parts = (f.read(size) + head).split(b"\n")
+        head = parts[0]
+        at, lines = pos + len(parts[0]) + 1, []
+        for part in parts[1:]:
+            lines.append((at, part))
+            at += len(part) + 1
+        for item in reversed(lines):
+            if item[1]:
+                yield item
+    if pos == 0 and head:
+        yield 0, head
+
+
+def transcript_title(session_id):
+    """The latest `ai-title` record of a session's transcript on this machine:
+    the harness rewrites it as the conversation moves, so it is the current
+    topic, the last fallback of the in-charge line (§5). Looked for in the
+    file's last 8 MiB."""
+    path = transcript_path(session_id)
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            for _, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
+                if b'"ai-title"' in line:
+                    r = _record(line)
+                    if r and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
+                        return " ".join(r["aiTitle"].split())
+    except OSError:
+        pass
+    return ""
+
+
+def _position_path(project, session):
+    return project_path(project, "cursors", "export", reader_key(session) + ".json")
+
+
+def _position_load(project, session):
+    try:
+        with open(_position_path(project, session)) as f:
+            pos = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(pos, dict) and isinstance(pos.get("uuid"), str) and type(pos.get("offset")) is int:
+        return pos
+    return None
+
+
+def _resume_at(f, pos, end):
+    """Where an export resumes: just past the position's record, found at its
+    offset or else from the end of the file; for a position with no record
+    (a transcript that was empty), its offset. None when it does not hold."""
+    offset, uid = pos["offset"], pos["uuid"]
+    if not 0 <= offset <= end:
+        return None
+    if not uid:
+        if offset:
+            f.seek(offset - 1)
+            if f.read(1) != b"\n":
+                return None
+        return offset
+    f.seek(offset)
+    line = f.readline()
+    if line.endswith(b"\n") and (_record(line) or {}).get("uuid") == uid:
+        return offset + len(line)
+    for at, line in _lines_backward(f, end):
+        if uid.encode() in line and (_record(line) or {}).get("uuid") == uid:
+            return at + len(line) + 1
+    return None
+
+
+def _trailing_run(f, end):
+    """Where the trailing run of assistant records begins: past the last user
+    record — the first-use policy for a session with no position."""
+    for at, line in _lines_backward(f, end):
+        if b'"user"' in line and (_record(line) or {}).get("type") == "user":
+            return at + len(line) + 1
+    return 0
+
+
+def position_init(project, session, tpath):
+    """At SessionStart, set the export position to the transcript's current
+    end — only when the session has none, so a resume keeps it and a mark
+    written before the process died is still exported."""
+    with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
+        path = _position_path(project, session)
+        if os.path.exists(path):
+            return
+        pos = {"uuid": "", "offset": 0}
+        try:
+            with open(tpath, "rb") as f:
+                end = _complete_end(f)
+                pos["offset"] = end
+                last = next(_lines_backward(f, end), None)
+                uid = (_record(last[1]) or {}).get("uuid") if last else None
+                if isinstance(uid, str) and uid:
+                    pos = {"uuid": uid, "offset": last[0]}
+        except OSError:
+            pass
+        write_json(path, pos)
+
+
+def _records_past(project, session, tpath):
+    """(records, start, held): the transcript's complete main-chain records
+    past the session's export position, as (offset, record), the offset they
+    start at, and whether the position held (else the trailing run, §4);
+    None when the transcript cannot be opened."""
+    pos = _position_load(project, session)
+    try:
+        f = open(tpath, "rb")
+    except OSError:
+        return None
+    with f:
+        end = _complete_end(f)
+        start = _resume_at(f, pos, end) if pos else None
+        held = start is not None
+        if not held:
+            start = _trailing_run(f, end)
+        f.seek(start)
+        records, at = [], start
+        while at < end:
+            line = f.readline()
+            r = _record(line)
+            if r is not None and not r.get("isSidechain"):
+                records.append((at, r))
+            at += len(line)
+    return records, start, held
+
+
+# The harness queues transcript writes and flushes them every 100 ms, and
+# starts the Stop hooks without a flush first (bundle 2.1.292, the write
+# queue's FLUSH_INTERVAL_MS and the Stop dispatch): a Stop can read the
+# transcript before the turn's last records are on it. Seen live (M6
+# acceptance): one mark in 24 exported a turn late.
+FLUSH_WAIT = 2.0
+FLUSH_POLL = 0.1
+
+
+def _last_message_text(tpath):
+    """The text of the transcript's last message, read from its end, when that
+    message is an assistant's: its text blocks joined by newlines, as the
+    harness writes a Stop payload's `last_assistant_message` (one message's
+    blocks may span several records, one per block, joined by their message
+    id). None when the last message is a user-role record — a prompt, a tool
+    result, a peer frame: the turn's answer is not on the transcript yet — or
+    when the transcript cannot be read. Records of other types and sidechain
+    records are passed over."""
+    try:
+        f = open(tpath, "rb")
+    except OSError:
+        return None
+    key, texts = None, []
+    with f:
+        for _, line in _lines_backward(f, _complete_end(f)):
+            r = _record(line)
+            if not r or r.get("isSidechain") or r.get("type") not in ("user", "assistant"):
+                continue
+            if r["type"] == "user":
+                break
+            message = r.get("message") if isinstance(r.get("message"), dict) else {}
+            k = message.get("id") or r.get("uuid")
+            if key is not None and k != key:
+                break
+            key = k
+            texts[:0] = [str(b.get("text") or "") for b in _blocks(r, "text")]
+    return "\n".join(texts) if key is not None else None
+
+
+def await_flush(tpath, last_message, until):
+    """Before a Stop's export: wait, polling, until the transcript's last
+    message is the turn's answer — an assistant message reading the payload's
+    `last_assistant_message` — or until `until` (epoch seconds). The same text
+    earlier in the transcript is not the answer: a mark the turn repeats is
+    still waited for. True when it is there; at the deadline the export takes
+    what is there, and the next Stop the rest."""
+    text = str(last_message or "").strip()
+    if not text:
+        return True
+    while True:
+        last = _last_message_text(tpath)
+        if last is not None and last.strip() == text:
+            return True
+        if time.time() + FLUSH_POLL > until:
+            return False
+        time.sleep(FLUSH_POLL)
+
+
+def export_host(project, session, tpath, alias):
+    """Append what the transcript holds for the host past the session's export
+    position, as one batch, then advance the position to the last assistant
+    record read whose async asks all have their results (so a question is
+    never split from the result that accepts it). With no position, the
+    trailing run of assistant records is exported (§4). Exports of a session
+    are serialised by its export lock, taken before the log's locks."""
+    with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
+        past = _records_past(project, session, tpath)
+        if past is None:
+            return 0
+        records, start, held = past
+        events = host_events([r for _, r in records], alias)
+        if events:
+            log_append_batch(project, writer_id(session), events)
+        new, pending = None, set()
+        for at, r in records:
+            for b in _blocks(r, "tool_use"):
+                if b.get("name") == ASK_TOOL and b.get("id"):
+                    pending.add(str(b["id"]))
+            for b in _blocks(r, "tool_result"):
+                pending.discard(str(b.get("tool_use_id") or ""))
+            if r.get("type") == "assistant" and isinstance(r.get("uuid"), str) and r["uuid"] and not pending:
+                new = {"uuid": r["uuid"], "offset": at}
+        if new is None and not held:
+            new = {"uuid": "", "offset": start}
+        if new is not None:
+            write_json(_position_path(project, session), new)
+        return len(events)
+
+
+def _own_events(project, session):
+    """The session's own writer file, read directly (the hook reads nothing else of the log)."""
+    path = os.path.join(project.home, "log", writer_id(session).replace("/", ".") + ".jsonl")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [e for e in map(parse_event, f) if e]
+    except OSError:
+        return []
+
+
+def record_session(project, session, tpath, event, last_message=""):
+    """The hook's work for one session (§4). Membership on sight, as
+    reconciliation decides it: a seat whose record is not retired, or a
+    session the harness records as `interactive` or `bg`, and never an
+    internal fork. SessionStart sets a member's export position, then joins
+    it: the position first, so a join cut short by the hook's bound (a lock
+    held elsewhere) still leaves the first Stop a position rather than the
+    trailing-run fallback. Stop joins it if it is not yet (its harness record
+    may not have existed at its start) and exports. A session the harness
+    has not registered yet at its start is not joined on no evidence, but its
+    position is set, so its first turn counts whole at its Stop. A session
+    that is not a member records nothing. At Stop, the export first waits a
+    little for the turn's last message to reach the transcript (await_flush)."""
+    seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
+    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    if peer is not None and str(peer.get("pid")) in internal_pids():
+        return
+    if seat is None and peer is None:
+        if event == "SessionStart":
+            position_init(project, session, tpath)
+        return
+    if not joinable(seat, peer):
+        return
+    if event == "SessionStart":
+        position_init(project, session, tpath)
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        join_on_sight(project, session, seat, peer, True)
+        own = _own_events(project, session)
+    if event != "Stop" or latest_membership(own) != "joined":
+        return
+    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
+    if not alias:
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
+        alias = str(named[-1]["alias"]) if named else session[:8]
+    until = time.time() + FLUSH_WAIT
+    if _RECORD_DEADLINE is not None:
+        until = min(until, _RECORD_DEADLINE - 0.5)
+    await_flush(tpath, last_message, until)
+    export_host(project, session, tpath, alias)
+
+
+# The hook is bounded in time (§4: it never blocks a turn): its waits are,
+# never a migration step. See run_record.
+RECORD_TIMEOUT = 5
+_RECORD_DEADLINE = None   # run_record's, for the flush wait to end inside it
+
+
+class RecordTimeout(BaseException):
+    """The hook's time ran out, most likely behind a lock a stalled holder
+    keeps. A BaseException, so no `except Exception` on the way swallows it."""
+
+
+def _record_expired(_signum, _frame):
+    raise RecordTimeout()
+
+
+def _record_gave_up(seconds, behind):
+    try:
+        daemon_log("record: gave up after %gs, %s; the next Stop retries" % (seconds, behind))
+    except OSError:
+        pass
+
+
+def run_record():
+    """`sminos record` within SMNS_RECORD_TIMEOUT seconds (default 5).
+
+    Only waiting is bounded, never a mutation that is not safe to cut short.
+    migrate's lock is taken by a non-blocking retry against the deadline, and
+    when it cannot be had in time, the call records nothing at all. The
+    migration steps then run whole, with no timer — one of them (a colliding
+    aside board's merge: append, then delete the source) would append twice
+    if cut between — and each lock a step takes inside (.metalock for a seat
+    record, the log's .sync.lock for a chat import) is waited for only until
+    the deadline: a step that cannot have its lock is skipped untouched, logged
+    in daemon.log, and done by a later call. Only then is
+    an interval timer armed, for the time that is left, around the export —
+    the export lock, the log's locks, the batch — where an interruption
+    heals: the position moves only after the batch, so the next Stop retries,
+    and a batch cut mid-write is completed then, since the batch drops what
+    the file already holds and an append ends a torn line. Every other verb
+    keeps waiting on the same locks."""
+    if os.environ.get("SMNS_INTERNAL"):
+        return
+    global _RECORD_DEADLINE
+    seconds = float(os.environ.get("SMNS_RECORD_TIMEOUT") or RECORD_TIMEOUT)
+    deadline = _RECORD_DEADLINE = time.time() + seconds
+    try:
+        migrate(lock_until=deadline)
+    except LockBusy:
+        _record_gave_up(seconds, "migrate's lock held elsewhere")
+        return
+    left = deadline - time.time()
+    if left <= 0:
+        _record_gave_up(seconds, "spent on the migration")
+        return
+    previous = signal.signal(signal.SIGALRM, _record_expired)
+    signal.setitimer(signal.ITIMER_REAL, left)
+    try:
+        cmd_record(None)
+    except RecordTimeout:
+        _record_gave_up(seconds, "a lock the export needs held elsewhere")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def cmd_record(_a):
+    """The hook's verb: one Stop or SessionStart payload on stdin. Records
+    nothing for an internal fork, a session in no project, or a non-member;
+    a failure is a line in daemon.log, never an exit that blocks a turn
+    (run_record bounds it in time)."""
+    if os.environ.get("SMNS_INTERNAL"):
+        return
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        return
+    if not isinstance(payload, dict):
+        return
+    session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
+    tpath, event = str(payload.get("transcript_path") or ""), str(payload.get("hook_event_name") or "")
+    if not (UUID_RE.match(session) and cwd and tpath):
+        return
+    try:
+        project = resolve_project(cwd)
+        if project is not None:
+            record_session(project, session, tpath, event, str(payload.get("last_assistant_message") or ""))
+    except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
+        try:
+            daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
+        except OSError:
+            pass
+
+
+def _asked(question):
+    text = question.get("text")
+    return " / ".join(str(t) for t in text) if isinstance(text, list) else str(text or "")
+
+
+def host_line(e, related=None):
+    """One host event as `chat --host` prints it. A question carries its
+    answer (`related`) under it, or is marked open; an answer printed apart
+    from its question names the call, with the question (`related`) beneath
+    it as context when the log holds it."""
+    head = "%s %s" % (e["ts"][11:19], e.get("from", ""))
+    if e["kind"] == "question":
+        out = ["%s asks%s: %s" % (head, "" if related else " (open)", _asked(e))]
+        if e.get("choices"):
+            out.append("    choices: " + " · ".join(str(c) for c in e["choices"]))
+        if related:
+            lines = str(related.get("text") or "").split("\n")
+            out += ["    answered: " + lines[0]] + ["      " + line for line in lines[1:]]
+        return "\n".join(out)
+    if e["kind"] == "answered":
+        head = "%s answered (call %s)" % (head, e.get("src", ""))
+    lines = str(e.get("text") or "").split("\n")
+    out = ["%s: %s" % (head, lines[0])] + ["    " + line for line in lines[1:]]
+    if e["kind"] == "answered" and related:
+        out.append("    to: %s (asked %s %s)" % (_asked(related), related["ts"][:10], related["ts"][11:16]))
+    return "\n".join(out)
+
+
+def chat_host(project, a):
+    """What the members sent their human: messages, questions, and answers.
+    A view, not a cursor read: the last 30 host events (-n N), or those since
+    a time (--since TS), chosen before anything is grouped; the reader's chat
+    cursor never moves. A question shows its answer under it, or is marked
+    open; an answer whose question falls outside the window is shown where it
+    falls, its question beneath it as context (with --json, the question
+    first)."""
+    events = log_read(project, kinds=HOST_KINDS)
+    questions, answers = {}, {}
+    for e in events:
+        if e.get("src") and e["kind"] == "question":
+            questions.setdefault(e["src"], e)
+        elif e.get("src") and e["kind"] == "answered":
+            answers.setdefault(e["src"], e)
+    if a.since is not None:
+        since = normalize_ts(a.since)
+        window, head = [e for e in events if e["ts"] >= since], "since %s" % a.since
     else:
-        print("chat %s (%s) · members: %s · %d messages" % (
-            host["alias"], host["group"], ", ".join(s["alias"] for s in members), len(records)))
-        for r in selected:
-            lines = r.get("text", "").split("\n")
-            target = (" ".join("@" + alias for alias in r.get("to", [])) if r.get("mode") == "tagged"
-                      else "all" if r.get("mode") in ("all", "team", "operator")
-                      else " ".join(r.get("to", [])))
-            print("#%-3d %s %-6s → %-7s %s" % (r["id"], r.get("ts", "")[11:19] + "Z",
-                                             r.get("from", ""), target, lines[0]))
-            for line in lines[1:]:
-                print("    " + line)
-    if caller and selected:
-        seen_advance(caller["seat_id"], host["seat_id"], selected[-1]["id"], caller["short"])
+        n = a.n if a.n is not None else 30
+        window, head = events[-n:], "last %d of %d" % (min(n, len(events)), len(events))
+    shown = {id(e) for e in window}
+
+    def context(e):
+        """An answer's question, when the window does not hold it."""
+        q = questions.get(e.get("src"))
+        return q if e["kind"] == "answered" and q is not None and id(q) not in shown else None
+
+    if a.json:
+        for e in window:
+            if context(e):
+                print(json.dumps(context(e), ensure_ascii=False))
+            print(json.dumps(e, ensure_ascii=False))
+        return
+    print("host %s · %s" % (project.name, head))
+    if len(events) > len(window) and a.since is None:
+        print("+%d earlier — sminos chat %s --host -n %d" % (len(events) - len(window), project.name, len(events)))
+    for e in window:
+        if e["kind"] == "answered" and not context(e) and e.get("src") in questions \
+                and answers.get(e["src"]) is e:
+            continue  # printed under its question
+        if e["kind"] == "question":
+            print(host_line(e, answers.get(e.get("src"))))
+        else:
+            print(host_line(e, context(e)))
+    if not window:
+        print("(no messages to the host)")
+
+
+# ------------------------------------------------------------ the in-charge line
+#
+# `charge` sets a member's line; `derive` asks a session what it is in charge
+# of by forking it headless, and the fork is internal: SMNS_INTERNAL keeps the
+# hook from recording it, and $SMINOS_HOME/internal/<pid>, written before the
+# fork starts, keeps reconciliation from joining it (§5).
+
+DERIVE_PROMPT = ("In one line: what is this session in charge of in this project — its standing responsibility, "
+                 "not its latest step? Answer with the line only.")
+DERIVE_MIN_PROMPTS = 10
+DERIVE_EVERY = 6 * 3600
+DERIVE_LINE_MAX = 120
+
+
+def cmd_charge(a):
+    """`charge [<member>] "<line>"`: the member's in-charge line, set. From a
+    session, with no member, its own. An empty line clears it."""
+    if len(a.args) > 2:
+        die('usage: sminos charge [<member>] "<one line>" — quote the line')
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    line = " ".join(a.args[-1].split())
+    if len(a.args) == 2:
+        target = find_target(a.args[0])
+        if target[0] == "none":
+            die("no seat or member matching '%s'" % a.args[0], EXIT_UNKNOWN)
+    elif not sid:
+        die('charge from a terminal names the member: sminos charge <member> "<one line>"')
+    else:
+        caller = caller_seat()
+        project = caller_project(caller)
+        me = next((m for m in (members(project) if project else []) if m.session == sid), None)
+        if me is None:
+            die("this session is no member of a project here: sminos charge <member> \"<one line>\"", EXIT_UNKNOWN)
+        target = ("seat", me.seat) if me.seat else ("member", project, me)
+    if target[0] == "seat":
+        s = target[1]
+        if not s["current"]:
+            die("%s/%s holds no session to be in charge" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+        lifecycle(seat_project(s), s["current"], "in-charge", text=line, source="set")
+        name = "%s/%s" % (s["group"], s["alias"])
+    else:
+        project, m = target[1], target[2]
+        if m.local:
+            lifecycle(project, m.session, "in-charge", text=line, source="set")
+        else:
+            # Another machine's session file is that machine's to write (§3).
+            try:
+                _append(project, writer_id(sid or None),
+                        [{"kind": "in-charge", "session": m.session, "text": line, "source": "set"}])
+            except OSError as e:
+                die("the line of %s was not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
+        name = m.alias
+    print("%s in charge of: %s" % (name, line or "(cleared)"))
+
+
+class DeriveFailed(Exception):
+    def __init__(self, reason, stderr=""):
+        super().__init__(reason)
+        self.reason, self.stderr = reason, stderr
+
+
+def human_prompts(path, enough):
+    """How many prompts the human typed into a transcript, counted up to
+    `enough`: user records that are neither a tool's result, nor a delivery
+    (a peer's frame, a plugin's or a notification's prompt), nor meta."""
+    n = 0
+    with open(path, "rb") as f:
+        for line in f:
+            if b'"user"' not in line:
+                continue
+            r = _record(line)
+            if not r or r.get("type") != "user" or r.get("isMeta") or r.get("isSidechain"):
+                continue
+            origin = r.get("origin")
+            if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
+                continue
+            message = r.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not content or _blocks(r, "tool_result"):
+                continue
+            n += 1
+            if n >= enough:
+                break
+    return n
+
+
+def derive_refusal(project, m):
+    """Why a member is not derived, or "": only a local member with no set
+    line and no name its human gave, at least ten prompts from its human, and
+    no derived line in the last six hours (§5)."""
+    if not m.session:
+        return "it holds no session"
+    if not m.local:
+        return "it runs on %s" % m.machine
+    if m.charge_source == "set":
+        return "its line is set"
+    if m.charge_source == "name":
+        return "its human named it"
+    path = transcript_path(m.session)
+    if not path:
+        return "no transcript of it on this machine"
+    derived = latest_across_writers([e for e in log_read(project, kinds=("in-charge",))
+                                     if e.get("session") == m.session and e.get("source") == "derived"])
+    age = ts_age(derived["ts"]) if derived else None
+    if age is not None and age < DERIVE_EVERY:
+        return "derived %s ago" % short_age(age)
+    try:
+        n = human_prompts(path, DERIVE_MIN_PROMPTS)
+    except OSError as e:
+        return "its transcript is unreadable: %s" % e
+    if n < DERIVE_MIN_PROMPTS:
+        return "%d prompt(s) from its human, fewer than %d" % (n, DERIVE_MIN_PROMPTS)
+    return ""
+
+
+def member_cwd(project, m):
+    """Where a member's session runs — where its fork must start for
+    `--resume` to find the transcript."""
+    candidates = [(m.seat or {}).get("cwd"), (session_running(m.session) or {}).get("cwd")]
+    candidates += [e.get("cwd") for e in reversed(_own_events(project, m.session)) if e["kind"] == "joined"]
+    return next((c for c in candidates if isinstance(c, str) and c and os.path.isdir(c)), project.root or os.getcwd())
+
+
+def answer_line(text):
+    """The fork's answer as an in-charge line: its marks stripped, its first
+    line, at most 120 characters."""
+    spans = extract_marks(text)
+    text = sminos_marks.TAG.sub("", spans[0]["text"] if spans else text)
+    return next((x.strip() for x in text.splitlines() if x.strip()), "")[:DERIVE_LINE_MAX]
+
+
+def sweep_internal():
+    """Markers of internal forks older than a day: their forks are long gone."""
+    d = os.path.join(root(), "internal")
+    for name in (os.listdir(d) if os.path.isdir(d) else ()):
+        path = os.path.join(d, name)
+        try:
+            if time.time() - os.path.getmtime(path) > 86400:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def derive_line(project, m):
+    """Fork the member's session headless and return its one-line answer.
+    The fork starts behind a gate: its pid is marked internal before it can
+    register. Its session id is minted here (`--session-id`), so its
+    transcript is known and deleted whatever the outcome — an answer, a
+    crash, a timeout — and so is the marker. The prompt comes last: `--tools`
+    takes several values and would swallow a prompt right after it."""
+    fork = str(uuidlib.uuid4())
+    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--session-id", fork, "--tools", "",
+            "--output-format", "json", DERIVE_PROMPT]
+    gate_r, gate_w = os.pipe()
+    marker = ""
+    out = err = ""
+    obj = None
+    try:
+        try:
+            proc = subprocess.Popen(["/bin/sh", "-c", 'read -r _ <&%d; exec %d<&-; exec "$@"' % (gate_r, gate_r), "sh"]
+                                    + args, cwd=member_cwd(project, m), env={**os.environ, "SMNS_INTERNAL": "1"},
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, pass_fds=(gate_r,))
+        except OSError as e:
+            raise DeriveFailed("the fork did not start: %s" % e)
+        finally:
+            os.close(gate_r)
+        os.makedirs(os.path.join(root(), "internal"), mode=0o700, exist_ok=True)
+        marker = os.path.join(root(), "internal", str(proc.pid))
+        try:
+            open(marker, "w").close()
+        except OSError as e:
+            proc.kill()
+            proc.communicate()
+            raise DeriveFailed("its fork could not be marked internal: %s" % e)
+        os.write(gate_w, b"\n")
+        os.close(gate_w)
+        gate_w = -1
+        timeout = float(os.environ.get("SMINOS_DERIVE_TIMEOUT") or 120)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            raise DeriveFailed("the fork timed out after %ds" % timeout, err)
+        for raw in reversed((out or "").splitlines()):
+            if raw.strip().startswith("{"):
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    obj = d
+                    break
+        if proc.returncode != 0 or obj is None or obj.get("is_error"):
+            raise DeriveFailed("the fork failed (exit %d)" % proc.returncode, err)
+        line = answer_line(str(obj.get("result") or ""))
+        if not line:
+            raise DeriveFailed("the fork answered nothing", err)
+        return line
+    finally:
+        if gate_w != -1:
+            os.close(gate_w)
+        for sid in {fork, str((obj or {}).get("session_id") or "")}:
+            path = transcript_path(sid) if UUID_RE.match(sid) and sid != m.session else ""
+            if path:
+                os.unlink(path)
+        if marker:
+            try:
+                os.unlink(marker)
+            except FileNotFoundError:
+                pass
+
+
+def cmd_derive(a):
+    """`derive <member> | --all`: ask a local member what it is in charge of,
+    by a headless internal fork, and record the answer as a derived line —
+    only where §5 allows (derive_refusal). --all: every local member of every
+    project known here, as the daemon runs it hourly."""
+    if bool(a.member) == bool(a.all):
+        die("usage: sminos derive <member> | --all")
+    sweep_internal()
+    if a.all:
+        targets = [(p, m) for p in known_projects() for m in members(p) if m.local]
+    else:
+        target = find_target(a.member)
+        if target[0] == "none":
+            die("no seat or member matching '%s'" % a.member, EXIT_UNKNOWN)
+        if target[0] == "seat":
+            s = target[1]
+            p = seat_project(s)
+            m = next((x for x in members(p) if x.seat and x.seat["seat_id"] == s["seat_id"]), None)
+            if m is None:
+                die("%s/%s holds no member session to ask" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+            targets = [(p, m)]
+        else:
+            targets = [target[1:]]
+    failed = 0
+    for project, m in targets:
+        why = derive_refusal(project, m)
+        if why:
+            print("%s: not derived — %s" % (m.alias, why))
+            continue
+        try:
+            line = derive_line(project, m)
+        except DeriveFailed as e:
+            failed += 1
+            tail = [x for x in (e.stderr or "").splitlines() if x.strip()][-5:]
+            sys.stderr.write("sminos: derive %s failed: %s; nothing recorded\n%s" % (
+                m.alias, e.reason, "".join("    %s\n" % x for x in tail)))
+            continue
+        lifecycle(project, m.session, "in-charge", text=line, source="derived")
+        print("%s: %s" % (m.alias, line))
+    if failed:
+        sys.exit(1)
+
+
+# ------------------------------------------------------------------ project verb
+
+
+def git_toplevel(cwd):
+    try:
+        p = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    return p.stdout.strip() if p.returncode == 0 else ""
+
+
+def cmd_project(a):
+    if a.op == "init":
+        project_init(a)
+    elif a.op == "show":
+        d = os.path.abspath(a.dir or os.getcwd())
+        p = resolve_project(d)
+        if p is None:
+            die("no project at %s: no .smns above it and no git repository around it" % d, EXIT_UNKNOWN)
+        print("project  %s\nid       %s\nremote   %s\nroot     %s\nhome     %s" % (
+            p.name, p.id, p.remote or "-", p.root, p.home))
+    else:
+        project_attach(a)
+
+
+def project_init(a):
+    top = git_toplevel(os.getcwd())
+    if not top:
+        die("project init needs a git repository: .smns is committed at its root")
+    path = os.path.join(top, SMNS)
+    if os.path.exists(path):
+        smns = read_smns(path)
+        die("%s is already project %s (%s)" % (top, smns[1], smns[0]) if smns else
+            "%s exists but is unreadable — fix or remove it first" % path)
+    name = a.name or safe_name(os.path.basename(owning_repo(top) or top)) or "project"
+    if "/" in name or "\n" in name or not name.strip():
+        die("a project name is one line without '/': %r" % name)
+    data = {"project": str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.chmod(path, 0o644)  # committed: every clone reads it
+    _PROJECTS.clear()
+    project_path(resolve_project(top), "log")
+    print("project %s (%s) at %s — commit it, so every clone is the same project" % (name, data["project"], path))
+
+
+def project_attach(a):
+    """Adopt the existing log/ as a working tree of the project's remote —
+    the mirror's first half; sminos_daemon owns the mirror."""
+    p = resolve_project(os.path.abspath(a.dir or os.getcwd()))
+    if p is None:
+        die("no project here to attach", EXIT_UNKNOWN)
+    if not p.remote:
+        die("project %s names no remote in its .smns: nothing to attach to" % p.name)
+    daemon_module().attach(p)
 
 
 def resolve_seat(q):
-    kind, res = find_seat(q)
-    caller = caller_seat()
-    if is_family_seat(caller) and kind == "ambiguous":
-        reachable = [s for s in res if s["seat_id"] in reach_of(caller)]
-        if len(reachable) == 1:
-            return reachable[0]
-        if not reachable:
-            die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
-        res = reachable
+    """The one seat a query names (find_seat, a bare alias in the caller's
+    project), or exit 4 naming why not."""
+    kind, res = find_seat(q, caller_scope())
     if kind == "ok":
-        require_reach(caller, res, q)
         return res
-    if is_family_seat(caller) and kind == "none":
-        die("%s %s" % (q, REACH_HINT), EXIT_UNKNOWN)
     if kind == "ambiguous":
         die(ambiguous_seat(q, res), EXIT_UNKNOWN)
     die("no seat matching '%s'" % q, EXIT_UNKNOWN)
+
+
+def find_target(q):
+    """What a member verb (send, status, retire) names: ("seat", seat, session)
+    for a seat; ("member", project, member) for a member that holds no seat
+    here; else exit 4 — ambiguous (named so they can be told apart) or
+    unknown. ("none",) when nothing answers. A seat's `session` is the one the
+    name bound — `alias#short`, or a session id that is not the seat's own id —
+    and "" when the name named the seat: a verb that re-reads the seat under
+    its lifecycle lock refuses when the seat no longer holds that session
+    (locked_fresh), so a refill in between cannot take the bound session's
+    place.
+
+    A full id — a seat id or session id — names its seat directly, and so
+    does `group/alias` when the qualifier is a group and no project. Any other
+    name, `<project>/<alias>` by the project's name or id included, is
+    resolved as a tag is: its projects (the one it names, else the caller's,
+    else every project known here) are reconciled, and the name is matched
+    against every member and every seat no member stands for (vacant,
+    retired), so a seat and a seat-less session sharing an alias are refused
+    as ambiguous rather than the seat being taken. A qualifier that is both a
+    project and a group falls back to the group when the project has no match."""
+    scope = caller_scope()
+
+    def exact(kind, res):
+        if kind == "ambiguous":
+            die(ambiguous_seat(q, res), EXIT_UNKNOWN)
+        if kind == "ok":
+            reconcile(seat_project(res))  # the verb reads the project; no liveness probe needed
+            return ("seat", res, q if res["current"] == q and res["seat_id"] != q else "")
+        return None
+
+    def group_seat(group, alias):
+        hits = [s for s in seats() if s["group"] == group and s["alias"] == alias]
+        return exact("ambiguous" if len(hits) > 1 else "ok" if hits else "none", hits if len(hits) > 1 else
+                     (hits[0] if hits else None))
+
+    if UUID_RE.match(q):
+        hit = exact(*find_seat(q))
+        if hit:
+            return hit
+    proj, _, rest = q.rpartition("/")
+    name, _, short = rest.partition("#")
+    if proj and not short and find_project(proj, required=False) is None:
+        return group_seat(proj, name) or ("none",)
+    projects = known_projects() if UUID_RE.match(q) else name_scope(scope, proj)
+    found, seen = [], set()
+    for p in projects:
+        ms, rows = project_view(p)
+        for m in ms + rows:
+            if short:
+                hit = bool(m.short) and m.alias == name and m.short.startswith(short)
+            else:
+                hit = name == m.alias or (bool(m.session) and name == m.session)
+            # One seat is one target, though its session joined one project
+            # and its record now resolves to another (a cwd that moved).
+            key = m.seat["seat_id"] if m.seat else m.session
+            if hit and key not in seen:
+                seen.add(key)
+                found.append((p, m))
+    if len(found) > 1:
+        if all(m.seat for _, m in found):
+            die(ambiguous_seat(q, [m.seat for _, m in found]), EXIT_UNKNOWN)
+        labels = sorted("%s/%s" % (m.seat["group"], m.seat["alias"]) if m.seat else
+                        ("%s/" % p.name if len(projects) > 1 else "") + "%s#%s" % (m.alias, m.short)
+                        for p, m in found)
+        die("ambiguous '%s' matches: %s" % (q, ", ".join(labels)), EXIT_UNKNOWN)
+    if not found:
+        return (proj and not short and group_seat(proj, name)) or ("none",)
+    project, m = found[0]
+    return ("seat", m.seat, m.session if short or name == m.session else "") if m.seat else ("member", project, m)
 
 
 def ambiguous_seat(q, hits):
@@ -747,40 +2852,21 @@ def ambiguous_seat(q, hits):
         q, ", ".join(sorted("%s/%s" % (s["group"], s["alias"]) for s in hits)))
 
 
-def group_dir(g):
-    return os.path.join(root(), "groups", g)
-
-
-def group_exists(g):
-    return os.path.isdir(group_dir(g)) or any(True for _ in seats(g))
-
-
 def derive_group(cwd):
     """Default group for a seat spawned without --group: the OWNING repository.
 
     Board-pipeline workers spawn in a linked worktree (<repo>/.claude/worktrees/
     <name>), whose toplevel is the worktree dir — grouping on that would file
-    every worker under its own name. The common git dir points at the main
-    checkout's .git, so its parent is the owning repo; all a repo's workers
-    share one group. Non-git cwd falls back to the directory basename.
+    every worker under its own name. owning_repo follows the common git dir to
+    the main checkout, so all a repo's workers share one group (the same rule
+    names a local project, resolve_project). Non-git cwd falls back to the
+    directory basename.
     """
     name = ""
     if cwd and os.path.isdir(cwd):
-        try:
-            common = subprocess.run(["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-                                    capture_output=True, text=True, timeout=10).stdout.strip()
-        except Exception:
-            common = ""
-        if common:
-            if not os.path.isabs(common):
-                common = os.path.join(cwd, common)
-            name = os.path.basename(os.path.dirname(os.path.abspath(common)))
-        else:
-            name = os.path.basename(os.path.normpath(cwd))
-    name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64]
-    if not valid_name(name):
-        name = "fleet"
-    return name
+        repo = owning_repo(cwd)
+        name = os.path.basename(repo) if repo else os.path.basename(os.path.normpath(cwd))
+    return safe_name(name) or "fleet"
 
 
 def group_for_record(m):
@@ -880,14 +2966,23 @@ def agents_refresh():
     return agents_json()
 
 
-def refresh_caches():
-    """Forget everything cached from the harness — the agents rows, the peer
-    registry, and process start times — so a long-lived reader (the chart TUI)
-    sees the fleet as it is now rather than as it was at launch."""
+def forget_caches():
+    """Forget everything cached for the invocation — the agents rows, the peer
+    registry, process start times, resolved projects and their views — so a
+    long-lived process (the chart TUI, the daemon's loop) sees the fleet as it
+    is now rather than as it was at launch. Nothing is read until asked."""
     global _AGENTS_LOADED, _PEERS
     _AGENTS_LOADED = False
     _PEERS = None
     _PSTART.clear()
+    _PROJECTS.clear()
+    _HOMES.clear()
+    _VIEWS.clear()
+
+
+def refresh_caches():
+    """forget_caches, then the harness's agents rows read afresh."""
+    forget_caches()
     return agents_json()
 
 
@@ -984,6 +3079,19 @@ def peer_live(rec):
     if not same_process(rec):
         return False
     return socket_ok(socket_path_of(rec))
+
+
+def peer_running(rec):
+    """The record's process runs: its pid is alive and is the process the
+    record described. Membership follows the process (§2); whether its inbox
+    answers is delivery's question (peer_live), not membership's."""
+    return pid_alive(rec.get("pid")) and same_process(rec)
+
+
+def session_running(session_id):
+    """A harness record for the session whose process runs, or None."""
+    return next((r for r in peer_records() if session_id and r.get("sessionId") == session_id and peer_running(r)),
+                None)
 
 
 def peer_for_session(session_id):
@@ -1451,10 +3559,12 @@ def reply_stale(seat_id, turn_id):
 # ----------------------------------------------------------------- migration
 
 
-def convert_v2_nodes(r):
+def convert_v2_nodes(r, lock_until=None):
     """Convert v2 groups/<g>/nodes/*.json into seat records. Removes only the
     node files it actually converts and rmdir's the nodes/ dir only when it is
-    empty (never rmtree — an unreadable node file must survive for a human)."""
+    empty (never rmtree — an unreadable node file must survive for a human).
+    With lock_until, a node whose record lock cannot be had by then is left
+    as it is, for a later call."""
     converted = 0
     for nodes_dir in glob.glob(os.path.join(r, "groups", "*", "nodes")):
         g = os.path.basename(os.path.dirname(nodes_dir))
@@ -1488,18 +3598,11 @@ def convert_v2_nodes(r):
                     # this node gets its deterministic id instead.
                     seat_id = det_id
                     existing = None if not os.path.exists(meta_path(det_id)) else {}
-            if existing is not None:
-                meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
-                                   "brief": str(n.get("desc") or "")})
-            else:
-                meta_set(seat_id, {
-                    "uuid": seat_id, "current": sess, "short": "", "name": alias, "alias": alias,
-                    "group": g, "parent": str(n.get("parent") or ""),
-                    "role": "", "brief": str(n.get("desc") or ""),
-                    "task": "", "now": "", "note": "", "cwd": str(n.get("cwd") or ""), "worktree": "",
-                    "model": "", "settings": "", "effort": "", "status": "retired",
-                    "host": "", "boot_id": "", "created": str(n.get("joined") or now()),
-                    "updated": now(), "turns": "0", "preamble": "1"})
+            try:
+                _convert_node(seat_id, existing, n, g, alias, sess, lock_until)
+            except LockBusy:
+                migration_skipped("converting v2 node %s/%s" % (g, alias), ".metalock")
+                continue
             os.unlink(nf)
             converted += 1
         try:
@@ -1507,6 +3610,21 @@ def convert_v2_nodes(r):
         except OSError:
             pass
     return converted
+
+
+def _convert_node(seat_id, existing, n, g, alias, sess, lock_until):
+    if existing is not None:
+        meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
+                           "brief": str(n.get("desc") or "")}, lock_until=lock_until)
+    else:
+        meta_set(seat_id, {
+            "uuid": seat_id, "current": sess, "short": "", "name": alias, "alias": alias,
+            "group": g, "parent": str(n.get("parent") or ""),
+            "role": "", "brief": str(n.get("desc") or ""),
+            "task": "", "now": "", "note": "", "cwd": str(n.get("cwd") or ""), "worktree": "",
+            "model": "", "settings": "", "effort": "", "status": "retired",
+            "host": "", "boot_id": "", "created": str(n.get("joined") or now()),
+            "updated": now(), "turns": "0", "preamble": "1"}, lock_until=lock_until)
 
 
 def _append_board(src, dst):
@@ -1532,6 +3650,8 @@ def _append_board(src, dst):
     with open(dst, "a") as f:
         for m in moved:
             f.write(m + "\n")
+    if os.environ.get("SMINOS_TEST_MERGE_PAUSE"):  # tests: hold the merge between its append and its delete
+        time.sleep(float(os.environ["SMINOS_TEST_MERGE_PAUSE"]))
     os.unlink(src)
     return True
 
@@ -1617,7 +3737,37 @@ def set_aside(path, r):
     return aside
 
 
-def migrate(quiet=False):
+class LockBusy(Exception):
+    """A lock could not be had before a deadline."""
+
+
+def flock_until(f, deadline, exclusive=True):
+    """A flock on f, exclusive or shared; with a deadline, retried without
+    blocking until it, then LockBusy. Without one, it waits as long as it takes."""
+    mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    if deadline is None:
+        fcntl.flock(f, mode)
+        return
+    while True:
+        try:
+            fcntl.flock(f, mode | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.time() >= deadline:
+                raise LockBusy()
+            time.sleep(0.02)
+
+
+def migration_skipped(step, lock):
+    """A migration step the record hook left for a later call: its lock was
+    held past the hook's deadline, so the step mutated nothing."""
+    try:
+        daemon_log("migrate: skipped %s — %s held past the deadline; a later call does it" % (step, lock))
+    except OSError:
+        pass
+
+
+def migrate(quiet=False, lock_until=None):
     """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
 
     The whole cutover is serialized by an exclusive flock on
@@ -1664,7 +3814,10 @@ def migrate(quiet=False):
     os.makedirs(lockdir, exist_ok=True)
     # The former name, shared with cached older `agora` binaries (see docstring).
     with open(os.path.join(lockdir, ".agora-migrate.lock"), "a") as mlf:
-        fcntl.flock(mlf, fcntl.LOCK_EX)
+        # lock_until (the record hook's deadline): LockBusy before any step
+        # runs; inside, each step's own lock is waited for only until then,
+        # and a step that cannot have it is skipped untouched for a later call.
+        flock_until(mlf, lock_until)
         try:
             if r == default_root():
                 for old in legacy_roots():
@@ -1725,8 +3878,13 @@ def migrate(quiet=False):
                     key = (str(m.get("group") or fields.get("group") or ""), alias)
                     by_key.setdefault(key, []).append((m.get("engine") != "codex", str(m.get("updated") or ""), sid, m))
                 if fields:
-                    meta_set(sid, fields, bump=False)
-            n = convert_v2_nodes(r)
+                    try:
+                        meta_set(sid, fields, bump=False, lock_until=lock_until)
+                    except LockBusy:
+                        migration_skipped("migrating record %s" % sid[:8], ".metalock")
+                        stamped -= "group" in fields
+                        retired -= fields.get("status") == "retired"
+            n = convert_v2_nodes(r, lock_until)
             if n:
                 did.append("converted %d v2 node(s) into seats" % n)
             # Pass 2 — dedupe (group, alias): a claude record beats a codex one,
@@ -1741,11 +3899,18 @@ def migrate(quiet=False):
                     fields = {"alias": "%s@%s" % (alias, tag)}
                     if m.get("status") != "retired":
                         fields["status"] = "retired"  # `updated` untouched
-                    meta_set(sid, fields, bump=False, create=False)
+                    try:
+                        meta_set(sid, fields, bump=False, create=False, lock_until=lock_until)
+                    except LockBusy:
+                        migration_skipped("renaming duplicate alias %s of %s" % (alias, sid[:8]), ".metalock")
+                        continue
                     deduped += 1
             if stamped or retired or deduped:
                 did.append("stamped group on %d record(s), retired %d legacy codex record(s), renamed %d duplicate alias(es)" % (
                     stamped, retired, deduped))
+            imported = import_chats(lock_until)
+            if imported:
+                did.append("imported %d family chat(s) into project logs" % imported)
         finally:
             fcntl.flock(mlf, fcntl.LOCK_UN)
     if did and not quiet:
@@ -1753,20 +3918,98 @@ def migrate(quiet=False):
     return did
 
 
+def legacy_ts(ts):
+    """A family chat's whole-second ts in the log's millisecond shape."""
+    ts = str(ts or "")
+    return ts[:-1] + ".000Z" if re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", ts) else ts
+
+
+def import_chats(lock_until=None):
+    """Fold each former per-host family chat (chats/<host-seat-id>.jsonl) into
+    the project log of the host's cwd, as writer legacy/<host-seat-id>: ts,
+    sender and text kept, a tag resolved against the host's group to the
+    session its seat holds (an unresolvable one stays as text, and the event
+    is to "*"). The writer file is written whole and renamed into place; the
+    chat file is then set aside as .imported, so the import runs once. The
+    chat's own lock (chats/<host-seat-id>.lock, under which the previous CLI
+    appends to and rewrites it) is held from the read through the set-aside,
+    so a line it appends meanwhile is never archived without being imported.
+    A chat whose host record is gone stays, its project unknown. With
+    lock_until, a chat whose own lock or log lock cannot be had by then is
+    left as it is, for a later call."""
+    files = sorted(glob.glob(os.path.join(root(), "chats", "*.jsonl")))
+    if not files:
+        return 0
+    by_id = {s["seat_id"]: s for s in seats()}
+    imported = 0
+    for path in files:
+        host_id = os.path.basename(path)[:-len(".jsonl")]
+        host = by_id.get(host_id)
+        project = seat_project(host) if host else None
+        if project is None:
+            continue
+        try:
+            with flocked(path[:-len(".jsonl")] + ".lock", lock_until=lock_until):
+                imported += _import_chat(path, host_id, host, project, by_id, lock_until)
+        except LockBusy:
+            migration_skipped("importing chat %s" % host_id[:8], "chats/%s.lock" % host_id)
+    return imported
+
+
+def _import_chat(path, host_id, host, project, by_id, lock_until):
+    """One chat's import, under its lock (import_chats): 1 when it is set
+    aside as imported, 0 when it is left for a later call."""
+    writer = "legacy/" + host_id
+    target = writer_path(project, writer)
+    if not os.path.exists(target):
+        sessions = {s["alias"]: s["current"] for s in by_id.values()
+                    if s["group"] == host["group"] and s["current"]}
+        rows = []
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and type(r.get("id")) is int:
+                    rows.append(r)
+        events = []
+        for seq, r in enumerate(sorted(rows, key=lambda r: r["id"]), 1):
+            to = [{"session": sessions[alias], "alias": alias} for alias in r.get("to") or []
+                  if r.get("mode") == "tagged" and isinstance(alias, str) and alias in sessions]
+            sender = str(r.get("from") or "")
+            events.append({"ts": legacy_ts(r.get("ts")), "writer": writer, "seq": seq,
+                           "kind": "human" if sender == "human" else "say", "from": sender,
+                           "to": to or "*", "text": str(r.get("text") or "")})
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".tmp-")
+        with os.fdopen(fd, "w") as f:
+            f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
+        try:
+            with flocked(os.path.join(os.path.dirname(target), ".sync.lock"), exclusive=False,
+                         lock_until=lock_until):
+                os.replace(tmp, target)
+        except LockBusy:
+            os.unlink(tmp)
+            migration_skipped("importing chat %s" % host_id[:8], "the log's .sync.lock")
+            return 0
+    os.replace(path, path + ".imported")
+    return 1
+
+
 # --------------------------------------------------------------- spawn / fill
 
 
-def render_preamble(group, alias, parent):
+def render_preamble(project, alias, by=""):
+    """The spawn preamble every spawn renders (§6), with {{PROJECT}},
+    {{ALIAS}}, {{BY}} (the spawner, or "the operator"), and {{SMINOS_CLI}}
+    filled."""
     try:
         with open(PREAMBLE_PATH) as f:
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
-    if not parent:
-        t = t.replace(', a member of the\nfamily "{{PARENT}}" hosts.',
-                      ', the root of your\nown family.', 1)
-    return (t.replace("{{GROUP}}", group).replace("{{ALIAS}}", alias)
-             .replace("{{PARENT}}", parent or "none").replace("{{SMINOS_CLI}}", LAUNCHER))
+    return (t.replace("{{PROJECT}}", project).replace("{{ALIAS}}", alias)
+             .replace("{{BY}}", by or "the operator").replace("{{SMINOS_CLI}}", LAUNCHER))
 
 
 def compose_task(task, brief, preamble):
@@ -1795,6 +4038,54 @@ def claude_args(alias, model, settings, effort, worktree=""):
     if effort:
         args += ["--effort", effort]
     return args
+
+
+def launch_settings(settings):
+    """The settings a fresh seat launches with: the caller's, plus, when
+    SMINOS_HOME (or the legacy DAEMON_HOME) is set, `env.SMINOS_HOME` naming
+    this registry.
+
+    `claude --bg` hands the launch to the harness's supervisor, which claims
+    a pre-started process: the seat's environment is the supervisor's, not
+    this process's (observed live, harness 2.1.299: a seat spawned with
+    SMINOS_HOME set printed none). A seat whose sminos calls and hook ran
+    against the default registry would talk to a different family, and under
+    a test registry would migrate the human's real one. A seat takes one
+    settings source, so a caller's `--settings` (a file or a JSON object) is
+    merged into one file, written under this registry's `settings/` and
+    named by its content: a resume keeps the launch's options, this path
+    among them. Only the argv changes: the route a seat runs on is still
+    decided by the caller's own settings (launch_env)."""
+    home = os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME")
+    if not home:
+        return settings
+    merged = {}
+    if settings:
+        text = settings
+        if not settings.lstrip().startswith("{"):
+            try:
+                with open(os.path.expanduser(settings)) as f:
+                    text = f.read()
+            except OSError as e:
+                die("--settings %s: %s" % (settings, e.strerror or e), EXIT_USAGE)
+        try:
+            merged = json.loads(text)
+        except ValueError:
+            merged = None
+        if not isinstance(merged, dict):
+            die("--settings %s: not a JSON object" % settings, EXIT_USAGE)
+    env = merged.get("env") if isinstance(merged.get("env"), dict) else {}
+    merged["env"] = {**env, "SMINOS_HOME": root()}
+    body = json.dumps(merged, indent=2, sort_keys=True) + "\n"
+    path = os.path.join(root(), "settings", hashlib.sha256(body.encode()).hexdigest()[:16] + ".json")
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    return path
 
 
 def env_default(value, env_name):
@@ -1863,8 +4154,8 @@ def parse_stamps(items):
     return out
 
 
-def spawn_fresh(seat_id, alias, group, parent, role, brief, task, cwd, worktree,
-                model, settings, effort, preamble_flag, wait, locks, verb, stamp=None):
+def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
+                model, settings, effort, wait, locks, verb, stamp=None):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -1877,21 +4168,28 @@ def spawn_fresh(seat_id, alias, group, parent, role, brief, task, cwd, worktree,
     name is also the harness name the native SendMessage reaches it by. The
     banner's bracket is always `[<short> / <RECORD FILENAME>]` — the pipeline
     parses that value and board-bind matches it against filenames, so on a
-    re-fill it is the seat id, never the new session's uuid. Returns nothing
-    (prints; may exit)."""
+    re-fill it is the seat id, never the new session's uuid.
+
+    In the project's log: `retired` (replaced) for the session a re-fill
+    displaces, then `joined` for the new one with its spawner as `by`, then,
+    when the seat has a brief, the brief as its `in-charge` line. Every spawn
+    renders the preamble. Returns nothing (prints; may exit)."""
     prev = reload_seat(seat_id) if seat_id else None
-    preamble = render_preamble(group, alias, parent or "") if preamble_flag else ""
+    project = seat_project({"cwd": cwd, "group": group})
+    by = caller_alias()
+    preamble = render_preamble(project.name, alias, by)
     task_text = compose_task(task, brief or "", preamble)
-    short, banner = run_claude_bg(claude_args(alias, model, settings, effort, worktree) + [task_text], cwd, settings)
+    short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree) + [task_text],
+                                  cwd, settings)
     if not short:
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
     launch = {
         "current": "", "short": short, "name": alias, "alias": alias, "group": group,
-        "parent": parent or "", "role": role or "", "brief": brief or "",
+        "role": role or "", "brief": brief or "",
         "task": task_text, "cwd": cwd, "worktree": worktree or "", "model": model or "",
         "settings": settings, "effort": effort, "status": "working", "host": host_name(),
-        "boot_id": boot_id(), "updated": now(), "turns": "1", "preamble": "1" if preamble_flag else "",
+        "boot_id": boot_id(), "updated": now(), "turns": "1", "preamble": "1",
     }
     # Merged into the launch dict itself, so the caller's fields are on the
     # record's very first write and cannot be lost to a later failure.
@@ -1966,6 +4264,27 @@ def spawn_fresh(seat_id, alias, group, parent, role, brief, task, cwd, worktree,
     else:
         meta_set(rec_id, {"current": uuid, "cwd": runcwd or cwd, "host": host_name(),
                           "boot_id": boot_id(), "updated": now()})
+    project = seat_project({"cwd": runcwd or cwd, "group": group})
+    # The session already runs, so a failed append does not fail the spawn: an
+    # exit 1 would make a dispatcher release the run and leave the worker
+    # running unbound. Each event is attempted on its own, and each one that
+    # fails is named loudly after the banner with what it loses.
+    log_failed = []
+
+    def record(what_is_lost, p, session, kind, **fields):
+        try:
+            lifecycle(p, session, kind, **fields)
+        except LogWriteFailed as e:
+            log_failed.append("%s — %s" % (e, what_is_lost))
+
+    if prev and prev["current"] and prev["current"] != uuid:
+        record("the displaced session %s stays a member until a reading verb finds it no longer runs"
+               % prev["current"][:8], seat_project(prev), prev["current"], "retired", by=by, reason="replaced")
+    record("the seat re-joins its project on the next reading verb, but its spawner (by %s) is not recorded"
+           % (by or "the operator"), project, uuid, "joined",
+           **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "", rec_id, by))
+    if brief:
+        record("its in-charge line (%s) is not recorded" % brief, project, uuid, "in-charge", text=brief, source="set")
     status = "working"
     if state in TERMINAL:
         # Don't blindly claim working — a fast first turn may already be over.
@@ -1982,48 +4301,31 @@ def spawn_fresh(seat_id, alias, group, parent, role, brief, task, cwd, worktree,
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
     print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
-        verb, group, alias, short, rec_id, status, wt, short))
+        verb, group, alias, short, rec_id, status, wt, short), flush=True)
     if wait:
         print_reply_block(rec_id)
+    for failure in log_failed:
+        warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
 
 
 def cmd_spawn(a):
-    caller = caller_seat()
-    if is_family_seat(caller):
-        if a.group is not None or a.parent is not None:
-            die("a seat spawns its own children")
-        # A provisional host must be promoted before its family can be keyed.
-        if not caller["current"]:
-            for _ in range(int(os.environ.get("SMINOS_UUID_POLL") or
-                               os.environ.get("DAEMON_UUID_POLL") or "30")):
-                latest = caller_seat()
-                if latest and latest["current"]:
-                    caller = latest
-                    break
-                time.sleep(poll_interval())
-            else:
-                die("parent seat has not completed promotion", 1)
-        a.group, a.parent = caller["group"], caller["alias"]
+    """Start a session in the working directory's project (or --cwd's), as a
+    seat, recorded as joined by its spawner: a sibling, never a child."""
     alias = a.alias
     if not valid_name(alias):
         die("bad alias: %s" % alias)
     if alias in ("human", "all"):
         die("the alias '%s' is reserved" % alias)
-    if a.parent and not valid_name(a.parent):
-        die("bad parent alias: %s" % a.parent)
     cwd = cwd_or_die(a.cwd, "spawn")
-    explicit_group = a.group is not None
-    group = a.group if explicit_group else derive_group(cwd)
-    if not valid_name(group):
-        die("bad group name: %s" % group)
+    # The group is the seat's namespace on this machine: its alias is unique in
+    # it and its lifecycle lock is keyed by it. It derives from the cwd's
+    # owning repository, as it always did without --group.
+    group = derive_group(cwd)
     locks = lock_names([seat_key(group, alias)])
     # Read under the lock: whether the seat is filled/refillable is only true as
     # of now, not as of any earlier read.
     existing = next((s for s in seats(group) if s["alias"] == alias), None)
     if existing:
-        if is_family_seat(caller) and existing["parent"] != caller["alias"]:
-            die("alias %s/%s belongs to another seat; a seat re-fills only its own children" % (
-                group, alias), EXIT_UNKNOWN)
         live = state(existing)
         if live in FILLED:
             die("seat %s/%s is filled (%s) — message it with sminos send" % (group, alias, live), EXIT_UNKNOWN)
@@ -2043,28 +4345,22 @@ def cmd_spawn(a):
         # Definition fields change only when EXPLICITLY given (argparse default
         # None keeps the seat's own); task/model/settings/effort/cwd/worktree are
         # per-fill and always come from this call.
-        parent = a.parent if a.parent is not None else existing["parent"]
         role = a.role if a.role is not None else existing["role"]
         brief = a.brief if a.brief is not None else existing["brief"]
-        preamble_flag = explicit_group or is_family_seat(caller) or bool(existing["preamble"])
     else:
-        parent, role, brief, preamble_flag = a.parent or "", a.role or "", a.brief or "", explicit_group or is_family_seat(caller)
-    spawn_fresh(existing["seat_id"] if existing else None, alias, group, parent, role, brief,
-                a.task, cwd, a.worktree or "", a.model or "", settings, effort, preamble_flag, a.wait, locks, "spawned",
+        role, brief = a.role or "", a.brief or ""
+    spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
+                a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
                 stamp=parse_stamps(a.stamp))
 
 
 def cmd_seat_add(a):
-    if is_family_seat(caller_seat()):
-        die("a seat spawns its own children")
     if not valid_name(a.group):
         die("bad group name: %s" % a.group)
     if not valid_name(a.alias):
         die("bad alias: %s" % a.alias)
     if a.alias in ("human", "all"):
         die("the alias '%s' is reserved" % a.alias)
-    if a.parent and not valid_name(a.parent):
-        die("bad parent alias: %s" % a.parent)
     session = a.session or ""
     if session and not UUID_RE.match(session):
         die("--session must be a session uuid (8-4-4-4-12 hex): %s" % session)
@@ -2090,8 +4386,7 @@ def cmd_seat_add(a):
     if existing:
         s = existing[0]
         seat_id = s["seat_id"]
-        fields = {"parent": a.parent if a.parent is not None else s["parent"],
-                  "role": a.role if a.role is not None else s["role"],
+        fields = {"role": a.role if a.role is not None else s["role"],
                   "brief": a.brief if a.brief is not None else s["brief"], "updated": now()}
         if session:
             fields.update({"current": session, "short": short, "status": "idle",
@@ -2104,16 +4399,21 @@ def cmd_seat_add(a):
                 session, meta_get(seat_id, "group"), meta_get(seat_id, "alias") or meta_get(seat_id, "name")), EXIT_UNKNOWN)
         meta_set(seat_id, {
             "uuid": seat_id, "current": session, "short": short, "name": a.alias, "alias": a.alias,
-            "group": a.group, "parent": a.parent or "", "role": a.role or "",
+            "group": a.group, "role": a.role or "",
             "brief": a.brief or "", "task": "", "now": "", "note": "", "cwd": os.getcwd(), "worktree": "",
             "model": "", "settings": "", "effort": "", "status": "idle" if session else "vacant",
             "host": host_name() if session else "", "boot_id": boot_id() if session else "",
             "created": now(), "updated": now(), "turns": "0", "preamble": "1", "attempts": 1, "history": []})
-    os.makedirs(os.path.join(group_dir(a.group), "locks"), exist_ok=True)
+    if session:
+        # The session joins as this seat; a session the seat held before is
+        # displaced, as by a fill.
+        if existing and existing[0]["current"] and existing[0]["current"] != session:
+            lifecycle(seat_project(existing[0]), existing[0]["current"], "retired", by=caller_alias(),
+                      reason="replaced")
+        join_seat(reload_seat(seat_id), by=caller_alias())
     unlock(locks)
-    print("seat %s/%s %s (parent: %s%s)" % (
-        a.group, a.alias, "updated" if existing else "added", a.parent or "none",
-        (", session: " + session) if session else ", vacant"))
+    print("seat %s/%s %s (%s)" % (a.group, a.alias, "updated" if existing else "added",
+                                  ("session: " + session) if session else "vacant"))
 
 
 def legacy_codex_refusal(s):
@@ -2158,8 +4458,8 @@ def cmd_fill(a):
     # The seat's cwd is already the worktree path when it had one, so no
     # --worktree on a re-fill: the fresh session runs where the seat lives.
     cwd = cwd_or_die(s["cwd"], "fill")
-    spawn_fresh(s["seat_id"], s["alias"], s["group"], s["parent"], s["role"], s["brief"],
-                a.task, cwd, "", model, settings, effort, bool(s["preamble"]), a.wait, locks, "filled")
+    spawn_fresh(s["seat_id"], s["alias"], s["group"], s["role"], s["brief"],
+                a.task, cwd, "", model, settings, effort, a.wait, locks, "filled")
 
 
 # ------------------------------------------------------------ resume / send
@@ -2171,7 +4471,7 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
+def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_launched=None):
     """Process-level continuation of a seat's session.
 
     A live current turn is stopped first (`claude stop`, then a bounded wait
@@ -2191,7 +4491,26 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     dies). If the banner says a copy started, or the harness reports a
     different session id, the copy is stopped, the record is left untouched,
     and the command fails loudly.
+
+    `on_launched`, when given, is called once the message is in a launched
+    process — confirmed, or uncertain because no session id came back — and
+    before any wait: `send` settles its delivery record there. At the same
+    point a seat whose session was retired re-joins the project's family.
     """
+    def launched():
+        # The delivery settles first: a failed re-join (LogWriteFailed) must
+        # not leave a launched message owed, to be pushed again. On a fan-out
+        # (`quiet`, from deliver_next) the message is in a launched process, so
+        # the outcome stands and the fan-out goes on: the failure is a warning.
+        if on_launched:
+            on_launched()
+        try:
+            join_seat(s, by=caller_alias())
+        except LogWriteFailed as e:
+            if not quiet:
+                raise
+            warn("%s/%s was resumed with the message, but %s" % (s["group"], s["alias"], e))
+
     if s["engine"] == "codex":
         raise ResumeRefused(legacy_codex_refusal(s))
     if locks is None:
@@ -2261,6 +4580,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     polled = poll_uuid(short)
     if not polled:
         meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
+        launched()  # launched with the message: delivery is uncertain, not failed
         if quiet:
             unlock(locks)
             return "woken?"
@@ -2268,6 +4588,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False):
     uuid, state, _cwd = polled
     if uuid != cur:
         copy_started(uuid)
+    launched()
     turns = int(s["turns"] or "0") + 1
     # model/settings/effort stay as recorded at spawn/fill: the resumed session
     # runs on its saved options, whatever this call was passed.
@@ -2374,19 +4695,24 @@ def compose_frame(sender, msg_id, msg):
     return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
 
 
-def send_to_seat(s0, text, msg_id, wait):
+def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the socket delivery, and the status write, so a
     concurrent fill/resume/retire cannot slip between them. A live seat takes
     the frame on its inbox socket and is recorded `working`; a stopped one is
     resumed with the frame as its message; vacant, retired, and gone seats
-    are refused, pointing at the verb that can reach them."""
+    are refused, pointing at the verb that can reach them. Given `session`,
+    the one the name bound (find_target), a seat that no longer holds it is
+    refused.
+
+    `record(seat)`, when given, appends the message to the seat's project log
+    once the seat is known reachable and returns its SendDelivery (or None
+    when the seat has no project): the push then carries every earlier event
+    of the same writer still owed to the seat, in order, and the delivery
+    record is settled on sent, woken, or uncertain and noted as failed
+    otherwise — so a send that dies on the way is the daemon's to retry."""
     refuse_codex(s0)
-    locks = lock_seat(s0)
-    s = reload_seat(s0["seat_id"])
-    if s is None:
-        unlock(locks)
-        die("seat %s/%s vanished before the send could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
+    locks, s = locked_fresh(s0, "send", session)
     refuse_codex(s)
     ref = "%s/%s" % (s["group"], s["alias"])
     # ONE liveness probe (pid alive AND socket answers) decides both the word
@@ -2399,8 +4725,34 @@ def send_to_seat(s0, text, msg_id, wait):
     if st == "gone":
         die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
             "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
+    delivery = record(s) if record else None
+    if delivery and not delivery.queue:
+        # A concurrent deliverer pushed it between the append and our lock: no
+        # second push, but --wait still waits on this message's id.
+        delivery.release()
+        row = harness_row(s)
+        was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (
+            not peer or peer.get("status") != "busy")
+        guard = same_gen(current_gen(s["seat_id"]))
+        unlock(locks)
+        print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
+        if wait:
+            wait_socket_turn(s, msg_id, was_idle, guard)
+            print_reply_block(s["seat_id"])
+        return
+    settle = delivery.settle if delivery else None
+
+    def resume(locks):
+        try:
+            resume_session(s, delivery.payload(False) if delivery else text, wait, locks,
+                           verb="sent to", on_launched=settle)
+        except ResumeRefused:
+            if delivery:
+                delivery.fail()
+            raise
+
     if not peer:
-        resume_session(s, text, wait, locks, verb="sent to")
+        resume(locks)
         return
     sock = socket_path_of(peer)
     row = harness_row(s)
@@ -2408,18 +4760,22 @@ def send_to_seat(s0, text, msg_id, wait):
     # the peer record's own status — never from normalising an empty state.
     was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
     try:
-        send_frame(sock, text)
+        send_frame(sock, delivery.payload(True) if delivery else text)
     except SendFailed as e:
         if e.phase == "before":
             # Nothing reached the peer (the session exited between the
             # liveness check and the write): fall through to the resume path.
             warn("inbox socket delivery to %s failed before the frame was written (%s); resuming instead" % (ref, e))
-            resume_session(s, text, wait, locks, verb="sent to")
+            resume(locks)
             return
+        if delivery:
+            delivery.settle()  # uncertain after a write: never pushed again
         unlock(locks)
         die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
             "resuming and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
                 ref, e, msg_id), 1)
+    if delivery:
+        delivery.settle()
     wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
     # The watcher's guard: the generation right after our write, read while
     # the lifecycle lock is still held.
@@ -2486,10 +4842,112 @@ def refuse_wait(target):
     die("--wait needs a seat: '%s' is not one, so there is no record to watch — send without --wait" % target)
 
 
+class SendDelivery:
+    """One `send` through the recipient's delivery record: holds
+    delivered/<session>.lock from choosing to settling, and carries, in writer
+    order, every event of the sender's writer still owed to the seat up to and
+    including this send — an earlier pending one goes first, in the same push."""
+
+    def __init__(self, project, session, writer, event):
+        self.project, self.session, self.writer = project, session, writer
+        self.lock = open(project_path(project, "delivered", reader_key(session) + ".lock"), "a")
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        self.events = log_read(project)
+        self.queue = [e for e in _owed(self.events, session, delivered_load(project, session))
+                      if e["writer"] == writer and e["seq"] <= event["seq"]]
+        self.cursor = cursor_load(project, session)
+        self.skipped = []
+
+    def payload(self, live):
+        """The text of the one push. Ordinary delivery's policy applies: an
+        @all (`wake`) reaches only the live, so to a stopped member it is
+        settled by passing and left out of the resume."""
+        self.skipped = [e for e in self.queue if e.get("wake") and not live]
+        return "\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor)
+                             for e in self.queue if e not in self.skipped)
+
+    def settle(self):
+        for e in self.queue:
+            delivered_settle(self.project, self.session, self.writer, e["seq"])
+        self.queue = []
+        self.release()
+
+    def fail(self):
+        # The skipped broadcasts ahead of the first pushed event settle; that
+        # event is the one pending.
+        for e in self.queue:
+            if e in self.skipped:
+                delivered_settle(self.project, self.session, self.writer, e["seq"])
+                continue
+            delivered_fail(self.project, self.session, self.writer, e["seq"])
+            break
+        self.release()
+
+    def release(self):
+        if not self.lock.closed:
+            self.lock.close()
+
+
+def record_send(s, sender, via, text, msg_id):
+    """`send` is recorded in the target's project log — `human` from the
+    operator, `say` from a session — to the one session it reaches, then
+    delivered through that session's delivery record (SendDelivery). A message
+    the log cannot hold is not sent: the failure exits non-zero first."""
+    if not s["current"]:
+        return None
+    return record_message(seat_project(s), s["current"], s["alias"], sender, via, text, msg_id)
+
+
+def record_message(project, session, alias, sender, via, text, msg_id, deliver=True):
+    """Append a `send` to the project's log, addressed to one session, and —
+    unless the recipient is another machine's to deliver — open its
+    SendDelivery. A message the log cannot hold is not sent: exit 1 first."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    writer = writer_id(sid or None)
+    fields = {"from": sender, "to": [{"session": session, "alias": alias}], "text": text, "msg_id": msg_id}
+    if via and via != sender:
+        fields["via"] = via
+    try:
+        event = log_append(project, writer, "say" if sid else "human", **fields)
+        return SendDelivery(project, session, writer, event) if deliver else event
+    except OSError as e:
+        die("send not delivered: it could not be recorded in %s's log (%s)" % (project.name, e), 1)
+
+
+def send_to_member(project, m, sender, via, text, msg_id):
+    """send to a member that holds no seat here. A remote member's send is
+    recorded and owed: its own machine's daemon delivers it. A local one is
+    reached over its inbox socket while it runs; a session sminos did not
+    spawn is never resumed — it is the human's to reopen."""
+    if not m.local:
+        e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
+        print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
+        nudge_daemon()
+        return
+    peer = peer_for_session(m.session)
+    if not peer:
+        die("%s is not live (%s) — a session sminos did not spawn is reached only while it runs; "
+            "sminos say records for it" % (m.alias, m.state), EXIT_UNKNOWN)
+    delivery = record_message(project, m.session, m.alias, sender, via, text, msg_id)
+    if not delivery.queue:
+        delivery.release()
+        print("sent to %s (delivered by a concurrent delivery)" % m.alias)
+        return
+    try:
+        send_frame(socket_path_of(peer), delivery.payload(True))
+    except SendFailed as e:
+        if e.phase == "after":
+            delivery.settle()
+            die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s); "
+                "do not blindly re-send" % (m.alias, e), 1)
+        delivery.fail()
+        die("%s went away mid-send (%s) — not live; the message stays owed" % (m.alias, e), EXIT_UNKNOWN)
+    delivery.settle()
+    print("sent to %s" % m.alias)
+
+
 def _send(a):
     caller = caller_seat()
-    if is_family_seat(caller) and a.target.startswith(CODEX_PREFIX):
-        die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
     frm = default_from(a.frm)
     msg_id = uuidlib.uuid4().hex[:8]
     text = compose_frame(frm, msg_id, a.msg)
@@ -2505,29 +4963,40 @@ def _send(a):
                 raw, "" if shutil.which("codex") else " (codex CLI not on PATH)"), EXIT_UNKNOWN)
         report_codex_queued(tid, qid)
         return
-    kind, res = find_seat(a.target)
-    if kind == "ambiguous" and is_family_seat(caller):
-        reachable = [s for s in res if s["seat_id"] in reach_of(caller)]
-        if len(reachable) == 1:
-            kind, res = "ok", reachable[0]
-        elif not reachable:
-            die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
-        else:
-            res = reachable
-    if kind == "ambiguous":
-        # A genuine seat match that is ambiguous must NOT silently fall through
-        # to a raw name lookup — that would hide the ambiguity.
-        die(ambiguous_seat(a.target, res), EXIT_UNKNOWN)
-    if kind == "ok":
-        require_reach(caller, res, a.target)
-        send_to_seat(res, text, msg_id, a.wait)
+    # A genuine match that is ambiguous never falls through to a raw name
+    # lookup — that would hide the ambiguity (find_target exits 4 naming it).
+    target = find_target(a.target)
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sender = "human" if not sid else ((caller or {}).get("alias") or default_from(""))
+    if target[0] == "seat":
+        res = target[1]
+        if sid and res["current"] == sid:
+            die("you cannot send to yourself")
+        send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, sender, frm, a.msg, msg_id),
+                     session=target[2])
         return
-    if is_family_seat(caller):
-        die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
+    if target[0] == "member":
+        project, m = target[1], target[2]
+        if a.wait:
+            refuse_wait(a.target)
+        if sid and m.session == sid:
+            die("you cannot send to yourself")
+        send_to_member(project, m, sender, frm, a.msg, msg_id)
+        return
     if a.wait:
         refuse_wait(a.target)
-    # Only when NO seat matched: fall back to a raw live harness-session name.
-    peers = live_name_holders(a.target)  # live already means the socket answers
+    # Nothing in the project answers. From inside a project a bare name never
+    # reaches past it: another project's member is <project>/<alias>, and a
+    # message to it is recorded in that project's log.
+    scope = caller_scope()
+    if scope is not None and not UUID_RE.match(a.target.lower()):
+        die("no member '%s' in project %s — a member of another project is <project>/%s" % (
+            a.target, scope.name, a.target), EXIT_UNKNOWN)
+    # From no project, the one unrecorded route: a live session that is in no
+    # project either (any session in a project answered above, as a member),
+    # by its harness name. There is no log for it to be recorded in.
+    peers = [r for r in live_name_holders(a.target)
+             if not (isinstance(r.get("cwd"), str) and r["cwd"] and resolve_project(r["cwd"]))]
     if len(peers) == 1:
         try:
             send_frame(socket_path_of(peers[0]), text)
@@ -2652,13 +5121,8 @@ def sync_one(s0):
 def cmd_sync(a):
     if a.all or not a.seat:
         # --all includes idle seats too, to catch natively-woken ones; a seat
-        # that needed no reconciliation (noop) is not printed. A family seat
-        # reconciles only its reach, as `list` shows it.
-        caller = caller_seat()
-        reach = reach_of(caller) if is_family_seat(caller) else None
+        # that needed no reconciliation (noop) is not printed.
         for s in seats():
-            if reach is not None and s["seat_id"] not in reach:
-                continue
             if s["status"] in ("working", "blocked", "idle"):
                 word = sync_one(s)
                 if word != "noop":
@@ -2668,13 +5132,34 @@ def cmd_sync(a):
 
 
 def cmd_status(a):
-    s = resolve_seat(a.seat)
+    """A member's one-line status: a `status` event in its own file, which
+    every machine reads, and — for a seat — the local `now` line beside it."""
+    target = find_target(a.seat)
     line = " ".join(a.line).strip()
+    if target[0] == "none":
+        die("no seat or member matching '%s'" % a.seat, EXIT_UNKNOWN)
+    if target[0] == "member":
+        project, m = target[1], target[2]
+        if m.local:
+            lifecycle(project, m.session, "status", text=line)
+        else:
+            # Another machine's session file is that machine's to write: the
+            # line goes in this caller's own file, and the later ts wins (§3).
+            try:
+                _append(project, writer_id(os.environ.get("CLAUDE_CODE_SESSION_ID") or None),
+                        [{"kind": "status", "session": m.session, "text": line}])
+            except OSError as e:
+                die("status of %s not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
+        print("%s now: %s" % (m.alias, line or "(cleared)"))
+        return
+    s = target[1]
     # The agent's own status line is not a lifecycle write: it must never make
     # the turn's watcher refuse to record the reply (bump=False). Nor may it
     # resurrect a seat a concurrent remove just deleted (create=False).
     if not meta_set(s["seat_id"], {"now": line, "updated": now()}, bump=False, create=False):
         die("seat %s/%s was removed before the status could land" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+    if s["current"]:
+        lifecycle(seat_project(s), s["current"], "status", text=line)
     print("%s/%s now: %s" % (s["group"], s["alias"], line or "(cleared)"))
 
 
@@ -2723,53 +5208,58 @@ def unlink_seat_files(seat_id):
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def locked_fresh(s0, verb):
-    """Take the seat's lifecycle locks and re-load the record; (locks, seat)."""
+def locked_fresh(s0, verb, session=""):
+    """Take the seat's lifecycle locks and re-load the record; (locks, seat).
+    Given `session`, the one a name bound (find_target), a seat that no
+    longer holds it is refused: an address names a session, and a refill
+    after the name was resolved must not put another session in its place."""
     locks = lock_seat(s0)
     s = reload_seat(s0["seat_id"])
     if s is None:
         unlock(locks)
         die("seat %s/%s vanished before the %s could start" % (s0["group"], s0["alias"], verb), EXIT_UNKNOWN)
+    if session and s["current"] != session:
+        unlock(locks)
+        die("no %s: session %s left seat %s/%s, which now holds %s — name the seat to reach whoever holds it" % (
+            verb, session[:8], s["group"], s["alias"], s["current"][:8] or "no session"), EXIT_UNKNOWN)
     return locks, s
 
 
 def cmd_retire(a):
-    target = resolve_seat(a.seat)
-    caller = caller_seat()
-    descendants = []
-    reachable = reach_of(caller) if is_family_seat(caller) else None
-    visited = {target["seat_id"]}
+    """Stop one member and record it retired. Nothing it spawned goes with it:
+    a spawner is provenance, not a host."""
+    target = find_target(a.seat)
+    if target[0] == "none":
+        die("no seat or member matching '%s'" % a.seat, EXIT_UNKNOWN)
+    if target[0] == "seat":
+        _retire_one(target[1], a.purge, target[2])
+        return
+    project, m = target[1], target[2]
+    if not m.local:
+        die("%s is on %s" % (m.alias, m.machine), EXIT_UNKNOWN)
+    if a.purge:
+        die("%s holds no seat: there is no record to purge" % m.alias)
+    # A session sminos did not spawn: its harness row, if the harness lists
+    # it with an id (a background session), is what stops it. An interactive
+    # session has none, and runs on in its human's terminal. Either way the
+    # retirement names the process it saw, and holds for that process's life
+    # (retirement_holds): only a new process — a resume — re-joins it.
+    agents_refresh()
+    row = agent_row(session_id=m.session)
+    stopped = bool(row and row.get("id")) and claude_stop(row["id"])
+    proc = session_running(m.session)
+    lifecycle(project, m.session, "retired", by=caller_alias(), reason="retire",
+              **({"pid": proc.get("pid")} if proc else {}))
+    if proc and not stopped:
+        print("retired %s (session %s): %s's session keeps running in its terminal; it re-joins when resumed as a "
+              "new process" % (m.alias, m.short, m.alias))
+    else:
+        print("retired %s (session %s; it holds no seat, so nothing is kept)" % (m.alias, m.short))
 
-    def collect(host, own_subtree):
-        # Parents may form a cycle (the registry permits it): visit each seat once.
-        for child in family_of(host)[1]:
-            if child["seat_id"] in visited:
-                continue
-            visited.add(child["seat_id"])
-            child_is_own = own_subtree or (caller is not None and child["seat_id"] == caller["seat_id"])
-            if reachable is not None and child["seat_id"] not in reachable and not child_is_own:
-                require_reach(caller, child)
-            collect(child, child_is_own)
-            descendants.append(child)
 
-    if a.cascade:
-        # Preflight the entire subtree before retiring anyone: descendants of
-        # our own seat are ours, but a sibling's descendants are not.
-        own_subtree = (caller is not None and
-                       (target["seat_id"] == caller["seat_id"] or target["parent"] == caller["alias"]))
-        collect(target, own_subtree)
-    for child in descendants + [target]:
-        _retire_one(child, a.purge)
-
-
-def _retire_one(s0, purge):
-    locks, s = locked_fresh(s0, "retire")
+def _retire_one(s0, purge, session=""):
+    locks, s = locked_fresh(s0, "retire", session)
     try:
-        live_children = [c["alias"] for c in family_of(s)[1] if c["seat_id"] != s["seat_id"] and
-                         state(c) in FILLED]
-        if live_children:
-            die("%s/%s hosts live children: %s — retire them first or use --cascade" % (
-                s["group"], s["alias"], ", ".join(live_children)), EXIT_UNKNOWN)
         stop_session(s)
         if s["engine"] == "codex":
             hint = "legacy codex-CLI worker — no resume path; remove with: sminos remove %s/%s" % (s["group"], s["alias"])
@@ -2777,12 +5267,17 @@ def _retire_one(s0, purge):
             hint = 'sminos fill %s/%s --resume "<task>"' % (s["group"], s["alias"])
         else:
             hint = 'sminos fill %s/%s "<task>"' % (s["group"], s["alias"])
+        # The record first, then the event: reconciliation re-reads the record
+        # under the session file's lock, so it cannot re-join in between.
         if purge:
             unlink_seat_files(s["seat_id"])
+        else:
+            meta_set(s["seat_id"], {"status": "retired", "updated": now()})
+        lifecycle(seat_project(s), s["current"], "retired", by=caller_alias(), reason="retire")
+        if purge:
             print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
                 s["group"], s["alias"], s["seat_id"], worktree_note(s)))
         else:
-            meta_set(s["seat_id"], {"status": "retired", "updated": now()})
             print("retired %s/%s [%s] (seat kept; re-fill with: %s)%s" % (
                 s["group"], s["alias"], s["seat_id"], hint, worktree_note(s)))
     finally:
@@ -2794,6 +5289,8 @@ def cmd_remove(a):
     try:
         stop_session(s)
         unlink_seat_files(s["seat_id"])
+        # A removed seat's session leaves the family with it.
+        lifecycle(seat_project(s), s["current"], "retired", by=caller_alias(), reason="retire")
         print("removed %s/%s [%s] (chat history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
         unlock(locks)
@@ -2802,68 +5299,85 @@ def cmd_remove(a):
 # --------------------------------------------------------------------- views
 
 
-def now_or_reply(s, st):
-    """What a seat is doing, for a view that already read its state word `st`:
-    its own status line; for a waiting seat without one, what the session
-    waits for; else the first words of its latest reply."""
-    if s["now"]:
-        return s["now"]
-    if st == "waiting":
-        waiting_for = " ".join(str((peer_for_session(s["current"]) or {}).get("waitingFor") or "").split())
-        if waiting_for:
-            return waiting_for
-    return " ".join(reply_text(s["seat_id"]).split())[:46]
+def view_projects(q, every=False):
+    """(projects, fleet): the projects a view shows — the one named; with
+    `every`, every project known here; else the caller's (its seat's, or the
+    working directory's), and from a directory that is no project, every
+    project known here — and whether that is the fleet, every project."""
+    if q:
+        return [find_project(q)], False
+    here = None if every else caller_scope()
+    if here is not None:
+        return [here], False
+    return sorted(known_projects(), key=lambda p: (p.name, p.id)), True
 
 
-def list_row(s, st, width):
-    now_col = now_or_reply(s, st)[:46]
-    if s["role"]:
-        now_col = s["role"].upper() + (" · " + now_col if now_col else "")
-    return ("  %-*s   %-8s  %s" % (width, s["alias"], st, now_col)).rstrip()
+def project_rows(project):
+    """A view's rows for a project: its members, newest join first, then the
+    seats no member stands for (vacant, retired, replaced)."""
+    ms, rest = project_view(project)
+    return ms + rest
+
+
+def short_age(seconds):
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return "%d%s" % (seconds // size, unit)
+    return "%ds" % seconds
+
+
+def state_column(m):
+    """The state word; for a member on another machine, its last published
+    word, `@<machine>`, and how long ago it was published."""
+    if m.local:
+        return m.state
+    return " ".join(x for x in (m.state or "?", "@" + m.machine,
+                                short_age(m.state_age) if m.state_age is not None else "") if x)
+
+
+def list_row(m, label, width, state_width):
+    rest = [charge_shown(m)] if charge_shown(m) else []
+    if m.status:
+        rest.append("· now: " + m.status)
+    if m.by:
+        rest.append("· by " + m.by)
+    return ("  %-*s   %-*s  %s" % (width, label, state_width, state_column(m), "  ".join(rest))).rstrip()
 
 
 def cmd_list(a):
-    caller = caller_seat()
-    rows = seats(a.group)
-    if is_family_seat(caller):
-        reach = reach_of(caller)
-        rows = [s for s in rows if s["seat_id"] in reach]
-    rows = [(s, state(s)) for s in rows]
-    if a.state:
-        rows = [(s, st) for s, st in rows if st == a.state]
-    rows.sort(key=lambda r: r[0]["updated"], reverse=True)
+    """One heading per project, its members newest first: alias (with #short
+    when another member shares it), state word, in-charge line, `· now:` the
+    status, `· by` the spawner."""
+    projects, _fleet = view_projects(a.project, a.all)
+    unfold = a.all or bool(a.state)
+    sections, out, hidden = [], [], 0
+    for p in projects:
+        every = project_rows(p)
+        rows = [m for m in every if not a.state or m.state == a.state]
+        if a.json:
+            out += [member_json(m, p) for m in rows]
+            continue
+        # The text view folds what only a `fill` (or the human) can act on,
+        # as chart and tui do, unless --all or an explicit --state names the
+        # word; the tail line says how many it folded. --json keeps every row.
+        if not unfold:
+            hidden += sum(1 for m in rows if m.state in HIDDEN)
+            rows = [m for m in rows if m.state not in HIDDEN]
+        if rows:
+            sections.append((p, rows, every))
     if a.json:
-        out = []
-        for s, st in rows:
-            d = public_seat(s)
-            d["state"] = st
-            out.append(d)
         print(json.dumps(out, indent=2))
         return
-    # The text view folds the seats only a `fill` can act on, as chart and
-    # tui do, unless --all or an explicit --state names the word; the tail
-    # line says how many it folded. --json keeps every row (a script filters
-    # on `state`).
-    hidden = 0
-    if not a.all and not a.state:
-        hidden = sum(1 for _, st in rows if st in HIDDEN)
-        rows = [(s, st) for s, st in rows if st not in HIDDEN]
     tail = ("+%d hidden (%s) — sminos list --all" % (hidden, ", ".join(HIDDEN))) if hidden else ""
-    if not rows:
-        print("(no seats)")
-        if tail:
-            print(tail)
-        return
-    # Groups in order of their most recently updated seat: rows are already
-    # newest first, so a group's first appearance is its place.
-    groups = {}
-    for s, st in rows:
-        groups.setdefault(s["group"], []).append((s, st))
-    for g, members in groups.items():
-        width = min(max(len(s["alias"]) for s, _ in members), 24)
-        print(g)
-        for s, st in members:
-            print(list_row(s, st, width))
+    if not sections:
+        print("(no members)")
+    for p, rows, every in sections:
+        labels = [member_label(m, every) for m in rows]
+        width = min(max(len(x) for x in labels), 24)
+        state_width = max(len(state_column(m)) for m in rows)
+        print(p.name)
+        for m, label in zip(rows, labels):
+            print(list_row(m, label, width, state_width))
     if tail:
         print(tail)
 
@@ -2895,23 +5409,30 @@ def chart_module():
     return sibling_module("sminos_chart")
 
 
-def chart_group_or_die(g):
-    if g is not None:
-        if not valid_name(g):
-            die("bad group name: %s" % g)
-        if not group_exists(g):
-            die("no such group: %s" % g, EXIT_UNKNOWN)
+def daemon_module():
+    return sibling_module("sminos_daemon")
+
+
+def tick(project):
+    """One daemon tick of one project (§8): integrate, reconcile, publish,
+    deliver, push. {"integrated", "reconciled", "published", "delivered",
+    "pushed"}, plus "to" (the aliases delivered to) and "error"."""
+    return daemon_module().tick(project)
+
+
+def cmd_daemon(a):
+    if not a.op:
+        die("usage: sminos daemon run [--interval N] | tick | install | status")
+    daemon_module().cmd_daemon(a)
 
 
 def cmd_chart(a):
-    """The organisation chart as text: boxes left-to-right, hidden seats folded
-    into '+N hidden' unless --all, then one summary line."""
-    if is_family_seat(caller_seat()):
-        die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
-    g = a.group
-    chart_group_or_die(g)
+    """The members as boxes, flat: one project's in a column, or — for every
+    project — each project a rounded box with its members beside it; hidden
+    members folded into '+N hidden' unless --all; then one summary line."""
+    projects, boxed = view_projects(a.project, a.all)
     chart = chart_module()
-    roots, meta = chart.snapshot(g, a.all)
+    roots, meta = chart.snapshot(projects, a.all, boxed)
     lay = chart.layout(roots)
     width = a.width or (shutil.get_terminal_size((120, 40)).columns if sys.stdout.isatty() else 120)
     if lay["boxes"]:
@@ -2919,16 +5440,16 @@ def cmd_chart(a):
         chart.paint_chart(scr, lay)
         print(scr.text())
     else:
-        print("(no seats to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are hidden; sminos chart --all" % meta["hidden"]))
+        print("(no members to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are hidden; sminos chart --all" % meta["hidden"]))
     bits = []
-    if g is None:
-        bits.append("%d groups" % meta["groups"])
-    bits += ["%d seats" % meta["seats"], "%d live" % meta["live"]]
+    if boxed:
+        bits.append("%d projects" % meta["projects"])
+    bits += ["%d members" % meta["members"], "%d live" % meta["live"]]
     if meta["hidden"]:
         hid = "%d hidden" % meta["hidden"]
-        if meta["hidden_groups"]:
-            hid += " in %d group(s) folded away" % meta["hidden_groups"]
-        bits.append(hid + ("" if a.all else " (sminos chart%s --all)" % ((" " + g) if g else "")))
+        if meta["hidden_projects"]:
+            hid += " in %d project(s) folded away" % meta["hidden_projects"]
+        bits.append(hid + ("" if a.all else " (sminos chart%s --all)" % ((" " + a.project) if a.project else "")))
     if lay["width"] > width:
         bits.append("%d cells clipped on the right (--width %d)" % (lay["width"] - width, width))
     print(" · ".join(bits))
@@ -2937,9 +5458,7 @@ def cmd_chart(a):
 def cmd_tui(a):
     """The chart as an interactive screen (sminos_tui): headless when asked,
     otherwise a real terminal inside tmux."""
-    if is_family_seat(caller_seat()):
-        die("an operator view; your family is `sminos list`", EXIT_UNKNOWN)
-    chart_group_or_die(a.group)
+    view_projects(a.project, a.all)  # an unknown project exits 4 before any screen
     sibling_module("sminos_tui").cmd_tui(a)
 
 
@@ -2989,9 +5508,8 @@ def build_parser():
     sp.add_argument("alias")
     sp.add_argument("task")
     # Definition flags default to None so a re-fill can tell "not given" (keep
-    # the seat's value) from "given as empty".
-    sp.add_argument("--group", default=None)
-    sp.add_argument("--parent", default=None)
+    # the seat's value) from "given as empty". --group and --parent left with
+    # the family tree: the project is the group, and there is no parent.
     sp.add_argument("--role", default=None)
     sp.add_argument("--brief", default=None)
     sp.add_argument("--cwd", default="")
@@ -3009,7 +5527,6 @@ def build_parser():
     sa.add_argument("alias")
     sa.add_argument("--role", default=None)
     sa.add_argument("--brief", default=None)
-    sa.add_argument("--parent", default=None)
     sa.add_argument("--session", default="")
     sa.set_defaults(fn=cmd_seat_add)
 
@@ -3043,16 +5560,47 @@ def build_parser():
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
     say.add_argument("--in", dest="in_", default="")
-    say.add_argument("--team", action="store_true")
     say.set_defaults(fn=cmd_say)
 
     chat = sub.add_parser("chat", add_help=False)
-    chat.add_argument("host", nargs="?", default="")
-    chat.add_argument("-n", type=int, default=30)
-    chat.add_argument("--since", type=int, default=None)
-    chat.add_argument("--team", action="store_true")
+    chat.add_argument("project", nargs="?", default="")
+    chat.add_argument("-n", type=int, default=None)
+    chat.add_argument("--since", default=None)
+    chat.add_argument("--kind", action="append", default=None)
     chat.add_argument("--json", action="store_true")
+    chat.add_argument("--host", action="store_true")
     chat.set_defaults(fn=cmd_chat)
+
+    cg = sub.add_parser("charge", add_help=False)
+    cg.add_argument("args", nargs="+")
+    cg.set_defaults(fn=cmd_charge)
+
+    dv = sub.add_parser("derive", add_help=False)
+    dv.add_argument("member", nargs="?", default="")
+    dv.add_argument("--all", action="store_true")
+    dv.set_defaults(fn=cmd_derive)
+
+    rec = sub.add_parser("record", add_help=False)
+    rec.set_defaults(fn=cmd_record)
+
+    pj = sub.add_parser("project", add_help=False)
+    psub = pj.add_subparsers(dest="op")
+    pi = psub.add_parser("init", add_help=False)
+    pi.add_argument("--name", default="")
+    pi.add_argument("--remote", default="")
+    pi.set_defaults(fn=cmd_project)
+    for op in ("show", "attach"):
+        po = psub.add_parser(op, add_help=False)
+        po.add_argument("dir", nargs="?", default="")
+        po.set_defaults(fn=cmd_project)
+
+    dm = sub.add_parser("daemon", add_help=False)
+    dsub = dm.add_subparsers(dest="op")
+    dr = dsub.add_parser("run", add_help=False)
+    dr.add_argument("--interval", type=float, default=5.0)
+    for op in ("tick", "install", "status"):
+        dsub.add_parser(op, add_help=False)
+    dm.set_defaults(fn=cmd_daemon)
 
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")
@@ -3071,7 +5619,6 @@ def build_parser():
     rt = sub.add_parser("retire", add_help=False)
     rt.add_argument("seat")
     rt.add_argument("--purge", action="store_true")
-    rt.add_argument("--cascade", action="store_true")
     rt.set_defaults(fn=cmd_retire)
 
     rm = sub.add_parser("remove", add_help=False)
@@ -3079,20 +5626,20 @@ def build_parser():
     rm.set_defaults(fn=cmd_remove)
 
     ls = sub.add_parser("list", add_help=False)
-    ls.add_argument("group", nargs="?", default=None)
+    ls.add_argument("project", nargs="?", default="")
     ls.add_argument("--state", default="", choices=STATES)
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--all", action="store_true")
     ls.set_defaults(fn=cmd_list)
 
     ch = sub.add_parser("chart", add_help=False)
-    ch.add_argument("group", nargs="?", default=None)
+    ch.add_argument("project", nargs="?", default="")
     ch.add_argument("--all", action="store_true")
     ch.add_argument("--width", type=int, default=0)
     ch.set_defaults(fn=cmd_chart)
 
     tu = sub.add_parser("tui", add_help=False)
-    tu.add_argument("group", nargs="?", default=None)
+    tu.add_argument("project", nargs="?", default="")
     tu.add_argument("--all", action="store_true")
     tu.add_argument("--headless", action="store_true")
     tu.add_argument("--keys", default="")
@@ -3133,12 +5680,20 @@ def main(argv=None):
         if did and not a.quiet:
             print("sminos: migrated: %s" % "; ".join(did))
         return
+    if a.cmd == "record":
+        run_record()
+        return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":
-            die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--session S]")
+            die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--session S]")
+        if a.cmd == "project":
+            die("usage: sminos project init [--name N] [--remote URL] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
-    a.fn(a)
+    try:
+        a.fn(a)
+    except LogWriteFailed as e:
+        die("%s completed, but %s" % (a.cmd, e), 1)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""sminos_chart — the seat fleet drawn as a box organisation chart.
+"""sminos_chart — the project families drawn as boxes.
 
 Three pure layers over the registry that `sminos.py` exposes:
 
-  snapshot()     reads seats + their state words into a tree of NODES and
-                 applies the hide rule (hidden seats fold into a "+N hidden"
-                 note);
+  snapshot()     reads the projects' members and their state words into
+                 NODES — flat: one project's members are roots, or, for
+                 several projects, each project is a box with its members
+                 beside it — and applies the hide rule (hidden members fold
+                 into a "+N hidden" note); there is no tree of seats;
   layout()       places one box per node left-to-right — roots in the first
                  column, children one column to the right, siblings stacked
                  vertically, a parent centred on its children — and computes
@@ -16,7 +18,6 @@ GridScreen renders to text (backs `sminos chart` and the tests); the curses TUI
 supplies its own Screen subclass. Nothing here writes to the registry.
 """
 
-import glob
 import os
 import sys
 import unicodedata
@@ -25,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 
 GLYPH = {"busy": "●", "idle": "○", "waiting": "◐", "stopped": "■", "gone": "✕", "vacant": "◌", "retired": "⊘"}
-BOX_LINES = 3
+BOX_LINES = 4
 
 # ------------------------------------------------------------- display width
 
@@ -69,108 +70,63 @@ def fit(s, n, collapse=True):
 
 
 def is_dead(st):
-    """Hidden by default (shown with --all): a retired or gone seat — one only
-    a `fill` can act on. The word decides; the hide rule asks nothing more.
-    `list` folds the same words (sminos.HIDDEN)."""
+    """Hidden by default (shown with --all): a retired or gone member — one
+    only a `fill` (or its human) can act on. The word decides; the hide rule
+    asks nothing more. `list` folds the same words (sminos.HIDDEN)."""
     return st in sminos.HIDDEN
 
 
-def seat_node(s, st, node_id):
-    return {"kind": "seat", "id": node_id, "label": s["alias"], "role": s["role"], "state": st,
-            "now": sminos.now_or_reply(s, st), "dead": is_dead(st),
-            "children": [], "hidden": 0, "seat": sminos.public_seat(s)}
+def member_node(project, m, label):
+    """One member's box, carrying the facts `list` prints (§7): the in-charge
+    line, `now:` the status, `by` the spawner, and for a member on another
+    machine `@machine age` beside its word. `id` keys the box by the
+    project's id and the seat's (or the session's) — names repeat across
+    projects; `name` is the qualified one shown. `ref` is what `sminos send`
+    takes for it: exactly the seat's id, else the session's — a seat's
+    group/alias can name a seat-less member too."""
+    seat = m.seat
+    return {"kind": "seat", "id": "%s/%s" % (project.id, seat["seat_id"] if seat else m.session),
+            "name": "%s/%s" % (project.name, label), "label": label,
+            "role": (seat or {}).get("role") or "", "state": m.state, "word": sminos.state_column(m),
+            "charge": sminos.charge_shown(m), "now": m.status, "by": m.by, "dead": is_dead(m.state),
+            "children": [], "hidden": 0, "seat": sminos.public_seat(seat) if seat else None,
+            "member": sminos.member_json(m), "project": project,
+            "ref": seat["seat_id"] if seat else m.session}
 
 
-def count_nodes(nodes):
-    return sum(1 + count_nodes(n["children"]) for n in nodes)
+def project_members(project, show_all=False):
+    """One project's members as flat nodes, newest join first, after the hide
+    rule: (nodes, hidden, n_members, n_live)."""
+    rows = sminos.project_rows(project)
+    nodes = [member_node(project, m, sminos.member_label(m, rows)) for m in rows]
+    kept = [n for n in nodes if show_all or not n["dead"]]
+    return kept, len(nodes) - len(kept), len(nodes), sum(1 for n in nodes if n["state"] in sminos.FILLED)
 
 
-def group_tree(group, show_all=False):
-    """One group's seats as a forest after the hide rule.
-
-    Returns (roots, hidden, n_seats, n_live). `hidden` is how many seats were
-    folded away in total; each kept node's own `hidden` counts the folded seats
-    beneath it (whole subtrees, so "+N hidden" is the full count).
-    """
-    gs = sorted(sminos.seats(group), key=lambda s: (s["alias"], s["seat_id"]))
-    aliases = {s["alias"] for s in gs}
-    nodes, ids = {}, set()
-    for s in gs:
-        nid = "%s/%s" % (s["group"], s["alias"])
-        if nid in ids:  # a duplicate alias in one group still gets its own box
-            nid += "#" + s["seat_id"][:8]
-        ids.add(nid)
-        nodes[s["seat_id"]] = seat_node(s, sminos.state(s), nid)
-    n_live = sum(1 for n in nodes.values() if n["state"] in sminos.FILLED)
-    visited = set()
-
-    def walk(s):
-        node = nodes[s["seat_id"]]
-        visited.add(s["seat_id"])
-        for c in gs:
-            if c["parent"] == s["alias"] and c["seat_id"] not in visited and c["seat_id"] != s["seat_id"]:
-                node["children"].append(walk(c))
-        return node
-
-    roots = []
-    for s in gs:
-        if s["seat_id"] in visited:
-            continue
-        if not s["parent"] or s["parent"] not in aliases or s["parent"] == s["alias"]:
-            roots.append(walk(s))
-    for s in gs:  # members of a parent cycle are reachable from no root: break it here
-        if s["seat_id"] not in visited:
-            roots.append(walk(s))
-
-    def prune(node):
-        kept = []
-        for c in node["children"]:
-            if prune(c):
-                kept.append(c)
-            else:
-                # c is folded away: it, whatever is still hanging off it, and
-                # everything prune() already folded away beneath it — else a
-                # parent says "+1 hidden" over a whole hidden subtree while the
-                # summary counts every seat in it.
-                node["hidden"] += 1 + count_nodes(c["children"]) + c["hidden"]
-        node["children"] = kept
-        return show_all or not node["dead"] or bool(kept)
-
-    kept_roots = [r for r in roots if prune(r)]
-    return kept_roots, len(gs) - count_nodes(kept_roots), len(gs), n_live
-
-
-def group_names():
-    names = {s["group"] for s in sminos.seats()}
-    for gp in glob.glob(os.path.join(sminos.root(), "groups", "*")):
-        if os.path.isdir(gp):
-            names.add(os.path.basename(gp))
-    return sorted(names)
-
-
-def snapshot(group=None, show_all=False):
-    """(roots, meta). With a group: that group's seat forest. Without: one
-    rounded GROUP node per group, its children the group's roots; a group with
-    nothing visible is dropped (counted in meta["hidden_groups"]) unless
-    show_all. meta = {"groups", "seats", "live", "hidden", "hidden_roots",
-    "hidden_groups"}."""
-    if group is not None:
-        roots, hidden, n, live = group_tree(group, show_all)
-        return roots, {"groups": 1, "seats": n, "live": live, "hidden": hidden,
-                       "hidden_roots": hidden, "hidden_groups": 0}
-    roots, meta = [], {"groups": 0, "seats": 0, "live": 0, "hidden": 0, "hidden_roots": 0, "hidden_groups": 0}
-    for g in group_names():
-        gr, hidden, n, live = group_tree(g, show_all)
-        meta["groups"] += 1
-        meta["seats"] += n
+def snapshot(projects, show_all=False, boxed=True):
+    """(roots, meta). Unboxed: the projects' members, flat, as roots. Boxed:
+    one rounded PROJECT node per project, its children its members; a project
+    with nothing visible is dropped (counted in meta["hidden_projects"])
+    unless show_all. meta = {"projects", "members", "live", "hidden",
+    "hidden_projects"}."""
+    roots, meta = [], {"projects": 0, "members": 0, "live": 0, "hidden": 0, "hidden_projects": 0}
+    names = [p.name for p in projects]
+    for p in projects:
+        nodes, hidden, n, live = project_members(p, show_all)
+        meta["projects"] += 1
+        meta["members"] += n
         meta["live"] += live
         meta["hidden"] += hidden
-        if not gr and not show_all:
-            meta["hidden_groups"] += 1
+        if not boxed:
+            roots += nodes
             continue
-        roots.append({"kind": "group", "id": g, "label": g, "role": "", "state": "", "now": "",
-                      "dead": False, "children": gr, "hidden": hidden, "seats": n, "alive": live})
-    meta["hidden_roots"] = meta["hidden"]
+        if not nodes and not show_all:
+            meta["hidden_projects"] += 1
+            continue
+        name = p.name if names.count(p.name) == 1 else "%s#%s" % (p.name, p.id[:8])
+        roots.append({"kind": "project", "id": p.id, "name": name, "label": p.name, "role": "", "state": "", "word": "",
+                      "charge": "", "now": "", "by": "", "dead": False, "children": nodes, "hidden": hidden, "members": n, "alive": live,
+                      "project": p})
     return roots, meta
 
 
@@ -178,19 +134,25 @@ def snapshot(group=None, show_all=False):
 
 
 def node_lines(node, collapsed=()):
-    """The box's three content lines as (left, right) pairs; `right` is
-    right-aligned on the same line (a seat's ROLE)."""
-    if node["kind"] == "group":
-        counts = "%d seats · %d live" % (node["seats"], node["alive"])
+    """The box's four content lines as (left, right) pairs; `right` is
+    right-aligned on the same line (a seat's ROLE). A member: its name, its
+    word, its in-charge line, then `now:` its status and `by` its spawner."""
+    if node["kind"] == "project":
+        counts = "%d members · %d live" % (node["members"], node["alive"])
         if node["id"] in collapsed and node["children"]:
             counts = "▸ " + counts
-        return [(node["label"], ""), (counts, ""), (("+%d hidden" % node["hidden"]) if node["hidden"] else "", "")]
-    tail = node["now"] or (("+%d hidden" % node["hidden"]) if node["hidden"] else "")
-    return [(node["label"], (node["role"] or "").upper()), (glyph_line(node), ""), (tail, "")]
+        return [(node["label"], ""), (counts, ""), (("+%d hidden" % node["hidden"]) if node["hidden"] else "", ""),
+                ("", "")]
+    tail = " · ".join(x for x in (("now: " + node["now"]) if node["now"] else "",
+                                  ("by " + node["by"]) if node["by"] else "") if x)
+    return [(node["label"], (node["role"] or "").upper()), (glyph_line(node), ""), (node["charge"], ""), (tail, "")]
 
 
 def glyph_line(node):
-    return "%s %s" % (GLYPH[node["state"]], node["state"])
+    """The state glyph and the word as `list` prints it: for a member on
+    another machine, `@machine age` beside its last published word ("?"
+    before it published one)."""
+    return "%s %s" % (GLYPH.get(node["state"], "?"), node.get("word") or node["state"] or "?")
 
 
 def line_need(left, right):
@@ -350,7 +312,7 @@ HEAVY = ("┏", "┓", "┗", "┛", "━", "┃")
 
 def paint_chart(screen, lay, focus_id=None, ox=0, oy=0, styles=None, collapsed=()):
     """Draw connectors, then boxes, shifted by the viewport offsets (ox, oy).
-    `styles` maps names — focus, dim, group, edge, and the state words —
+    `styles` maps names — focus, dim, project, edge, and the state words —
     to screen attributes; missing names draw plain."""
     st = styles or {}
     for y, x, text in lay["edges"]:
@@ -361,9 +323,9 @@ def paint_chart(screen, lay, focus_id=None, ox=0, oy=0, styles=None, collapsed=(
         if focused:
             tl, tr, bl, br, hz, vt = HEAVY
             attr = st.get("focus", 0)
-        elif n["kind"] == "group":
+        elif n["kind"] == "project":
             tl, tr, bl, br, hz, vt = ROUND
-            attr = st.get("group", 0)
+            attr = st.get("project", 0)
         else:
             tl, tr, bl, br, hz, vt = PLAIN
             attr = st.get("dim", 0) if n["dead"] else 0
