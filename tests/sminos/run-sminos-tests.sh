@@ -3640,6 +3640,35 @@ assert_contains "$OUT" "mute" "and stays a member"
 assert_equals "$(events_of "$MU")" "joined " "with no retired (ended) for an unanswering inbox"
 rm -f "$HOME/.claude/sessions/pf-mute.json"
 run "$SMINOS" list   # its process is gone now: its membership ends
+# One session the legacy conversion left in seats of two projects is bound,
+# in each project, by that project's own seat: another project's retired seat
+# neither names it, nor colours its state, nor keeps it from joining.
+SHR=5d00001b-0000-4000-8000-00000000005d
+legacy_seat() { # seat-id session alias group status cwd
+  printf '{"uuid":"%s","current":"%s","alias":"%s","group":"%s","status":"%s","cwd":"%s"}' "$1" "$2" "$3" "$4" "$5" "$6" \
+    > "$SMINOS_HOME/$1.json"
+  chmod 600 "$SMINOS_HOME/$1.json"
+}
+legacy_seat "$SHR" "$SHR" primary pf-repo idle "$R"
+pf_peer primary "$SHR" idle seat
+run "$SMINOS" list
+assert_equals "$(events_of "$SHR")" "joined " "a seat's session joins"
+legacy_seat fe00001c-0000-4000-8000-0000000000fe "$SHR" secondary pf-second retired "$P4"   # read after it
+run "$SMINOS" list
+assert_contains "$OUT" "  primary" "a session another project's retired seat also holds lists under its own seat's alias"
+assert_not_contains "$OUT" "secondary" "never the other project's"
+assert_equals "$(json_row primary state)" "idle" "with its own seat's state"
+SHB=6d00001d-0000-4000-8000-00000000006d
+legacy_seat 0a00001e-0000-4000-8000-0000000000a0 "$SHB" secondary2 pf-second retired "$P4"   # read before it
+legacy_seat "$SHB" "$SHB" primary2 pf-repo idle "$R"
+pf_peer primary2 "$SHB" idle seat
+hook_run SessionStart "$SHB" "$R" "$TEST_ROOT/no-such-transcript.jsonl" startup
+assert_equals "$(events_of "$SHB")" "joined " "the hook joins a seat's session that another project's retired seat also holds"
+rm -f "$SMINOS_HOME/fe00001c-0000-4000-8000-0000000000fe.json" "$SMINOS_HOME/0a00001e-0000-4000-8000-0000000000a0.json" \
+  "$HOME/.claude/sessions/pf-primary.json" "$HOME/.claude/sessions/pf-primary2.json"
+"$SMINOS" remove pf-repo/primary >/dev/null
+"$SMINOS" remove pf-repo/primary2 >/dev/null
+run "$SMINOS" list
 
 # The chart and the tui draw what list prints (§7): the in-charge line,
 # `now:` the status, `by` the spawner, and a remote member's @machine age.

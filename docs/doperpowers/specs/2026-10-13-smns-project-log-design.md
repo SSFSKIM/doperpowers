@@ -1678,6 +1678,19 @@ Dispatch scripts: one `--brief` each.
   budget. A user-type record the harness wrote after the answer would cost
   the full 2 s, and nothing would be lost.
   Date/Author: 2026-10-14, the branch-review fix wave (review 4).
+- Decision: in a project's projection, a session is bound by that
+  project's own seat (one whose cwd resolves to it) when it has one.
+  Reconciliation and the hook use the same rule. The legacy conversion keeps
+  one session in seats of several groups, which can belong to different
+  projects. A retired seat of another project therefore neither names the
+  member, nor gives it its state, nor blocks the member's join on sight.
+  When the project holds no seat for the session, the seat holding it
+  elsewhere still binds it: a seat whose cwd moved keeps standing for its
+  session, one seat one target (`find_target`). Binding only by the
+  project's own seats was tried first. It made a moved seat's session a
+  seat-less member in its old project, which no reconciliation retires
+  while a seat holds it, and turned that seat's name ambiguous.
+  Date/Author: 2026-10-14, the branch-review fix wave (review 5).
 
 ## Outcomes & Retrospective
 

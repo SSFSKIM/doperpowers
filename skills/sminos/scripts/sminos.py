@@ -1022,6 +1022,27 @@ def join_seat(seat, by=""):
                                      seat["seat_id"], by))
 
 
+def seats_by_session(project, all_seats):
+    """{session: seat}: the seat that binds a session in the project's
+    projection. The legacy conversion can leave one session in seats of
+    several projects, and there the project's own seat (its cwd resolves to
+    the project) binds it, never another project's. A session the project
+    holds no seat for is bound by the seat that holds it elsewhere: a seat
+    whose cwd moved still stands for the session it holds, one seat one
+    target (find_target)."""
+    out, own = {}, set()
+    for s in all_seats:
+        sid = s["current"]
+        if not sid:
+            continue
+        mine = (p := seat_project(s)) is not None and p.id == project.id
+        if mine or sid not in own:
+            out[sid] = s
+            if mine:
+                own.add(sid)
+    return out
+
+
 def _local_sessions(project, all_seats):
     """This machine's evidence of sessions in the project: {session: {"seat",
     "peer"}} for every seat whose cwd resolves to it and every harness session
@@ -1310,7 +1331,7 @@ def view_of(project, all_seats=None, titles=True):
     if titles and project.id in _VIEWS:
         return _VIEWS[project.id]
     all_seats = seats() if all_seats is None else all_seats
-    by_session = {s["current"]: s for s in all_seats if s["current"]}
+    by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
     events = log_read(project)
     appended = _reconcile(project, events, local, by_session)
@@ -1358,8 +1379,8 @@ def reconcile(project):
     """Join this machine's unrecorded sessions in the project; how many."""
     _VIEWS.pop(project.id, None)
     all_seats = seats()
-    by_session = {s["current"]: s for s in all_seats if s["current"]}
-    return len(_reconcile(project, log_read(project), _local_sessions(project, all_seats), by_session))
+    return len(_reconcile(project, log_read(project), _local_sessions(project, all_seats),
+                          seats_by_session(project, all_seats)))
 
 
 def _owed(events, session, record):
@@ -2227,7 +2248,7 @@ def record_session(project, session, tpath, event, last_message=""):
     position is set, so its first turn counts whole at its Stop. A session
     that is not a member records nothing. At Stop, the export first waits a
     little for the turn's last message to reach the transcript (await_flush)."""
-    seat = next((s for s in seats() if s["current"] == session), None)
+    seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
     peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
     if peer is not None and str(peer.get("pid")) in internal_pids():
         return
