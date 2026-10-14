@@ -3030,7 +3030,11 @@ start_inbox q
 live_peer q "$SQ" idle
 CLAUDE_CODE_SESSION_ID="$WQ" "$SMINOS" say "@q eleven" > "$TEST_ROOT/q-say.out" 2>&1 & qs=$!
 "$SMINOS" daemon tick > "$TEST_ROOT/q-tick.out" 2>&1 & qt=$!
-wait "$qs" || true; wait "$qt" || true
+set +e; wait "$qs"; QS_RC=$?; wait "$qt"; QT_RC=$?; set -e
+assert_rc 0 "$QS_RC" "the sender's say exits 0"
+assert_rc 0 "$QT_RC" "the concurrent daemon tick exits 0"
+assert_contains "$(cat "$TEST_ROOT/q-tick.out")" "demo: reconciled" "and ticked the project"
+assert_not_contains "$(cat "$TEST_ROOT/q-tick.out")" "failed" "reporting no failure (its delivery count may be 0: the fast path may win)"
 assert_equals "$(bodies q | grep -e '^@q ten$' -e '^@q eleven$' | tr '\n' ' ')" "@q ten @q eleven " \
   "with the fast path and a daemon tick at once, 10 and 11 each arrive once, 11 never before 10"
 assert_equals "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[sys.argv[2]]; print(d["settled"], d["pending"])' \
@@ -4282,6 +4286,17 @@ run env "${H1[@]}" "$SMINOS" daemon tick
 assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "a state flip lasting one tick is not published"
 md_peer h1 a "$A" busy
 run env "${H1[@]}" "$SMINOS" daemon tick
+md_peer h1 a "$A" waiting
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "two different unpublished words, a tick each, publish nothing"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$(tail -1 "$LOG1/h1.$A.jsonl")" '"state": "waiting", "machine": "h1"' "the second word held for a second tick is published"
+md_peer h1 a "$A" idle
+run env "${H1[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" daemon tick
+STATES_BEFORE="$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")"
+md_peer h1 a "$A" busy
+run env "${H1[@]}" "$SMINOS" daemon tick
 run env "${H1[@]}" "$SMINOS" daemon tick
 assert_contains "$(tail -1 "$LOG1/h1.$A.jsonl")" '"kind": "state", "session": "'"$A"'", "state": "busy", "machine": "h1"' "one that holds for two ticks is"
 md_peer h1 a "$A" idle
@@ -4484,6 +4499,30 @@ kill "$RUNS"; wait "$RUNS" || true
 assert_contains "$(cat "$MD/run-solo.out")" "delivered 1 to y" "the loop reports the delivery"
 for _ in $(seq 1 300); do grep -q '"source": "derived"' "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl" && break; sleep 0.05; done
 assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl")" '"text": "watches the sleepy fixture", "source": "derived"' "the derivation finishes on its own"
+# Two ticks at once, a derivation due: exactly one derive starts.
+FORKS_BEFORE="$(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log")"
+STARTS_BEFORE="$(grep -c 'derive --all started' "$MD/solo/sminos/daemon.log")"
+python3 - "$MD/solo/sminos/daemon/state.json" <<'PY_DUE'
+import json, sys
+d = json.load(open(sys.argv[1])); d["derive"]["started"] = 0; json.dump(d, open(sys.argv[1], "w"))
+PY_DUE
+python3 - "$MD/solo/sminos/projects/$SOLOP/log/solo.$SL.jsonl" <<'PY_STALE'
+import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+with open(sys.argv[1], "w") as f:
+    for e in lines:
+        if e.get("kind") == "in-charge":
+            e["ts"] = "2000-01-01T00:00:00.000Z"   # the derived line is old: a derivation is due again
+        f.write(json.dumps(e) + "\n")
+PY_STALE
+env "${SOLO[@]}" SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=3 "$SMINOS" daemon tick > /dev/null 2>&1 & TA=$!
+env "${SOLO[@]}" SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=3 "$SMINOS" daemon tick > /dev/null 2>&1 & TB=$!
+wait "$TA" "$TB" || true
+for _ in $(seq 1 100); do [ "$(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log")" -gt "$FORKS_BEFORE" ] && break; sleep 0.05; done
+sleep 0.5
+assert_equals "$(( $(grep -c 'derive --all started' "$MD/solo/sminos/daemon.log") - STARTS_BEFORE ))" 1 "two ticks at once start exactly one derive between them"
+assert_equals "$(( $(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log") - FORKS_BEFORE ))" 1 "one fork"
+for _ in $(seq 1 200); do [ -z "$(find "$MD/solo/sminos/internal" -type f 2>/dev/null)" ] && break; sleep 0.05; done
 # A harness rename is recorded in a project with no remote too: the only
 # record of a name change.
 printf '{"pid":%s,"sessionId":"%s","name":"night-shift","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
@@ -4532,9 +4571,18 @@ real() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1";
 run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
 assert_rc 0 "$RC" "install from the plugin cache succeeds"
 assert_equals "$(plist_cli)" "$(real "$MKT/skills/sminos/scripts/sminos")" "and runs the marketplace clone's CLI, not the versioned cache's"
+PLIST_BEFORE="$(cat "$PLIST")"
+mv "$MKT/skills/sminos/scripts/sminos" "$MD/clone-cli.away"
+run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
+assert_rc 1 "$RC" "from the cache with the clone's CLI missing, install is refused"
+assert_contains "$OUT" "marketplace clone it would run instead is missing" "saying the clone is missing"
+assert_contains "$OUT" "or run the install from a checkout" "and how to recover"
+mv "$MD/clone-cli.away" "$MKT/skills/sminos/scripts/sminos"
 rm "$MD/inst/.claude/plugins/known_marketplaces.json"
 run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
-assert_equals "$(plist_cli)" "$(real "$CACHE/skills/sminos/scripts/sminos")" "with no marketplace clone known, it runs itself"
+assert_rc 1 "$RC" "with no marketplace entry at all, refused too"
+assert_contains "$OUT" "no doperpowers entry in" "naming what is missing"
+assert_equals "$(cat "$PLIST")" "$PLIST_BEFORE" "a refused install writes no plist"
 assert_file_absent "$MD/launchctl.calls" "still loading nothing"
 # run notices new code: a change to its own scripts ends the loop with exit 0,
 # for launchd's KeepAlive to restart it on the new code.

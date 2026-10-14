@@ -346,25 +346,30 @@ def daemon_record(project):
 
 def publish_state(project, view, record):
     """Duty 3, for a mirrored project: for each local member, a `state` event
-    when its word differs from the last one published for it and differed on
-    the previous tick too (one tick of persistence drops the flip inside a
-    tool round) — the first word at once, so another machine never waits on
-    an unpublished member. Into the session's own file. Only another machine
-    reads a published word (a local view computes it live), so a project with
-    no remote publishes none. Returns how many events it appended."""
-    before = set(record.get("differed") or [])
-    differed, n = set(), 0
+    once a word other than the last one published for it has held for two
+    consecutive ticks (one tick of persistence drops the flip inside a tool
+    round) — the first word at once, so another machine never waits on an
+    unpublished member. The word each member was last seen holding while it
+    differed (its candidate) is kept in `record` between ticks. Into the
+    session's own file. Only another machine reads a published word (a local
+    view computes it live), so a project with no remote publishes none.
+    Returns how many events it appended."""
+    before = record.get("candidates")
+    before = before if isinstance(before, dict) else {}
+    candidates, n = {}, 0
     for m in view.members:
         if not (m.local and m.session):
             continue
         last = ((view.info.get(m.session) or {}).get("state") or {}).get("state")
-        if m.state != last:
-            if last is None or m.session in before:
-                n += len(sminos.lifecycle(project, m.session, "state", required=False,
-                                          state=m.state, machine=sminos.host_name()))
-            else:
-                differed.add(m.session)
-    record["differed"] = sorted(differed)
+        if m.state == last:
+            continue
+        if last is None or before.get(m.session) == m.state:
+            n += len(sminos.lifecycle(project, m.session, "state", required=False,
+                                      state=m.state, machine=sminos.host_name()))
+        else:
+            candidates[m.session] = m.state
+    record.pop("differed", None)
+    record["candidates"] = candidates
     return n
 
 
@@ -519,21 +524,25 @@ def derive_running(d):
 def derive_duty():
     """Duty 6: once an hour, `derive --all` as a child process this tick does
     not wait for — a fork's model call can take minutes, and the delivery
-    interval must not; one derivation in flight at a time."""
+    interval must not; one derivation in flight at a time, across every
+    process that ticks here: the check, the start, and the record of the
+    child's pid are one step under daemon/derive.lock, released at once (the
+    child does not inherit it)."""
     global _DERIVE
     every = derive_every()
     if every <= 0:
         return
-    rec = machine_record()
-    d = rec.get("derive") or {}
-    if derive_running(d) or time.time() - float(d.get("started") or 0) < every:
-        return
-    with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
-        _DERIVE = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "derive", "--all"],
-                                   stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
-    rec["derive"] = {"pid": _DERIVE.pid, "start": sminos.proc_start(_DERIVE.pid), "started": time.time()}
-    sminos.write_json(daemon_path("state.json"), rec)
+    with sminos.flocked(daemon_path("derive.lock")):
+        rec = machine_record()
+        d = rec.get("derive") or {}
+        if derive_running(d) or time.time() - float(d.get("started") or 0) < every:
+            return
+        with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
+            _DERIVE = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "derive", "--all"],
+                                       stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+        rec["derive"] = {"pid": _DERIVE.pid, "start": sminos.proc_start(_DERIVE.pid), "started": time.time()}
+        sminos.write_json(daemon_path("state.json"), rec)
     sminos.daemon_log("derive --all started (pid %d)" % _DERIVE.pid)
 
 
@@ -640,19 +649,26 @@ def installed_cli():
     CLI running from the plugin cache lives under a versioned directory an
     update prunes, so the agent runs the marketplace clone instead (its
     `installLocation` in ~/.claude/plugins/known_marketplaces.json, kept up to
-    date by the harness); anything else — a development checkout — is
-    stable as it is, and runs itself."""
+    date by the harness), and with no usable clone the install is refused
+    rather than pointed at a path the next update deletes. Anything else — a
+    development checkout — is stable as it is, and runs itself."""
     here = os.path.realpath(sminos.LAUNCHER)
     plugins = os.path.join(sminos.home_dir(), ".claude", "plugins")
     if not here.startswith(os.path.realpath(os.path.join(plugins, "cache")) + os.sep):
         return here
+    known = os.path.join(plugins, "known_marketplaces.json")
     try:
-        with open(os.path.join(plugins, "known_marketplaces.json")) as f:
+        with open(known) as f:
             location = str(((json.load(f) or {}).get("doperpowers") or {}).get("installLocation") or "")
     except (OSError, ValueError, AttributeError):
         location = ""
     stable = os.path.join(location, "skills", "sminos", "scripts", "sminos") if location else ""
-    return stable if stable and os.path.isfile(stable) else here
+    if stable and os.path.isfile(stable):
+        return stable
+    sminos.die("daemon install: this sminos runs from the versioned plugin cache (%s), which a plugin update "
+               "deletes, and the doperpowers marketplace clone it would run instead is missing (%s) — restore it "
+               "(claude plugin marketplace add, or update the doperpowers marketplace), or run the install "
+               "from a checkout of doperpowers" % (here, stable or "no doperpowers entry in %s" % known), 1)
 
 
 def cmd_install(_a):
