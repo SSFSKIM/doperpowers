@@ -638,8 +638,9 @@ def known_projects():
     return list(out.values())
 
 
-def find_project(q):
-    """A project known locally, by id or by name."""
+def find_project(q, required=True):
+    """A project known locally, by id or by name; with required=False, None
+    when none is (an ambiguous name still exits)."""
     known = known_projects()
     for match in (lambda p: p.id == q, lambda p: p.name == q):
         hits = [p for p in known if match(p)]
@@ -648,6 +649,8 @@ def find_project(q):
         if hits:
             die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in hits))),
                 EXIT_UNKNOWN)
+    if not required:
+        return None
     die("no project '%s' is known on this machine" % q, EXIT_UNKNOWN)
 
 
@@ -1782,22 +1785,38 @@ def find_target(q):
     else exit 4 — ambiguous (named so they can be told apart) or unknown.
     ("none",) when nothing answers.
 
-    An exact address — a seat id, a session id, `group/alias` — names its
-    seat directly. A name is resolved as a tag is: its projects (the one it
-    names, else the caller's, else every project known here) are reconciled,
-    and the name is matched against every member and every seat no member
-    stands for (vacant, retired), so a seat and a seat-less session sharing
-    an alias are refused as ambiguous rather than the seat being taken."""
+    A full id — a seat id or session id — names its seat directly, and so
+    does `group/alias` when the qualifier is a group and no project. Any other
+    name, `<project>/<alias>` by the project's name or id included, is
+    resolved as a tag is: its projects (the one it names, else the caller's,
+    else every project known here) are reconciled, and the name is matched
+    against every member and every seat no member stands for (vacant,
+    retired), so a seat and a seat-less session sharing an alias are refused
+    as ambiguous rather than the seat being taken. A qualifier that is both a
+    project and a group falls back to the group when the project has no match."""
     scope = caller_scope()
-    if UUID_RE.match(q) or ("/" in q and "#" not in q):
-        kind, res = find_seat(q)
+
+    def exact(kind, res):
+        if kind == "ambiguous":
+            die(ambiguous_seat(q, res), EXIT_UNKNOWN)
         if kind == "ok":
             reconcile(seat_project(res))  # the verb reads the project; no liveness probe needed
             return ("seat", res)
-        if kind == "ambiguous":
-            die(ambiguous_seat(q, res), EXIT_UNKNOWN)
+        return None
+
+    def group_seat(group, alias):
+        hits = [s for s in seats() if s["group"] == group and s["alias"] == alias]
+        return exact("ambiguous" if len(hits) > 1 else "ok" if hits else "none", hits if len(hits) > 1 else
+                     (hits[0] if hits else None))
+
+    if UUID_RE.match(q):
+        hit = exact(*find_seat(q))
+        if hit:
+            return hit
     proj, _, rest = q.rpartition("/")
     name, _, short = rest.partition("#")
+    if proj and not short and find_project(proj, required=False) is None:
+        return group_seat(proj, name) or ("none",)
     projects = known_projects() if UUID_RE.match(q) else name_scope(scope, proj)
     found, seen = [], set()
     for p in projects:
@@ -1821,7 +1840,7 @@ def find_target(q):
                         for p, m in found)
         die("ambiguous '%s' matches: %s" % (q, ", ".join(labels)), EXIT_UNKNOWN)
     if not found:
-        return ("none",)
+        return (proj and not short and group_seat(proj, name)) or ("none",)
     project, m = found[0]
     return ("seat", m.seat) if m.seat else ("member", project, m)
 
@@ -3120,19 +3139,24 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     project = seat_project({"cwd": runcwd or cwd, "group": group})
     # The session already runs, so a failed append does not fail the spawn: an
     # exit 1 would make a dispatcher release the run and leave the worker
-    # running unbound, and reconciliation re-joins the seat on the next
-    # reading verb. What it cannot repair — the spawner and the in-charge line
-    # — is named loudly after the banner.
-    log_failed = None
-    try:
-        if prev and prev["current"] and prev["current"] != uuid:
-            lifecycle(seat_project(prev), prev["current"], "retired", by=by, reason="replaced")
-        lifecycle(project, uuid, "joined", **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "",
-                                                           rec_id, by))
-        if brief:
-            lifecycle(project, uuid, "in-charge", text=brief, source="set")
-    except LogWriteFailed as e:
-        log_failed = e
+    # running unbound. Each event is attempted on its own, and each one that
+    # fails is named loudly after the banner with what it loses.
+    log_failed = []
+
+    def record(what_is_lost, p, session, kind, **fields):
+        try:
+            lifecycle(p, session, kind, **fields)
+        except LogWriteFailed as e:
+            log_failed.append("%s — %s" % (e, what_is_lost))
+
+    if prev and prev["current"] and prev["current"] != uuid:
+        record("the displaced session %s stays a member until a reading verb finds it no longer runs"
+               % prev["current"][:8], seat_project(prev), prev["current"], "retired", by=by, reason="replaced")
+    record("the seat re-joins its project on the next reading verb, but its spawner (by %s) is not recorded"
+           % (by or "the operator"), project, uuid, "joined",
+           **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "", rec_id, by))
+    if brief:
+        record("its in-charge line (%s) is not recorded" % brief, project, uuid, "in-charge", text=brief, source="set")
     status = "working"
     if state in TERMINAL:
         # Don't blindly claim working — a fast first turn may already be over.
@@ -3152,9 +3176,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         verb, group, alias, short, rec_id, status, wt, short), flush=True)
     if wait:
         print_reply_block(rec_id)
-    if log_failed:
-        warn("%s completed, but %s. The seat re-joins its project on the next reading verb; its spawner (by) "
-             "and its in-charge line are not recorded." % ("fill" if verb == "filled" else "spawn", log_failed))
+    for failure in log_failed:
+        warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
 
 
 def cmd_spawn(a):
@@ -3348,10 +3371,17 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     """
     def launched():
         # The delivery settles first: a failed re-join (LogWriteFailed) must
-        # not leave a launched message owed, to be pushed again.
+        # not leave a launched message owed, to be pushed again. On a fan-out
+        # (`quiet`, from deliver_next) the message is in a launched process, so
+        # the outcome stands and the fan-out goes on: the failure is a warning.
         if on_launched:
             on_launched()
-        join_seat(s, by=caller_alias())
+        try:
+            join_seat(s, by=caller_alias())
+        except LogWriteFailed as e:
+            if not quiet:
+                raise
+            warn("%s/%s was resumed with the message, but %s" % (s["group"], s["alias"], e))
 
     if s["engine"] == "codex":
         raise ResumeRefused(legacy_codex_refusal(s))

@@ -3296,18 +3296,44 @@ DS=2f00000f-0000-4000-8000-00000000002f
 DL=3a000010-0000-4000-8000-00000000003a
 run "$SMINOS" seat add pf-repo dupe --session "$DS"
 pf_peer dupe "$DL" idle user
-for verb in "send dupe hi" "status dupe busy" "retire dupe"; do
-  run "$SMINOS" $verb
-  assert_rc 4 "$RC" "$verb: a name a seat and a seat-less session share is refused"
-  assert_contains "$OUT" "pf-repo/dupe" "$verb: naming the seat"
-  assert_contains "$OUT" "dupe#${DL:0:8}" "$verb: and the session"
+# A project qualifier, by name or by id, resolves the same way: only a full id
+# or a group qualifier that is no project names a seat directly.
+for name in dupe pfdemo/dupe "$PF/dupe"; do
+  for verb in "send $name hi" "status $name busy" "retire $name"; do
+    run "$SMINOS" $verb
+    assert_rc 4 "$RC" "$verb: a name a seat and a seat-less session share is refused"
+    assert_contains "$OUT" "pf-repo/dupe" "$verb: naming the seat"
+    assert_contains "$OUT" "dupe#${DL:0:8}" "$verb: and the session"
+  done
 done
-assert_not_contains "$(field "$DS" status)" "retired" "the refused retire touched nothing"
+assert_not_contains "$(field "$DS" status)" "retired" "the refused retires touched nothing"
+run "$SMINOS" status pf-repo/dupe "the seat's"
+assert_rc 0 "$RC" "a group qualifier that is no project names the seat directly"
+run "$SMINOS" status "$DS" "the seat's, by id"
+assert_rc 0 "$RC" "and so does its full id"
 run "$SMINOS" send "dupe#${DL:0:4}" "the session one"
 assert_rc 0 "$RC" "alias#short picks the seat-less one"
 assert_contains "$(inbox dupe)" "the session one" "and reaches it"
 rm -f "$HOME/.claude/sessions/pf-dupe.json"
 "$SMINOS" remove pf-repo/dupe >/dev/null
+# A fan-out resume that launched stands, though its re-join cannot be recorded:
+# the frame settles, a warning says what failed, and the next recipient is
+# still delivered.
+STP=4c000018-0000-4000-8000-00000000004c
+"$SMINOS" seat add pf-repo stp --session "$STP" >/dev/null
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/pl-proj/$STP.jsonl"   # stopped: its transcript is here
+: > "$TEST_ROOT/in-ib.received"
+chmod 400 "$PFLOG/testhost.$STP.jsonl"
+run "$SMINOS" say "@stp @ib wake both"
+chmod 600 "$PFLOG/testhost.$STP.jsonl"
+assert_rc 0 "$RC" "a say whose resumed recipient cannot be re-joined in the log still completes"
+assert_contains "$OUT" "stp: woken" "the resume launched with the frame"
+assert_contains "$OUT" "pf-repo/stp was resumed with the message, but recording joined of ${STP:0:8}" "a warning names the failed re-join"
+assert_contains "$OUT" "ib: sent" "the fan-out goes on to the next recipient"
+assert_contains "$(inbox ib)" "wake both" "which is delivered"
+assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["testhost/human"]["settled"])' "$SMINOS_HOME/projects/$PF/delivered/$STP.json")" \
+  "$(tail -1 "$PFLOG/testhost.human.jsonl" | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])')" "the launched frame is settled, never pushed again"
+"$SMINOS" remove pf-repo/stp >/dev/null
 # send and status reconcile the project before they resolve: a session no
 # reading verb has seen yet is joined, then reached.
 FR=3b000011-0000-4000-8000-00000000003b
@@ -3403,7 +3429,8 @@ chmod 700 "$PFLOG"
 assert_rc 0 "$RC" "a spawn whose joined cannot be recorded still exits 0: its worker runs, and a dispatcher must not release it"
 assert_contains "$OUT" "seat spawned: pf-repo/sfail" "its banner names the seat it launched"
 assert_contains "$OUT" "sminos: warning: spawn completed, but recording joined of" "a loud warning says the log write failed"
-assert_contains "$OUT" "its spawner (by) and its in-charge line are not recorded" "naming what is lost"
+assert_contains "$OUT" "but its spawner (by the operator) is not recorded" "naming what the failed event loses"
+assert_not_contains "$OUT" "in-charge" "and nothing it does not: the spawn had no brief to record"
 run "$SMINOS" list --json
 assert_contains "$OUT" '"alias": "sfail"' "reconciliation repairs the membership on the next reading verb"
 assert_contains "$(head -1 "$PFLOG/testhost.$(field "$(seat_id_of sfail)" current).jsonl")" '"kind": "joined"' "joining it into the log"
