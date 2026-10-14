@@ -173,6 +173,8 @@ function harness(
   options: {
     builtin?: string | undefined
     tmpdir?: string
+    /** MAWS_NATIVE_TO_HUMAN's value; unset by default. */
+    maws?: string
     dirs?: Record<string, string[]>
     unreadable?: string[]
     whileStarting?: () => Promise<unknown>
@@ -200,7 +202,7 @@ function harness(
   const dirs = new Map(Object.entries(options.dirs ?? { '/tmp': ['claude-0', 'claude-501', 'other'], '/tmp/claude-501': [], '/tmp/claude-0': [] }))
   const unreadable = new Set(options.unreadable ?? ['/tmp/claude-0'])
   const $ = {
-    env: { get: async (name: string) => (name === 'CLAUDE_CODE_TMPDIR' ? options.tmpdir : undefined) },
+    env: { get: async (name: string) => (name === 'CLAUDE_CODE_TMPDIR' ? options.tmpdir : name === 'MAWS_NATIVE_TO_HUMAN' ? options.maws : undefined) },
     fs: {
       list: async (path: string) => {
         const names = dirs.get(path)
@@ -429,6 +431,13 @@ describe('registerAsk: the tool and the built-in', () => {
     expect(h.registered()[0]?.description).toBe(describeAsk('The whole text.'))
     expect(h.calls.filter((c) => c.op === 'ui.invalidate')).toEqual([{ op: 'ui.invalidate', args: 'tool.describe' }])
     expect(await h.describe('AskUserQuestion', 'The whole text.')).toEqual({ description: WITHDRAWN, isDeferred: true })
+  })
+
+  test('under MAWS the tool is not registered and the built-in is left as described', async () => {
+    const h = harness({ maws: '4' })
+    await h.start()
+    expect(h.registered()).toEqual([])
+    expect(await h.describe('AskUserQuestion', 'The whole text.')).toEqual({ description: 'The whole text.', isDeferred: true })
   })
 
   test('a tool that does not register puts the built-in back', async () => {

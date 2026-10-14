@@ -1106,7 +1106,14 @@ async function askStart($: EngineInterface) {
  * to-human view, so its row hooks are inner to that view's.
  */
 export function registerAsk(on: On) {
+  // Under MAWS (MAWS_NATIVE_TO_HUMAN set) the host offers its own ask tool,
+  // so this one stays out and the built-in is left to MAWS's launch line,
+  // whatever decides when the tool would otherwise register.
   on('session.start', { isInteractive: true }, async ($, e, next) => {
+    const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
+    if (maws !== undefined && maws !== '') {
+      return next(e)
+    }
     isServing = true
     const result = await next(e)
     await askStart($)

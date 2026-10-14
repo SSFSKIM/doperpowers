@@ -266,7 +266,9 @@ registered at `session.start` of an interactive session and kept inline with a
 answers `isDeferred: true` with the withdrawal sentence, from the moment such
 a session starts (the engine describes the built-in then, and caches the
 answer for the session), and the built-in is put back should the tool fail to
-register. A headless session gets neither.
+register. A headless session gets neither, and neither does a MAWS launch
+(`MAWS_NATIVE_TO_HUMAN` set), whatever its kind: MAWS offers its own ask tool,
+`mcp__maws__ask`, and withholds the built-in on its launch line.
 
 Every ask is validated before any dialog against the built-in's rules (1–4
 questions, 2–4 options, the required strings, unique question texts and option
