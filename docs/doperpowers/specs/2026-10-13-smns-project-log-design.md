@@ -194,7 +194,11 @@ session kept as a member would hold its alias ambiguous forever. Resuming
 it re-joins it on sight. Only a harness session whose record's `kind` is
 `interactive` or `bg`, and whose `entrypoint` does not start with `sdk`,
 joins on sight, so another tool's headless run in the directory is not a
-member.
+member. A `retire` of a seat-less session holds for the life of the
+process that was running when it was recorded. Nobody can stop the
+terminal session the human opened, so reconciliation re-joins it only as
+a different process (another pid, or a later start). A resume re-joins,
+and the retire is not undone a moment later.
 
 There is no host seat. A seat that spawns another is recorded as its
 spawner (§6) and nothing more: it does not integrate the other's work, is
@@ -636,7 +640,11 @@ stays in its own files.
 Not here: the chief-of-staff agent (a reader of the log on the human's
 behalf; whether a resident session or a per-event routine is decided when
 the log is in use), inbound Slack or mail, a human seat, remote control of
-a session's process, any change to the board loop or to `decomposing`.
+a session's process, any change to the board loop or to `decomposing`,
+and the async questions of a MAWS session. Under `MAWS_NATIVE_TO_HUMAN`,
+the plugin's ask tool is not registered, and `mcp__maws__ask` (blocking
+false), whose answer shape this repository does not own, carries them.
+They reach neither the log nor `chat --host` (residue).
 
 ## Acceptance
 
@@ -973,6 +981,24 @@ Dispatch scripts: one `--brief` each.
   Evidence: both independent reviewers reproduced it on a scratch bare
   remote and clone — appending a second line to a committed writer file
   made the pull exit 128. The sync invariant (§8) commits first.
+- Observation: the harness can start `Stop` hooks before the turn's last
+  transcript record is written.
+  Evidence: in the live acceptance run (2026-10-14), 1 mark in 24 was
+  exported one `Stop` late, 73 s. Transcript writes are queued behind a
+  100 ms flush (`FLUSH_INTERVAL_MS = 100`, bundle 2.1.292,
+  `cli.pretty.js` near 819427), and the Stop hooks start without a
+  flush. Before the F1 fix, a mark in a session's last turn would have
+  waited for a resume.
+- Observation: a `claude --bg` seat does not inherit its spawner's
+  environment, so a non-default `SMINOS_HOME` did not reach it: its hook
+  and CLI would have used the operator's real registry and run the
+  one-way import there. This is the M1 incident's failure, at the spawn
+  boundary.
+  Evidence: a live probe in M6. A flagless `claude --bg --resume` does
+  keep the launch's `--settings` and its env (2.1.299).
+- Observation: `claude agents` lists an interactive session with `id:
+  null`, so sminos has nothing it can stop. Evidence: the M6 live run,
+  where `retire a` was undone by reconciliation 2 s later until F2.
 - Observation: M5's eval. Four scenarios were run on the old text
   (commit af0511a2) and on the rewrite, with 30 opus subjects in all.
   Transcripts and verdicts are in
@@ -1579,6 +1605,48 @@ Dispatch scripts: one `--brief` each.
   Left for M6: `render_preamble`'s dead `{{GROUP}}`/`{{PARENT}}`
   replacements and its stale docstring.
   Date/Author: 2026-10-14, the M5 executor, folded by the controller.
+- Decision: M6. origin/main (7.152.1, 8 commits) was merged into the
+  branch (c98ba037), not rebased. Nothing conflicted, and main changed
+  neither the mark grammar, its fixtures, nor the three shapes
+  `extract_asks` reads. Version 7.153.0. The sminos description went
+  into CLAUDE.md's `skills/` row, which had no sminos line before.
+  Acceptance ran live in tmux, in real sessions loading this branch with
+  `--plugin-dir`, and is recorded in
+  `docs/doperpowers/specs/2026-10-13-smns-project-log-acceptance.md`.
+  Step 4 ran after step 5, so that `retire a` follows `charge a`. `retire
+  a` was run from b, so that a did not stop its own process mid-tool.
+  Date/Author: 2026-10-14, the M6 executor, folded by the controller.
+- Decision: three defects found by the live acceptance run, fixed in
+  38e94907.
+  (F1) At `Stop`, `record` polls every 100 ms until the payload's
+  `last_assistant_message` is on the transcript past the export
+  position. It stops polling at 2 s, or 0.5 s before the record budget
+  ends, then exports what it finds; the next `Stop` takes the rest.
+  §4's "the row is there when `Stop` fires" was not reliable (see
+  Surprises).
+  (F2) The retirement holds for the life of the process `retire` saw
+  (§2 revised). `retire` records that process's pid, and reconciliation
+  and the hook re-join the session only when the harness shows a
+  different pid or a later start. The hold applies only to `reason:
+  retire`: an `ended` retirement means no process was seen, and holding
+  it could lock out a live session after a misread of the sessions
+  directory. The CLI prints "<alias>'s session keeps running in its
+  terminal; it re-joins when resumed as a new process". Refusing the
+  retire was the alternative. It lost because it would make `retire`
+  mean one thing for seats and another for sessions, and acceptance 4
+  retires an interactive session.
+  (F3) `spawn` and a fresh `fill` launch the seat with settings that
+  carry `env.SMINOS_HOME`. These are merged with any `--settings` the
+  caller passed into one file under `$SMINOS_HOME/settings/`, named by
+  its content. The spawner's `SMINOS_HOME` wins. The seat record keeps
+  the caller's own settings. A flagless `claude --bg --resume` keeps the
+  launch's settings and env (verified live on 2.1.299), so `resume`
+  needs nothing more. The board's dispatch scripts launch through
+  `sminos spawn` and are covered; their contract test asserts it. A seat
+  spawned before this fix has no such settings, and a resume cannot add
+  them.
+  Date/Author: 2026-10-14, the controller's and the authoring session's
+  rulings, built by the M6 executor.
 
 ## Outcomes & Retrospective
 
