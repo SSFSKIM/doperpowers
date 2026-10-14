@@ -40,7 +40,7 @@ machines.
 - [x] M1 — Project identity and the log (2026-10-14, reviewed clean after two fix waves; 7f3f8b9f..eb6a5ede)
 - [x] M2 — The project family (2026-10-14, reviewed clean after two fix waves and two rulings; 5dd82ba4..0ed8f8fb)
 - [x] M3 — Messages to the host and the in-charge line (2026-10-14, reviewed clean after three fix waves and two rulings; 09775a35..2fc95340)
-- [ ] M4 — The mirror and the daemon
+- [x] M4 — The mirror and the daemon (2026-10-14, reviewed clean after one fix wave and one ruling; e4204b38..e7e55aef)
 - [ ] M5 — The skill and the preamble, as behavior
 - [ ] M6 — Docs, acceptance, version
 
