@@ -138,19 +138,11 @@ fork's process (§5).
 
 Resolution and appending never need the network. A project with a remote
 is **attached** (`sminos project attach`, also run by the daemon on first
-sight) by adopting the existing `log/`, in this order: scan every local
-event with the redaction scanner of §3 — a local project never redacted —
-and on a match stop, listing the events by `(writer, seq)`, unless
-`attach --redact` was given, which rewrites those values in place (these
-files have never left the machine, so the one-time rewrite breaks no
-reader); only then `git init` when it is not yet a repository, the first
-commit, the remote added, the remote fetched and integrated so that local
-history is preserved (unrelated histories are expected on first attach).
-No commit exists before the scan passes, so no reachable history can
-carry an original value — a redaction after a commit would leave the
-value in the parent, which a push publishes. An attach with the remote
-unreachable succeeds up to the fetch, leaving the first sync to the
-daemon. The alternative, cloning
+sight) by adopting the existing `log/`: `git init` when it is not yet a
+repository, the first commit, the remote added, the remote fetched and
+integrated so that local history is preserved (unrelated histories are
+expected on first attach). An attach with the remote unreachable succeeds
+up to the fetch, leaving the first sync to the daemon. The alternative, cloning
 the remote into `log/`, was rejected because the normal path is a project
 that mirrored nothing until the second machine arrived.
 
@@ -257,7 +249,7 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | `say` | `from` alias, `to` `"*"` or a list of `{session, alias}`, `text`, `wake` true for `@all` (whose `to` is the list of members live at submission) | `sminos say`, a member's `send` |
 | `human` | `from` `"human"`, `to` as `say`, `text`, `wake` true for `@all` | operator `say` / `send` |
 | `message` | `from` alias, `to` `"host"`, `text`, `src` transcript record uuid plus span index | the hook, from a `<message>` mark — the one mark since 7.149.0; `<to-human>`, `<essential>`, `<need-input>`, `<insight>` read as its aliases |
-| `need-input` | `from` alias, `to` `"host"`, `text` the question texts, `choices` the option labels, `src` the call's `tool_use_id` | the hook, from a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async` true whose paired `tool_result` is the tool's accepted result (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`) |
+| `question` | `from` alias, `to` `"host"`, `text` the question texts, `choices` the option labels, `src` the call's `tool_use_id` | the hook, from a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async` true whose paired `tool_result` is the tool's accepted result (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`) |
 | `answered` | `from` alias, `src` the call id, `text` the engine's result text | the hook, from the delivery row quoting `The human responded to your async AskUserQuestion (call <id>)` |
 | `joined` | `session` uuid, `alias`, `name_source` `user`/`derived`/`seat`, `machine`, `cwd`, `worktree`, `role`, `seat` seat id or `""`, `by` alias or `""` | `spawn` (with `by`), `fill`/`resume` of a retired seat, the hook on session start, reconciliation, `seat add` |
 | `retired` | `session`, `by`, `reason` `retire`/`replaced` | `sminos retire`; `spawn`/`fill` into an occupied seat |
@@ -286,14 +278,14 @@ time. The per-message `delivered` map rewritten in place today leaves: an
 append-only file is never rewritten, and delivery is the deliverer's local
 record (`delivered/`, §4), not the message's.
 
-**Secrets.** For a project with a remote, `log_append` redacts, in every
-text field, values that look like credentials: a `Bearer` token's value, a
-value after `key`, `token`, `secret`, or `password` and `=` or `:` of 16 or
-more non-space characters, strings with a known prefix (`sk-`, `ghp_`,
-`github_pat_`, `xox[abp]-`, `AKIA`), and a PEM private-key block. The value
-alone becomes `[redacted]` and the sender is warned. Best effort, stated as
-such; it is not `SECRET_RE` in sminos.py, which matches field names and
-would strike "the tokenizer tests passed". A local project is unaffected.
+**Secrets.** The log carries no redaction layer. What reaches it is what
+agents say to each other and to the human, and a secret does not get into
+that: the plugin's secrets hook keeps an agent from reading or printing a
+stored secret in the first place (a value is used only inside the shell
+command that needs it, never read into the conversation), so a plaintext
+credential in a `<message>` or a `say` is not a case this design guards
+against. Earlier drafts carried a scanner at append and at attach; the
+owner ruled it out on 2026-10-13 (Decision Log).
 
 ## 4. Speaking
 
@@ -412,7 +404,7 @@ Parity fixtures ported from `tests/mods/` pin it: a backticked
 — the native `AskUserQuestion`, or the plugin's with `async` false — is not
 an event: the session is `waiting`, which the daemon publishes as its
 state, and the human goes to the session. `sminos chat --host` prints
-`message`, `need-input`, and `answered` events, an open ask marked as
+`message`, `question`, and `answered` events, an open question marked as
 such; it is the human's view of what every session sent them.
 
 The output style itself does not change. Its first sentence, "The human does
@@ -700,7 +692,7 @@ What exists at its end: `sminos project init|show|attach`;
 `resolve_project` with its three outcomes (§1); the `projects/<id>/`
 layout; `log_append` and `log_read` with per-writer `seq` under the file
 lock and the shared `.sync.lock`, millisecond `ts`, `(ts, writer, seq)`
-display merge, redaction for a remote project; address resolution
+display merge; address resolution
 (`resolve_tags`: the four tag forms, ambiguity and unknown refusals);
 `say`, `send`, and `chat` writing and reading the project log with the
 routing table of §4, the fast-path delivery record, and the cursor
@@ -711,7 +703,7 @@ semantics of §3; `migrate` importing `chats/`. Touches
 `send_to_seat`, `migrate`), `tests/sminos/run-sminos-tests.sh`.
 Interfaces: produces `Project`, `resolve_project`, `log_append`,
 `log_read`, `cursor_load`, `cursor_save`, `delivered_load`,
-`delivered_record`, `resolve_tags`, `redact`. Decisions here: the writer
+`delivered_record`, `resolve_tags`. Decisions here: the writer
 file name replaces `/` in the writer id with `.`; `seq` is read as the
 last line's `seq` plus one under `flock` on `<file>.lock`; a malformed
 line is skipped on read and never rewritten; `--in <project>` on the
@@ -727,17 +719,14 @@ acceptance 2 (local delivery), and tests pin: two writers' lines interleave
 by `ts` while one writer's keep `seq` order under a backwards `ts`; `chat`
 advances the cursor and `-n` does not; a `say` to `*` pushes nothing;
 `@all` pushes to every live member and resumes none; a tag matching two
-seats is refused naming both as `alias#short`; `@"two words"` resolves; a redacted value leaves the rest of the line; `attach` with an unreachable
-remote succeeds and preserves local files, and `attach` on a log holding a
-credential-shaped value refuses until `--redact`; a message tagged into
+seats is refused naming both as `alias#short`; `@"two words"` resolves; `attach` with an unreachable remote succeeds and
+preserves local files; a message tagged into
 another project lands in that project's log and nowhere else, and tags
 naming two projects are refused; when a writer's event 10 fails to push and its event 11 would succeed, 11
 is not delivered before 10 and both arrive, in order, on a later attempt,
 also when the sender's fast path and a daemon tick run at once; a `@all`
 written before a member joined is never delivered to it, and never to its
-sender; `attach` on a log holding a credential-shaped value creates no
-commit, and after `--redact` the remote's full history (`git log -p`)
-holds no original value.
+sender.
 
 ### M2 — The project family
 
@@ -805,7 +794,7 @@ by the trailing-run policy of §4; export consumes `log_append_batch`,
 never nested single appends; `derive`'s fork runs with a 120-second timeout and a
 failure prints the stderr tail and writes nothing. Does not touch: the
 daemon; the output style. Proves: acceptance 3, 5; tests pin that a `<to-human>` span records as `message`, that an async
-ask records `need-input` with its option labels and its delivery records
+ask records `question` with its option labels and its delivery records
 `answered` with the same `src` while a blocking ask records nothing, that
 the backticked and fenced tags record nothing, that a Stop replayed over the same transcript appends nothing, that an export killed after the first of two spans in one record appends
 only the second on retry, that a mark left unexported by a process that
@@ -911,7 +900,7 @@ class Project(NamedTuple):
 
 def resolve_project(cwd: str) -> Project | None        # None: no project (§1)
 def writer_id(session_uuid: str | None = None) -> str   # "<machine>/<uuid>" | "<machine>/human"; a session's lifecycle always under its own id
-def log_append(project: Project, writer: str, kind: str, **fields) -> dict   # ts (ms), seq under the file lock, .sync.lock shared; redacts for a remote project
+def log_append(project: Project, writer: str, kind: str, **fields) -> dict   # ts (ms), seq under the file lock, .sync.lock shared
 def log_append_batch(project: Project, writer: str, events: list[dict], skip_src: bool = True) -> list[dict]   # the locks once; drops events whose src is present
 def log_read(project: Project, since: dict | None = None, kinds: tuple = (), to_session: str | None = None) -> list[dict]
 def cursor_load(project: Project, session_uuid: str) -> dict
@@ -922,7 +911,6 @@ def delivered_fail(project: Project, session_uuid: str, writer: str, seq: int) -
 def owed(project: Project, member: "Member") -> list[dict]                   # in writer order from the settled prefix (§4)
 def deliver_next(project: Project, member: "Member") -> dict                 # under delivered/<session>.lock: choose, push, settle or fail; {"delivered": int, "pending": int}
 def resolve_tags(project: Project, text: str) -> tuple["Project", list[dict], str, bool]   # destination, recipients [{session, alias}], text, wake; raises on ambiguity/unknown/mixed projects
-def redact(text: str) -> tuple[str, bool]
 
 class Member(NamedTuple):
     session: str; short: str; alias: str; name_source: str; machine: str; local: bool
@@ -933,7 +921,7 @@ def members(project: Project) -> list[Member]          # ignores $SMINOS_HOME/in
 def reconcile(project: Project) -> int                 # joined events appended for unrecorded local sessions
 def charge_of(member: Member, events: list[dict]) -> tuple[str, str]
 def extract_marks(text: str) -> list[dict]             # [{"kind": "message", "text": str}], code-aware; every alias is a message
-def extract_asks(records: list[dict]) -> list[dict]    # [{"kind": "need-input", "src": call id, "text": [str], "choices": [str]} | {"kind": "answered", "src": call id, "text": str}]
+def extract_asks(records: list[dict]) -> list[dict]    # [{"kind": "question", "src": call id, "text": [str], "choices": [str]} | {"kind": "answered", "src": call id, "text": str}]
 def tick(project: Project) -> dict                     # {"integrated": bool, "reconciled": int, "published": int, "delivered": int, "pushed": bool}
 ```
 
@@ -1058,16 +1046,27 @@ Dispatch scripts: one `--brief` each.
   the spec to make rather than leave, and it is the simplest of the
   options (no cross-writer time comparison, no initialisation state).  Dismissed: none.
   Date/Author: 2026-10-13, the authoring session.
-- Revision: the `need-input` event's source. The `<need-input>` mark was
+- Revision: the `question` event (named `need-input` until this line). The `<need-input>` mark was
   retired in doperpowers 7.148.0 (PR #191) and `<insight>` in 7.149.0, so
   `<message>` is the one mark and the others its aliases; an async question
   is now a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async`
   true (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`). The
   event keeps its name and fields (`text` the questions, `choices` the
   option labels) with `src` the call id, and gains a settlement, `answered`,
-  from the delivery row. No decision changed; the source moved under the
-  spec. Noticed by the ask-async session and relayed to this one.
+  from the delivery row. No decision changed; the source moved under the  spec. Noticed by the ask-async session and relayed to this one.
   Date/Author: 2026-10-13, the authoring session.
+- Decision: no redaction anywhere — not at append, not at attach. The
+  `redact` interface, the `attach --redact` preflight, and their tests
+  leave; §3 says why.
+  Rationale: the owner's ruling. A secret never reaches a `<message>` or a
+  `say` as plaintext, because the plugin's secrets hook stops an agent from
+  reading or printing a stored secret at all; the scanner guarded a case
+  that does not arise and would have struck ordinary text. The round-one
+  and round-three entries above record the scanner's history.
+  Date/Author: 2026-10-13, the owner.
+- Decision: the host-bound question event is `question`, not `need-input`:
+  the mark it was named after is gone, and the event is a question.
+  Date/Author: 2026-10-13, the owner.
 
 ## Outcomes & Retrospective
 
