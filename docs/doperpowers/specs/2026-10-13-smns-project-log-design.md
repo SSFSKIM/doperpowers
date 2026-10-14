@@ -1498,6 +1498,23 @@ Dispatch scripts: one `--brief` each.
   user-set name leaves no `in-charge` row, and a later reader of a local
   project should still see it.
   Date/Author: 2026-10-14, the authoring session, folded by the controller.
+- Decision: M4's task review moved three things (e7e55aef).
+  - Two-tick persistence keeps the candidate word, in a session → word
+    map in `projects/<id>/daemon.json`. A word is published only when
+    it equals the previous tick's candidate. Before this, idle → busy →
+    waiting published `waiting` after a single tick.
+  - One derivation in flight per machine, across processes:
+    `$SMINOS_HOME/daemon/derive.lock` is held across the eligibility
+    check, the child's start, and the recording of its pid. Any
+    process's check sees the live child by that pid. `daemon tick` does
+    not take the run lock, so a lock local to one process was not
+    enough.
+  - `daemon install` run from the plugin cache, with no usable
+    marketplace clone, exits 1 before it writes the plist. The message
+    says what is missing and how to restore it. A fallback to the cache
+    path would have reinstated the failure the stable-path ruling
+    removes.
+  Date/Author: 2026-10-14, the controller, from the M4 task review.
 
 ## Outcomes & Retrospective
 
