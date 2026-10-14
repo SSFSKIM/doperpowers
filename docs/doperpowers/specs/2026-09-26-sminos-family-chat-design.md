@@ -1178,6 +1178,19 @@ unknown seat or outside reach.
   yields only logged debt is the loop's stopping signal.
   Date/Author: 2026-09-27, the owning session.
 
+- Decision (2026-10-14): the deferred human seat and cross-machine
+  family resumed in `2026-10-13-smns-project-log-design.md`, which
+  replaces this design's host-rooted family with the project. A committed
+  `.smns` names a project; every session working under it is a member;
+  what crosses sessions is an event in the project's append-only log, one
+  file per writer, mirrored through a git remote by a per-machine daemon,
+  so a family spans machines. The human is the project's host rather than
+  a seat: a member's `<message>` is recorded as a message to them and read
+  with `sminos chat --host`. The per-host chat files of this design are
+  imported into their projects' logs by the first sminos call on each
+  machine, one-way: each is renamed `.imported` and never written again.
+  Date/Author: 2026-10-14, the smns M6 executor.
+
 ## Outcomes & Retrospective
 
 **Achieved.** Every family has a group chat, and a seat's sminos surface is
