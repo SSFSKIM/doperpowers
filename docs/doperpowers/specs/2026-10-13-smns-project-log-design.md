@@ -1165,12 +1165,16 @@ Dispatch scripts: one `--brief` each.
   Date/Author: 2026-10-14, the controller, from the M1 task review.
 - Decision: how the fix wave built (1), in commit d08376c1. An earlier
   pending event of the same sender rides in the send's own push (one
-  socket write, or one resume), not in a separate push. A send event
+  socket write, or one resume), not in a separate push, under ordinary
+  delivery's policy for the route taken: a resume leaves out a pending
+  `@all` and settles it by passing. A send event
   carries `msg_id`, so a retry reuses the send's frame. A resume settles
   through an `on_launched` callback that fires before any `--wait`; a
   resume that returns no session id counts as uncertain and settles. A
-  send that a concurrent deliverer already pushed says so and skips
-  `--wait`. Lock order for `send`: the seat's lifecycle lock, then
+  send that a concurrent deliverer already pushed is not pushed again,
+  but its `--wait` still waits on the recorded id and prints the reply
+  (fix wave 2, eb6a5ede, reversing wave 1's skip). A session's `send` to
+  its own seat exits 2. Lock order for `send`: the seat's lifecycle lock, then
   `delivered/<session>.lock`. A deliverer coming the other way takes the
   lifecycle lock without blocking, so the two orders cannot deadlock.
   Date/Author: 2026-10-14, the M1 executor, folded by the controller.
