@@ -3,7 +3,7 @@
 
 The chart (sminos_chart) is drawn in the middle of the screen; a header carries
 the fleet counts and refresh time, a panel under the chart describes the
-focused seat (or lists its family chat), and a footer shows the keys, the
+focused seat (or lists its project's chat), and a footer shows the keys, the
 send line being typed, or a short flash message.
 
 Everything that decides is a pure function over one `state` dict:
@@ -39,7 +39,7 @@ HELP_LINES = [
     "enter — on a seat: open its conversation (claude attach) in a new tmux window, or switch to that window if it is open",
     "enter — on a group: collapse / expand its seats",
     "s — type a message for the focused seat; enter sends it (sminos send: a live seat over its inbox socket, a stopped one resumed), esc cancels",
-    "b — toggle the bottom panel: seat detail ↔ family chat",
+    "b — toggle the bottom panel: seat detail ↔ the focused seat's project chat",
     "tab — move the keys into the chat list (enter opens a message, tab back)",
     "a — show / hide retired and gone seats",
     "r — refresh from the harness now (it also refreshes every few seconds)",
@@ -161,22 +161,18 @@ def ensure_visible(state, center=False):
     state["oy"] = max(0, state["oy"])
 
 
-def chat_host(state):
+def chat_project(state):
+    """The project whose chat the panel shows: the focused seat's."""
     node = focused_node(state)
     if node is None or node["kind"] != "seat":
         return None
-    seat = node["seat"]
-    if sminos.family_of(seat)[1]:
-        return seat
-    if seat["parent"]:
-        return next((candidate for candidate in sminos.seats(seat["group"])
-                     if candidate["alias"] == seat["parent"]), None)
-    return None
+    return sminos.seat_project(node["seat"])
 
 
 def chat_messages(state):
-    host = chat_host(state)
-    return list(reversed(sminos.chat_read(host["seat_id"]))) if host else []
+    """The project chat, newest first."""
+    project = chat_project(state)
+    return list(reversed(sminos.log_read(project, kinds=sminos.CHAT_KINDS))) if project else []
 
 
 # ------------------------------------------------------------------- keymap
@@ -506,9 +502,6 @@ def detail_lines(state, node, w):
                  (" · %d hidden" % node["hidden"]) if node["hidden"] else "")]
         roots = ", ".join(c["label"] for c in node["children"])
         lines.append("roots: " + (roots or "(none visible)"))
-        host = chat_host(state)
-        if host:
-            lines.append("chat: %d messages · host %s" % (len(sminos.chat_read(host["seat_id"])), host["alias"]))
         lines.append("enter collapses / expands · b shows the chat")
         return lines
     s = node["seat"]
@@ -567,10 +560,10 @@ def paint(state, screen):
     if r["panel_h"]:
         node = focused_node(state)
         if state["panel"] == "chat":
-            host = chat_host(state)
+            project = chat_project(state)
             messages = chat_messages(state)
             label = " chat · %s · %d messages · %s " % (
-                host["alias"] if host else "-", len(messages),
+                project.name if project else "-", len(messages),
                 "↑↓ enter opens · tab back" if state["panel_focus"] else "tab to browse")
         else:
             label = " detail "
@@ -586,8 +579,8 @@ def paint(state, screen):
                 top = max(0, min(cur - rows + 1, len(messages) - rows)) if cur >= rows else 0
                 for i, message in enumerate(messages[top:top + rows]):
                     text = " ".join(str(message.get("text", "")).split())
-                    line = "#%-4s %-20s %-14s %s" % (
-                        message.get("id"), str(message.get("ts", ""))[:20],
+                    line = "%-15s %-19s %-14s %s" % (
+                        sminos.event_ref(message), str(message.get("ts", ""))[:19],
                         str(message.get("from", ""))[:14], text)
                     attr = st.get("sel", 0) if (state["panel_focus"] and top + i == cur) else 0
                     screen.put(r["panel_y"] + 1 + i, 1, chart.fit(line, w - 2, collapse=False), attr)
@@ -617,10 +610,7 @@ def overlay_lines(state, inner_w):
     if ov == "help":
         return HELP_LINES
     _, p = ov
-    targets = (" ".join("@" + alias for alias in p.get("to", [])) if p.get("mode") == "tagged"
-               else "all" if p.get("mode") in ("team", "all", "operator")
-               else " ".join(p.get("to", [])))
-    head = "#%s · %s → %s · %s" % (p.get("id"), p.get("from", ""), targets, p.get("ts", ""))
+    head = "%s · %s → %s · %s" % (sminos.event_ref(p), p.get("from", ""), sminos.target_label(p), p.get("ts", ""))
     lines = [head]
     lines += wrap(p.get("text", ""), inner_w)
     return lines

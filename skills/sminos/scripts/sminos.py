@@ -23,8 +23,10 @@ family seat's family for that seat.
                    # a live seat: inbox socket; a stopped one: resumed. A live session by
                    # name, or a codex thread (its id, or codex:<id|exact name>, through
                    # codex's queue); --wait needs a seat.
-    sminos say      [--in <host>] [--team] <text>
-    sminos chat     [<host>] [-n N] [--since ID] [--team] [--json]
+    sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
+                   @short / @project/alias: delivered; @all: every live member
+    sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
+    sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <seat> <one line>                     # the agent's own "now" line
@@ -56,8 +58,11 @@ the process-level continuation the board pipeline relays through: a fresh
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
-writes them directly under the shared flock file .metalock. Family chats live
-at chats/<host-seat-id>.jsonl. Names are [A-Za-z0-9._-]{1,64}; `human` is the reserved operator identity.
+writes them directly under the shared flock file .metalock. A project (a
+committed .smns, else the owning git repository) keeps its append-only event
+log, one file per writer, at projects/<id>/log/, with each reader's cursor and
+each recipient's delivery record beside it. Names are [A-Za-z0-9._-]{1,64};
+`human` is the reserved operator identity.
 
 Exit codes: 0 ok, 1 harness failure, 2 usage (including `wake`, folded into
 `send`), 4 unknown seat/group, a target `send` cannot reach (not live, or a
@@ -70,6 +75,7 @@ import datetime
 import fcntl
 import glob
 import hashlib
+import heapq
 import importlib
 import json
 import os
@@ -82,7 +88,7 @@ import tempfile
 import time
 import uuid as uuidlib
 from contextlib import contextmanager
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 # Fleet state is private to the agent fleet: everything this CLI creates is
 # 700/600. All agents run as the same OS user, so nothing needs group/other.
@@ -135,8 +141,13 @@ def root():
     return os.environ.get("SMINOS_HOME") or os.environ.get("DAEMON_HOME") or default_root()
 
 
-def now():
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def now(ms=False):
+    """UTC ISO-8601. The log's `ts` carries milliseconds (ms=True); seat
+    records keep whole seconds, the shape the board pipeline compares."""
+    t = datetime.datetime.now(datetime.timezone.utc)
+    if ms:
+        return t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (t.microsecond // 1000)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def die(msg, code=EXIT_USAGE) -> NoReturn:
@@ -392,24 +403,598 @@ def find_seat(q):
     return "none", None
 
 
-# ------------------------------------------------------------- family chats
+# --------------------------------------------------------- projects and the log
+#
+# A project is the unit of shared work state: a committed `.smns` names it; a
+# git repository without one is a local project named after its owning
+# repository; any other directory is no project. Everything that crosses
+# sessions is one event in the project's append-only log — one file per
+# writer under $SMINOS_HOME/projects/<id>/log/, so a file has one writer and
+# replication is a copy. Delivery is the deliverer's own record (delivered/),
+# never a rewrite of the log. Design: docs/doperpowers/specs/
+# 2026-10-13-smns-project-log-design.md.
+
+
+class Project(NamedTuple):
+    id: str          # uuid from .smns, or "local-<name>"
+    name: str
+    remote: str      # "" for a local project
+    root: str        # directory holding .smns, or the owning repository
+    home: str        # $SMINOS_HOME/projects/<id>
+
+
+SMNS = ".smns"
+# The conversation `chat` shows and a frame's `unread` counts.
+CHAT_KINDS = ("say", "human")
+# A push that failed before anything was written is retried this many times,
+# then settled with a line in $SMINOS_HOME/daemon.log.
+DELIVERY_ATTEMPTS = 60
+PUSHED = ("sent", "woken", "sent?", "woken?")
+_PROJECTS = {}
+_HOMES = set()
+
+
+def projects_root():
+    return os.path.join(root(), "projects")
+
+
+def safe_name(name):
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64]
+    return name if valid_name(name) else ""
+
+
+def owning_repo(cwd):
+    """The owning repository of a directory — for a linked worktree, the main
+    checkout, through the common git dir — asked of its nearest existing
+    ancestor, so a removed worktree still resolves. "" outside git."""
+    d = os.path.abspath(cwd)
+    while not os.path.isdir(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return ""
+        d = parent
+    try:
+        p = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    common = p.stdout.strip() if p.returncode == 0 else ""
+    if not common:
+        return ""
+    if not os.path.isabs(common):
+        common = os.path.join(d, common)
+    return os.path.dirname(os.path.abspath(common))
+
+
+def make_project(pid, name, remote, root_dir):
+    return Project(pid, name, remote, root_dir, os.path.join(projects_root(), pid))
+
+
+def read_smns(path):
+    """(id, name, remote) from a .smns, or None — with a warning — when it is
+    unreadable or names no valid id: a broken file in one repository must not
+    stop every verb that resolves a seat living there."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError) as e:
+        warn("ignoring unreadable %s: %s" % (path, e))
+        return None
+    pid = str(d.get("project") or "") if isinstance(d, dict) else ""
+    if not valid_name(pid):
+        warn("ignoring %s: it names no valid project id" % path)
+        return None
+    return pid, str(d.get("name") or pid), str(d.get("remote") or "")
+
+
+def resolve_project(cwd):
+    """The project of a directory: the first .smns walking up; else the local
+    project of the owning git repository; else None (no project)."""
+    cwd = os.path.abspath(os.path.expanduser(cwd or "."))
+    if cwd in _PROJECTS:
+        return _PROJECTS[cwd]
+    project, d = None, cwd
+    while True:
+        smns = read_smns(os.path.join(d, SMNS)) if os.path.isfile(os.path.join(d, SMNS)) else None
+        if smns:
+            project = make_project(smns[0], smns[1], smns[2], d)
+            break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    if project is None:
+        repo = owning_repo(cwd)
+        if repo:
+            name = safe_name(os.path.basename(repo)) or "repo"
+            project = make_project("local-" + name, name, "", repo)
+    _PROJECTS[cwd] = project
+    return project
+
+
+def seat_project(seat):
+    """A seat's project, from its recorded cwd. A seat spawned where there is
+    no project belongs to the local project named after that directory: the
+    seat record is the explicit registration automatic discovery never makes."""
+    cwd = str((seat or {}).get("cwd") or "")
+    if not cwd:
+        return None
+    project = resolve_project(cwd)
+    if project is None:
+        name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
+        project = make_project("local-" + name, name, "", os.path.abspath(cwd))
+    return project
+
+
+def write_json(path, data, mode=0o600):
+    """Atomic replace: a reader sees the old file or the new one, never half."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def project_path(project, *parts):
+    """A path under the project's home; the first use creates the home and
+    records project.json (the .smns as last resolved, plus its root)."""
+    if project.id not in _HOMES:
+        os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
+        info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
+        path = os.path.join(project.home, "project.json")
+        try:
+            with open(path) as f:
+                same = json.load(f) == info
+        except (OSError, ValueError):
+            same = False
+        if not same:
+            write_json(path, info)
+        _HOMES.add(project.id)
+    path = os.path.join(project.home, *parts)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    return path
+
+
+def known_projects():
+    """Every project this machine knows: those with a home here, and those of
+    the seats it holds."""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            pid = str(d["project"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid:
+            out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""))
+    for s in seats():
+        p = seat_project(s)
+        if p:
+            out.setdefault(p.id, p)
+    return list(out.values())
+
+
+def find_project(q):
+    """A project known locally, by id or by name."""
+    known = known_projects()
+    for match in (lambda p: p.id == q, lambda p: p.name == q):
+        hits = [p for p in known if match(p)]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in hits))),
+                EXIT_UNKNOWN)
+    die("no project '%s' is known on this machine" % q, EXIT_UNKNOWN)
+
+
+def caller_project(caller=None):
+    """The project a call speaks in by default: the caller seat's, else the
+    working directory's (None: no project)."""
+    return seat_project(caller) if caller else resolve_project(os.getcwd())
+
+
+# Writers: one appender each. `<machine>/<session-uuid>` for a session,
+# `<machine>/human` for the operator, `legacy/<host-seat-id>` for an imported
+# family chat. The file name replaces `/` with `.`.
+
+
+def writer_id(session_uuid=None):
+    return "%s/%s" % (host_name(), session_uuid or "human")
+
+
+def writer_session(writer):
+    last = writer.rsplit("/", 1)[-1]
+    return last if UUID_RE.match(last) else ""
+
+
+def writer_short(writer):
+    session = writer_session(writer)
+    return session[:8] if session else writer
+
+
+def event_ref(e):
+    return "%s:%d" % (writer_short(e["writer"]), e["seq"])
+
+
+def writer_path(project, writer):
+    return project_path(project, "log", writer.replace("/", ".") + ".jsonl")
+
+
+@contextmanager
+def flocked(path, exclusive=True):
+    with open(path, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def parse_event(line):
+    """One well-formed event, or None: a malformed line is skipped on read and
+    never rewritten."""
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return None
+    if not (isinstance(e, dict) and isinstance(e.get("writer"), str) and isinstance(e.get("ts"), str)
+            and isinstance(e.get("kind"), str) and type(e.get("seq")) is int):
+        return None
+    return e
+
+
+def _last_seq(f):
+    """The seq of the last well-formed line of an open writer file; 0 if none.
+    Reads backwards from the end: a long-lived writer's file is never read whole."""
+    end = f.seek(0, os.SEEK_END)
+    size = 1 << 16
+    while True:
+        start = max(0, end - size)
+        f.seek(start)
+        lines = f.read(end - start).split(b"\n")
+        if start:
+            lines = lines[1:]  # the first may be the tail of an earlier line
+        for line in reversed(lines):
+            e = parse_event(line.decode("utf-8", "replace")) if line.strip() else None
+            if e:
+                return e["seq"]
+        if not start:
+            return 0
+        size *= 4
+
+
+def _append(project, writer, events, skip_src=False):
+    """Append events to the writer's file under `.sync.lock` shared (git never
+    rewrites log/ while an appender writes) and the file's own lock (seq is the
+    last line's plus one). Returns the events as written."""
+    path = writer_path(project, writer)
+    log = os.path.dirname(path)
+    with flocked(os.path.join(log, ".sync.lock"), exclusive=False), flocked(path + ".lock"):
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "r+b") as f:
+            if skip_src:
+                f.seek(0)
+                present = {x["src"] for x in map(parse_event, f.read().decode("utf-8", "replace").split("\n"))
+                           if x and x.get("src") is not None}
+                kept = []
+                for e in events:
+                    src = e.get("src")
+                    if src is None or src not in present:
+                        if src is not None:
+                            present.add(src)
+                        kept.append(e)
+                events = kept
+            if not events:
+                return []
+            seq = _last_seq(f)
+            out = []
+            for fields in events:
+                seq += 1
+                rest = {k: v for k, v in fields.items() if k != "kind"}
+                out.append({"ts": now(ms=True), "writer": writer, "seq": seq, "kind": fields["kind"], **rest})
+            end = f.seek(0, os.SEEK_END)
+            if end:
+                # An interrupted append can leave a fragment without its
+                # newline; end it so this event is a line of its own.
+                f.seek(end - 1)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in out).encode())
+    return out
+
+
+def log_append(project, writer, kind, **fields):
+    return _append(project, writer, [{"kind": kind, **fields}])[0]
+
+
+def log_append_batch(project, writer, events, skip_src=True):
+    """Several events of one writer under one taking of the locks; with
+    skip_src, an event whose `src` the file already holds is dropped inside
+    them, so a retried export appends each source once."""
+    return _append(project, writer, events, skip_src)
+
+
+def addressed_to(e, session):
+    to = e.get("to")
+    return isinstance(to, list) and any(isinstance(r, dict) and r.get("session") == session for r in to)
+
+
+def log_read(project, since=None, kinds=(), to_session=None):
+    """The project's events: each writer's stream in seq order (authoritative
+    within a writer), merged by taking the next line from whichever stream's
+    head has the earlier (ts, writer). Only the top-level *.jsonl are read."""
+    streams = {}
+    for path in sorted(glob.glob(os.path.join(project.home, "log", "*.jsonl"))):
+        try:
+            f = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with f:
+            for line in f:
+                e = parse_event(line)
+                if (e is None or (since and e["seq"] <= int(since.get(e["writer"], 0)))
+                        or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
+                    continue
+                streams.setdefault(e["writer"], []).append(e)
+    for stream in streams.values():
+        stream.sort(key=lambda e: e["seq"])
+    return list(heapq.merge(*streams.values(), key=lambda e: (e["ts"], e["writer"])))
+
+
+def reader_key(session_uuid):
+    key = session_uuid or "human"
+    if not valid_name(key):
+        die("not a session id: %s" % key)
+    return key
+
+
+def cursor_load(project, session_uuid):
+    """What a reader has read: {writer: seq}."""
+    try:
+        with open(os.path.join(project.home, "cursors", reader_key(session_uuid) + ".json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {str(w): int(s) for w, s in d.items() if type(s) is int} if isinstance(d, dict) else {}
+
+
+def cursor_save(project, session_uuid, cursor):
+    write_json(project_path(project, "cursors", reader_key(session_uuid) + ".json"), cursor)
+
+
+# Delivery records: per recipient session, per writer, the seq up to which
+# every event owed to it is settled, and the one pending event that failed
+# with its attempt count. A deliverer never settles past an unsettled event of
+# the same writer, so a later success cannot bury an earlier failure.
+
+
+def delivered_load(project, session_uuid):
+    try:
+        with open(os.path.join(project.home, "delivered", reader_key(session_uuid) + ".json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for w, v in (d.items() if isinstance(d, dict) else ()):
+        if isinstance(v, dict):
+            pending = v.get("pending")
+            out[str(w)] = {"settled": int(v.get("settled") or 0),
+                           "pending": pending if type(pending) is int else None,
+                           "attempts": int(v.get("attempts") or 0)}
+    return out
+
+
+def _delivery(record, writer):
+    return record.get(writer) or {"settled": 0, "pending": None, "attempts": 0}
+
+
+def _next_check(record, writer, seq):
+    w = _delivery(record, writer)
+    if seq <= w["settled"] or (w["pending"] is not None and seq != w["pending"]):
+        raise ValueError("delivery of %s:%d out of order (settled %d, pending %s)" % (
+            writer, seq, w["settled"], w["pending"]))
+    return w
+
+
+def delivered_settle(project, session_uuid, writer, seq):
+    """Settle the writer's next owed event — every event between the settled
+    prefix and seq is not owed to this session, so the prefix moves to seq.
+    The caller holds delivered/<session>.lock."""
+    record = delivered_load(project, session_uuid)
+    _next_check(record, writer, seq)
+    record[writer] = {"settled": seq, "pending": None, "attempts": 0}
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+
+
+def delivered_fail(project, session_uuid, writer, seq):
+    """Note a failed attempt at the writer's next owed event; returns the count."""
+    record = delivered_load(project, session_uuid)
+    w = _next_check(record, writer, seq)
+    attempts = w["attempts"] + 1 if w["pending"] == seq else 1
+    record[writer] = {"settled": w["settled"], "pending": seq, "attempts": attempts}
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    return attempts
+
+
+def member_session(member):
+    """The session a member is — until M2's Member, a seat record stands in."""
+    return str((member or {}).get("session") or (member or {}).get("current") or "")
+
+
+def _owed(events, session, record):
+    # Imported history was delivered by the old chat, and a `direct` event by
+    # the sender's own `send`: neither is owed.
+    return [e for e in events
+            if not e["writer"].startswith("legacy/") and not e.get("direct")
+            and writer_session(e["writer"]) != session and addressed_to(e, session)
+            and e["seq"] > _delivery(record, e["writer"])["settled"]]
+
+
+def owed(project, member):
+    """The events owed to a member, each writer's in seq order from its
+    settled prefix."""
+    session = member_session(member)
+    if not session:
+        return []
+    return _owed(log_read(project, to_session=session), session, delivered_load(project, session))
+
+
+def daemon_log(line):
+    with open(os.path.join(root(), "daemon.log"), "a") as f:
+        f.write("%s %s\n" % (now(ms=True), line))
+
+
+def deliver_next(project, member):
+    """The one delivery operation, for the sender's fast path and the daemon
+    alike. Under delivered/<session>.lock, from choosing through the push to
+    the settlement: per writer, push the owed events in seq order, settling
+    each, and stop that writer at the first failure (it stays pending, retried
+    by the next call, and is settled with a daemon.log line after
+    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}."""
+    session = member_session(member)
+    result = {"delivered": 0, "pending": 0, "outcomes": []}
+    if not session:
+        return result
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        events = log_read(project)
+        streams = {}
+        for e in _owed(events, session, delivered_load(project, session)):
+            streams.setdefault(e["writer"], []).append(e)
+        cursor = cursor_load(project, session)
+        for writer, queue in streams.items():
+            for i, e in enumerate(queue):
+                outcome = push_event(project, member, session, e, events, cursor)
+                result["outcomes"].append((e, outcome))
+                if outcome.startswith("failed"):
+                    if delivered_fail(project, session, writer, e["seq"]) < DELIVERY_ATTEMPTS:
+                        result["pending"] += len(queue) - i
+                        break
+                    daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
+                        event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
+                elif outcome in PUSHED:
+                    result["delivered"] += 1
+                delivered_settle(project, session, writer, e["seq"])
+    return result
+
+
+def push_event(project, member, session, e, events, cursor):
+    """Push one event to one member as a chat frame. An addressed event resumes
+    a stopped member; an @all (`wake`) reaches only the live."""
+    unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and
+                 writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
+    frame = compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
+                               "@all" if e.get("wake") else "@you", unread, str(e.get("text") or ""))
+    return push_member(member, frame, not e.get("wake"), session=session)
+
+
+def compose_chat_frame(project_name, ref, sender, target, unread, text):
+    return "[sminos chat %s %s from %s → %s%s]\n%s" % (
+        project_name, ref, sender, target, (" | unread %d" % unread) if unread else "", text)
+
+
+# ------------------------------------------------------------------ addressing
 
 REACH_HINT = ("is outside your family (parent, siblings, children). To reach another session "
               "use the native ListAgents and SendMessage tools.")
-TAG = re.compile(r"@[A-Za-z0-9._-]+")
+TAG_RE = re.compile(r'@(?:"([^"\n]+)"|([\w.-]+(?:/[\w.-]+)?))(?:#([0-9a-f]{1,8}))?')
+SPACE_RE = re.compile(r"\s*")
 
 
 def leading_tags(text):
-    """The `@name` tokens that open a message, trailing `,:;` stripped. Only
-    this leading run addresses anyone: an @ later in the text (a quoted alias,
-    an error message naming a seat) is just text."""
-    tags = []
-    for token in text.split():
-        token = token.rstrip(",:;")
-        if not TAG.fullmatch(token):
-            break
-        tags.append(token)
-    return tags
+    """The tags that open a message — `@name`, `@"name with spaces"`,
+    `@name#short`, `@short`, each optionally `project/`-qualified — trailing
+    `,:;` allowed. Only this leading run addresses anyone: an @ later in the
+    text (a quoted alias, an error message naming a seat) is just text.
+    Returns [{"raw", "project", "name", "short"}]."""
+    tags, pos = [], 0
+    while True:
+        pos = SPACE_RE.match(text, pos).end()
+        m = TAG_RE.match(text, pos)
+        if not m:
+            return tags
+        end = m.end()
+        while end < len(text) and text[end] in ",:;":
+            end += 1
+        if end < len(text) and not text[end].isspace():
+            return tags
+        project, _, name = (m.group(1) or m.group(2)).rpartition("/")
+        tags.append({"raw": m.group(0), "project": project, "name": name, "short": m.group(3) or ""})
+        pos = end
+
+
+def session_short(seat):
+    return (seat.get("current") or "")[:8]
+
+
+def tag_label(seat):
+    return "%s#%s" % (seat["alias"], session_short(seat))
+
+
+def project_seats(project):
+    """The seats whose cwd resolves to the project (M1's members)."""
+    return [s for s in seats() if (p := seat_project(s)) and p.id == project.id]
+
+
+def is_all(tag):
+    return tag["name"] == "all" and not tag["project"] and not tag["short"]
+
+
+def resolve_tags(project, text):
+    """Resolve a message's leading tags at submission. Returns (destination,
+    recipients [{session, alias}], text, wake). The destination is the
+    sender's project, or the one the tags name; tags naming two projects are
+    refused, as are a tag matching no member and one matching several
+    (named as alias#short). `@all` is the members live at submission."""
+    tags = leading_tags(text)
+    if not tags:
+        return project, [], text, False
+    if any(is_all(t) for t in tags):
+        if len(tags) != 1:
+            die("@all stands alone")
+        if project is None:
+            die("@all needs a project: say it in a project's directory, or with --in <project>")
+        live = [s for s in project_seats(project) if s["current"] and state(s) in FILLED]
+        return project, [{"session": s["current"], "alias": s["alias"]} for s in live], text, True
+    destinations = {}
+    for t in tags:
+        if t["project"]:
+            p = find_project(t["project"])
+        elif project is None:
+            die("%s names no project, and this is no project's directory: tag @<project>/%s, or say --in <project>" % (
+                t["raw"], t["name"]))
+        else:
+            p = project
+        destinations[p.id] = p
+    if len(destinations) > 1:
+        die("one message, one project: the tags name %s" % ", ".join(sorted(p.name for p in destinations.values())))
+    dest = next(iter(destinations.values()))
+    candidates = project_seats(dest)
+    recipients = []
+    for t in tags:
+        def hit(s):
+            if t["short"]:
+                return s["alias"] == t["name"] and session_short(s).startswith(t["short"])
+            return s["alias"] == t["name"] or session_short(s) == t["name"]
+        hits = [s for s in candidates if hit(s)]
+        members = [s for s in hits if s["current"] and s["status"] != "retired"]
+        if len(members) > 1:
+            die("ambiguous %s matches: %s" % (t["raw"], ", ".join(sorted(tag_label(s) for s in members))), EXIT_UNKNOWN)
+        if not members:
+            if any(s["status"] == "retired" for s in hits):
+                die("%s is retired; re-fill it to reach it" % t["raw"], EXIT_UNKNOWN)
+            if hits:
+                die("%s is vacant — fill it to reach it" % t["raw"], EXIT_UNKNOWN)
+            die("no member %s in project %s" % (t["raw"], dest.name), EXIT_UNKNOWN)
+        s = members[0]
+        if all(r["session"] != s["current"] for r in recipients):
+            recipients.append({"session": s["current"], "alias": s["alias"]})
+    return dest, recipients, text, False
 
 
 def caller_seat():
@@ -447,112 +1032,6 @@ def require_reach(caller, target, name=None):
         die("%s %s" % (name or target["alias"], REACH_HINT), EXIT_UNKNOWN)
 
 
-def chat_path(host_seat_id):
-    return os.path.join(root(), "chats", host_seat_id + ".jsonl")
-
-
-@contextmanager
-def chat_lock(host_seat_id):
-    directory = os.path.join(root(), "chats")
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    with open(os.path.join(directory, host_seat_id + ".lock"), "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-
-
-def chat_read(host_seat_id):
-    try:
-        with open(chat_path(host_seat_id)) as f:
-            records = []
-            for line in f:
-                try:
-                    record = json.loads(line)
-                    if isinstance(record, dict) and isinstance(record.get("id"), int):
-                        records.append(record)
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return []
-    return sorted(records, key=lambda record: record["id"])
-
-
-def chat_append(host_seat_id, record):
-    with chat_lock(host_seat_id):
-        record = {**record, "id": max((r["id"] for r in chat_read(host_seat_id)), default=0) + 1,
-                  "ts": now(), "delivered": {}}
-        fd = os.open(chat_path(host_seat_id), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "r+b") as f:
-            # An interrupted append can leave a fragment without its newline;
-            # end it so this record is a line of its own.
-            end = f.seek(0, os.SEEK_END)
-            if end:
-                f.seek(end - 1)
-                if f.read(1) != b"\n":
-                    f.write(b"\n")
-            f.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
-        return record
-
-
-def chat_update(host_seat_id, msg_id, delivered):
-    with chat_lock(host_seat_id):
-        path = chat_path(host_seat_id)
-        # Preserve corrupt lines while rewriting: they are skipped by chat_read,
-        # but neither a slow writer nor a malformed line should erase history.
-        with open(path) as f:
-            lines = f.readlines()
-        updated = []
-        for line in lines:
-            try:
-                item = json.loads(line)
-                if item.get("id") == msg_id:
-                    item["delivered"] = delivered
-                    line = json.dumps(item, ensure_ascii=False) + "\n"
-            except (ValueError, AttributeError):
-                pass
-            updated.append(line)
-        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".chat-", text=True)
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.writelines(updated)
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-
-
-def seen_advance(seat_id, host_seat_id, msg_id, expected_short=None):
-    os.makedirs(root(), exist_ok=True)
-    with open(os.path.join(root(), ".metalock"), "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        # Promotion renames the provisional file under this same lock. Match
-        # the caller again while locked, never create a vanished provisional.
-        s = reload_seat(seat_id)
-        if s is None and expected_short:
-            caller = caller_seat()
-            # Only a promotion of this caller's provisional short can redirect
-            # the write; an arbitrary missing id must remain a no-op.
-            s = caller if caller and caller["short"] == expected_short and is_family_seat(caller) else None
-        if s:
-            seen = s.get("chat_seen") if isinstance(s.get("chat_seen"), dict) else {}
-            seen[host_seat_id] = max(int(seen.get(host_seat_id, 0)), msg_id)
-            _write_record(meta_path(s["seat_id"]), {**s, "chat_seen": seen})
-
-
-def unread_for(host_seat_id, member_alias, watermark, below_id):
-    """Messages the member has neither read nor been pushed; its own are never unread."""
-    return sum(1 for r in chat_read(host_seat_id)
-               if watermark < r["id"] < below_id and r.get("from") != member_alias and
-               r.get("delivered", {}).get(member_alias) not in ("sent", "woken"))
-
-
-def compose_chat_frame(host_alias, msg_id, sender, targets, unread, text):
-    return "[sminos chat %s #%d from %s → %s%s]\n%s" % (
-        host_alias, msg_id, sender, targets, (" | unread %d" % unread) if unread else "", text)
-
-
 class ResumeRefused(Exception):
     def __init__(self, message, code=EXIT_UNKNOWN):
         super().__init__(message)
@@ -560,7 +1039,11 @@ class ResumeRefused(Exception):
         self.code = code
 
 
-def push_member(member, text, tagged):
+def push_member(member, text, tagged, session=None):
+    """Push one frame to a seat: its inbox socket when live; a resume when it
+    is stopped and the message is addressed to it (`tagged`). Given `session`,
+    a seat that now holds another session is not this message's recipient:
+    delivery goes by session id, so a replacement cannot misroute it."""
     def unreachable(s):
         # Decided on the record as it is now, never on the fan-out's snapshot:
         # an earlier member's resume can outlast a later member's retirement.
@@ -568,7 +1051,7 @@ def push_member(member, text, tagged):
             if s is not None and tagged:
                 warn("%s is retired; re-fill it to reach it" % s["alias"])
             return True
-        return False
+        return bool(session) and s["current"] != session
 
     fresh = reload_seat(member["seat_id"])
     if unreachable(fresh):
@@ -609,115 +1092,237 @@ def push_member(member, text, tagged):
         unlock(locks)
 
 
+# ------------------------------------------------------------------ say / chat
+
+
 def cmd_say(a):
-    caller = caller_seat()
-    if caller:
+    """Record a message in a project's log, and deliver it to whom it tags."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if sid:
         if a.in_:
-            die("--in is for an operator, not a seat")
-        parent = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None)
-        own = family_of(caller)[1]
-        tags = leading_tags(a.text)
-        if "@all" in tags and len(tags) != 1:
-            die("@all stands alone")
-        if "@%s" % caller["alias"] in tags:
-            die("you cannot tag yourself")
-        parent_members = ([parent] + family_of(parent)[1]) if parent else []
-        selected = set(tags) - {"@all"}
-        up = {"@" + s["alias"] for s in parent_members if s["seat_id"] != caller["seat_id"]}
-        down = {"@" + s["alias"] for s in own if s["seat_id"] != caller["seat_id"]}
-        if selected - up - down:
-            die("%s %s" % (next(iter(sorted(selected - up - down))), REACH_HINT), EXIT_UNKNOWN)
-        if selected & up and selected & down:
-            die("one message, one family")
-        if a.team and selected & up:
-            die("--team cannot name a parent or sibling: one message, one family")
-        host = caller if (selected & down or a.team or not parent) else parent
-        if not host or (host["seat_id"] == caller["seat_id"] and not own):
-            die("no family yet: spawn a child, or you were spawned without a parent", EXIT_UNKNOWN)
-        members = [host] + family_of(host)[1]
-        targets = [s for s in members if s["seat_id"] != caller["seat_id"] and
-                   ("@all" in tags or "@" + s["alias"] in selected or
-                    (not selected and (host["seat_id"] == caller["seat_id"] or
-                                       s["seat_id"] == host["seat_id"])))]
-        mode = ("tagged" if selected else "team" if host["seat_id"] == caller["seat_id"] else
-                "all" if tags else "host")
-        explicit = bool(selected)
-        target_label = " ".join(sorted(selected)) if explicit else host["alias"] if mode == "host" else "all"
-        sender = caller["alias"]
+            die("--in is for an operator, not a session — tag @<project>/<name> to speak into another project")
+        caller = caller_seat()
+        home = caller_project(caller)
+        sender = caller["alias"] if caller else default_from("")
+        writer, kind = writer_id(sid), "say"
     else:
-        if not a.in_:
-            die("say from an operator requires --in <host>")
-        host = resolve_seat(a.in_)
-        members = [host] + family_of(host)[1]
-        tags = leading_tags(a.text)
-        if "@all" in tags and len(tags) != 1:
-            die("@all stands alone")
-        selected = set(tags) - {"@all"}
-        if selected - {"@" + s["alias"] for s in members}:
-            die("%s %s" % (next(iter(sorted(selected - {"@" + s["alias"] for s in members}))), REACH_HINT), EXIT_UNKNOWN)
-        targets = [s for s in members if not selected or "@" + s["alias"] in selected]
-        mode, sender, explicit = ("tagged" if selected else "all" if tags else "operator"), "human", bool(selected)
-        target_label = " ".join(sorted(selected)) if selected else "all"
+        home = find_project(a.in_) if a.in_ else caller_project()
+        sender, writer, kind = "human", writer_id(), "human"
+    dest, recipients, _text, wake = resolve_tags(home, a.text)
+    if dest is None:
+        die("say outside a project: run it in a project's directory, or name one with --in <project>")
+    if sid:
+        if wake:
+            recipients = [r for r in recipients if r["session"] != sid]
+        elif any(r["session"] == sid for r in recipients):
+            die("you cannot tag yourself")
+    fields = {"from": sender, "to": recipients if (recipients or wake) else "*", "text": a.text}
+    if wake:
+        fields["wake"] = True
     try:
-        record = chat_append(host["seat_id"], {"from": sender, "to": [s["alias"] for s in targets],
-                                               "mode": mode, "text": a.text})
-    except OSError as e:
-        die("chat could not be recorded: %s" % e, 1)
-    delivered = {}
-    for member in targets:
-        current = reload_seat(member["seat_id"]) or member
-        watermark = (current.get("chat_seen") or {}).get(host["seat_id"], 0)
-        unread = unread_for(host["seat_id"], member["alias"], int(watermark), record["id"])
-        frame = compose_chat_frame(host["alias"], record["id"], sender, target_label, unread, a.text)
-        delivered[member["alias"]] = push_member(member, frame, explicit)
-        print("%s: %s" % (member["alias"], delivered[member["alias"]]))
-    try:
-        chat_update(host["seat_id"], record["id"], delivered)
-    except OSError as e:
-        warn("chat message #%d was recorded but delivery outcomes could not be saved: %s" % (record["id"], e))
+        e = log_append(dest, writer, kind, **fields)
+    except OSError as err:
+        die("say could not be recorded: %s" % err, 1)
+    print("recorded %s in %s" % (event_ref(e), dest.name))
+    by_session = {s["current"]: s for s in project_seats(dest) if s["current"]}
+    for r in recipients:
+        member = by_session.get(r["session"])
+        result = deliver_next(dest, member) if member else {"outcomes": []}
+        mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
+        if mine:
+            print("%s: %s" % (r["alias"], mine[0]))
+            continue
+        held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
+        print("%s: pending%s" % (r["alias"], " behind an earlier undelivered message (%s)" % held if held else ""))
+
+
+def target_label(e):
+    to = e.get("to")
+    if to == "*":
+        return "*"
+    if e.get("wake"):
+        return "@all"
+    if isinstance(to, list):
+        return " ".join("@" + str(r.get("alias") or "?") for r in to if isinstance(r, dict)) or "-"
+    return str(to or "-")
+
+
+def chat_line(e):
+    lines = str(e.get("text") or "").split("\n")
+    out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target_label(e), lines[0])]
+    out += ["    " + line for line in lines[1:]]
+    return "\n".join(out)
+
+
+TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d)(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,3}))?)?)?Z?$")
+
+
+def normalize_ts(ts):
+    """A user-given time as the log's ts shape, so string order is time order."""
+    m = TS_RE.match(ts.strip())
+    if not m:
+        die("--since takes an ISO-8601 UTC time such as 2026-10-13T08:00:00Z: %s" % ts)
+    day, hh, mm, ss, ms = m.groups()
+    return "%sT%s:%s:%s.%sZ" % (day, hh or "00", mm or "00", ss or "00", (ms or "0").ljust(3, "0"))
 
 
 def cmd_chat(a):
-    if a.n < 1 or (a.since is not None and a.since < 0):
-        die("chat -n must be positive and --since must not be negative")
-    caller = caller_seat()
-    if caller:
-        if a.host:
-            die("a seat's chat takes no <host> argument")
-        if a.team:
-            host = caller
-        else:
-            host = next((s for s in seats(caller["group"]) if s["alias"] == caller["parent"]), None) or caller
-        if host["seat_id"] == caller["seat_id"] and not family_of(host)[1]:
-            print("no family yet: spawn a child, or you were spawned without a parent")
-            return
+    """Read a project's chat. With no flags: what is above the reader's
+    cursor (at most 30, then +N earlier), advancing it; -n tails and --since
+    reads from a time, neither moving it."""
+    if a.n is not None and a.n < 1:
+        die("chat -n must be positive")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    project = find_project(a.project) if a.project else caller_project(caller_seat() if sid else None)
+    if project is None:
+        die("chat outside a project: run it in a project's directory, or name one: sminos chat <project>")
+    kinds = tuple(a.kind) if a.kind else CHAT_KINDS
+    events = log_read(project)
+    pool = [e for e in events if e["kind"] in kinds]
+    earlier = 0
+    if a.since is not None:
+        since = normalize_ts(a.since)
+        window, head = [e for e in pool if e["ts"] >= since], "since %s" % a.since
+    elif a.n is not None:
+        window, head = pool[-a.n:], "last %d of %d" % (min(a.n, len(pool)), len(pool))
     else:
-        if a.team:
-            die("--team is for a seat's own chat")
-        if not a.host:
-            die("chat from an operator requires <host>")
-        host = resolve_seat(a.host)
-    members = [host] + family_of(host)[1]
-    records = chat_read(host["seat_id"])
-    selected = ([r for r in records if r["id"] > a.since] if a.since is not None
-                else records[-a.n:])
+        cursor = cursor_load(project, sid)
+        mine = writer_id(sid or None)
+        above = [e for e in pool if e["writer"] != mine and e["seq"] > cursor.get(e["writer"], 0)]
+        window = above[-30:]
+        earlier = len(above) - len(window)
+        head = "%d new" % len(above)
+        advanced = dict(cursor)
+        for e in events:
+            advanced[e["writer"]] = max(advanced.get(e["writer"], 0), e["seq"])
+        if advanced != cursor:
+            cursor_save(project, sid, advanced)
     if a.json:
-        for r in selected:
-            print(json.dumps(r, ensure_ascii=False))
+        for e in window:
+            print(json.dumps(e, ensure_ascii=False))
+        if earlier:
+            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, project.name, len(window) + earlier))
+        return
+    print("chat %s · %s" % (project.name, head))
+    if earlier:
+        print("+%d earlier — sminos chat %s -n %d" % (earlier, project.name, len(window) + earlier))
+    for e in window:
+        print(chat_line(e))
+    if not window:
+        print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
+
+
+# ------------------------------------------------------------------ project verb
+
+
+def git_toplevel(cwd):
+    try:
+        p = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    return p.stdout.strip() if p.returncode == 0 else ""
+
+
+def cmd_project(a):
+    if a.op == "init":
+        project_init(a)
+    elif a.op == "show":
+        d = os.path.abspath(a.dir or os.getcwd())
+        p = resolve_project(d)
+        if p is None:
+            die("no project at %s: no .smns above it and no git repository around it" % d, EXIT_UNKNOWN)
+        print("project  %s\nid       %s\nremote   %s\nroot     %s\nhome     %s" % (
+            p.name, p.id, p.remote or "-", p.root, p.home))
     else:
-        print("chat %s (%s) · members: %s · %d messages" % (
-            host["alias"], host["group"], ", ".join(s["alias"] for s in members), len(records)))
-        for r in selected:
-            lines = r.get("text", "").split("\n")
-            target = (" ".join("@" + alias for alias in r.get("to", [])) if r.get("mode") == "tagged"
-                      else "all" if r.get("mode") in ("all", "team", "operator")
-                      else " ".join(r.get("to", [])))
-            print("#%-3d %s %-6s → %-7s %s" % (r["id"], r.get("ts", "")[11:19] + "Z",
-                                             r.get("from", ""), target, lines[0]))
-            for line in lines[1:]:
-                print("    " + line)
-    if caller and selected:
-        seen_advance(caller["seat_id"], host["seat_id"], selected[-1]["id"], caller["short"])
+        project_attach(a)
+
+
+def project_init(a):
+    top = git_toplevel(os.getcwd())
+    if not top:
+        die("project init needs a git repository: .smns is committed at its root")
+    path = os.path.join(top, SMNS)
+    if os.path.exists(path):
+        smns = read_smns(path)
+        die("%s is already project %s (%s)" % (top, smns[1], smns[0]) if smns else
+            "%s exists but is unreadable — fix or remove it first" % path)
+    name = a.name or safe_name(os.path.basename(owning_repo(top) or top)) or "project"
+    if "/" in name or "\n" in name or not name.strip():
+        die("a project name is one line without '/': %r" % name)
+    data = {"project": str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.chmod(path, 0o644)  # committed: every clone reads it
+    _PROJECTS.clear()
+    project_path(resolve_project(top), "log")
+    print("project %s (%s) at %s — commit it, so every clone is the same project" % (name, data["project"], path))
+
+
+def git_in(log, *args, timeout=None):
+    return subprocess.run(["git", "-C", log, *args], capture_output=True, text=True, timeout=timeout,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def commit_log(log, message):
+    """Commit whatever the appenders wrote; the caller holds `.sync.lock`
+    exclusive. A first commit is made even with nothing to commit."""
+    git_in(log, "add", "-A")
+    if git_in(log, "rev-parse", "--verify", "-q", "HEAD").returncode == 0 and \
+            not git_in(log, "status", "--porcelain").stdout.strip():
+        return
+    p = git_in(log, "commit", "-q", "--allow-empty", "-m", message)
+    if p.returncode != 0:
+        die("git commit in %s failed: %s" % (log, (p.stderr or p.stdout).strip()), 1)
+
+
+def project_attach(a):
+    """Adopt the existing log/ as a git working tree of the project's remote:
+    init, first commit, remote, fetch, integrate (unrelated histories are
+    expected on first attach). With the remote unreachable it stops after the
+    remote is set, leaving the first sync to the daemon."""
+    p = resolve_project(os.path.abspath(a.dir or os.getcwd()))
+    if p is None:
+        die("no project here to attach", EXIT_UNKNOWN)
+    if not p.remote:
+        die("project %s names no remote in its .smns: nothing to attach to" % p.name)
+    log = os.path.dirname(writer_path(p, writer_id()))
+    with flocked(os.path.join(log, ".sync-op.lock")):
+        with flocked(os.path.join(log, ".sync.lock")):
+            if not os.path.isdir(os.path.join(log, ".git")):
+                init = git_in(log, "init", "-q", "-b", "main")
+                if init.returncode != 0:
+                    die("git init in %s failed: %s" % (log, init.stderr.strip()), 1)
+            git_in(log, "config", "user.name", "sminos")
+            git_in(log, "config", "user.email", "sminos@%s" % host_name())
+            exclude = os.path.join(log, ".git", "info", "exclude")
+            os.makedirs(os.path.dirname(exclude), exist_ok=True)
+            with open(exclude, "w") as f:
+                f.write("# locks are this machine's, never the mirror's\n*.lock\n")
+            commit_log(log, "sminos: %s attaches %s" % (host_name(), p.name))
+            if git_in(log, "remote", "get-url", "origin").returncode == 0:
+                git_in(log, "remote", "set-url", "origin", p.remote)
+            else:
+                git_in(log, "remote", "add", "origin", p.remote)
+        try:
+            fetch = git_in(log, "fetch", "-q", "origin", timeout=30)
+            fetched, why = fetch.returncode == 0, (fetch.stderr or fetch.stdout).strip()
+        except subprocess.TimeoutExpired:
+            fetched, why = False, "timed out after 30s"
+        if not fetched:
+            print("attached %s to %s; the remote is unreachable for now (%s) — the daemon syncs once it answers" % (
+                p.name, p.remote, " ".join(why.split())[:200]))
+            return
+        with flocked(os.path.join(log, ".sync.lock")):
+            # Appends made during the fetch are committed before anything is
+            # integrated, so no event is ever outside a commit.
+            commit_log(log, "sminos: %s before integrating" % host_name())
+            if git_in(log, "rev-parse", "--verify", "-q", "origin/main").returncode == 0:
+                merge = git_in(log, "merge", "-q", "--no-edit", "--allow-unrelated-histories", "origin/main")
+                if merge.returncode != 0:
+                    die("integrating %s into %s failed: %s" % (p.remote, log, (merge.stderr or merge.stdout).strip()), 1)
+    print("attached %s to %s" % (p.name, p.remote))
 
 
 def resolve_seat(q):
@@ -760,27 +1365,16 @@ def derive_group(cwd):
 
     Board-pipeline workers spawn in a linked worktree (<repo>/.claude/worktrees/
     <name>), whose toplevel is the worktree dir — grouping on that would file
-    every worker under its own name. The common git dir points at the main
-    checkout's .git, so its parent is the owning repo; all a repo's workers
-    share one group. Non-git cwd falls back to the directory basename.
+    every worker under its own name. owning_repo follows the common git dir to
+    the main checkout, so all a repo's workers share one group (the same rule
+    names a local project, resolve_project). Non-git cwd falls back to the
+    directory basename.
     """
     name = ""
     if cwd and os.path.isdir(cwd):
-        try:
-            common = subprocess.run(["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-                                    capture_output=True, text=True, timeout=10).stdout.strip()
-        except Exception:
-            common = ""
-        if common:
-            if not os.path.isabs(common):
-                common = os.path.join(cwd, common)
-            name = os.path.basename(os.path.dirname(os.path.abspath(common)))
-        else:
-            name = os.path.basename(os.path.normpath(cwd))
-    name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64]
-    if not valid_name(name):
-        name = "fleet"
-    return name
+        repo = owning_repo(cwd)
+        name = os.path.basename(repo) if repo else os.path.basename(os.path.normpath(cwd))
+    return safe_name(name) or "fleet"
 
 
 def group_for_record(m):
@@ -888,6 +1482,7 @@ def refresh_caches():
     _AGENTS_LOADED = False
     _PEERS = None
     _PSTART.clear()
+    _PROJECTS.clear()
     return agents_json()
 
 
@@ -1746,11 +2341,71 @@ def migrate(quiet=False):
             if stamped or retired or deduped:
                 did.append("stamped group on %d record(s), retired %d legacy codex record(s), renamed %d duplicate alias(es)" % (
                     stamped, retired, deduped))
+            imported = import_chats()
+            if imported:
+                did.append("imported %d family chat(s) into project logs" % imported)
         finally:
             fcntl.flock(mlf, fcntl.LOCK_UN)
     if did and not quiet:
         sys.stderr.write("sminos: migrated: %s\n" % "; ".join(did))
     return did
+
+
+def legacy_ts(ts):
+    """A family chat's whole-second ts in the log's millisecond shape."""
+    ts = str(ts or "")
+    return ts[:-1] + ".000Z" if re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", ts) else ts
+
+
+def import_chats():
+    """Fold each former per-host family chat (chats/<host-seat-id>.jsonl) into
+    the project log of the host's cwd, as writer legacy/<host-seat-id>: ts,
+    sender and text kept, a tag resolved against the host's group to the
+    session its seat holds (an unresolvable one stays as text, and the event
+    is to "*"). The writer file is written whole and renamed into place; the
+    chat file is then set aside as .imported, so the import runs once. A chat
+    whose host record is gone stays, its project unknown."""
+    files = sorted(glob.glob(os.path.join(root(), "chats", "*.jsonl")))
+    if not files:
+        return 0
+    by_id = {s["seat_id"]: s for s in seats()}
+    imported = 0
+    for path in files:
+        host_id = os.path.basename(path)[:-len(".jsonl")]
+        host = by_id.get(host_id)
+        project = seat_project(host) if host else None
+        if project is None:
+            continue
+        writer = "legacy/" + host_id
+        target = writer_path(project, writer)
+        if not os.path.exists(target):
+            sessions = {s["alias"]: s["current"] for s in by_id.values()
+                        if s["group"] == host["group"] and s["current"]}
+            rows = []
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(r, dict) and type(r.get("id")) is int:
+                        rows.append(r)
+            events = []
+            for seq, r in enumerate(sorted(rows, key=lambda r: r["id"]), 1):
+                to = [{"session": sessions[alias], "alias": alias} for alias in r.get("to") or []
+                      if r.get("mode") == "tagged" and isinstance(alias, str) and alias in sessions]
+                sender = str(r.get("from") or "")
+                events.append({"ts": legacy_ts(r.get("ts")), "writer": writer, "seq": seq,
+                               "kind": "human" if sender == "human" else "say", "from": sender,
+                               "to": to or "*", "text": str(r.get("text") or "")})
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".tmp-")
+            with os.fdopen(fd, "w") as f:
+                f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
+            with flocked(os.path.join(os.path.dirname(target), ".sync.lock"), exclusive=False):
+                os.replace(tmp, target)
+        os.replace(path, path + ".imported")
+        imported += 1
+    return imported
 
 
 # --------------------------------------------------------------- spawn / fill
@@ -2374,7 +3029,7 @@ def compose_frame(sender, msg_id, msg):
     return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
 
 
-def send_to_seat(s0, text, msg_id, wait):
+def send_to_seat(s0, text, msg_id, wait, record=None):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the socket delivery, and the status write, so a
     concurrent fill/resume/retire cannot slip between them. A live seat takes
@@ -2399,6 +3054,8 @@ def send_to_seat(s0, text, msg_id, wait):
     if st == "gone":
         die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
             "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
+    if record:
+        record(s)
     if not peer:
         resume_session(s, text, wait, locks, verb="sent to")
         return
@@ -2486,6 +3143,22 @@ def refuse_wait(target):
     die("--wait needs a seat: '%s' is not one, so there is no record to watch — send without --wait" % target)
 
 
+def record_send(s, sender, text):
+    """`send` is recorded in the target's project log — `human` from the
+    operator, `say` from a session — to the one session it reaches, marked
+    `direct`: the sender's own verb delivers it, so it is never owed."""
+    project = seat_project(s)
+    if project is None or not s["current"]:
+        return
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    try:
+        log_append(project, writer_id(sid or None), "say" if sid else "human",
+                   **{"from": sender, "to": [{"session": s["current"], "alias": s["alias"]}],
+                      "text": text, "direct": True})
+    except OSError as e:
+        warn("the send is not recorded in %s's log: %s" % (project.name, e))
+
+
 def _send(a):
     caller = caller_seat()
     if is_family_seat(caller) and a.target.startswith(CODEX_PREFIX):
@@ -2520,7 +3193,7 @@ def _send(a):
         die(ambiguous_seat(a.target, res), EXIT_UNKNOWN)
     if kind == "ok":
         require_reach(caller, res, a.target)
-        send_to_seat(res, text, msg_id, a.wait)
+        send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, frm, a.msg))
         return
     if is_family_seat(caller):
         die("%s %s" % (a.target, REACH_HINT), EXIT_UNKNOWN)
@@ -3043,16 +3716,26 @@ def build_parser():
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
     say.add_argument("--in", dest="in_", default="")
-    say.add_argument("--team", action="store_true")
     say.set_defaults(fn=cmd_say)
 
     chat = sub.add_parser("chat", add_help=False)
-    chat.add_argument("host", nargs="?", default="")
-    chat.add_argument("-n", type=int, default=30)
-    chat.add_argument("--since", type=int, default=None)
-    chat.add_argument("--team", action="store_true")
+    chat.add_argument("project", nargs="?", default="")
+    chat.add_argument("-n", type=int, default=None)
+    chat.add_argument("--since", default=None)
+    chat.add_argument("--kind", action="append", default=None)
     chat.add_argument("--json", action="store_true")
     chat.set_defaults(fn=cmd_chat)
+
+    pj = sub.add_parser("project", add_help=False)
+    psub = pj.add_subparsers(dest="op")
+    pi = psub.add_parser("init", add_help=False)
+    pi.add_argument("--name", default="")
+    pi.add_argument("--remote", default="")
+    pi.set_defaults(fn=cmd_project)
+    for op in ("show", "attach"):
+        po = psub.add_parser(op, add_help=False)
+        po.add_argument("dir", nargs="?", default="")
+        po.set_defaults(fn=cmd_project)
 
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")
@@ -3136,6 +3819,8 @@ def main(argv=None):
     if not getattr(a, "fn", None):
         if a.cmd == "seat":
             die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--parent P] [--session S]")
+        if a.cmd == "project":
+            die("usage: sminos project init [--name N] [--remote URL] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
     a.fn(a)

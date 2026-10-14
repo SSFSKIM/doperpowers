@@ -20,8 +20,10 @@ FAILURES=0
 PASSES=0
 TEST_ROOT="$(mktemp -d)"
 SOCK_PID=""
+EXTRA_PIDS=()
 cleanup() {
   [ -n "$SOCK_PID" ] && kill "$SOCK_PID" 2>/dev/null || true
+  for pid in ${EXTRA_PIDS[@]+"${EXTRA_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -1930,30 +1932,25 @@ assert_contains "$OUT" "send scout ping-from-tui here → rc=0 sent to org/scout
 assert_contains "$(tail -c 400 "$RECEIVED")" "[sminos message from human id=" "the frame reached the seat's inbox socket with the human sender line"
 assert_contains "$(tail -c 400 "$RECEIVED")" "]\nping-from-tui here" "carrying the typed message"
 run $TUI --keys b
-assert_contains "$OUT" "── chat · lead · 0 messages · tab to browse ──" "b shows focused host's chat"
-assert_contains "$OUT" "(no messages)" "empty chat has a message-free placeholder"
-"$SMINOS" say --in lead 'hello chat from the tui test' >/dev/null
+assert_contains "$OUT" "── chat · work · " "b shows the focused seat's project chat"
+assert_contains "$OUT" "ping-from-tui here" "the project chat carries the send recorded a moment ago"
+"$SMINOS" say --in work 'hello chat from the tui test' >/dev/null
 run $TUI --keys b
-assert_contains "$OUT" "chat · lead · 1 messages ·" "chat panel counts messages"
-assert_contains "$OUT" "#1    " "chat panel lists the message id"
+assert_contains "$OUT" "testhost/human:" "chat panel lists the event id"
 assert_contains "$OUT" "hello chat from the tui test" "chat panel shows the first line"
 run $TUI --keys "b,tab"
 assert_contains "$OUT" "↑↓ enter opens · tab back" "tab moves the keys into the chat list"
 run $TUI --keys "b,tab,enter"
-assert_contains "$OUT" "#1 · human → all · " "enter opens the message overlay with sender, targets and time"
+assert_contains "$OUT" " · human → * · " "enter opens the message overlay with sender, target and time"
 assert_contains "$OUT" "hello chat from the tui test" "message overlay shows the text"
 assert_contains "$OUT" "esc closes" "the overlay says how to close"
 run $TUI --keys "b,tab,enter,esc"
 assert_not_contains "$OUT" "esc closes" "esc closes the overlay"
-# A child with no hosted family shows its parent's chat.
+# Every seat of the project shows the one project chat.
 run $TUI --keys "right,b"
-assert_contains "$OUT" "chat · lead · 1 messages" "child panel follows its parent's chat"
-"$SMINOS" say --in scribe 'nested family update' >/dev/null
-run $TUI --keys "right,down,down,b"
-assert_contains "$OUT" "chat · scribe · 1 messages" "host seat shows its own chat instead of its parent's"
-assert_contains "$OUT" "nested family update" "nested host message is in its own panel"
+assert_contains "$OUT" "chat · work · " "a child's panel shows the same project chat"
 run $TUI --keys "right,down,down,right,b"
-assert_contains "$OUT" "chat · scribe · 1 messages" "grandchild reads its parent's chat"
+assert_contains "$OUT" "hello chat from the tui test" "so does a grandchild's"
 run $TUI --keys "b,tab,tab,right"
 assert_contains "$OUT" "--- focus: org/qa" "tab again hands the keys back to the chart"
 run $TUI --keys "?"
@@ -2012,12 +2009,22 @@ assert_contains "$OUT" "sminos tui needs a terminal — for text use: sminos cha
 
 fi # existing fleet tests; family-only runs skip to the focused section
 
-# ---- family chat --------------------------------------------------------------
+# ---- family seats and the project chat ----------------------------------------
+# The family's reach (parent, siblings, children) still governs send, list,
+# sync, spawn, and retire; say and chat speak in the project the seats' cwd
+# resolves to (fam-work, a .smns in $WORK).
 echo "family chat:"
 export SMINOS_HOME="$TEST_ROOT/family-registry"
-mkdir -p "$SMINOS_HOME"
+mkdir -p "$SMINOS_HOME" "$HOME/.claude/projects/fake-proj"
+chmod 700 "$SMINOS_HOME"
+touch "$RECEIVED"   # a family-only run starts before any frame has arrived
 rm -f "$HOME/.claude/sessions/"*.json
 cd "$WORK"
+git -c init.defaultBranch=main init -q "$WORK"
+"$SMINOS" project init --name fam-work >/dev/null
+FAMP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["project"])' "$WORK/.smns")"
+FAMLOG="$SMINOS_HOME/projects/$FAMP/log"
+recv_size() { wc -c < "$RECEIVED" | tr -d ' '; }
 run "$SMINOS" spawn root-alone 'ROOT-TASK' --group roots
 assert_rc 0 "$RC" "root family seat spawns"
 ROOT_ID="$(banner_uuid "$OUT")"
@@ -2028,14 +2035,15 @@ assert_contains "$(field "$ROOT_ID" task)" 'host (a root has' "root task explain
 assert_contains "$(field "$ROOT_ID" task)" 'Tags address only at the start of a message; an @ later' "root preamble teaches that only leading tags address"
 export CLAUDE_CODE_SESSION_ID="$ROOT_ID"
 run "$SMINOS" chat -n 30
-assert_rc 0 "$RC" "root without children can read its empty chat"
-assert_contains "$OUT" 'no family yet' "empty root chat explains how to gain a family"
+assert_rc 0 "$RC" "a seat alone in its project reads the chat as the preamble says"
+assert_contains "$OUT" 'chat fam-work' "the chat is the project's"
+run "$SMINOS" chat
+assert_contains "$OUT" '(no new messages)' "with nothing unread"
 run "$SMINOS" chat --team
-assert_rc 0 "$RC" "root without children can read its empty team chat"
-assert_contains "$OUT" 'no family yet' "empty team chat explains how to gain a family"
+assert_rc 2 "$RC" "chat --team is gone with the per-host chats"
 run "$SMINOS" say 'not yet'
-assert_rc 4 "$RC" "root without children still cannot say"
-assert_contains "$OUT" 'no family yet' "say without family keeps actionable refusal"
+assert_rc 0 "$RC" "a seat alone in its project still records"
+assert_contains "$(cat "$FAMLOG/testhost.$ROOT_ID.jsonl")" '"text": "not yet"' "into its own writer file"
 unset CLAUDE_CODE_SESSION_ID
 "$SMINOS" remove roots/root-alone >/dev/null
 run "$SMINOS" seat add fam lead --session 11111111-aaaa-4000-8000-000000000001
@@ -2049,82 +2057,80 @@ X=44444444-aaaa-4000-8000-000000000004
 # A bare alias outranks id prefixes: `a` is also a hex prefix of another seat's id.
 run "$SMINOS" seat add other hexa --session aaaaaaab-aaaa-4000-8000-0000000000ab
 assert_rc 0 "$RC" "a seat whose id starts with the alias a is added"
-run "$SMINOS" chat a
+run "$SMINOS" meta get a group
 assert_rc 0 "$RC" "a bare alias resolves beside a seat-id prefix match"
-assert_contains "$OUT" 'chat a (fam)' "chat a reads the aliased seat's chat, not the id-prefix match"
+assert_equals "$OUT" fam "meta get a reads the aliased seat, not the id-prefix match"
 run "$SMINOS" status a 'alias check'
 assert_contains "$OUT" 'fam/a now: alias check' "status a resolves the alias before a seat-id prefix"
 "$SMINOS" status a >/dev/null
-run "$SMINOS" chat aaaaaaab
+run "$SMINOS" meta get aaaaaaab group
 assert_rc 4 "$RC" "a seat-id prefix does not resolve even when no alias matches"
-run "$SMINOS" chat aaaaaaab-aaaa-4000-8000-0000000000ab
-assert_contains "$OUT" 'chat hexa (other)' "the full seat id resolves"
+run "$SMINOS" meta get aaaaaaab-aaaa-4000-8000-0000000000ab group
+assert_equals "$OUT" other "the full seat id resolves"
 "$SMINOS" remove other/hexa >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"lead","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$LEAD" "$SOCK" > "$HOME/.claude/sessions/lead.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$B.jsonl"   # stopped, not gone: its transcript is here
 export CLAUDE_CODE_SESSION_ID="$A"
+BEFORE_RECV="$(recv_size)"
 run "$SMINOS" say 'schema done'
-assert_rc 0 "$RC" "untagged family report records"
-assert_contains "$OUT" 'lead: sent' "report pushes to host"
-CHAT="$SMINOS_HOME/chats/$LEAD.jsonl"
-assert_equals "$(mode_of "$CHAT")" 0600 "chat record is private"
-assert_contains "$(cat "$CHAT")" '"mode": "host"' "report mode is host"
-assert_contains "$(cat "$CHAT")" '"lead": "sent"' "report delivery is stored"
-assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #1 from a \u2192 lead]' "host receives framed report"
+assert_rc 0 "$RC" "an untagged report records"
+assert_not_contains "$OUT" 'lead:' "an untagged message pushes to no one, the host included"
+assert_equals "$(recv_size)" "$BEFORE_RECV" "nothing reaches an inbox"
+A_LOG="$FAMLOG/testhost.$A.jsonl"
+assert_equals "$(mode_of "$A_LOG")" 0600 "a writer file is private"
+assert_contains "$(cat "$A_LOG")" '"from": "a", "to": "*", "text": "schema done"' "an untagged report is a say to *"
 run env -u CLAUDE_CODE_SESSION_ID "$SMINOS" tui fam --headless --keys "b,tab,enter"
-assert_contains "$OUT" "#1 · a → lead ·" "chat overlay names the recipient of a report"
+assert_contains "$OUT" " · a → * · " "chat overlay names the target of an untagged message"
 run env -u CLAUDE_CODE_SESSION_ID "$SMINOS" tui --headless --keys "!focus:fam,b"
-assert_contains "$OUT" "chat · - · 0 messages" "group box has no focused seat and selects no family chat"
+assert_contains "$OUT" "chat · - · 0 messages" "group box has no focused seat and selects no chat"
 run "$SMINOS" say '@b your migration renames my column'
 assert_rc 0 "$RC" "tag to stopped sibling is recorded"
 assert_contains "$OUT" 'b: woken' "tag resumes stopped sibling"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $B" "resume uses saved session"
 run "$SMINOS" say '@all standup'
 assert_rc 0 "$RC" "broadcast is recorded"
-assert_contains "$OUT" 'b: recorded' "stopped sibling stays stopped on broadcast"
-assert_equals "$(python3 -c 'import json,sys; print([json.loads(x)["id"] for x in open(sys.argv[1])])' "$CHAT")" '[1, 2, 3]' "chat ids increase"
-# A live socket for b makes the host's untagged team message and a later tag push.
+assert_contains "$OUT" 'lead: sent' "@all reaches the live host"
+assert_not_contains "$OUT" 'b:' "a stopped sibling is not in the @all audience"
+assert_equals "$(python3 -c 'import json,sys; print([json.loads(x)["seq"] for x in open(sys.argv[1])])' "$A_LOG")" '[1, 2, 3]' "a writer's seq increases"
+# A live socket for b makes a later tag push.
 printf '{"pid":%s,"sessionId":"%s","name":"b","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$B" "$SOCK" > "$HOME/.claude/sessions/b.json"
 export CLAUDE_CODE_SESSION_ID="$LEAD"
-run "$SMINOS" say 'merge b first'
-assert_rc 0 "$RC" "root host speaks to team"
-assert_contains "$OUT" 'b: sent' "team reaches live child"
-assert_contains "$(tail -1 "$CHAT")" '"mode": "team"' "team mode recorded"
+run "$SMINOS" say '@b merge b first'
+assert_rc 0 "$RC" "the host tags a member"
+assert_contains "$OUT" 'b: sent' "a tag reaches a live member"
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say '@b check again'
 assert_rc 0 "$RC" "tagged sibling message delivers"
-assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #5 from a \u2192 @b | unread 2]' "unread excludes previously pushed messages"
-assert_equals "$(field "$B" chat_seen)" '' "a pushed message does not mark history read"
+assert_contains "$(cat "$RECEIVED")" "[sminos chat fam-work ${A:0:8}:4 from a \u2192 @you | unread 5]" "unread counts what the reader has not read, the pushed message aside"
 export CLAUDE_CODE_SESSION_ID="$B"
-run "$SMINOS" chat -n 30
-assert_contains "$OUT" 'chat lead (fam) · members: lead, a, b · 5 messages' "chat reads complete history"
+run "$SMINOS" chat
+assert_contains "$OUT" 'chat fam-work · 6 new' "chat reads what is above the cursor"
 assert_contains "$OUT" '→ @b' "tagged chat entry marks its recipient"
-assert_contains "$(field "$B" chat_seen)" "$LEAD\": 5" "chat read advances watermark"
+assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/cursors/$B.json")" "\"testhost/$A\": 4" "chat read advances the cursor"
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say '@b final'
-assert_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a \u2192 @b]' "the message after a read is pushed"
-assert_not_contains "$(cat "$RECEIVED")" '[sminos chat lead #6 from a \u2192 @b | unread' "read clears unread count"
+assert_contains "$(cat "$RECEIVED")" "[sminos chat fam-work ${A:0:8}:5 from a \u2192 @you]" "the message after a read is pushed with no unread count"
 # Tags address only at the start of a message; an @ later in the text is text.
 run "$SMINOS" say 'report: the @x attempt failed'
-assert_rc 0 "$RC" "an out-of-reach @ inside the text is not refused"
-assert_contains "$OUT" 'lead: sent' "a report quoting an alias reaches the host"
-assert_not_contains "$OUT" 'b:' "a report quoting an alias pushes only the host"
-assert_contains "$(tail -1 "$CHAT")" '"mode": "host"' "a report quoting an alias is recorded as a host report"
-assert_contains "$(tail -1 "$CHAT")" '"to": ["lead"]' "a report quoting an alias is addressed to the host"
+assert_rc 0 "$RC" "an @ inside the text is not refused"
+assert_not_contains "$OUT" 'x:' "an @ inside the text addresses no one"
+assert_contains "$(tail -1 "$A_LOG")" '"to": "*"' "a report quoting an alias is recorded to *"
 run "$SMINOS" say 'tell @all'
 assert_rc 0 "$RC" "an @all inside the text is not refused"
-assert_contains "$(tail -1 "$CHAT")" '"mode": "host"' "an @all inside the text is not a broadcast"
-assert_contains "$(tail -1 "$CHAT")" '"to": ["lead"]' "an @all inside the text reports to the host"
+assert_contains "$(tail -1 "$A_LOG")" '"to": "*"' "an @all inside the text is not a broadcast"
+assert_not_contains "$(tail -1 "$A_LOG")" '"wake"' "and wakes no one"
 run "$SMINOS" say '@b hi'
-assert_contains "$(tail -1 "$CHAT")" '"mode": "tagged"' "a leading tag still addresses"
-assert_contains "$(tail -1 "$CHAT")" '"to": ["b"]' "a leading tag names its recipient"
+assert_contains "$(tail -1 "$A_LOG")" "\"session\": \"$B\", \"alias\": \"b\"" "a leading tag addresses its recipient by session"
+printf '{"pid":%s,"sessionId":"%s","name":"a","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$A" "$SOCK" > "$HOME/.claude/sessions/a.json"
+export CLAUDE_CODE_SESSION_ID="$LEAD"
+run "$SMINOS" say '@a, @b: go'
 printf '{"pid":%s,"sessionId":"%s","name":"a","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$A" "$SOCK" > "$HOME/.claude/sessions/a.json"
 export CLAUDE_CODE_SESSION_ID="$LEAD"
 run "$SMINOS" say '@a, @b: go'
 assert_rc 0 "$RC" "a host's leading tag run with punctuation delivers"
-assert_contains "$(tail -1 "$CHAT")" '"to": ["a", "b"]' "tags separated by , and : both address"
-assert_contains "$(tail -1 "$CHAT")" '"mode": "tagged"' "a punctuated leading tag run is a tagged message"
+assert_contains "$(tail -1 "$FAMLOG/testhost.$LEAD.jsonl")" '"alias": "a"' "tags separated by , and : both address"
+assert_contains "$(tail -1 "$FAMLOG/testhost.$LEAD.jsonl")" '"alias": "b"' "the second of them too"
 rm -f "$HOME/.claude/sessions/a.json"
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" list --json
@@ -2149,13 +2155,14 @@ run "$SMINOS" send --wait other/x hi
 assert_rc 4 "$RC" "family send --wait refuses an outside seat"
 assert_contains "$OUT" 'ListAgents and SendMessage' "with the reach hint"
 run "$SMINOS" say '@x hi'
-assert_rc 4 "$RC" "outside-family tag refused"
+assert_rc 0 "$RC" "the project is a tag's reach: a seat of another group in the project is addressed"
+assert_contains "$OUT" 'x: recorded' "and recorded for it (no session of its runs here)"
 run "$SMINOS" say '@all @b hi'
 assert_rc 2 "$RC" "all cannot mix with tags"
 run "$SMINOS" say '@a hi'
 assert_rc 2 "$RC" "self-tag refused"
 run "$SMINOS" say --team '@lead hi'
-assert_rc 2 "$RC" "team cannot name parent"
+assert_rc 2 "$RC" "say --team is gone with the per-host chats"
 run "$SMINOS" say --in lead hi
 assert_rc 2 "$RC" "family seat cannot select arbitrary chat"
 run "$SMINOS" seat add other intruder --session 55555555-aaaa-4000-8000-000000000005
@@ -2179,43 +2186,45 @@ assert_equals "$(field "$C" group)" fam "child inherits caller group"
 assert_contains "$(field "$C" task)" 'family "a" hosts.' "child task names its parent as host"
 assert_contains "$(field "$C" task)" 'host (a root has' "child task also explains root untagged messages"
 assert_contains "$(field "$C" task)" "$SMINOS chat -n 30" "child task begins with family chat instruction"
-run "$SMINOS" say --team 'my team'
-assert_rc 0 "$RC" "middle seat speaks in its own chat"
-assert_file_exists "$SMINOS_HOME/chats/$A.jsonl" "child-host chat has distinct history"
-# A member's own messages are never its unread: a's team message is not counted
-# in the frame a receives for its child's reply.
+# A member's own messages are never its unread: a's note is not counted in the
+# frame a receives for its child's report.
 printf '{"pid":%s,"sessionId":"%s","name":"a","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$A" "$SOCK" > "$HOME/.claude/sessions/a.json"
+"$SMINOS" chat >/dev/null
+run "$SMINOS" say 'a note of my own'
+assert_rc 0 "$RC" "the middle seat speaks in the project"
 CHILD_SESSION="$(field "$C" current)"
 export CLAUDE_CODE_SESSION_ID="$CHILD_SESSION"
-run "$SMINOS" say 'c reporting'
-assert_rc 0 "$RC" "child reports to its host"
+run "$SMINOS" say '@a c reporting'
+assert_rc 0 "$RC" "child reports to its host by tag"
 assert_contains "$OUT" 'a: sent' "child report reaches the live host"
-assert_contains "$(cat "$RECEIVED")" '[sminos chat a #2 from c \u2192 a]' "host receives the child's report"
-assert_not_contains "$(cat "$RECEIVED")" '[sminos chat a #2 from c \u2192 a | unread' "the host's own message is not its unread"
+assert_contains "$(cat "$RECEIVED")" "[sminos chat fam-work ${CHILD_SESSION:0:8}:1 from c \u2192 @you]" "host receives the child's report, its own note not counted unread"
 rm -f "$HOME/.claude/sessions/a.json"
 export CLAUDE_CODE_SESSION_ID="$A"
 run "$SMINOS" say '@c @lead cross'
-assert_rc 2 "$RC" "one message cannot span two families"
+assert_rc 0 "$RC" "two tags in one project are one message, whatever their families"
+assert_contains "$OUT" 'c:' "reaching the child"
+assert_contains "$OUT" 'lead:' "and the host"
 run "$SMINOS" chat
-assert_rc 0 "$RC" "member can read parent chat"
+assert_rc 0 "$RC" "a member reads the project chat"
 run "$SMINOS" chat --team
-assert_contains "$OUT" 'chat a (fam)' "team chat selects child's family"
-assert_contains "$(field "$A" chat_seen)" "$LEAD\"" "parent chat cursor remains when own chat read"
-assert_contains "$(field "$A" chat_seen)" "$A\"" "own chat cursor saved independently"
+assert_rc 2 "$RC" "chat --team is gone"
+assert_file_exists "$SMINOS_HOME/projects/$FAMP/cursors/$A.json" "a member's cursor is its own file"
 unset CLAUDE_CODE_SESSION_ID
 run "$SMINOS" say hi
-assert_rc 2 "$RC" "operator must select a chat"
+assert_rc 0 "$RC" "the operator says in the working directory's project"
+assert_contains "$(tail -1 "$FAMLOG/testhost.human.jsonl")" '"kind": "human", "from": "human", "to": "*", "text": "hi"' "as human to *"
 run "$SMINOS" chat
-assert_rc 2 "$RC" "operator must name the chat host"
-run "$SMINOS" say --in lead 'hello team'
-assert_rc 0 "$RC" "operator speaks as human"
-assert_contains "$(tail -1 "$CHAT")" '"from": "human"' "operator identity recorded"
-run "$SMINOS" say --in lead '@all operator broadcast'
-assert_rc 0 "$RC" "operator can broadcast to a named family"
-assert_contains "$(tail -1 "$CHAT")" '"mode": "all"' "explicit operator @all records broadcast mode"
-run "$SMINOS" chat lead --since 6 --json
+assert_rc 0 "$RC" "the operator reads the working directory's project chat"
+run "$SMINOS" say --in fam-work 'hello team'
+assert_rc 0 "$RC" "operator speaks as human into a named project"
+assert_contains "$(tail -1 "$FAMLOG/testhost.human.jsonl")" '"from": "human"' "operator identity recorded"
+HELLO_TS="$(tail -1 "$FAMLOG/testhost.human.jsonl" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ts"])')"
+run "$SMINOS" say '@all operator broadcast'
+assert_rc 0 "$RC" "operator can broadcast to the project"
+assert_contains "$(tail -1 "$FAMLOG/testhost.human.jsonl")" '"wake": true' "an operator @all is recorded with wake"
+run "$SMINOS" chat --since "$HELLO_TS" --json
 assert_rc 0 "$RC" "operator can read selected messages as JSONL"
-assert_contains "$OUT" '"text": "@all operator broadcast"' "JSONL since prints messages after watermark"
+assert_contains "$OUT" '"text": "@all operator broadcast"' "JSONL since prints messages from that time"
 assert_not_contains "$OUT" 'schema done' "since skips earlier messages"
 run "$SMINOS" seat add fam b1 --parent b
 B1="$(seat_id_of b1)"
@@ -2313,7 +2322,7 @@ printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D1.jsonl"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D2.jsonl"
 python3 - "$SMINOS_HOME/$D1.json" "$SMINOS_HOME/$D2.json" "$WORK" <<'PY_FIX_CWD'
 import json, sys
-for path, cwd in ((sys.argv[1], '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3])):
+for path, cwd in ((sys.argv[1], sys.argv[3] + '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3])):
     d = json.load(open(path)); d['cwd'] = cwd
     with open(path, 'w') as f: json.dump(d, f)
 PY_FIX_CWD
@@ -2332,10 +2341,11 @@ assert_rc 0 "$RC" "one busy lifecycle lock does not abort sibling fan-out"
 assert_contains "$OUT" 'd1: failed:' "busy lifecycle lock is recorded per member"
 assert_contains "$OUT" 'd2: woken' "later member still resumes after lock contention"
 run "$SMINOS" say '@d1 @d2 please respond'
-assert_rc 0 "$RC" "one refused resume does not abort the chat"
-assert_contains "$OUT" 'd1: failed:' "bad cwd is recorded as a failed push"
+assert_rc 0 "$RC" "one refused resume does not abort the fan-out"
+assert_contains "$OUT" 'd1: pending behind an earlier undelivered message (failed:' "a failed earlier message holds the later one back"
 assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
-assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d2": "woken"' "fan-out retains successful outcome"
+assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D2.json")" "\"testhost/$DUO\": {\"settled\": 2" "fan-out settles the successful member"
+assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D1.json")" '"pending": 1, "attempts": 2' "and keeps the failed one pending with its attempts"
 unset CLAUDE_CODE_SESSION_ID
 # A tagged member with no transcript on this machine (and no process) is gone: a
 # resume cannot work, so none is attempted — the message is recorded, the
@@ -2367,37 +2377,20 @@ PY_FIX_CWD2
 STUB_NO_UUID=1 run "$SMINOS" say '@d3 check'
 assert_rc 0 "$RC" "unconfirmed resume does not erase message"
 assert_contains "$OUT" 'd3: woken?' "unconfirmed uuid is reported as uncertain wake"
-assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"d3": "woken?"' "uncertain wake is recorded"
+assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json")" "\"testhost/$D1\": {\"settled\": 1" "an uncertain wake is settled, never re-sent"
 assert_contains "$(field "$D3" pending_short)" 'dddd0003' "unconfirmed resume keeps recovery short"
 unset CLAUDE_CODE_SESSION_ID
 run "$SMINOS" seat add fam solo --session aaaaaaaa-aaaa-4000-8000-00000000000a
 export CLAUDE_CODE_SESSION_ID=aaaaaaaa-aaaa-4000-8000-00000000000a
 run "$SMINOS" say 'no family'
-assert_rc 4 "$RC" "isolated family seat has no chat"
-assert_contains "$OUT" 'no family yet' "isolated seat explains how to gain a family"
+assert_rc 0 "$RC" "a seat with no family still speaks in its project"
 run "$SMINOS" chart fam
 assert_rc 4 "$RC" "family cannot use operator chart"
 run "$SMINOS" tui fam --headless
 assert_rc 4 "$RC" "family cannot use operator tui"
 unset CLAUDE_CODE_SESSION_ID
-# Corrupt history is ignored on reads, while the highest valid id wins.
-printf '%s\n' 'not JSON at all' '{"id": 40, "from": "old", "delivered": {}}' >> "$SMINOS_HOME/chats/$DUO.jsonl"
-run "$SMINOS" say --in duo 'after corrupt line'
-assert_rc 0 "$RC" "a corrupt line does not block recording"
-assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"id": 41' "next id follows highest valid record"
-"$SMINOS" say --in duo 'parallel one' > "$TEST_ROOT/parallel-one.log" & p1=$!
-"$SMINOS" say --in duo 'parallel two' > "$TEST_ROOT/parallel-two.log" & p2=$!
-wait "$p1"; wait "$p2"
-IDS="$(python3 - "$SMINOS_HOME/chats/$DUO.jsonl" <<'PY_IDS'
-import json,sys
-ids=[]
-for line in open(sys.argv[1]):
-    try: ids.append(json.loads(line)['id'])
-    except (ValueError,KeyError): pass
-print(ids[-2:])
-PY_IDS
-)"
-assert_equals "$IDS" '[42, 43]' "two writers obtain unique sequential ids"
+# Malformed and torn lines, and concurrent appends, are pinned in "projects
+# and the log" below, on the writer files that replaced the per-host chats.
 # The startup window: no current, harness row matches provisional short.
 run "$SMINOS" seat add fam starter --parent duo --session aaaaaaaa-bbbb-4000-8000-00000000000a
 START=aaaaaaaa-bbbb-4000-8000-00000000000a
@@ -2411,11 +2404,11 @@ PY_PROVISIONAL
 printf 'short=aaaa000a\nuuid=%s\nname=starter\nstate=working\nstatus=busy\n' "$START" > "$STUB_STATE/agents/aaaa000a"
 export CLAUDE_CODE_SESSION_ID="$START"
 run "$SMINOS" chat -n 30
-assert_rc 0 "$RC" "provisional caller reads its parent chat"
-assert_contains "$OUT" 'chat duo (fam)' "provisional caller finds family by short"
+assert_rc 0 "$RC" "provisional caller reads its project chat"
+assert_contains "$OUT" 'chat fam-work' "provisional caller finds its project by its record"
 run "$SMINOS" say 'starting'
 assert_rc 0 "$RC" "provisional caller records a report"
-assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"from": "starter"' "startup report has seat identity"
+assert_contains "$(tail -1 "$FAMLOG/testhost.$START.jsonl")" '"from": "starter"' "startup report has seat identity"
 assert_file_absent "$SMINOS_HOME/$START.json" "startup chat read does not create promoted record"
 # Promotion occurs while spawn waits; its child inherits the final tree.
 python3 - "$SMINOS_HOME/$PROVISIONAL.json" "$SMINOS_HOME/$START.json" "$WORK" <<'PY_PROMOTE' & promoter=$!
@@ -2431,59 +2424,28 @@ wait "$promoter"
 assert_rc 0 "$RC" "spawn waits for parent's promotion"
 assert_equals "$(field "$(seat_id_of starter-child)" parent)" starter "startup child belongs to promoted parent"
 assert_file_absent "$SMINOS_HOME/$PROVISIONAL.json" "provisional record is gone after promotion"
-assert_contains "$(field "$START" chat_seen)" "$DUO" "promotion preserves startup read watermark"
 BEFORE_GEN="$(field "$START" gen)"
 run "$SMINOS" chat
 assert_equals "$(field "$START" gen)" "$BEFORE_GEN" "chat read does not invalidate lifecycle watcher"
-# A promotion racing the watermark write redirects only the caller's own short.
-unset CLAUDE_CODE_SESSION_ID
-run "$SMINOS" say --in duo 'later message'
-assert_contains "$(tail -1 "$SMINOS_HOME/chats/$DUO.jsonl")" '"id": 45' "later chat message is available to a racing reader"
-export CLAUDE_CODE_SESSION_ID="$START"
-python3 - "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$START" "$PROVISIONAL" "$DUO" <<'PY_SEEN'
-import importlib.util, sys
-spec=importlib.util.spec_from_file_location('sminos',sys.argv[1])
-mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-mod.seen_advance(sys.argv[3],sys.argv[4],45,'aaaa000a')
-mod.seen_advance(sys.argv[2],sys.argv[4],1)
-mod.seen_advance('missing-seat-id',sys.argv[4],99)
-PY_SEEN
-assert_contains "$(field "$START" chat_seen)" "$DUO\": 45" "promotion redirects read and lower id cannot regress watermark"
-assert_file_absent "$SMINOS_HOME/missing-seat-id.json" "seen advance never resurrects removed seat"
+assert_file_exists "$SMINOS_HOME/projects/$FAMP/cursors/$START.json" "a cursor is keyed by session, so a promotion cannot strand it"
 unset CLAUDE_CODE_SESSION_ID
 
-# The update is transactional: a kill just before replace leaves all old bytes.
-BEFORE_CHAT="$(cat "$SMINOS_HOME/chats/$DUO.jsonl")"
-RESULT="$(python3 - "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$DUO" <<'PY_ATOMIC'
+# A delivery record is replaced atomically: a kill just before replace leaves all old bytes.
+BEFORE_REC="$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D2.json")"
+RESULT="$(python3 - "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$FAMP" "$D2" <<'PY_ATOMIC'
 import subprocess, sys
 script = '''import importlib.util, os, signal, sys
 spec=importlib.util.spec_from_file_location("sminos",sys.argv[1]); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 def interrupt(*args): os.kill(os.getpid(), signal.SIGKILL)
+p = mod.find_project(sys.argv[2])
 mod.os.replace=interrupt
-mod.chat_update(sys.argv[2],1,{"lead":"sent"})'''
+mod.delivered_fail(p, sys.argv[3], "testhost/someone", 1)'''
 p=subprocess.run([sys.executable, '-c', script, *sys.argv[1:]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 print(p.returncode)
 PY_ATOMIC
 )"
-assert_equals "$RESULT" '-9' "chat updater was killed before replacement"
-assert_equals "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" "$BEFORE_CHAT" "killed update preserves complete chat"
-# An interrupted append left a fragment with no newline: the next record is a line of its own.
-printf '%s' '{"id":2,"text":"interrupted' >> "$SMINOS_HOME/chats/$DUO.jsonl"
-run "$SMINOS" say --in duo 'after a torn append'
-assert_rc 0 "$RC" "say after a torn append records"
-run "$SMINOS" chat duo --json
-assert_contains "$OUT" '"text": "after a torn append"' "a message after a torn append is readable"
-assert_equals "$(python3 - "$SMINOS_HOME/chats/$DUO.jsonl" <<'PY_TORN'
-import json, sys
-for line in open(sys.argv[1]):
-    try:
-        d = json.loads(line)
-    except ValueError:
-        continue
-    if d.get("text") == "after a torn append":
-        print(bool(d["delivered"]))
-PY_TORN
-)" True "delivery outcomes land on a message after a torn append"
+assert_equals "$RESULT" '-9' "the record writer was killed before replacement"
+assert_equals "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D2.json")" "$BEFORE_REC" "a killed write preserves the whole delivery record"
 # A member retired while an earlier member's push ran is not resumed from a stale snapshot.
 run "$SMINOS" seat add fam stale --session eeeeeeee-aaaa-4000-8000-00000000000e
 STALE=eeeeeeee-aaaa-4000-8000-00000000000e
@@ -2495,7 +2457,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("sminos", sys.argv[1])
 mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 member = {**mod.reload_seat(sys.argv[2]), "status": "idle"}
-print(mod.push_member(member, "[sminos chat duo #99 from human \u2192 @stale]\nhi", True))
+print(mod.push_member(member, "[sminos chat fam-work testhost/human:99 from human \u2192 @you]\nhi", True))
 PY_STALE
 )"
 assert_contains "$PUSHED" 'recorded' "a push decides retirement on the reloaded record"
@@ -2506,7 +2468,7 @@ assert_equals "$(field "$STALE" status)" retired "a stale push leaves the member
 rm -f "$STUB_STATE/agents/eeee000e"
 # A long-held flock is not a timed lease: no second writer overtakes it at 30 s.
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
-  python3 - "$SMINOS_HOME/chats/$DUO.lock" "$TEST_ROOT/lock-ready" <<'PY_LOCK_HOLDER' & holder=$!
+  python3 - "$FAMLOG/testhost.human.jsonl.lock" "$TEST_ROOT/lock-ready" <<'PY_LOCK_HOLDER' & holder=$!
 import fcntl, pathlib, sys, time
 with open(sys.argv[1], 'a') as f:
     fcntl.flock(f, fcntl.LOCK_EX)
@@ -2514,11 +2476,11 @@ with open(sys.argv[1], 'a') as f:
     time.sleep(31)
 PY_LOCK_HOLDER
   for _ in $(seq 1 100); do [ -f "$TEST_ROOT/lock-ready" ] && break; sleep .05; done
-  "$SMINOS" say --in duo 'wait behind lock' > "$TEST_ROOT/waited-say.log" & waiter=$!
+  "$SMINOS" say --in fam-work 'wait behind lock' > "$TEST_ROOT/waited-say.log" & waiter=$!
   sleep 30.25
-  assert_not_contains "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" 'wait behind lock' "writer held beyond thirty seconds is not overtaken"
+  assert_not_contains "$(cat "$FAMLOG/testhost.human.jsonl")" 'wait behind lock' "writer held beyond thirty seconds is not overtaken"
   wait "$holder"; wait "$waiter"
-  assert_contains "$(cat "$SMINOS_HOME/chats/$DUO.jsonl")" 'wait behind lock' "waiting writer records after flock releases"
+  assert_contains "$(cat "$FAMLOG/testhost.human.jsonl")" 'wait behind lock' "waiting writer records after flock releases"
 fi
 
 
@@ -2538,22 +2500,457 @@ run "$SMINOS" seat add fam legacy --session dddddddd-aaaa-4000-8000-00000000000d
 run "$SMINOS" resume fam/legacy 'try legacy'
 assert_rc 4 "$RC" "resume refuses legacy codex seat"
 assert_contains "$OUT" 'its resume path was retired — retire or remove the seat' "resume keeps actionable legacy codex refusal"
-run "$SMINOS" seat add fam history --session cccccccc-aaaa-4000-8000-00000000000c
-HISTORY=cccccccc-aaaa-4000-8000-00000000000c
-python3 - "$SMINOS_HOME/chats/$HISTORY.jsonl" <<'PY_HISTORY'
-import json,os,sys
-os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)
-with open(sys.argv[1],'w') as f:
-    for n in range(1,36):
-        f.write(json.dumps({'id':n,'ts':'2026-09-26T05:00:00Z','from':'human',
-                            'to':['history'],'mode':'operator','text':f'entry {n}',
-                            'delivered':{'history':'recorded'}})+'\n')
+python3 - "$FAMLOG/h0.human.jsonl" <<'PY_HISTORY'
+import json, sys
+with open(sys.argv[1], 'w') as f:
+    for n in range(1, 36):
+        f.write(json.dumps({'ts': '2099-01-01T00:00:%02d.000Z' % n, 'writer': 'h0/human', 'seq': n, 'kind': 'human',
+                            'from': 'human', 'to': '*', 'text': 'entry %d' % n}) + '\n')
 PY_HISTORY
-run "$SMINOS" chat history --json
-assert_equals "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" 30 "default chat JSONL tails thirty messages"
-run "$SMINOS" chat history --since 0 --json
-assert_equals "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" 35 "explicit --since 0 prints complete history"
-assert_contains "$OUT" '"text": "entry 1"' "explicit zero includes earliest message"
+run "$SMINOS" chat
+assert_equals "$(printf '%s\n' "$OUT" | grep -c 'entry ')" 30 "an unread chat prints at most thirty messages"
+assert_contains "$OUT" "entry 35" "the newest of them"
+assert_contains "$OUT" "earlier — sminos chat fam-work -n" "and says how to read the earlier ones"
+run "$SMINOS" chat -n 35 --json
+assert_equals "$(printf '%s\n' "$OUT" | grep -c '"text": "entry ')" 35 "chat -n reaches back past the unread window"
+assert_contains "$OUT" '"text": "entry 1"' "to the earliest message"
+
+# ---- projects and the log -----------------------------------------------------
+# A project is named by a committed .smns, or by its owning repository; what
+# crosses sessions is an event in the project's append-only log, one file per
+# writer, and delivery is the deliverer's own record (spec 2026-10-13, M1).
+echo "projects and the log:"
+export SMINOS_HOME="$TEST_ROOT/project-registry"
+mkdir -m 700 "$SMINOS_HOME"
+rm -f "$HOME/.claude/sessions/"*.json
+unset CLAUDE_CODE_SESSION_ID
+gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
+# Each member gets an inbox of its own, so a test can tell who received what.
+start_inbox() { # name
+  python3 "$TEST_ROOT/sockserver.py" "$TEST_ROOT/in-$1.sock" "$TEST_ROOT/in-$1.received" &
+  EXTRA_PIDS+=("$!"); disown "$!"
+  for _ in $(seq 1 50); do [ -S "$TEST_ROOT/in-$1.sock" ] && break; sleep 0.05; done
+  : > "$TEST_ROOT/in-$1.received"
+}
+live_peer() { # name session status
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","status":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/pl-$1.json"
+}
+inbox() { cat "$TEST_ROOT/in-$1.received"; }
+run_in() { # dir cmd... — run, from another directory
+  local dir="$1"; shift
+  set +e; OUT="$(cd "$dir" && "$@" 2>&1)"; RC=$?; set -e
+}
+smns_id() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["project"])' "$1/.smns"; }
+log_of() { cat "$SMINOS_HOME/projects/$1/log/"*.jsonl 2>/dev/null || true; }
+SMINOS_PY="$REPO_ROOT/skills/sminos/scripts/sminos.py"
+
+# Resolution: a .smns names the project; a git repository without one is a
+# local project named after its owning repository; anything else is none.
+PR="$TEST_ROOT/demo-repo"
+mkdir -p "$PR"
+gitq init -q "$PR"
+cd "$PR"
+run "$SMINOS" project show
+assert_rc 0 "$RC" "project show resolves a plain git repository"
+assert_contains "$OUT" "local-demo-repo" "a repository without .smns is the local project named after it"
+mkdir -p "$TEST_ROOT/nowhere"
+run "$SMINOS" project show "$TEST_ROOT/nowhere"
+assert_rc 4 "$RC" "a directory in no repository and under no .smns is no project"
+assert_contains "$OUT" "no project" "and says so"
+run "$SMINOS" project init --name demo
+assert_rc 0 "$RC" "project init writes .smns"
+assert_file_exists "$PR/.smns" "the .smns lands at the repository root"
+DEMO="$(smns_id "$PR")"
+assert_equals "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["name"], repr(d["remote"]))' "$PR/.smns")" "demo ''" ".smns carries the name and an empty remote"
+run "$SMINOS" project init --name again
+assert_rc 2 "$RC" "a second init refuses to replace the project id"
+mkdir -p "$PR/deep/er"
+run "$SMINOS" project show "$PR/deep/er"
+assert_contains "$OUT" "$DEMO" "a subdirectory resolves to the .smns above it"
+assert_contains "$OUT" "demo" "with its name"
+gitq -C "$PR" add .smns
+gitq -C "$PR" commit -qm smns
+LR="$TEST_ROOT/plain-repo"
+mkdir -p "$LR"
+gitq init -q "$LR"
+gitq -C "$LR" commit -q --allow-empty -m root
+gitq -C "$LR" worktree add -q "$LR/.claude/worktrees/w1" -b w1
+run "$SMINOS" project show "$LR/.claude/worktrees/w1"
+assert_contains "$OUT" "local-plain-repo" "a linked worktree without .smns resolves to its owning repository"
+gitq -C "$PR" worktree add -q "$PR/.claude/worktrees/w2" -b w2
+run "$SMINOS" project show "$PR/.claude/worktrees/w2"
+assert_contains "$OUT" "$DEMO" "a linked worktree carries the project by checkout"
+BROKEN="$TEST_ROOT/broken-repo"
+mkdir -p "$BROKEN"
+gitq init -q "$BROKEN"
+printf 'not json' > "$BROKEN/.smns"
+run "$SMINOS" project show "$BROKEN"
+assert_rc 0 "$RC" "a broken .smns is not fatal"
+assert_contains "$OUT" "ignoring unreadable $BROKEN/.smns" "it is named"
+assert_contains "$OUT" "local-broken-repo" "and skipped for the repository's local project"
+
+# Members in M1 are seat records whose cwd resolves to the project.
+SA=a0000001-0000-4000-8000-0000000000a1
+SB=b0000002-0000-4000-8000-0000000000b2
+SC=c0000003-0000-4000-8000-0000000000c3
+SD=d0000004-0000-4000-8000-0000000000d4
+"$SMINOS" seat add demo a --session "$SA" >/dev/null
+"$SMINOS" seat add demo b --session "$SB" >/dev/null
+"$SMINOS" seat add demo c --session "$SC" >/dev/null
+"$SMINOS" seat add demo d --session "$SD" >/dev/null
+for m in a b c; do start_inbox "$m"; done
+live_peer a "$SA" idle
+live_peer b "$SB" idle
+live_peer c "$SC" busy
+mkdir -p "$HOME/.claude/projects/pl-proj"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/pl-proj/$SD.jsonl"   # d is stopped: no process, a transcript here
+printf 'short=dddd0d04\nuuid=%s\nname=d\nstate=stopped\nstatus=\ncwd=%s\n' "$SD" "$PR" > "$STUB_STATE/agents/dddd0d04"
+: > "$STUB_STATE/log/calls.log"
+
+# Acceptance 2: untagged is a record, a tag delivers, @all wakes the live.
+export CLAUDE_CODE_SESSION_ID="$SA"
+run "$SMINOS" say "merged #12"
+assert_rc 0 "$RC" "an untagged say records"
+assert_contains "$OUT" "in demo" "into the project's log"
+assert_contains "$(log_of "$DEMO")" '"kind": "say", "from": "a", "to": "*", "text": "merged #12"' "an untagged say is a say to *"
+assert_file_exists "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl" "the writer file is <machine>.<session>.jsonl"
+assert_equals "$(inbox a)$(inbox b)$(inbox c)" "" "a say to * pushes nothing"
+CLAUDE_CODE_SESSION_ID="$SB" run "$SMINOS" chat
+assert_rc 0 "$RC" "a member reads the project chat"
+assert_contains "$OUT" "a → *" "the chat attributes the line to its sender"
+assert_contains "$OUT" "merged #12" "and carries the text"
+assert_file_exists "$SMINOS_HOME/projects/$DEMO/cursors/$SB.json" "chat saves the reader's cursor"
+CURSOR_BEFORE="$(cat "$SMINOS_HOME/projects/$DEMO/cursors/$SB.json")"
+CLAUDE_CODE_SESSION_ID="$SB" run "$SMINOS" chat
+assert_contains "$OUT" "no new messages" "a second chat has nothing above the cursor"
+CLAUDE_CODE_SESSION_ID="$SB" run "$SMINOS" chat -n 5
+assert_contains "$OUT" "merged #12" "chat -n tails the log"
+assert_equals "$(cat "$SMINOS_HOME/projects/$DEMO/cursors/$SB.json")" "$CURSOR_BEFORE" "chat -n does not move the cursor"
+run "$SMINOS" say "@b look at X"
+assert_rc 0 "$RC" "a tagged say records"
+assert_contains "$OUT" "b: sent" "and delivers to the live member"
+assert_contains "$(inbox b)" "[sminos chat demo ${SA:0:8}:2 from a \u2192 @you]" "the frame names project, event id, sender, and @you"
+assert_contains "$(inbox b)" "look at X" "the frame carries the text"
+assert_equals "$(inbox c)" "" "a tag reaches only its recipient"
+assert_contains "$(cat "$SMINOS_HOME/projects/$DEMO/delivered/$SB.json")" "\"testhost/$SA\": {\"settled\": 2" "delivery is the deliverer's record, settled per writer"
+assert_not_contains "$(log_of "$DEMO")" '"delivered"' "the log is never rewritten with outcomes"
+run "$SMINOS" say "@all rebase in progress"
+assert_rc 0 "$RC" "an @all records"
+assert_contains "$(inbox b)" "\u2192 @all" "@all wakes an idle member"
+assert_contains "$(inbox b)" "rebase in progress" "with the text"
+assert_contains "$(inbox c)" "rebase in progress" "@all reaches a busy member"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $SD" "@all resumes no stopped member"
+assert_equals "$(inbox a)" "" "@all is never delivered to its sender"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" '"wake": true' "@all is recorded with wake"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"alias\": \"b\"" "its audience is the live members at submission"
+assert_not_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"alias\": \"d\"" "a stopped member is not in its audience"
+assert_not_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"alias\": \"a\"" "nor is its sender"
+# A member that joins after the broadcast never receives it.
+SE=e0000005-0000-4000-8000-0000000000e5
+unset CLAUDE_CODE_SESSION_ID
+"$SMINOS" seat add demo e --session "$SE" >/dev/null
+start_inbox e
+live_peer e "$SE" idle
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@e welcome"
+assert_contains "$(inbox e)" "welcome" "a later member is reached by a tag"
+assert_not_contains "$(inbox e)" "rebase in progress" "an @all written before a member joined is never delivered to it"
+# A tag to a stopped member resumes it.
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@d wake up"
+assert_contains "$OUT" "d: woken" "a tag resumes a stopped member"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $SD" "through its saved session"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@a hi"
+assert_rc 2 "$RC" "a member cannot tag itself"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@all @b hi"
+assert_rc 2 "$RC" "@all stands alone"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@nobody hi"
+assert_rc 4 "$RC" "a tag matching no member is refused as unknown"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "report: the @b attempt failed"
+assert_not_contains "$OUT" "b:" "an @ later in the text addresses no one"
+# Ambiguity: two members share an alias; #short and @short tell them apart.
+SC2=c0000006-0000-4000-8000-0000000000c6
+"$SMINOS" seat add other c --session "$SC2" >/dev/null
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@c hi"
+assert_rc 4 "$RC" "a tag matching two members is refused"
+assert_contains "$OUT" "c#c0000003" "naming the first as alias#short"
+assert_contains "$OUT" "c#c0000006" "and the second"
+: > "$TEST_ROOT/in-c.received"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@c#c0000003 the busy one"
+assert_rc 0 "$RC" "@name#short resolves"
+assert_contains "$(inbox c)" "the busy one" "to the member it names"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@c0000006 by short"
+assert_rc 0 "$RC" "@short resolves"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"session\": \"$SC2\"" "an address is stored as the session id"
+"$SMINOS" remove other/c >/dev/null
+# A quoted tag reaches a display name with spaces.
+SW=f0000007-0000-4000-8000-0000000000f7
+python3 - "$SMINOS_HOME/$SW.json" "$SW" "$PR" <<'PY_TWO'
+import json, sys
+json.dump({"uuid": sys.argv[2], "current": sys.argv[2], "alias": "two words", "name": "two words",
+           "group": "demo", "status": "idle", "cwd": sys.argv[3]}, open(sys.argv[1], "w"))
+PY_TWO
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say '@"two words" hello there'
+assert_rc 0 "$RC" '@"two words" resolves'
+assert_contains "$OUT" "two words:" "and is reported per recipient"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" '"alias": "two words"' "recorded with its alias"
+rm -f "$SMINOS_HOME/$SW.json"
+
+# Another project: a tag names it; a message has one destination.
+P2="$TEST_ROOT/other-repo"
+mkdir -p "$P2"
+gitq init -q "$P2"
+(cd "$P2" && "$SMINOS" project init --name other >/dev/null)
+OTHER="$(smns_id "$P2")"
+SX=0a000008-0000-4000-8000-0000000000a8
+(cd "$P2" && "$SMINOS" seat add other x --session "$SX" >/dev/null)
+start_inbox x
+live_peer x "$SX" idle
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x the shared plugin changed"
+assert_rc 0 "$RC" "a tag into another project records"
+assert_contains "$OUT" "in other" "in the destination project"
+assert_contains "$(log_of "$OTHER")" "the shared plugin changed" "the message lands in the tagged project's log"
+assert_not_contains "$(log_of "$DEMO")" "the shared plugin changed" "and nowhere else"
+assert_contains "$(inbox x)" "[sminos chat other " "the recipient's frame names its project"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x @b both"
+assert_rc 2 "$RC" "tags naming two projects are refused"
+assert_contains "$OUT" "one message, one project" "with the reason"
+assert_not_contains "$(log_of "$DEMO")$(log_of "$OTHER")" '"text": "@other/x @b both"' "and nothing is recorded"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" chat other -n 5
+assert_contains "$OUT" "the shared plugin changed" "the sender reads the record with chat <project>"
+unset CLAUDE_CODE_SESSION_ID
+
+# The operator: human events, --in a project by name or id.
+run "$SMINOS" say "operator note"
+assert_rc 0 "$RC" "the operator says in the cwd's project"
+assert_contains "$(log_of "$DEMO")" '"kind": "human", "from": "human", "to": "*", "text": "operator note"' "an operator's untagged say is human to *"
+run_in "$TEST_ROOT/nowhere" "$SMINOS" say "lost"
+assert_rc 2 "$RC" "outside a project the operator must name one"
+run_in "$TEST_ROOT/nowhere" "$SMINOS" say --in other "by name"
+assert_rc 0 "$RC" "--in accepts a project name"
+run_in "$TEST_ROOT/nowhere" "$SMINOS" say --in "$OTHER" "by id"
+assert_rc 0 "$RC" "--in accepts a project id"
+assert_contains "$(log_of "$OTHER")" '"text": "by id"' "and records there"
+: > "$TEST_ROOT/in-b.received"
+run "$SMINOS" say "@b from the operator"
+assert_contains "$(inbox b)" "from human \u2192 @you" "an operator's tag delivers as human"
+run "$SMINOS" chat
+assert_rc 0 "$RC" "the operator reads the chat"
+assert_file_exists "$SMINOS_HOME/projects/$DEMO/cursors/human.json" "with a cursor of its own"
+
+# send is recorded to the one session it reaches, and never owed again.
+: > "$TEST_ROOT/in-b.received"
+run "$SMINOS" send demo/b "direct line"
+assert_rc 0 "$RC" "send still delivers"
+assert_contains "$(inbox b)" "[sminos message from human id=" "with its own frame"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.human.jsonl")" '"text": "direct line"' "send is recorded in the target's project"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.human.jsonl")" "\"session\": \"$SB\"" "addressed to its session"
+OWED="$(python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_OWED'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+print(len(mod.owed(p, mod.reload_seat(sys.argv[3]))))
+PY_OWED
+)"
+assert_equals "$OWED" 0 "a sent message is not owed to its recipient again"
+
+# The merged display: per-writer streams in seq order, heads by (ts, writer).
+MERGE="$SMINOS_HOME/projects/merge-test"
+mkdir -p "$MERGE/log"
+printf '{"project": "merge-test", "name": "merge", "remote": "", "root": "/nowhere"}\n' > "$MERGE/project.json"
+python3 - "$MERGE/log" <<'PY_MERGE'
+import json, os, sys
+d = sys.argv[1]
+def w(name, events):
+    with open(os.path.join(d, name), "w") as f:
+        for e in events:
+            f.write((e if isinstance(e, str) else json.dumps(e)) + "\n")
+w("h1.w1.jsonl", [
+    {"ts": "2026-10-13T08:00:01.000Z", "writer": "h1/w1", "seq": 1, "kind": "human", "from": "w1", "to": "*", "text": "w1-1"},
+    {"ts": "2026-10-13T08:00:04.000Z", "writer": "h1/w1", "seq": 2, "kind": "human", "from": "w1", "to": "*", "text": "w1-2"},
+    "not json at all",
+    {"ts": "2026-10-13T08:00:02.000Z", "writer": "h1/w1", "seq": 3, "kind": "human", "from": "w1", "to": "*", "text": "w1-3 clock stepped back"}])
+w("h2.w2.jsonl", [
+    {"ts": "2026-10-13T08:00:03.000Z", "writer": "h2/w2", "seq": 1, "kind": "human", "from": "w2", "to": "*", "text": "w2-1"}])
+PY_MERGE
+run "$SMINOS" chat merge -n 10 --json
+assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json,sys; print(" ".join(json.loads(l)["text"].split()[0] for l in sys.stdin if l.strip()))')" \
+  "w1-1 w2-1 w1-2 w1-3" "two writers interleave by ts while one writer keeps seq order under a backwards ts"
+run "$SMINOS" chat merge --since 2026-10-13T08:00:03Z --json
+assert_equals "$(printf '%s\n' "$OUT" | grep -c '"text"')" 2 "chat --since reads from a time"
+
+# Appends: seq under the file lock, a torn or malformed line skipped and never rewritten.
+HUMAN_LOG="$SMINOS_HOME/projects/$DEMO/log/testhost.human.jsonl"
+LAST_SEQ="$(tail -1 "$HUMAN_LOG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])')"
+printf '%s\n%s' 'garbage line' '{"ts":"x","seq":' >> "$HUMAN_LOG"
+run "$SMINOS" say "after a torn append"
+assert_rc 0 "$RC" "a say after a torn append records"
+assert_contains "$(tail -1 "$HUMAN_LOG")" "\"seq\": $((LAST_SEQ + 1))" "seq follows the last well-formed line"
+assert_contains "$(cat "$HUMAN_LOG")" "garbage line" "a malformed line is never rewritten"
+"$SMINOS" say "parallel one" >/dev/null & p1=$!
+"$SMINOS" say "parallel two" >/dev/null & p2=$!
+wait "$p1"; wait "$p2"
+assert_equals "$(tail -2 "$HUMAN_LOG" | python3 -c 'import json,sys; print(sorted(json.loads(l)["seq"] for l in sys.stdin))')" \
+  "[$((LAST_SEQ + 2)), $((LAST_SEQ + 3))]" "two concurrent appends take distinct consecutive seqs"
+assert_equals "$(tail -1 "$HUMAN_LOG" | python3 -c 'import json,re,sys; print(bool(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", json.load(sys.stdin)["ts"])))')" True "ts is ISO-8601 UTC with milliseconds"
+BATCH="$(python3 - "$SMINOS_PY" "$DEMO" <<'PY_BATCH'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, w = mod.find_project(sys.argv[2]), "testhost/0d00000d-0000-4000-8000-00000000000d"
+spans = [{"kind": "message", "src": "r1#0", "text": "one"}, {"kind": "message", "src": "r1#1", "text": "two"}]
+first = mod.log_append_batch(p, w, spans)
+again = mod.log_append_batch(p, w, spans + [{"kind": "message", "src": "r2#0", "text": "three"}])
+plain = mod.log_append_batch(p, w, [{"kind": "status", "text": "no src"}, {"kind": "status", "text": "nor here"}])
+print([e["seq"] for e in first], [e["seq"] for e in again], [e["seq"] for e in plain])
+PY_BATCH
+)"
+assert_equals "$BATCH" "[1, 2] [3] [4, 5]" "a batch drops the events whose src the file holds, and never one without a src"
+
+# Delivery settles in order per writer: event 10 failing holds back event 11.
+DELIVERY_TEST="$TEST_ROOT/deliver_test.py"
+cat > "$DELIVERY_TEST" <<'PY_DELIVER'
+import importlib.util, json, os, sys, time
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+project, seat_id, mode, record = mod.find_project(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+member = mod.reload_seat(seat_id)
+down = os.path.join(os.path.dirname(record), "push-down")
+def fake_push(member, text, tagged, session=None):
+    body = text.split("\n", 1)[1]
+    time.sleep(0.05)
+    if body == "ten" and os.path.exists(down):
+        if mode == "once":
+            os.unlink(down)  # the next attempt succeeds
+        with open(record, "a") as f:
+            f.write("fail:%s\n" % body)
+        return "failed:simulated"
+    with open(record, "a") as f:
+        f.write("sent:%s\n" % body)
+    return "sent"
+mod.push_member = fake_push
+print(json.dumps({k: v for k, v in mod.deliver_next(project, member).items() if k != "outcomes"}))
+PY_DELIVER
+SG=09000009-0000-4000-8000-000000000009
+"$SMINOS" seat add demo g --session "$SG" >/dev/null
+W10=0c00000c-0000-4000-8000-00000000000c
+python3 - "$SMINOS_PY" "$DEMO" "$W10" <<'PY_FILL'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+for _ in range(9):
+    mod.log_append(p, mod.writer_id(sys.argv[3]), "say", **{"from": "k", "to": "*", "text": "filler"})
+PY_FILL
+REC="$TEST_ROOT/deliver.log"
+: > "$REC"; touch "$TEST_ROOT/push-down"
+append_g() { python3 - "$SMINOS_PY" "$DEMO" "$W10" "$SG" "$1" <<'PY_APPEND'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+e = mod.log_append(p, mod.writer_id(sys.argv[3]), "say", **{"from": "k", "to": [{"session": sys.argv[4], "alias": "g"}], "text": sys.argv[5]})
+print(e["seq"])
+PY_APPEND
+}
+assert_equals "$(append_g ten)" 10 "the failing event is the writer's event 10"
+assert_equals "$(python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SG" sticky "$REC")" '{"delivered": 0, "pending": 1}' "a failed push leaves the event pending"
+assert_equals "$(append_g eleven)" 11 "the next event is 11"
+assert_equals "$(python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SG" sticky "$REC")" '{"delivered": 0, "pending": 2}' "11 waits while 10 still fails"
+assert_equals "$(tr '\n' ' ' < "$REC")" "fail:ten fail:ten " "11 is never pushed before 10"
+assert_contains "$(cat "$SMINOS_HOME/projects/$DEMO/delivered/$SG.json")" '"pending": 10, "attempts": 2' "the record keeps the pending event and its attempts"
+rm -f "$TEST_ROOT/push-down"
+assert_equals "$(python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SG" sticky "$REC")" '{"delivered": 2, "pending": 0}' "a later attempt delivers both"
+assert_equals "$(tr '\n' ' ' < "$REC")" "fail:ten fail:ten sent:ten sent:eleven " "in order"
+assert_equals "$(python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SG" sticky "$REC")" '{"delivered": 0, "pending": 0}' "nothing is delivered twice"
+# The same, with the sender's fast path and a daemon tick (two deliver_next) at once.
+"$SMINOS" seat add demo h --session 0a00000a-0000-4000-8000-00000000000a >/dev/null
+SH=0a00000a-0000-4000-8000-00000000000a
+python3 - "$SMINOS_PY" "$DEMO" "$SH" <<'PY_FILL2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+w = "testhost/0b00000b-0000-4000-8000-00000000000b"
+for text in ["ten", "eleven", "twelve"]:
+    mod.log_append(p, w, "say", **{"from": "k", "to": [{"session": sys.argv[3], "alias": "h"}], "text": text})
+PY_FILL2
+: > "$REC"; touch "$TEST_ROOT/push-down"
+python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SH" once "$REC" >/dev/null & d1=$!
+python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SH" once "$REC" >/dev/null & d2=$!
+wait "$d1"; wait "$d2"
+python3 "$DELIVERY_TEST" "$SMINOS_PY" "$DEMO" "$SH" once "$REC" >/dev/null
+assert_equals "$(grep '^sent:' "$REC" | tr '\n' ' ')" "sent:ten sent:eleven sent:twelve " "concurrent deliverers push each event once, in writer order"
+assert_equals "$(head -1 "$REC")" "fail:ten" "the first attempt at 10 failed and held 11 back"
+
+# attach adopts the existing log/; an unreachable remote is not an error.
+P3="$TEST_ROOT/remote-repo"
+mkdir -p "$P3"
+gitq init -q "$P3"
+(cd "$P3" && "$SMINOS" project init --name mirrored --remote "$TEST_ROOT/no-such-remote.git" >/dev/null)
+MIRRORED="$(smns_id "$P3")"
+(cd "$P3" && "$SMINOS" say "before attach" >/dev/null)
+run_in "$P3" "$SMINOS" project attach
+assert_rc 0 "$RC" "attach with an unreachable remote succeeds"
+assert_contains "$OUT" "the daemon" "and says the first sync is left to the daemon"
+assert_contains "$(log_of "$MIRRORED")" "before attach" "attach preserves the local log"
+assert_contains "$(git -C "$SMINOS_HOME/projects/$MIRRORED/log" log --oneline 2>&1)" "attach" "the existing log is the first commit"
+assert_contains "$(git -C "$SMINOS_HOME/projects/$MIRRORED/log" ls-files)" "testhost.human.jsonl" "the writer files are committed"
+assert_not_contains "$(git -C "$SMINOS_HOME/projects/$MIRRORED/log" ls-files)" ".lock" "lock files are never committed"
+assert_equals "$(git -C "$SMINOS_HOME/projects/$MIRRORED/log" remote get-url origin)" "$TEST_ROOT/no-such-remote.git" "the remote is added"
+# A remote that already carries another machine's history is integrated.
+BARE="$TEST_ROOT/smns-remote.git"
+gitq init -q --bare "$BARE"
+SEED="$TEST_ROOT/seed"
+gitq clone -q "$BARE" "$SEED" 2>/dev/null
+printf '{"ts": "2026-10-13T08:00:00.000Z", "writer": "h9/human", "seq": 1, "kind": "human", "from": "human", "to": "*", "text": "from h9"}\n' > "$SEED/h9.human.jsonl"
+gitq -C "$SEED" add h9.human.jsonl
+gitq -C "$SEED" commit -qm "h9"
+gitq -C "$SEED" push -q origin HEAD:main 2>/dev/null
+python3 - "$P3/.smns" "$BARE" <<'PY_REMOTE'
+import json, sys
+d = json.load(open(sys.argv[1])); d["remote"] = sys.argv[2]; json.dump(d, open(sys.argv[1], "w"))
+PY_REMOTE
+run_in "$P3" "$SMINOS" project attach
+assert_rc 0 "$RC" "attach to a populated remote succeeds"
+assert_file_exists "$SMINOS_HOME/projects/$MIRRORED/log/h9.human.jsonl" "the remote's writer files arrive"
+assert_contains "$(log_of "$MIRRORED")" "before attach" "beside the local ones (unrelated histories integrated)"
+run_in "$P3" "$SMINOS" chat -n 10
+assert_contains "$OUT" "from h9" "the merged log reads both machines"
+run_in "$PR" "$SMINOS" project attach
+assert_rc 2 "$RC" "attach of a project without a remote is refused"
+
+# migrate imports the former per-host family chats as legacy writers.
+HOST_ID="$SA"
+mkdir -p "$SMINOS_HOME/chats"
+python3 - "$SMINOS_HOME/chats/$HOST_ID.jsonl" <<'PY_CHATS'
+import json, sys
+rows = [{"id": 1, "ts": "2026-09-26T05:00:00Z", "from": "b", "to": ["a"], "mode": "host", "text": "old report", "delivered": {"a": "sent"}},
+        {"id": 2, "ts": "2026-09-26T05:00:01Z", "from": "a", "to": ["b"], "mode": "tagged", "text": "@b old tag", "delivered": {"b": "sent"}},
+        {"id": 3, "ts": "2026-09-26T05:00:02Z", "from": "human", "to": ["a", "b"], "mode": "operator", "text": "old operator", "delivered": {}},
+        {"id": 4, "ts": "2026-09-26T05:00:03Z", "from": "a", "to": ["gone"], "mode": "tagged", "text": "@gone hello", "delivered": {}}]
+with open(sys.argv[1], "w") as f:
+    for r in rows:
+        f.write(json.dumps(r) + "\n")
+PY_CHATS
+run "$SMINOS" migrate
+assert_rc 0 "$RC" "migrate runs"
+assert_contains "$OUT" "imported 1 family chat" "and reports the import"
+LEGACY="$SMINOS_HOME/projects/$DEMO/log/legacy.$HOST_ID.jsonl"
+assert_file_exists "$LEGACY" "a family chat becomes the legacy writer's file in the host's project"
+assert_file_absent "$SMINOS_HOME/chats/$HOST_ID.jsonl" "the chat file is set aside once imported"
+assert_contains "$(cat "$LEGACY")" '"ts": "2026-09-26T05:00:01.000Z", "writer": "legacy/'"$HOST_ID"'", "seq": 2, "kind": "say", "from": "a", "to": [{"session": "'"$SB"'", "alias": "b"}]' "a tag is resolved against the seats to a session"
+assert_contains "$(cat "$LEGACY")" '"kind": "human", "from": "human", "to": "*", "text": "old operator"' "an operator line imports as human to *"
+assert_contains "$(cat "$LEGACY")" '"to": "*", "text": "@gone hello"' "an unresolvable tag stays as text"
+assert_not_contains "$(cat "$LEGACY")" '"delivered"' "the old delivery maps are not imported"
+run "$SMINOS" migrate
+assert_not_contains "$OUT" "imported" "the import runs once"
+OWED_LEGACY="$(python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_OWED2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+print(sum(1 for e in mod.owed(p, mod.reload_seat(sys.argv[3])) if e["writer"].startswith("legacy/")))
+PY_OWED2
+)"
+assert_equals "$OWED_LEGACY" 0 "imported history is never delivered again"
+run "$SMINOS" chat -n 50
+assert_contains "$OUT" "old tag" "imported lines read in the project chat"
+cd "$WORK"
+rm -f "$HOME/.claude/sessions/pl-"*.json
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
