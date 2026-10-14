@@ -218,7 +218,7 @@ def _write_record(path, data):
     os.replace(tmp, path)
 
 
-def meta_set(seat_id, fields, remove=(), bump=True, create=True):
+def meta_set(seat_id, fields, remove=(), bump=True, create=True, lock_until=None):
     """Merge fields into a seat record (creating it if absent, unless create=False).
 
     The read-modify-write is serialized across processes with an advisory flock
@@ -232,12 +232,14 @@ def meta_set(seat_id, fields, remove=(), bump=True, create=True):
     `meta set` are NOT lifecycle writes (bump=False): an agent updating its
     status mid-turn must not make the turn's watcher refuse to record the reply.
     create=False (status / meta set) refuses to resurrect a record that
-    a concurrent remove just deleted. Returns True iff it wrote.
+    a concurrent remove just deleted. Returns True iff it wrote. With
+    lock_until (the record hook's migration), the lock is waited for only until
+    then: LockBusy, the record untouched.
     """
     path = meta_path(seat_id)
     os.makedirs(root(), exist_ok=True)
     with open(os.path.join(root(), ".metalock"), "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+        flock_until(lf, lock_until)
         try:
             try:
                 with open(path) as f:
@@ -700,9 +702,10 @@ def writer_path(project, writer):
 
 
 @contextmanager
-def flocked(path, exclusive=True):
+def flocked(path, exclusive=True, lock_until=None):
+    """flock held for the block; with lock_until, LockBusy if it cannot be had by then."""
     with open(path, "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        flock_until(lock, lock_until, exclusive)
         try:
             yield
         finally:
@@ -2112,9 +2115,12 @@ def run_record():
     Only waiting is bounded, never a mutation that is not safe to cut short.
     migrate's lock is taken by a non-blocking retry against the deadline, and
     when it cannot be had in time, the call records nothing at all. The
-    migration steps then run whole, with no timer: they are local file
-    operations, and one of them (a colliding aside board's merge: append,
-    then delete the source) would append twice if cut between. Only then is
+    migration steps then run whole, with no timer — one of them (a colliding
+    aside board's merge: append, then delete the source) would append twice
+    if cut between — and each lock a step takes inside (.metalock for a seat
+    record, the log's .sync.lock for a chat import) is waited for only until
+    the deadline: a step that cannot have its lock is skipped untouched, logged
+    in daemon.log, and done by a later call. Only then is
     an interval timer armed, for the time that is left, around the export —
     the export lock, the log's locks, the batch — where an interruption
     heals: the position moves only after the batch, so the next Stop retries,
@@ -3408,10 +3414,12 @@ def reply_stale(seat_id, turn_id):
 # ----------------------------------------------------------------- migration
 
 
-def convert_v2_nodes(r):
+def convert_v2_nodes(r, lock_until=None):
     """Convert v2 groups/<g>/nodes/*.json into seat records. Removes only the
     node files it actually converts and rmdir's the nodes/ dir only when it is
-    empty (never rmtree — an unreadable node file must survive for a human)."""
+    empty (never rmtree — an unreadable node file must survive for a human).
+    With lock_until, a node whose record lock cannot be had by then is left
+    as it is, for a later call."""
     converted = 0
     for nodes_dir in glob.glob(os.path.join(r, "groups", "*", "nodes")):
         g = os.path.basename(os.path.dirname(nodes_dir))
@@ -3445,18 +3453,11 @@ def convert_v2_nodes(r):
                     # this node gets its deterministic id instead.
                     seat_id = det_id
                     existing = None if not os.path.exists(meta_path(det_id)) else {}
-            if existing is not None:
-                meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
-                                   "brief": str(n.get("desc") or "")})
-            else:
-                meta_set(seat_id, {
-                    "uuid": seat_id, "current": sess, "short": "", "name": alias, "alias": alias,
-                    "group": g, "parent": str(n.get("parent") or ""),
-                    "role": "", "brief": str(n.get("desc") or ""),
-                    "task": "", "now": "", "note": "", "cwd": str(n.get("cwd") or ""), "worktree": "",
-                    "model": "", "settings": "", "effort": "", "status": "retired",
-                    "host": "", "boot_id": "", "created": str(n.get("joined") or now()),
-                    "updated": now(), "turns": "0", "preamble": "1"})
+            try:
+                _convert_node(seat_id, existing, n, g, alias, sess, lock_until)
+            except LockBusy:
+                migration_skipped("converting v2 node %s/%s" % (g, alias), ".metalock")
+                continue
             os.unlink(nf)
             converted += 1
         try:
@@ -3464,6 +3465,21 @@ def convert_v2_nodes(r):
         except OSError:
             pass
     return converted
+
+
+def _convert_node(seat_id, existing, n, g, alias, sess, lock_until):
+    if existing is not None:
+        meta_set(seat_id, {"group": g, "alias": alias, "parent": str(n.get("parent") or ""),
+                           "brief": str(n.get("desc") or "")}, lock_until=lock_until)
+    else:
+        meta_set(seat_id, {
+            "uuid": seat_id, "current": sess, "short": "", "name": alias, "alias": alias,
+            "group": g, "parent": str(n.get("parent") or ""),
+            "role": "", "brief": str(n.get("desc") or ""),
+            "task": "", "now": "", "note": "", "cwd": str(n.get("cwd") or ""), "worktree": "",
+            "model": "", "settings": "", "effort": "", "status": "retired",
+            "host": "", "boot_id": "", "created": str(n.get("joined") or now()),
+            "updated": now(), "turns": "0", "preamble": "1"}, lock_until=lock_until)
 
 
 def _append_board(src, dst):
@@ -3580,20 +3596,30 @@ class LockBusy(Exception):
     """A lock could not be had before a deadline."""
 
 
-def flock_until(f, deadline):
-    """An exclusive flock on f; with a deadline, retried without blocking
-    until it, then LockBusy. Without one, it waits as long as it takes."""
+def flock_until(f, deadline, exclusive=True):
+    """A flock on f, exclusive or shared; with a deadline, retried without
+    blocking until it, then LockBusy. Without one, it waits as long as it takes."""
+    mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     if deadline is None:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        fcntl.flock(f, mode)
         return
     while True:
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f, mode | fcntl.LOCK_NB)
             return
         except BlockingIOError:
             if time.time() >= deadline:
                 raise LockBusy()
             time.sleep(0.02)
+
+
+def migration_skipped(step, lock):
+    """A migration step the record hook left for a later call: its lock was
+    held past the hook's deadline, so the step mutated nothing."""
+    try:
+        daemon_log("migrate: skipped %s — %s held past the deadline; a later call does it" % (step, lock))
+    except OSError:
+        pass
 
 
 def migrate(quiet=False, lock_until=None):
@@ -3643,7 +3669,9 @@ def migrate(quiet=False, lock_until=None):
     os.makedirs(lockdir, exist_ok=True)
     # The former name, shared with cached older `agora` binaries (see docstring).
     with open(os.path.join(lockdir, ".agora-migrate.lock"), "a") as mlf:
-        # lock_until (the hook's deadline): LockBusy, before any step runs.
+        # lock_until (the record hook's deadline): LockBusy before any step
+        # runs; inside, each step's own lock is waited for only until then,
+        # and a step that cannot have it is skipped untouched for a later call.
         flock_until(mlf, lock_until)
         try:
             if r == default_root():
@@ -3705,8 +3733,13 @@ def migrate(quiet=False, lock_until=None):
                     key = (str(m.get("group") or fields.get("group") or ""), alias)
                     by_key.setdefault(key, []).append((m.get("engine") != "codex", str(m.get("updated") or ""), sid, m))
                 if fields:
-                    meta_set(sid, fields, bump=False)
-            n = convert_v2_nodes(r)
+                    try:
+                        meta_set(sid, fields, bump=False, lock_until=lock_until)
+                    except LockBusy:
+                        migration_skipped("migrating record %s" % sid[:8], ".metalock")
+                        stamped -= "group" in fields
+                        retired -= fields.get("status") == "retired"
+            n = convert_v2_nodes(r, lock_until)
             if n:
                 did.append("converted %d v2 node(s) into seats" % n)
             # Pass 2 — dedupe (group, alias): a claude record beats a codex one,
@@ -3721,12 +3754,16 @@ def migrate(quiet=False, lock_until=None):
                     fields = {"alias": "%s@%s" % (alias, tag)}
                     if m.get("status") != "retired":
                         fields["status"] = "retired"  # `updated` untouched
-                    meta_set(sid, fields, bump=False, create=False)
+                    try:
+                        meta_set(sid, fields, bump=False, create=False, lock_until=lock_until)
+                    except LockBusy:
+                        migration_skipped("renaming duplicate alias %s of %s" % (alias, sid[:8]), ".metalock")
+                        continue
                     deduped += 1
             if stamped or retired or deduped:
                 did.append("stamped group on %d record(s), retired %d legacy codex record(s), renamed %d duplicate alias(es)" % (
                     stamped, retired, deduped))
-            imported = import_chats()
+            imported = import_chats(lock_until)
             if imported:
                 did.append("imported %d family chat(s) into project logs" % imported)
         finally:
@@ -3742,14 +3779,16 @@ def legacy_ts(ts):
     return ts[:-1] + ".000Z" if re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", ts) else ts
 
 
-def import_chats():
+def import_chats(lock_until=None):
     """Fold each former per-host family chat (chats/<host-seat-id>.jsonl) into
     the project log of the host's cwd, as writer legacy/<host-seat-id>: ts,
     sender and text kept, a tag resolved against the host's group to the
     session its seat holds (an unresolvable one stays as text, and the event
     is to "*"). The writer file is written whole and renamed into place; the
     chat file is then set aside as .imported, so the import runs once. A chat
-    whose host record is gone stays, its project unknown."""
+    whose host record is gone stays, its project unknown. With lock_until, a
+    chat whose log lock cannot be had by then is left as it is, for a later
+    call."""
     files = sorted(glob.glob(os.path.join(root(), "chats", "*.jsonl")))
     if not files:
         return 0
@@ -3786,8 +3825,14 @@ def import_chats():
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".tmp-")
             with os.fdopen(fd, "w") as f:
                 f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
-            with flocked(os.path.join(os.path.dirname(target), ".sync.lock"), exclusive=False):
-                os.replace(tmp, target)
+            try:
+                with flocked(os.path.join(os.path.dirname(target), ".sync.lock"), exclusive=False,
+                             lock_until=lock_until):
+                    os.replace(tmp, target)
+            except LockBusy:
+                os.unlink(tmp)
+                migration_skipped("importing chat %s" % host_id[:8], "the log's .sync.lock")
+                continue
         os.replace(path, path + ".imported")
         imported += 1
     return imported

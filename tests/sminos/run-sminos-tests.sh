@@ -3768,6 +3768,56 @@ print(len(posts), sorted(p["id"] for p in posts) == list(range(1, len(posts) + 1
 assert_equals "$(board_check "$MG/sminos/groups/g1/board.jsonl")" "3 True ['aside one', 'aside two', 'root one']" \
   "the board holds each post once, every line whole, ids in sequence, after a second run"
 if ls -d "$MG/sminos.v2-"* >/dev/null 2>&1; then fail "the merged aside is gone"; else pass "the merged aside is gone"; fi
+# A migration step's own lock is waited for only until the hook's deadline: a
+# step that cannot have it is skipped untouched, and a later call does it.
+MW="$TEST_ROOT/migwait"
+mkdir -p "$MW/.claude/sessions" "$MW/sminos/chats" "$MW/sminos/projects/$HP/log"
+chmod 700 "$MW/sminos"
+NEEDY=7b00000c-0000-4000-8000-00000000007b
+printf '{"uuid":"%s","current":"%s","alias":"needy","status":"idle","cwd":"%s"}' "$NEEDY" "$NEEDY" "$R3" > "$MW/sminos/$NEEDY.json"
+chmod 600 "$MW/sminos/$NEEDY.json"
+hold_lock() { # path — hold an exclusive flock on it until $TEST_ROOT/release appears
+  rm -f "$TEST_ROOT/held" "$TEST_ROOT/release"
+  python3 - "$1" "$TEST_ROOT/held" "$TEST_ROOT/release" <<'PY_HOLD' & holder=$!
+import fcntl, os, sys, time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(sys.argv[2], 'w').close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+PY_HOLD
+  for _ in $(seq 1 100); do [ -f "$TEST_ROOT/held" ] && break; sleep .05; done
+}
+mw_hook() { # timed: sets elapsed
+  local t0
+  t0=$(date +%s)
+  HOME="$MW" SMINOS_HOME="$MW/sminos" SMNS_RECORD_TIMEOUT=1 hook_run Stop "$HA" "$R3" "$TA"
+  elapsed=$(( $(date +%s) - t0 ))
+}
+needy_group() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("group", "<none>"))' "$MW/sminos/$NEEDY.json"; }
+hold_lock "$MW/sminos/.metalock"
+mw_hook
+touch "$TEST_ROOT/release"; wait "$holder"
+assert_rc 0 "$HOOK_RC" "with .metalock held, a hook whose migration must stamp a seat record exits 0"
+assert_equals "$(( elapsed < 4 ))" "1" "promptly (${elapsed}s for a 1s bound)"
+assert_equals "$(needy_group)" "<none>" "leaving the record untouched"
+assert_contains "$(cat "$MW/sminos/daemon.log")" "migrate: skipped migrating record ${NEEDY:0:8} — .metalock held past the deadline" "and saying what it skipped"
+mw_hook
+assert_equals "$(needy_group)" "hp-repo" "once the lock is free, a later call stamps it"
+# A pending legacy chat import, its project's log lock held.
+printf '{"id":1,"ts":"2026-01-01T00:00:00Z","from":"human","to":[],"mode":"broadcast","text":"legacy hello"}\n' > "$MW/sminos/chats/$NEEDY.jsonl"
+hold_lock "$MW/sminos/projects/$HP/log/.sync.lock"
+mw_hook
+touch "$TEST_ROOT/release"; wait "$holder"
+assert_rc 0 "$HOOK_RC" "with the log's .sync.lock held, a hook whose migration must import a chat exits 0"
+assert_equals "$(( elapsed < 4 ))" "1" "promptly (${elapsed}s for a 1s bound)"
+assert_file_exists "$MW/sminos/chats/$NEEDY.jsonl" "leaving the chat to import"
+assert_file_absent "$MW/sminos/projects/$HP/log/legacy.$NEEDY.jsonl" "writing nothing into the log"
+assert_equals "$(find "$MW/sminos/projects/$HP/log" -name '.tmp-*' | wc -l | tr -d ' ')" "0" "and leaving no temporary file"
+assert_contains "$(cat "$MW/sminos/daemon.log")" "migrate: skipped importing chat ${NEEDY:0:8} — the log's .sync.lock held past the deadline" "saying what it skipped"
+mw_hook
+assert_contains "$(cat "$MW/sminos/projects/$HP/log/legacy.$NEEDY.jsonl" 2>/dev/null)" "legacy hello" "once the lock is free, a later call imports it"
+assert_file_exists "$MW/sminos/chats/$NEEDY.jsonl.imported" "and sets the chat aside as imported"
 hook_run Stop "$HA" "$R3" "$TA"
 assert_equals "$(grep -c 'while a lock is held' "$HPLOG/testhost.$HA.jsonl")" "1" "once the locks are free, the next Stop exports"
 
