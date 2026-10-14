@@ -3359,6 +3359,26 @@ run "$SMINOS" list
 assert_equals "$(events_of "$IT")" "joined retired:retire joined retired:retire joined " "so does a process with the same pid that started after the retirement"
 rm -f "$HOME/.claude/sessions/pf-it.json" "$tx_it"
 run "$SMINOS" list
+# A delivery decides on the membership as it is at the push, not on the member
+# it was handed: a seat-less member retired after the deliverer's snapshot,
+# its process running on in its terminal, is pushed nothing (§2, §4).
+IR=1f00000c-0000-4000-8000-00000000002c
+pf_peer ir "$IR" idle user
+run "$SMINOS" list
+RETIRED_PUSH="$(python3 - "$SMINOS_PY" "$PF" "$IR" "$SOCK_PID" <<'PY_SNAPSHOT'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, sid = mod.find_project(sys.argv[2]), sys.argv[3]
+member = next(m for m in mod.members(p) if m.session == sid)   # the snapshot a deliverer holds
+mod.log_append(p, mod.writer_id(), "human", **{"from": "human", "to": [{"session": sid, "alias": "ir"}], "text": "after the retire"})
+mod.lifecycle(p, sid, "retired", by="", reason="retire", pid=int(sys.argv[4]))
+print([o for _, o in mod.deliver_next(p, member)["outcomes"]], len(mod.owed(p, member)))
+PY_SNAPSHOT
+)"
+assert_equals "$RETIRED_PUSH" "['recorded'] 0" "a seat-less member retired after the deliverer's snapshot is pushed nothing, the event settled"
+assert_equals "$(inbox ir)" "" "though its process still runs"
+rm -f "$HOME/.claude/sessions/pf-ir.json"
+run "$SMINOS" list
 
 # Occupancy: a fresh fill displaces; a resume of a retired seat re-joins.
 run "$SMINOS" retire pc

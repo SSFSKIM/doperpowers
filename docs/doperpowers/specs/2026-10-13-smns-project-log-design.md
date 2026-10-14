@@ -1656,6 +1656,15 @@ Dispatch scripts: one `--brief` each.
   before. `retire` was included because it re-reads the seat under the same
   lock and had the same gap.
   Date/Author: 2026-10-14, the branch-review fix wave (review 1).
+- Decision: a seat-less member whose own file shows it retired when an
+  event is pushed gets no push, and the event settles as `recorded`. That
+  is what a retired seat's owed event already did, and it follows §4: a
+  seat-less session is never resumed, and a retired one reads the chat if it
+  comes back. The check reads the session's own file at each push, under
+  `delivered/<session>.lock`. The deliverer's member may be a snapshot
+  taken before the retire, and retiring an interactive session leaves its
+  process running (§2).
+  Date/Author: 2026-10-14, the branch-review fix wave (review 2).
 
 ## Outcomes & Retrospective
 

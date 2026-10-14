@@ -1445,7 +1445,13 @@ def frame_of(project, e, events, session, cursor):
 
 def push_event(project, member, session, e, events, cursor):
     """Push one event to one member. An addressed event resumes a stopped
-    member; an @all (`wake`) reaches only the live."""
+    member; an @all (`wake`) reaches only the live. A seat-less member's
+    membership is read again from its own file first: `member` may be a
+    snapshot taken before a `retire`, which leaves an interactive session's
+    process running (§2), and a retired member is pushed nothing — the event
+    settles as recorded, as it does for a retired seat."""
+    if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
+        return "recorded"
     return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session)
 
 
