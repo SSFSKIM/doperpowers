@@ -1409,6 +1409,15 @@ Dispatch scripts: one `--brief` each.
     to all host events before grouping. An answer whose question falls
     outside the window is shown in place, with its question as context.
   - `chat --host` reconciles before it reads.
+  Revised by fix wave 2 (8136a2e8): the timer bounds only waiting, never
+  a migration step. Under the alarm, `_append_board` could be cut off
+  between appending posts and deleting their source, and the retry then
+  duplicated the posts. `record` now takes migrate's lock with a bounded
+  non-blocking retry and exits 0 if the lock is busy. The migration
+  steps run with no alarm armed, and the alarm is armed only around the
+  export, for whatever time is left. Deferred as minor: on a machine not
+  yet migrated, a migration step can still wait without bound on
+  `.metalock` or `.sync.lock`, which it takes inside the step.
   Date/Author: 2026-10-14, the controller, from the M3 task review.
 
 ## Outcomes & Retrospective
