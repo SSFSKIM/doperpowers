@@ -1,3 +1,4 @@
+import type { On } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
@@ -327,6 +328,16 @@ describe('promptRow', () => {
     expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a5d804ff68753fdeb', toolUseId: 'toolu_2' } })).toBe('record')
   })
 
+  test('the failure of an agent the report shows the spawn of stays in the report', async () => {
+    const spawns = new Set(['toolu_agent'])
+    const failed = (toolUseId: string) => ({ origin: { kind: 'task-notification' as const }, task: { id: 'a1', toolUseId, status: 'failed' } })
+    expect(promptRow(failed('toolu_agent'), spawns)).toBe('marked')
+    // A background command that failed is the model's business.
+    expect(promptRow(failed('toolu_bash'), spawns)).toBe('record')
+    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a1', toolUseId: 'toolu_agent', status: 'completed' } }, spawns)).toBe('record')
+    expect(promptRow({ origin: { kind: 'task-notification' }, task: { id: 'a1', toolUseId: 'toolu_agent', status: 'killed' } }, spawns)).toBe('record')
+  })
+
   test('received agent messages are working record, even without an origin', async () => {
     expect(promptRow({ origin: { kind: 'peer' }, from: { name: 'reviewer' } })).toBe('record')
     expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } })).toBe('record')
@@ -412,6 +423,74 @@ describe('rows', () => {
   })
 })
 
+describe('failures', () => {
+  const PLUGIN = 'doperpowers-mods'
+  const engineDrawing = (on: On) =>
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+
+  test('an API error that ends the main turn stays in the report', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const error = 'API Error: terminated'
+    on('session.messages', () => ({
+      value: [
+        { role: 'user', text: 'Go.', toolUses: [] },
+        { role: 'assistant', text: 'Working.', toolUses: [] },
+        { role: 'assistant', text: error, toolUses: [] },
+      ],
+    }))
+    on('turn.complete', () => ({ text: '' }))
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    await message('m1', '<message>Starting.</message>')
+    const record = await message('r1', 'Working.')
+    const row = await message('e1', error)
+
+    // Drawn before the turn ends, it is one more unmarked row of the run.
+    expect(await row.find({ type: 'Text', text: error })).toBeUndefined()
+
+    // A subagent's error is its spawner's business.
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't0', reason: 'error', agentId: 'a1' })
+    expect(await row.find({ type: 'Text', text: error })).toBeUndefined()
+
+    await $.turn.complete({ answer: 'Working.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'error' })
+    expect(await row.find({ type: 'Text', text: error })).toBeDefined()
+    expect(await record.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await record.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+  })
+
+  test('a spawned agent\'s failure notification stays in the report, a failed command\'s does not', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Dispatching.</message>', isFirstOfReply: true } })
+    await $.ui.mount({
+      plugin: PLUGIN,
+      surface: 'terminal',
+      component: 'ToolUse',
+      requestId: 'toolu_agent',
+      props: { tool_use_id: 'toolu_agent', tool: 'Agent', input: {}, isInterrupted: false },
+    } as never)
+    const notification = (requestId: string, text: string, toolUseId: string) =>
+      $.ui.mount({
+        plugin: PLUGIN,
+        surface: 'terminal',
+        component: 'UserMessage',
+        requestId,
+        props: { text, origin: { kind: 'task-notification' }, isExpanded: false, task: { id: requestId, toolUseId, status: 'failed' } },
+      })
+    const agent = await notification('n1', 'Agent "Review" failed: Agent terminated early due to an API error: terminated', 'toolu_agent')
+    const shell = await notification('n2', 'Background command "npm test" failed with exit code 1', 'toolu_bash')
+
+    expect(await agent.find({ type: 'Text', text: 'Agent "Review" failed: Agent terminated early due to an API error: terminated' })).toBeDefined()
+    expect(await shell.find({ type: 'Text', text: 'Background command "npm test" failed with exit code 1' })).toBeUndefined()
+  })
+})
+
 describe('mixed', () => {
   const PLUGIN = 'doperpowers-mods'
 
@@ -479,13 +558,13 @@ describe('surfaces', () => {
       plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'fenced-record',
       props: { text: renderedFenceRecord('~~~', true), isFirstOfReply: true },
     })
-    expect(await ui.find({ type: 'Text', text: 'Report.' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: 'Report.' })).toBeDefined()
     expect(await ui.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await ui.find({ type: 'Button', text: 'reply…' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: '● need input' })).toBeUndefined()
   })
 
-  test('the terminal keeps the engine\'s own drawing of each span body, under the message label', async ($, on) => {
+  test('the terminal draws each span body as its own Markdown, directly under its label', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     on('ui.render', (_, e) => ({
@@ -502,10 +581,36 @@ describe('surfaces', () => {
 
     expect(await ui.find({ type: 'Text', text: '● message' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '  message' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'One.' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: QUESTION })).toBeDefined()
-    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+    expect(await ui.find({ type: 'Markdown', text: 'One.' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: QUESTION })).toBeDefined()
+    // The engine's block is not handed back: it would carry its row margin,
+    // a blank line between the label and the body.
+    expect(await ui.find({ type: 'Text', text: 'One.' })).toBeUndefined()
     expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test('the report\'s rows stand a line apart, as the engine\'s rows do', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    const marked = await message('m1', '<message>One.</message>')
+    const record = await message('r1', 'Working.')
+    const mixed = await message('m2', '<message>Two.</message>\nNotes.')
+    const band = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+    })
+    const marginTop = async (ui: { drawn: () => Promise<unknown> }) => ((await ui.drawn()) as { props?: { marginTop?: number } }).props?.marginTop
+    expect(await marginTop(marked)).toBe(1)
+    expect(await marginTop(record)).toBe(1)
+    expect(await marginTop(band)).toBe(1)
+    // A mixed message's button stands a line below its body.
+    expect((await mixed.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text === 'working record')).toBe(true)
   })
 
   test('without MAWS, the report band and its press still switch the desktop transcript', async ($, on) => {

@@ -22,17 +22,18 @@ Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
 
 - An assistant message draws only its marked spans, each under the
-  `message` label in Claude's orange.
-  On the terminal a
-  span's body is the engine's own markdown drawing of the span's text (the
-  block is handed back beneath the hook with that text in place of the
-  whole), so a table or a list inside a mark draws as it would unmarked. A
-  remote surface (the desktop app, VS Code, mobile) draws the body as the
-  surface's own `Markdown` element instead: a render answer carries one
-  props, so of several blocks handed back only the first draws there — Claude
-  Desktop portals its native row into the first engine node and draws nothing
-  at the rest, which left every span after the first label-only
-  (2026-10-03). A
+  `message` label in Claude's orange. A span's body is the surface's own
+  `Markdown` element, which draws as a reply's text does, so a table, a list
+  or a code fence inside a mark draws as it would unmarked. The engine's own
+  block is not handed back for it: on a remote surface (the desktop app,
+  VS Code, mobile) a render answer carries one props, so of several blocks
+  handed back only the first draws — Claude Desktop portals its native row
+  into the first engine node and draws nothing at the rest, which left every
+  span after the first label-only (2026-10-03) — and on the terminal the
+  block carries the engine's row margin, a blank line between the label and
+  the body (2026-10-14). The rows the view draws (a marked message, a
+  `[ working record ]` button, the band above the prompt) stand one line
+  below the row above, as the engine's own rows do. A
   span still streaming shows `…` after its label. A message with an unmarked
   working record beside its spans gets a dim `[ working record ]` button that
   unfolds the engine's drawing of the whole block, and the run of working
@@ -67,9 +68,17 @@ a mark, so a session without the output style is left alone. From then on:
   answer given) in the report itself: the answer is the human's own words,
   and they read it as they read a mark.
 - Agent spawns stay in the report as the engine draws them: an `Agent`
-  call and a `Workflow` of agents. `SendMessage` calls, received messages
-  from agents, teammates or other sessions, and agent-finish notifications
-  are working record. Unfolding the run or the full transcript reveals them.
+  call and a `Workflow` of agents, and the notification that one of them
+  failed (`Agent "…" failed: …`). `SendMessage` calls, received messages
+  from agents, teammates or other sessions, and the other agent-finish
+  notifications are working record. Unfolding the run or the full
+  transcript reveals them.
+- An API error that ends the main turn (retries spent, the context limit,
+  a usage limit) stays in the report as the engine draws it: the model does
+  not answer after it, so no message of its own could tell the human. The
+  row's props do not mark it an error; the mod learns its text from
+  `turn.complete` (`reason: "error"`) and the transcript's last assistant
+  message, and redraws.
 - Above the prompt, `to-human view · [ full transcript ]` switches the whole
   transcript to the engine's drawing; the same button then reads
   `[ report only ]`.
@@ -266,7 +275,9 @@ registered at `session.start` of an interactive session and kept inline with a
 answers `isDeferred: true` with the withdrawal sentence, from the moment such
 a session starts (the engine describes the built-in then, and caches the
 answer for the session), and the built-in is put back should the tool fail to
-register. A headless session gets neither.
+register. A headless session gets neither, and neither does a MAWS launch
+(`MAWS_NATIVE_TO_HUMAN` set), whatever its kind: MAWS offers its own ask tool,
+`mcp__maws__ask`, and withholds the built-in on its launch line.
 
 Every ask is validated before any dialog against the built-in's rules (1–4
 questions, 2–4 options, the required strings, unique question texts and option

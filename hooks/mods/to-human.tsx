@@ -301,7 +301,7 @@ export function parse(text: string): Parsed {
 /**
  * What one row of the transcript is: the person's prompt; a row they read
  * (an assistant message carrying marks, a question they answered, an
- * agent's dispatch); a mixed row, a message
+ * agent's dispatch, an agent's failure, an API error that ended the turn); a mixed row, a message
  * carrying marks with unmarked text beside them, which the person reads and
  * which opens the run of working record after it; or working record (an
  * unmarked message, a tool call and its result, agent messages and
@@ -335,15 +335,21 @@ export type PromptRowProps = {
   /** Present when someone other than the person sent it: an agent, a teammate, another session, a channel. */
   from?: { name: string }
   /** Present on a notification row: the background task it reports on, an agent's run among them. */
-  task?: { id?: string; toolUseId?: string }
+  task?: { id?: string; toolUseId?: string; status?: string }
 }
 
 /**
  * The person's own words stay visible. Messages delivered by agents and
- * background notifications belong to the working record.
+ * background notifications belong to the working record, except the
+ * failure of an agent the report shows the spawn of (`spawns`, the calls'
+ * ids): the spawn stays in the report, so its failure does too.
  */
-export function promptRow(props: PromptRowProps): RowKind {
-  if (props.from !== undefined || props.task !== undefined) {
+export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = new Set()): RowKind {
+  const { task } = props
+  if (task?.status === 'failed' && task.toolUseId !== undefined && spawns.has(task.toolUseId)) {
+    return 'marked'
+  }
+  if (props.from !== undefined || task !== undefined) {
     return 'record'
   }
   return props.origin !== undefined && DELIVERED.has(props.origin.kind) ? 'record' : 'user'
@@ -403,14 +409,15 @@ export function runEnd(
 }
 
 /**
- * A remote surface (the desktop app, VS Code, mobile) draws a span's body as
- * its own `Markdown`. A render answer carries one props, so of several blocks
- * handed back beneath the hook only the first can draw there: Claude Desktop
+ * A span's body is drawn as its own `Markdown`, on every surface. A render
+ * answer to a remote surface carries one props, so of several blocks handed
+ * back beneath the hook only the first can draw there: Claude Desktop
  * portals its native row into the first `engine` node and draws nothing at
- * the rest, which left every span after the first label-only (2026-10-03). The
- * terminal draws the hook's whole tree in-process, so there the body stays
- * the engine's own drawing. `Markdown.text` takes at most 10000 characters
- * and no control character but tab and newline.
+ * the rest, which left every span after the first label-only (2026-10-03).
+ * The terminal drew the engine's block until 2026-10-14, but that block
+ * carries the engine's row margin, a blank line between the label and the
+ * body. `Markdown.text` took at most 10000 characters and takes no control
+ * character but tab and newline.
  */
 const MARKDOWN_MAX = 10000
 
@@ -453,8 +460,10 @@ const STYLE: Record<Kind, { label: string; color: string }> = {
 const TOGGLE = 'to-human-toggle'
 const MODE = 'to-human-mode'
 
+const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
+
 /** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
-export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === ASK_TOOL || tool === 'Agent' || tool === 'Workflow'
+export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === ASK_TOOL || isSpawn(tool)
 
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked
@@ -532,7 +541,7 @@ async function recordRow<E extends RenderInput>(
 
   if (!view.unfolded.has(start)) {
     return opens && start === id ? (
-      <Box>
+      <Box marginTop={1}>
         <Text dimColor>{bullet}</Text>
         <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
       </Box>
@@ -567,8 +576,9 @@ const native = async ($: EngineInterface, e: object) =>
  * the engine does; from then on, assistant messages fold to their marks and
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
- * transcript by the band above the prompt. Agent spawns stay in the report;
- * agent messages and finish notifications are working record.
+ * transcript by the band above the prompt. Agent spawns and their failures
+ * stay in the report, and so does an API error that ends the turn; agent
+ * messages and finish notifications are working record.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
@@ -583,12 +593,34 @@ export function registerToHuman(on: On) {
   const groupOf = new Map<string, string>()
   const lastOf = new Map<string, string>()
 
+  // The ids of the Agent and Workflow calls the transcript drew, whose
+  // failure notifications stay in the report as the spawns do.
+  const spawns = new Set<string>()
+
+  // An API error that ends a turn (retries spent, the context limit) is an
+  // assistant message the engine writes, drawn through the same row as the
+  // model's text, and the model never answers after it: nothing it could
+  // send would tell the person, so the row stays in the report. The row's
+  // props do not say it is an error; `turn.complete` does, and the
+  // transcript's last assistant message is its text.
+  const errors = new Set<string>()
+  on('turn.complete', { reason: 'error' }, async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const text = (await $.session.messages()).findLast((message) => message.role === 'assistant')?.text.trim()
+      if (text !== undefined && text !== '' && !errors.has(text)) {
+        errors.add(text)
+        $.ui.invalidate('ui.render')
+      }
+    }
+    return next(e)
+  })
+
   // The person's prompt breaks a run: the record before it and the record
   // after it are two, as the person reads them. Agent messages and background
   // deliveries are working record, and stand in the run they fall in.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
-    const kind = promptRow(e.props)
+    const kind = promptRow(e.props, spawns)
     see($, view, e.requestId, kind)
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
   })
@@ -621,7 +653,8 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     const parsed = parse(e.props.text)
-    see($, view, e.requestId, parsed.spans.length === 0 ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
+    const isError = parsed.spans.length === 0 && errors.has(e.props.text.trim())
+    see($, view, e.requestId, parsed.spans.length === 0 && !isError ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
       // Rows drawn before the first mark (the tool rows of this turn, the
@@ -630,7 +663,7 @@ export function registerToHuman(on: On) {
       $.ui.invalidate('ui.render')
     }
 
-    if (!isFolding()) {
+    if (!isFolding() || isError) {
       return next(e)
     }
 
@@ -662,29 +695,21 @@ export function registerToHuman(on: On) {
     const last = parsed.spans.length - 1
 
     // A span's body is markdown as the model wrote it (a table, a list, a
-    // code fence). On the terminal it is drawn by the engine: the block is
-    // handed back beneath this hook with the span's text in place of the
-    // whole, and no bullet, since the label above carries it. The bullet is
-    // the engine's two-column gutter, so the body is padded by as much to sit
-    // where the transcript's text does. A remote surface draws it as its own
-    // `Markdown` instead, one block per span, since only the first block
-    // handed back would draw there (see `markdownBlocks`).
-    const bodies = await Promise.all(
-      parsed.spans.map((span) =>
-        e.surface === 'terminal'
-          ? next({ ...e, props: { ...e.props, text: span.text, isFirstOfReply: false } })
-          : Promise.resolve(
-              <Box flexDirection="column">
-                {markdownBlocks(span.text).map((block) => (
-                  <Markdown text={block} />
-                ))}
-              </Box>,
-            ),
-      ),
-    )
+    // code fence), drawn as the surface draws a reply's text (see
+    // `markdownBlocks`), directly under its label. The bullet is the engine's
+    // two-column gutter, so the body is padded by as much to sit where the
+    // transcript's text does. The row stands one line below the row above,
+    // as the engine's rows do.
+    const bodies = parsed.spans.map((span) => (
+      <Box flexDirection="column">
+        {markdownBlocks(span.text).map((block) => (
+          <Markdown text={block} />
+        ))}
+      </Box>
+    ))
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" marginTop={1}>
         {parsed.spans.map((span, i) => {
           const style = STYLE[span.kind]
           return (
@@ -702,7 +727,7 @@ export function registerToHuman(on: On) {
         })}
         {parsed.hasRecord ? (
           // The one button of this message's record and of the run after it.
-          <Box paddingLeft={2}>
+          <Box paddingLeft={2} marginTop={1}>
             <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
           </Box>
         ) : null}
@@ -722,6 +747,9 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     const read = isRead(e.props.tool)
+    if (isSpawn(e.props.tool)) {
+      spawns.add(e.props.tool_use_id)
+    }
     const group = groupOf.get(e.requestId)
     if (group === undefined) {
       see($, view, e.requestId, read ? 'marked' : 'record')
@@ -755,6 +783,9 @@ export function registerToHuman(on: On) {
       if (call.tool_use_id) {
         groupOf.set(call.tool_use_id, id)
         last = call.tool_use_id
+        if (isSpawn(call.tool)) {
+          spawns.add(call.tool_use_id)
+        }
       }
     }
     if (last !== undefined && lastOf.get(id) !== last) {
@@ -788,7 +819,7 @@ export function registerToHuman(on: On) {
     const { Box, Text, Button } = $.ui.resolve(e)
 
     return (
-      <Box>
+      <Box marginTop={1}>
         <Text dimColor>to-human view · </Text>
         <Button
           key={MODE}

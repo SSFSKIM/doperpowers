@@ -3,6 +3,7 @@ name: critique
 description: Design critic for a matured design that matters: attacks the design and its reasoning, then debates the dispatching session until the disagreement converges.
 model: fable
 effort: xhigh
+autoCompactWindow: 600000
 color: red
 disallowedTools: mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---
