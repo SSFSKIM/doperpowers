@@ -548,7 +548,8 @@ def own_code():
     """The scripts this loop runs, with their mtimes: when one changes (a plugin
     update), the loop ends and launchd's KeepAlive starts it on the new code."""
     out = {}
-    for path in (os.path.realpath(sminos.__file__), os.path.realpath(__file__)):
+    for mod in (sminos, sminos.sminos_marks, sys.modules[__name__]):
+        path = os.path.realpath(mod.__file__)
         try:
             out[path] = os.stat(path).st_mtime_ns
         except OSError:
