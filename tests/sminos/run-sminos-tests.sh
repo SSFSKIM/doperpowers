@@ -3731,6 +3731,43 @@ PY_HOLD
   assert_equals "$(cat "$POS")" "$POS_BEFORE" "and keeping the export position"
 done
 assert_contains "$(tail -1 "$SMINOS_HOME/daemon.log")" "record: gave up after 1s" "the give-up is a line in daemon.log"
+# With migrate's lock held elsewhere, the hook neither migrates nor exports.
+rm -f "$TEST_ROOT/held" "$TEST_ROOT/release"
+python3 - "$HOME/.claude/.agora-migrate.lock" "$TEST_ROOT/held" "$TEST_ROOT/release" <<'PY_HOLD' & holder=$!
+import fcntl, os, sys, time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(sys.argv[2], 'w').close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+PY_HOLD
+for _ in $(seq 1 100); do [ -f "$TEST_ROOT/held" ] && break; sleep .05; done
+t0=$(date +%s)
+SMNS_RECORD_TIMEOUT=1 hook_run Stop "$HA" "$R3" "$TA"
+elapsed=$(( $(date +%s) - t0 ))
+touch "$TEST_ROOT/release"; wait "$holder"
+assert_rc 0 "$HOOK_RC" "with migrate's lock held, the hook exits 0"
+assert_equals "$(( elapsed < 4 ))" "1" "promptly (${elapsed}s for a 1s bound)"
+assert_not_contains "$(cat "$HPLOG/testhost.$HA.jsonl")" "while a lock is held" "exporting nothing"
+assert_equals "$(cat "$POS")" "$POS_BEFORE" "and keeping the export position"
+assert_contains "$(tail -1 "$SMINOS_HOME/daemon.log")" "migrate's lock held elsewhere" "saying so in daemon.log"
+# A migration step is never cut short: a colliding aside board merged by the
+# hook, its merge outlasting the hook's bound, completes once and only once.
+MG="$TEST_ROOT/mergehome"
+mkdir -p "$MG/.claude/sessions" "$MG/sminos/groups/g1" "$MG/sminos.v2-20260101T000000Z/groups/g1"
+chmod 700 "$MG/sminos"
+printf '{"id":1,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":"root one"}\n' > "$MG/sminos/groups/g1/board.jsonl"
+printf '{"id":1,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":"aside one"}\n{"id":2,"ts":"t","from":"human","title":"","cwd":"/","branch":"","text":"aside two"}\n' \
+  > "$MG/sminos.v2-20260101T000000Z/groups/g1/board.jsonl"
+HOME="$MG" SMINOS_HOME="$MG/sminos" SMNS_RECORD_TIMEOUT=0.2 SMINOS_TEST_MERGE_PAUSE=0.6 hook_run Stop "$HA" "$R3" "$TA"
+assert_rc 0 "$HOOK_RC" "a hook whose migration outlasts its bound exits 0"
+HOME="$MG" SMINOS_HOME="$MG/sminos" SMNS_RECORD_TIMEOUT=0.2 hook_run Stop "$HA" "$R3" "$TA"
+board_check() { python3 -c 'import json, sys
+posts = [json.loads(l) for l in open(sys.argv[1])]
+print(len(posts), sorted(p["id"] for p in posts) == list(range(1, len(posts) + 1)), sorted(p["text"] for p in posts))' "$1"; }
+assert_equals "$(board_check "$MG/sminos/groups/g1/board.jsonl")" "3 True ['aside one', 'aside two', 'root one']" \
+  "the board holds each post once, every line whole, ids in sequence, after a second run"
+if ls -d "$MG/sminos.v2-"* >/dev/null 2>&1; then fail "the merged aside is gone"; else pass "the merged aside is gone"; fi
 hook_run Stop "$HA" "$R3" "$TA"
 assert_equals "$(grep -c 'while a lock is held' "$HPLOG/testhost.$HA.jsonl")" "1" "once the locks are free, the next Stop exports"
 

@@ -2085,8 +2085,8 @@ def record_session(project, session, tpath, event):
     export_host(project, session, tpath, alias)
 
 
-# The hook's whole call, migrate included, is bounded: §4's hook never blocks
-# a turn, and every lock on its path is a blocking flock.
+# The hook is bounded in time (§4: it never blocks a turn): its waits are,
+# never a migration step. See run_record.
 RECORD_TIMEOUT = 5
 
 
@@ -2099,27 +2099,47 @@ def _record_expired(_signum, _frame):
     raise RecordTimeout()
 
 
+def _record_gave_up(seconds, behind):
+    try:
+        daemon_log("record: gave up after %gs, %s; the next Stop retries" % (seconds, behind))
+    except OSError:
+        pass
+
+
 def run_record():
-    """`sminos record` within SMNS_RECORD_TIMEOUT seconds (default 5): an
-    interval timer ends the call wherever it waits — migrate's lock, the
-    export lock, the log's locks. The export position moves only after its
-    batch is appended, so a cut-short export leaves it where it was and the
-    next Stop retries; a batch cut mid-write is completed then, since the
-    batch drops what the file already holds. Only this verb is bounded: every
-    other caller of the same locks keeps waiting for them."""
+    """`sminos record` within SMNS_RECORD_TIMEOUT seconds (default 5).
+
+    Only waiting is bounded, never a mutation that is not safe to cut short.
+    migrate's lock is taken by a non-blocking retry against the deadline, and
+    when it cannot be had in time, the call records nothing at all. The
+    migration steps then run whole, with no timer: they are local file
+    operations, and one of them (a colliding aside board's merge: append,
+    then delete the source) would append twice if cut between. Only then is
+    an interval timer armed, for the time that is left, around the export —
+    the export lock, the log's locks, the batch — where an interruption
+    heals: the position moves only after the batch, so the next Stop retries,
+    and a batch cut mid-write is completed then, since the batch drops what
+    the file already holds and an append ends a torn line. Every other verb
+    keeps waiting on the same locks."""
     if os.environ.get("SMNS_INTERNAL"):
         return
     seconds = float(os.environ.get("SMNS_RECORD_TIMEOUT") or RECORD_TIMEOUT)
-    previous = signal.signal(signal.SIGALRM, _record_expired)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
+    deadline = time.time() + seconds
     try:
-        migrate()
+        migrate(lock_until=deadline)
+    except LockBusy:
+        _record_gave_up(seconds, "migrate's lock held elsewhere")
+        return
+    left = deadline - time.time()
+    if left <= 0:
+        _record_gave_up(seconds, "spent on the migration")
+        return
+    previous = signal.signal(signal.SIGALRM, _record_expired)
+    signal.setitimer(signal.ITIMER_REAL, left)
+    try:
         cmd_record(None)
     except RecordTimeout:
-        try:
-            daemon_log("record: gave up after %gs, a lock it needs held elsewhere; the next Stop retries" % seconds)
-        except (OSError, RecordTimeout):
-            pass
+        _record_gave_up(seconds, "a lock the export needs held elsewhere")
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
@@ -3469,6 +3489,8 @@ def _append_board(src, dst):
     with open(dst, "a") as f:
         for m in moved:
             f.write(m + "\n")
+    if os.environ.get("SMINOS_TEST_MERGE_PAUSE"):  # tests: hold the merge between its append and its delete
+        time.sleep(float(os.environ["SMINOS_TEST_MERGE_PAUSE"]))
     os.unlink(src)
     return True
 
@@ -3554,7 +3576,27 @@ def set_aside(path, r):
     return aside
 
 
-def migrate(quiet=False):
+class LockBusy(Exception):
+    """A lock could not be had before a deadline."""
+
+
+def flock_until(f, deadline):
+    """An exclusive flock on f; with a deadline, retried without blocking
+    until it, then LockBusy. Without one, it waits as long as it takes."""
+    if deadline is None:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.time() >= deadline:
+                raise LockBusy()
+            time.sleep(0.02)
+
+
+def migrate(quiet=False, lock_until=None):
     """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
 
     The whole cutover is serialized by an exclusive flock on
@@ -3601,7 +3643,8 @@ def migrate(quiet=False):
     os.makedirs(lockdir, exist_ok=True)
     # The former name, shared with cached older `agora` binaries (see docstring).
     with open(os.path.join(lockdir, ".agora-migrate.lock"), "a") as mlf:
-        fcntl.flock(mlf, fcntl.LOCK_EX)
+        # lock_until (the hook's deadline): LockBusy, before any step runs.
+        flock_until(mlf, lock_until)
         try:
             if r == default_root():
                 for old in legacy_roots():
