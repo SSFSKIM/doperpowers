@@ -3930,10 +3930,13 @@ def import_chats(lock_until=None):
     sender and text kept, a tag resolved against the host's group to the
     session its seat holds (an unresolvable one stays as text, and the event
     is to "*"). The writer file is written whole and renamed into place; the
-    chat file is then set aside as .imported, so the import runs once. A chat
-    whose host record is gone stays, its project unknown. With lock_until, a
-    chat whose log lock cannot be had by then is left as it is, for a later
-    call."""
+    chat file is then set aside as .imported, so the import runs once. The
+    chat's own lock (chats/<host-seat-id>.lock, under which the previous CLI
+    appends to and rewrites it) is held from the read through the set-aside,
+    so a line it appends meanwhile is never archived without being imported.
+    A chat whose host record is gone stays, its project unknown. With
+    lock_until, a chat whose own lock or log lock cannot be had by then is
+    left as it is, for a later call."""
     files = sorted(glob.glob(os.path.join(root(), "chats", "*.jsonl")))
     if not files:
         return 0
@@ -3945,42 +3948,52 @@ def import_chats(lock_until=None):
         project = seat_project(host) if host else None
         if project is None:
             continue
-        writer = "legacy/" + host_id
-        target = writer_path(project, writer)
-        if not os.path.exists(target):
-            sessions = {s["alias"]: s["current"] for s in by_id.values()
-                        if s["group"] == host["group"] and s["current"]}
-            rows = []
-            with open(path, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    try:
-                        r = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(r, dict) and type(r.get("id")) is int:
-                        rows.append(r)
-            events = []
-            for seq, r in enumerate(sorted(rows, key=lambda r: r["id"]), 1):
-                to = [{"session": sessions[alias], "alias": alias} for alias in r.get("to") or []
-                      if r.get("mode") == "tagged" and isinstance(alias, str) and alias in sessions]
-                sender = str(r.get("from") or "")
-                events.append({"ts": legacy_ts(r.get("ts")), "writer": writer, "seq": seq,
-                               "kind": "human" if sender == "human" else "say", "from": sender,
-                               "to": to or "*", "text": str(r.get("text") or "")})
-            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".tmp-")
-            with os.fdopen(fd, "w") as f:
-                f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
-            try:
-                with flocked(os.path.join(os.path.dirname(target), ".sync.lock"), exclusive=False,
-                             lock_until=lock_until):
-                    os.replace(tmp, target)
-            except LockBusy:
-                os.unlink(tmp)
-                migration_skipped("importing chat %s" % host_id[:8], "the log's .sync.lock")
-                continue
-        os.replace(path, path + ".imported")
-        imported += 1
+        try:
+            with flocked(path[:-len(".jsonl")] + ".lock", lock_until=lock_until):
+                imported += _import_chat(path, host_id, host, project, by_id, lock_until)
+        except LockBusy:
+            migration_skipped("importing chat %s" % host_id[:8], "chats/%s.lock" % host_id)
     return imported
+
+
+def _import_chat(path, host_id, host, project, by_id, lock_until):
+    """One chat's import, under its lock (import_chats): 1 when it is set
+    aside as imported, 0 when it is left for a later call."""
+    writer = "legacy/" + host_id
+    target = writer_path(project, writer)
+    if not os.path.exists(target):
+        sessions = {s["alias"]: s["current"] for s in by_id.values()
+                    if s["group"] == host["group"] and s["current"]}
+        rows = []
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and type(r.get("id")) is int:
+                    rows.append(r)
+        events = []
+        for seq, r in enumerate(sorted(rows, key=lambda r: r["id"]), 1):
+            to = [{"session": sessions[alias], "alias": alias} for alias in r.get("to") or []
+                  if r.get("mode") == "tagged" and isinstance(alias, str) and alias in sessions]
+            sender = str(r.get("from") or "")
+            events.append({"ts": legacy_ts(r.get("ts")), "writer": writer, "seq": seq,
+                           "kind": "human" if sender == "human" else "say", "from": sender,
+                           "to": to or "*", "text": str(r.get("text") or "")})
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".tmp-")
+        with os.fdopen(fd, "w") as f:
+            f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
+        try:
+            with flocked(os.path.join(os.path.dirname(target), ".sync.lock"), exclusive=False,
+                         lock_until=lock_until):
+                os.replace(tmp, target)
+        except LockBusy:
+            os.unlink(tmp)
+            migration_skipped("importing chat %s" % host_id[:8], "the log's .sync.lock")
+            return 0
+    os.replace(path, path + ".imported")
+    return 1
 
 
 # --------------------------------------------------------------- spawn / fill

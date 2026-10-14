@@ -3179,6 +3179,28 @@ PY_OWED2
 assert_equals "$OWED_LEGACY" 0 "imported history is never delivered again"
 run "$SMINOS" chat -n 50
 assert_contains "$OUT" "old tag" "imported lines read in the project chat"
+# The previous CLI appends to a chat under chats/<host-seat-id>.lock: an import
+# waits for it, so a line appended meanwhile is imported, never archived alone.
+printf '{"id":1,"ts":"2026-09-26T06:00:00Z","from":"b","to":[],"mode":"broadcast","text":"before the append"}\n' > "$SMINOS_HOME/chats/$SB.jsonl"
+rm -f "$TEST_ROOT/held" "$TEST_ROOT/release"
+python3 - "$SMINOS_HOME/chats/$SB" "$TEST_ROOT/held" "$TEST_ROOT/release" <<'PY_OLDCLI' & holder=$!
+import fcntl, json, os, sys, time
+with open(sys.argv[1] + ".lock", "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    open(sys.argv[2], "w").close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+    with open(sys.argv[1] + ".jsonl", "a") as f:
+        f.write(json.dumps({"id": 2, "ts": "2026-09-26T06:00:01Z", "from": "a", "to": [], "mode": "broadcast",
+                            "text": "appended under the lock", "delivered": {}}) + "\n")
+PY_OLDCLI
+for _ in $(seq 1 100); do [ -f "$TEST_ROOT/held" ] && break; sleep .05; done
+"$SMINOS" migrate > "$TEST_ROOT/migrate-wait.out" 2>&1 & migrating=$!
+sleep 0.5
+touch "$TEST_ROOT/release"; wait "$holder"; wait "$migrating"
+assert_equals "$(grep -c '"kind"' "$SMINOS_HOME/projects/$DEMO/log/legacy.$SB.jsonl" 2>/dev/null || true)" "2" \
+  "a line the previous CLI appends while the import waits for the chat's lock is imported"
+assert_equals "$(grep -c '"id"' "$SMINOS_HOME/chats/$SB.jsonl.imported" 2>/dev/null || true)" "2" "the archive holds the same lines"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/pl-"*.json
 
@@ -4082,6 +4104,16 @@ mw_hook
 assert_equals "$(needy_group)" "hp-repo" "once the lock is free, a later call stamps it"
 # A pending legacy chat import, its project's log lock held.
 printf '{"id":1,"ts":"2026-01-01T00:00:00Z","from":"human","to":[],"mode":"broadcast","text":"legacy hello"}\n' > "$MW/sminos/chats/$NEEDY.jsonl"
+# The chat's own lock held (the previous CLI appends under it): the import
+# waits for it only until the deadline, and takes nothing meanwhile.
+hold_lock "$MW/sminos/chats/$NEEDY.lock"
+mw_hook
+touch "$TEST_ROOT/release"; wait "$holder"
+assert_rc 0 "$HOOK_RC" "with the chat's own lock held, a hook whose migration must import it exits 0"
+assert_equals "$(( elapsed < 4 ))" "1" "promptly (${elapsed}s for a 1s bound)"
+assert_file_exists "$MW/sminos/chats/$NEEDY.jsonl" "leaving the chat in place"
+assert_file_absent "$MW/sminos/projects/$HP/log/legacy.$NEEDY.jsonl" "importing nothing"
+assert_contains "$(cat "$MW/sminos/daemon.log")" "migrate: skipped importing chat ${NEEDY:0:8} — chats/$NEEDY.lock held past the deadline" "saying which lock it waited for"
 hold_lock "$MW/sminos/projects/$HP/log/.sync.lock"
 mw_hook
 touch "$TEST_ROOT/release"; wait "$holder"
