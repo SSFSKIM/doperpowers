@@ -34,9 +34,8 @@ When you can go on with other work while they decide, ask with
 blocked on their answer, or the answer is the last thing left in your turn,
 ask with `async: false`.
 
-Where that tool is not among yours, ask with `mcp__maws__ask` if you have
-it (`blocking: false` where the paragraph above says `async: true`), else
-with the native AskUserQuestion, which has no `async`.
+Where that tool is not among yours, ask with the ask tool your host offers,
+else the native AskUserQuestion, which has no `async`.
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth
