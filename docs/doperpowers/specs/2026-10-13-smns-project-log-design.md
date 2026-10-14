@@ -1163,6 +1163,17 @@ Dispatch scripts: one `--brief` each.
   pending event. (3) is a contradiction inside the spec that M3 would
   have hit.
   Date/Author: 2026-10-14, the controller, from the M1 task review.
+- Decision: how the fix wave built (1), in commit d08376c1. An earlier
+  pending event of the same sender rides in the send's own push (one
+  socket write, or one resume), not in a separate push. A send event
+  carries `msg_id`, so a retry reuses the send's frame. A resume settles
+  through an `on_launched` callback that fires before any `--wait`; a
+  resume that returns no session id counts as uncertain and settles. A
+  send that a concurrent deliverer already pushed says so and skips
+  `--wait`. Lock order for `send`: the seat's lifecycle lock, then
+  `delivered/<session>.lock`. A deliverer coming the other way takes the
+  lifecycle lock without blocking, so the two orders cannot deadlock.
+  Date/Author: 2026-10-14, the M1 executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
