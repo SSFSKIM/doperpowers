@@ -681,6 +681,9 @@ def cmd_install(_a):
     for key, value in (("LABEL", escape(LABEL)), ("SMINOS_CLI", escape(installed_cli())),
                        ("ENV", entries), ("LOG", escape(os.path.join(sminos.root(), "daemon.out")))):
         text = text.replace("{{%s}}" % key, value)
+    # launchd opens daemon.out in the registry before the daemon runs: on a
+    # first install nothing has made the registry yet.
+    os.makedirs(sminos.root(), mode=0o700, exist_ok=True)
     path = plist_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:

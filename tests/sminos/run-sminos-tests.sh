@@ -4712,6 +4712,13 @@ PY_PLIST
 )" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True http://gateway.test False True True True" \
   "a well-formed plist: daemon run through this CLI, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
 assert_equals "$(mode_of "$PLIST")" "0600" "readable only by its owner: it may carry the gateway's token"
+# A first install, before any verb made the registry: launchd opens daemon.out
+# in it before the daemon runs, so the install makes it.
+run env HOME="$MD/fresh-inst" SMINOS_HOME="$MD/fresh-inst/sminos" PATH="$MD/lc:$PATH" "$SMINOS" daemon install
+assert_rc 0 "$RC" "a first install, with no registry yet, succeeds"
+FRESH_LOG="$(python3 -c 'import plistlib, sys; d = plistlib.load(open(sys.argv[1], "rb")); print(d["StandardOutPath"], d["StandardErrorPath"])' "$MD/fresh-inst/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist")"
+assert_equals "$FRESH_LOG" "$MD/fresh-inst/sminos/daemon.out $MD/fresh-inst/sminos/daemon.out" "its output paths are in the registry"
+assert_equals "$(mode_of "$MD/fresh-inst/sminos" 2>/dev/null || echo absent)" "0700" "which the install made, its owner's only"
 # A CLI running from the versioned plugin cache installs the marketplace
 # clone's CLI, which plugin updates keep; with no clone known, itself.
 CACHE="$MD/inst/.claude/plugins/cache/doperpowers/doperpowers/9.9.9"
