@@ -4029,8 +4029,15 @@ tx "$TB" asst-part b2000004 msg_two thinking "considering"
 tx "$TB" asst-part b2000005 msg_two text "<message>two blocks</message>"
 sleep 0.3
 tx "$TB" asst-part b2000006 msg_two text "second paragraph"
+T0="$(python3 -c 'import time; print(time.time())')"
 wait "$LATE"
+TOOK="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$T0")"
 assert_equals "$(grep -c '"text": "two blocks"' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "a message split into one record per block is found by its joined text"
+# Matched, not timed out: the deadline (2 s from the hook's start, about
+# 1.3 s after the last block landed) would hold the hook far longer.
+if python3 -c 'import sys; sys.exit(not float(sys.argv[1]) < 0.8)' "$TOOK"; then
+  pass "the wait ends as soon as the whole message is on the transcript (${TOOK}s after its last block)"
+else fail "the wait ends as soon as the whole message is on the transcript"; echo "    took ${TOOK}s after its last block"; fi
 # At the deadline the export takes what is there; the next Stop the rest.
 tx "$TB" prompt b2000007 "last"
 tx "$TB" asst b2000008 '<message>on disk in time</message>'
