@@ -563,10 +563,11 @@ invariant the executor chooses the git commands; `stash` is not among them
 top-level `*.jsonl` of `log/`, so `machines/` is invisible to it.
 
 `sminos daemon run [--interval 5]` loops `sminos daemon tick` over every
-project known locally — the sync and publish duties only for those with a
-remote (a local view reads liveness directly, so a published `state` in a
-local project would only grow its log), the rest for all, so a remote-less
-project's owed deliveries are retried too —
+project known locally — the sync duties and the publishing of `state`
+only for those with a remote (a local view reads liveness directly, so a
+published `state` in a local project would only grow its log), the rest —
+`renamed` included, the log's only record of a name change — for all, so a
+remote-less project's owed deliveries are retried too —
 `tick` being one iteration, used by tests;
 `sminos daemon install` writes a launchd agent
 (`~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`, modelled on
@@ -1489,6 +1490,14 @@ Dispatch scripts: one `--brief` each.
   Rationale: the cache path is versioned, so a plugin update would leave
   the daemon running the old code, or a path that no longer exists.
   Date/Author: 2026-10-14, the controller.
+- Revision: only `state` is published just for projects with a remote.
+  `renamed` is published for every project the daemon visits (§8
+  revised). This narrows the M4 entry above.
+  Rationale: a rename is rare and does not grow the log. It is also the
+  only record of a name change, because an in-charge line taken from a
+  user-set name leaves no `in-charge` row, and a later reader of a local
+  project should still see it.
+  Date/Author: 2026-10-14, the authoring session, folded by the controller.
 
 ## Outcomes & Retrospective
 
