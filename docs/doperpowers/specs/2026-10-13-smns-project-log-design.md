@@ -187,7 +187,13 @@ harness), so they appear in the log without a restart and reach other
 machines through the mirror. A retired seat with no process is not
 reconciled: it stays retired until `fill`, `resume`, or `send` revives it,
 which appends `joined` (§3). The hook (§4) does the same at session start;
-all of it is idempotent by the membership rule.
+all of it is idempotent by the membership rule. Symmetrically, a seat-less
+local member whose harness session is no longer live is retired by
+reconciliation (`reason` `ended`): its activation is over, and a closed
+session kept as a member would hold its alias ambiguous forever. Resuming
+it re-joins it on sight. Only a harness session whose record's `kind` is
+`interactive` or `bg` joins on sight, so another tool's headless run in
+the directory is not a member.
 
 There is no host seat. A seat that spawns another is recorded as its
 spawner (§6) and nothing more: it does not integrate the other's work, is
@@ -252,7 +258,7 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | `question` | `from` alias, `to` `"host"`, `text` the question texts, `choices` the option labels, `src` the call's `tool_use_id` | the hook, from a `tool_use` of `mcp__doperpowers__AskUserQuestion` with `async` true whose paired `tool_result` is the tool's accepted result (`docs/doperpowers/specs/2026-10-13-ask-async-design.md`) |
 | `answered` | `from` alias, `src` the call id, `text` the engine's result text | the hook, from the delivery row quoting `The human responded to your async AskUserQuestion (call <id>)` |
 | `joined` | `session` uuid, `alias`, `name_source` `user`/`derived`/`seat`, `machine`, `cwd`, `worktree`, `role`, `seat` seat id or `""`, `by` alias or `""` | `spawn` (with `by`), `fill`/`resume` of a retired seat, the hook on session start, reconciliation, `seat add` |
-| `retired` | `session`, `by`, `reason` `retire`/`replaced` | `sminos retire`; `spawn`/`fill` into an occupied seat |
+| `retired` | `session`, `by`, `reason` `retire`/`replaced`/`ended` | `sminos retire`, `remove`; `spawn`/`fill` into an occupied seat; reconciliation, for a seat-less session no longer live (`ended`) |
 | `in-charge` | `session`, `text`, `source` `set` or `derived` | `sminos charge`, `spawn --brief`, `sminos derive` |
 | `status` | `session`, `text` | `sminos status` |
 | `renamed` | `session`, `alias`, `name_source` | the daemon, on a harness name change, into the session's file |
@@ -972,6 +978,17 @@ Dispatch scripts: one `--brief` each.
   was escalated to the human; restored 2026-10-14 on the human's
   approval. Every later dispatch isolates `HOME` and
   `SMINOS_HOME`, and M6's docs say the import is one-way.
+- Observation: lifecycle events share a session's writer file with its
+  messages, so a member's first message is not `seq` 1, and a seat added
+  with `--session` holds `joined` at `seq` 1. M2 rewrote the M1
+  assertions that pinned literal seqs to read the file's last seq.
+- Observation: the dispatch suites inherit `CLAUDE_CODE_SESSION_ID` from
+  the session running them, so through the real CLI `by` names that
+  session. That is correct in production: `by` names whoever ran the
+  dispatch. The contract tests unset it.
+- Observation: a seat record written by board-bind is wider than 0600, so
+  the next sminos call prints `migrated: tightened 1 file(s) to 0600`.
+  This predates this work.
 - Observation: `SMINOS_FAMILY_ONLY=1` (the suite's focused mode) was
   already broken at baseline. M1 fixed it: it now passes 314/314.
 - Observation: `git rev-parse --git-common-dir` prints a relative path
@@ -1178,6 +1195,59 @@ Dispatch scripts: one `--brief` each.
   `delivered/<session>.lock`. A deliverer coming the other way takes the
   lifecycle lock without blocking, so the two orders cannot deadlock.
   Date/Author: 2026-10-14, the M1 executor, folded by the controller.
+- Decision: M2's gaps, resolved by its executor (commit 5dd82ba4).
+  - Reconciliation never re-joins a session whose seat record is retired,
+    even while its process still answers. `retire` stops the process
+    asynchronously, and a `list` in that window would undo the retire.
+    The seat record is this machine's verdict, and §2 already names
+    `fill`, `resume`, and `send` as the ways back. The check repeats
+    under the session file's lock, and `retire` writes the record before
+    the event.
+  - A seat's `group` stays as its alias namespace and lifecycle-lock key
+    on this machine, derived from the cwd. `seat add <group> <alias>`
+    keeps its positional argument, `group/alias` still addresses a seat
+    (banners keep it; the board parses it), and `project/alias` is added
+    beside it.
+  - A bare name resolves only in the caller's project (the caller seat's
+    project, else the cwd's), and across every project only from a
+    directory that is no project. CLI targets (`send`, `status`,
+    `retire`) do not take a bare eight-character short; tags do.
+  - `retire` takes a seat-less member: it stops the session through its
+    harness row and records `retired`. `--purge` is refused for one, and
+    a remote member is refused as §2 says. `remove` records `retired`.
+  - A seat-less member is never resumed. A tag to a stopped one is
+    recorded, and `send` to one that is not live exits 4: resuming the
+    human's interactive session as a background one would be wrong.
+  - `status` set on a remote member goes into the caller's own writer
+    file, and the later `ts` wins (§3).
+  - Every spawn renders the preamble, filling `{{PROJECT}}`, `{{ALIAS}}`,
+    `{{BY}}`, and `{{SMINOS_CLI}}` for M5's text.
+  - A seat's brief becomes a `set` in-charge line for every session the
+    seat launches.
+  - `list` with no argument shows the caller's project, or every project
+    from a directory that is no project; `--all` shows every project with
+    nothing folded. The chart and the TUI select projects the same way.
+  - A remote member with no published state shows `?`.
+  - A seat record with no cwd belongs to `local-<group>`.
+  - `by` is the caller seat's alias, else its harness name, and `""` for
+    the operator.
+  - The API lane briefs are `ticket #<n>`, `review ticket #<n>`, and
+    `review epic #<n>`, because that lane has no title or PR number in
+    hand.
+  - `chat` reconciles before it reads.
+  Date/Author: 2026-10-14, the M2 executor, folded by the controller.
+- Decision: two rulings on M2's concerns (§2, §3 table revised).
+  (1) A seat-less local member whose harness session is no longer live is
+  retired by reconciliation with `reason` `ended`, and re-joins when it
+  is resumed. Folding such members out of `list` was the alternative. It
+  lost because a closed session that stays a member keeps its alias
+  ambiguous for every later tag, and the §2 clause re-joining a resumed
+  session already assumes a closed one is retired. (2) Only a harness
+  record of `kind` `interactive` or `bg` joins on sight. The harness
+  records `kind` (this machine, 2026-10-14: 21 `interactive`, 1 `bg`), so
+  another tool's headless run in the repository does not become a
+  member. The internal-fork marker stays for `derive`.
+  Date/Author: 2026-10-14, the controller.
 
 ## Outcomes & Retrospective
 
