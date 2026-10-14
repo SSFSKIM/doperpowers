@@ -13,7 +13,7 @@ describe('register', () => {
 
     expect(parsed.spans).toEqual([
       { kind: 'message', text: 'Done.', isOpen: false },
-      { kind: 'insight', text: 'Tests fail.', isOpen: false },
+      { kind: 'message', text: 'Tests fail.', isOpen: false },
     ])
     expect(parsed.hasRecord).toBe(true)
   })
@@ -65,7 +65,7 @@ describe('register', () => {
 
     expect(parsed.spans).toEqual([
       { kind: 'message', text: 'Done.', isOpen: false },
-      { kind: 'insight', text: 'Tests fail.', isOpen: false },
+      { kind: 'message', text: 'Tests fail.', isOpen: false },
       { kind: 'message', text: 'More.', isOpen: false },
     ])
     expect(parsed.hasRecord).toBe(false)
@@ -76,7 +76,7 @@ describe('register', () => {
 
     expect(parsed.spans).toEqual([
       { kind: 'message', text: 'Done.', isOpen: false },
-      { kind: 'insight', text: 'Tests fail.', isOpen: false },
+      { kind: 'message', text: 'Tests fail.', isOpen: false },
       { kind: 'message', text: 'Which', isOpen: true },
     ])
   })
@@ -108,12 +108,12 @@ describe('register', () => {
     expect(parsed.hasRecord).toBe(true)
   })
 
-  test('parse reads an insight as a span of its own, in either form', async () => {
+  test('parse reads an old insight as a message, in either form', async () => {
     expect(parse('Editing.\n<insight>The cache key is the path.</insight>').spans).toEqual([
-      { kind: 'insight', text: 'The cache key is the path.', isOpen: false },
+      { kind: 'message', text: 'The cache key is the path.', isOpen: false },
     ])
     expect(parse('\u001b[1;33minsight\u001b[0m\n\nThe cache key is the path.\n').spans).toEqual([
-      { kind: 'insight', text: 'The cache key is the path.', isOpen: false },
+      { kind: 'message', text: 'The cache key is the path.', isOpen: false },
     ])
   })
 

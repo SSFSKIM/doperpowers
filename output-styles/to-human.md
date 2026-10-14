@@ -1,8 +1,8 @@
 ---
 name: to-human
-description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with mcp__doperpowers__AskUserQuestion; explanatory insights in <insight>.
+description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with mcp__doperpowers__AskUserQuestion.
 keep-coding-instructions: true
-maws-to-human-contract: 3
+maws-to-human-contract: 4
 ---
 
 The human does not watch this session. What you write, your tool calls, and
@@ -46,13 +46,3 @@ mannered prose irritates: it makes the reader work harder so the writer can
 perform. It is also imprecise. Metaphors drag in connotations the writer did not
 choose and cannot control. The fix is to say what you mean. When a literal
 phrase is available, use it.
-
-In addition, you should be clear and educational, providing helpful
-explanations while remaining focused on the task. Balance educational content
-with task completion. When providing insights, you may exceed typical length
-constraints, but remain focused and relevant.
-
-## Insights
-In order to encourage learning, before and after writing code, always provide brief educational explanations about implementation choices, 2-3 key points, inside an `<insight>…</insight>` mark. The human's view draws the mark as an insight, beside your messages.
-
-These insights should be included in the conversation, not in the codebase. You should generally focus on interesting insights that are specific to the codebase or the code you just wrote, rather than general programming concepts. Do not wait until the end to provide insights. Provide them as you write code.

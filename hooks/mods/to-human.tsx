@@ -3,16 +3,13 @@ import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } fr
 import { ASK_TOOL } from './ask'
 
 /**
- * The marks the `to-human` output style asks the model to write: a message
- * to the human and an explanatory insight. The old `to-human`, `essential`
- * and `need-input` marks read as messages too (a `need-input` question's
- * `<choice>` lines stay in its text). Everything outside a mark is the
- * model's working record.
+ * The mark the `to-human` output style asks the model to write: a message
+ * to the human. The old `to-human`, `essential`, `need-input` and `insight`
+ * marks read as messages too (a `need-input` question's `<choice>` lines
+ * stay in its text). Everything outside a mark is the model's working
+ * record.
  */
-export type Kind = 'message' | 'insight'
-
-/** The marks that read as a message: the current one and its old aliases. */
-const MESSAGE_ALIASES: ReadonlySet<string> = new Set(['message', 'to-human', 'essential', 'need-input'])
+export type Kind = 'message'
 
 export type Span = {
   kind: Kind
@@ -131,7 +128,7 @@ function readingOf(text: string, regions: readonly CodeRegion[]) {
 }
 
 /**
- * Splits text still carrying its marks. Marks may nest (an `<insight>`
+ * Splits text still carrying its marks. Marks may nest (an old `<insight>`
  * inside a `<message>`): each contiguous run of text under one mark is a
  * span of its own, in the order written. An unclosed mark runs to the end.
  */
@@ -171,7 +168,7 @@ function parseMarked(text: string): Parsed {
   for (const match of tokens) {
     const [whole, slash] = match
     const tag = match[2] as string
-    const kind: Kind = MESSAGE_ALIASES.has(tag) ? 'message' : 'insight'
+    const kind: Kind = 'message'
     const at = match.index ?? 0
     take(text.slice(last, at))
     last = at + whole.length
@@ -212,7 +209,8 @@ function parseMarked(text: string): Parsed {
  * the message streams, so by the time the message is whole its text carries
  * the hook's headers and dimmed record instead of the tags: a header is the
  * mark's label in its own bold color, a dimmed run is working record. The
- * old labels (`to human`, `essential`, `need input`) read as messages.
+ * old labels (`to human`, `essential`, `need input`, `insight`) read as
+ * messages.
  *
  * The first group is the header's color, the second a dimmed run's text.
  */
@@ -227,7 +225,7 @@ const KIND_OF_COLOR: Record<string, Kind> = {
   '36': 'message',
   '32': 'message',
   '35': 'message',
-  '33': 'insight',
+  '33': 'message',
 }
 
 /**
@@ -450,7 +448,6 @@ export function markdownBlocks(text: string): string[] {
 
 const STYLE: Record<Kind, { label: string; color: string }> = {
   message: { label: 'message', color: 'claude' },
-  insight: { label: 'insight', color: 'yellow' },
 }
 
 const TOGGLE = 'to-human-toggle'

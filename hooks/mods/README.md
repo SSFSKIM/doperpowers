@@ -9,12 +9,11 @@ ignores it elsewhere; the shell hooks beside this folder run everywhere.
 
 The `to-human` output style (`output-styles/to-human.md`) assumes a human who
 reads a report stream, not the transcript: the model sends them messages in
-`<message>`, explanatory notes in `<insight>`, asks for what it needs from
-them through AskUserQuestion (the ask mod's, `async` when it can work on
-while they decide), and leaves its working record unwrapped. The old
-`<to-human>`, `<essential>` and `<need-input>` marks read as aliases of
-`<message>` (an old question's `<choice>` lines stay in its text, with no
-buttons); tags in inline code or fenced blocks stay literal. This mod
+`<message>`, asks for what it needs from them through AskUserQuestion (the
+ask mod's, `async` when it can work on while they decide), and leaves its
+working record unwrapped. The old `<to-human>`, `<essential>`,
+`<need-input>` and `<insight>` marks read as aliases of `<message>` (an old
+question's `<choice>` lines stay in its text, with no buttons); tags in inline code or fenced blocks stay literal. This mod
 makes the Claude Code terminal the consumer of those marks.
 
 Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report itself; this view passes every drawing hook through on non-terminal surfaces, and the streaming hook draws nothing.
@@ -22,8 +21,8 @@ Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report itself; this view
 Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:
 
-- An assistant message draws only its marked spans, each under a colored
-  label: `message` in Claude's orange, `insight` in yellow.
+- An assistant message draws only its marked spans, each under the
+  `message` label in Claude's orange.
   On the terminal a
   span's body is the engine's own markdown drawing of the span's text (the
   block is handed back beneath the hook with that text in place of the

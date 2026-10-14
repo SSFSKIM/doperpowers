@@ -10,11 +10,10 @@
 BEGIN {
   ESC = sprintf("%c", 27)
   DIM = ESC "[2m"; OFF = ESC "[0m"
-  # The old to-human, essential and need-input marks draw as messages; a
-  # need-input question's <choice> lines stay in its text.
-  LABEL["message"] = LABEL["to-human"] = LABEL["essential"] = LABEL["need-input"] = "message"
-  COLOR["message"] = COLOR["to-human"] = COLOR["essential"] = COLOR["need-input"] = ESC "[1;38;2;215;119;87m"
-  LABEL["insight"] = "insight"; COLOR["insight"] = ESC "[1;33m"
+  # The old to-human, essential, need-input and insight marks draw as
+  # messages; a need-input question's <choice> lines stay in its text.
+  LABEL["message"] = LABEL["to-human"] = LABEL["essential"] = LABEL["need-input"] = LABEL["insight"] = "message"
+  COLOR["message"] = COLOR["to-human"] = COLOR["essential"] = COLOR["need-input"] = COLOR["insight"] = ESC "[1;38;2;215;119;87m"
   MARK = "</?(message|to-human|essential|need-input|insight)>"
   # JavaScript trim's whitespace, as complete UTF-8 alternatives (also works
   # in byte-oriented awk locales). Newline already separates source lines.

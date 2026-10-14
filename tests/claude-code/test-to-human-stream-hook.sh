@@ -119,11 +119,11 @@ Inner.
 </insight>
 Outer again.
 ")
+inner_then_outer="${ORANGE}message${OFF}"$'\n\n\n''Inner.'
 case $out in
-  *"${YELLOW}insight${OFF}"*) pass "the inner mark opens as its own header" ;;
+  *"Outer."*"$inner_then_outer"*) pass "the inner mark opens as its own header (an old insight reads as a message)" ;;
   *) fail "no inner header: $(printf '%q' "$out")" ;;
 esac
-inner_then_outer="${YELLOW}insight${OFF}"$'\n\n\n''Inner.'
 case $out in
   *"$inner_then_outer"*"${ORANGE}message${OFF}"*) pass "the enclosing mark's header resumes when the inner one closes" ;;
   *) fail "no resumed header: $(printf '%q' "$out")" ;;
@@ -157,20 +157,21 @@ case $out in
   *) fail "a choice inside a message was drawn as one: $(printf '%q' "$out")" ;;
 esac
 
-echo "an insight:"
+echo "an old insight mark:"
 out=$(flush m7 0 true "Editing the parser.
 <insight>
 The cache key is the path.
 </insight>
 ")
 case $out in
-  *"${YELLOW}insight${OFF}"*) pass "the insight opens as a header in its color" ;;
-  *) fail "no insight header: $(printf '%q' "$out")" ;;
+  *"${YELLOW}"*) fail "the retired insight header was drawn: $(printf '%q' "$out")" ;;
+  *"${ORANGE}message${OFF}"*) pass "an old insight draws under the message label" ;;
+  *) fail "no message header: $(printf '%q' "$out")" ;;
 esac
 case $out in
-  *"${DIM}The cache key"*) fail "the insight's body was dimmed as record" ;;
-  *"The cache key is the path."*) pass "the insight's body stays undimmed" ;;
-  *) fail "the insight's body was dropped: $(printf '%q' "$out")" ;;
+  *"${DIM}The cache key"*) fail "the old insight's body was dimmed as record" ;;
+  *"The cache key is the path."*) pass "the old insight's body stays undimmed" ;;
+  *) fail "the old insight's body was dropped: $(printf '%q' "$out")" ;;
 esac
 
 echo "tags in code:"
