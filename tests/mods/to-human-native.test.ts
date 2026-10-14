@@ -30,11 +30,6 @@ describe('MAWS native to-human', () => {
         invalidate: () => { calls.push('invalidate') },
         toast: () => { calls.push('toast') },
       },
-      session: { messages: async () => [] },
-      prompt: {
-        read: async () => { calls.push('read'); return { text: '' } },
-        fill: async () => { calls.push('fill'); return { isFilled: true } },
-      },
     } as unknown as EngineInterface
     const text = '<message>One.</message>\n<need-input>Which branch?\n<choice>main</choice>\n</need-input>'
     const assistant = hooks.find((hook) => hook.matcher.component === 'AssistantMessage')!
@@ -48,14 +43,14 @@ describe('MAWS native to-human', () => {
       return { type: 'Text', children: [(e.props as { text: string }).text] }
     })
     expect(report).toMatchObject({ type: 'Box' })
-    expect(bodies).toEqual(['One.', 'Which branch?'])
+    expect(bodies).toEqual(['One.', 'Which branch?\n<choice>main</choice>'])
 
-    // A marked terminal row primes the folding state and the question key:
-    // otherwise a missing guard on AbovePrompt or a question press could
-    // look like a pass-through simply because there was nothing to do yet.
+    // A marked terminal row primes the folding state: otherwise a missing
+    // guard on AbovePrompt could look like a pass-through simply because
+    // there was nothing to do yet.
     calls.length = 0
     for (const surface of ['desktop', 'vscode', 'mobile', undefined]) {
-      await Promise.all(hooks.filter((hook) => hook.event !== 'prompt.submit').map(async (hook) => {
+      await Promise.all(hooks.map(async (hook) => {
         const e: Event = {
           ...(surface !== undefined && { surface }),
           ...hook.matcher,
@@ -66,7 +61,7 @@ describe('MAWS native to-human', () => {
             calls: [{ tool_use_id: 't1', tool: 'Bash', input: {} }],
             isExpanded: false,
           },
-          ...(hook.event === 'ui.press' && { element: hook.matcher.element ?? 'need-input:m1:1:0' }),
+          ...(hook.event === 'ui.press' && { element: hook.matcher.element }),
         }
         const result = Object.freeze({ marker: 'next result' })
         const received: Event[] = []
@@ -79,18 +74,9 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
-
-    // A submission carries no surface and is not gated: the answer settles
-    // the question, and the terminal's row reads it on its next draw.
-    const submit = hooks.find((hook) => hook.event === 'prompt.submit')!
-    const passed = Object.freeze({})
-    expect(await submit.handler(engine, { text: 'Answering "Which branch?": main' }, async () => passed)).toBe(passed)
-    expect(calls).toEqual(['invalidate'])
-    const settled = await assistant.handler(engine, terminal, async (e) => ({ type: 'Text', children: [(e.props as { text: string }).text] }))
-    const leaves = (node: unknown): string => typeof node === 'string' ? node
-      : Array.isArray(node) ? node.map(leaves).join('')
-      : node && typeof node === 'object' ? leaves((node as { children?: unknown }).children ?? Object.values(node)) : ''
-    expect(leaves(settled)).toContain('answered: main')
+    // Every hook draws, so every one is gated: none is left that answers a
+    // question or a prompt.
+    expect(hooks.map((hook) => hook.event).filter((event) => event !== 'ui.render' && event !== 'ui.press')).toEqual([])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
 })

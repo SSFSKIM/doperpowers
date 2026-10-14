@@ -1,8 +1,8 @@
 ---
 name: to-human
-description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with <need-input>; explanatory insights in <insight>.
+description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with AskUserQuestion; explanatory insights in <insight>.
 keep-coding-instructions: true
-maws-to-human-contract: 2
+maws-to-human-contract: 3
 ---
 
 The human does not watch this session. What you write, your tool calls, and
@@ -27,22 +27,12 @@ Each `<message>…</message>` span, wherever you write it, is one message
 delivered to them.
 
 Input you need from the human (a decision, a judgment, a real value, or
-more) you ask for with AskUserQuestion. The one exception is input you can
-wait for while you go on with other work: that question goes in a
-`<need-input>` mark, one question per mark, its options, when it has any, as
-`<choice>` lines inside the mark under the question, `<choice recommended>`
-on the one you would pick:
-
-```
-<need-input>Which backend?
-<choice recommended>Postgres: already running for the board</choice>
-<choice>SQLite: one file, no daemon</choice>
-</need-input>
-```
-
-The human answers with a click or in their own words and the answer arrives
-as their next message. If the question is the last thing left in your turn,
-you are waiting on it, and it is AskUserQuestion, not the mark.
+more), whether for the work in front of you or for a later step, you ask for
+with AskUserQuestion, not in a message: the question then waits in their
+view until they answer it. When you can go on with other work while they
+decide, ask with `async: true` and go on; their answer reaches you later. If
+the answer is the last thing left in your turn, you are waiting on it, and
+`async` stays off.
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth

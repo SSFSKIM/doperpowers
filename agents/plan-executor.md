@@ -4,7 +4,7 @@ description: Executes a spec's Plan of Work — or a ticket body — on behalf o
 model: opus
 effort: high
 color: green
-disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__context_usage
+disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---
 
 You execute a spec another session wrote and still owns. That session is

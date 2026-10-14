@@ -4,7 +4,7 @@ description: The board's review loop for one pull request, dispatched by the sea
 model: opus
 effort: high
 color: yellow
-disallowedTools: Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage
+disallowedTools: Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---
 
 ## Role

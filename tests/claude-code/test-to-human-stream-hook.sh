@@ -133,47 +133,28 @@ case $out in
   *) pass "the enclosing mark's rest is not record" ;;
 esac
 
-echo "a question with choices:"
+echo "an old need-input mark:"
 MAGENTA="${ESC}[1;35m"
-out=$(flush m4 0 false "<need-input>
+out=$(flush m4 0 true "<need-input>
 Which backend?
 <choice>SQLite</choice>
 <choice recommended>Postgres</choice>
 </need-input>
 ")
+expected=$'\n'"${ORANGE}message${OFF}"$'\n\n\n''Which backend?'$'\n''<choice>SQLite</choice>'$'\n''<choice recommended>Postgres</choice>'
+if [ "$out" = "$expected" ]; then pass "the question draws under the message label, its choice lines as text"
+else fail "need-input alias: $(printf '%q' "$out")"; fi
 case $out in
-  *"${MAGENTA}need input${OFF}"*) pass "the question opens as a header" ;;
-  *) fail "no header: $(printf '%q' "$out")" ;;
-esac
-case $out in
-  *"◇ SQLite"*) pass "a choice draws as a line under its marker" ;;
-  *) fail "no choice marker: $(printf '%q' "$out")" ;;
-esac
-case $out in
-  *"◆ Postgres"*) pass "the recommended choice draws under the filled marker" ;;
-  *) fail "no recommended marker: $(printf '%q' "$out")" ;;
-esac
-case $out in
-  *"</choice>"* | *"<choice"*) fail "a choice tag was left in the drawing: $(printf '%q' "$out")" ;;
-  *) pass "the choice tags are gone" ;;
-esac
-case $out in
-  *"${DIM}Which backend?"* | *"${DIM}◇"*) fail "the question or a choice was dimmed as record" ;;
-  *) pass "the question and its choices are not record" ;;
-esac
-out=$(flush m6 0 true "<need-input>Which? <choice>A</choice> <choice recommended>B</choice></need-input>
-")
-case $out in
-  *"Which? "$'\n'"◇ A"*$'\n'"◆ B"*) pass "choices written on one line each get a line of their own" ;;
-  *) fail "inline choices not broken into lines: $(printf '%q' "$out")" ;;
+  *"${MAGENTA}"* | *"◇"* | *"◆"*) fail "the retired question header or choice markers were drawn: $(printf '%q' "$out")" ;;
+  *) pass "no question header and no choice markers" ;;
 esac
 out=$(flush m5 0 true "<message>
 <choice>A</choice>
 </message>
 ")
 case $out in
-  *"<choice>A</choice>"*) pass "a choice outside a need-input mark is text" ;;
-  *) fail "a choice outside need-input was drawn as one: $(printf '%q' "$out")" ;;
+  *"<choice>A</choice>"*) pass "a choice inside a message is text" ;;
+  *) fail "a choice inside a message was drawn as one: $(printf '%q' "$out")" ;;
 esac
 
 echo "an insight:"
@@ -221,7 +202,7 @@ second=$(flush split-code 1 false 'input>Example</need-input>` here.'$'\n\n')
 third=$(flush split-code 2 true '<message>Real.</message>')
 joined="$first$second$third"
 case $joined in
-  *"${MAGENTA}need input"*) fail "a split quoted tag became a question: $(printf '%q' "$joined")" ;;
+  *"${ORANGE}message${OFF}"*"${ORANGE}message${OFF}"*) fail "a split quoted tag became a mark: $(printf '%q' "$joined")" ;;
   *$'Use `<need-input>Example</need-input>` here.'*"${ORANGE}message${OFF}"*'Real.'*) pass "a backticked tag split across flushes stays literal, and the later mark draws" ;;
   *) fail "split quoted text lost: $(printf '%q' "$joined")" ;;
 esac
@@ -234,31 +215,31 @@ second=$(flush split-fence 1 false $'<need-input>Which?\n<choice>A</choice>\n</n
 third=$(flush split-fence 2 true $'```\n<message>Real.</message>')
 joined="$first$second$third"
 case $joined in
-  *"${MAGENTA}need input"* | *'◇ A'*) fail "fence state lost across flushes: $(printf '%q' "$joined")" ;;
+  *"${ORANGE}message${OFF}"*"${ORANGE}message${OFF}"*) fail "fence state lost across flushes: $(printf '%q' "$joined")" ;;
   *'<need-input>Which?'*'<choice>A</choice>'*"${ORANGE}message${OFF}"*'Real.'*) pass "a fence opened without marks carries across flushes" ;;
   *) fail "split fenced example lost: $(printf '%q' "$joined")" ;;
 esac
 
 out=$(flush code-choice 0 true $'<need-input>Example:\nWrite `<choice>A</choice>` lines.\n```\n<choice>B</choice>\n</need-input>\n```\n<choice recommended>Yes</choice>\n</need-input>')
-expected=$'\n'"${MAGENTA}need input${OFF}"$'\n\n''Example:'$'\nWrite `<choice>A</choice>` lines.'$'\n```\n<choice>B</choice>\n</need-input>\n```\n◆ Yes'
-if [ "$out" = "$expected" ]; then pass "quoted choice tags and a fenced closer stay inside the real question"
+expected=$'\n'"${ORANGE}message${OFF}"$'\n\n''Example:'$'\nWrite `<choice>A</choice>` lines.'$'\n```\n<choice>B</choice>\n</need-input>\n```\n<choice recommended>Yes</choice>'
+if [ "$out" = "$expected" ]; then pass "a fenced closer stays inside the old question, its choice lines as text"
 else fail "code inside question: $(printf '%q' "$out")"; fi
 
 for fence in '```' '~~~'; do
   out=$(flush glued-final 0 true '<message>Run:'$'\n'"${fence}sh"$'\nx\n'"$fence"'</message>'$'\n''<need-input>Go?</need-input>')
-  expected=$'\n'"${ORANGE}message${OFF}"$'\n\n''Run:'$'\n'"${fence}sh"$'\nx\n'"$fence"$'\n\n'"${MAGENTA}need input${OFF}"$'\n\n''Go?'
+  expected=$'\n'"${ORANGE}message${OFF}"$'\n\n''Run:'$'\n'"${fence}sh"$'\nx\n'"$fence"$'\n\n'"${ORANGE}message${OFF}"$'\n\n''Go?'
   if [ "$out" = "$expected" ]; then pass "$fence closing fence glued to a tag recovers the report"
   else fail "glued fence: $(printf '%q' "$out")"; fi
 done
 first=$(flush glued-example 0 false $'<message>Example:\n```text\n```</message>\n<need-input>Example only?</need-input>\n')
 case $first in
-  *"${MAGENTA}need input"*) fail "a speculative glued recovery drew an example as a question: $(printf '%q' "$first")" ;;
+  *"${ORANGE}message${OFF}"*"${ORANGE}message${OFF}"*) fail "a speculative glued recovery drew an example as a mark: $(printf '%q' "$first")" ;;
   *) pass "a glued fence does not speculate before the strict reading is settled" ;;
 esac
 second=$(flush glued-example 1 true $'```\nEnd.</message>')
 joined="$first$second"
 case $joined in
-  *"${MAGENTA}need input"*) fail "balanced strict example became a question: $(printf '%q' "$joined")" ;;
+  *"${ORANGE}message${OFF}"*"${ORANGE}message${OFF}"*) fail "balanced strict example became a mark: $(printf '%q' "$joined")" ;;
   *'<need-input>Example only?</need-input>'*'End.'*) pass "the balanced strict reading keeps the glued example literal" ;;
   *) fail "balanced glued example lost: $(printf '%q' "$joined")" ;;
 esac
@@ -345,8 +326,8 @@ for specification in '~~~ closed adjacent' '``` closed blank' '``` open blank'; 
   else fail "$specification golden drawing: $(printf '%q' "$out")"; fi
 done
 out=$(shown golden-choices 0 true $'<need-input>Which?\n<choice>Use `main`</choice>\n<choice recommended>`npm test`</choice>\n</need-input>'; printf X); out=${out%X}
-expected=$'\n'"${MAGENTA}need input${OFF}"$'\n\nWhich?\n◇ Use `main`\n◆ `npm test`\n'
-if [[ $out == "$expected" ]]; then pass "choices ending in code draw the marker fixture consumed by the mod"
+expected=$'\n'"${ORANGE}message${OFF}"$'\n\nWhich?\n<choice>Use `main`</choice>\n<choice recommended>`npm test`</choice>\n'
+if [[ $out == "$expected" ]]; then pass "an old question's choice lines ending in code draw as text, the fixture the mod reads as a message"
 else fail "code choices drawing: $(printf '%q' "$out")"; fi
 
 echo "state:"

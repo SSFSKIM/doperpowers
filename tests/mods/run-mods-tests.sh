@@ -17,3 +17,6 @@ cp -R "$root/hooks/mods" "$stage/hooks/mods"
 cp -R "$root/tests/mods" "$stage/tests/mods"
 
 claude plugin test "$stage"
+
+# What the mods' tests cannot reach (a process, a file): run beside them.
+"$root/tests/mods/test-ask-search.sh"
