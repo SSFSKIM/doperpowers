@@ -996,7 +996,13 @@ Dispatch scripts: one `--brief` each.
     sibling with `--brief` and claimed no parentage. c-v1-2: "A spawned
     session would leave a standing member behind after a one-afternoon
     job." A v2 misread ("a subagent of the session that owns it" read as
-    the owner of the area) was fixed in v3.
+    the owner of the area) was fixed in v3. In 3 of the 7 rewrite runs,
+    the bounded task went to the member already in charge of that area.
+    Those are passes, not failures. §6's rule exists so that bounded
+    work does not create new sessions, and handing it to the session
+    that holds the area is the intended collaboration: a session is in
+    charge of a responsibility, and a sibling stepping into that area
+    with its own subagent would be the worse outcome.
   - (d) fails through a side channel that invites the answer outside the
     ticket. d-old-2: "Please ask Hyun and reply with his answer"; d-v1-1:
     "have the answer go on #231 or to me". The final text's conditional
