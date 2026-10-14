@@ -180,3 +180,40 @@ event templates for the runner day (`pr-review-dispatch.yml`,
   `doperpowers-dev` marketplace listing remains as the reinstall pointer.
   New worker machines must repeat the uninstall (or never install the codex
   plugin) — vendoring needs no install.
+
+## `.smns` project log residue (2026-10-14, PR #192)
+
+Left by the branch review's fix wave and the second live pass; context in
+the spec's Decision Log entry "the branch review round"
+(`docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`).
+
+- **T2 — `send` to a seat-less member keeps the retire race.**
+  `send_to_member` pushes to the member it read; a retire between that
+  read and the push gets one frame. The window is milliseconds; the owed
+  path (`deliver_next`) re-reads under the delivered lock and does not
+  have it. Trigger: a retired interactive session receives a frame.
+- **T2 — seat records keep `host` after a machine rename.** The daemon
+  carries unpushed writer files to the new name, but seat records keep
+  the old `host`, so `identity_local` treats them as another machine's in
+  the resume and peer checks. Trigger: the first machine rename on a
+  registry that holds seats.
+- **T3 — rebuilt-registry recovery.** The claim refusal's other recovery
+  (remove `machines/<name>.json` from the remote for a registry rebuilt
+  under the same name) still conflicts when the rebuilt registry wrote
+  same-named writer files before attaching. Trigger: it happens once.
+- **T3 — late exports carry the export time as `ts`.** A mark written
+  while retired, or one a Stop missed, is exported later and sorts by
+  export time; its own time is in `src`. Trigger: a reader needs the
+  mark's own time; then `message` events take `ts` from the transcript
+  record.
+- **T3 — two seats of one project holding one session** resolve to the
+  one whose seat id sorts last. Trigger: a legacy registry with such a
+  pair misroutes.
+- **T3 — the rename carry costs about four git calls per mirror commit.**
+  Trigger: tick time matters on a machine with many mirrored projects.
+- **T3 — a moved seat lists twice** from a directory in no project
+  (deferred M2 review finding; addressing de-duplicates by seat id).
+- **Backlog, not debt — MAWS async questions never reach the log** (§9 of
+  the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
+  whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are
+  the ones most affected.

@@ -480,3 +480,46 @@ probes, c) were removed with `claude rm`. `~/.claude/projects/-private-tmp-smns-
 and `-probe` were deleted, along with `/tmp/smns-acc` and the driver's
 scratch directories. Afterwards, `~/.claude/sessions` held no record under
 `/tmp/smns-acc`, and `claude agents --json --all` listed none.
+
+## Second live pass (F1–F3)
+
+2026-10-14, while the branch review ran: the same setup against Claude
+Code 2.1.299 (a `-L smnsacc` tmux server from a scrubbed environment,
+`SMINOS_HOME=/tmp/smns-acc/sminos` verified with `ps eww` on every session
+pid, the same `/tmp/smns-acc/R` path so no new trust entry was written,
+`--plugin-dir <worktree> --settings … --model sonnet`). Sessions `a`
+(a1105697) and `b` (6f55f329), both renamed with `/rename`.
+
+- **F1 holds.** 12 of 12 turns exported their mark on their own Stop
+  (the first run: 23 of 24), the first turn included. Each export landed
+  0.13–0.36 s after its assistant record; `smns-record.sh` took 120–309 ms
+  per Stop, against about 112 ms without the wait. The final-turn mark
+  survived a `/exit` typed 14 ms after the record reached disk: the log
+  holds `seq 17, kind message, ts 17:21:32.603Z, "f1-final-a71a"` against
+  a record at 17:21:32.468Z, and no `stop_hook_summary` was written before
+  the exit.
+- **F2 holds.** In b, `sminos retire a` printed `retired a (session
+  a1105697): a's session keeps running in its terminal; it re-joins when
+  resumed as a new process`, and the log holds `retired, by b, reason
+  retire, pid 93248`. a stayed absent for 12 s across four `list`s, one
+  `daemon tick` (`reconciled 0 · published 1 · delivered 0`) and one more
+  turn in a whose own Stop fired. After `/exit` and `claude --resume
+  a1105697-…` (new pid 78540), the SessionStart hook wrote `joined` and
+  `list` showed a again.
+- **F3 holds.** `sminos spawn c "wait for instructions" --model sonnet`
+  with no `--settings` wrote `/tmp/smns-acc/sminos/settings/21b537f1ec01bec4.json`
+  holding `{"env": {"SMINOS_HOME": "/tmp/smns-acc/sminos"}}`, and the
+  harness roster's launch argv carried `--settings` with that path. The
+  seat process is a supervisor spare started earlier (`claude bg-spare …`),
+  so `ps eww` cannot show the variable; the seat's own `printenv
+  SMINOS_HOME` returned the temp path, its first preamble read (`sminos
+  chat -n 30`) printed a canary written to the temp log just before the
+  spawn, and its `charge` and `status` calls landed there. `find
+  ~/.claude/sminos -newer <start marker>` printed nothing at the end.
+- **Observed.** A mark a wrote while retired (`f2-retired-turn-9d1`,
+  17:20:45) was exported at the resumed process's first Stop, stamped
+  17:21:32. That is §4's rule that a resume keeps the export position; the
+  late event's `ts` is the export time, and the mark's own time stays
+  recoverable through `src`. Recorded as residue.
+- **Cleanup** as above. The empty `~/.claude/session-env/<id>` directories
+  the harness creates were left in place.

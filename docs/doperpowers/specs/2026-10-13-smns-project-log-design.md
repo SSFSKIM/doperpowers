@@ -1107,6 +1107,24 @@ Dispatch scripts: one `--brief` each.
   (`../../.git`) when run from a subdirectory. Resolution joins it with
   the directory given to `-C`.
 
+- Observation: a mark written while a session was retired is exported at
+  the first `Stop` after its resume: a resume keeps the export position
+  (§4) and the hook exports nothing for a non-member. The event's `ts` is
+  the export time; the mark's own time stays recoverable through `src`.
+  Evidence: the second live pass, 2026-10-14 (acceptance record). Left as
+  residue.
+- Observation: the xhigh branch review (a sweep, four scalpels, one
+  verifier) confirmed 11 findings, every one reproduced in a scratch
+  registry, and all were contract edges the common path never crosses: a
+  name bound to a session re-read as a seat under the lock; a delivery
+  snapshot older than a retire; the export position set after a join that
+  can time out; a flush wait satisfied by an earlier identical message; a
+  session bound by another project's seat; a legacy chat imported without
+  its lock; an install that never creates its own root; a stale git lock
+  no tick removes; a rename recovery that strands the unpushed stream;
+  view keys made of names. None contradicted the design. The round went
+  to one fix wave of two workers split by file.
+
 ## Decision Log
 
 - Decision: verification — one independent spec review by a general-purpose
@@ -1720,6 +1738,25 @@ Dispatch scripts: one `--brief` each.
   rewrite the writer inside every line.
   Date/Author: 2026-10-14, the branch-review fix wave.
 
+- Decision: the branch review round. The xhigh panel on c90a0ed8 against
+  main (58bd8273) returned 11 confirmed findings, all P2. Each was fixed
+  in one wave with a test that fails before its fix: wave A on
+  `sminos.py` (4ce9d92f..a6c65050), wave B on the daemon, chart and TUI
+  (6935aa97..ed017197, merged at e2879418); the fixers' own decisions are
+  the entries above. The fix range is re-reviewed at the high rung. Left
+  for `docs/doperpowers/TECH-DEBT.md`: a `send` to a seat-less member has
+  the retire race of review 2 in a shorter window; two seats of one
+  project holding one session resolve to the one whose seat id sorts
+  last; seat records keep `host` set to the old name after a machine
+  rename; the refusal's other recovery (removing `machines/<name>.json`
+  from the remote for a registry rebuilt under the same name) still
+  conflicts when the rebuilt registry wrote same-named files before
+  attaching; the carry adds about four git calls per commit of the
+  mirror; a late export carries the export time as `ts`.
+  Rationale: every finding was real, reproduced, and small enough to fix
+  in place; what was left is bounded and named.
+  Date/Author: 2026-10-14, the authoring session.
+
 ## Outcomes & Retrospective
 
 2026-10-14, at the end of execution and before the branch review.
@@ -1750,8 +1787,10 @@ The live run was the first time a session read the new preamble, and it
 found three defects the stub could not show: the Stop/flush race (F1),
 a retire that reconciliation undid (F2), and a seat that did not
 inherit `SMINOS_HOME` (F3). All three are fixed and pinned by tests.
-The fixes were not re-run live, so a second live pass is the remaining
-confirmation.
+A second live pass on 2026-10-14 confirmed all three on the real
+harness: 12 of 12 marks exported on their own Stop, a retire that held
+across lists, a tick and the session's own Stop, and a spawned seat that
+wrote only its spawner's registry.
 
 **What the reviews moved.** Every milestone needed at least one fix
 wave. The recurring theme was a contract that held in the common path
@@ -1766,6 +1805,11 @@ Only the controller's reviewers saw these; the design's three rounds of
 spec review could not have. The design survived intact: no owner ruling
 was reopened. The changes were revisions the design's intent settled,
 each logged.
+
+**The branch review.** The xhigh panel confirmed 11 findings on the
+finished branch, all reproduced, all contract edges, none against the
+design; one fix wave of two workers closed them with 61 new assertions,
+and the fix range got its own review at the high rung.
 
 **Lessons.**
 - A dev run without an isolated `SMINOS_HOME` rewrote the operator's
@@ -1790,3 +1834,8 @@ each logged.
   resume cannot add it.
 - The `~/.claude.json` trust entry that the acceptance run's trust
   dialog added for `/private/tmp/smns-acc/R` is the human's to remove.
+- A late export (a mark written while retired, or one a Stop missed)
+  carries the export time as `ts`; the mark's own time is in `src`.
+- After a machine rename, seat records keep the old `host`; the
+  rebuilt-registry recovery still conflicts; a `send` to a seat-less
+  member keeps a short retire race. All in `docs/doperpowers/TECH-DEBT.md`.

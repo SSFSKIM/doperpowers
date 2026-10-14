@@ -168,4 +168,6 @@ scripts. That line predates this branch.
   deferred minor review finding.
 - **Seats spawned before F3** carry no `SMINOS_HOME` in their settings,
   and a resume cannot add it.
-- **The F1–F3 fixes have not had a second live pass.**
+- **The F1–F3 fixes had their second live pass** on 2026-10-14 and all
+  three hold on the real harness (acceptance record, "Second live
+  pass"). The branch review's residue is in `docs/doperpowers/TECH-DEBT.md`.
