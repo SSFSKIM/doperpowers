@@ -1724,7 +1724,8 @@ Dispatch scripts: one `--brief` each.
   main (58bd8273) returned 11 confirmed findings, all P2. Each was fixed
   in one wave with a test that fails before its fix: wave A on
   `sminos.py` (4ce9d92f..a6c65050), wave B on the daemon, chart and TUI
-  (6935aa97..ed017197, merged at e2879418); the fixers' own decisions are
+  (6935aa97..ed017197, merged at e2879418; its rename carry withdrawn,
+  see below); the fixers' own decisions are
   the entries above. The fix range is re-reviewed at the high rung. Left
   for `docs/doperpowers/TECH-DEBT.md`: a `send` to a seat-less member has
   the retire race of review 2 in a shorter window; two seats of one
@@ -1738,6 +1739,22 @@ Dispatch scripts: one `--brief` each.
   Rationale: every finding was real, reproduced, and small enough to fix
   in place; what was left is bounded and named.
   Date/Author: 2026-10-14, the authoring session.
+
+- Decision: the machine-rename carry (review finding scalpel-1#2) is
+  withdrawn. The fix wave's carry rewrote unpushed writer files under the
+  new name; the high-rung re-review reproduced four defects in it (a push
+  acknowledged remotely but not locally rewritten and deleted; a first
+  delivery in flight ignored by its reader exclusion; a crash between the
+  file switch and the record migration leaving records that suppress
+  another machine's events; carried lifecycle events appended after newer
+  ones, undoing a retirement). The refusal now states the two recoveries
+  that hold, and the collision goes to `docs/doperpowers/TECH-DEBT.md`. The
+  durable fix is naming writer files by the machine's instance id rather
+  than its name (§3), a design change for its own initiative. Rationale: a
+  recovery that can lose or reorder events is worse than a stranded
+  pre-attach stream reported honestly; two machines with one name is rare
+  in the owner's fleet.
+  Date/Author: 2026-10-14, the authoring session, from the high-rung re-review.
 
 ## Outcomes & Retrospective
 

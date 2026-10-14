@@ -4664,6 +4664,10 @@ REMOTE_HEAD="$(gitq -C "$REMOTE" rev-parse main)"
 run env "${H3[@]}" "$SMINOS" project attach
 assert_rc 1 "$RC" "attach under a name another instance claimed is refused"
 assert_contains "$OUT" "the machine name h2 is claimed by another instance" "saying the name is claimed"
+assert_contains "$OUT" "Events already written under this name cannot be published under another name." "the refusal says a rename cannot publish existing events"
+assert_contains "$OUT" "Choose a unique DAEMON_HOST before this registry's first say or attach." "the refusal places the unique-name recovery before the first write or attach"
+assert_contains "$OUT" "keep the name and remove machines/h2.json from the remote only when the other machine is gone and pushed nothing under this name" "the refusal limits claim removal to a departed machine that pushed no events"
+assert_contains "$OUT" "or accept that the pre-attach events stay local" "the refusal names accepting a local-only pre-attach stream"
 run env "${H3[@]}" "$SMINOS" daemon tick
 assert_rc 1 "$RC" "a claimed machine name refuses to run: tick"
 assert_contains "$OUT" "refuses to run" "saying so"

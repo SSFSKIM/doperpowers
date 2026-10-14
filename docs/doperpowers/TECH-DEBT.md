@@ -197,10 +197,18 @@ the spec's Decision Log entry "the branch review round"
   the old `host`, so `identity_local` treats them as another machine's in
   the resume and peer checks. Trigger: the first machine rename on a
   registry that holds seats.
-- **T3 — rebuilt-registry recovery.** The claim refusal's other recovery
-  (remove `machines/<name>.json` from the remote for a registry rebuilt
-  under the same name) still conflicts when the rebuilt registry wrote
-  same-named writer files before attaching. Trigger: it happens once.
+- **T2 — two machines with one name strand the pre-attach stream.** Writer
+  files are named by `DAEMON_HOST`, so a registry that wrote events under a
+  name another machine later claimed cannot publish them under a new name;
+  the refusal says so and names the two recoveries that hold. Keeping the
+  name and removing the departed machine's claim works only when it pushed
+  nothing under the name; otherwise the merge still meets its
+  `<name>.*.jsonl` files. A carry that rewrote the files under the new name
+  was tried in PR #192's fix wave and withdrawn after the re-review
+  reproduced four defects in it (spec Decision Log, 2026-10-14). Durable
+  fix: name writer files by the instance id in `machine.json` (§3), its own
+  initiative. Trigger: a second machine joins a mirror under a name already
+  claimed.
 - **T3 — late exports carry the export time as `ts`.** A mark written
   while retired, or one a Stop missed, is exported later and sorts by
   export time; its own time is in `src`. Trigger: a reader needs the
@@ -209,8 +217,6 @@ the spec's Decision Log entry "the branch review round"
 - **T3 — two seats of one project holding one session** resolve to the
   one whose seat id sorts last. Trigger: a legacy registry with such a
   pair misroutes.
-- **T3 — the rename carry costs about four git calls per mirror commit.**
-  Trigger: tick time matters on a machine with many mirrored projects.
 - **T3 — a moved seat lists twice** from a directory in no project
   (deferred M2 review finding; addressing de-duplicates by seat id).
 - **Backlog, not debt — MAWS async questions never reach the log** (§9 of

@@ -214,10 +214,12 @@ def check_claim(log):
             pass
     if held and held != mine:
         raise MachineClaimed(
-            "the machine name %s is claimed by another instance (%s) in %s — two machines under one name would "
-            "write the same files, so this daemon refuses to run. Give this machine its own name (DAEMON_HOST), or, "
-            "if the claim is this machine's own from an earlier $SMINOS_HOME, remove machines/%s.json from the "
-            "remote" % (name, held[:8], log, name))
+            "the machine name %s is claimed by another instance (%s) in %s — this daemon refuses to run. "
+            "Events already written under this name cannot be published under another name. "
+            "Choose a unique DAEMON_HOST before this registry's first say or attach. If this registry already holds "
+            "events, keep the name and remove machines/%s.json from the remote only when the other machine is gone "
+            "and pushed nothing under this name, or accept that the pre-attach events stay local"
+            % (name, held[:8], log, name))
 
 
 def write_claim(log):
