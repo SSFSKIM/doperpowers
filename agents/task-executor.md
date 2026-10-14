@@ -3,6 +3,7 @@ name: task-executor
 description: Per-task implementer for doperpowers:subagent-driven-execution only.
 model: opus
 effort: high
+autoCompactWindow: 600000
 color: blue
 disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---

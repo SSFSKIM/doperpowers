@@ -3,6 +3,7 @@ name: qa-loop
 description: The board's review loop for one pull request, dispatched by the seat that owns its ticket — runs the review engine, audits the work against its contract, drives fix waves, and merges.
 model: opus
 effort: high
+autoCompactWindow: 600000
 color: yellow
 disallowedTools: Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---

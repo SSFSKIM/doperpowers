@@ -3,6 +3,7 @@ name: reviewer-low
 description: Independent code reviewer, low rung (sol/high): a small, low-stakes diff. Read-only.
 model: sol
 effort: high
+autoCompactWindow: 600000
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---
