@@ -3118,9 +3118,11 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         meta_set(rec_id, {"current": uuid, "cwd": runcwd or cwd, "host": host_name(),
                           "boot_id": boot_id(), "updated": now()})
     project = seat_project({"cwd": runcwd or cwd, "group": group})
-    # The events are part of the spawn, but the session already runs: a failed
-    # append is reported after the banner, so whoever parses it still finds
-    # the seat it launched.
+    # The session already runs, so a failed append does not fail the spawn: an
+    # exit 1 would make a dispatcher release the run and leave the worker
+    # running unbound, and reconciliation re-joins the seat on the next
+    # reading verb. What it cannot repair — the spawner and the in-charge line
+    # — is named loudly after the banner.
     log_failed = None
     try:
         if prev and prev["current"] and prev["current"] != uuid:
@@ -3151,7 +3153,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     if wait:
         print_reply_block(rec_id)
     if log_failed:
-        raise log_failed
+        warn("%s completed, but %s. The seat re-joins its project on the next reading verb; its spawner (by) "
+             "and its in-charge line are not recorded." % ("fill" if verb == "filled" else "spawn", log_failed))
 
 
 def cmd_spawn(a):

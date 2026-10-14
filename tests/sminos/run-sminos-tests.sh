@@ -3400,9 +3400,13 @@ assert_equals "$(field "$RFS" status)" "retired" "the local retire stands"
 chmod 500 "$PFLOG"
 run "$SMINOS" spawn sfail "t"
 chmod 700 "$PFLOG"
-assert_rc 1 "$RC" "a spawn whose joined cannot be recorded exits 1"
-assert_contains "$OUT" "seat spawned: pf-repo/sfail" "after its banner, so the seat it launched can still be found"
-assert_contains "$OUT" "spawn completed, but recording joined of" "saying the spawn happened and the log write did not"
+assert_rc 0 "$RC" "a spawn whose joined cannot be recorded still exits 0: its worker runs, and a dispatcher must not release it"
+assert_contains "$OUT" "seat spawned: pf-repo/sfail" "its banner names the seat it launched"
+assert_contains "$OUT" "sminos: warning: spawn completed, but recording joined of" "a loud warning says the log write failed"
+assert_contains "$OUT" "its spawner (by) and its in-charge line are not recorded" "naming what is lost"
+run "$SMINOS" list --json
+assert_contains "$OUT" '"alias": "sfail"' "reconciliation repairs the membership on the next reading verb"
+assert_contains "$(head -1 "$PFLOG/testhost.$(field "$(seat_id_of sfail)" current).jsonl")" '"kind": "joined"' "joining it into the log"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/pf-"*.json
 
