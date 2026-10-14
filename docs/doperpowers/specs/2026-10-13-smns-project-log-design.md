@@ -192,8 +192,9 @@ local member whose harness session is no longer live is retired by
 reconciliation (`reason` `ended`): its activation is over, and a closed
 session kept as a member would hold its alias ambiguous forever. Resuming
 it re-joins it on sight. Only a harness session whose record's `kind` is
-`interactive` or `bg` joins on sight, so another tool's headless run in
-the directory is not a member.
+`interactive` or `bg`, and whose `entrypoint` does not start with `sdk`,
+joins on sight, so another tool's headless run in the directory is not a
+member.
 
 There is no host seat. A seat that spawns another is recorded as its
 spawner (§6) and nothing more: it does not integrate the other's work, is
@@ -444,7 +445,7 @@ beside its state. Sources, in order; the first present wins:
 `sminos derive [<alias> | --all]` asks a session what it is in charge of
 without interrupting it, by forking it headless:
 
-    claude -p --resume <session-uuid> --fork-session --tools "" --output-format json \
+    claude -p --resume <session-uuid> --fork-session --session-id <fork-uuid> --tools "" --output-format json \
       "In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
 
 Verified 2026-10-13 on a live transcript (Surprises & Discoveries): the fork
@@ -969,6 +970,33 @@ Dispatch scripts: one `--brief` each.
   Evidence: both independent reviewers reproduced it on a scratch bare
   remote and clone — appending a second line to a committed writer file
   made the pull exit 128. The sync invariant (§8) commits first.
+- Observation: harness registration races the `SessionStart` hooks, so a
+  hook can run before `~/.claude/sessions/<pid>.json` exists.
+  Evidence: in bundle 2.1.292 (`cli.pretty.js` near line 16028), the
+  registration `T8t(...)` is started without an `await` and is followed
+  at once by `startSessionStartHooks()`.
+- Observation: a headless `claude -p` run registers as a harness session
+  with `kind: "interactive"`, and only `entrypoint` sets it apart.
+  Evidence: 2026-10-14, harness 2.1.299. A `-p` run in /tmp wrote
+  `~/.claude/sessions/<pid>.json` with `kind: "interactive", entrypoint:
+  "sdk-cli"`. In the bundle, `kind` is `CLAUDE_CODE_SESSION_KIND`
+  (`bg`/`daemon`/`daemon-worker`) or else `"interactive"`.
+- Observation: `--session-id <uuid>` works together with `--fork-session`
+  and pins the fork's id. `--tools` takes several values and swallows a
+  prompt that follows it directly.
+  Evidence: 2026-10-14, harness 2.1.299. The fork returned the pinned
+  `session_id` and wrote `<uuid>.jsonl`. `claude -p --tools "" "<prompt>"`
+  answered "Input must be provided either through stdin or as a prompt
+  argument".
+- Observation: a live async ask has exactly the transcript shapes
+  `ask.tsx` reads. The `tool_use` carries `"async": true`, the
+  `tool_result` content is `ASYNC_RESULT`, and the delivery row is a
+  plugin prompt (`origin: {"kind": "plugin", "name": "doperpowers"}`)
+  framed by the engine. `queue-operation` rows copy the delivery text and
+  are not deliveries.
+  Evidence: live rows from harness 2.1.296, read by the M3 executor.
+- Observation: the hook takes about 110–130 ms a run, also on a 207 MB
+  transcript, because it reads only the tail past the position.
 - Observation: `migrate` runs before every verb, so any run of a working
   copy's CLI without a temporary `SMINOS_HOME` performs the one-way chat
   import on the operator's real registry.
@@ -1124,6 +1152,11 @@ Dispatch scripts: one `--brief` each.
   Rationale: each test's intent survives intact at its milestone, and no
   milestone builds ahead of its plan to satisfy a test.
   Date/Author: 2026-10-13, the plan-executor (controller).
+  Re-pinned 2026-10-14 (M3, 09775a35): the clock-stepped-back ordering
+  test now starts from the hook's real `joined`, sent as a `SessionStart`
+  payload through `hooks/smns-record.sh`. The reconciliation stand-in was
+  removed. The hook joins through the same `join_on_sight` function, so
+  the stand-in proved nothing the real test does not.
 - Decision: M1's gaps, resolved by its executor (detail in commit
   7f3f8b9f). `now(ms=True)` only for the log's `ts`: seat records keep
   whole seconds, because the board compares `updated` as strings and the
@@ -1294,6 +1327,72 @@ Dispatch scripts: one `--brief` each.
   - The spawn warning names only the event that failed and what that
     event carries.
   Date/Author: 2026-10-14, the M2 executor, folded by the controller.
+- Decision: M3's gaps, resolved by its executor (09775a35).
+  - The hook passes the payload whole to `sminos record` on stdin. The
+    shell reads only `cwd`, for the quick exit when there is no project.
+  - When the harness record is missing at `SessionStart` (registration
+    races the hooks, see Surprises), the hook sets the export position
+    but does not join; `Stop` or any reading verb joins later. Polling
+    for the record was rejected because it would delay every session's
+    start.
+  - The hook's membership test is reconciliation's (`joinable`,
+    `join_on_sight`): a retired seat is not joined, and both the pid
+    marker and `SMNS_INTERNAL` mark an internal fork.
+  - Export is one `log_append_batch` per `Stop` over the whole range.
+    The position is `{uuid, offset}`, with offset the start of that
+    record's line. It advances to the last assistant record whose async
+    asks all have their results in the range, so a question is never
+    split from the result that accepts it. If the record is not at its
+    offset, it is searched for from the end. A position that does not
+    hold falls back to the trailing-run policy. The trailing run is
+    everything after the last record of type `user`.
+  - Sidechain records are never exported: a subagent's marks are not the
+    session's message to its human.
+  - `answered` is recorded for any delivery, even when its question is
+    not in the log, with the engine's plugin-prompt framing cut off. An
+    accepted ask is a non-error result whose text is exactly the tool's
+    `ASYNC_RESULT`. `choices` is one flat list of labels and `text` the
+    list of questions, as the Interfaces section types them.
+  - `chat --host` is a view of the last 30 (with `-n`, `--since`, and
+    `--json`) and never moves the chat cursor. A shared cursor would
+    mark host messages read when a member's `chat` advanced past them.
+    `--host --kind` is refused.
+  - `charge_source` values: `set`, `name` (§5 source 2), `derived`,
+    `title` (source 4), or `""`. An empty `set` or `derived` line counts
+    as absent, so `charge <m> ""` clears it. `list` and the chart do not
+    repeat a user-set name as the line; `--json` and the TUI carry it.
+    `charge` with one argument sets the session's own line, with two it
+    takes the member and the line, and with more it exits 2. A remote
+    member's line goes into the caller's file.
+  - `derive`: a member that does not qualify prints "not derived —
+    <reason>" and exits 0. `--all` covers every local member of every
+    project. The fork starts behind a shell gate, `read` then `exec`, so
+    the pid marker is written before `claude` can register. It runs in
+    the session's cwd so that `--resume` finds the transcript. A human
+    prompt is a `user` record whose `origin` is absent or `human`, and
+    which is not meta, not a sidechain, and not a tool result.
+    `SMINOS_DERIVE_TIMEOUT` exists for tests. The `ai-title` lookup
+    reads only the transcript's last 8 MiB.
+  - The mark grammar is its own module, `sminos_marks.py`, checked
+    against the mod's 47 parse fixtures.
+  Date/Author: 2026-10-14, the M3 executor, folded by the controller.
+- Decision: two rulings on M3's concerns.
+  (1) A seat-less harness record whose `entrypoint` starts with `sdk`
+  never joins on sight, whatever its `kind`, in reconciliation and in
+  the hook. Evidence (2026-10-14, harness 2.1.299): a plain `claude -p`
+  run registered `~/.claude/sessions/<pid>.json` with `kind:
+  "interactive"` and `entrypoint: "sdk-cli"`. The harness writes `kind`
+  as `CLAUDE_CODE_SESSION_KIND` or else `interactive`, so the M2 `kind`
+  rule alone admitted headless runs.
+  (2) `derive` mints the fork's uuid in advance and passes it as
+  `--session-id` beside `--fork-session`. It deletes `<uuid>.jsonl`
+  whatever the outcome. Evidence: the same harness returned the pinned
+  `session_id` and wrote `<uuid>.jsonl`. Before this, a fork that
+  crashed without printing JSON left its transcript behind. Also, the
+  prompt must follow `--output-format json`: `--tools` takes several
+  values, and a prompt placed right after `--tools ""` is swallowed
+  ("Input must be provided…").
+  Date/Author: 2026-10-14, the controller.
 
 ## Outcomes & Retrospective
 
