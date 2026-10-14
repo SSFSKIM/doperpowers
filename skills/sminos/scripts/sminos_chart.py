@@ -84,7 +84,7 @@ def member_node(project, m, label):
     seat = m.seat
     return {"kind": "seat", "id": "%s/%s" % (project.name, label), "label": label,
             "role": (seat or {}).get("role") or "", "state": m.state, "word": sminos.state_column(m),
-            "charge": m.charge, "now": m.status, "by": m.by, "dead": is_dead(m.state),
+            "charge": sminos.charge_shown(m), "now": m.status, "by": m.by, "dead": is_dead(m.state),
             "children": [], "hidden": 0, "seat": sminos.public_seat(seat) if seat else None,
             "member": sminos.member_json(m), "project": project,
             "ref": "%s/%s" % (seat["group"], seat["alias"]) if seat else m.session}

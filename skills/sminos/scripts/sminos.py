@@ -26,6 +26,10 @@ member too, seat-less, from the first call that reads its project.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
                    @short / @project/alias: delivered; @all: every live member
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
+    sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
+    sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
+    sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
+    sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin)
     sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
@@ -97,6 +101,10 @@ from typing import NamedTuple, NoReturn
 os.umask(0o077)
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+import sminos_marks  # noqa: E402 — the mark grammar of hooks/mods/to-human.tsx, ported
+
 LAUNCHER = os.path.join(SCRIPT_DIR, "sminos")
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
@@ -919,7 +927,7 @@ class Member(NamedTuple):
     state: str            # one of STATES; for a remote member its last published word, or ""
     state_age: float | None
     charge: str
-    charge_source: str    # set | derived | ""
+    charge_source: str    # set | name | derived | title | "" (charge_of)
     status: str
     by: str
     worktree: str
@@ -1061,36 +1069,64 @@ def _reconcile(project, events, local, by_session):
         out += lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
-        if seat and seat["status"] == "retired":
-            continue
-        if not seat and str((peer or {}).get("kind") or "") not in JOINABLE_KINDS:
-            continue
         if (latest.get(sid) == "joined") if peer else (sid in latest):
             continue
-
-        def guard(evs, seat=seat, peer=peer):
-            last = latest_membership(evs)
-            if (last == "joined") if peer else (last is not None):
-                return False
-            fresh = reload_seat(seat["seat_id"]) if seat else None
-            return not (seat and (fresh is None or fresh["status"] == "retired"))
-
-        if seat:
-            fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"])
-        else:
-            fields = joined_fields(str(peer.get("name") or sid[:8]), str(peer.get("nameSource") or "derived"),
-                                   str(peer.get("cwd") or ""))
-        out += lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+        out += join_on_sight(project, sid, seat, peer, bool(peer))
     return out
+
+
+def joinable(seat, peer):
+    """Whether a session of this machine is a member on sight: a seat whose
+    record is not retired, or a seat-less session the harness records as
+    `interactive` or `bg` (another tool's headless run is no member)."""
+    if seat:
+        return seat["status"] != "retired"
+    return str((peer or {}).get("kind") or "") in JOINABLE_KINDS
+
+
+def join_on_sight(project, sid, seat, peer, running):
+    """joined for a session seen on this machine, when it is joinable and
+    the log does not already hold it as a member: a running session whose
+    latest membership is absent or retired (a live process is evidence of
+    activation), a seat that is not running only when it has no membership
+    event at all. Checked again under the session file's lock, the seat
+    record re-read there, so a concurrent retire cannot be undone. Shared by
+    reconciliation and the hook (§2, §4)."""
+    if not joinable(seat, peer):
+        return []
+
+    def guard(evs):
+        last = latest_membership(evs)
+        if (last == "joined") if running else (last is not None):
+            return False
+        fresh = reload_seat(seat["seat_id"]) if seat else None
+        return not (seat and (fresh is None or fresh["status"] == "retired"))
+
+    if seat:
+        fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"])
+    else:
+        fields = joined_fields(str(peer.get("name") or sid[:8]), str(peer.get("nameSource") or "derived"),
+                               str(peer.get("cwd") or ""))
+    return lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+
+
+def latest_across_writers(events):
+    """Each writer's latest event by seq (authoritative within a writer),
+    then the later ts between writers (§3); None for no events. `events` holds
+    each writer's stream in seq order, so the last one seen of a writer is its
+    latest."""
+    last = {}
+    for e in events:
+        last[e["writer"]] = e
+    return max(last.values(), key=lambda e: e["ts"]) if last else None
 
 
 def _projection(events):
     """Per session, what the log says of it: its latest membership event and
     latest joined (by seq, in its own file), the first non-empty `by`, its
-    latest rename and published state (its own file), and its set in-charge
-    line and status: each writer's latest by seq (authoritative within a
-    writer), the later ts between writers (§3). `events` holds each writer's
-    stream in seq order, so the last one seen of a writer is its latest."""
+    latest rename and published state (its own file), its in-charge events
+    (for charge_of), and its status: each writer's latest by seq, the later
+    ts between writers (§3)."""
     info = {}
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -1098,7 +1134,7 @@ def _projection(events):
             continue
         own = writer_session(e["writer"]) == sid
         r = info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
-                                  "charge": {}, "status": {}})
+                                  "in_charge": [], "status": []})
         if kind in MEMBERSHIP or kind in ("renamed", "state"):
             if not own:
                 continue
@@ -1111,14 +1147,38 @@ def _projection(events):
             else:
                 r[kind] = e
         elif kind == "in-charge":
-            if e.get("source") == "set":
-                r["charge"][e["writer"]] = e
+            r["in_charge"].append(e)
         else:
-            r["status"][e["writer"]] = e
+            r["status"].append(e)
     for r in info.values():
-        for k in ("charge", "status"):
-            r[k] = max(r[k].values(), key=lambda e: e["ts"]) if r[k] else None
+        r["status"] = latest_across_writers(r["status"])
     return info
+
+
+def charge_of(member, events):
+    """(line, source): what a member is in charge of, the first present of
+    (§5) the latest `set` in-charge line, the name the human gave it, the
+    latest `derived` line, and — on this machine only — its transcript's
+    latest title; ("", "") when none is. A set or derived line written
+    empty is no line. `events` is the log, or any part of it holding the
+    member's in-charge events, each writer's in seq order."""
+    mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") == member.session]
+    for source in ("set", "name", "derived", "title"):
+        if source == "name":
+            line = member.alias if member.name_source == "user" else ""
+        elif source == "title":
+            line = transcript_title(member.session) if member.local and member.session else ""
+        else:
+            e = latest_across_writers([x for x in mine if x.get("source") == source])
+            line = str(e.get("text") or "").strip() if e else ""
+        if line:
+            return line, source
+    return "", ""
+
+
+def charge_shown(m):
+    """The in-charge line a row draws: not a name the alias column already shows."""
+    return "" if m.charge_source == "name" else m.charge
 
 
 def ts_age(ts):
@@ -1153,15 +1213,16 @@ def _member(sid, r, seat, peer, local):
         state_word = peer_state(peer)
     else:
         state_word = "stopped" if transcript_path(sid) else "gone"
-    charge = (r or {}).get("charge")
     status = (r or {}).get("status")
-    return Member(
+    m = Member(
         session=sid, short=sid[:8], alias=alias or sid[:8], name_source=name_source,
         machine=host_name() if local else machine, local=local, state=state_word, state_age=age,
-        charge=str(charge.get("text") or "") if charge else "", charge_source="set" if charge else "",
+        charge="", charge_source="",
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
         by=(r or {}).get("by") or "", worktree=seat["worktree"] if seat else str(j.get("worktree") or ""),
         seat=seat)
+    charge, source = charge_of(m, (r or {}).get("in_charge") or [])
+    return m._replace(charge=charge, charge_source=source)
 
 
 def project_view(project):
@@ -1607,13 +1668,19 @@ def normalize_ts(ts):
 def cmd_chat(a):
     """Read a project's chat. With no flags: what is above the reader's
     cursor (at most 30, then +N earlier), advancing it; -n tails and --since
-    reads from a time, neither moving it."""
+    reads from a time, neither moving it. --host reads what the members sent
+    their human instead (chat_host)."""
     if a.n is not None and a.n < 1:
         die("chat -n must be positive")
+    if a.host and a.kind:
+        die("chat --host reads the host kinds (%s); it takes no --kind" % ", ".join(HOST_KINDS))
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     project = find_project(a.project) if a.project else caller_project(caller_seat() if sid else None)
     if project is None:
         die("chat outside a project: run it in a project's directory, or name one: sminos chat <project>")
+    if a.host:
+        chat_host(project, a)
+        return
     kinds = tuple(a.kind) if a.kind else CHAT_KINDS
     reconcile(project)
     events = log_read(project)
@@ -1649,6 +1716,699 @@ def cmd_chat(a):
         print(chat_line(e))
     if not window:
         print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
+
+
+# ------------------------------------------------------------ messages to the host
+#
+# What a session sends its human — a <message> mark, an async ask, the answer
+# the human gave it — reaches the project's log through the Stop and
+# SessionStart hook (hooks/smns-record.sh → `sminos record`), read from the
+# session's transcript past its export position (§4). Every event carries a
+# `src`, and the batch drops a (kind, src) already present, so replaying an
+# export appends nothing.
+
+HOST_KINDS = ("message", "question", "answered")
+ASK_TOOL = "mcp__doperpowers__AskUserQuestion"
+# What the tool returns for an async call it accepted (hooks/mods/ask.tsx).
+ASYNC_RESULT = ("Your questions are waiting for the human; this call does not wait for them. Their answer will "
+                "reach you in a later message that quotes each question. Go on with work that does not depend on it.")
+# A delivery of the human's answer, in whichever row the engine stored it.
+DELIVERY_RE = re.compile(r"The human responded to your async AskUserQuestion \(call ([^)\s]+)\): ")
+PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
+# The engine's framing after the text of a prompt a plugin submitted.
+PLUGIN_FRAMING = "\n\nThis is how Claude Code surfaces a prompt a plugin submits"
+
+
+def extract_marks(text):
+    """[{"kind": "message", "text"}]: the marked spans of one assistant text,
+    read as the to-human mod reads them (sminos_marks): tags in code are
+    literal, nested marks are runs of their own, an unclosed mark runs to the
+    end, and every alias is a message."""
+    return [{"kind": s["kind"], "text": s["text"]} for s in sminos_marks.parse(text)["spans"] if s["text"]]
+
+
+def _blocks(record, kind):
+    """A transcript record's content blocks of one type; a string content is
+    one text block."""
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if kind == "text" else []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == kind] if isinstance(content, list) else []
+
+
+def _result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def _delivery_texts(record):
+    """The texts of a record that can deliver an answer, as ask.tsx reads
+    them: a context attachment's entries, and a prompt the plugin submitted.
+    Never the model's own rows, a tool's output, or the human quoting one."""
+    if record.get("type") == "attachment":
+        att = record.get("attachment")
+        if isinstance(att, dict) and att.get("type") == "hook_additional_context":
+            content = att.get("content")
+            return [t for t in (content if isinstance(content, list) else [content]) if isinstance(t, str)]
+        return []
+    if record.get("type") != "user":
+        return []
+    return [t for t in (b.get("text") for b in _blocks(record, "text"))
+            if isinstance(t, str) and t.startswith(PLUGIN_PROMPT)]
+
+
+def _deliveries(text):
+    """(call id, answer) for each delivery head in a text: the answer is the
+    engine's result text, up to the next head, without the engine's framing."""
+    heads = list(DELIVERY_RE.finditer(text))
+    out = []
+    for i, head in enumerate(heads):
+        answer = text[head.end():heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        cut = answer.find(PLUGIN_FRAMING)
+        out.append((head.group(1), (answer[:cut] if cut >= 0 else answer).rstrip()))
+    return out
+
+
+def _ask_events(records):
+    """(record index, event) for the async asks the records hold, in record
+    order: a `question` for each tool_use of the tool with `async` true whose
+    paired tool_result is the tool's accepted result, and an `answered` for
+    each delivery. A blocking ask — the plugin's without async, or the native
+    AskUserQuestion — is no event: the session waits, and the human goes to it."""
+    calls, results, out = [], {}, []
+    for i, r in enumerate(records):
+        for b in _blocks(r, "tool_use"):
+            inp = b.get("input")
+            if b.get("name") == ASK_TOOL and isinstance(inp, dict) and inp.get("async") is True and b.get("id"):
+                calls.append((i, str(b["id"]), inp))
+        for b in _blocks(r, "tool_result"):
+            results[str(b.get("tool_use_id") or "")] = b
+        for text in _delivery_texts(r):
+            out += [(i, {"kind": "answered", "src": call, "text": answer}) for call, answer in _deliveries(text)]
+    for i, call, inp in calls:
+        res = results.get(call)
+        if res is None or res.get("is_error") is True or _result_text(res.get("content")) != ASYNC_RESULT:
+            continue
+        questions = [q for q in inp.get("questions") or [] if isinstance(q, dict)]
+        out.append((i, {"kind": "question", "text": [str(q.get("question") or "") for q in questions],
+                        "choices": [str(o.get("label") or "") for q in questions
+                                    for o in q.get("options") or [] if isinstance(o, dict)], "src": call}))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def extract_asks(records):
+    """The async asks and their answers the transcript records hold, in order:
+    {"kind": "question", "src": call id, "text": [questions], "choices": [labels]}
+    and {"kind": "answered", "src": call id, "text": the engine's result text}."""
+    return [e for _, e in _ask_events(records)]
+
+
+def host_events(records, alias):
+    """The events a run of transcript records holds for the host, in record
+    order, ready for log_append_batch: each marked span of an assistant record
+    as a `message` (src `<record uuid>#<span index>`), each accepted async ask
+    as a `question`, each delivery of an answer as `answered` (src the call id)."""
+    out = []
+    for i, r in enumerate(records):
+        if r.get("type") != "assistant" or not isinstance(r.get("uuid"), str) or not r["uuid"]:
+            continue
+        spans = [s for b in _blocks(r, "text") for s in extract_marks(str(b.get("text") or ""))]
+        out += [(i, {"kind": "message", "from": alias, "to": "host", "text": s["text"], "src": "%s#%d" % (r["uuid"], n)})
+                for n, s in enumerate(spans)]
+    for i, e in _ask_events(records):
+        if e["kind"] == "question":
+            out.append((i, {"kind": "question", "from": alias, "to": "host", "text": e["text"],
+                            "choices": e["choices"], "src": e["src"]}))
+        else:
+            out.append((i, {"kind": "answered", "from": alias, "src": e["src"], "text": e["text"]}))
+    out.sort(key=lambda x: x[0])
+    return [e for _, e in out]
+
+
+# The transcript is read by byte offset and never whole: an architect
+# session's reaches 155MB. Only complete lines count; the line being written
+# is the next reader's.
+
+
+def _record(line):
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return None
+    return r if isinstance(r, dict) else None
+
+
+def _complete_end(f):
+    """The offset just past the file's last newline."""
+    pos = f.seek(0, os.SEEK_END)
+    while pos > 0:
+        size = min(1 << 16, pos)
+        f.seek(pos - size)
+        at = f.read(size).rfind(b"\n")
+        if at >= 0:
+            return pos - size + at + 1
+        pos -= size
+    return 0
+
+
+def _lines_backward(f, end, budget=None):
+    """(offset, line) for the complete lines before `end`, the last first;
+    with `budget`, reading at most that many bytes."""
+    pos, head = end, b""
+    while pos > 0 and (budget is None or end - pos < budget):
+        size = min(1 << 16, pos)
+        pos -= size
+        f.seek(pos)
+        parts = (f.read(size) + head).split(b"\n")
+        head = parts[0]
+        at, lines = pos + len(parts[0]) + 1, []
+        for part in parts[1:]:
+            lines.append((at, part))
+            at += len(part) + 1
+        for item in reversed(lines):
+            if item[1]:
+                yield item
+    if pos == 0 and head:
+        yield 0, head
+
+
+def transcript_title(session_id):
+    """The latest `ai-title` record of a session's transcript on this machine:
+    the harness rewrites it as the conversation moves, so it is the current
+    topic, the last fallback of the in-charge line (§5). Looked for in the
+    file's last 8 MiB."""
+    path = transcript_path(session_id)
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            for _, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
+                if b'"ai-title"' in line:
+                    r = _record(line)
+                    if r and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
+                        return " ".join(r["aiTitle"].split())
+    except OSError:
+        pass
+    return ""
+
+
+def _position_path(project, session):
+    return project_path(project, "cursors", "export", reader_key(session) + ".json")
+
+
+def _position_load(project, session):
+    try:
+        with open(_position_path(project, session)) as f:
+            pos = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(pos, dict) and isinstance(pos.get("uuid"), str) and type(pos.get("offset")) is int:
+        return pos
+    return None
+
+
+def _resume_at(f, pos, end):
+    """Where an export resumes: just past the position's record, found at its
+    offset or else from the end of the file; for a position with no record
+    (a transcript that was empty), its offset. None when it does not hold."""
+    offset, uid = pos["offset"], pos["uuid"]
+    if not 0 <= offset <= end:
+        return None
+    if not uid:
+        if offset:
+            f.seek(offset - 1)
+            if f.read(1) != b"\n":
+                return None
+        return offset
+    f.seek(offset)
+    line = f.readline()
+    if line.endswith(b"\n") and (_record(line) or {}).get("uuid") == uid:
+        return offset + len(line)
+    for at, line in _lines_backward(f, end):
+        if uid.encode() in line and (_record(line) or {}).get("uuid") == uid:
+            return at + len(line) + 1
+    return None
+
+
+def _trailing_run(f, end):
+    """Where the trailing run of assistant records begins: past the last user
+    record — the first-use policy for a session with no position."""
+    for at, line in _lines_backward(f, end):
+        if b'"user"' in line and (_record(line) or {}).get("type") == "user":
+            return at + len(line) + 1
+    return 0
+
+
+def position_init(project, session, tpath):
+    """At SessionStart, set the export position to the transcript's current
+    end — only when the session has none, so a resume keeps it and a mark
+    written before the process died is still exported."""
+    with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
+        path = _position_path(project, session)
+        if os.path.exists(path):
+            return
+        pos = {"uuid": "", "offset": 0}
+        try:
+            with open(tpath, "rb") as f:
+                end = _complete_end(f)
+                pos["offset"] = end
+                last = next(_lines_backward(f, end), None)
+                uid = (_record(last[1]) or {}).get("uuid") if last else None
+                if isinstance(uid, str) and uid:
+                    pos = {"uuid": uid, "offset": last[0]}
+        except OSError:
+            pass
+        write_json(path, pos)
+
+
+def export_host(project, session, tpath, alias):
+    """Append what the transcript holds for the host past the session's export
+    position, as one batch, then advance the position to the last assistant
+    record read whose async asks all have their results (so a question is
+    never split from the result that accepts it). With no position, the
+    trailing run of assistant records is exported (§4). Exports of a session
+    are serialised by its export lock, taken before the log's locks."""
+    with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
+        pos = _position_load(project, session)
+        try:
+            f = open(tpath, "rb")
+        except OSError:
+            return 0
+        with f:
+            end = _complete_end(f)
+            start = _resume_at(f, pos, end) if pos else None
+            held = start is not None
+            if not held:
+                start = _trailing_run(f, end)
+            f.seek(start)
+            records, at = [], start
+            while at < end:
+                line = f.readline()
+                r = _record(line)
+                if r is not None and not r.get("isSidechain"):
+                    records.append((at, r))
+                at += len(line)
+        events = host_events([r for _, r in records], alias)
+        if events:
+            log_append_batch(project, writer_id(session), events)
+        new, pending = None, set()
+        for at, r in records:
+            for b in _blocks(r, "tool_use"):
+                if b.get("name") == ASK_TOOL and b.get("id"):
+                    pending.add(str(b["id"]))
+            for b in _blocks(r, "tool_result"):
+                pending.discard(str(b.get("tool_use_id") or ""))
+            if r.get("type") == "assistant" and isinstance(r.get("uuid"), str) and r["uuid"] and not pending:
+                new = {"uuid": r["uuid"], "offset": at}
+        if new is None and not held:
+            new = {"uuid": "", "offset": start}
+        if new is not None:
+            write_json(_position_path(project, session), new)
+        return len(events)
+
+
+def _own_events(project, session):
+    """The session's own writer file, read directly (the hook reads nothing else of the log)."""
+    path = os.path.join(project.home, "log", writer_id(session).replace("/", ".") + ".jsonl")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [e for e in map(parse_event, f) if e]
+    except OSError:
+        return []
+
+
+def record_session(project, session, tpath, event):
+    """The hook's work for one session (§4). Membership on sight, as
+    reconciliation decides it: a seat whose record is not retired, or a
+    session the harness records as `interactive` or `bg`, and never an
+    internal fork. SessionStart joins a member and sets its export position;
+    Stop joins it if it is not yet (its harness record may not have existed
+    at its start) and exports. A session the harness has not registered yet
+    at its start is not joined on no evidence, but its position is set, so
+    its first turn counts whole at its Stop. A session that is not a member
+    records nothing."""
+    seat = next((s for s in seats() if s["current"] == session), None)
+    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    if peer is not None and str(peer.get("pid")) in internal_pids():
+        return
+    if seat is None and peer is None:
+        if event == "SessionStart":
+            position_init(project, session, tpath)
+        return
+    if not joinable(seat, peer):
+        return
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        join_on_sight(project, session, seat, peer, True)
+        own = _own_events(project, session)
+    if event == "SessionStart":
+        position_init(project, session, tpath)
+        return
+    if event != "Stop" or latest_membership(own) != "joined":
+        return
+    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
+    if not alias:
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
+        alias = str(named[-1]["alias"]) if named else session[:8]
+    export_host(project, session, tpath, alias)
+
+
+def cmd_record(_a):
+    """The hook's verb: one Stop or SessionStart payload on stdin. Records
+    nothing for an internal fork, a session in no project, or a non-member;
+    a failure is a line in daemon.log, never an exit that blocks a turn."""
+    if os.environ.get("SMNS_INTERNAL"):
+        return
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        return
+    if not isinstance(payload, dict):
+        return
+    session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
+    tpath, event = str(payload.get("transcript_path") or ""), str(payload.get("hook_event_name") or "")
+    if not (UUID_RE.match(session) and cwd and tpath):
+        return
+    try:
+        project = resolve_project(cwd)
+        if project is not None:
+            record_session(project, session, tpath, event)
+    except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
+        try:
+            daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
+        except OSError:
+            pass
+
+
+def host_line(e, answer=None):
+    """One host event as `chat --host` prints it; a question with its answer
+    under it, or marked open."""
+    head = "%s %s" % (e["ts"][11:19], e.get("from", ""))
+    if e["kind"] == "question":
+        text = e.get("text")
+        asked = " / ".join(str(t) for t in text) if isinstance(text, list) else str(text or "")
+        out = ["%s asks%s: %s" % (head, "" if answer else " (open)", asked)]
+        if e.get("choices"):
+            out.append("    choices: " + " · ".join(str(c) for c in e["choices"]))
+        if answer:
+            lines = str(answer.get("text") or "").split("\n")
+            out += ["    answered: " + lines[0]] + ["      " + line for line in lines[1:]]
+        return "\n".join(out)
+    if e["kind"] == "answered":
+        head = "%s answered (call %s)" % (head, e.get("src", ""))
+    lines = str(e.get("text") or "").split("\n")
+    return "\n".join(["%s: %s" % (head, lines[0])] + ["    " + line for line in lines[1:]])
+
+
+def chat_host(project, a):
+    """What the members sent their human: messages, and questions with their
+    answers under them, an open one marked open. A view, not a cursor read:
+    the last 30 (-n N, --since TS); the reader's chat cursor never moves."""
+    events = log_read(project, kinds=HOST_KINDS)
+    asked = {e["src"] for e in events if e["kind"] == "question" and e.get("src")}
+    answers = {}
+    for e in events:
+        if e["kind"] == "answered" and e.get("src") in asked:
+            answers.setdefault(e["src"], e)
+    pool = [e for e in events if e["kind"] != "answered" or e.get("src") not in asked]
+    if a.since is not None:
+        since = normalize_ts(a.since)
+        window, head = [e for e in pool if e["ts"] >= since], "since %s" % a.since
+    else:
+        n = a.n if a.n is not None else 30
+        window, head = pool[-n:], "last %d of %d" % (min(n, len(pool)), len(pool))
+    if a.json:
+        for e in window:
+            print(json.dumps(e, ensure_ascii=False))
+            if e["kind"] == "question" and e.get("src") in answers:
+                print(json.dumps(answers[e["src"]], ensure_ascii=False))
+        return
+    print("host %s · %s" % (project.name, head))
+    if len(pool) > len(window) and a.since is None:
+        print("+%d earlier — sminos chat %s --host -n %d" % (len(pool) - len(window), project.name, len(pool)))
+    for e in window:
+        print(host_line(e, answers.get(e.get("src")) if e["kind"] == "question" else None))
+    if not window:
+        print("(no messages to the host)")
+
+
+# ------------------------------------------------------------ the in-charge line
+#
+# `charge` sets a member's line; `derive` asks a session what it is in charge
+# of by forking it headless, and the fork is internal: SMNS_INTERNAL keeps the
+# hook from recording it, and $SMINOS_HOME/internal/<pid>, written before the
+# fork starts, keeps reconciliation from joining it (§5).
+
+DERIVE_PROMPT = ("In one line: what is this session in charge of in this project — its standing responsibility, "
+                 "not its latest step? Answer with the line only.")
+DERIVE_MIN_PROMPTS = 10
+DERIVE_EVERY = 6 * 3600
+DERIVE_LINE_MAX = 120
+
+
+def cmd_charge(a):
+    """`charge [<member>] "<line>"`: the member's in-charge line, set. From a
+    session, with no member, its own. An empty line clears it."""
+    if len(a.args) > 2:
+        die('usage: sminos charge [<member>] "<one line>" — quote the line')
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    line = " ".join(a.args[-1].split())
+    if len(a.args) == 2:
+        target = find_target(a.args[0])
+        if target[0] == "none":
+            die("no seat or member matching '%s'" % a.args[0], EXIT_UNKNOWN)
+    elif not sid:
+        die('charge from a terminal names the member: sminos charge <member> "<one line>"')
+    else:
+        caller = caller_seat()
+        project = caller_project(caller)
+        me = next((m for m in (members(project) if project else []) if m.session == sid), None)
+        if me is None:
+            die("this session is no member of a project here: sminos charge <member> \"<one line>\"", EXIT_UNKNOWN)
+        target = ("seat", me.seat) if me.seat else ("member", project, me)
+    if target[0] == "seat":
+        s = target[1]
+        if not s["current"]:
+            die("%s/%s holds no session to be in charge" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+        lifecycle(seat_project(s), s["current"], "in-charge", text=line, source="set")
+        name = "%s/%s" % (s["group"], s["alias"])
+    else:
+        project, m = target[1], target[2]
+        if m.local:
+            lifecycle(project, m.session, "in-charge", text=line, source="set")
+        else:
+            # Another machine's session file is that machine's to write (§3).
+            try:
+                _append(project, writer_id(sid or None),
+                        [{"kind": "in-charge", "session": m.session, "text": line, "source": "set"}])
+            except OSError as e:
+                die("the line of %s was not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
+        name = m.alias
+    print("%s in charge of: %s" % (name, line or "(cleared)"))
+
+
+class DeriveFailed(Exception):
+    def __init__(self, reason, stderr=""):
+        super().__init__(reason)
+        self.reason, self.stderr = reason, stderr
+
+
+def human_prompts(path, enough):
+    """How many prompts the human typed into a transcript, counted up to
+    `enough`: user records that are neither a tool's result, nor a delivery
+    (a peer's frame, a plugin's or a notification's prompt), nor meta."""
+    n = 0
+    with open(path, "rb") as f:
+        for line in f:
+            if b'"user"' not in line:
+                continue
+            r = _record(line)
+            if not r or r.get("type") != "user" or r.get("isMeta") or r.get("isSidechain"):
+                continue
+            origin = r.get("origin")
+            if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
+                continue
+            message = r.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not content or _blocks(r, "tool_result"):
+                continue
+            n += 1
+            if n >= enough:
+                break
+    return n
+
+
+def derive_refusal(project, m):
+    """Why a member is not derived, or "": only a local member with no set
+    line and no name its human gave, at least ten prompts from its human, and
+    no derived line in the last six hours (§5)."""
+    if not m.session:
+        return "it holds no session"
+    if not m.local:
+        return "it runs on %s" % m.machine
+    if m.charge_source == "set":
+        return "its line is set"
+    if m.charge_source == "name":
+        return "its human named it"
+    path = transcript_path(m.session)
+    if not path:
+        return "no transcript of it on this machine"
+    derived = latest_across_writers([e for e in log_read(project, kinds=("in-charge",))
+                                     if e.get("session") == m.session and e.get("source") == "derived"])
+    age = ts_age(derived["ts"]) if derived else None
+    if age is not None and age < DERIVE_EVERY:
+        return "derived %s ago" % short_age(age)
+    try:
+        n = human_prompts(path, DERIVE_MIN_PROMPTS)
+    except OSError as e:
+        return "its transcript is unreadable: %s" % e
+    if n < DERIVE_MIN_PROMPTS:
+        return "%d prompt(s) from its human, fewer than %d" % (n, DERIVE_MIN_PROMPTS)
+    return ""
+
+
+def member_cwd(project, m):
+    """Where a member's session runs — where its fork must start for
+    `--resume` to find the transcript."""
+    candidates = [(m.seat or {}).get("cwd"), (session_running(m.session) or {}).get("cwd")]
+    candidates += [e.get("cwd") for e in reversed(_own_events(project, m.session)) if e["kind"] == "joined"]
+    return next((c for c in candidates if isinstance(c, str) and c and os.path.isdir(c)), project.root or os.getcwd())
+
+
+def answer_line(text):
+    """The fork's answer as an in-charge line: its marks stripped, its first
+    line, at most 120 characters."""
+    spans = extract_marks(text)
+    text = sminos_marks.TAG.sub("", spans[0]["text"] if spans else text)
+    return next((x.strip() for x in text.splitlines() if x.strip()), "")[:DERIVE_LINE_MAX]
+
+
+def sweep_internal():
+    """Markers of internal forks older than a day: their forks are long gone."""
+    d = os.path.join(root(), "internal")
+    for name in (os.listdir(d) if os.path.isdir(d) else ()):
+        path = os.path.join(d, name)
+        try:
+            if time.time() - os.path.getmtime(path) > 86400:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def derive_line(project, m):
+    """Fork the member's session headless and return its one-line answer.
+    The fork starts behind a gate: its pid is marked internal before it can
+    register; its transcript and the marker are deleted whatever the outcome."""
+    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--tools", "", "--output-format", "json",
+            DERIVE_PROMPT]
+    gate_r, gate_w = os.pipe()
+    marker = ""
+    out = err = ""
+    obj = None
+    try:
+        try:
+            proc = subprocess.Popen(["/bin/sh", "-c", 'read -r _ <&%d; exec %d<&-; exec "$@"' % (gate_r, gate_r), "sh"]
+                                    + args, cwd=member_cwd(project, m), env={**os.environ, "SMNS_INTERNAL": "1"},
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, pass_fds=(gate_r,))
+        except OSError as e:
+            raise DeriveFailed("the fork did not start: %s" % e)
+        finally:
+            os.close(gate_r)
+        os.makedirs(os.path.join(root(), "internal"), mode=0o700, exist_ok=True)
+        marker = os.path.join(root(), "internal", str(proc.pid))
+        try:
+            open(marker, "w").close()
+        except OSError as e:
+            proc.kill()
+            proc.communicate()
+            raise DeriveFailed("its fork could not be marked internal: %s" % e)
+        os.write(gate_w, b"\n")
+        os.close(gate_w)
+        gate_w = -1
+        timeout = float(os.environ.get("SMINOS_DERIVE_TIMEOUT") or 120)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            raise DeriveFailed("the fork timed out after %ds" % timeout, err)
+        for raw in reversed((out or "").splitlines()):
+            if raw.strip().startswith("{"):
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    obj = d
+                    break
+        if proc.returncode != 0 or obj is None or obj.get("is_error"):
+            raise DeriveFailed("the fork failed (exit %d)" % proc.returncode, err)
+        line = answer_line(str(obj.get("result") or ""))
+        if not line:
+            raise DeriveFailed("the fork answered nothing", err)
+        return line
+    finally:
+        if gate_w != -1:
+            os.close(gate_w)
+        fork = str((obj or {}).get("session_id") or "")
+        if UUID_RE.match(fork) and fork != m.session:
+            path = transcript_path(fork)
+            if path:
+                os.unlink(path)
+        if marker:
+            try:
+                os.unlink(marker)
+            except FileNotFoundError:
+                pass
+
+
+def cmd_derive(a):
+    """`derive <member> | --all`: ask a local member what it is in charge of,
+    by a headless internal fork, and record the answer as a derived line —
+    only where §5 allows (derive_refusal). --all: every local member of every
+    project known here, as the daemon runs it hourly."""
+    if bool(a.member) == bool(a.all):
+        die("usage: sminos derive <member> | --all")
+    sweep_internal()
+    if a.all:
+        targets = [(p, m) for p in known_projects() for m in members(p) if m.local]
+    else:
+        target = find_target(a.member)
+        if target[0] == "none":
+            die("no seat or member matching '%s'" % a.member, EXIT_UNKNOWN)
+        if target[0] == "seat":
+            s = target[1]
+            p = seat_project(s)
+            m = next((x for x in members(p) if x.seat and x.seat["seat_id"] == s["seat_id"]), None)
+            if m is None:
+                die("%s/%s holds no member session to ask" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+            targets = [(p, m)]
+        else:
+            targets = [target[1:]]
+    failed = 0
+    for project, m in targets:
+        why = derive_refusal(project, m)
+        if why:
+            print("%s: not derived — %s" % (m.alias, why))
+            continue
+        try:
+            line = derive_line(project, m)
+        except DeriveFailed as e:
+            failed += 1
+            tail = [x for x in (e.stderr or "").splitlines() if x.strip()][-5:]
+            sys.stderr.write("sminos: derive %s failed: %s; nothing recorded\n%s" % (
+                m.alias, e.reason, "".join("    %s\n" % x for x in tail)))
+            continue
+        lifecycle(project, m.session, "in-charge", text=line, source="derived")
+        print("%s: %s" % (m.alias, line))
+    if failed:
+        sys.exit(1)
 
 
 # ------------------------------------------------------------------ project verb
@@ -4194,7 +4954,7 @@ def state_column(m):
 
 
 def list_row(m, label, width, state_width):
-    rest = [m.charge] if m.charge else []
+    rest = [charge_shown(m)] if charge_shown(m) else []
     if m.status:
         rest.append("· now: " + m.status)
     if m.by:
@@ -4409,7 +5169,20 @@ def build_parser():
     chat.add_argument("--since", default=None)
     chat.add_argument("--kind", action="append", default=None)
     chat.add_argument("--json", action="store_true")
+    chat.add_argument("--host", action="store_true")
     chat.set_defaults(fn=cmd_chat)
+
+    cg = sub.add_parser("charge", add_help=False)
+    cg.add_argument("args", nargs="+")
+    cg.set_defaults(fn=cmd_charge)
+
+    dv = sub.add_parser("derive", add_help=False)
+    dv.add_argument("member", nargs="?", default="")
+    dv.add_argument("--all", action="store_true")
+    dv.set_defaults(fn=cmd_derive)
+
+    rec = sub.add_parser("record", add_help=False)
+    rec.set_defaults(fn=cmd_record)
 
     pj = sub.add_parser("project", add_help=False)
     psub = pj.add_subparsers(dest="op")

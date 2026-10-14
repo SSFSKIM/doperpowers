@@ -1,5 +1,5 @@
 {
-  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the to-human view of the transcript, mcp__doperpowers__AskUserQuestion (the built-in's input plus async, which withdraws the built-in), the kairos button in the prompt footer, the agents pane, and the model's own compact / context_usage tools (compaction at the end of the turn that asked, then the resume prompt it wrote). to-human-stream.sh (MessageDisplay) draws the same <message> mark while a message streams; old <to-human>, <essential>, <need-input> and <insight> marks read as aliases of it. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. compact-instructions.md: PreCompact prints it, so every compaction's summary is written as the note a memory-reset self resumes from",
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the to-human view of the transcript, mcp__doperpowers__AskUserQuestion (the built-in's input plus async, which withdraws the built-in), the kairos button in the prompt footer, the agents pane, and the model's own compact / context_usage tools (compaction at the end of the turn that asked, then the resume prompt it wrote). to-human-stream.sh (MessageDisplay) draws the same <message> mark while a message streams; old <to-human>, <essential>, <need-input> and <insight> marks read as aliases of it. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. compact-instructions.md: PreCompact prints it, so every compaction's summary is written as the note a memory-reset self resumes from. smns-record.sh (SessionStart, Stop): a session in a project joins its sminos log at its start, and its <message> marks and async asks reach the log as messages to the host",
   "modules": [
     "./mods/register.tsx"
   ],
@@ -11,6 +11,25 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/kairos.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/smns-record.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/smns-record.sh\""
           }
         ]
       }

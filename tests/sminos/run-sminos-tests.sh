@@ -135,10 +135,11 @@ esac
 
 args=("$@")
 prompt="${args[$((${#args[@]} - 1))]}"
-has_bg=0; name=""; resume_uuid=""; worktree=""; i=0
+has_bg=0; fork=0; name=""; resume_uuid=""; worktree=""; i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
     --bg) has_bg=1 ;;
+    --fork-session) fork=1 ;;
     -n) i=$((i + 1)); name="${args[$i]}" ;;
     --resume) i=$((i + 1)); resume_uuid="${args[$i]}" ;;
     --worktree) i=$((i + 1)); worktree="${args[$i]}" ;;
@@ -155,6 +156,39 @@ open(sys.argv[1], 'a').write(json.dumps(
     {"type": "assistant", "message": {"content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
 PY
 }
+
+# `-p --resume <id> --fork-session …` (derive's internal fork): a copy of the
+# parent's transcript as a new session, registered while it runs, the hook run
+# at its start and stop as the harness would, and the JSON result on stdout.
+# STUB_FORK_RESULT is its answer, STUB_FORK_FAIL=1 a failed run, and
+# STUB_FORK_LIST=1 has it list the project's members while it runs.
+if [ $fork -eq 1 ]; then
+  echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no)" >> "$STUB_STATE/log/calls.log"
+  n=$(cat "$STUB_STATE/counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_STATE/counter"
+  fork_uuid="$(printf '%08x' "$n")-f0f0-4000-8000-00000000f0f0"
+  parent="$(ls "$HOME"/.claude/projects/*/"$resume_uuid.jsonl" 2>/dev/null | head -1 || true)"
+  f="$(tx_path "$fork_uuid")"; mkdir -p "$(dirname "$f")"
+  if [ -n "$parent" ]; then cp "$parent" "$f"; else : > "$f"; fi
+  printf '{"pid":%s,"sessionId":"%s","name":"stubfork","kind":"interactive","status":"busy","cwd":"%s"}\n' \
+    "$$" "$fork_uuid" "$PWD" > "$HOME/.claude/sessions/stubfork-$$.json"
+  trap 'rm -f "$HOME/.claude/sessions/stubfork-$$.json"' EXIT
+  answer="${STUB_FORK_RESULT:-<message>owns the stub tool</message>}"
+  hook() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"%s"}' \
+    "$fork_uuid" "$f" "$PWD" "$1" "$2" | CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" "$STUB_PLUGIN_ROOT/hooks/smns-record.sh"; }
+  hook SessionStart fork
+  python3 - "$f" "$answer" <<'PY'
+import json, sys
+open(sys.argv[1], 'a').write(json.dumps({"type": "assistant", "uuid": "f0f0f0f0-answer", "isSidechain": False,
+    "message": {"role": "assistant", "content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
+PY
+  hook Stop ""
+  if [ "${STUB_FORK_LIST:-0}" = "1" ]; then "$STUB_SMINOS" list --json > "$STUB_STATE/fork-list.json" 2>&1 || true; fi
+  is_error=false; [ "${STUB_FORK_FAIL:-0}" = "1" ] && is_error=true
+  python3 -c 'import json, sys; print(json.dumps({"type": "result", "is_error": sys.argv[3] == "true", "result": sys.argv[1], "session_id": sys.argv[2]}))' \
+    "$answer" "$fork_uuid" "$is_error"
+  if [ "$is_error" = "true" ]; then printf 'stub: warming up\nstub: the fork exploded\n' >&2; exit 1; fi
+  exit 0
+fi
 
 if [ $has_bg -eq 1 ]; then
   # Transport-env snapshot: what the launched agent would actually inherit,
@@ -239,6 +273,8 @@ echo "Queued message 01a0aaaa-0000-7000-8000-000000000001 for thread $tid."
 STUB
 chmod +x "$CODEX_BIN/codex"
 export PATH="$STUB_BIN:$CODEX_BIN:$PATH"
+# What the stub's derive fork runs: the hook, and the CLI itself.
+export STUB_PLUGIN_ROOT="$REPO_ROOT" STUB_SMINOS="$SMINOS"
 
 # A stand-in for a live session's inbox socket: appends every frame it
 # receives to inbox.received, one connection at a time, forever.
@@ -3057,6 +3093,17 @@ rows = [d for d in json.load(sys.stdin) if d["alias"] == sys.argv[1]]
 v = rows[0].get(sys.argv[2]) if rows else "<no row>"
 print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
 }
+# The Stop / SessionStart hook, run as the harness runs it: one JSON payload on stdin.
+HOOK="$REPO_ROOT/hooks/smns-record.sh"
+# HOOK_OUT is everything it printed (the harness would inject a SessionStart
+# hook's stdout as context), HOOK_RC its exit code.
+hook_run() { # event session cwd transcript [source]
+  set +e
+  HOOK_OUT="$(printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"%s"}' \
+    "$2" "$4" "$3" "$1" "${5:-}" | CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$HOOK" 2>&1)"
+  HOOK_RC=$?
+  set -e
+}
 cd "$R"
 
 # Acceptance 1: two interactive sessions in the project list under its name,
@@ -3184,18 +3231,21 @@ assert_rc 2 "$RC" "seat add --parent is gone"
 run "$SMINOS" remove pf-repo/added
 assert_equals "$(events_of "$SAS")" "joined retired:retire " "remove records retired"
 
-# Lifecycle order is by seq within the session's own file, never by ts: a
-# joined, then an operator retire and a resume under a clock stepped back.
+# Lifecycle order is by seq within the session's own file, never by ts: the
+# hook's joined at session start, then an operator retire and a resume under
+# a clock stepped back.
 HK=2b000008-0000-4000-8000-00000000002b
 printf '{"uuid":"%s","current":"%s","alias":"hk","group":"pf-repo","status":"idle","cwd":"%s"}' \
   "$HK" "$HK" "$R" > "$SMINOS_HOME/$HK.json"
 chmod 600 "$SMINOS_HOME/$HK.json"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/pl-proj/$HK.jsonl"
+hook_run SessionStart "$HK" "$R" "$HOME/.claude/projects/pl-proj/$HK.jsonl" startup
+assert_equals "$(events_of "$HK")" "joined " "the hook joins a seat's session at its start, at the real time"
 CLOCK="$(python3 - "$SMINOS_PY" "$PF" "$HK" 2>&1 <<'PY_CLOCK'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 p, hk = mod.find_project(sys.argv[2]), sys.argv[3]
-joined = hk in {m.session for m in mod.members(p)}        # reconciliation joins it at the real time
+joined = hk in {m.session for m in mod.members(p)}        # the joined of the hook stands; nothing is reconciled
 real_now = mod.now
 mod.now = lambda ms=False: "2001-01-01T00:00:00.000Z" if ms else real_now(ms)   # the clock steps back
 mod.main(["retire", hk])
@@ -3215,6 +3265,7 @@ PY_CLOCK
 )"
 assert_equals "$(printf '%s\n' "$CLOCK" | tail -1)" "True True True" "joined, retired, re-joined in seq order though the later two carry earlier ts"
 assert_equals "$(printf '%s\n' "$CLOCK" | tail -2 | head -1)" "second second line" "a writer's later status and in-charge line win by seq, though they carry an earlier ts"
+assert_equals "$(events_of "$HK" | cut -d' ' -f1-3)" "joined retired:retire joined" "the hook's joined is the first of the session's own sequence"
 
 # Reach is the project: a name resolves in the working directory's project;
 # from no project, across every project known here.
@@ -3436,6 +3487,368 @@ assert_contains "$OUT" '"alias": "sfail"' "reconciliation repairs the membership
 assert_contains "$(head -1 "$PFLOG/testhost.$(field "$(seat_id_of sfail)" current).jsonl")" '"kind": "joined"' "joining it into the log"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/pf-"*.json
+
+# ---- messages to the host and the in-charge line --------------------------------
+# A session's <message> marks and async asks reach the project's log through
+# the Stop / SessionStart hook (§4); every member has one in-charge line, set,
+# named, derived by a headless internal fork, or the transcript's title (§5).
+echo "messages to the host and the in-charge line:"
+export SMINOS_HOME="$TEST_ROOT/hp-registry"
+mkdir -m 700 "$SMINOS_HOME"
+rm -f "$HOME/.claude/sessions/"*.json
+unset CLAUDE_CODE_SESSION_ID
+R3="$TEST_ROOT/hp-repo"
+mkdir -p "$R3"
+gitq init -q "$R3"
+(cd "$R3" && "$SMINOS" project init --name hostdemo >/dev/null)
+HP="$(smns_id "$R3")"
+HPLOG="$SMINOS_HOME/projects/$HP/log"
+TXD="$HOME/.claude/projects/hp-proj"
+mkdir -p "$TXD"
+cd "$R3"
+
+# The mark grammar is the to-human mod's, ported: its own parse fixtures pin it.
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*) pass "mark parity: ${line#ok }" ;;
+    *) fail "mark parity: ${line#FAIL }" ;;
+  esac
+done < <(python3 "$SCRIPT_DIR/marks_parity.py" "$REPO_ROOT/skills/sminos/scripts" 2>&1)
+
+# Transcript records as the harness stores them (the shapes the ask design and
+# a live 2.1.296 transcript record).
+cat > "$TEST_ROOT/tx.py" <<'PY_TX'
+import json, sys
+ASK = "mcp__doperpowers__AskUserQuestion"
+ASYNC_RESULT = ("Your questions are waiting for the human; this call does not wait for them. Their answer will "
+                "reach you in a later message that quotes each question. Go on with work that does not depend on it.")
+HEAD = "The human responded to your async AskUserQuestion (call %s): %s"
+path, kind, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+base = {"isSidechain": False, "uuid": args[0] if args else ""}
+if kind == "prompt":
+    rec = {"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": args[1]}}
+elif kind == "asst":
+    rec = {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": args[1]}]}}
+elif kind == "peer":
+    rec = {"type": "user", "origin": {"kind": "peer", "name": "other"}, "message": {"role": "user", "content":
+           '<cross-session-message from="uds:/tmp/x.sock" from-name="other">\n%s\n</cross-session-message>' % args[1]}}
+elif kind == "ask":   # uuid call async|blocking|native questions-json
+    inp = {"questions": json.loads(args[3])}
+    if args[2] != "native":
+        inp["async"] = args[2] == "async"
+    rec = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": args[1], "name": "AskUserQuestion" if args[2] == "native" else ASK, "input": inp}]}}
+elif kind == "result":   # uuid call text|ASYNC
+    rec = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": args[1], "content": ASYNC_RESULT if args[2] == "ASYNC" else args[2]}]}}
+elif kind == "deliver-att":
+    rec = {"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [HEAD % (args[1], args[2])],
+                                                "hookName": "tool.call", "hookEvent": "PostToolUse"}}
+elif kind == "deliver-prompt":
+    rec = {"type": "user", "origin": {"kind": "plugin", "name": "doperpowers"}, "message": {"role": "user", "content":
+           "The doperpowers plugin sent a message:\n" + HEAD % (args[1], args[2]) + "\n\nThis is how Claude Code "
+           "surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. "
+           "Address the message above."}}
+elif kind == "title":
+    rec, base = {"type": "ai-title", "aiTitle": args[0]}, {}
+elif kind == "sidechain":
+    rec = {"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "content": [{"type": "text", "text": args[1]}]}}
+    base.pop("isSidechain")
+else:
+    sys.exit("tx.py: unknown kind " + kind)
+with open(path, "a") as f:
+    f.write(json.dumps({**base, **rec}, ensure_ascii=False) + "\n")
+PY_TX
+tx() { python3 "$TEST_ROOT/tx.py" "$@"; }
+hp_peer() { # name session nameSource kind — a running harness session in the project
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"%s","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "$4" "$R3" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/hp-$1.json"
+}
+hp_events() { # session → "kind[:src]" words from its own writer file
+  python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    e = json.loads(l)
+    print(e["kind"] + (":" + e["src"] if e.get("src") else ""), end=" ")' "$HPLOG/testhost.$1.jsonl" 2>/dev/null || true
+}
+host_count() { "$SMINOS" chat hostdemo --host --json 2>/dev/null | grep -c '"kind"' || true; }
+
+if python3 - "$REPO_ROOT/hooks/hooks.json" <<'PY_WIRED'
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+def wired(event, matcher=None):
+    return any("smns-record.sh" in h["command"] and (matcher is None or e.get("matcher") == matcher)
+               for e in hooks.get(event, []) for h in e["hooks"])
+assert wired("SessionStart", "startup|resume|clear|fork") and wired("Stop")
+PY_WIRED
+then pass "hooks.json runs the hook on Stop and on SessionStart (startup|resume|clear|fork)"
+else fail "hooks.json runs the hook on Stop and on SessionStart (startup|resume|clear|fork)"; fi
+
+# A session starts: the hook joins it and sets its export position at the
+# transcript's start (the file does not exist yet).
+HA=5a000001-0000-4000-8000-00000000005a
+TA="$TXD/$HA.jsonl"
+hp_peer ha "$HA" user interactive
+hook_run SessionStart "$HA" "$R3" "$TA" startup
+assert_equals "$(hp_events "$HA")" "joined " "the hook joins a session at its start"
+assert_contains "$(cat "$HPLOG/testhost.$HA.jsonl")" '"alias": "ha", "name_source": "user"' "under its harness name"
+assert_file_exists "$SMINOS_HOME/projects/$HP/cursors/export/$HA.json" "and initialises its export position"
+assert_rc 0 "$HOOK_RC" "the hook exits 0"
+assert_equals "$HOOK_OUT" "" "and prints nothing: a SessionStart hook's output would be read as context"
+
+# One turn: marks in every form the grammar knows, a peer frame mid-turn.
+tx "$TA" prompt a1000001 "parse it"
+tx "$TA" asst a1000002 'Reading.
+<message>done with the parser</message>
+And `<message>not this</message>` is an example.'
+tx "$TA" asst a1000003 'An example:
+```
+<message>fenced, not sent</message>
+```
+<to-human>an old mark</to-human>'
+tx "$TA" peer a1000004 "your change renames a column I read"
+tx "$TA" asst a1000005 '<message>outer <insight>inner</insight> tail</message>
+<message>left open to the end'
+tx "$TA" sidechain a1000006 '<message>a subagent writes this</message>'
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(hp_events "$HA")" "joined message:a1000002#0 message:a1000003#0 message:a1000005#0 message:a1000005#1 message:a1000005#2 message:a1000005#3 " \
+  "Stop records each span as a message, src record uuid and span index; marks after a peer frame too"
+run "$SMINOS" chat hostdemo --host
+assert_rc 0 "$RC" "chat --host exits 0"
+assert_contains "$OUT" "ha: done with the parser" "chat --host prints the message attributed to its session"
+assert_not_contains "$OUT" "not this" "a backticked tag is not a message to the host"
+assert_not_contains "$OUT" "fenced, not sent" "nor a fenced one"
+assert_contains "$OUT" "ha: an old mark" "an old <to-human> mark records as a message"
+assert_contains "$OUT" "ha: inner" "a nested alias mark is a run of its own"
+assert_contains "$OUT" "ha: tail" "and the outer mark resumes after it"
+assert_contains "$OUT" "ha: left open to the end" "an unclosed mark runs to the end of the text"
+assert_not_contains "$OUT" "a subagent writes this" "a sidechain record is not the session's"
+assert_contains "$(cat "$HPLOG/testhost.$HA.jsonl")" '"kind": "message", "from": "ha", "to": "host", "text": "done with the parser", "src": "a1000002#0"' \
+  "a message event carries from, to host, text, and src"
+BEFORE="$(hp_events "$HA")"
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(hp_events "$HA")" "$BEFORE" "a Stop replayed over the same transcript appends nothing"
+run "$SMINOS" chat hostdemo
+assert_not_contains "$OUT" "done with the parser" "the chat itself carries no host message"
+
+# Asks: an async ask records a question with its labels; its delivery records
+# the answer under the same src; a blocking ask, plugin or native, records nothing.
+Q1='[{"question":"Which backend?","header":"Backend","multiSelect":false,"options":[{"label":"Postgres","description":"running"},{"label":"SQLite","description":"a file"}]}]'
+tx "$TA" prompt a2000001 "ask me"
+tx "$TA" ask a2000002 toolu_async1 async "$Q1"
+tx "$TA" result a2000003 toolu_async1 ASYNC
+tx "$TA" ask a2000004 toolu_block1 blocking "$Q1"
+tx "$TA" result a2000005 toolu_block1 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.'
+tx "$TA" ask a2000006 toolu_native native "$Q1"
+tx "$TA" result a2000007 toolu_native 'User has answered your questions: "Which backend?"="Postgres".'
+tx "$TA" ask a2000008 toolu_refused async '[{"question":"Pick?","header":"P","multiSelect":false,"options":[{"label":"Only","description":""}]}]'
+tx "$TA" result a2000009 toolu_refused '<tool_use_error>a question with fewer than 2 options</tool_use_error>'
+tx "$TA" asst a200000a "Asked; going on."
+hook_run Stop "$HA" "$R3" "$TA"
+assert_contains "$(hp_events "$HA")" "question:toolu_async1 " "an async ask the tool accepted records a question, src its call id"
+assert_not_contains "$(hp_events "$HA")" "toolu_block1" "a blocking ask records nothing"
+assert_not_contains "$(hp_events "$HA")" "toolu_native" "nor the native AskUserQuestion"
+assert_not_contains "$(hp_events "$HA")" "toolu_refused" "nor an async call the tool refused"
+assert_contains "$(grep toolu_async1 "$HPLOG/testhost.$HA.jsonl")" '"text": ["Which backend?"], "choices": ["Postgres", "SQLite"]' \
+  "the question carries its text and its option labels"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "ha asks (open): Which backend?" "chat --host shows the question, open"
+assert_contains "$OUT" "Postgres · SQLite" "with both labels"
+tx "$TA" prompt a3000001 "later"
+tx "$TA" deliver-att a3000002 toolu_async1 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.'
+tx "$TA" asst a3000003 "Taking SQLite."
+hook_run Stop "$HA" "$R3" "$TA"
+assert_contains "$(hp_events "$HA")" "question:toolu_async1 " "the question stays"
+assert_contains "$(hp_events "$HA")" "answered:toolu_async1 " "its delivery records answered with the same src"
+assert_contains "$(grep '"kind": "answered"' "$HPLOG/testhost.$HA.jsonl")" '"from": "ha", "src": "toolu_async1", "text": "Your questions have been answered: \"Which backend?\"=\"SQLite\". You can now continue with these answers in mind."' \
+  "carrying the engine's result text"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "ha asks: Which backend?" "an answered question is no longer open"
+assert_contains "$OUT" '    answered: Your questions have been answered: "Which backend?"="SQLite".' "and its answer stands under it"
+# A delivery the plugin submitted as a prompt, framed by the engine.
+tx "$TA" ask a3000004 toolu_async2 async "$Q1"
+tx "$TA" result a3000005 toolu_async2 ASYNC
+tx "$TA" asst a3000006 "Asked again."
+tx "$TA" deliver-prompt a3000007 toolu_async2 'Your questions have been answered: "Which backend?"="Postgres". You can now continue with these answers in mind.'
+tx "$TA" asst a3000008 "Taking Postgres."
+hook_run Stop "$HA" "$R3" "$TA"
+assert_contains "$(grep '"src": "toolu_async2"' "$HPLOG/testhost.$HA.jsonl" | grep answered)" '=\"Postgres\". You can now continue with these answers in mind."' \
+  "a plugin-submitted delivery records its answer without the engine's framing"
+assert_equals "$(grep -c 'This is how Claude Code' "$HPLOG/testhost.$HA.jsonl" || true)" "0" "the framing is not part of it"
+
+# An export that died after the first of two spans in one record: the retry
+# appends only the second.
+tx "$TA" asst a4000001 '<message>first of two</message> <message>second of two</message>'
+python3 - "$SMINOS_PY" "$HP" "$HA" <<'PY_HALF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, s = mod.find_project(sys.argv[2]), sys.argv[3]
+mod.log_append_batch(p, mod.writer_id(s), [{"kind": "message", "from": "ha", "to": "host", "text": "first of two", "src": "a4000001#0"}])
+PY_HALF
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(grep -c '"src": "a4000001#0"' "$HPLOG/testhost.$HA.jsonl")" "1" "the span already recorded is not recorded again"
+assert_equals "$(grep -c '"src": "a4000001#1"' "$HPLOG/testhost.$HA.jsonl")" "1" "and the one after it is recorded once"
+
+# A mark written before the process died, never exported: a resume keeps the
+# position, and the next Stop exports it once.
+tx "$TA" asst a5000001 '<message>written before the crash</message>'
+hook_run SessionStart "$HA" "$R3" "$TA" resume
+assert_not_contains "$(cat "$HPLOG/testhost.$HA.jsonl")" "written before the crash" "a SessionStart exports nothing"
+tx "$TA" prompt a5000002 "back"
+tx "$TA" asst a5000003 "Resumed."
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(grep -c 'written before the crash' "$HPLOG/testhost.$HA.jsonl")" "1" "the resumed session's next Stop exports it once"
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(grep -c 'written before the crash' "$HPLOG/testhost.$HA.jsonl")" "1" "and never again"
+
+# No position at all (the plugin arrived mid-session): the first Stop exports
+# the trailing run of assistant records and nothing before the peer frame.
+HB=5b000002-0000-4000-8000-00000000005b
+TB="$TXD/$HB.jsonl"
+hp_peer hb "$HB" derived interactive
+tx "$TB" prompt b1000001 "go"
+tx "$TB" asst b1000002 '<message>before the frame</message>'
+tx "$TB" peer b1000003 "a peer interrupts"
+tx "$TB" asst b1000004 '<message>after the frame</message>'
+hook_run Stop "$HB" "$R3" "$TB"
+assert_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "after the frame" "a first Stop with no position exports the trailing run"
+assert_not_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "before the frame" "and nothing before the peer frame"
+assert_equals "$(hp_events "$HB" | cut -d' ' -f1)" "joined" "joining the session first"
+tx "$TB" asst b1000005 '<message>next turn</message>'
+hook_run Stop "$HB" "$R3" "$TB"
+assert_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "next turn" "from there the position carries on"
+assert_not_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "before the frame" "and the earlier mark stays out"
+# An answer to a question the log never held (asked before the plugin came) stands alone.
+tx "$TB" deliver-att b1000006 toolu_orphan 'Your questions have been answered: "Old?"="Yes".'
+tx "$TB" asst b1000007 "Noted."
+hook_run Stop "$HB" "$R3" "$TB"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" 'hb answered (call toolu_orphan): Your questions have been answered: "Old?"="Yes".' "an answer with no question in the log is shown on its own"
+run "$SMINOS" chat hostdemo --host --kind message
+assert_rc 2 "$RC" "chat --host takes no --kind"
+
+# Who is not a member records nothing: another tool's headless run, a session
+# in no project, an internal fork.
+HS=5c000003-0000-4000-8000-00000000005c
+hp_peer tool "$HS" derived sdk
+tx "$TXD/$HS.jsonl" asst c1000001 '<message>from a tool run</message>'
+hook_run SessionStart "$HS" "$R3" "$TXD/$HS.jsonl" startup
+hook_run Stop "$HS" "$R3" "$TXD/$HS.jsonl"
+assert_file_absent "$HPLOG/testhost.$HS.jsonl" "a session of another kind records nothing"
+assert_rc 0 "$HOOK_RC" "and the hook exits 0"
+mkdir -p "$TEST_ROOT/hp-nowhere"
+NOW_HOMES="$(ls "$SMINOS_HOME/projects" | wc -l | tr -d ' ')"
+hook_run SessionStart "$HA" "$TEST_ROOT/hp-nowhere" "$TA" startup
+hook_run Stop "$HA" "$TEST_ROOT/hp-nowhere" "$TA"
+assert_equals "$(ls "$SMINOS_HOME/projects" | wc -l | tr -d ' ')" "$NOW_HOMES" "a session in no project records nothing anywhere"
+HI=5d000004-0000-4000-8000-00000000005d
+hp_peer fork "$HI" derived interactive
+tx "$TXD/$HI.jsonl" asst d1000001 '<message>a fork answers</message>'
+SMNS_INTERNAL=1 hook_run SessionStart "$HI" "$R3" "$TXD/$HI.jsonl" fork
+SMNS_INTERNAL=1 hook_run Stop "$HI" "$R3" "$TXD/$HI.jsonl"
+assert_file_absent "$HPLOG/testhost.$HI.jsonl" "an internal fork records nothing"
+rm -f "$HOME/.claude/sessions/hp-fork.json" "$HOME/.claude/sessions/hp-tool.json"
+
+# The harness record not yet written at SessionStart: no join on no evidence,
+# but the position is set, so the first turn's marks all count at its Stop.
+HC=5e000005-0000-4000-8000-00000000005e
+TC="$TXD/$HC.jsonl"
+hook_run SessionStart "$HC" "$R3" "$TC" startup
+assert_file_absent "$HPLOG/testhost.$HC.jsonl" "a session the harness has not registered yet is not joined at its start"
+assert_file_exists "$SMINOS_HOME/projects/$HP/cursors/export/$HC.json" "but its export position is set"
+hp_peer hc "$HC" derived interactive
+tx "$TC" prompt e1000001 "first"
+tx "$TC" asst e1000002 '<message>first mark</message>'
+tx "$TC" peer e1000003 "a frame"
+tx "$TC" asst e1000004 '<message>second mark</message>'
+hook_run Stop "$HC" "$R3" "$TC"
+assert_equals "$(hp_events "$HC")" "joined message:e1000002#0 message:e1000004#0 " "its Stop joins it and exports the whole first turn"
+
+# The in-charge line: charge beats a name the human set; the name beats a
+# derived line; a derived line beats the transcript's title.
+run "$SMINOS" list --json
+assert_equals "$(json_row ha charge)" "ha" "a user-named member's line is its name"
+assert_equals "$(json_row ha charge_source)" "name" "sourced from the name"
+run "$SMINOS" list
+assert_equals "$(printf '%s\n' "$OUT" | grep '^  ha ')" "  ha   idle" "list does not print the name twice"
+python3 - "$SMINOS_PY" "$HP" "$HA" <<'PY_DERIVED'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+mod.lifecycle(mod.find_project(sys.argv[2]), sys.argv[3], "in-charge", text="a derived guess", source="derived")
+PY_DERIVED
+assert_equals "$(json_row ha charge)" "ha" "the name beats a derived line"
+run "$SMINOS" charge hb "owns the GUI tool"
+assert_rc 0 "$RC" "the operator sets a member's line"
+assert_contains "$(tail -1 "$HPLOG/testhost.$HB.jsonl")" '"kind": "in-charge", "session": "'"$HB"'", "text": "owns the GUI tool", "source": "set"' \
+  "as a set in-charge event in the member's own file"
+run "$SMINOS" list
+assert_contains "$OUT" "owns the GUI tool" "list shows the line"
+assert_equals "$(json_row hb charge_source)" "set" "list --json says it was set"
+CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" charge "parser"
+assert_rc 0 "$RC" "a session sets its own line"
+run "$SMINOS" list
+assert_contains "$OUT" "  ha " "the member keeps its alias"
+assert_contains "$OUT" "parser" "and shows the line it set"
+assert_equals "$(json_row ha charge_source)" "set" "charge beats a name the human set"
+run "$SMINOS" charge "orphan line"
+assert_rc 2 "$RC" "the operator names the member"
+run "$SMINOS" charge hb "two" "three"
+assert_rc 2 "$RC" "a line given as several words is refused: quote it"
+tx "$TC" title "구글 테이크아웃 Gemini 대화 기록"
+assert_equals "$(json_row hc charge)" "구글 테이크아웃 Gemini 대화 기록" "with no line set, named, or derived, the transcript's latest title"
+assert_equals "$(json_row hc charge_source)" "title" "sourced from the title"
+
+# derive: a headless internal fork answers; nothing of it stays.
+HD=5f000006-0000-4000-8000-00000000005f
+TD="$TXD/$HD.jsonl"
+hp_peer hd "$HD" derived interactive
+for i in 1 2 3 4 5 6 7 8 9; do tx "$TD" prompt "f00000$i" "prompt $i"; tx "$TD" asst "f10000$i" "answer $i"; done
+run "$SMINOS" derive hd
+assert_contains "$OUT" "not derived" "a session with fewer than ten prompts is not derived"
+tx "$TD" prompt f0000010 "prompt 10"
+tx "$TD" peer f0000011 "a frame is not a prompt"
+run "$SMINOS" list --json
+MEMBERS_BEFORE="$(printf '%s' "$OUT" | grep -c '"session"')"
+HOST_BEFORE="$(host_count)"
+TX_BEFORE="$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')"
+: > "$STUB_STATE/fork-list.json"
+STUB_FORK_LIST=1 STUB_FORK_RESULT='<message>Keeps the stub tool working.
+A second line.</message>' run "$SMINOS" derive hd
+assert_rc 0 "$RC" "derive exits 0"
+assert_contains "$OUT" "hd: Keeps the stub tool working." "derive prints the one-line answer, marks stripped, first line"
+assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Keeps the stub tool working.", "source": "derived"' "and records it as a derived line"
+assert_equals "$(json_row hd charge_source)" "derived" "list --json says the line was derived"
+run "$SMINOS" list --json
+assert_equals "$(printf '%s' "$OUT" | grep -c '"session"')" "$MEMBERS_BEFORE" "list --json has the same number of members after"
+assert_not_contains "$(cat "$STUB_STATE/fork-list.json")" "stubfork" "nor during the fork: its session is marked internal"
+assert_contains "$(cat "$STUB_STATE/fork-list.json")" '"alias": "hd"' "while the members stay listed"
+assert_equals "$(host_count)" "$HOST_BEFORE" "the host stream has no new line"
+assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "the fork's transcript is deleted"
+assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "internal=1 marker=yes" "the fork runs with SMNS_INTERNAL set and its pid marked before it starts"
+assert_contains "$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)" "-p --resume $HD --fork-session --tools  --output-format json In one line: what is this session in charge of" \
+  "the fork is the headless resume the design names"
+assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker is removed"
+assert_equals "$(find "$HPLOG" -name '*f0f0*' | wc -l | tr -d ' ')" "0" "and the hook recorded nothing for the fork"
+run "$SMINOS" derive hd
+assert_contains "$OUT" "not derived" "a session derived within six hours is not derived again"
+for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TA" prompt "a90000$i" "prompt $i"; done
+run "$SMINOS" derive ha
+assert_contains "$OUT" "not derived" "a user-named session is never derived"
+run "$SMINOS" derive --all
+assert_equals "$(grep -c '"source": "derived"' "$HPLOG/testhost.$HA.jsonl")" "1" "nor by --all: ha holds only the derived line written by hand above"
+# A fork that fails prints its stderr's tail and writes nothing.
+HE=6a000007-0000-4000-8000-00000000006a
+TE="$TXD/$HE.jsonl"
+hp_peer he "$HE" derived interactive
+for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TE" prompt "g0000$i" "prompt $i"; done
+TX_BEFORE="$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')"
+STUB_FORK_FAIL=1 run "$SMINOS" derive he
+assert_rc 1 "$RC" "a failed fork exits 1"
+assert_contains "$OUT" "stub: the fork exploded" "printing the tail of its stderr"
+assert_not_contains "$(cat "$HPLOG/testhost.$HE.jsonl")" "in-charge" "and writing nothing"
+assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "its transcript is deleted all the same"
+assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker"
+cd "$WORK"
+rm -f "$HOME/.claude/sessions/hp-"*.json
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
