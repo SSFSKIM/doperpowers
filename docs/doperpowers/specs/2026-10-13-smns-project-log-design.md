@@ -1281,6 +1281,19 @@ Dispatch scripts: one `--brief` each.
   Deferred as minor: from a directory in no project, `list` shows a seat
   whose cwd moved after it joined under both projects.
   Date/Author: 2026-10-14, the controller, from the M2 task review.
+- Decision: M2 fix wave 2 (0ed8f8fb).
+  - Only a full seat or session id, or `group/alias` whose qualifier is
+    no known project, names a seat directly. `<project>/<alias>`, by
+    project name or id, resolves member-wide like a tag. A qualifier that
+    is both a project and a group is read as the project first, and as
+    the group only when the project has no match.
+  - Once a resume on a `say` fan-out has launched with the frame, the
+    delivery is settled and the fan-out continues. A failure to record
+    the re-join is then only a warning. A direct `send` still exits 1, but
+    only after settling.
+  - The spawn warning names only the event that failed and what that
+    event carries.
+  Date/Author: 2026-10-14, the M2 executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
