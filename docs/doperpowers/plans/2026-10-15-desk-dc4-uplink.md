@@ -462,6 +462,16 @@ produces nothing new for other children beyond the stream DC7 builds on.
   `hub.json` changes, as the loop restarts on its own code, so `hub
   enroll --replace` takes effect at once.
   Date/Author: 2026-10-15, the composite's writer.
+- Decision: For M3, from DC3's M2 review (relayed by the composite's
+  writer; endpoint shapes unchanged). A POST to `/machine/frames` that
+  answers anything but 200 — including a hub whose replies failed to
+  reach the stream — was not delivered: the uplink resends it or
+  reconnects and redoes the handshake, never assuming its frames landed
+  (inserts are idempotent on `(writer, seq)`). A POST in flight across a
+  reconnect is refused `stale-generation` and cannot touch the new
+  stream; after every reconnect the uplink sends `hello` for each project
+  on the new generation before it uploads anything.
+  Date/Author: 2026-10-15, the composite's writer (from DC3's M2 review).
 
 ## Surprises & Discoveries
 
