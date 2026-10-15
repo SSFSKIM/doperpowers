@@ -3,7 +3,8 @@
 
 `sminos daemon uplink` is its own process, which `daemon run` starts as a
 child and restarts when it exits; at most one runs per $SMINOS_HOME
-(`daemon/uplink.lock`), and it ends when its parent does. It reads the
+(`daemon/uplink.lock`), and it ends when its parent does (the parent names
+itself at spawn, so one already gone at startup counts). It reads the
 machine's credential (`daemon/hub.json`, written by enrollment; without it
 nothing connects) and holds DX2's connection, opened outbound: the stream
 down — `GET /machine/stream`, Server-Sent Events — and frames up by `POST
@@ -634,10 +635,22 @@ def take_lock():
     return lf
 
 
+def supervisor():
+    """The pid of the `daemon run` that spawned this uplink, as it said at
+    spawn; for an uplink started by hand, this process's parent now."""
+    said_ = os.environ.pop(daemon.UPLINK_PARENT_ENV, "")
+    return int(said_) if said_.isdigit() else os.getppid()
+
+
 def cmd_uplink(_a):
     """The uplink's process: one stream at a time, reconnecting with backoff
     (from 1 s, doubling to a minute, reset by a welcome), until SIGTERM or
-    until its parent is gone — an uplink outlives no `daemon run`."""
+    until its parent is not the `daemon run` that spawned it — an uplink
+    outlives no `daemon run`, even one gone before this process could look."""
+    parent = supervisor()
+    if os.getppid() != parent:
+        log("not started (pid %d): its daemon (pid %d) is gone" % (os.getpid(), parent))
+        return
     lf = take_lock()  # noqa: F841 — held for the process's life
     try:
         cred = load_credential()
@@ -647,7 +660,7 @@ def cmd_uplink(_a):
     if cred is None:
         log("no credential (%s): nothing to connect" % credential_path())
         return
-    parent, halt = os.getppid(), threading.Event()
+    halt = threading.Event()
     # SIGTERM from its supervisor; SIGINT from a terminal's ^C, which reaches a
     # foreground `daemon run`'s whole process group.
     for sig in (signal.SIGTERM, signal.SIGINT):

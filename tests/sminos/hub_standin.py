@@ -22,8 +22,8 @@ is <client-id> / <client-secret>.
   suffix past the machine's vector); `events` stores the machine's own
   writers' events once each at the next seq — a copy of a stored one passed
   over, a different payload at a stored position `refused` (`conflict`), a
-  writer not the machine's `refused` (`writer-not-yours`), a gap answered by
-  `resend` — and fans what it stored out to every other machine that opened
+  writer not the machine's `refused` (`writer-not-yours`), an event past
+  1 MiB `refused` (`too-large`), a gap answered by `resend` — and fans what it stored out to every other machine that opened
   the project; `rejected` goes to the project's audit record; `session`
   messages and `hb-ack` are kept; `part` frames are joined. Events or a
   rejection for a project not opened on this stream are `refused`
@@ -104,6 +104,8 @@ PROJECT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 B64URL = re.compile(r"[A-Za-z0-9_-]+")
 BATCH = 200  # events per `events` frame of a backlog
 HELD = ("hold", "stall-headers", "stall-body")  # POST faults whose answer waits for /control/release
+FRAME_LIMIT = 1 << 20  # an event is at most 1 MiB of UTF-8, as every frame is (DX2)
+TOO_LARGE = "an event is at most 1 MiB"
 
 lock = threading.Condition()
 state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults": [], "post_faults": [],
@@ -204,6 +206,8 @@ def shape_error(e):
     if not (isinstance(mac, dict) and all(isinstance(mac.get(k), str) and B64URL.fullmatch(mac[k])
                                           for k in ("nonce", "value"))):
         return "mac is {nonce, value}"
+    if len(json.dumps(e, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")) > FRAME_LIMIT:
+        return TOO_LARGE
     return None
 
 
@@ -256,7 +260,18 @@ def apply(machine, s, frame, replies):
     for e in events:
         problem = shape_error(e)
         if problem:
-            refuse({"reason": "bad-shape", "message": problem})
+            # As DC3's Project: the refusal names the position the event
+            # carried, and stops its writer for the rest of the frame.
+            position = {}
+            if isinstance(e, dict) and isinstance(e.get("writer"), str):
+                position["writer"] = e["writer"]
+            if isinstance(e, dict) and isinstance(e.get("seq"), (int, float)) and not isinstance(e.get("seq"), bool):
+                position["seq"] = e["seq"]
+            if "writer" in position:
+                if position["writer"] in stopped:
+                    continue
+                stopped.add(position["writer"])
+            refuse({"reason": "too-large" if problem == TOO_LARGE else "bad-shape", **position, "message": problem})
             continue
         w, seq = e["writer"], e["seq"]
         if w in stopped:

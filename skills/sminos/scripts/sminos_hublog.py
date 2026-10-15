@@ -263,6 +263,7 @@ class HubLog:
         self.have = None     # the hub's vector, from `have`
         self.sent = {}       # own writer → the last seq the hub holds or took in a POST answered 200
         self.stuck = set()   # own writers the hub refused: not uploaded again on this stream
+        self.refused = {}    # own writer → the lowest seq the hub refused on this stream (0: the writer itself)
         self.archive = False
 
     # ---------------------------------------------------- what is held here
@@ -373,7 +374,11 @@ class HubLog:
         """Each live local member whose latest `joined` this machine wrote
         under a former name joins again under its name now, once: the hub
         takes only `<machine>/…` writers, so otherwise no other machine and
-        no browser would see it. Its earlier history stays here."""
+        no browser would see it. Its earlier history stays here — a rename or
+        a state published under the former name included — so the new writer
+        starts from what the member is now: its alias and name source in the
+        `joined`, and its state after it (publish_renames and publish_state
+        compare against those former events and would find nothing to say)."""
         if not sminos.machine_identity()[1]:
             return 0
         view = sminos.view_of(self.project, titles=False)
@@ -389,11 +394,14 @@ class HubLog:
                 last = next((e for e in reversed(evs) if e["kind"] in sminos.MEMBERSHIP), None)
                 return last is not None and last["kind"] == "joined" and last["writer"] != mine
 
-            fields = {k: j.get(k, "") for k in ("alias", "name_source", "cwd", "worktree", "role", "seat", "by")}
             got = sminos.lifecycle(self.project, m.session, "joined", guard=guard, required=False,
-                                   machine=sminos.host_name(), **fields)
+                                   **sminos.joined_fields(m.alias, m.name_source, *(
+                                       j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by"))))
             if got:
                 n += 1
+                if m.state:
+                    sminos.lifecycle(self.project, m.session, "state", required=False, state=m.state,
+                                     machine=sminos.host_name())
                 log("%s in %s joined again as %s (it had joined as %s)"
                     % (m.alias, self.project.name, self.machine, j.get("machine")))
         return n
@@ -406,14 +414,14 @@ class HubLog:
         if opening:
             # The handshake: upload from the hub's vector, every writer free.
             self.sent = {w: s for w, s in have.items() if self.own(w)}
-            self.stuck = set()
+            self.stuck, self.refused = set(), {}
         else:
             # A `have` answering a `hello` repeated on an open stream (the
             # uplink's periodic one, which refreshes the designation): the
             # upload goes on as it was. `sent` only moves forward — an older
             # vector still queued must not bring back what the hub has taken
             # since — and a writer the hub refused stays stopped until a new
-            # stream, or a `resend`, frees it, as on the stream before.
+            # stream, or a `resend` from before what it refused, frees it.
             for w, s in have.items():
                 if self.own(w) and s > self.sent.get(w, 0):
                     self.sent[w] = s
@@ -427,8 +435,18 @@ class HubLog:
         self.save(d)
 
     def on_resend(self, frame):
+        """The hub lacks a writer's events from `from` on. Every batch is
+        posted before the replies are read, so a resend may be queued behind
+        a refusal of the same writer — drawn by a later batch, whose events
+        follow the refused one: a resend at or past the refused position would
+        send that event again, to be refused again, forever. The refusal wins
+        on this stream; a resend from before it is followed."""
         writer, start = frame.get("writer"), frame.get("from")
         if isinstance(writer, str) and self.own(writer) and type(start) is int and start >= 1:
+            if writer in self.refused and start >= self.refused[writer]:
+                log("the hub asks %s of %s again from %d, where it refused it or past that (at %d): not followed on "
+                    "this stream" % (writer, self.project.name, start, self.refused[writer]))
+                return
             self.sent[writer] = start - 1
             self.stuck.discard(writer)
             log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
@@ -445,6 +463,9 @@ class HubLog:
         if isinstance(writer, str) and self.own(writer) and reason in ("conflict", "writer-not-yours", "bad-shape",
                                                                         "too-large"):
             self.stuck.add(writer)
+            seq = r.get("seq")
+            at = seq if type(seq) is int and seq >= 1 else 0
+            self.refused[writer] = min(at, self.refused.get(writer, at))
         if reason == "not-open":
             self.have = None
 

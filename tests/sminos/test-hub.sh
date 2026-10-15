@@ -227,8 +227,11 @@ assert_contains "$OUT" "another machine of this org is enrolled as alpha" "sayin
 assert_contains "$OUT" "run sminos hub enroll --name <another name> and paste the same code at the prompt" \
   "and how to pick another with the same code"
 assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing is stored"
-enroll "$CODE_B" --name ALPHA
+# Under another host name for once: from alpha, ALPHA differs only in case
+# and is refused here before the hub is asked (below).
+DAEMON_HOST=b-host enroll "$CODE_B" --name ALPHA
 assert_rc 1 "$RC" "the name is taken whatever its case"
+assert_contains "$OUT" "another machine of this org is enrolled as ALPHA" "the hub says so"
 
 # ---- this installation's state under alpha, before it is renamed
 echo "state before the rename:"
@@ -321,6 +324,37 @@ assert_equals "$(cat "$STUB_STATE/stops" 2>/dev/null)" "b1short" "stopping the s
 run "$SMINOS" say "said as beta"
 assert_contains "$(cat "$BLOG/beta.human.jsonl")" "said as beta" "new events are written under beta"
 assert_equals "$(alpha_writers)" 3 "and no new alpha/ writer appears (two of this machine's, one of the other alpha's)"
+
+# ---- a name that differs only in case
+# DX7 compares machine names without case, and a file system that ignores case
+# would put Kappa.human.jsonl and kappa.human.jsonl in one file.
+echo "a name that differs only in case:"
+as k Kappa
+PK="$T/k/proj"
+mkdir -p "$PK"
+gitq init -q "$PK"
+cd "$PK"
+"$SMINOS" project init --name kproj >/dev/null
+"$SMINOS" say "said as Kappa" >/dev/null
+KLOG="$SMINOS_HOME/projects/$(json_get "$PK/.smns" 'd["project"]' | tr -d '"')/log"
+BEFORE="$(redemptions)"
+enroll "$(code_for kappa)" --name kappa
+assert_rc 2 "$RC" "a name that differs from this machine's own only in case is refused"
+assert_contains "$OUT" "differs from Kappa, the name this machine writes under, only in case" "saying so"
+assert_contains "$OUT" "--name Kappa" "and how to keep its name"
+assert_equals "$(redemptions)" "$BEFORE" "before anything is redeemed"
+assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing is stored"
+"$SMINOS" say "said after the refusal" >/dev/null
+assert_equals "$(python3 -c 'import glob, json, sys
+print(sorted(json.loads(l)["writer"] for p in glob.glob(sys.argv[1] + "/*.jsonl") for l in open(p) if l.strip()))' "$KLOG")" \
+  "['Kappa/human', 'Kappa/human']" "this machine still writes as Kappa"
+as b alpha
+enroll "$(code_for beta)" --name Alpha --replace
+assert_rc 2 "$RC" "a name that differs from a former name only in case is refused"
+assert_contains "$OUT" "differs from alpha, a name this machine wrote under before, only in case" "saying so"
+assert_equals "$(redemptions)" "$BEFORE" "before anything is redeemed"
+assert_equals "$(json_get "$(cred)" 'd["machine"]')" '"beta"' "the enrollment is unchanged"
+cd "$T"
 
 # ---- what the hub answers, said with what to do
 echo "the hub's answers:"
@@ -492,6 +526,102 @@ PY
 }
 assert_equals "$(importable "$PO" 2>/dev/null)" refuses "the uplink imports nothing into a project whose hub carries only an org"
 assert_equals "$(importable "$PH" 2>/dev/null)" imports "and imports into a well-formed hub project of its org"
+cd "$T"
+
+# ---- the conversion against a tick that syncs the project through git
+# A tick read each project when it began; `project init --hub` may land while
+# it waits on the remote. The conversion takes the mirror's sync lock, and
+# each git phase reads .smns again under that lock, so what is left of the
+# tick neither integrates nor pushes, and no git event enters the hub log.
+echo "a conversion during a tick's sync:"
+cat > "$T/race.py" <<'PY'
+import json, os, subprocess, sys, threading
+scripts, root, mode = sys.argv[1:4]
+sys.path.insert(0, scripts)
+import sminos, sminos_daemon as daemon
+project = sminos.resolve_project(root)  # as the tick read it: no hub yet
+convert = [os.path.join(scripts, "sminos"), "project", "init", "--hub"]
+report = {}
+if mode == "held":
+    # The tick's fetch waits until the conversion has started and had a second
+    # to finish; the tick's delivery waits for the conversion to end, so its
+    # push comes after the switch.
+    entered, gate, proc = threading.Event(), threading.Event(), []
+    real_fetch, real_deliver = daemon.fetch, daemon.deliver_owed
+    def held_fetch(log):
+        entered.set()
+        gate.wait(60)
+        real_fetch(log)
+    def deliver_after(project_, view):
+        proc[0].wait(60)
+        return real_deliver(project_, view)
+    daemon.fetch, daemon.deliver_owed = held_fetch, deliver_after
+    out = {}
+    t = threading.Thread(target=lambda: out.update(daemon.tick(project)))
+    t.start()
+    entered.wait(60)
+    proc.append(subprocess.Popen(convert, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    subprocess.run([os.path.join(scripts, "sminos"), "say", "said during the held fetch"], cwd=root,
+                   stdout=subprocess.DEVNULL, check=True)
+    try:
+        proc[0].wait(1.0)
+    except subprocess.TimeoutExpired:
+        pass
+    report["converted during the fetch"] = proc[0].poll() is not None
+    gate.set()
+    t.join(120)
+    report["tick"] = out
+else:  # "stale": the switch landed between the tick's read and its sync of the project
+    subprocess.run(convert, cwd=root, stdout=subprocess.DEVNULL, check=True)
+    subprocess.run([os.path.join(scripts, "sminos"), "say", "said after the switch"], cwd=root,
+                   stdout=subprocess.DEVNULL, check=True)
+    report["tick"] = daemon.tick(project)
+print(json.dumps(report))
+PY
+other_pushes() { # bare-remote text — another machine's git event, pushed to the remote
+  rm -rf "$T/other-clone"
+  gitq clone -q "$1" "$T/other-clone" 2>/dev/null
+  printf '{"ts": "2026-10-15T00:00:00.000Z", "writer": "other/human", "seq": 1, "kind": "say", "from": "human", "to": "*", "text": "%s"}\n' \
+    "$2" > "$T/other-clone/other.human.jsonl"
+  gitq -C "$T/other-clone" add other.human.jsonl
+  gitq -C "$T/other-clone" commit -qm other
+  gitq -C "$T/other-clone" push -q origin HEAD:main
+}
+mirrored_project() { # name → a checkout under $T/a/<name> of a git-mirrored project, synced once
+  gitq init -q --bare "$T/$1.git"
+  mkdir -p "$T/a/$1"
+  gitq init -q "$T/a/$1"
+  cd "$T/a/$1"
+  "$SMINOS" project init --name "$1" --remote "$T/$1.git" >/dev/null
+  "$SMINOS" say "before the switch" >/dev/null
+  run "$SMINOS" daemon tick
+  assert_contains "$OUT" "$1: synced" "$1 syncs through git before the switch"
+  cd "$T"
+}
+log_of() { echo "$SMINOS_HOME/projects/$(json_get "$T/a/$1/.smns" 'd["project"]' | tr -d '"')/log"; }
+as a alpha
+mirrored_project heldproj
+HELD_HEAD="$(git -C "$T/heldproj.git" rev-parse main)"
+run python3 "$T/race.py" "$SCRIPTS" "$T/a/heldproj" held
+assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys; print(json.load(sys.stdin)["converted during the fetch"])')" \
+  False "a conversion started while a tick fetches waits for that sync to end"
+assert_equals "$(json_get "$T/a/heldproj/.smns" 'd["hub"]["url"]')" "\"$HUB\"" "then converts the project"
+assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tick"]["pushed"])')" \
+  False "the rest of the tick, after the switch, pushes nothing"
+assert_equals "$(git -C "$T/heldproj.git" rev-parse main)" "$HELD_HEAD" "the remote is where it was"
+assert_contains "$(cat "$(log_of heldproj)/alpha.human.jsonl")" "said during the held fetch" \
+  "though the log holds what was said meanwhile"
+mirrored_project staleproj
+STALE_HEAD="$(git -C "$T/staleproj.git" rev-parse main)"
+other_pushes "$T/staleproj.git" "a git event after the switch"
+OTHER_HEAD="$(git -C "$T/staleproj.git" rev-parse main)"
+run python3 "$T/race.py" "$SCRIPTS" "$T/a/staleproj" stale
+assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys; t = json.load(sys.stdin)["tick"]; print([t["integrated"], t["pushed"]])')" \
+  "[False, False]" "a tick that read the project before the switch neither integrates nor pushes it after"
+assert_equals "$(test -e "$(log_of staleproj)/other.human.jsonl" && echo there || echo none)" none \
+  "no git event enters the hub project's log"
+assert_equals "$(git -C "$T/staleproj.git" rev-parse main)" "$OTHER_HEAD" "nothing of this machine is pushed"
+[[ "$OTHER_HEAD" != "$STALE_HEAD" ]] || fail "the other machine's push moved the remote"
 cd "$T"
 as b2 beta2
 P0="$T/b2/p"

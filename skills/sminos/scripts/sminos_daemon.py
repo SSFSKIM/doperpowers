@@ -17,7 +17,10 @@ exclusive here, for the phases that touch the working tree and for nothing
 else — the fetch and the push wait on the network outside it, each bounded,
 so an unreachable remote never stalls a `say` or a Stop export. The
 integration phase commits whatever was appended during the fetch and merges
-under one hold. One sync per project at a time (`log/.sync-op.lock`).
+under one hold. One sync per project at a time (`log/.sync-op.lock`);
+`project init --hub` takes the same lock to make a mirrored project a hub
+project, and every git phase reads .smns again under it, so what is left of
+a tick that began before the switch neither integrates nor pushes.
 
 The daemon is one process per machine. `daemon tick` is one iteration over
 every project known here, each in the order of §8:
@@ -72,6 +75,9 @@ DERIVE_EVERY = 3600
 UPLINK_BACKOFF_MAX = 60
 # A stopped uplink has this long to end after SIGTERM before it is killed.
 UPLINK_STOP_GRACE = 3
+# The pid of the `daemon run` that spawned an uplink, in the uplink's
+# environment: it ends whenever its parent is another process.
+UPLINK_PARENT_ENV = "SMINOS_UPLINK_PARENT"
 # The scripts `daemon run` runs, itself and its uplink child: a change to one
 # ends the loop for a restart on the new code.
 OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
@@ -84,6 +90,10 @@ _DERIVE = None  # the derivation child this process started, while it may run
 
 class SyncFailed(Exception):
     """A sync phase failed: logged, and the tick goes on with the stale mirror."""
+
+
+class BecameHub(Exception):
+    """The project's .smns names a hub now: git no longer syncs it."""
 
 
 class MachineClaimed(Exception):
@@ -298,10 +308,24 @@ def fetch(log):
     git_ok(log, "fetch", "-q", "origin", timeout=git_timeout())
 
 
+def ensure_mirrored(project):
+    """Raise BecameHub when the project's .smns, read as it is now, names a
+    hub. A tick syncs the Project it read when it began; `project init --hub`
+    rewrites .smns under .sync-op.lock, which every caller here holds, so a
+    git phase that looks again under it never integrates or pushes a project
+    that has become a hub project (an .smns changed by any other hand is
+    caught at the next phase)."""
+    path = os.path.join(project.root, sminos.SMNS) if project.root else ""
+    smns = sminos.read_smns(path) if path and os.path.isfile(path) else None
+    if smns is not None and smns[0] == project.id and smns[3] is not None:
+        raise BecameHub("%s names a hub now: git no longer syncs %s" % (path, project.name))
+
+
 def integrate(project, log):
     """The integration phase, under one exclusive hold: the claim checked,
     what was appended during the fetch committed, then the remote merged —
     never releasing between the two, so the merge never meets an append."""
+    ensure_mirrored(project)
     with lock(log, ".sync.lock"):
         check_claim(log)
         write_claim(log)
@@ -328,6 +352,7 @@ def push(project, log):
     it moved is retried after another fetch and integration, PUSH_RETRIES
     times. True when something was pushed. The caller holds .sync-op.lock."""
     for attempt in range(PUSH_RETRIES + 1):
+        ensure_mirrored(project)
         with lock(log, ".sync.lock"):
             commit_log(log, "sminos: %s" % sminos.host_name())
         if not ahead(log):
@@ -345,20 +370,33 @@ def push(project, log):
 
 
 def sync_in(project):
-    """Duty 1: attach on first sight, fetch, integrate."""
+    """Duty 1: attach on first sight, fetch, integrate. True when it
+    integrated; False when the project turned out to be a hub project now
+    (BecameHub), with nothing of the remote integrated."""
     log = log_dir(project)
-    with sync_op(log):
-        if not attached(project, log):
-            prepare(project, log)
-        fetch(log)
-        integrate(project, log)
+    try:
+        with sync_op(log):
+            ensure_mirrored(project)
+            if not attached(project, log):
+                prepare(project, log)
+            fetch(log)
+            integrate(project, log)
+    except BecameHub as e:
+        sminos.daemon_log("sync %s: %s" % (project.name, e))
+        return False
+    return True
 
 
 def sync_out(project):
-    """Duty 5: commit what this tick appended and push it."""
+    """Duty 5: commit what this tick appended and push it. Nothing is pushed
+    once the project is a hub project (BecameHub)."""
     log = log_dir(project)
-    with sync_op(log):
-        return push(project, log)
+    try:
+        with sync_op(log):
+            return push(project, log)
+    except BecameHub as e:
+        sminos.daemon_log("sync %s: %s" % (project.name, e))
+        return False
 
 
 def attach(project):
@@ -369,6 +407,7 @@ def attach(project):
     log = log_dir(project)
     try:
         with sync_op(log):
+            ensure_mirrored(project)
             prepare(project, log)
             try:
                 fetch(log)
@@ -383,7 +422,7 @@ def attach(project):
                 print("attached %s to %s; the push did not land (%s) — the daemon pushes on its next tick" % (
                     project.name, project.remote, e))
                 return
-    except (SyncFailed, MachineClaimed) as e:
+    except (SyncFailed, MachineClaimed, BecameHub) as e:
         sminos.die(str(e), 1)
     print("attached %s to %s" % (project.name, project.remote))
 
@@ -486,8 +525,7 @@ def tick(project, all_seats=None):
     record = daemon_record(project)
     if mirrored(project):
         try:
-            sync_in(project)
-            out["integrated"] = True
+            out["integrated"] = sync_in(project)
         except SyncFailed as e:
             errors.append(str(e))
     view = sminos.view_of(project, all_seats, titles=False)
@@ -682,9 +720,12 @@ class UplinkSupervisor(threading.Thread):
                 continue
             started = time.time()
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
+                # The child is told who spawned it: an uplink whose parent is
+                # gone before it could look must not take launchd for it.
                 self.proc = subprocess.Popen(
                     [sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon", "uplink"],
-                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                    env={**os.environ, UPLINK_PARENT_ENV: str(os.getpid())})
             while self.proc.poll() is None and not self.halt.wait(0.2):
                 if credential_bytes() != held:
                     sminos.daemon_log("uplink (pid %d): hub.json changed; restarting it on the credential as it "
