@@ -922,6 +922,20 @@ Order, batching (≤ 500) and one post in flight are unchanged.
      high-water mark.
   Date/Author: 2026-10-15, controller with the composite's writer, from
   M4's review.
+- Decision (M4, from DC7's M1 review, ruled by the composite's writer):
+  Each loop's cut is seeded at load. A `null` cut sent history to EOF, so
+  a row flushed after the module loaded but before its notice could sit in
+  the snapshot's history while its block was still in `streaming`. Now the
+  mod's first `resync` reports each loop's cut as the last row that loop
+  had when the module loaded; `null` means only "this loop had no rows".
+  The invariant: no block of a loop enters `streaming` before that loop's
+  cut is seeded, and no block in `streaming` has its row at or before the
+  cut. A seed row not yet on disk is covered by the consumer's 5 s wait for
+  a cut row. The engine's message list (`$.session.messages()`) carries no
+  row uuids, so the seed cannot come from it; the means are M4's executor's
+  to choose against the invariant, proven by a race test (a row flushed
+  between the module's load and the seed).
+  Date/Author: 2026-10-15, controller with the composite's writer.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
   `scripts/bump-version.sh` above the first; no version number is merged by
