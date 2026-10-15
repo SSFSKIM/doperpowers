@@ -231,10 +231,16 @@ def git_branch(path):
     return head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""
 
 
+def machine_policy():
+    """The machine's policy as DX4's `machine` presence carries it (DX6's,
+    which DC7 owns): never read-only, and the ceiling the user's own settings
+    give, until the owner's policy file exists (DC7's M2 makes it real)."""
+    return {"read_only": False, "ceiling": permission_ceiling()}
+
+
 def permission_ceiling():
-    """The machine's permission ceiling as DX4's `machine` presence carries it:
-    the default mode the user's own settings give (§6), until DC7 lets the
-    owner set one."""
+    """The machine's permission ceiling: the default mode the user's own
+    settings give (§6) — the engine's `default` when they name none."""
     try:
         with open(os.path.join(sminos.home_dir(), ".claude", "settings.json")) as f:
             mode = ((json.load(f) or {}).get("permissions") or {}).get("defaultMode")
@@ -350,7 +356,7 @@ class HubLog:
         return {"t": "session", "message": {
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,
-            "body": {"online": True, "policy": {"read_only": False, "ceiling": permission_ceiling()},
+            "body": {"online": True, "policy": machine_policy(),
                      "checkouts": checkouts}}}
 
     def unreported(self):

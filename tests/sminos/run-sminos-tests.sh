@@ -5015,6 +5015,8 @@ echo
 if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
 if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
 if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
+if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
+  fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
