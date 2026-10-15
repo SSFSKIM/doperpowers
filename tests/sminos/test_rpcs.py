@@ -421,6 +421,51 @@ class Checks(unittest.TestCase):
                                     "digest": digest_of(self.bridged.sid, "toolu_dg1", "Bash", tool_input)})
         self.refused(late, "not-pending")
 
+    def test_e_a_decision_refused_by_the_bridge_says_who_won_as_fields(self):
+        """DX6 (composite bb8b8773): a 409 from the bridge is `not-pending`
+        carrying `winner`, `by`, `terminalOnly` as the bridge gave them as
+        fields, never read from its text."""
+        settled = {"request": "toolu_w", "winner": "terminal", "outcome": "deny", "by": "terminal", "t": 1}
+        cases = [
+            ({"error": "already settled", "settled": settled}, {"winner": "terminal", "by": "terminal"}),
+            ({"error": "already answered by %s; its settlement follows" % MEMBER, "by": MEMBER}, {"by": MEMBER}),
+            ({"error": "the window for answering it from outside closed; the terminal answers it",
+              "terminalOnly": True}, {"terminalOnly": True}),
+            ({"error": "the terminal answered it; its settlement follows", "winner": "terminal", "by": "terminal"},
+             {"winner": "terminal", "by": "terminal"}),
+            ({"error": "already answered by cli; its settlement follows"}, {}),  # no field: nothing read from text
+        ]
+        from unittest import mock
+        for body, fields in cases:
+            with mock.patch.object(rpcs.bridge, "request", return_value=(409, body)):
+                with self.assertRaises(rpcs.Refused) as r:
+                    rpcs.decide("/nowhere", "toolu_w", {"behavior": "allow", "by": MEMBER})
+            error = r.exception.outcome["error"]
+            self.assertEqual(error["code"], "not-pending", body)
+            self.assertEqual({k: v for k, v in error.items() if k not in ("code", "message")}, fields, body)
+            self.assertTrue(error["message"])
+
+    def test_e_a_second_member_s_decision_names_the_first(self):
+        tool_input = {"command": "make release"}
+        self.mod.raise_("toolu_two", input_=tool_input)
+        wait_for(lambda: self.request_info("toolu_two")[0] == 200)
+        args = {"session": self.bridged.sid, "decision": "allow",
+                "digest": digest_of(self.bridged.sid, "toolu_two", "Bash", tool_input)}
+        self.assertEqual(self.outcome(self.send("decide", args)), {"state": "done", "result": {}})
+        other = "0123456789abcdef0123456789abcdef"
+        o = self.outcome(self.send("decide", dict(args, decision="deny"), member=other))
+        self.assertEqual(o["error"]["code"], "not-pending")
+        self.assertEqual(o["error"]["by"], MEMBER, "the first answerer, from the bridge's field")
+        self.assertNotIn("winner", o["error"], "nothing is settled yet")
+        self.mod.settle("toolu_two", outcome="allow", winner="web", by=MEMBER)
+        # A background window past its deadline: the terminal's alone now.
+        self.mod.raise_("toolu_win", input_=tool_input, agentId="a1", deadline=int(time.time() * 1000) - 1000)
+        wait_for(lambda: self.request_info("toolu_win")[0] == 200)
+        o = self.outcome(self.send("decide", dict(args, digest=digest_of(self.bridged.sid, "toolu_win", "Bash",
+                                                                         tool_input))))
+        self.assertEqual((o["error"]["code"], o["error"].get("terminalOnly")), ("not-pending", True))
+        self.mod.settle("toolu_win", outcome="allow", winner="terminal", by="terminal")
+
     def test_e_an_answer_goes_to_its_question(self):
         q = {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}
         self.mod.raise_("toolu_q1", tool="AskUserQuestion", input_=q)

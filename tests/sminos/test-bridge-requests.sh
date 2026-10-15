@@ -150,6 +150,9 @@ elif op == "fakemod":       # sminos session lines-file decisions-file mode-file
                 with open(decisions, "a") as f:
                     f.write(json.dumps({"request": rid, **got}) + "\n")
                 mode = open(modefile).read().strip() if os.path.exists(modefile) else ""
+                while mode == "hold":   # the engine has the answer and has not settled it yet
+                    time.sleep(0.05)
+                    mode = open(modefile).read().strip() if os.path.exists(modefile) else ""
                 d = got["decision"]
                 if mode == "terminal":
                     settle(rid, "allow", "terminal")
@@ -269,6 +272,19 @@ assert_equals "$(field_of "$SNAP" settled.0.outcome)" "allow" "with its outcome"
 run ctl get "$SOCK" "/requests/toolu_perm01/wait?ms=200"
 assert_contains "$OUT" "410 " "a poll for a settled request ends at once (410)"
 
+echo "a second decision while the first is taken and not yet settled:"
+mode hold
+raise_bash toolu_perm09
+run ctl postto "$SOCK" /requests/toolu_perm09/decision '{"behavior":"allow","by":"m-first"}'
+assert_contains "$OUT" "200 " "the first decision is taken"
+until_true 100 grep -q toolu_perm09 "$T/decisions" || true
+run ctl postto "$SOCK" /requests/toolu_perm09/decision '{"behavior":"deny","by":"cli"}'
+assert_contains "$OUT" "409 " "a second one is refused"
+assert_equals "$(field_of "${OUT#409 }" by)" "m-first" "naming who answered first, as a field"
+assert_equals "$(field_of "${OUT#409 }" winner)" "null" "and no winner: nothing is settled yet"
+mode engine
+until_true 100 bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm09 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
+
 echo "decisions refused:"
 raise_bash toolu_perm02
 run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"maybe","by":"cli"}'
@@ -303,6 +319,8 @@ presence idle
 run ctl postto "$SOCK" /requests/toolu_perm03/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "409 " "a decision for a dialog the terminal has closed is refused"
 assert_contains "$OUT" "terminal" "saying the terminal answered it"
+assert_equals "$(field_of "${OUT#409 }" winner)" "terminal" "the terminal won, as a field"
+assert_equals "$(field_of "${OUT#409 }" by)" "terminal" "and decided, as a field"
 presence waiting
 
 echo "a background subagent's window:"
@@ -317,6 +335,7 @@ sleep 0.6
 run ctl postto "$SOCK" /requests/toolu_bg01/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "409 " "after the deadline a decision is refused"
 assert_contains "$OUT" "terminal" "the prompt is the terminal's now"
+assert_equals "$(field_of "${OUT#409 }" terminalOnly)" "true" "terminal only, as a field"
 run ctl get "$SOCK" /requests/toolu_bg01
 assert_contains "$OUT" "200 " "and the request stays pending until the terminal answers"
 DL=$(( $(now_ms) + 5000 ))

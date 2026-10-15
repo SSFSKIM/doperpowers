@@ -106,16 +106,31 @@ def done(result):
     return {"state": "done", "result": result}
 
 
-def failed(code, message):
-    return {"state": "failed", "error": {"code": code, "message": message}}
+def failed(code, message, **fields):
+    """DX6's failed outcome; `fields` are RpcError's `winner`, `by`,
+    `terminalOnly`, each only when given."""
+    return {"state": "failed", "error": {"code": code, "message": message,
+                                         **{k: v for k, v in fields.items() if v is not None}}}
 
 
 class Refused(Exception):
     """An RPC answered `failed` with one of DX6's codes."""
 
-    def __init__(self, code, message):
+    def __init__(self, code, message, **fields):
         super().__init__(message)
-        self.outcome = failed(code, message)
+        self.outcome = failed(code, message, **fields)
+
+
+def who_won(body):
+    """RpcError's `winner`, `by`, `terminalOnly` from the fields a bridge's
+    refusal carries (DX5's 409s; a request's `settled`), never from its
+    text."""
+    s = body.get("settled") if isinstance(body.get("settled"), dict) else {}
+    out = {"winner": body.get("winner", s.get("winner")), "by": body.get("by", s.get("by"))}
+    out = {k: v for k, v in out.items() if isinstance(v, str) and v}
+    if body.get("terminalOnly") is True:
+        out["terminalOnly"] = True
+    return out
 
 
 def created_at(text):
@@ -586,7 +601,8 @@ def check_digest(path, sid, digest):
         raise Refused("not-pending", "the session's bridge did not answer for %s: %s" % (rid, e))
     if status == 410:
         s = (body or {}).get("settled") or {}
-        raise Refused("not-pending", "already settled: %s by %s" % (s.get("outcome"), s.get("by")))
+        raise Refused("not-pending", "already settled: %s by %s" % (s.get("outcome"), s.get("by")),
+                      **who_won(body if isinstance(body, dict) else {}))
     if status != 200 or not isinstance(body, dict):
         raise Refused("not-pending", "no request %s is pending in the session" % rid)
     tool_input = body.get("input")
@@ -677,7 +693,7 @@ def decide(path, rid, body):
     if status in (404, 409, 410):
         s = out.get("settled") if isinstance(out.get("settled"), dict) else None
         raise Refused("not-pending", "already settled: %s by %s" % (s.get("outcome"), s.get("by")) if s
-                      else str(out.get("error") or "not pending"))
+                      else str(out.get("error") or "not pending"), **(who_won(out) if status != 404 else {}))
     raise Refused("failed", "the bridge answered %d: %s" % (status, out.get("error")))
 
 

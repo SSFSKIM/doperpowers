@@ -811,7 +811,8 @@ class Bridge:
             if why:
                 return 400, {"error": why}
             if p["decided"] is not None:
-                return 409, {"error": "already answered by %s; its settlement follows" % p["decided"]["by"]}
+                return 409, {"error": "already answered by %s; its settlement follows" % p["decided"]["by"],
+                             "by": p["decided"]["by"]}
             deadline = raised.get("deadline")
             if isinstance(deadline, (int, float)):
                 if _now_ms() >= deadline - WINDOW_MARGIN_MS:
@@ -826,7 +827,8 @@ class Bridge:
                     p["closed"] = True
                     self.changed.notify_all()
             if p["closed"]:
-                return 409, {"error": "the terminal answered it; its settlement follows"}
+                return 409, {"error": "the terminal answered it; its settlement follows", "winner": "terminal",
+                             "by": "terminal"}
             decision = {"behavior": body["behavior"]}
             for k in ("message", "updatedInput"):
                 if k in body:
