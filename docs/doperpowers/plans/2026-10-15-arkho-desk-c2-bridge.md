@@ -250,6 +250,140 @@ Repeat with a `claude --bg` job; stop it afterwards.
 DX5 is written here at M1's end and sent to the composite's writer; M2 and
 M3 extend it in place, each extension sent the same way.
 
+### DX5 — Local bridge protocol (version 1)
+
+The session endpoint of a bridged session. **Built at M1** unless marked
+**reserved (M2)** or **reserved (M3)**; reserved shapes are proposals the
+milestone that builds them fixes and sends as an extension.
+
+#### Parties
+
+- **The mod**, `hooks/mods/bridge.tsx`, inside the session.
+- **The child**, `sminos bridge --session <session-id>`
+  (`skills/sminos/scripts/sminos_bridge.py`), spawned by the mod with
+  `$.process.spawn` for the session's life; a direct child of the session process.
+- **Local clients**: the CLI (`sminos watch` now; the control verbs at M2/M3) and the
+  daemon (DC7).
+
+#### The endpoint and presence (built)
+
+- **Path:** `$SMINOS_HOME/bridge/<session-id>.sock`; the directory is mode 0700, the socket
+  0600. The path must fit a Unix socket (at most 103 bytes; the child exits 1 otherwise).
+- **Transport:** HTTP/1.1 over the socket, JSON bodies, `Connection: close` on every
+  response (one request per connection).
+- **Placement:** the child binds `.<first 8 of id>.<pid>.sock` in the directory, listens,
+  sets 0600, and renames it onto the path; then it writes `hello` on stdout. So the path
+  never names a socket that is not yet listening.
+- **Presence:** a session has a bridge when `GET /status` on its path answers 200 with its
+  session id. (DX4's "bridge connected".)
+- **Stale rule:** a socket file whose connect fails is stale; whoever finds it removes it,
+  having checked its inode is the same before the connect and before the unlink
+  (`sminos_bridge.remove_stale`). A starting child replaces a stale file by its rename.
+- **Discovery (DC7):** list `$SMINOS_HOME/bridge/*.sock` (skip names beginning with `.`, a
+  child's temporary bind) and probe each.
+- **One child per session:** a newer child takes the path over; an older one exits within
+  0.5 s of finding the path's inode no longer its own, without unlinking. A child also
+  exits when its parent process is gone (the session ended or was killed), on SIGTERM or
+  SIGHUP, or when its stdout breaks; it unlinks the path only if the inode is still its own.
+- **When the mod spawns one:** at `session.start`; again after a module reload (the reload
+  kills the child and runs `session.start` again); again after a child ends on its own
+  (1 s, doubling to 60 s, back to 1 s once a child lived 30 s); and under the new id when
+  the session id changes (a `/clear`), noticed at the next heartbeat (≤ 5 s). Never in a
+  session with `SMNS_INTERNAL` set.
+
+#### Routes
+
+| Route | Built | Body | Answer |
+| --- | --- | --- | --- |
+| `GET /status` | M1 | — | 200 `{session, pid, protocol: 1, socket, started, subscribers, mod: {events, last}}` (`last`: epoch seconds of the mod's last post) |
+| `POST /events` | M1 (the mod's) | a JSON array of events, oldest first (a single object is accepted) | 204; 400 when an item is not an object with a string `type` |
+| `GET /events` | M1 | — | 200 `application/x-ndjson`, close-delimited: one snapshot line, then every event, each with `n` (below) |
+| `POST /command[?wait=ms]` | M1 | `{op, ...args}` | `wait` absent or 0: 202 `{id, status: "sent"}`; `wait` 1–25000: 200 `{id, ok, result?, error?}` once the mod answered, 504 `{id, error}` on time-out; 400 for no string `op` or `op: "hello"`; 503 when the child can no longer write to the mod |
+| any other | — | — | 404 `{error}` |
+| `GET /requests/<request>/wait?ms=` | **reserved (M3)** | — | the mod's long-poll for a decision on a pending request (held ≤ 20 s, under the 30 s fetch bound): 200 the decision, 204 nothing yet, 410 withdrawn/settled |
+| `GET /requests/<request>` | **reserved (M3)** | — | the pending request's current content for DC7's digest check: `{request, session, tool, input, agentId, deadline?}`; 404 when not pending, 410 settled (with the settlement) |
+| `POST /requests/<request>/decision` | **reserved (M3)** | `{behavior: "allow"\|"deny", message?, updatedInput?, by}` (an answer is `allow` with `updatedInput: {questions, answers}`) | 200 accepted (the settlement follows on the stream); 409 already settled, naming the winner |
+
+#### The child's stdout: lines for the mod (built)
+
+One JSON object per line, flushed:
+
+- First, once the socket answers:
+  `{"op": "hello", "session": "<id>", "pid": <child pid>, "socket": "<path>", "protocol": 1}`.
+  The mod posts nothing before it, then posts the session's start first.
+- Then one line per command: `{"id": "<32 hex, minted by the child>", "op": "<op>", ...args}`,
+  `id` first, the client's other fields as given (a client's own `id` is replaced). The mod
+  answers every command with a `result` event (below) carrying the same `id`; an op it does
+  not know is answered `{ok: false, error: "unknown op: <op>"}`.
+
+| Op | Built | Arguments | Result |
+| --- | --- | --- | --- |
+| `ping` | M1 | — | `{pong: true, state: {mainTurn: <turnId or null>, isStreaming: <a main-loop model request streaming>, tools: [<tool names running>]}}` |
+| `steer` | **reserved (M2)** | `{text}` | `{row: <uuid of the appended user row>}` (mirrored with `$.ui.log`) |
+| `interrupt` | **reserved (M2)** | — | `{turnId, stopped: [<task ids TaskStop ended>]}` |
+| `model` | **reserved (M2)** | `{model, effort?}` | `{model, effort}` in force; kept in `$SMINOS_HOME/bridge/<id>.json` |
+| `compact` | **reserved (M2)** | `{instructions?}` | `{queued: true}` mid-turn, else the compaction's outcome |
+| `deliver` | **reserved (M2)** | `{key: {writer, seq}, text}` | `{submitted: true}` or `{duplicate: true}`; the **delivery key** is the log event's `(writer, seq)`, remembered in `<id>.json` across reloads |
+
+#### Events (the mod's posts; the stream's lines)
+
+Every event is an object with `type` and `t` (the mod's clock, epoch ms). `agentId` is
+`null` on the main loop and the subagent's id otherwise.
+
+| `type` / `phase` | Built | Fields |
+| --- | --- | --- |
+| `session` / `start` | M1 | `session, cwd, surface, isInteractive, model, version` |
+| `session` / `end` | M1 | `reason` (the engine's; `clear` for a /clear) — best effort, the process exits next |
+| `turn` / `start` | M1 | `turnId, agentId, text` (the prompt) |
+| `turn` / `complete` | M1 | `turnId, agentId, reason` (`answer`, `aborted`, `refusal`, `error`), `usage` (the turn's, or null) |
+| `step` / `start` | M1 | `turnId, agentId, step` (the request's index in the turn), `model, effort, messageCount` |
+| `step` / `end` | M1 | `turnId, agentId, step, stopReason, usage` |
+| `chunk` | M1 | `turnId, agentId, step, chunkIndex, chunk` — **DX4's chunk:** `chunk` is `turn.step`'s chunk object verbatim (`text`, `thinking`, `tool`, `input`, `stop`; `engine` items are not sent); the three tags are `turnId`, `agentId`, and `chunkIndex`, the chunk's index in its message from 0; a message is identified by `(turnId, agentId, step)` |
+| `tool` / `call` | M1 | `toolUseId, tool, agentId, input` (the tool's own arguments), `truncated?` |
+| `tool` / `result` | M1 | `toolUseId, tool, agentId, isError, denied?, text?, truncated?` |
+| `agent` / `spawn` | M1 | `agentId, parentAgentId, subagentType, description, name, background, model, toolUseId` |
+| `agent` / `stop` | M1 | `agentId, agentType` |
+| `usage` | M1 | `context: {tokens, window, percent}, cost` — after each main turn |
+| `heartbeat` | M1 | `state` (as `ping`'s) — every 5 s |
+| `result` | M1 | `id, op, ok, result?, error?` — the mod's answer to a command |
+| `gap` | M1 | `dropped` — events lost on the way (a failed post); resubscribe |
+| `command` | M1 (the child's own) | `id, op` — a command relayed to the mod |
+| `raised` | **reserved (M3)** | `request` (the tool-use id), `tool, input, agentId, deadline?` (a background subagent's 3 s bound) — DX4's pending request |
+| `settled` | **reserved (M3)** | `request, winner` (DX4's: the side whose answer the engine used), `outcome, by` (`cli`, `terminal`, later `web`) — exactly one per `raised` |
+| `delivered` | **reserved (M2)** | `key: {writer, seq}, outcome: "submitted" \| "duplicate"` |
+
+String fields of a tool's input, a result's text, a denial, and a prompt are held to
+65,536 characters (`truncated: true` where cut). Events reach the child in the order they
+happened: the mod keeps one post in flight, batches of up to 500.
+
+#### Subscription (`GET /events`, built)
+
+- **Line 1, the snapshot:**
+  `{"type": "snapshot", "session", "protocol": 1, "pid", "sessionInfo": {...the session start, "ended"?}, "turns": [{turnId, agentId, t}], "streaming": [{turnId, agentId, step, model?, text, thinking, upTo}], "agents": [{agentId, ...the spawn's fields, agentType?, running}], "usage": <the last usage event or null>, "pending": [], "settled": []}`.
+  `streaming` holds every message still streaming: its partial text and thinking and
+  `upTo`, the `chunkIndex` of the last chunk they include (-1 for none). A message leaves
+  it at its step's end or its turn's end.
+  **`pending` and `settled` are reserved (M3)**: the requests pending now and the ones
+  settled recently, so a subscriber that arrives after a request settled sees it settled
+  (the plan's G3 fourth case).
+- **Then every event** as posted, with `n` added, from 1 and one past the last.
+- **No gap, no duplicate:** the child applies an event to its state and hands it to every
+  subscriber under one lock, and takes a snapshot and adds the subscriber under the same
+  lock (subscribe before snapshot, DX4).
+- **Discontinuity:** the stream ends when the child ends or the subscriber falls 10,000
+  events behind; a client subscribes again and takes a fresh snapshot. Nothing is resumed.
+
+#### `sminos watch <member> [--json]` (built)
+
+`<member>` is a member name as the other verbs take it, or a session id. Prints the stream:
+the conversation as it streams (`[main] …`, `[<type> <agentId>] …` for a subagent), one
+line per turn, tool call, failed tool, subagent start and stop, and command result; with
+`--json`, the lines as the endpoint sends them. Exit: 4 when the member has no bridge on
+this machine (a stale socket is removed), is unknown, holds no session, or runs on another
+machine; 1 when the bridge ended and none answers again within 5 s; 0 when the session
+ended or on Ctrl-C. A bridge that comes back within 5 s (a module reload) is followed:
+"· the bridge restarted; reconnected", and a fresh snapshot.
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
@@ -327,7 +461,66 @@ M3 extend it in place, each extension sent the same way.
   DC1 findings stay in doperpowers.
   Date/Author: 2026-10-15, controller.
 
+- Decision (M1): The child lives in `skills/sminos/scripts/sminos_bridge.py`
+  with thin `bridge`/`watch` verbs in `sminos.py`; `sminos bridge` is
+  dispatched before `migrate()`, as `record` is — it starts in every session,
+  reads no registry, and must never take the registry's lock.
+  Date/Author: 2026-10-15, M1 executor.
+- Decision (M1): DX4's chunk is nested, not merged: `{type: "chunk",
+  turnId, agentId, step, chunkIndex, chunk}` with the engine's object
+  verbatim under `chunk` (its own `index` is the content block's and would
+  collide). `step`, the request's index in the turn, is added because
+  DX4's snapshot names a message by `(turnId, agentId, ordinal of the
+  request)`. `engine`-kind chunks are not forwarded; `chunkIndex` and `upTo`
+  count the forwarded ones.
+  Date/Author: 2026-10-15, M1 executor.
+- Decision (M1): The child, not the daemon, keeps the session's live state
+  and builds DX4's snapshot (partial text with `upTo`, open turns, agents,
+  usage) under the one lock that applies events and adds subscribers, so
+  every local client gets subscribe-before-snapshot exactly and DC7 gets the
+  snapshot for free. Events reach the child in order: one post in flight,
+  batches of up to 500; lost events surface as a `gap` event.
+  Date/Author: 2026-10-15, M1 executor.
+- Decision (M1): Endpoint placement — bind a temporary name, listen, rename
+  onto the path, so the path never names a socket not yet listening and a
+  refused connect there is safely stale; stale removal checks the inode
+  before connect and before unlink; a newer child takes the path over and
+  the older exits; a child exits when its parent session is gone. A path
+  over 103 bytes fails the child with a message naming `SMINOS_HOME`.
+  Date/Author: 2026-10-15, M1 executor.
+- Decision (M1): The bridge registers first (outermost) in `register.tsx`,
+  with match-everything matchers, because the other mods hold each event's
+  one unmatched registration. `$` is never stored (the validator refuses
+  it); long-lived posting runs on closures made in `session.start`.
+  Date/Author: 2026-10-15, M1 executor.
+- Decision (M1): `/clear` changes the session id with no `session.start`;
+  the heartbeat (5 s) notices and restarts the child under the new id.
+  Date/Author: 2026-10-15, M1 executor.
+- Decision (M1): `sminos watch` exits 4 when the member has no bridge here
+  (or is unknown, seatless, or on another machine), 1 when the bridge ended
+  and none answers within 5 s, 0 when the session ended; it follows a bridge
+  that returns within 5 s. The endpoint tests live in
+  `tests/sminos/test-bridge.sh` (a short `SMINOS_HOME` under `/tmp`, since
+  macOS `mktemp -d` paths overrun the socket limit), run from
+  `run-sminos-tests.sh`; the live check is `tests/mods/live-bridge-check.py`.
+  Date/Author: 2026-10-15, M1 executor.
+
 ## Surprises & Discoveries
+
+- (M1) With a permission dialog open, the bridge's outermost `tool.call`
+  hook for that call is still in flight: the `PermissionRequest` and the
+  `tool.call` of one call overlap in time, so M3 can match a request to its
+  call and use the call's settling as a withdrawal signal.
+- (M1) `/clear` fires `session.end` (reason `clear`) and no
+  `session.start`, and the session id changes.
+- (M1) macOS `mktemp -d` paths plus `/bridge/<uuid>.sock` exceed the
+  104-byte `sun_path`; the real default (`~/.claude/sminos/bridge/…`) is
+  about 75 bytes.
+- (M1) The session's `end` event is best effort (the process exits right
+  after); a consumer should read a vanished endpoint as the session gone.
+- (M1) Live, the model again ran a "foreground" Agent call in the
+  background (as in DC1); subagent chunks streamed with their `agentId`
+  either way.
 
 ## Outcomes & Retrospective
 
