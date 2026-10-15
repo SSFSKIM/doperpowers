@@ -397,6 +397,27 @@ against the local hub; until it lands, the stand-in.
   <n>` (no `--`).
   Date/Author: 2026-10-15, the composite's writer (`0e7da91e`).
 
+- Decision: From DC2's live walk of its M4 (composite `2038124c`,
+  `10b2d830`), folded into M1's real-child wave (with the seeded cut),
+  since none blocks M2. (1) The bridge holds a step's `step end` until
+  its `block-row` notices are posted, for at most 1 s, released early by
+  the loop's next request, the turn's end, or the subagent's stop; a
+  `block-row` later than the cap is still relayed in order (the browser
+  ignores it for a block it dropped), and a step is never ended twice.
+  (2) A producer removes a block from its snapshot `streaming` at its
+  step's end as well as at its `block-row`, under the snapshot lock, so
+  an aborted block never appears in a later snapshot; the scripted
+  endpoint does the same. (3) A response row's `block-row` is never
+  preceded by a notice for a row written after it on disk; notice order
+  is otherwise the engine's append order, which can put a row ahead of
+  its parentUuid chain within one same-millisecond batch, and the release
+  rule absorbs that (the passed-over row released unnamed at once, its
+  late `row-seen` ignored). (4) The worst flush-to-notice lag measured is
+  0.68 s at load ~220, so the 2 s window stands; the module loads before
+  a `--bg` job's first prompt row, so the seed applies only to loops
+  older than the module.
+  Date/Author: 2026-10-15, the composite's writer, from DC2's M4 walk.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
