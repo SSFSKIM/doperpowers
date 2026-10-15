@@ -409,15 +409,16 @@ async function imageLines($: EngineInterface, paths: readonly string[]): Promise
 
 // The dialog.
 
-export type DialogOutcome =
+export type DialogOutcome = (
   | { kind: 'answered'; text: string; record: unknown; images: string[] } // text: the engine's result text; images: paths pasted in this dialog
   | { kind: 'refused'; text: string; hasFeedback: boolean; images: string[] } // text: the refusal; hasFeedback: "Chat about this"; images: kept with it
+) & { toolUseId?: string } // the dialog's own call: the bridge names who answered it
 
 /** "Chat about this" refuses with the human's words after this. */
 const FEEDBACK = 'To tell you how to proceed, the user said:'
 
 /** One raised dialog: its question set, the token its one-question raise carries as the header, and what it settled with. */
-type Entry = { token: string; questions: AskQuestion[]; isClaimed: boolean; outcome?: DialogOutcome }
+type Entry = { token: string; questions: AskQuestion[]; isClaimed: boolean; outcome?: DialogOutcome; toolUseId?: string }
 
 let entries: Entry[] = []
 let raised = 0
@@ -442,13 +443,15 @@ let describedFrom: string | undefined
 
 /**
  * What the session's asks do, as an observer (the bridge) is told: an async
- * ask opened, was answered (`by` the terminal, or whoever answered it from
- * outside), or was forgotten (a new conversation); a dialog this mod raised
- * settled, with what the engine returned for its call.
+ * ask opened, was answered (`by` whoever answered it from outside, or
+ * through the `dialog` a press opened, whose answer the bridge attributes),
+ * or was forgotten (a new conversation); a dialog this mod raised settled,
+ * with what the engine returned for its call.
  */
 export type AskNote =
   | { kind: 'open'; id: string; questions: AskQuestion[] }
   | { kind: 'answered'; id: string; by: string }
+  | { kind: 'answered'; id: string; dialog: string }
   | { kind: 'forgotten'; ids: string[] }
   | { kind: 'dialog'; toolUseId: string; isError: boolean; text: string }
 
@@ -524,10 +527,11 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
         throw error
       }
     }
-    const outcome = entry.outcome as DialogOutcome | undefined
-    if (outcome === undefined) {
+    const widened = entry.outcome as DialogOutcome | undefined
+    if (widened === undefined) {
       throw new Error(`the dialog for "${first.question}" settled without being widened (${entry.token})`)
     }
+    const outcome: DialogOutcome = { ...widened, ...(entry.toolUseId !== undefined && { toolUseId: entry.toolUseId }) }
     const pasted = newImages(before, await storedImages($, folder), taken)
     pasted.forEach((name) => taken.add(name))
     // Only an answer or "Chat about this" carries pictures; Esc carries none.
@@ -1057,7 +1061,9 @@ async function answerAsk($: EngineInterface, id: string) {
   ask.answer = answer
   deliver(outOf($), { id, text: deliveryText(id, answer) })
   $.ui.invalidate('ui.render')
-  note({ kind: 'answered', id, by: 'terminal' })
+  // The dialog goes through the PermissionRequest hooks like any other, so
+  // its answer may have come from outside: the bridge names who gave it.
+  note({ kind: 'answered', id, dialog: outcome.toolUseId ?? '' })
 }
 
 /**
@@ -1438,6 +1444,7 @@ export function registerAsk(on: On) {
     }
     const result = await next({ ...e, questions: entry.questions } as typeof e)
     entry.outcome = outcomeOf(result as Parameters<typeof outcomeOf>[0])
+    entry.toolUseId = e.tool_use_id
     // What the engine returned for this dialog's call, which the bridge's
     // own hooks do not see (the call is this plugin's): whose answer it used.
     note({ kind: 'dialog', toolUseId: e.tool_use_id ?? '', isError: entry.outcome.kind === 'refused', text: entry.outcome.text })

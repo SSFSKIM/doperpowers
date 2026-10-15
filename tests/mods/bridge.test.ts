@@ -2,7 +2,7 @@ import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
 import { ASK_TOOL } from '../../hooks/mods/ask'
-import { BACKGROUND_WINDOW_MS, HEARTBEAT_MS, SETTLE_GRACE_MS, STEER_WAKE, TEXT_CAP, onAskNote, registerBridge, resetBridge, splitLines } from '../../hooks/mods/bridge'
+import { BACKGROUND_WINDOW_MS, HEARTBEAT_MS, RECORD_WAIT_MS, STEER_WAKE, TRANSCRIPT_RETRY_MS, TEXT_CAP, onAskNote, registerBridge, resetBridge, splitLines } from '../../hooks/mods/bridge'
 
 tier('user')
 
@@ -97,6 +97,8 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
   const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
   /** Appends held by `holdAppend`, each released by the test. */
   const appends: (() => void)[] = []
+  /** Files `$.fs.read` reads (the session's transcripts). */
+  const files: Record<string, string> = {}
   let session = SID
   const $ = {
     plugin: { name: 'doperpowers', root: '/plug' },
@@ -180,6 +182,14 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       now: async () => clockNow,
     },
     ui: { log: (text: string) => logs.push(text) },
+    fs: {
+      read: async (path: string) => {
+        if (files[path] === undefined) {
+          throw new Error(`ENOENT: ${path}`)
+        }
+        return files[path]
+      },
+    },
   }
   resetBridge()
   registerBridge(on)
@@ -275,8 +285,14 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
   const decisionMark = (agentId?: string) =>
     append('hook-context', { type: 'attachment', name: 'hook_permission_decision', role: 'user', content: [] }, { agentId, origin: { kind: 'hook', event: 'PermissionRequest' } })
   /** A call's result row. */
-  const resultRow = (toolUseId: string, content: string, isError = false, agentId?: string) =>
-    append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, ...(isError && { is_error: true }) }] }, { agentId, origin: { kind: 'tool', tool: 'Bash' } })
+  const resultRow = (toolUseId: string, content: string, isError = false, agentId?: string, uuid?: string) =>
+    append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, ...(isError && { is_error: true }) }] }, { agentId, uuid, origin: { kind: 'tool', tool: 'Bash' } })
+  /** The engine's record of a call's permission decision (its `tool_decision` collector record), through the telemetry.log hooks. */
+  const recorded = async (toolUseId: string, source: string, decision: 'accept' | 'reject' = 'accept', tool = 'Bash') => {
+    const e = { to: 'collector', event: 'tool_decision', attributes: { decision, source, tool_name: tool, tool_use_id: toolUseId }, loggedAt: '2026-10-15T00:00:00.000Z' }
+    await hook('telemetry.log', { to: 'collector' })(engine, e, async () => ({ value: undefined }))
+    await settle()
+  }
   let polled = 0
   /** The next poll the mod makes on the child. */
   const nextPoll = async () => {
@@ -307,6 +323,8 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     responseRow,
     decisionMark,
     resultRow,
+    recorded,
+    files,
     polls,
     nextPoll,
     fire,
@@ -1039,6 +1057,8 @@ describe('streaming per content block', () => {
               { index: 1, kind: 'text', text: 'Hi', upTo: 1 },
               { index: 2, kind: 'tool', text: '{"c', upTo: 3, id: 'toolu_9', name: 'Bash' },
             ],
+            // The blocks a row settled, so a child that takes this over ignores their late chunks.
+            settled: [0],
           },
         ],
       })
@@ -1078,6 +1098,7 @@ describe('streaming per content block', () => {
 
 describe('requests from outside: a permission prompt', () => {
   const INPUT = { command: 'rm -rf /tmp/x', description: 'clean' }
+  const REFUSED = "The user doesn't want to proceed with this tool use. The tool use was rejected."
   /** A main turn running, a call the engine put to the dialog, and its PermissionRequest raised: the hook polling. */
   const raised = async () => {
     const h = harness()
@@ -1087,6 +1108,13 @@ describe('requests from outside: a permission prompt', () => {
     const answer = h.permission('Bash', INPUT)
     const poll = await h.nextPoll()
     return { h, answer, poll }
+  }
+  /** A raised request whose poll handed out `decision` from `by`; the hook's answer awaited. */
+  const handedOut = async (decision: Record<string, unknown>, by = 'cli') => {
+    const { h, answer, poll } = await raised()
+    poll.respond(200, { decision, by })
+    await answer
+    return h
   }
 
   test('raised under the tool-use id the check named, before any answer; the hook long-polls the child under the fetch bound', async () => {
@@ -1103,16 +1131,16 @@ describe('requests from outside: a permission prompt', () => {
     expect((await h.nextPoll()).url).toBe('http://bridge/requests/toolu_1/wait?ms=20000')
   })
 
-  test("a decision handed out is the hook's answer; the engine's mark beside the call's result settles it as the decider's", async () => {
+  test("a decision handed out is the hook's answer; the engine's record that a hook decided this call settles it as the decider's, at once", async () => {
     const { h, answer, poll } = await raised()
     poll.respond(200, { decision: { behavior: 'allow' }, by: 'cli' })
     expect(await answer).toEqual({ decision: { behavior: 'allow' } })
     expect(h.ofType('settled')).toEqual([])
-    await h.decisionMark()
-    await h.resultRow('toolu_1', 'done')
+    await h.recorded('toolu_1', 'hook')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'other', outcome: 'allow', by: 'cli' })])
-    // Once: later evidence settles nothing more.
-    await h.fire(SETTLE_GRACE_MS)
+    // Once: the call's result, its end, and the turn's end settle nothing more.
+    await h.resultRow('toolu_1', 'done')
+    await h.fire(RECORD_WAIT_MS)
     await h.complete('t1')
     expect(h.ofType('settled').length).toBe(1)
   })
@@ -1121,8 +1149,7 @@ describe('requests from outside: a permission prompt', () => {
     const { h, answer, poll } = await raised()
     poll.respond(200, { decision: { behavior: 'deny', message: 'not there' }, by: 'm-1' })
     expect(await answer).toEqual({ decision: { behavior: 'deny', message: 'not there' } })
-    await h.decisionMark()
-    await h.resultRow('toolu_1', 'not there', true)
+    await h.recorded('toolu_1', 'hook', 'reject')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'web', outcome: 'deny', by: 'm-1' })])
   })
 
@@ -1132,45 +1159,94 @@ describe('requests from outside: a permission prompt', () => {
     expect(await answer).toEqual({ decision: { behavior: 'deny', message: 'The human denied this request.' } })
   })
 
-  test("a decision the engine did not use: the call's result with no mark is the terminal's, with what it did", async () => {
-    const { h, answer, poll } = await raised()
-    poll.respond(200, { decision: { behavior: 'deny' }, by: 'cli' })
-    await answer
-    await h.resultRow('toolu_1', 'ran anyway')
+  test("the person at the dialog deciding: the terminal's, with what they chose, even with a decision handed out (it lost the race)", async () => {
+    const h = await handedOut({ behavior: 'allow' })
+    await h.recorded('toolu_1', 'user_temporary')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'terminal', outcome: 'allow', by: 'terminal' })])
+    const second = await handedOut({ behavior: 'deny' })
+    await second.recorded('toolu_1', 'user_permanent')
+    expect(second.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'terminal', outcome: 'allow', by: 'terminal' })])
   })
 
-  test('an allow handed out whose call runs on past the grace: the decider allowed it', async () => {
-    const { h, answer, poll } = await raised()
-    poll.respond(200, { decision: { behavior: 'allow' }, by: 'cli' })
-    await answer
-    await h.fire(SETTLE_GRACE_MS)
-    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'other', outcome: 'allow', by: 'cli' })])
-  })
-
-  test('a deny handed out whose call runs on past the grace: the terminal allowed it first (a used deny ends the call at once)', async () => {
-    const { h, answer, poll } = await raised()
-    poll.respond(200, { decision: { behavior: 'deny' }, by: 'cli' })
-    await answer
-    await h.fire(SETTLE_GRACE_MS)
-    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'terminal', outcome: 'allow', by: 'terminal' })])
-  })
-
-  test("the terminal answering first ends the poll with no answer; the call's refusal makes it the terminal's deny", async () => {
+  test("the terminal answering first ends the poll with no answer; its refusal is the terminal's deny", async () => {
     const { h, answer, poll } = await raised()
     poll.respond(410, { reason: 'terminal' })
     expect(await answer).toEqual({})
-    await h.resultRow('toolu_1', "The user doesn't want to proceed with this tool use. The tool use was rejected.", true)
+    expect(h.ofType('settled')).toEqual([])
+    await h.recorded('toolu_1', 'user_reject', 'reject')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'terminal', outcome: 'deny', by: 'terminal' })])
   })
 
-  test('the terminal answering first, the call running on past the grace: the terminal allowed it', async () => {
-    const { h, answer, poll } = await raised()
-    poll.respond(410, { reason: 'terminal' })
-    await answer
+  test('a turn the person interrupted at the dialog (user_abort): withdrawn', async () => {
+    const { h, poll } = await raised()
+    await h.recorded('toolu_1', 'user_abort', 'reject')
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'other', outcome: 'withdrawn', by: 'bridge' })])
+    poll.respond(410, { reason: 'settled' })
+  })
+
+  test("a hook's decision with none of the bridge's handed out (another plugin's hook decided): withdrawn, and said so in the debug log", async () => {
+    const { h, poll } = await raised()
+    await h.recorded('toolu_1', 'hook')
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', outcome: 'withdrawn', by: 'bridge' })])
+    expect(h.logs.join('\n')).toContain('toolu_1')
+    poll.respond(410, { reason: 'settled' })
+  })
+
+  test("a hook's decision other than the one handed out: withdrawn, not credited to the decider", async () => {
+    const h = await handedOut({ behavior: 'allow' })
+    await h.recorded('toolu_1', 'hook', 'reject')
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', outcome: 'withdrawn', by: 'bridge' })])
+  })
+
+  test("records of other calls (rules, mode) settle nothing", async () => {
+    const { h, poll } = await raised()
+    await h.recorded('toolu_other', 'config')
+    await h.recorded('toolu_other', 'hook')
     expect(h.ofType('settled')).toEqual([])
-    await h.fire(SETTLE_GRACE_MS)
-    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'terminal', outcome: 'allow', by: 'terminal' })])
+    poll.respond(410, { reason: 'settled' })
+  })
+
+  test('no record by the call\'s result: the transcript\'s mark of a hook\'s decision for this call says the decider\'s', async () => {
+    const h = await handedOut({ behavior: 'allow' })
+    h.files['/t'] = [
+      JSON.stringify({ type: 'attachment', uuid: 'm1', attachment: { type: 'hook_permission_decision', decision: 'allow', toolUseID: 'toolu_1', hookEvent: 'PermissionRequest' } }),
+      JSON.stringify({ type: 'user', uuid: 'r1', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'done' }] } }),
+      '',
+    ].join('\n')
+    await h.resultRow('toolu_1', 'done', false, undefined, 'r1')
+    expect(h.ofType('settled')).toEqual([])
+    await h.fire(RECORD_WAIT_MS)
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'other', outcome: 'allow', by: 'cli' })])
+  })
+
+  test("no record, and no mark for this call beside its result: the terminal's, with what the result shows; another call's mark does not count", async () => {
+    const h = await handedOut({ behavior: 'allow' })
+    h.files['/t'] = [
+      JSON.stringify({ type: 'attachment', uuid: 'm0', attachment: { type: 'hook_permission_decision', decision: 'allow', toolUseID: 'toolu_0', hookEvent: 'PermissionRequest' } }),
+      JSON.stringify({ type: 'user', uuid: 'r1', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: REFUSED, is_error: true }] } }),
+    ].join('\n')
+    await h.resultRow('toolu_1', REFUSED, true, undefined, 'r1')
+    await h.fire(RECORD_WAIT_MS)
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'terminal', outcome: 'deny', by: 'terminal' })])
+  })
+
+  test('no record, and the result not yet in the transcript: read again until it is; never found, withdrawn', async () => {
+    const h = await handedOut({ behavior: 'allow' })
+    h.files['/t'] = ''
+    await h.resultRow('toolu_1', 'done', false, undefined, 'r1')
+    await h.fire(RECORD_WAIT_MS)
+    expect(h.ofType('settled')).toEqual([])
+    h.files['/t'] = JSON.stringify({ type: 'user', uuid: 'r1', message: { content: [] } })
+    await h.fire(TRANSCRIPT_RETRY_MS)
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', by: 'terminal', outcome: 'allow' })])
+    const lost = await handedOut({ behavior: 'allow' })
+    lost.files['/t'] = ''
+    await lost.resultRow('toolu_1', 'done', false, undefined, 'r9')
+    await lost.fire(RECORD_WAIT_MS)
+    for (let i = 0; i < 10; i++) {
+      await lost.fire(TRANSCRIPT_RETRY_MS)
+    }
+    expect(lost.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', outcome: 'withdrawn', by: 'bridge' })])
   })
 
   test('the settings hooks beneath deciding: nothing is raised, their answer stands', async () => {
@@ -1182,6 +1258,53 @@ describe('requests from outside: a permission prompt', () => {
     expect(h.polls).toEqual([])
   })
 
+  test('two identical calls, the first decided beneath: the second is raised under its own id, and answered from outside', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.check('toolu_1', 'Bash', INPUT)
+    await h.permission('Bash', INPUT, undefined, { decision: { behavior: 'allow' } })
+    await h.check('toolu_2', 'Bash', INPUT)
+    const answer = h.permission('Bash', INPUT)
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_2' })])
+    expect(poll.url).toBe('http://bridge/requests/toolu_2/wait?ms=20000')
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'cli' })
+    await answer
+    await h.recorded('toolu_2', 'hook')
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_2', by: 'cli' })])
+  })
+
+  test('a call the engine decided with no dialog (its mode) leaves no check for a later identical call to take', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.check('toolu_1', 'Bash', INPUT)
+    await h.recorded('toolu_1', 'config')
+    await h.check('toolu_2', 'Bash', INPUT)
+    void h.permission('Bash', INPUT)
+    ;(await h.nextPoll()).respond(410, { reason: 'settled' })
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_2' })])
+  })
+
+  test('answered at the dialog while the settings hooks beneath still ran: nothing is raised', async () => {
+    const h = harness()
+    await h.ready()
+    await h.check('toolu_1', 'Bash', INPUT)
+    let beneath: (v: Record<string, unknown>) => void = () => undefined
+    const answer = h.hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
+      h.engine,
+      { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: INPUT, session_id: SID, transcript_path: '/t', cwd: '/w' },
+      Object.assign(() => new Promise((resolve) => (beneath = resolve)), { signal: new AbortController().signal }),
+    )
+    await h.settle()
+    await h.recorded('toolu_1', 'user_temporary')
+    beneath({})
+    expect(await answer).toEqual({})
+    expect(h.ofType('raised')).toEqual([])
+    expect(h.ofType('settled')).toEqual([])
+  })
+
   test('a turn that ends with the request unanswered withdraws it, and the poll ends there', async () => {
     const { h, answer, poll } = await raised()
     await h.complete('t1', 'aborted')
@@ -1190,10 +1313,10 @@ describe('requests from outside: a permission prompt', () => {
     expect(await answer).toEqual({})
   })
 
-  test("an interrupt with the dialog open: the call's refusal that follows is a withdrawal", async () => {
+  test("the bridge's interrupt with the dialog open: a withdrawal, whatever the record or the result says", async () => {
     const { h, poll } = await raised()
     await h.command({ op: 'interrupt' })
-    await h.resultRow('toolu_1', "The user doesn't want to proceed with this tool use.", true)
+    await h.recorded('toolu_1', 'user_reject', 'reject')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', outcome: 'withdrawn', by: 'bridge' })])
     poll.respond(410, { reason: 'settled' })
   })
@@ -1224,7 +1347,7 @@ describe('requests from outside: a permission prompt', () => {
     const second = await h.nextPoll()
     poll.respond(410, { reason: 'terminal' })
     await answer
-    await h.resultRow('toolu_1', "The user doesn't want to proceed with this tool use.", true)
+    await h.recorded('toolu_1', 'user_reject', 'reject')
     h.children[0]!.write(hello())
     await h.settle()
     const resync = h.posts.at(-1)!.events[1]!
@@ -1242,7 +1365,7 @@ describe('requests from outside: subagents', () => {
   const spawn = (h: ReturnType<typeof harness>, agentId: string, background: boolean) =>
     h.hook('agent.spawn', { tool_use_id: 'tu' })(h.engine, { tool_use_id: 'tu', subagentType: 'general-purpose', description: 'd', background }, async () => ({ agentId, model: 'm' }))
 
-  test("a background subagent's request: raised with its deadline, polled only until it, then left to the terminal, its end still watched", async () => {
+  test("a background subagent's request: raised with its deadline, polled only until it, then left to the terminal, whose record settles it", async () => {
     const h = harness()
     await h.ready()
     await spawn(h, 'a9', true)
@@ -1258,13 +1381,29 @@ describe('requests from outside: subagents', () => {
     h.advance(BACKGROUND_WINDOW_MS)
     h.polls.at(-1)!.respond(204)
     expect(await answer).toEqual({})
-    // The dialog is the terminal's now: the bridge watches for its answer, taking no decision.
-    const watch = await h.nextPoll()
-    expect(watch.url).toBe('http://bridge/requests/toolu_b/wait?ms=20000&watch=1')
-    watch.respond(410, { reason: 'terminal' })
+    // The dialog is the terminal's now: no more polls; the engine's record says what it did.
     await h.settle()
-    await h.resultRow('toolu_b', 'built', false, 'a9')
+    expect(h.polls.length).toBe(2)
+    expect(h.ofType('settled')).toEqual([])
+    await h.recorded('toolu_b', 'user_temporary')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_b', winner: 'terminal', outcome: 'allow', by: 'terminal' })])
+  })
+
+  test("with no record, a subagent's result is read from its own transcript", async () => {
+    const h = harness()
+    await h.ready()
+    await spawn(h, 'a9', true)
+    await h.check('toolu_b', 'Bash', INPUT, 'a9')
+    const answer = h.permission('Bash', INPUT, 'a9')
+    ;(await h.nextPoll()).respond(200, { decision: { behavior: 'allow' }, by: 'cli' })
+    await answer
+    h.files['/t/subagents/agent-a9.jsonl'] = [
+      JSON.stringify({ type: 'attachment', uuid: 'm1', attachment: { type: 'hook_permission_decision', decision: 'allow', toolUseID: 'toolu_b' } }),
+      JSON.stringify({ type: 'user', uuid: 'r1' }),
+    ].join('\n')
+    await h.resultRow('toolu_b', 'built', false, 'a9', 'r1')
+    await h.fire(RECORD_WAIT_MS)
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_b', by: 'cli', outcome: 'allow' })])
   })
 
   test('a subagent the bridge does not know of is bounded the same way; a foreground one is not', async () => {
@@ -1288,30 +1427,32 @@ describe('requests from outside: questions', () => {
   const FRUIT = { question: 'Which fruit?', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple', description: 'a' }, { label: 'Mango', description: 'm' }] }
   const answered = (label: string) => `Your questions have been answered: "Which fruit?"="${label}". You can now continue with these answers in mind.`
   /** The ask mod's dialog for a question, its PermissionRequest polling. */
-  const asked = async () => {
+  const asked = async (id = 'toolu_plugin_1') => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
-    await h.check('toolu_plugin_1', 'AskUserQuestion', { questions: [FRUIT] })
+    await h.check(id, 'AskUserQuestion', { questions: [FRUIT] })
     const answer = h.permission('AskUserQuestion', { questions: [FRUIT] })
     const poll = await h.nextPoll()
     return { h, answer, poll }
   }
 
-  test("answered from outside: the allow carries the dialog's own questions with the answers, and the dialog's result settles it as answered", async () => {
+  test("answered from outside: the allow carries the dialog's own questions with the answers; the record of the hook's decision settles it as answered", async () => {
     const { h, answer, poll } = await asked()
     poll.respond(200, { decision: { behavior: 'allow', updatedInput: { answers: { 'Which fruit?': 'Mango' } } }, by: 'cli' })
     expect(await answer).toEqual({ decision: { behavior: 'allow', updatedInput: { questions: [FRUIT], answers: { 'Which fruit?': 'Mango' } } } })
+    await h.recorded('toolu_plugin_1', 'hook', 'accept', 'AskUserQuestion')
     onAskNote({ kind: 'dialog', toolUseId: 'toolu_plugin_1', isError: false, text: answered('Mango') })
-    await h.settle()
+    await h.fire(RECORD_WAIT_MS)
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', winner: 'other', outcome: 'answered', by: 'cli' })])
   })
 
-  test("the dialog's result naming another answer: the terminal's", async () => {
+  test('the same answer given in the terminal first: the terminal\'s, though the answers match', async () => {
     const { h, answer, poll } = await asked()
     poll.respond(200, { decision: { behavior: 'allow', updatedInput: { answers: { 'Which fruit?': 'Mango' } } }, by: 'cli' })
     await answer
-    onAskNote({ kind: 'dialog', toolUseId: 'toolu_plugin_1', isError: false, text: answered('Apple') })
+    await h.recorded('toolu_plugin_1', 'user_temporary', 'accept', 'AskUserQuestion')
+    onAskNote({ kind: 'dialog', toolUseId: 'toolu_plugin_1', isError: false, text: answered('Mango') })
     await h.settle()
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', winner: 'terminal', outcome: 'answered', by: 'terminal' })])
   })
@@ -1320,9 +1461,19 @@ describe('requests from outside: questions', () => {
     const { h, answer, poll } = await asked()
     poll.respond(410, { reason: 'terminal' })
     await answer
-    onAskNote({ kind: 'dialog', toolUseId: 'toolu_plugin_1', isError: true, text: "The user doesn't want to proceed with this tool use." })
-    await h.settle()
+    await h.recorded('toolu_plugin_1', 'user_reject', 'reject', 'AskUserQuestion')
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', winner: 'terminal', outcome: 'deny', by: 'terminal' })])
+  })
+
+  test('a dialog that settled with no record of who decided it: withdrawn (the dialog keeps no transcript rows to read)', async () => {
+    const { h, answer, poll } = await asked()
+    poll.respond(200, { decision: { behavior: 'allow', updatedInput: { answers: { 'Which fruit?': 'Mango' } } }, by: 'cli' })
+    await answer
+    onAskNote({ kind: 'dialog', toolUseId: 'toolu_plugin_1', isError: false, text: answered('Mango') })
+    await h.settle()
+    expect(h.ofType('settled')).toEqual([])
+    await h.fire(RECORD_WAIT_MS)
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', outcome: 'withdrawn', by: 'bridge' })])
   })
 
   test('an async question: raised as it opens, answered through the ask mod, settled as it is answered, withdrawn when forgotten', async () => {
@@ -1345,5 +1496,34 @@ describe('requests from outside: questions', () => {
     await h.turn('t9')
     await h.complete('t9')
     expect(h.ofType('settled').map((e) => e.request)).not.toContain('toolu_a3')
+  })
+
+  test("an async question opened in the terminal, its dialog answered from outside: settled with the dialog's winner", async () => {
+    const { h, answer, poll } = await asked('toolu_plugin_9')
+    onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })
+    poll.respond(200, { decision: { behavior: 'allow', updatedInput: { answers: { 'Which fruit?': 'Mango' } } }, by: 'm-7' })
+    await answer
+    await h.recorded('toolu_plugin_9', 'hook', 'accept', 'AskUserQuestion')
+    onAskNote({ kind: 'answered', id: 'toolu_a1', dialog: 'toolu_plugin_9' })
+    await h.settle()
+    expect(h.ofType('settled')).toEqual([
+      expect.objectContaining({ request: 'toolu_plugin_9', winner: 'web', outcome: 'answered', by: 'm-7' }),
+      expect.objectContaining({ request: 'toolu_a1', winner: 'web', outcome: 'answered', by: 'm-7' }),
+    ])
+  })
+
+  test("an async question's dialog answered in the terminal, its note before the record: settled with the terminal once the dialog is", async () => {
+    const { h, answer, poll } = await asked('toolu_plugin_9')
+    onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })
+    poll.respond(410, { reason: 'terminal' })
+    await answer
+    onAskNote({ kind: 'answered', id: 'toolu_a1', dialog: 'toolu_plugin_9' })
+    await h.settle()
+    expect(h.ofType('settled')).toEqual([])
+    await h.recorded('toolu_plugin_9', 'user_temporary', 'accept', 'AskUserQuestion')
+    expect(h.ofType('settled')).toEqual([
+      expect.objectContaining({ request: 'toolu_plugin_9', by: 'terminal' }),
+      expect.objectContaining({ request: 'toolu_a1', winner: 'terminal', outcome: 'answered', by: 'terminal' }),
+    ])
   })
 })

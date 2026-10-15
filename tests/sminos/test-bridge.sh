@@ -297,7 +297,25 @@ until_true 100 has_lines "$T/w11" 1 || true
 M6="$(streaming_of "$(nth_line "$T/w11" 1)" "$T6")"
 assert_equals "$(block_indexes "$M6")" "[2]" "a chunk for a settled block is ignored"
 assert_equals "$(field_of "$M6" upTo)" "5" "though the message's upTo moves past it"
-ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T6'","agentId":null,"reason":"answer"}]' >/dev/null
+# A resync between the block-row and a late chunk: the block stays settled,
+# from this child's own memory when the mod's copy does not name it, and from
+# the copy's `settled` for a message this child never saw (a child that took
+# over from another).
+T7=77777777-aaaa-4aaa-8aaa-777777777777
+ctl post "$SOCK" '[{"type":"resync","turns":[{"turnId":"'$T6'","agentId":null},{"turnId":"'$T7'","agentId":null}],"agents":[{"agentId":"a7","subagentType":"general-purpose","running":true}],
+ "streaming":[{"turnId":"'$T6'","agentId":null,"step":0,"model":"m","upTo":5,"blocks":[{"index":1,"kind":"text","text":"Running","upTo":2},{"index":2,"kind":"tool","text":"{\"comm","upTo":4,"id":"toolu_9","name":"Bash"}]},
+  {"turnId":"'$T7'","agentId":null,"step":0,"model":"m","upTo":1,"settled":[0],"blocks":[{"index":1,"kind":"text","text":"B","upTo":1}]}]},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":6,"chunk":{"kind":"text","index":1,"text":"later"}},
+ {"type":"chunk","turnId":"'$T7'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":0,"text":"late"}}]' >/dev/null
+watch_json "$SID" "$T/w11b"
+until_true 100 has_lines "$T/w11b" 1 || true
+assert_equals "$(block_indexes "$(streaming_of "$(nth_line "$T/w11b" 1)" "$T6")")" "[2]" \
+  "after a resync whose copy still holds a block this child saw settled, its late chunk is ignored"
+M7="$(streaming_of "$(nth_line "$T/w11b" 1)" "$T7")"
+assert_equals "$(block_indexes "$M7")" "[1]" "a resync's settled blocks stay settled in a child that never saw their rows"
+assert_equals "$(field_of "$M7" upTo)" "2" "the late chunk still moves the message on"
+ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T6'","agentId":null,"reason":"answer"},
+ {"type":"turn","phase":"complete","turnId":"'$T7'","agentId":null,"reason":"answer"}]' >/dev/null
 
 # The human view: the conversation as it streams, subagents labelled.
 "$SMINOS" watch "$SID" > "$T/h1" 2>&1 &

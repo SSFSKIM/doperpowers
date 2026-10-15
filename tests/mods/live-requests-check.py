@@ -3,9 +3,13 @@
 
 What only a running engine shows, pinned so a release that breaks it fails
 loudly, in a terminal session and a `--bg` job:
+- the engine raises a `tool_decision` record through `telemetry.log` for
+  each decision, naming its call and who decided (the bridge settles on it);
+  a witness mod, `live-decision-probe/`, writes what it receives;
 - a permission prompt is raised and settled once, naming the side whose
   answer the engine used, in DC2.G3's four cases: answered from the CLI
-  first, in the terminal first (the request settles within 2 s of the key),
+  first (settled while the call still runs), in the terminal first (the
+  request settles within 2 s of the key),
   both at once (the winner agrees with the engine's own mark in the
   transcript), and the CLI answering after the terminal did (refused as
   already settled); a deny from the CLI carries its message to the model;
@@ -31,6 +35,8 @@ import glob
 import importlib.util
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -58,8 +64,26 @@ KIND = {"text": "text", "thinking": "thinking", "redacted_thinking": "thinking",
 class Requests(LC.Control):
     def setup(self):
         LB.Live.setup(self)  # settings.json stays {}: every Bash call asks
+        self.decisions = os.path.join(self.root, "decisions.json")
+        # A copy: the engine writes its type stubs into a plugin it loads.
+        self.probe = os.path.join(self.root, "probe")
+        shutil.copytree(os.path.join(HERE, "live-decision-probe"), self.probe)
         with open(self.envfile, "a") as f:
             f.write("export CLAUDE_CODE_DAEMON_COLD_START=transient\n")
+            f.write("export LIVE_DECISIONS=%s\n" % shlex.quote(self.decisions))
+
+    def start_session(self):
+        inner = "set -e; . %s; cd %s; exec claude --plugin-dir %s --plugin-dir %s --model haiku --permission-mode default -n %s" % (
+            shlex.quote(self.envfile), shlex.quote(self.work), shlex.quote(self.plugin), shlex.quote(self.probe), NAME)
+        cmd = "env -i /bin/bash --noprofile --norc -c %s" % shlex.quote(inner)
+        subprocess.run(self.tmux + ["new-session", "-d", "-s", "brl", "-x", "200", "-y", "50", cmd], check=True)
+
+    def records(self):
+        try:
+            with open(self.decisions) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return []
 
     # -- helpers
 
@@ -106,16 +130,22 @@ class Requests(LC.Control):
 
     def cli_first(self, term):
         m = self.marker + "cli"
-        t, at, raised = self.ask_bash(term, m)
+        # A call that runs on: the settlement comes from the engine's record of
+        # the decision, at once, not from the call's end.
+        t, at, raised = self.ask_bash(term, m, sleep=12)
         rid = raised["request"]
+        t0 = time.time()
         r = self.cli("decide", NAME, rid, "allow")
-        _, s = self.settled(term, rid)
+        st, s = self.settled(term, rid)
+        running = not self.call_results(term, rid)
         self.turn_end(term, t)
         ran = any(m in str(e.get("text")) for e in self.call_results(term, rid))
-        self.check("CLI first: raised with its tool, input and tool-use id; the CLI's allow settles it as the CLI's",
+        self.check("CLI first: raised with its tool, input and tool-use id; the CLI's allow settles it as the CLI's, while the call still runs",
                    r.returncode == 0 and "settled from here: allow" in r.stdout and rid.startswith("toolu_")
-                   and self.outcome(s) == "other/allow/cli" and ran and len(self.all_settled(term, rid)) == 1,
-                   "%s; settled %s; ran %s" % ((r.stdout + r.stderr).strip(), self.outcome(s), ran))
+                   and self.outcome(s) == "other/allow/cli" and ran and len(self.all_settled(term, rid)) == 1
+                   and running and st - t0 <= 2.5,
+                   "%s; settled %s %.2f s after the decide began, the call still running: %s; ran %s"
+                   % ((r.stdout + r.stderr).strip(), self.outcome(s), st - t0, running, ran))
         self.check("CLI first: the engine marked the hook's answer as the one it used", self.marked(self.session, rid),
                    "%d mark rows" % len(self.marked(self.session, rid)))
         self.idle(self.endpoint())
@@ -126,17 +156,29 @@ class Requests(LC.Control):
         rid = raised["request"]
         r = self.cli("decide", NAME, rid, "deny", "--message", "Not now: say the word WALNUT instead.")
         _, s = self.settled(term, rid)
-        self.turn_end(term, t)
+        # The model may try the same call again: each retry is its own request
+        # (a call never takes an earlier identical one's id), denied the same way.
+        retries = []
+        deadline = time.time() + 150
+        while not term.seen(lambda e: is_main(e, "turn", "complete"), t):
+            if time.time() > deadline:
+                raise TimeoutError("the deny's turn did not end")
+            for e in term.seen(lambda e: e.get("type") == "raised" and self.bash_marker(m)(e), t):
+                if e["request"] not in retries + [rid]:
+                    retries.append(e["request"])
+                    self.cli("decide", NAME, e["request"], "deny", "--message", "Still no. Reply with the word WALNUT and stop.")
+            time.sleep(0.3)
         res = self.call_results(term, rid)
         self.check("a CLI deny carries its message to the model",
                    r.returncode == 0 and self.outcome(s) == "other/deny/cli" and res and res[0].get("isError")
                    and "WALNUT" in str(res[0].get("text")) and "WALNUT" in LC.main_text(term, t),
-                   "%s; settled %s; result %r" % (r.stdout.strip(), self.outcome(s), str(res[0].get("text"))[:80] if res else None))
+                   "%s; settled %s; result %r%s" % (r.stdout.strip(), self.outcome(s), str(res[0].get("text"))[:80] if res else None,
+                                                    "; the model retried %d time(s), each raised under its own id %s" % (len(retries), retries) if retries else ""))
         self.idle(self.endpoint())
 
     def terminal_first(self, term):
         m = self.marker + "term"
-        # A call that runs on: its settlement must come from the poll ending, not from its result.
+        # A call that runs on: its settlement must come from the engine's record of the key, not from its result.
         t, at, raised = self.ask_bash(term, m, sleep=8)
         rid = raised["request"]
         wait_for("the dialog", 20, self.dialog)
@@ -222,12 +264,15 @@ class Requests(LC.Control):
         at, raised = self.raised(term, t, self.bash_marker(m), m)
         rid = raised["request"]
         deadline = raised.get("deadline")
+        # The deadline is the engine clock's at the raise plus 3 s; the event's
+        # `t` is stamped as it is emitted, a millisecond or so later.
         window = deadline - raised["t"] if isinstance(deadline, int) else None
+        is_window = window is not None and abs(window - 3000) <= 50
         if within:
             r = self.cli("decide", NAME, rid, "allow")
             _, s = self.settled(term, rid)
             self.check("a background subagent's request: a 3 s deadline, answerable from the CLI within it",
-                       raised.get("agentId") and window == 3000 and r.returncode == 0 and self.outcome(s) == "other/allow/cli",
+                       raised.get("agentId") and is_window and r.returncode == 0 and self.outcome(s) == "other/allow/cli",
                        "agent %s, window %s ms; %s; settled %s" % (raised.get("agentId"), window, r.stdout.strip(), self.outcome(s)))
         else:
             drawn_early = []
@@ -249,7 +294,7 @@ class Requests(LC.Control):
                     if not self.dialog():
                         _, s = self.settled(term, rid)
             self.check("a background subagent's dialog is drawn only after its 3 s window",
-                       window == 3000 and drawn_early and not any(drawn_early) and seen - deadline / 1000 < 3,
+                       is_window and drawn_early and not any(drawn_early) and seen - deadline / 1000 < 3,
                        "window %s ms; drawn %.2f s after the deadline" % (window, seen - deadline / 1000))
             self.check("past the window only the terminal answers it",
                        r.returncode == 1 and "window" in r.stderr and s and self.outcome(s) == "terminal/allow/terminal",
@@ -316,6 +361,26 @@ class Requests(LC.Control):
                    "%s; settled %s" % (r.stdout.strip(), self.outcome(s)))
         bg.stop.set()
 
+    def records_check(self, term):
+        """Every settled request whose call the engine decided has its
+        `tool_decision` record, as a mod receives it, naming who decided."""
+        records = {r.get("tool_use_id"): r for r in self.records() if isinstance(r, dict)}
+        expect = {"cli": {"hook"}, "terminal": {"user_temporary", "user_permanent", "user_reject"}, "bridge": {"user_abort"}}
+        rows, bad = 0, []
+        for s in term.seen(lambda e: e.get("type") == "settled"):
+            rid, by = s.get("request"), s.get("by")
+            raised = term.seen(lambda e, rid=rid: e.get("type") == "raised" and e.get("request") == rid)
+            if not raised or raised[0].get("async") or by not in expect:
+                continue
+            rows += 1
+            rec = records.get(rid)
+            if rec is None or rec.get("source") not in expect[by] or not rec.get("tool_name"):
+                bad.append("%s %s: %s" % (rid[:20], by, rec))
+        sources = sorted({str(r.get("source")) for r in records.values()})
+        self.check("the engine's tool_decision records reach a mod through telemetry.log, naming each call and who decided",
+                   rows >= 8 and not bad, "%d settlements matched to their record; sources seen %s%s"
+                   % (rows, sources, ("; mismatched: " + "; ".join(bad)) if bad else ""))
+
     def block_rows(self, term):
         """Every block-row names a transcript row of its block's kind; counts
         the steps whose nth response row named block n."""
@@ -370,6 +435,7 @@ class Requests(LC.Control):
         self.background(term, "out", within=False)
         self.question(term)
         self.async_question(term)
+        self.records_check(term)
         self.block_rows(term)
         self.bg_job()
 

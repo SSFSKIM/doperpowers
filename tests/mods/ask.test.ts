@@ -1495,14 +1495,14 @@ describe('answered from outside the terminal (the bridge)', () => {
     await pressed
   })
 
-  test("a press's answer is told to the observer as the terminal's", async () => {
+  test("a press's answer is told to the observer with the dialog it went through, whose answer may have come from outside", async () => {
     const { h, notes, id } = await opened()
     const pressed = h.press(`ask-answer:${id}`)
     await h.settle()
     await h.raise(0, answered(ANSWER))
     await pressed
     await h.settle()
-    expect(notes.at(-1)).toEqual({ kind: 'answered', id, by: 'terminal' })
+    expect(notes.at(-1)).toEqual({ kind: 'answered', id, dialog: 'nested_0' })
   })
 
   test('a dialog the mod raised is told to the observer as it settles, by its call id, with what the engine returned', async () => {

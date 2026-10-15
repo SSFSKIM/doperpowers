@@ -231,14 +231,16 @@ _BLOCK_KIND = {"text": "text", "thinking": "thinking", "tool": "tool", "input": 
 
 def _message(e):
     """A streaming message as the snapshot carries it, from a step's start or
-    a resync's entry: its blocks by index, the ones a block-row settled, and
-    `upTo`, the last chunk applied to it."""
+    a resync's entry: its blocks by index, the ones a block-row settled (a
+    resync names them, so their late chunks stay ignored), and `upTo`, the
+    last chunk applied to it."""
+    settled = {i for i in e.get("settled") or [] if type(i) is int}
     blocks = {}
     for b in e.get("blocks") or []:
-        if isinstance(b, dict) and isinstance(b.get("index"), int):
+        if isinstance(b, dict) and isinstance(b.get("index"), int) and b["index"] not in settled:
             blocks[b["index"]] = dict(b)
     m = {"turnId": e.get("turnId"), "agentId": e.get("agentId"), "step": e.get("step"), "model": e.get("model"),
-         "upTo": e.get("upTo") if isinstance(e.get("upTo"), int) else -1, "blocks": blocks, "settled": set()}
+         "upTo": e.get("upTo") if isinstance(e.get("upTo"), int) else -1, "blocks": blocks, "settled": settled}
     return m
 
 
@@ -403,7 +405,17 @@ class Bridge:
             # The mod's own copy of the live state, whole: it replaces this one,
             # and what is kept for the session with it.
             self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
-            self.streaming = {_key(m): _message(m) for m in e.get("streaming") or []}
+            streaming = {}
+            for entry in e.get("streaming") or []:
+                m = _message(entry)
+                # A block this child saw settled stays settled, whatever the copy says.
+                old = self.streaming.get(_key(entry))
+                if old is not None:
+                    m["settled"] |= old["settled"]
+                    for i in old["settled"]:
+                        m["blocks"].pop(i, None)
+                streaming[_key(entry)] = m
+            self.streaming = streaming
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
             self.broken = set()
             if isinstance(e.get("pending"), list):
@@ -573,12 +585,11 @@ class Bridge:
                         p["closed"] = True
                         self.changed.notify_all()
 
-    def wait_decision(self, rid, ms, watch_only=False):
+    def wait_decision(self, rid, ms):
         """The mod's poll: a client's decision once there is one (handed out
         once), 410 once the request is settled or the terminal answered it,
-        204 when the hold runs out. `watch_only` (the mod's watch after it
-        stopped waiting for a decision) hands nothing out. A request not
-        raised yet (its `raised` still on its way) is waited for."""
+        204 when the hold runs out. A request not raised yet (its `raised`
+        still on its way) is waited for."""
         deadline = time.monotonic() + max(0, min(ms, POLL_HOLD_MAX)) / 1000.0
         with self.lock:
             while True:
@@ -586,7 +597,7 @@ class Bridge:
                 if p is None and rid in self.settled:
                     return 410, {"reason": "settled", "settled": self.settled[rid]}
                 if p is not None:
-                    if not watch_only and p["decided"] is not None and not p["handed"]:
+                    if p["decided"] is not None and not p["handed"]:
                         p["handed"] = True
                         return 200, dict(p["decided"])
                     if p["closed"] and not p["handed"]:
@@ -756,7 +767,7 @@ class _Handler(BaseHTTPRequestHandler):
                 ms = int((q.get("ms") or [str(POLL_HOLD_MAX)])[0])
             except ValueError:
                 return self._send(400, {"error": "ms is milliseconds"})
-            return self._send(*bridge.wait_decision(unquote(parts[2]), ms, watch_only=(q.get("watch") or [""])[0] == "1"))
+            return self._send(*bridge.wait_decision(unquote(parts[2]), ms))
         return self._send(404, {"error": "no route %s" % route})
 
     def do_POST(self):

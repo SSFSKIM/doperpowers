@@ -1,7 +1,7 @@
 import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDecision, ProcessSpawnChunk, ProcessSpawnResult, SessionStartInput, Timer } from 'claude-code'
 
-import { ASK_TOOL, answerAsync, answerRows, observeAsks } from './ask'
-import type { AskNote, AskQuestion } from './ask'
+import { ASK_TOOL, answerAsync, observeAsks } from './ask'
+import type { AskNote } from './ask'
 
 /**
  * The bridge (DC2): this session's live events go out, and commands come in,
@@ -95,17 +95,25 @@ const BACKGROUNDED = /running in background with ID: ([A-Za-z0-9_-]+)/
  */
 export const BACKGROUND_WINDOW_MS = 3_000
 /**
- * After the terminal answered, or a decision went to the engine, how long the
- * call has to show what the engine did (a refusal ends it at once) before the
- * running call is read as allowed.
+ * The engine records each permission decision as it is made (its
+ * `tool_decision` collector record, raised to plugins through `telemetry.log`
+ * whether or not a collector is configured; live, 2.1.300, also with
+ * DISABLE_TELEMETRY and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC). A call
+ * whose result arrives with no record within this long is settled from the
+ * transcript instead.
  */
-export const SETTLE_GRACE_MS = 1_500
+export const RECORD_WAIT_MS = 1_000
+/** The transcript holds a result row once it is written: read again this often, so many times. */
+export const TRANSCRIPT_RETRY_MS = 300
+const TRANSCRIPT_TRIES = 6
+/** The record's sources that are the person at the dialog (`user_abort` is an interrupt: nobody answered). */
+const PERSON_SOURCES = new Set(['user_temporary', 'user_permanent', 'user_reject'])
 /** The child holds a poll this long at most, under `$.http.fetch`'s 30-second bound. */
 const POLL_HOLD_MS = 20_000
 /** With no child answering (one restarting), the hook waits this long, so many times, out of its own budget. */
 const POLL_RETRY_MS = 250
 const POLL_RETRIES = 16
-/** Tool checks put to the dialog, kept for their PermissionRequest; recent settlements, for a late subscriber. */
+/** Tool checks put to the dialog, kept for their PermissionRequest (and those decided, for a late one); recent settlements, for a late subscriber. */
 const CHECKS_KEPT = 50
 const SETTLED_KEPT = 100
 /** A deny that carries no words of its own. */
@@ -168,13 +176,13 @@ type Request = {
   /** The turn of its loop it was raised in: that turn's end withdraws it. */
   turnId?: string
   decided?: { decision: Decision; by: string }
-  /** The terminal answered it: the child saw the dialog close. */
-  isClosed: boolean
-  /** The engine kept a hook's decision in its loop after a decision went to it. */
-  isMarked: boolean
   /** The bridge's interrupt aborted its turn. */
   isAborted: boolean
+  /** The session's transcript (the PermissionRequest's `transcript_path`): where its loop's rows are read when no record came. */
+  transcript?: string
 }
+/** A call the engine's check put to the dialog. */
+type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
 
 type BridgeState = {
   /**
@@ -182,8 +190,8 @@ type BridgeState = {
    * long as the child's loop does, so posts, timers and restarts run on it.
    */
   post?: (socketPath: string, body: string) => Promise<HttpResponse>
-  /** A GET on the child's endpoint, outside any hook (a request watched after its hook returned). */
-  get?: (socketPath: string, path: string) => Promise<HttpResponse>
+  /** A file's text, outside any hook (a transcript read when no record of a decision came). */
+  read?: (path: string) => Promise<string>
   log?: (text: string) => void
   after?: (ms: number, fn: () => void) => void
   readId?: () => Promise<string>
@@ -239,7 +247,14 @@ type BridgeState = {
   /** Each loop's latest model request and where its blocks started, for pairing rows with blocks. */
   stepBlocks: Map<string, StepBlocks>
   /** Calls the engine's check put to the dialog, oldest first: a PermissionRequest takes its call's id from one. */
-  checks: { toolUseId: string; tool: string; agentId: string | null; input: unknown }[]
+  checks: Check[]
+  /** Checks whose decision the engine recorded before a PermissionRequest took them (no dialog, or answered at once). */
+  decidedChecks: Check[]
+  /** Calls a PermissionRequest hook took and has not raised yet; those of them already decided. */
+  claiming: Set<string>
+  preDecided: Set<string>
+  /** An async question answered through a dialog whose request had not settled yet: dialog id → question id. */
+  askDialogs: Map<string, string>
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
   requests: Map<string, Request>
   settled: Record<string, unknown>[]
@@ -251,6 +266,10 @@ const fresh = (): BridgeState => ({
   loopTurns: new Map(),
   stepBlocks: new Map(),
   checks: [],
+  decidedChecks: [],
+  claiming: new Set(),
+  preDecided: new Set(),
+  askDialogs: new Map(),
   requests: new Map(),
   settled: [],
   minted: 0,
@@ -411,7 +430,9 @@ function resyncEvent(): BridgeEvent {
   return {
     type: 'resync',
     turns: [...state.turns.values()],
-    streaming: [...state.messages.values()].map(shownMessage),
+    // Each message also names the blocks a row settled, so a child taking it
+    // over ignores their late chunks as this one does.
+    streaming: [...state.messages.values()].map((m) => ({ ...shownMessage(m), settled: [...m.settled].sort((a, b) => a - b) })),
     agents: [...state.agents.values()],
     pending: [...state.requests.values()].map((r) => ({ ...raisedFields(r), t: r.t })),
     settled: state.settled.map((s) => ({ ...s })),
@@ -434,6 +455,9 @@ function forgetLive() {
   state.loopTurns.clear()
   state.stepBlocks.clear()
   state.checks = []
+  state.decidedChecks = []
+  state.preDecided.clear()
+  state.askDialogs.clear()
   state.requests.clear()
   state.settled = []
 }
@@ -805,6 +829,12 @@ function settle(r: Request, outcome: Outcome, by: string) {
     state.settled.shift()
   }
   emit({ type: 'settled', ...settled })
+  // An async question answered through this dialog settles with it.
+  const asked = state.askDialogs.get(r.id)
+  if (asked !== undefined) {
+    state.askDialogs.delete(r.id)
+    answeredThrough(asked, settled)
+  }
 }
 
 /** Whether a subagent runs in the background, itself or under an ancestor; one the bridge does not know of is taken to (its window is bounded). */
@@ -823,14 +853,25 @@ function isBackground(agentId: string): boolean {
 /**
  * The call a PermissionRequest is for: the hook's input names no call, so the
  * engine's check that put a call of that tool, in that loop, to the dialog
- * names it (the one with the same input first).
+ * names it (the one with the same input first). Every PermissionRequest takes
+ * its check, raised or not, so none is left for a later identical call. A
+ * check whose decision the engine already recorded is taken as decided.
  */
-function claimCheck(tool: string, agentId: string | null, input: unknown): string | undefined {
-  const same = (c: BridgeState['checks'][number]) => c.tool === tool && c.agentId === agentId
+function claimCheck(tool: string, agentId: string | null, input: unknown): { toolUseId: string; isDecided: boolean } | undefined {
+  const same = (c: Check) => c.tool === tool && c.agentId === agentId
   const text = JSON.stringify(input)
-  const exact = state.checks.findIndex((c) => same(c) && JSON.stringify(c.input) === text)
-  const at = exact >= 0 ? exact : state.checks.findIndex(same)
-  return at < 0 ? undefined : state.checks.splice(at, 1)[0]?.toolUseId
+  const exact = (c: Check) => same(c) && JSON.stringify(c.input) === text
+  const take = (list: Check[], at: number) => list.splice(at, 1)[0]?.toolUseId
+  let at = state.checks.findIndex(exact)
+  if (at >= 0) {
+    return { toolUseId: take(state.checks, at) as string, isDecided: false }
+  }
+  at = state.decidedChecks.findIndex(exact)
+  if (at >= 0) {
+    return { toolUseId: take(state.decidedChecks, at) as string, isDecided: true }
+  }
+  at = state.checks.findIndex(same)
+  return at < 0 ? undefined : { toolUseId: take(state.checks, at) as string, isDecided: false }
 }
 
 /** The decision as the engine takes it: a question's allow carries the dialog's own questions with the answers. */
@@ -848,15 +889,15 @@ function engineDecision(r: Request, d: Decision): PermissionRequestDecision {
  * Polls the child for a decision while the dialog is up, in holds under the
  * fetch bound, until one is handed out, the terminal answered, the request
  * settled, or a background window's deadline passed. Past the deadline (or
- * with no child answering) the dialog is the terminal's, and the request's
- * end is watched from outside the hook.
+ * with no child answering) the dialog is the terminal's; the engine's record
+ * of what it decided settles the request.
  */
 async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal): Promise<PermissionRequestDecision | undefined> {
   let retries = 0
   while (state.requests.get(r.id) === r && !signal.aborted) {
     const hold = r.deadline === undefined ? POLL_HOLD_MS : Math.min(POLL_HOLD_MS, r.deadline - (await $.clock.now()))
     if (hold <= 0) {
-      break
+      return undefined
     }
     const socketPath = state.socket
     let res: HttpResponse | undefined
@@ -865,7 +906,7 @@ async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal
     }
     if (res === undefined) {
       if (++retries > POLL_RETRIES) {
-        break
+        return undefined
       }
       await $.clock.sleep(POLL_RETRY_MS)
       continue
@@ -875,18 +916,12 @@ async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal
       const decision = handed?.decision as Decision | undefined
       if (decision !== undefined && (decision.behavior === 'allow' || decision.behavior === 'deny') && typeof handed?.by === 'string') {
         r.decided = { decision, by: handed.by }
-        graceFor(r)
         return engineDecision(r, decision)
       }
     } else if (res.status === 410) {
-      if (parsed(res.text)?.reason === 'terminal') {
-        terminalAnswered(r)
-      }
+      // The terminal answered it, or it settled: nothing to answer.
       return undefined
     }
-  }
-  if (state.requests.get(r.id) === r) {
-    watchRequest(r)
   }
   return undefined
 }
@@ -900,91 +935,108 @@ const parsed = (text: string): Record<string, unknown> | undefined => {
   }
 }
 
-/** A request whose hook stopped waiting: the child says when the terminal answers it (it hands out nothing here). */
-function watchRequest(r: Request) {
-  const round = () => {
-    if (state.requests.get(r.id) !== r || r.isClosed || state.get === undefined) {
-      return
+/**
+ * The engine recorded the decision on a call (DX4's evidence of who won,
+ * tied to the call's id): a PermissionRequest hook's, the person's at the
+ * dialog (`user_*`), or neither (its rules or mode, an interrupt). A call
+ * not raised yet is taken as decided, so it is never raised.
+ */
+function decisionRecorded(id: string, source: string, isAccepted: boolean) {
+  const at = state.checks.findIndex((c) => c.toolUseId === id)
+  if (at >= 0) {
+    state.decidedChecks.push(...state.checks.splice(at, 1))
+    if (state.decidedChecks.length > CHECKS_KEPT) {
+      state.decidedChecks.shift()
     }
-    const socketPath = state.socket
-    if (socketPath === undefined) {
-      state.after?.(1_000, round)
-      return
-    }
-    state.get(socketPath, `/requests/${encodeURIComponent(r.id)}/wait?ms=${POLL_HOLD_MS}&watch=1`).then(
-      (res) => {
-        if (res.status !== 410) {
-          round()
-        } else if (parsed(res.text)?.reason === 'terminal') {
-          terminalAnswered(r)
-        }
-      },
-      () => state.after?.(1_000, round),
-    )
   }
-  round()
-}
-
-function terminalAnswered(r: Request) {
-  r.isClosed = true
-  graceFor(r)
-}
-
-/** Once the call has had its grace to show what the engine did, what it shows by running on. */
-function graceFor(r: Request) {
-  state.after?.(SETTLE_GRACE_MS, () => {
-    if (state.requests.get(r.id) !== r) {
-      return
-    }
-    const ran = r.isQuestion ? 'answered' : 'allow'
-    if (r.isAborted) {
-      settle(r, 'withdrawn', 'bridge')
-    } else if (r.decided !== undefined) {
-      // A deny the engine used ends the call at once; one still running was allowed in the terminal.
-      settle(r, ran, r.decided.decision.behavior === 'deny' ? 'terminal' : r.decided.by)
-    } else if (r.isClosed) {
-      settle(r, ran, 'terminal')
-    }
-  })
-}
-
-/** Whether a question's result holds the answers a client decided. */
-function sameAnswers(r: Request, text: string): boolean {
-  const asked = isRecord(r.rawInput) && Array.isArray(r.rawInput.questions) ? (r.rawInput.questions as AskQuestion[]) : []
-  const decided = r.decided?.decision.updatedInput?.answers ?? {}
-  const rows = answerRows(asked, text)
-  return rows.length === Object.keys(decided).length && rows.every(([question, answer]) => decided[question] === answer)
+  if (state.claiming.has(id)) {
+    state.preDecided.add(id)
+  }
+  const r = state.requests.get(id)
+  if (r !== undefined && !r.isAsync) {
+    settleDecided(r, source, isAccepted)
+  }
 }
 
 /**
- * A request's call ended with this result: whose answer the engine used. A
- * decision that went to the engine was used when the engine kept its mark
- * beside the result (a question: when the result holds its answers); else the
- * terminal answered, and the result says what (a refusal is its deny).
+ * Settles a request from who decided it: the bridge's decider when a hook's
+ * decision was used and it is the one the bridge handed out; the terminal
+ * when the person decided at the dialog; else nobody (withdrawn).
  */
-function callEnded(toolUseId: string, result: { isError: boolean; text: string }) {
+function settleDecided(r: Request, source: string, isAccepted: boolean) {
+  const outcome: Outcome = !isAccepted ? 'deny' : r.isQuestion ? 'answered' : 'allow'
+  if (r.isAborted) {
+    settle(r, 'withdrawn', 'bridge')
+  } else if (source === 'hook' && r.decided !== undefined && (r.decided.decision.behavior === 'allow') === isAccepted) {
+    settle(r, outcome, r.decided.by)
+  } else if (PERSON_SOURCES.has(source)) {
+    settle(r, outcome, 'terminal')
+  } else {
+    if (source === 'hook') {
+      state.log?.(`bridge: request ${r.id} was decided by a PermissionRequest hook with an answer the bridge did not hand out; withdrawn`)
+    }
+    settle(r, 'withdrawn', 'bridge')
+  }
+}
+
+/**
+ * A request's call ended with no record of its decision yet: one that comes
+ * within RECORD_WAIT_MS settles it; else the transcript does. The engine
+ * writes its mark of a used hook decision (`hook_permission_decision`, with
+ * the call's id) just before the call's result, so once the result row is in
+ * the file, a mark with this call's id says the hook's answer was used, and
+ * none says the person's was.
+ */
+function callEnded(toolUseId: string, result: { text: string; uuid: string }) {
   const r = state.requests.get(toolUseId)
   if (r === undefined || r.isAsync) {
     return
   }
-  if (r.isAborted) {
+  state.after?.(RECORD_WAIT_MS, () => void settleFromTranscript(r, result, 0))
+}
+
+async function settleFromTranscript(r: Request, result: { text: string; uuid: string }, tries: number) {
+  if (state.requests.get(r.id) !== r) {
+    return
+  }
+  const path = transcriptOf(r)
+  let lines: string[] | undefined
+  try {
+    lines = path === undefined || state.read === undefined ? undefined : (await state.read(path)).split('\n').filter((l) => l.includes(r.id) || l.includes(result.uuid))
+  } catch {
+    lines = undefined
+  }
+  if (state.requests.get(r.id) !== r) {
+    return
+  }
+  const rows = (lines ?? []).map(parsed).filter((row) => row !== undefined)
+  if (!rows.some((row) => row.uuid === result.uuid)) {
+    if (lines !== undefined && tries < TRANSCRIPT_TRIES) {
+      state.after?.(TRANSCRIPT_RETRY_MS, () => void settleFromTranscript(r, result, tries + 1))
+      return
+    }
+    state.log?.(`bridge: request ${r.id}: no record of its decision, and its result is not in ${path ?? 'a transcript'}; withdrawn`)
     settle(r, 'withdrawn', 'bridge')
     return
   }
-  const outcome: Outcome = r.isQuestion ? (result.isError ? 'deny' : 'answered') : result.text.includes(REFUSAL) ? 'deny' : 'allow'
-  const d = r.decided
-  if (d !== undefined) {
-    const decided: Outcome = d.decision.behavior === 'deny' ? 'deny' : r.isQuestion ? 'answered' : 'allow'
-    const isUsed = r.isQuestion ? decided === outcome && (outcome !== 'answered' || sameAnswers(r, result.text)) : r.isMarked
-    if (isUsed) {
-      settle(r, decided, d.by)
-      return
-    }
+  const mark = rows.map((row) => row.attachment).find((a) => isRecord(a) && a.type === 'hook_permission_decision' && a.toolUseID === r.id)
+  if (isRecord(mark)) {
+    settleDecided(r, 'hook', mark.decision === 'allow')
+  } else {
+    settleDecided(r, 'user_temporary', !result.text.includes(REFUSAL))
   }
-  settle(r, outcome, 'terminal')
 }
 
-/** A tool result's text: a string, or its text blocks joined. */
+/** The file a request's loop keeps its rows in: the session's transcript, or its subagent's beside it. */
+function transcriptOf(r: Request): string | undefined {
+  const main = r.transcript
+  if (main === undefined || r.agentId === null || main.includes('/subagents/')) {
+    return main
+  }
+  return `${main.replace(/\.jsonl$/, '')}/subagents/agent-${r.agentId}.jsonl`
+}
+
+/** A result's text: a string, or its text blocks joined. */
 function resultText(content: unknown): string {
   if (typeof content === 'string') {
     return content
@@ -992,24 +1044,15 @@ function resultText(content: unknown): string {
   return Array.isArray(content) ? content.map((b) => (isRecord(b) && typeof b.text === 'string' ? b.text : '')).join('\n') : ''
 }
 
-/**
- * A row the session kept: a response row names its block (`block-row`); the
- * engine's mark of a hook's decision, and a call's result, settle requests.
- */
+/** A row the session kept: a response row names its block (`block-row`); a call's result may settle a request. */
 function observeRow(door: string, message: { name?: string; content?: unknown }, uuid: string, agentId: string | null) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
   if (door === 'response') {
     nameBlock(agentId, uuid, content[0])
-  } else if (door === 'hook-context' && message.name === 'hook_permission_decision') {
-    for (const r of state.requests.values()) {
-      if (r.agentId === agentId && r.decided !== undefined) {
-        r.isMarked = true
-      }
-    }
   } else if (door === 'tool-result') {
     for (const block of content) {
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        callEnded(block.tool_use_id, { isError: block.is_error === true, text: resultText(block.content) })
+        callEnded(block.tool_use_id, { text: resultText(block.content), uuid })
       }
     }
   }
@@ -1036,9 +1079,21 @@ function nameBlock(agentId: string | null, uuid: string, block: Record<string, u
 }
 
 /**
+ * An async question answered through a dialog a press opened: settled as
+ * that dialog's request settled (its winner answered the question), or
+ * withdrawn when the dialog's own settlement names nobody.
+ */
+function answeredThrough(id: string, dialog: { outcome: string; by: string }) {
+  const r = state.requests.get(id)
+  if (r?.isAsync) {
+    settle(r, dialog.outcome === 'withdrawn' ? 'withdrawn' : 'answered', dialog.by)
+  }
+}
+
+/**
  * What the ask mod's asks do (its observer): an async question is raised as
  * it opens and settled as it is answered or forgotten; a dialog it raised
- * settling is its request's result.
+ * that ended with no record of who decided it is withdrawn.
  */
 export function onAskNote(note: AskNote) {
   if (state.post === undefined) {
@@ -1047,12 +1102,23 @@ export function onAskNote(note: AskNote) {
   if (note.kind === 'open') {
     if (!state.requests.has(note.id)) {
       const input = capped({ questions: note.questions })
-      raise({ id: note.id, tool: ASK_TOOL, input: input.value, rawInput: { questions: note.questions }, isTruncated: input.cut, agentId: null, isAsync: true, isQuestion: true, t: Date.now(), isClosed: false, isMarked: false, isAborted: false })
+      raise({ id: note.id, tool: ASK_TOOL, input: input.value, rawInput: { questions: note.questions }, isTruncated: input.cut, agentId: null, isAsync: true, isQuestion: true, t: Date.now(), isAborted: false })
     }
   } else if (note.kind === 'answered') {
-    const r = state.requests.get(note.id)
-    if (r?.isAsync) {
-      settle(r, 'answered', note.by)
+    if (!state.requests.get(note.id)?.isAsync) {
+      return
+    }
+    if ('by' in note) {
+      answeredThrough(note.id, { outcome: 'answered', by: note.by })
+      return
+    }
+    const done = state.settled.find((s) => s.request === note.dialog)
+    if (done !== undefined) {
+      answeredThrough(note.id, { outcome: String(done.outcome), by: String(done.by) })
+    } else if (state.requests.has(note.dialog)) {
+      state.askDialogs.set(note.dialog, note.id)
+    } else {
+      answeredThrough(note.id, { outcome: 'withdrawn', by: 'bridge' })
     }
   } else if (note.kind === 'forgotten') {
     for (const id of note.ids) {
@@ -1062,7 +1128,11 @@ export function onAskNote(note: AskNote) {
       }
     }
   } else {
-    callEnded(note.toolUseId, { isError: note.isError, text: note.text })
+    // The dialog keeps no rows to read: with no record by now, nobody is known to have answered it.
+    const r = state.requests.get(note.toolUseId)
+    if (r !== undefined && !r.isAsync) {
+      state.after?.(RECORD_WAIT_MS, () => settle(r, 'withdrawn', 'bridge'))
+    }
   }
 }
 
@@ -1267,7 +1337,7 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   }
   state.post = (socketPath, body) =>
     $.http.fetch('http://bridge/events', { method: 'POST', socketPath, headers: { 'content-type': 'application/json' }, body })
-  state.get = (socketPath, path) => $.http.fetch(`http://bridge${path}`, { socketPath })
+  state.read = (path) => $.fs.read(path)
   state.log = (text) => $.ui.log(text, { to: 'debug' })
   state.after = (ms, fn) => void $.clock.after(ms, fn)
   state.readId = () => $.session.id()
@@ -1458,17 +1528,33 @@ export function registerBridge(on: On) {
 
   // A prompt the dialog shows (a permission, a native question): raised, and
   // answerable from outside while the dialog stays up. The settings hooks
-  // beneath decide first; one that did leaves nothing to raise.
+  // beneath decide first; one that did, or the person answering meanwhile,
+  // leaves nothing to raise.
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
-    const beneath = await next(e)
-    if (beneath.decision !== undefined || state.post === undefined || state.isEnding) {
-      return beneath
+    if (state.post === undefined) {
+      return next(e)
     }
     const agentId = e.agent_id ?? null
+    const claimed = claimCheck(e.tool_name, agentId, e.tool_input)
+    if (claimed?.isDecided) {
+      return next(e)
+    }
+    const id = claimed?.toolUseId ?? `request-${Date.now().toString(36)}-${++state.minted}`
+    state.claiming.add(id)
+    let beneath: Awaited<ReturnType<typeof next>>
+    try {
+      beneath = await next(e)
+    } finally {
+      state.claiming.delete(id)
+    }
+    const isDecided = state.preDecided.delete(id)
+    if (beneath.decision !== undefined || isDecided || state.isEnding) {
+      return beneath
+    }
     const input = capped(e.tool_input)
     const now = await $.clock.now()
     const r: Request = {
-      id: claimCheck(e.tool_name, agentId, e.tool_input) ?? `request-${Date.now().toString(36)}-${++state.minted}`,
+      id,
       tool: e.tool_name,
       input: input.value,
       rawInput: e.tool_input,
@@ -1480,17 +1566,27 @@ export function registerBridge(on: On) {
       isQuestion: e.tool_name === 'AskUserQuestion',
       t: now,
       turnId: state.loopTurns.get(loopKey(agentId)),
-      isClosed: false,
-      isMarked: false,
       isAborted: false,
+      transcript: typeof e.transcript_path === 'string' && e.transcript_path !== '' ? e.transcript_path : undefined,
     }
     raise(r)
     const decision = await awaitDecision($, r, next.signal)
     return decision === undefined ? beneath : { ...beneath, decision }
   }).catch((_, e, next) => next(e))
 
-  // Every row the session keeps: a response row's block, the engine's mark of
-  // a hook's decision, a call's result.
+  // The engine's record of each permission decision, by call: who decided
+  // it, the evidence a request's settlement names.
+  on('telemetry.log', { to: 'collector' }, async (_, e, next) => {
+    if (state.post !== undefined && e.to === 'collector' && e.event === 'tool_decision') {
+      const { tool_use_id: id, source, decision } = e.attributes
+      if (typeof id === 'string' && typeof source === 'string') {
+        decisionRecorded(id, source, decision === 'accept')
+      }
+    }
+    return next(e)
+  }).catch((_, e, next) => next(e))
+
+  // Every row the session keeps: a response row's block, a call's result.
   on('session.append', { door: /^/ }, async (_, e, next) => {
     const stored = await next(e)
     if (state.post !== undefined) {
