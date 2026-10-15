@@ -854,6 +854,13 @@ Order, batching (≤ 500) and one post in flight are unchanged.
   that hook is aborted. Pinned by the live check (no gaps across an
   interrupt).
   Date/Author: 2026-10-15, M3 executor.
+- Decision: Merge order with DC4's branch. DC4 also bumps the version in
+  its M4, so whichever branch merges second re-bumps through
+  `scripts/bump-version.sh` above the first; no version number is merged by
+  hand. The sminos-suite flake ("at most once more: two frames in all",
+  `run-sminos-tests.sh` ≈ line 4838) is already in DC4's
+  `docs/doperpowers/TECH-DEBT.md`; this branch adds no second entry.
+  Date/Author: 2026-10-15, controller, from the composite's writer.
 
 ## Surprises & Discoveries
 
