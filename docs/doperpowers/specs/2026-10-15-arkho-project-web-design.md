@@ -408,7 +408,7 @@ afleet's. Taste-heavy surfaces are reviewed as mockups in the web children.
 | Compact | RPC | bridge `$.session.compact()` between turns; during a turn it returns busy |
 | Spawn | RPC | daemon runs `sminos spawn` (`claude --bg`) with brief, model, effort |
 | Retire | RPC | daemon runs `sminos retire` |
-| Resume an ended session | RPC | daemon runs `claude --bg --resume <session>` in the session's working directory with no other flags (a flag makes the engine start a copy, `claude_args` in `sminos.py`), after checking the session is live nowhere; it rejoins (smns §2) |
+| Resume an ended session | RPC | daemon runs `claude --bg --resume <session>` in the session's working directory with no other flags (a flag makes the engine start a copy, `claude_args` in `sminos.py`), serialized per session, after checking it is live nowhere; then verifies the session the engine reports is the same id and, if the engine started a copy (the owner reopened it in a terminal meanwhile), stops the copy and fails — the postcondition `resume_session` in `sminos.py` already checks for seats; it rejoins (smns §2) |
 
 **[binding — one path means one behavior and one test surface]** Every
 control goes through the bridge, for every kind of session. The owner's
@@ -623,16 +623,18 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
     browsers; a settlement removes its request from the pending set, and a
     request the daemon no longer republishes after a reconnect is dropped;
     the audit record holds the side that actually won, from the settlement,
-    not the web's attempt.
+    not the web's attempt; the latest delivery outcome per event and
+    recipient is kept and returned to a browser that reconnects.
   - **G4 (deployed):** deployed to the owner's Cloudflare account behind
     Access; enrollment issues a service token and claims a machine name,
     refusing a name already enrolled; the designated archive machine is
     recorded per project; the fake machine works against the deployment.
   - **G5 (fake machine):** a tool that replays a recorded session
     (transcript JSONL, presence, pending requests and their settlements,
-    two subagents) through X2 under the X4 subscription semantics, with the
-    org key, so C5 and C6 develop and test against the real protocol
-    without a Mac.
+    delivery outcomes, two subagents) through X2 under the X4 subscription
+    semantics, with the org key, including a chunk that arrives while a
+    snapshot is being built, so C5 and C6 develop and test against the real
+    protocol without a Mac.
 - **Edges:** blocks: C4, C5 (start at G1; acceptance needs G5), C6
   (acceptance needs G5).
 - **Contracts:** X2, X3, X7, the X4 envelope, the X6 shapes (owner); X1
@@ -657,8 +659,11 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
     connection; a fresh machine bootstraps the project from the hub; the
     daemon never fetches git for a hub project; an event without a valid
     code is refused before it enters the log, including a forged `say`
-    under another machine's writer; a hub-less project's git mirror behaves
-    as before (the existing sminos suite passes).
+    under another machine's writer, an authentic event of one project
+    replayed into another project's feed, and a `hub/` event with a field
+    its code does not cover (such as `via` or `msg_id`); a hub-less
+    project's git mirror behaves as before (the existing sminos suite
+    passes).
   - **G3 (archive):** the designated machine writes the log to the
     project's git remote on schedule from a clone outside the log
     directory; no other machine pushes it.
@@ -688,7 +693,8 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
     lines, an ended session's channel with Resume); composer verbs and
     request cards issue authenticated X1 events and X6 RPCs, request cards
     carry the digest of what they drew, and results render; an event or a
-    request whose code fails is not drawn.
+    request whose code fails is not drawn; a send shows its X4 delivery
+    outcome per recipient, including after a reload.
   - **G3 (the key):** the org key derives from a passkey through PRF in the
     owner's browsers, or from a passphrase; the enrollment code it produces
     enrolls a machine through C4.
@@ -710,8 +716,9 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Acceptance:** against C3's fake machine replaying a recorded session
   with two subagents: the transcript streams and settles into the same
   rows a reload shows; the subagent tree matches the session's
-  `subagents/*.meta.json`; the diff renders; a reconnect mid-response and a
-  hub restart each end in a fresh snapshot with no gap and no duplicate.
+  `subagents/*.meta.json`; the diff renders; a reconnect mid-response, a hub
+  restart, and a chunk arriving during the snapshot each end with no gap
+  and no duplicated text, in the main thread and in a subagent.
 - **Edges:** blocked-by: C5.G1 (X8), C3.G1 to start, C3.G5 for acceptance.
 - **Contracts:** X8, X3, X4 (consumer).
 - **Design inheritance:** §2 Web client (the adapter), §3 session plane, §4
@@ -729,8 +736,9 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Acceptance:**
   - **G1 (session plane):** presence changes reach the hub within 1
     second; a subscribed session's snapshot and live stream follow X4,
-    verified by a reconnect mid-response and a Worker restart overlapping
-    transcript flushes, each including a subagent stream; pending requests
+    verified by a reconnect mid-response, a Worker restart overlapping
+    transcript flushes, and a chunk arriving while the snapshot is being
+    built, each including a subagent stream; pending requests
     and their settlements reach the hub with codes and are republished on
     reconnect.
   - **G2 (RPCs):** each RPC of §5 executes through C2's protocol; an RPC
@@ -740,12 +748,16 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
   - **G3 (policy):** a spawn outside the known checkouts or above the
     ceiling is refused; on a read-only machine every RPC is refused, and a
     `human` or `say` from outside the machine, addressed to a live session
-    and to a stopped seat, starts nothing and settles undelivered with the
-    reason shown.
+    and to a stopped seat, starts nothing and settles undelivered; every
+    settled delivery of an outside-origin event produces its X4 `delivery`
+    outcome (delivered, recorded for a closed terminal session,
+    refused-read-only), which the web shows.
   - **G4 (resume):** Resume brings an ended terminal session back on its
     machine as a `--bg` job with the same session id, which rejoins; it is
     refused while the session is live anywhere and on a read-only machine;
-    two Resumes at once start one session.
+    two Resumes at once start one session; a Resume racing the owner
+    reopening the session in a terminal ends with one session holding that
+    id, any copy stopped, and the RPC failed with the reason.
 - **Edges:** blocked-by: C2.G1, C4; blocks: — (integration at
   recomposition).
 - **Contracts:** X6 policy (owner); X4 (producer); X5, X2 (consumer); X1,
@@ -769,12 +781,19 @@ consumers start after that gate.
     "<member-id>"`;
   - every event on the hub carries `mac: {"nonce": "<128-bit random,
     base64url>", "value": "<HMAC-SHA256 with the org key, base64url>"}`.
-    For a machine's writers the code covers the canonical JSON (sorted
-    keys, no whitespace, UTF-8) of the whole event except `mac`, `writer`
-    and `seq` included, so an event cannot be moved to another position.
-    For a `hub/` writer, whose seq the browser cannot know, it covers
-    `{"created", "from", "kind", "member", "nonce", "project", "text",
-    "to", "wake"}`, and daemons refuse a nonce they have seen;
+    The code covers the bytes `arkho-log-v1\n<project id>\n` followed by
+    the canonical JSON (sorted keys, no whitespace, UTF-8) of **every field
+    of the event except `mac`** — and, for a `hub/` writer only, except
+    also `writer`, `seq`, and `ts`, which the hub assigns after the browser
+    computed the code. So no field can ride along unauthenticated (the
+    delivery path reads more than the text: `frame_of` and
+    `compose_frame` in `sminos.py` interpolate `msg_id` and `via`), an event
+    cannot be moved to another position in its feed, and an event cannot be
+    transplanted into another project of the org, where its seqs and
+    delivery cursors would be fresh. A web event carries `created` and the
+    `mac` nonce, and daemons refuse a nonce they have seen. A daemon
+    verifies against the project it is importing into; events it has
+    stored keep their `mac`, and the archive carries it;
   - `.smns` gains `"hub": {"url": "<https url>", "org": "<org id>"}`;
   - no new log kinds for permission prompts or RPCs (§3).
   Binds C2 (writes `message` and `question` as today), C3 (stores, never
@@ -805,22 +824,39 @@ consumers start after that gate.
     branch), which the spawn sheet offers;
   - **a subscription** (`sub`) delivers a snapshot, then live messages
     numbered `n` from 1. The snapshot is the transcript rows on disk up to
-    the last flushed row, the subagent tree, presence, and the partial text
-    of every message still streaming. The daemon starts buffering live
-    messages before it reads the snapshot and drops buffered rows the
-    snapshot already holds, by row uuid — subscribe before snapshot, as
-    MAWS's hydration does (`src/renderer/src/transcript/source/hydrate.ts`).
-    A row's arrival settles the partial text of its message. Any
-    discontinuity — a gap in `n`, a hub restart, a dropped connection —
-    makes the browser subscribe again and take a fresh snapshot; nothing is
-    resumed from a hub buffer, which is an optimization only;
+    the last flushed row, the subagent tree, presence, and, for every
+    message still streaming, its identity (`turnId`, `agentId`, and the
+    ordinal of the model request within the turn), its partial text, and
+    `upTo`, the index of the last chunk that text includes. The daemon
+    starts buffering live messages before it reads the snapshot, takes each
+    message's partial text and `upTo` together under the same lock that
+    appends chunks to it, and then drops buffered rows the snapshot already
+    holds (by row uuid) and buffered chunks at or below their message's
+    `upTo` — subscribe before snapshot, as MAWS's hydration does
+    (`src/renderer/src/transcript/source/hydrate.ts`), with the watermark
+    standing in for event ids that aggregated text lacks. A row's arrival
+    settles its message's partial text, and chunks for a settled message
+    are ignored. Any discontinuity — a gap in `n`, a hub restart, a dropped
+    connection — makes the browser subscribe again and take a fresh
+    snapshot; nothing is resumed from a hub buffer, which is an
+    optimization only;
   - **a pending request** is `raised {request: <tool-use id>, session,
     tool, input, mac}`, followed by exactly one `settled {request, winner:
     "web" | "terminal" | "other", outcome, by, mac}`, where the bridge names
     the side whose answer the engine used. The hub removes the request on
     `settled` and writes its audit record from it; after a reconnect it
-    drops any request the daemon does not republish.
-  The hub interprets only presence and pending; everything else it relays.
+    drops any request the daemon does not republish;
+  - **a delivery outcome** is `delivery {event: {writer, seq}, session,
+    outcome: "delivered" | "recorded" | "refused-read-only" | "failed",
+    reason, mac}`, produced by the daemon when `deliver_next` settles an
+    event for a recipient on its machine, one per event and recipient. It
+    is how the web knows that a send reached the session, or was only
+    recorded (a closed terminal session) or held back (a read-only
+    machine). The hub keeps the latest outcome per key and returns it to a
+    browser that reconnects. It is kept apart from `settled`, which is
+    about a session's pending request, not a log event.
+  The hub interprets presence, pending requests, and delivery outcomes;
+  everything else it relays.
   Binds C2 and C7 (produce), C3 (relays, implements the semantics in its
   fake machine), C5 and C6 (consume).
 - **X5 — Local bridge protocol (owner C2, at C2.G1).** The bridge's event
@@ -1020,6 +1056,30 @@ a hub that connects into machines (§2).
     and v1's C4 carried both.
   Rationale: each finding was reproduced against the code or the
   contracts; none was dismissed.
+  Date/Author: 2026-10-15, design session.
+- Decision: Spec review round 2 (the same two lenses, scoped to round 1's
+  fold), folded: the authentication code now covers the project id
+  (domain-separated) and every field of an event but `mac` — a hub could
+  otherwise transplant an authentic feed into another project, where its
+  messages are owed afresh (a reviewer ran `_owed` to show it), or add
+  `via`/`msg_id` to an honest web event, which `compose_frame` writes into
+  the prompt; X4 gains a per-message chunk watermark (`upTo`) so a
+  snapshot's partial text and the buffered stream cannot both carry a
+  chunk; X4 gains delivery outcomes so the web can say a send was
+  recorded or held back rather than delivered; Resume gains
+  per-session serialization and the same-id postcondition with copy
+  cleanup that `resume_session` already applies to seats. Rejected then:
+  a closed schema for web events (the full-field code covers it and every
+  future field without a list to maintain).
+  Rationale: two P1 and three P2, all reproduced; each fix is local to a
+  contract and its gates.
+  Date/Author: 2026-10-15, design session.
+- Decision: Spec review stops at round 2. Round 2's findings were narrow,
+  local to contracts, and the reviewers specified their fixes; the
+  contracts' full shapes get their next adversarial read at C3.G1 and
+  C2.G1, which are reviewed before any consumer starts.
+  Rationale: a third round on these edits would review the reviewers'
+  own wording; the gate reviews see the shapes in their final form.
   Date/Author: 2026-10-15, design session.
 
 ## Outcomes & Retrospective
