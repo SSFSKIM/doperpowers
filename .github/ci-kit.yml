@@ -27,9 +27,15 @@ gates:
       scripts/lint-shell.sh "${files[@]}"
     timeout: 10
 
+  # The sminos suite in its two parts, run side by side (about 9 min serial).
   - name: sminos
-    run: bash tests/sminos/run-sminos-tests.sh
-    timeout: 25
+    run: SMINOS_PART=core bash tests/sminos/run-sminos-tests.sh
+    timeout: 20
+    paths: ["skills/sminos/**", "hooks/**", "tests/sminos/**", ".github/**"]
+
+  - name: sminos-suites
+    run: SMINOS_PART=suites bash tests/sminos/run-sminos-tests.sh
+    timeout: 20
     paths: ["skills/sminos/**", "hooks/**", "tests/sminos/**", ".github/**"]
 
   - name: issue-tracker

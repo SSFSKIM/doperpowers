@@ -346,6 +346,54 @@ run() { # capture stdout+stderr and rc without aborting the suite
 }
 
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
+# ---- the suite's two parts ---------------------------------------------------
+# SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
+# `suites` the files it runs beside them (run_suites); unset runs both.
+SMINOS_PART="${SMINOS_PART:-all}"
+case "$SMINOS_PART" in all | core | suites) ;; *) echo "SMINOS_PART is all, core or suites" >&2; exit 2 ;; esac
+run_suites() {
+  # The bridge's session endpoint has a file of its own (short socket paths, a
+  # stand-in for the mod); its assertions count here as one.
+  echo
+  if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and delivery (test-bridge-control.sh)"; else
+    fail "the bridge's control and delivery (test-bridge-control.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
+    fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
+    fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
+    fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
+  if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
+  if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
+  if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
+  echo
+  if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
+    fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
+  if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
+    pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
+    fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
+  if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
+    fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
+}
+summary() {
+  echo
+  if [ "$FAILURES" -eq 0 ]; then
+    echo "all $PASSES assertions passed"
+  else
+    echo "$FAILURES of $((PASSES + FAILURES)) assertions FAILED"
+    exit 1
+  fi
+  exit 0
+}
+if [ "$SMINOS_PART" = suites ]; then run_suites; summary; fi
+
 # ---- 1) usage ----------------------------------------------------------------
 echo "usage:"
 run "$SMINOS"; assert_rc 2 "$RC" "no arguments is a usage error (exit 2)"
@@ -5060,40 +5108,5 @@ assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"
 unset STUB_COUNTER
 
-# The bridge's session endpoint has a file of its own (short socket paths, a
-# stand-in for the mod); its assertions count here as one.
-echo
-if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and delivery (test-bridge-control.sh)"; else
-  fail "the bridge's control and delivery (test-bridge-control.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
-  fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
-  fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
-  fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
-if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
-if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
-if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
-echo
-if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
-  fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
-if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
-  pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
-  fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
-if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
-  fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
-
-echo
-if [ "$FAILURES" -eq 0 ]; then
-  echo "all $PASSES assertions passed"
-else
-  echo "$FAILURES of $((PASSES + FAILURES)) assertions FAILED"
-  exit 1
-fi
+[ "$SMINOS_PART" = core ] || run_suites
+summary
