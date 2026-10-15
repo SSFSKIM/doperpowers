@@ -1,7 +1,7 @@
-# Arkho A8 — C1 findings: the bridge, live (2026-10-15)
+# Arkho A8 — DC1 findings: the bridge, live (2026-10-15)
 
 > **Cites:** `docs/doperpowers/specs/2026-10-15-arkho-project-web-design.md`,
-> child **C1** (Bridge spike — spike, findings, never a merge), parent pin
+> child **DC1** (Bridge spike — spike, findings, never a merge), parent pin
 > **8257d780**. Answers that child's Acceptance list and the design's §8
 > unknown 1, against §2 (Bridge, Without the bridge) and §5 (Control). The
 > spec's writer folds the verdicts into its Surprises & Discoveries; this
@@ -9,7 +9,7 @@
 
 ## Verdicts
 
-| # | Primitive (C1 Acceptance) | Terminal | `--bg` | Verdict |
+| # | Primitive (DC1 Acceptance) | Terminal | `--bg` | Verdict |
 |---|---|---|---|---|
 | 1 | `$.process.spawn` session-lifetime child; its lines reach the mod idle, mid-model-call, mid-Bash | yes (0–11 ms) | yes (≤ 3 ms) | **promote** |
 | 2 | `$.prompt.submit({asUser: true})` from a timer starts a turn in an idle session | yes | yes | **promote** |
@@ -24,7 +24,7 @@
 | 11 | A person-only ask (added by the coordinator) | no `PermissionRequest`, no `tool.call`: the terminal alone answers | — | **confirmed**: show it as "waiting in the terminal" |
 
 Nothing in the list is a discard. Three of the changes alter §5's table
-(rows Interrupt, Answer a question, Model); two change how C2 treats pending
+(rows Interrupt, Answer a question, Model); two change how DC2 treats pending
 requests (§3 Pending requests: retraction, and the bound for background
 subagents); the rest are notes.
 
@@ -106,7 +106,7 @@ call; while a permission dialog and an AskUserQuestion dialog were open.
   `session.start` again, which spawns a new one: the daemon sees a disconnect
   and a new HELLO from a new pid.
 
-**For C2.** The child should reconnect to the daemon on its own (the probe's
+**For DC2.** The child should reconnect to the daemon on its own (the probe's
 did, across a daemon restart: `"connects": 2`), and the daemon should treat a
 new HELLO for a session as the same session's bridge, since reloads and
 daemon restarts both happen.
@@ -135,7 +135,7 @@ again while a 12 s Bash call ran.
   and resolved 10.3 s later as its own turn started, right after the running
   turn completed. That is §4's Send ("queued for when the session is idle").
 
-**For C2.** The model reads the words as the human's; the terminal shows
+**For DC2.** The model reads the words as the human's; the terminal shows
 them as the plugin's. If the terminal should credit the web's sender, that is
 a `UserMessage` render hook in the bridge, not a property of `asUser`.
 
@@ -254,7 +254,7 @@ subagent's Bash call, BG with a client attached and with none.
   … only a plugin the organization lists in managed settings runs them". The
   owner's machines have no managed settings; a future org-phase machine might.
 
-**Change (for C2 and §3 Pending requests).**
+**Change (for DC2 and §3 Pending requests).**
 1. The pending request must be retracted from a signal other than the hook's
    abort: the presence file leaving `waiting`, the matching `tool.call`
    settling (the bridge's own `tool.call` hook wraps the same call; the
@@ -319,7 +319,7 @@ comma-joined, free text as given.
 **Not covered here:** §5's "the ask mod's external-answer path for an async
 one". The ask mod has no such path today: an async ask is answered only by
 pressing its `[ answer ]`, which opens the dialog (`answerAsk`,
-`ask.tsx:928`). Since the bridge will live in the same module, C2 can add a
+`ask.tsx:928`). Since the bridge will live in the same module, DC2 can add a
 function there that marks an ask answered and calls the existing `deliver`.
 
 ## 7. `$.config.set` switching the model — promote-with-change
@@ -389,7 +389,7 @@ fire-and-forget as it passed the hook (T1, BG). Also the main loop alone (a
   (T1); p50 3 ms, p95 35 ms, max 98 ms (BG, under the overlap). The forwarded
   stream to the screen was unaffected.
 
-**For C3.** Size the session plane for bursts of about 50–70 chunks a second
+**For DC3.** Size the session plane for bursts of about 50–70 chunks a second
 per active loop, about 1.2 KB/s of text each, rather than for averages.
 
 ## 9. `$.session.compact()` — promote-with-change
@@ -449,7 +449,7 @@ returns the settings hooks' answer, here none).
   `run_in_background`, which an `agent.spawn` hook reads, or the tool_result
   "Async agent launched successfully" with its agent id.
 
-**Change (C2, §3 Pending requests).** For a background subagent the hook is a
+**Change (DC2, §3 Pending requests).** For a background subagent the hook is a
 gate in front of the terminal's dialog, not a racer beside it. The bridge
 bounds its wait there (a few seconds is enough to answer from a web page that
 is open; the owner's choice of bound is the trade), publishes the request with

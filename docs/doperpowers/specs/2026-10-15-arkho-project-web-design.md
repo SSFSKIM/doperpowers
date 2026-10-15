@@ -1,7 +1,8 @@
-# The desk: MAWS on the web — the project's place on the web (2026-10-15)
+# The desk — the project's place on the web (2026-10-15)
 
-> **Parent:** root — a product of its own, closest to MAWS on the web
-> (owner, 2026-10-15; §1). **Level name:** Phase 1. **Consumes:** the
+> **Parent:** root — an independent product grown from `.smns` alone
+> (owner, 2026-10-15; §1). It lives in the MAWS repository as two apps of
+> its pnpm workspace. **Level name:** Phase 1. **Consumes:** the
 > `.smns` project log as built in doperpowers 7.153.0
 > (`docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`, cited
 > below as *smns §n*); the MAWS renderer (`SSFSKIM/MAWS`, `src/renderer/`)
@@ -10,9 +11,12 @@
 > section as its spec; each child's artifact opens by citing this document
 > (path + child id + parent pin). This document is
 > doperpowers:brainstorming's approved design (2026-10-15) extended in
-> place: design up top, roadmap below. It lives in doperpowers until the
-> owner names the repository the hub and the web app live in, and moves
-> there with them.
+> place: design up top, roadmap below. It was written in doperpowers and
+> moves to the MAWS repository (`docs/doperpowers/specs/`) when DC3 starts
+> there; the doperpowers children (DC2, DC4, DC7) cite it at its new path
+> from then on. Its child and contract ids carry a `D` (DC1–DC7, DX1–DX8)
+> because MAWS's own charter already binds C1–C12 and X1–X8 in that
+> repository.
 
 ## Purpose
 
@@ -81,11 +85,12 @@ app, and the answer from the phone moves the session on the mini.
   whose client endpoints are unpublished.
 - **An open remote-execution surface.** The machine decides what it
   executes and verifies who asked; the hub routes.
-- **Bound to an older project.** It is not a child of Arkho (owner,
-  2026-10-15): Arkho stays the board's service, read here like any other
-  outside source. MAWS stays the local deep workstation and lends its UX;
-  afleet's Slack-like presentation (2026-09-03) is the taste precedent;
-  Arkho's board UI and its A6 terminal-gateway design are prior art.
+- **Another project's child.** It is not part of Arkho, and it is not
+  MAWS's web edition (owner, 2026-10-15). Arkho stays the board's service,
+  read here like any other outside source; MAWS stays the local deep
+  workstation, lends its agent UX, and hosts the code; afleet's Slack-like
+  presentation (2026-09-03) is the taste precedent; Arkho's board UI and
+  its A6 terminal-gateway design are prior art.
 
 ## Parent-Level Acceptance
 
@@ -178,10 +183,14 @@ Terms used throughout:
 
 ### 1. Where it stands among the owner's projects, and what changes in `.smns`
 
-**[binding — owner, 2026-10-15]** This is a product of its own, closest to
-MAWS on the web: not a child of Arkho, and not bound to Arkho's roadmap.
-The owner's earlier control surfaces stay what they are and lend what
-they proved:
+**[binding — owner, 2026-10-15]** This is an independent product whose
+root is `.smns` alone: not a child of Arkho, not bound to Arkho's roadmap,
+and not MAWS's web edition. It shares a great deal with MAWS, so
+convergences — a cloud-hosted web MAWS, the product for teachers — are
+open possibilities, not commitments. For now it lives in the MAWS
+repository, as two apps of MAWS's pnpm workspace (§2, Web client), and
+follows MAWS's CI and rules there. The owner's earlier control surfaces
+stay what they are and lend what they proved:
 - **Arkho** (2026-08-04 on) is the board: its service (A1), plugin
   adapter (A2), board web UI (A3, live on Render since 2026-09-06),
   GitHub mirrors (A4), and cutover (A5) have landed, and its A6 design
@@ -196,8 +205,7 @@ they proved:
   agent UX; its own P4 seed names "a cloud and web-hosted MAWS" and the
   product for teachers.
 - **sminos hub** (2026-10-15, written in parallel in the MAWS repository)
-  is superseded by this design; four of its ideas were imported (Decision
-  Log).
+  is discarded (owner); four of its ideas were imported (Decision Log).
 
 `.smns` says twice that remote control of a session's process is not part
 of it (smns §2, §9). This unit adds that control as a layer beside the log,
@@ -238,7 +246,7 @@ every deploy restarts every object and disconnects every connection. So:
   in a transcript row, a snapshot) is split into numbered parts.
 - **After a deploy** browsers and daemons reconnect with backoff, and the
   daemon republishes presence, pending requests, and unacknowledged RPC
-  results (X2, X6).
+  results (DX2, DX6).
 
 **Daemon uplink.** **[binding — the hub never connects into a machine,
 which is what makes the machine's own policy the execution boundary]** Each
@@ -250,7 +258,7 @@ serial today (`cmd_run` and `tick_all` in
 delivery, derivation, then sleep), so the uplink does not live inside it:
 the daemon becomes concurrent, and an event that arrives from the hub
 nudges delivery (`daemon/nudge` exists) instead of waiting for the next
-tick. A thread in the daemon or a process beside it is C4's call. The
+tick. A thread in the daemon or a process beside it is DC4's call. The
 transport leans to an HTTP pair, SSE down and POST up, which a Durable
 Object holds as well as a WebSocket and which stdlib Python speaks without
 a hand-written RFC 6455 client (delegated unknown 2).
@@ -261,13 +269,13 @@ session's endpoint on `$SMINOS_HOME/bridge/<session-id>.sock` in an
 owner-only directory; the mod reads commands from the child's output line
 by line, at any point in a turn, and streams the session's live events to
 the child with `$.http.fetch` over that `socketPath`, where local clients —
-the CLI, the daemon — send commands and subscribe (C2's residue,
+the CLI, the daemon — send commands and subscribe (DC2's residue,
 2026-10-15: local control then works without the daemon running, and the
 daemon finds bridges by listing the directory): `turn.step` chunks for the
 main loop and every subagent (`turn.step` is the only source of subagent
 token deltas anywhere in the harness; the SDK wire streams the main thread
 only), tool calls and results, turn boundaries, subagent lifecycle, usage,
-and pending requests. **[binding — C1's findings, measured on 2.1.300]**
+and pending requests. **[binding — DC1's findings, measured on 2.1.300]**
 - **Requests from outside go through `classic.PermissionRequest`**, which
   long-polls the daemon (looped under `$.http.fetch`'s 30-second bound; a
   `$` call in flight stops the hook's 10-second budget) while the
@@ -285,7 +293,7 @@ and pending requests. **[binding — C1's findings, measured on 2.1.300]**
   stops polling and settles the request with the terminal as the winner.
 - **A background subagent's prompt gets a bounded window.** For a
   background subagent the engine awaits the hooks before it draws the
-  dialog (no dialog for 40 seconds of polling in C1), so the bridge waits
+  dialog (no dialog for 40 seconds of polling in DC1), so the bridge waits
   at most 3 seconds there, publishes that deadline with the request, and
   after it the prompt is the terminal's alone.
 - **A person-only prompt never reaches the hooks**; the web shows it as
@@ -312,8 +320,15 @@ Zustand stores, TanStack Query; the transcript and its presentation model,
 the request card, the composer, the attention model, the subagents panel,
 the diff review). MAWS's presentation model reads stream-json; an adapter
 turns transcript rows, `turn.step` chunks, and presence into the shape it
-expects. Copied, not shared as a package, so that neither app's pace binds
-the other.
+expects. **Where the code lives [binding — owner, 2026-10-15]:** the MAWS
+repository, whose `pnpm-workspace.yaml` gains a `packages` list with two
+apps beside the root Electron package — `apps/desk-hub` (the Worker and
+its Durable Objects) and `apps/desk-web` (the web app). A MAWS component
+kept free of Electron, Node, and `window.maws` (as `src/artifacts/` is,
+lint-enforced) is imported as it stands; an entangled one is copied and
+adapted. MAWS's gates (`scripts/ci-gate.sh`, its lint and typecheck) cover
+the two apps. The strongest alternative, a new repository, lost: it would
+copy everything and leave a later convergence to gather the copies back.
 
 **Without the bridge.** A session has a bridge when its endpoint socket
 answers; a live session in the registry with no answering endpoint after
@@ -348,7 +363,7 @@ The group chat and the direct channels are drawn from it.
 - **One writer per feed, enforced.** The git mirror's machine-name claim
   (smns §8, `check_claim` in `sminos_daemon.py`) runs inside git
   integration, which hub projects no longer use, so the hub replaces it: a
-  machine enrolls under a name unique in the org (X7), its daemon writes
+  machine enrolls under a name unique in the org (DX7), its daemon writes
   only under that name, the hub accepts from a machine's connection only
   events whose writer begins with that name, and an event arriving at an
   existing `(writer, seq)` with a different payload is refused and
@@ -363,7 +378,7 @@ The group chat and the direct channels are drawn from it.
   mirror as smns §8 built it. The cost: two machines on one LAN with the
   internet down no longer see each other's events. The archive is written
   by one machine the owner designates for the project (recorded in the
-  registry, X7), because a Worker cannot run git and the GitHub API would
+  registry, DX7), because a Worker cannot run git and the GitHub API would
   bind the archive to GitHub; that daemon copies the log files into an
   archive clone kept apart from the log directory and pushes, so git never
   feeds the live log. If the machine is retired, the owner designates
@@ -459,7 +474,7 @@ unavailable; everything they sent the human is still in the log.
 - **Notifications are Web Push.** A push fires when a question or a
   permission prompt is raised, or a `<message>` arrives, and no browser of
   that member has the project open and visible. Each member device's push
-  subscription is stored in the registry (X7). The Worker sends with VAPID
+  subscription is stored in the registry (DX7). The Worker sends with VAPID
   (ES256) and RFC 8291 payload encryption on WebCrypto; the npm `web-push`
   package depends on Node's crypto and does not run there. **A push only
   points to a card**: the service worker draws its text without the org
@@ -482,7 +497,7 @@ afleet's. Taste-heavy surfaces are reviewed as mockups in the web children.
 | Interrupt | RPC | bridge `$.turn.abort` (the main loop's turn), then `TaskStop` through `$.tool.call` on any Bash the abort moved to the background, as Esc kills it in the terminal |
 | Answer a question | RPC | bridge: `classic.PermissionRequest` returning `updatedInput: {questions, answers}` for a native AskUserQuestion; the ask mod's external-answer path for an async one |
 | Allow / deny | RPC | bridge `classic.PermissionRequest`, racing the terminal's dialog |
-| Model, effort | RPC | bridge rewrites `model` and `effort` on each of the session's requests in `turn.step` (this session only). `$.config.set({key: 'model'})` was rejected: it also saves the model as the user's default in `settings.json` (C1) |
+| Model, effort | RPC | bridge rewrites `model` and `effort` on each of the session's requests in `turn.step` (this session only). `$.config.set({key: 'model'})` was rejected: it also saves the model as the user's default in `settings.json` (DC1) |
 | Compact | RPC | bridge `$.session.compact()`; asked during a turn, the bridge holds it and runs it at `turn.complete` (the engine refuses it mid-turn) |
 | Spawn | RPC | daemon runs `sminos spawn` (`claude --bg`) with brief, model, effort |
 | Retire | RPC | daemon runs `sminos retire` |
@@ -562,8 +577,8 @@ fork.
   - *What carries a code:* every log event on the hub, from any writer (the
     daemon adds the code when it uploads its machine's events; the browser
     when it writes a `human`); every RPC; every pending request and its
-    settlement (X4). The code is HMAC-SHA256 over canonical JSON (X1, X4,
-    X6). Daemons verify before importing an event into their log or acting
+    settlement (DX4). The code is HMAC-SHA256 over canonical JSON (DX1, DX4,
+    DX6). Daemons verify before importing an event into their log or acting
     on an RPC; browsers verify before drawing a log event or a request card.
     What fails is refused, reported, and kept out of the log.
   - *Approvals are bound to what was shown.* An answer or a decision RPC
@@ -615,23 +630,23 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
 
 ### 8. Delegated unknowns
 
-1. **The bridge, live** (C1) — **resolved 2026-10-15**: every primitive
+1. **The bridge, live** (DC1) — **resolved 2026-10-15**: every primitive
    works on 2.1.300 in a terminal session and a `--bg` job; six work
    differently than v1 assumed, and §2 and §5 now say how (the findings
    file, `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md`).
    The terminal does not draw a row appended by `$.session.append`, so the
    bridge mirrors each steer as a `$.ui.log` line and both surfaces show
    the same conversation.
-2. **The uplink's transport and concurrency** (C4): the HTTP pair against a
+2. **The uplink's transport and concurrency** (DC4): the HTTP pair against a
    WebSocket, and thread against process. Against SSE: an object holding a
    machine's open stream never hibernates and is billed for the whole time
    the stream is open; acceptable for a few machines, and the trade is
    recorded with the choice.
-3. **Durable Object throughput** (C3): streaming chunks from several active
-   sessions through one project's object, measured (C3.G6); one object per
+3. **Durable Object throughput** (DC3): streaming chunks from several active
+   sessions through one project's object, measured (DC3.G6); one object per
    session for the session plane is the fallback, taken when the
-   measurement crosses the threshold C3 records.
-4. **WebAuthn PRF and Access on the phone** (C5): PRF support in the
+   measurement crosses the threshold DC3 records.
+4. **WebAuthn PRF and Access on the phone** (DC5): PRF support in the
    owner's browsers with an iCloud Keychain passkey, and inside an iOS
    home-screen app, whose storage is separate from Safari's, so the key is
    derived again there; Cloudflare Access sign-in inside the standalone app
@@ -648,7 +663,7 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
 
 ## Children
 
-### C1: Bridge spike — spike (findings, never a merge)
+### DC1: Bridge spike — spike (findings, never a merge)
 
 - **Purpose:** Prove, in real sessions on 2.1.300, that a mod can do what
   §2 and §5 assume, before two children build on it.
@@ -673,20 +688,20 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
   running; all of it in a terminal session and in a `--bg` job. Verdict per
   item: promote, promote with a change to this design, or discard with the
   fallback.
-- **Edges:** blocks C2.
+- **Edges:** blocks DC2.
 - **Contracts:** —
 - **Design inheritance:** §2 Bridge, §5, §8 unknown 1.
 - **Required:** required.
 - **Status:** landed (2026-10-15; findings folded).
 
-### C2: The bridge — plan
+### DC2: The bridge — plan
 
 - **Purpose:** Every session on a machine becomes controllable by that
   machine's daemon, and the daemon sees its live events and its pending
   requests: the mod, its session-lifetime child, and the daemon's local
   endpoint, usable from the CLI before the hub exists.
 - **Acceptance:**
-  - **G1 (local protocol):** X5 written into Interfaces and reviewed; C7
+  - **G1 (local protocol):** DX5 written into Interfaces and reviewed; DC7
     may start on it.
   - **G2 (local control):** on one machine, without a hub, sminos verbs
     drive a terminal session and a `--bg` job: `sminos steer`, `sminos
@@ -708,21 +723,21 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
     answered.
   - **G4 (export):** `<message>` spans and async questions reach the log as
     they complete, de-duplicated against the Stop hook's export.
-- **Edges:** blocked-by: C1; blocks: C7.
-- **Contracts:** X5 (owner), X4 (producer), X1 (writer of `message` and
+- **Edges:** blocked-by: DC1; blocks: DC7.
+- **Contracts:** DX5 (owner), DX4 (producer), DX1 (writer of `message` and
   `question`).
 - **Design inheritance:** §2 Bridge and Without the bridge [binding], §3
   sending and liveness of messages, §5 [binding], §6 bridge channel.
   Advisory: `hooks/mods/bridge.tsx` beside the other mods, registered in
-  `hooks/mods/register.tsx`; C1's probe (`/tmp/c1probe`, kept as evidence)
+  `hooks/mods/register.tsx`; DC1's probe (`/tmp/c1probe`, kept as evidence)
   is a working starting point for the child, the stand-in daemon, and the
-  drivers (`/tmp/c1tools`). C1's measured rates bound X5: 50–70 chunks a
+  drivers (`/tmp/c1tools`). DC1's measured rates bound DX5: 50–70 chunks a
   second per streaming subagent, a post to the daemon p50 1–3 ms, p95 at
   most 35 ms.
 - **Required:** required.
 - **Status:** in-flight (2026-10-15).
 
-### C3: The hub — plan
+### DC3: The hub — plan
 
 - **Purpose:** The cloud side: the Worker, the project Durable Objects, the
   registry, Access for humans and service tokens for machines, enrollment
@@ -730,9 +745,9 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
   routing, the pending set, the audit record, Web Push sending and push
   subscriptions, and a fake machine for the web children.
 - **Acceptance:**
-  - **G1 (protocols):** X2, X3, the X4 envelope, the X6 shapes, and X7
-    written into Interfaces and reviewed; C4 and C5 may start on them.
-  - **G2 (log):** a fake machine speaking X2 syncs a project's log in and
+  - **G1 (protocols):** DX2, DX3, the DX4 envelope, the DX6 shapes, and DX7
+    written into Interfaces and reviewed; DC4 and DC5 may start on them.
+  - **G2 (log):** a fake machine speaking DX2 syncs a project's log in and
     out across reconnects and Worker redeploys with no loss and no
     duplicates; a browser client resumes after its offset; an event under
     another machine's name is refused at that connection; an event at an
@@ -762,19 +777,19 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
     recorded per project; the fake machine works against the deployment.
   - **G5 (fake machine):** a tool that replays a recorded session
     (transcript JSONL, presence, pending requests and their settlements,
-    delivery outcomes, two subagents) through X2 under the X4 subscription
+    delivery outcomes, two subagents) through DX2 under the DX4 subscription
     semantics, with the org key, including a chunk that arrives while a
-    snapshot is being built, so C5 and C6 develop and test against the real
+    snapshot is being built, so DC5 and DC6 develop and test against the real
     protocol without a Mac.
-- **Edges:** blocks: C4, C5 (start at G1; acceptance needs G5), C6
+- **Edges:** blocks: DC4, DC5 (start at G1; acceptance needs G5), DC6
   (acceptance needs G5).
-- **Contracts:** X2, X3, X7, the X4 envelope, the X6 shapes (owner); X1
+- **Contracts:** DX2, DX3, DX7, the DX4 envelope, the DX6 shapes (owner); DX1
   (stores, never alters).
 - **Design inheritance:** §2 Hub, §3 [binding parts], §6, §8 unknown 3.
 - **Required:** required.
 - **Status:** not-dispatched (dispatchable now).
 
-### C4: The uplink — plan
+### DC4: The uplink — plan
 
 - **Purpose:** The machine's connection to the hub and the log plane over
   it: the daemon becomes concurrent, enrolls, syncs hub projects' logs with
@@ -801,14 +816,14 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
   - **G4 (concurrency):** a slow git phase of a hub-less project or a
     derivation does not delay the uplink; an event arriving from the hub
     nudges delivery at once.
-- **Edges:** blocked-by: C3.G1; blocks: C7.
-- **Contracts:** X1 (verifier and uploader), X2 (consumer), X7 (consumer).
+- **Edges:** blocked-by: DC3.G1; blocks: DC7.
+- **Contracts:** DX1 (verifier and uploader), DX2 (consumer), DX7 (consumer).
 - **Design inheritance:** §2 Daemon uplink [binding: outbound only, sole
   connection], §3 log plane [binding parts], §6 org key, §8 unknown 2.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C3.G1).
+- **Status:** not-dispatched (blocked-by DC3.G1).
 
-### C5: The web — projects and the conversation — plan
+### DC5: The web — projects and the conversation — plan
 
 - **Purpose:** The web app's shell and everything drawn from the log plane:
   sign-in, the org key, the project grid, the project view, the group chat,
@@ -817,71 +832,71 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
   resume actions, notifications.
 - **Acceptance:**
   - **G1 (shell):** MAWS's renderer skeleton copied and building as a web
-    app served by the Worker, with X8 written into Interfaces; the grid and
-    the project view against C3's fake machine.
+    app served by the Worker, with DX8 written into Interfaces; the grid and
+    the project view against DC3's fake machine.
   - **G2 (conversation):** group chat and direct channels draw a replayed
     project's log as §4 says (folding, the addressing grammar, system
     lines, an ended session's channel with Resume, controls a session
     cannot use shown disabled with the §5 table's reason, an `uncertain`
     RPC drawn as such and retried with its nonce); composer verbs and
-    request cards issue authenticated X1 events and X6 RPCs, request cards
+    request cards issue authenticated DX1 events and DX6 RPCs, request cards
     carry the digest of what they drew, and results render; an event or a
-    request whose code fails is not drawn; a send shows its X4 delivery
+    request whose code fails is not drawn; a send shows its DX4 delivery
     outcome per recipient, including after a reload; when the fake machine
     disconnects, its sessions' presence and depth show as unavailable while
     the conversation stays.
   - **G3 (the key):** the org key derives from a passkey through PRF in the
     owner's browsers, or from a passphrase; the enrollment code it produces
-    enrolls a machine through C4.
+    enrolls a machine through DC4.
   - **G4 (the phone):** installed to an iPhone's home screen, the app signs
     in through Access, derives the org key, and draws the grid, the group
     chat, a direct channel, and request cards in mobile layouts; a question
     raised by the fake machine pushes a notification that opens its card,
     and the answer from the phone reaches the fake machine authenticated.
-- **Edges:** blocked-by: C3.G1 to start, C3.G5 for G2; blocks: C6 (at G1).
-- **Contracts:** X8 (owner); X3, X4, X7 (consumer); X1, X6 (author, with
+- **Edges:** blocked-by: DC3.G1 to start, DC3.G5 for G2; blocks: DC6 (at G1).
+- **Contracts:** DX8 (owner); DX3, DX4, DX7 (consumer); DX1, DX6 (author, with
   codes).
 - **Design inheritance:** §4, §5, §6 [binding], §8 unknown 4. Advisory:
   taste-heavy surfaces (the grid card, the folded agent-traffic row, the
   request cards) go to the owner as mockups before polish.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C3.G1).
+- **Status:** not-dispatched (blocked-by DC3.G1).
 
-### C6: The web — session depth — plan
+### DC6: The web — session depth — plan
 
 - **Purpose:** The right-hand depth of a session: the live transcript with
   streaming through the adapter into MAWS's presentation model, the
   subagent tree with each subagent's transcript and stream, the diff of the
   working tree, session info.
-- **Acceptance:** against C3's fake machine replaying a recorded session
+- **Acceptance:** against DC3's fake machine replaying a recorded session
   with two subagents: the transcript streams and settles into the same
   rows a reload shows; the subagent tree matches the session's
   `subagents/*.meta.json`; the diff renders; a reconnect mid-response, a hub
   restart, and a chunk arriving during the snapshot each end with no gap
   and no duplicated text, in the main thread and in a subagent.
-- **Edges:** blocked-by: C5.G1 (X8), C3.G1 to start, C3.G5 for acceptance.
-- **Contracts:** X8, X3, X4 (consumer).
+- **Edges:** blocked-by: DC5.G1 (DX8), DC3.G1 to start, DC3.G5 for acceptance.
+- **Contracts:** DX8, DX3, DX4 (consumer).
 - **Design inheritance:** §2 Web client (the adapter), §3 session plane, §4
   right panel.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C5.G1, C3.G1).
+- **Status:** not-dispatched (blocked-by DC5.G1, DC3.G1).
 
-### C7: The machine's controls — plan
+### DC7: The machine's controls — plan
 
 - **Purpose:** The session plane and the RPCs on the machine side: presence
-  from the engine's session records, subscriptions served under the X4
+  from the engine's session records, subscriptions served under the DX4
   semantics, pending requests and settlements relayed with codes, the RPCs
   of §5 verified and executed through the bridge, the machine's policy, and
   Resume.
 - **Acceptance:**
   - **G1 (session plane):** presence changes reach the hub within 1
-    second; a subscribed session's snapshot and live stream follow X4,
+    second; a subscribed session's snapshot and live stream follow DX4,
     verified by a reconnect mid-response, a Worker restart overlapping
     transcript flushes, and a chunk arriving while the snapshot is being
     built, each including a subagent stream; pending requests
     and their settlements reach the hub with codes and are republished on
     reconnect.
-  - **G2 (RPCs):** each RPC of §5 executes through C2's protocol; an RPC
+  - **G2 (RPCs):** each RPC of §5 executes through DC2's protocol; an RPC
     without a valid code, older than 60 seconds, or with a seen nonce is
     refused and the refusal reported; an answer or decision whose digest
     differs from the pending request is refused; cutting the connection
@@ -892,7 +907,7 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
     ceiling is refused; on a read-only machine every RPC is refused, and a
     `human` or `say` from outside the machine, addressed to a live session
     and to a stopped seat, starts nothing and settles undelivered; every
-    settled delivery of an outside-origin event produces its X4 `delivery`
+    settled delivery of an outside-origin event produces its DX4 `delivery`
     outcome (delivered, recorded for a closed terminal session,
     refused-read-only), which the web shows.
   - **G4 (resume):** Resume brings an ended terminal session back on its
@@ -901,14 +916,14 @@ Phases 2–4 are this product's later units, each cut at its dispatch.
     two Resumes at once start one session; a Resume racing the owner
     reopening the session in a terminal ends with one session holding that
     id, any copy stopped, and the RPC failed with the reason.
-- **Edges:** blocked-by: C2.G1, C4; blocks: — (integration at
+- **Edges:** blocked-by: DC2.G1, DC4; blocks: — (integration at
   recomposition).
-- **Contracts:** X6 policy (owner); X4 (producer); X5, X2 (consumer); X1,
-  X6 (verifier).
+- **Contracts:** DX6 policy (owner); DX4 (producer); DX5, DX2 (consumer); DX1,
+  DX6 (verifier).
 - **Design inheritance:** §3 session plane [binding], §5 [binding], §6
   [binding: the daemon as boundary, codes, digests, read-only].
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C2.G1, C4).
+- **Status:** not-dispatched (blocked-by DC2.G1, DC4).
 
 ## Cross-Child Contracts
 
@@ -916,7 +931,7 @@ The clauses below bind now. Where a contract's full shapes are delegated,
 the owner writes them into Interfaces (below) at the named gate, and its
 consumers start after that gate.
 
-- **X1 — Log events (owner: this document; complete here).** smns §3's
+- **DX1 — Log events (owner: this document; complete here).** smns §3's
   events, extended and nothing more:
   - web writes use writer `hub/<member-id>`, sequenced by the project's
     Durable Object;
@@ -939,22 +954,22 @@ consumers start after that gate.
     stored keep their `mac`, and the archive carries it;
   - `.smns` gains `"hub": {"url": "<https url>", "org": "<org id>"}`;
   - no new log kinds for permission prompts or RPCs (§3).
-  Binds C2 (writes `message` and `question` as today), C3 (stores, never
-  alters), C4 (adds codes on upload, verifies on import), C5 (writes
+  Binds DC2 (writes `message` and `question` as today), DC3 (stores, never
+  alters), DC4 (adds codes on upload, verifies on import), DC5 (writes
   `human`, verifies before drawing).
-- **X2 — Machine ↔ hub protocol (owner C3, at C3.G1).** Outbound from the
+- **DX2 — Machine ↔ hub protocol (owner DC3, at DC3.G1).** Outbound from the
   machine; one connection per machine, admitted by its service token and
   bound to its enrolled name; per project the version-vector handshake of
   §3, then live tail both ways; RPC requests down and results up; session
-  subscriptions down and X4 messages up; machine and session presence and
+  subscriptions down and DX4 messages up; machine and session presence and
   the pending set republished on every reconnect, with every RPC result
-  the hub has not acknowledged. Binds C4, C7.
-- **X3 — Browser ↔ hub protocol (owner C3, at C3.G1).** Resume by project
+  the hub has not acknowledged. Binds DC4, DC7.
+- **DX3 — Browser ↔ hub protocol (owner DC3, at DC3.G1).** Resume by project
   offset for the log; subscriptions for the session plane; log events,
-  presence, the pending set, and X4 messages down; authenticated `human`
-  events and RPCs up, with their results. Binds C5, C6.
-- **X4 — Session-plane messages (envelope owner C3, at C3.G1; producers C2
-  and C7; semantics complete here).** An envelope `{project, machine,
+  presence, the pending set, and DX4 messages down; authenticated `human`
+  events and RPCs up, with their results. Binds DC5, DC6.
+- **DX4 — Session-plane messages (envelope owner DC3, at DC3.G1; producers DC2
+  and DC7; semantics complete here).** An envelope `{project, machine,
   session, kind, sub, n, body}` around the engine's own shapes, passed
   through rather than re-modelled:
   - transcript rows are the engine's JSONL rows verbatim; stream chunks are
@@ -1003,20 +1018,20 @@ consumers start after that gate.
     about a session's pending request, not a log event.
   The hub interprets presence, pending requests, and delivery outcomes;
   everything else it relays.
-  Binds C2 and C7 (produce), C3 (relays, implements the semantics in its
-  fake machine), C5 and C6 (consume).
-- **X5 — Local bridge protocol (owner C2, at C2.G1).** The session
+  Binds DC2 and DC7 (produce), DC3 (relays, implements the semantics in its
+  fake machine), DC5 and DC6 (consume).
+- **DX5 — Local bridge protocol (owner DC2, at DC2.G1).** The session
   endpoint's API (`$SMINOS_HOME/bridge/<session-id>.sock`): the bridge's
   event stream into it and the subscription out of it, the command lines
   the child relays to the mod, the long-poll for answers and decisions, the bridge-presence
   signal, the redelivery key for `human`, and the pending request's current
-  content for the daemon's digest check. Binds C7.
-- **X6 — RPCs (shapes owner C3, at C3.G1; policy owner C7).** The RPC set
-  of §5, each with its arguments, result, and errors, authenticated like X1
+  content for the daemon's digest check. Binds DC7.
+- **DX6 — RPCs (shapes owner DC3, at DC3.G1; policy owner DC7).** The RPC set
+  of §5, each with its arguments, result, and errors, authenticated like DX1
   over `{"args", "created", "machine", "member", "nonce", "project",
   "rpc"}`; an answer or decision carries in `args` the digest
   `{session, request, tool, input_sha256}` of the request as drawn. The
-  policy C7 enforces: known checkouts, permission ceiling, read-only (RPCs
+  policy DC7 enforces: known checkouts, permission ceiling, read-only (RPCs
   and outside-origin delivery), 60-second freshness, digest match.
   **An RPC runs at most once.** Its nonce is its id. The daemon keeps a
   durable ledger under `$SMINOS_HOME/daemon/` mapping each nonce to its
@@ -1028,54 +1043,55 @@ consumers start after that gate.
   older than 60 seconds is refused. The hub marks an RPC `uncertain` when
   the machine's connection drops after the RPC was forwarded and before its
   result arrived, and resolves it from the results the daemon republishes
-  on reconnect (X2); a browser retry reuses the nonce. This matters for
+  on reconnect (DX2); a browser retry reuses the nonce. This matters for
   spawn (two sessions) and steer (the text twice); it queues nothing for an
   offline machine, because `uncertain` applies only to an RPC the machine
-  already received. RPC states: `done | failed | uncertain`. Binds C5
-  (issues, draws `uncertain`), C3 (routes, marks and resolves `uncertain`),
-  C7 (verifies, executes, keeps the ledger).
-- **X7 — Identity (owner C3, at C3.G1).** The registry's org, member,
+  already received. RPC states: `done | failed | uncertain`. Binds DC5
+  (issues, draws `uncertain`), DC3 (routes, marks and resolves `uncertain`),
+  DC7 (verifies, executes, keeps the ledger).
+- **DX7 — Identity (owner DC3, at DC3.G1).** The registry's org, member,
   machine, and project records; machine names unique in the org; the
   project's designated archive machine; each member device's push
   subscription; Access for members, service tokens
   for machines; the enrollment code (hub URL, one-time token, machine name,
   org key), generated in the browser so the hub never sees the key. Binds
-  C4, C5, C7. Written to outlive this unit: the org phase extends it.
-- **X8 — The web shell's slots (owner C5, at C5.G1).** The slot, layout,
+  DC4, DC5, DC7. Written to outlive this unit: the org phase extends it.
+- **DX8 — The web shell's slots (owner DC5, at DC5.G1).** The slot, layout,
   session, and transcript-store interfaces the depth panel plugs into,
   copied from MAWS's `src/renderer/src/app/slots.ts` and
-  `src/renderer/src/transcript/shell.tsx`. Binds C6.
+  `src/renderer/src/transcript/shell.tsx`. Binds DC6.
 
 ## Interfaces
 
-Filled by the contract owners at their gates: X2, X3, the X4 envelope, the
-X6 shapes, and X7 by C3 at G1; X5 by C2 at G1; X8 by C5 at G1. Each lands as a subsection
+Filled by the contract owners at their gates: DX2, DX3, the DX4 envelope, the
+DX6 shapes, and DX7 by DC3 at G1; DX5 by DC2 at G1; DX8 by DC5 at G1. Each lands as a subsection
 here, reviewed with its gate, and a later change to one is a Decision Log
 entry that flags its consumers.
 
 ## Ordering & Dependency Map
 
 ```
-C1 spike ──► C2 bridge ──G1─────────────────────────┐
+DC1 spike ──► DC2 bridge ──G1─────────────────────────┐
                                                     ▼
-C3 hub ──G1──► C4 uplink ─────────────────────► C7 machine's controls ──┐
+DC3 hub ──G1──► DC4 uplink ─────────────────────► DC7 machine's controls ──┐
         │                                                               ├──► recomposition
-        ├──G1──► C5 web: conversation ──G1──► C6 web: depth ────────────┤    (acceptance 1–12)
-        └──G5 (fake machine) ──► C5.G2 and C6 acceptance ───────────────┘
+        ├──G1──► DC5 web: conversation ──G1──► DC6 web: depth ────────────┤    (acceptance 1–12)
+        └──G5 (fake machine) ──► DC5.G2 and DC6 acceptance ───────────────┘
 ```
 
-C1 and C3 start at once. C3's G1 (the protocols) is its first deliverable
-because three children wait on it; C2's G1 likewise for C7. C5 and C6 build
-against C3's fake machine, so they do not wait for the machine side; the
-real two-Mac integration happens at recomposition. C2, C4, and C7 change
-doperpowers; C3, C5, and C6 change the product's own repository, which the owner names.
+DC1 and DC3 start at once. DC3's G1 (the protocols) is its first deliverable
+because three children wait on it; DC2's G1 likewise for DC7. DC5 and DC6 build
+against DC3's fake machine, so they do not wait for the machine side; the
+real two-Mac integration happens at recomposition. DC2, DC4, and DC7 change
+doperpowers; DC3, DC5, and DC6 change the MAWS repository (`apps/desk-hub`,
+`apps/desk-web`).
 
 ## Risks & Mitigations
 
-- **The mod API is early access** ("may change without notice"). C1 tests
+- **The mod API is early access** ("may change without notice"). DC1 tests
   on the installed engine; measured churn 2.1.292 → 2.1.300 was additive.
   The bridge's degraded path (§2) is what remains if an API is withdrawn,
-  and C2's tests pin each primitive so a release that breaks one fails
+  and DC2's tests pin each primitive so a release that breaks one fails
   loudly.
 - **Function hooks are behind a flag.** Without
   `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` the bridge does nothing; the daemon
@@ -1086,9 +1102,13 @@ doperpowers; C3, C5, and C6 change the product's own repository, which the owner
   questions are the terminal's alone, as the §5 table's no-bridge columns
   say. Not the owner's machines; it matters for the org phase.
 - **One Durable Object per project may not carry the stream** (unknown 3).
-- **Porting MAWS's renderer is the largest piece of work.** C5 copies the
-  skeleton, not the app; Electron-only surfaces (the in-app browser, voice,
-  native menus) are not ported.
+- **Bringing MAWS's renderer to the web is the largest piece of work.** DC5
+  imports what MAWS keeps free of Electron and copies the skeleton of what
+  is entangled, not the app; Electron-only surfaces (the in-app browser,
+  voice, native menus) do not come. Living in MAWS's repository, the two
+  apps also meet MAWS's gates on every change, and a change to an imported
+  MAWS component reaches the web app at once — wanted, and a reason to pin
+  what the web relies on with its own tests.
 - **Anthropic converging.** Projects and Remote Control cover part of this
   for single users on first-party login; this unit's reason to exist is the
   project log shared by sessions and humans, the owner's machines behind
@@ -1119,13 +1139,13 @@ a hub that connects into machines (§2).
 
 | child | artifact | status |
 | --- | --- | --- |
-| C1 bridge spike | findings: `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` | **landed 2026-10-15**: 11 items, every primitive promoted, six with a change folded into §2 and §5; probe kept at `/tmp/c1probe` |
-| C2 bridge | plan: `docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md` | in-flight (dispatched 2026-10-15, parent pin 8acb3958) |
-| C3 hub | — | not-dispatched |
-| C4 uplink | — | not-dispatched |
-| C5 web: conversation | — | not-dispatched |
-| C6 web: depth | — | not-dispatched |
-| C7 machine's controls | — | not-dispatched |
+| DC1 bridge spike | findings: `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` | **landed 2026-10-15**: 11 items, every primitive promoted, six with a change folded into §2 and §5; probe kept at `/tmp/c1probe` |
+| DC2 bridge | plan: `docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md` | in-flight (dispatched 2026-10-15, parent pin 8acb3958) |
+| DC3 hub | — | not-dispatched |
+| DC4 uplink | — | not-dispatched |
+| DC5 web: conversation | — | not-dispatched |
+| DC6 web: depth | — | not-dispatched |
+| DC7 machine's controls | — | not-dispatched |
 
 ## Surprises & Discoveries
 
@@ -1141,7 +1161,7 @@ a hub that connects into machines (§2).
 - Observation: `turn.step` streams subagents' token deltas; the SDK wire
   does not. Evidence: mod API declarations 2.1.300; MAWS
   `research/sdk-wire-gap.md` row 14.
-- Observation: C1 (live, 2.1.300) — the engine never tells a
+- Observation: DC1 (live, 2.1.300) — the engine never tells a
   `PermissionRequest` hook that the terminal answered first; a web answer
   arriving after that is silently ignored, and the hook polls on.
   Evidence: findings item 5, `daemon.log` in `/tmp/c1probe`.
@@ -1184,7 +1204,7 @@ a hub that connects into machines (§2).
   technical-heavy) and, in the same round, a second
   `doperpowers:adversarial-reviewer` on the children and contracts for
   buildability. Each plan child names its own branch-review rung in its
-  execution document, xhigh for C3, C4, C5, and C7 by their size. Recomposition
+  execution document, xhigh for DC3, DC4, DC5, and DC7 by their size. Recomposition
   is a scale review: the two-Mac acceptance walk (Parent-Level Acceptance
   1–12) plus an xhigh panel per repository over the children's merged
   range.
@@ -1231,25 +1251,25 @@ a hub that connects into machines (§2).
     recorded and settled undelivered, not only RPCs refused.
   - **No revival by message**: v1's "a message revives a closed terminal
     session" misread smns §4 (Surprises); an explicit Resume RPC replaces it
-    (C7.G4).
+    (DC7.G4).
   - **Machine names are enforced by the hub** for hub projects, replacing
     the git integration's claim check; divergent payloads at an existing
     `(writer, seq)` are refused and reported.
   - **The archive is written by a designated machine** (above), with
-    hub-only bootstrap and no git ingestion in C4's acceptance.
-  - **The session plane's semantics are written here** (X4: subscribe
+    hub-only bootstrap and no git ingestion in DC4's acceptance.
+  - **The session plane's semantics are written here** (DX4: subscribe
     before snapshot, numbered live messages, fresh snapshot on any
     discontinuity; pending requests raised then settled with the winner),
-    so C6 does not wait on the machine side; C3's fake machine implements
+    so DC6 does not wait on the machine side; DC3's fake machine implements
     them.
-  - **Settlement and audit have gates** (C2.G3, C3.G3), **compaction is in
-    the spike and the local gate** (C1, C2.G2), **C6 waits on C5's shell**
-    (X8, C5.G1), and **the fake machine gates acceptance, not start**
-    (C3.G5).
-  - **C4 split into C4 (the uplink and the log plane) and C7 (the machine's
+  - **Settlement and audit have gates** (DC2.G3, DC3.G3), **compaction is in
+    the spike and the local gate** (DC1, DC2.G2), **DC6 waits on DC5's shell**
+    (DX8, DC5.G1), and **the fake machine gates acceptance, not start**
+    (DC3.G5).
+  - **DC4 split into DC4 (the uplink and the log plane) and DC7 (the machine's
     controls: session plane, RPCs, policy, Resume)**: different state
     owners (log files against live sessions) and verification strategies,
-    and v1's C4 carried both.
+    and v1's DC4 carried both.
   Rationale: each finding was reproduced against the code or the
   contracts; none was dismissed.
   Date/Author: 2026-10-15, design session.
@@ -1259,9 +1279,9 @@ a hub that connects into machines (§2).
   otherwise transplant an authentic feed into another project, where its
   messages are owed afresh (a reviewer ran `_owed` to show it), or add
   `via`/`msg_id` to an honest web event, which `compose_frame` writes into
-  the prompt; X4 gains a per-message chunk watermark (`upTo`) so a
+  the prompt; DX4 gains a per-message chunk watermark (`upTo`) so a
   snapshot's partial text and the buffered stream cannot both carry a
-  chunk; X4 gains delivery outcomes so the web can say a send was
+  chunk; DX4 gains delivery outcomes so the web can say a send was
   recorded or held back rather than delivered; Resume gains
   per-session serialization and the same-id postcondition with copy
   cleanup that `resume_session` already applies to seats. Rejected then:
@@ -1272,8 +1292,8 @@ a hub that connects into machines (§2).
   Date/Author: 2026-10-15, design session.
 - Decision: Spec review stops at round 2. Round 2's findings were narrow,
   local to contracts, and the reviewers specified their fixes; the
-  contracts' full shapes get their next adversarial read at C3.G1 and
-  C2.G1, which are reviewed before any consumer starts.
+  contracts' full shapes get their next adversarial read at DC3.G1 and
+  DC2.G1, which are reviewed before any consumer starts.
   Rationale: a third round on these edits would review the reviewers'
   own wording; the gate reviews see the shapes in their final form.
   Date/Author: 2026-10-15, design session.
@@ -1285,7 +1305,7 @@ a hub that connects into machines (§2).
   scope change was confirmed with the owner directly the same day.
   (1) **The phone in phase 1** [owner]: the PWA, Web Push sent from the
   Worker, mobile layouts for the needs-you loop, a push that only points to
-  a card; acceptance 12, C5.G4, C3.G3, X7, unknown 4. Rejected then: the
+  a card; acceptance 12, DC5.G4, DC3.G3, DX7, unknown 4. Rejected then: the
   phone in phase 4 as approved first; notification actions, which would
   need the org key in the service worker. (2) **One binding table of what
   each kind of session can do** (§5), filled from this spec and checked;
@@ -1294,20 +1314,20 @@ a hub that connects into machines (§2).
   and leaves the process the human's). (3) **RPCs run at most once**: the
   nonce as id, the daemon's durable ledger answered before the freshness
   check, `uncertain` on a drop after forwarding, results republished on
-  reconnect (X6, X2, C7.G2, C3.G3, C5.G2); spawn and steer were the cases
+  reconnect (DX6, DX2, DC7.G2, DC3.G3, DC5.G2); spawn and steer were the cases
   that could double. (4) **Cloudflare's limits** stated where they bind
   (§2): presence, pending requests, and delivery outcomes persisted, since
   a hibernating object can be evicted while its sockets stay open and no
   republish follows; frames bounded at 1 MiB; reconnect with backoff after
-  a deploy; SSE's cost in unknown 2; a measured throughput run (C3.G6).
+  a deploy; SSE's cost in unknown 2; a measured throughput run (DC3.G6).
   Also from the comparison: the SPEC's background-subagent exception to the
-  permission race and the person-only prompt, added to C1 and to the §5
-  table. Snapshots became newest-first under the frame bound (X4).
+  permission race and the person-only prompt, added to DC1 and to the §5
+  table. Snapshots became newest-first under the frame bound (DX4).
   Rationale: each import closes a gap this design had (a double spawn, a
   pending set lost to eviction) or follows the owner's scope call; none
   collides with a binding clause.
   Date/Author: 2026-10-15, design session.
-- Decision: C1's verdicts folded (all 11 promoted; six with a change).
+- Decision: DC1's verdicts folded (all 11 promoted; six with a change).
   Questions are answered through `PermissionRequest` `updatedInput`, not a
   `tool.call` result, which removes the hook-order question; the bridge
   withdraws a request the terminal answered; a background subagent's
@@ -1316,9 +1336,20 @@ a hub that connects into machines (§2).
   rewritten per request in `turn.step`, rejecting `$.config.set`, which
   writes the user's default; compact asked mid-turn runs at the turn's
   end; steers are mirrored as `$.ui.log` lines; acceptance 6 uses a Python
-  sleep. C2 is dispatchable.
+  sleep. DC2 is dispatchable.
   Rationale: measured in real sessions (findings file); each change keeps
   the design's intent with the primitive that actually delivers it.
+  Date/Author: 2026-10-15, design session.
+- Decision: The product's boundary and home (owner, 2026-10-15): an
+  independent product whose root is `.smns` alone — not Arkho's child and
+  not MAWS's web edition; convergences such as a cloud web MAWS are open
+  possibilities. The code lives in the MAWS repository as two pnpm
+  workspace apps, importing MAWS components kept free of Electron and
+  copying entangled ones; sminos hub is discarded. Child and contract ids
+  gain a `D` (DC, DX) so they cannot be read as MAWS's charter C1–C12 and
+  X1–X8, which MAWS's `CLAUDE.md` binds. Rejected then: a new repository
+  (the owner's alternative), and "MAWS on the web" as the product's
+  framing, which this session wrote an hour earlier.
   Date/Author: 2026-10-15, design session.
 - Decision: Not a child of Arkho (owner, 2026-10-15): "I don't want to be
   bound to Arkho's existing project; it is closer to MAWS on the web." The
@@ -1331,13 +1362,13 @@ a hub that connects into machines (§2).
   2026-09-13; the session had read a local checkout stopped at 2026-08-20
   instead of `origin/main` (Surprises).
   Date/Author: 2026-10-15, design session.
-- Decision: C2 residue — the bridge child serves a per-session endpoint
+- Decision: DC2 residue — the bridge child serves a per-session endpoint
   (`$SMINOS_HOME/bridge/<session-id>.sock`) that the CLI and the daemon
-  connect to, rather than connecting to one daemon socket. §2, §6, and X5
+  connect to, rather than connecting to one daemon socket. §2, §6, and DX5
   revised. Rejected then: one daemon socket, which would make local control
-  depend on the daemon running. Flags C7 (it discovers bridges by listing
+  depend on the daemon running. Flags DC7 (it discovers bridges by listing
   the directory).
-  Date/Author: 2026-10-15, design session (C2's plan).
+  Date/Author: 2026-10-15, design session (DC2's plan).
 
 ## Outcomes & Retrospective
 
