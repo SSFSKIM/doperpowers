@@ -476,6 +476,17 @@ produces nothing new for other children beyond the stream DC7 builds on.
   stream; after every reconnect the uplink sends `hello` for each project
   on the new generation before it uploads anything.
   Date/Author: 2026-10-15, the composite's writer (from DC3's M2 review).
+- Decision: Parent re-pinned for M3: DX2, DX3 and DX7 final at composite
+  MAWS `8711949a` (DC3's reviewed M2; enrollment endpoints and the POST
+  answer as M2's G1 ran against them). For M3: `not-open` for a project
+  not opened by `hello` on the stream; the hub refuses as `bad-shape` a
+  writer with a control character or not `<prefix>/<feed>`, and any
+  non-canonical base64url; a POST answers only once its replies are on
+  the stream, else `503 delivery-failed` (not delivered: resend);
+  presence's shape fixed (DX4 `presence` envelope, `{record, bridge}`,
+  DC7's to publish); the local hub runs as `pnpm --filter desk-hub
+  local` on `127.0.0.1:8747`, always from a temp copy.
+  Date/Author: 2026-10-15, controller (relayed by the composite's writer).
 - Decision: **G2's refusal cases split by how a forgery can reach a
   daemon.** The hub gets no test hook: a write path into the Worker
   that skips its checks would be a backdoor in production code. (1)
