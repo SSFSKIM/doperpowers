@@ -544,8 +544,9 @@ produces nothing new for other children beyond the stream DC7 builds on.
   event without mac>`. The derivation is aligned to exactly that and
   pinned by a test (same event, same nonce; another position or project,
   another). (6) `conflict` is a DX2 `rejected` reason; DC3 adds it to its
-  module at its M3, and the daemon reports `conflict` for a verified
-  event whose position here holds another. (4) Spent positions accepted
+  module at its M3, and until then the daemon keeps reporting such an
+  event as `bad-code` (a reason the hub's module does not yet know would
+  be refused), switching to `conflict` once DC3's module accepts it. (4) Spent positions accepted
   on one condition the composite now states: sminos's readers keep a
   per-writer high-water mark and tolerate the hole — delivery, `watch`,
   the archive writer, and every reader of a writer's file carry on past
