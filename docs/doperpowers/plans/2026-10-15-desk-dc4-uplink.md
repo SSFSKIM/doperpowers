@@ -15,7 +15,9 @@
 
 ## Progress
 
-- [ ] M1 — Codes in Python, and a daemon that is concurrent (DC4.G4)
+- [x] M1 — Codes in Python, and a daemon that is concurrent (DC4.G4) —
+  2026-10-15, reviewed clean (98bd8a69..cc3c49e1; one fix wave: a busy
+  stream's shutdown, canonical base64url)
 - [ ] M2 — Enrollment and hub projects (DC4.G1)
 - [ ] M3 — Sync through the hub (DC4.G2)
 - [ ] M4 — The archive, the two-machine walk, docs, version (DC4.G3)
@@ -326,6 +328,11 @@ produces nothing new for other children beyond the stream DC7 builds on.
   vectors are re-copied from `e6bb0160` (four `fails_by: "encoding"`
   negatives; checks in the order encoding, position, code). Reverses M1's
   call (10), "a nonce only has to be a string".
+  Built in `cc3c49e1`: `sminos_codes.failure()` classifies in that order
+  (anything that is not a JSON object fails by `encoding`; a lone
+  surrogate, NaN or an infinity inside a well-encoded event fails by
+  `code`), and one strict decoder reads the code, the nonce, and
+  `hub.json`'s org key.
   Date/Author: 2026-10-15, the composite's writer; built as M1's first fix.
 - Decision: **M2's shape** (against DX7's endpoints marked *M2,
   provisional* in the composite at `91f839ee`). (1) `sminos hub enroll
