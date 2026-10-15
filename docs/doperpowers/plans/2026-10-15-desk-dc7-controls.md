@@ -354,6 +354,23 @@ against the local hub; until it lands, the stand-in.
   Date/Author: 2026-10-15, the composite's writer; M1's consumer adopts it
   in its fix wave.
 
+- Decision: The producer seeds the cut (M1's review found a null-cut
+  snapshot could draw a flushed, un-noticed row beside its streaming
+  block). On its first `resync` the mod reports each loop's cut as the
+  last row that loop had when the module loaded, from the engine's own
+  message list, and no block of a loop enters `streaming` before its cut
+  is seeded; `null` means only "this loop has no rows". The consumer then
+  reads a null cut as empty history, every disk row live under the
+  disk-order rule; the wait for a cut row to reach disk covers a seed not
+  yet flushed. DX4's non-overlap holds with no exception. The consumer
+  keeps its current null-cut handling against the scripted endpoint until
+  DC2's M4 lands, then switches the endpoint to seed and is proved
+  against the real child.
+  Rejected: accepting the overlap as transient, healed by the
+  discontinuity.
+  Date/Author: 2026-10-15, the composite's writer (option a); DC2 builds
+  the seed in its M4.
+
 ## Surprises & Discoveries
 
 - (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
