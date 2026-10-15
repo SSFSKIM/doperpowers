@@ -1,33 +1,43 @@
 # DC7 (the machine's controls): execution report, interim (2026-10-15)
 
-Status: in progress. Handed back while M1's fix wave was still running.
+Status: in progress. The harness forced this hand-back while M4's executor was still running its own background work (a live Resume check).
 
 ## Where it stands
 
-- Branch `worktree-agent-ab2de4f299f415dbf`: DC2's branch at `664e4bd8` merged with DC4's at `7252a5d7` (merge `9e857943`; the one conflict, the tail of `run-sminos-tests.sh`, keeps both sides).
-- Pre-flight `5227ff12`: parent pin is blob `6c8015ef` at MAWS `edf9dea7`.
-- M1 executed at `19b50561` (`sminos_plane.py`, uplink seams, `tests/sminos/test_session_plane.py`, `fake_session.py`). Its suite passed 23/23 and the full sminos suite passed 1726 assertions.
-- M1's task review found three Important issues:
-  - Blocking bridge probes break the 1 s presence bound. Sent to the fix wave.
-  - A cached process identity survives PID reuse. Sent to the fix wave.
-  - A null cut lets a snapshot overlap. Taken to the composite's writer, who chose option (a): the producer seeds the cut. DC2 builds the seed in its M4.
-- M1's fix wave is running on M1's executor, with these items:
-  1. Adopt the disk-order rule (composite `cd2667d8`).
-  2. Move presence probes off the uplink thread.
-  3. PID identity: invalidate the cache on observed death, and revalidate.
-  4. Confirm the ceiling is the settings' `defaultMode`.
-  5. After the fix, rerun the uplink walks against DC3's real local hub (MAWS `f22e0839`) from a temporary copy, run directly and serially (the composite's writer waived the load wrapper).
-- The fix wave has landed in three commits. The executor's own report on them, with the local-hub results, has not arrived yet:
-  - `3aa64d21`: disk order, presence probes off the uplink thread, and PID identity.
-  - `3ade2b72`: the uplink tests run against DC3's local hub through `DESK_HUB`.
-  - `80fa84a0`: DX4 `step-end` (composite `34ee27ca`).
-- Decisions folded into the plan's Decision Log: `26155809`, `f4b699bc`, `12b0387a`.
+- **M1, presence and the session plane.** Reviewed clean and ticked. It is proven against DC2's real `sminos bridge` child with a seeded cut, and against DC3's reviewed hub at `a190a6d8` with `step-end`. One Minor from review (scripted endpoint fidelity on a resync) was carried into M4.
+- **M2, policy, requests, settlements and delivery outcomes.** Reviewed clean and ticked: `c71b751f`, fixes `f357a00a` and `526b9eb8`.
+- **M3, the RPCs.** Reviewed clean and ticked: `99d8fd62`, `73c821fc`, `298254af`, fixes `4dc19fa7`, `74f078ea` and `3cd17348`. `test_rpcs.py` passed 30/30 against DC3's local hub.
+- **M4.** Two commits have landed:
+  - `f263bbd5`: Resume, the bridge-file sweep, and the fixture fix.
+  - `69a9ad75`: CLAUDE.md and the 7.157.0 bump.
+
+  The executor has not reported yet, and `tests/mods/live-resume-check.py` is untracked in the worktree. M4's task review, the final `high` branch review, Outcomes & Retrospective, and the PR all remain.
+- **Merges:**
+  - DC4 at `7252a5d7` (`9e857943`).
+  - DC2 at `89c9f8da` (`0563b977`) and `5003ca2e` (`712f6af3`).
+  - origin/main (`93d01f3f`, `1c2fe0be`).
+- **Every contract ruling is in the plan's Decision Log.**
+
+## Open with the composite's writer
+
+How M3 handles a misfit decision. Today these are refused `bad-shape` after the claim, from the bridge's 400:
+- a deny on an async question;
+- an answer to a permission;
+- an allow on a question;
+- answer keys the request does not ask.
+
+I proposed catching them at check 7, before the claim, still as `bad-shape`. That needs DX6 to list `bad-shape` among the daemon's codes. The ruling is pending.
+
+## Tech debt
+
+The suite's load flakes are covered by DC4's entry in `docs/doperpowers/TECH-DEBT.md`.
 
 ## Next
 
-1. Take M1's fix report and re-review it with the M1 reviewer, using a fix package from `f4b699bc` (or the HEAD the fix lands on).
-2. Once clean, tick M1.
-3. When DC2's M4 commits, merge it, switch the scripted endpoint to a seeded cut, and prove M1 against the real child.
-4. Then M2, M3 and M4, the final `high` review, and the PR.
+1. Take M4's report and review it.
+2. Apply the misfit ruling.
+3. Run the final `high` review over `git merge-base origin/main HEAD`..HEAD.
+4. Write Outcomes & Retrospective.
+5. Open the PR.
 
-The ledger is in `.doperpowers/sde/2026-10-15-desk-dc7-controls/progress.md`.
+The ledger is `.doperpowers/sde/2026-10-15-desk-dc7-controls/progress.md`.
