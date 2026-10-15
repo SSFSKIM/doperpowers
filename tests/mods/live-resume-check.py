@@ -26,6 +26,7 @@ that supervisor stopped before it exits.
     tests/mods/live-resume-check.py [--keep]
 """
 
+import calendar
 import glob
 import importlib.util
 import json
@@ -45,8 +46,11 @@ SCRIPTS = os.path.join(LB.REPO, "skills", "sminos", "scripts")
 NAME = "rslive"
 
 # The daemon's Resume, as the uplink's worker runs it, in this check's
-# isolation; `--skip-check` passes over the "live nowhere" check once, as a
-# reopen landing just after it would.
+# isolation, with a recorder in place of the ledger for the evidence it keeps
+# (its launch, then its job); `--skip-check` passes over the "live nowhere"
+# check once, as a reopen landing just after it would. Prints {outcome,
+# notes}. test_rpcs.py runs it against the `claude` stand-in, so a change to
+# Resume's call is caught without an engine run.
 RESUME = r'''
 import json, sys, threading
 sys.path.insert(0, sys.argv[1])
@@ -57,12 +61,24 @@ if sys.argv[3] == "--skip-check":
         calls.append(sid)
         return [] if len(calls) == 1 else real(sid)
     r.holders = once
+notes = {}
 try:
-    out = r.resume(sys.argv[2], sys.argv[4], threading.Lock())
+    out = r.resume(sys.argv[2], sys.argv[4], threading.Lock(), lambda **fields: notes.update(fields))
 except r.Refused as e:
     out = e.outcome
-print(json.dumps(out))
+print(json.dumps({"outcome": out, "notes": notes}))
 '''
+
+def process_started(rec):
+    """When an engine record's process started (epoch s): `startedAt` (ms),
+    else `procStart` read as UTC, as sminos reads it; None when neither."""
+    if isinstance(rec.get("startedAt"), (int, float)):
+        return rec["startedAt"] / 1000.0
+    try:
+        return calendar.timegm(time.strptime(" ".join(str(rec.get("procStart")).split()), "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+
 
 # The gateway's model discovery is not part of what this check pins.
 os.environ.setdefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
@@ -90,7 +106,9 @@ class Resume(LC.Control):
                            capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError("the resume did not run: %s" % r.stderr.strip()[-2000:])
-        return json.loads(r.stdout.strip().splitlines()[-1])
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        self.notes = got["notes"]
+        return got["outcome"]
 
     def agents(self):
         r = self.claude(["agents", "--json", "--all"], timeout=120)
@@ -124,6 +142,7 @@ class Resume(LC.Control):
                    "session %s, %d answer rows, transcript %s" % (sid[:8], len(rows), transcript))
 
         out = self.resume(sid)
+        notes = self.notes
         held = self.records(sid)
         rows = [r for r in self.agents() if r.get("sessionId") == sid]
         self.jobs += [r.get("id") for r in rows]
@@ -134,6 +153,13 @@ class Resume(LC.Control):
                    "outcome %s; holders %s; job rows %s; same transcript %s" % (
                        out, [(h.get("kind"), h.get("jobId")) for h in held],
                        [(r.get("id"), r.get("state")) for r in rows], same_file))
+        started = [process_started(h) for h in held]
+        self.check("its launch and job are what it kept, and the job's process is that launch's",
+                   isinstance(notes.get("launched_at"), (int, float)) and [h.get("jobId") for h in held] == [notes.get("job")]
+                   and [r.get("id") for r in rows] == [notes.get("job")]
+                   and all(t is not None and t >= int(notes["launched_at"]) for t in started),
+                   "kept %s; holder jobs %s, started %s; job rows %s" % (
+                       notes, [h.get("jobId") for h in held], started, [r.get("id") for r in rows]))
 
         before = len(self.agents())
         out = self.resume(sid)

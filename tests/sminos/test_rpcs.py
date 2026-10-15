@@ -31,6 +31,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -1003,6 +1004,26 @@ class Checks(unittest.TestCase):
         e = self.ledger()[rpc["nonce"]]
         self.assertGreaterEqual(e["launched_at"], before - 1)
         self.assertEqual(e["job"], sid[:8], "the job it started")
+        for h in holders_of(sid):
+            os.kill(h["pid"], signal.SIGKILL)
+
+    def test_j_the_live_checks_call_path_runs_against_the_stand_in(self):
+        """tests/mods/live-resume-check.py's own Resume call, run here
+        against the `claude` stand-in: a change to Resume's call breaks this,
+        not only a by-hand engine run."""
+        import importlib.util
+        path = os.path.join(os.path.dirname(tsp.HERE), "mods", "live-resume-check.py")
+        spec = importlib.util.spec_from_file_location("live_resume_check", path)
+        live = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(live)
+        sid = ended_session(self.root)
+        r = subprocess.run([sys.executable, "-c", live.RESUME, tsp.SCRIPTS, sid, "--check", self.root],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(got["outcome"], {"state": "done", "result": {"session": sid}})
+        self.assertIsInstance(got["notes"]["launched_at"], float)
+        self.assertEqual(got["notes"]["job"], sid[:8], "the launch's evidence, as the ledger would keep it")
         for h in holders_of(sid):
             os.kill(h["pid"], signal.SIGKILL)
 
