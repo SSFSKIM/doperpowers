@@ -445,6 +445,27 @@ def notice_past_bound():
     child.stop()
 
 
+def verbs_retry_not_ready():
+    """The control verbs' stream (sminos_control.follow_stream) retries a
+    child that is not ready yet (503 past its hold) within their first-snapshot
+    window, rather than giving up at the first 503."""
+    sys.path.insert(0, os.path.dirname(os.path.realpath(SMINOS)))
+    import sminos_control as C
+    child = Child(env={"SMINOS_BRIDGE_READY_WAIT": "1"})
+    t0 = time.time()
+    events = C.follow_stream(child.sock)
+    threading.Timer(2.0, lambda: child.resync(cut={"main": "late"})).start()
+    try:
+        first = events.get(timeout=C.FIRST_WAIT_S)
+    except queue.Empty:
+        first = "nothing"
+    took = time.time() - t0
+    check("a verb's stream retries a not-ready child (503 after its 1 s hold) and gets the snapshot once the first resync lands, within its %d s window" % C.FIRST_WAIT_S,
+          isinstance(first, dict) and first.get("type") == "snapshot" and first.get("cut") == {"main": "late"} and 1.9 <= took < C.FIRST_WAIT_S,
+          "%r after %.2f s" % (first if not isinstance(first, dict) else first.get("type"), took))
+    child.stop()
+
+
 def step_end_drops():
     """A step's end takes all its blocks out of `streaming`, whether or not a
     block-row came for each: a block aborted mid-response is in no later
@@ -630,7 +651,7 @@ def subagent_loop():
     child.stop()
 
 
-for case in (readiness, cut, step_end_drops, seed, flush_ahead, between_chunk_and_row, notice_past_bound, passed_over, cut_wait, seeded,
+for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, flush_ahead, between_chunk_and_row, notice_past_bound, passed_over, cut_wait, seeded,
              fence, subagent_loop):
     try:
         case()

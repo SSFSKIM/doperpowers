@@ -515,6 +515,15 @@ describe('the child', () => {
     expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
   })
 
+  test("the first post lost (session start and all): the recovery's resync carries the session's start info, which the child takes", async () => {
+    const h = harness({ failAt: [0] })
+    await h.ready()
+    expect(h.posts[0]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+    await h.fire(500)
+    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['gap', 'resync'])
+    expect(h.posts[1]!.events[1]).toMatchObject({ sessionInfo: { session: SID, cwd: '/w', surface: 'terminal', isInteractive: true, model: 'claude-haiku', version: '2.1.300' } })
+  })
+
   test('the heartbeat carries the turn state', async () => {
     const h = harness()
     await h.ready()
@@ -1067,6 +1076,40 @@ describe('model and effort', () => {
     h.children[1]!.write(hello(SID, SOCK, { override: null, delivered: {} }))
     await h.settle()
     expect(h.ofType('resync').at(-1)).toMatchObject({ override: { model: 'claude-opus-5-5', effort: null } })
+  })
+})
+
+describe('a module reloaded mid-turn', () => {
+  /** A module loaded into a session whose main turn is running: it saw no turn.start. */
+  const RELOADED = { messages: [{ role: 'user', text: 'earlier' }] }
+
+  test("the running main turn is taken from its next request: interrupt aborts it, steer is taken, compact queues until it ends; the stream gets the turn, marked recovered", async () => {
+    const h = harness(RELOADED)
+    await h.ready()
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ result: { turnId: null } })
+    await h.step({ turnId: 't-old', index: 3, model: 'm', messageCount: 9 }, [{ kind: 'text', index: 0, text: 'still going' }])
+    expect(h.ofType('turn')).toEqual([expect.objectContaining({ phase: 'start', turnId: 't-old', agentId: null, text: null, recovered: true })])
+    expect(await h.command({ op: 'steer', text: 'and the date' })).toMatchObject({ ok: true, result: { row: expect.any(String) } })
+    const compact = await h.command({ op: 'compact' })
+    expect(compact).toMatchObject({ ok: true, result: { queued: true, turnId: 't-old' } })
+    const answered = h.command({ op: 'interrupt' })
+    await h.settle()
+    expect(h.calls.find((c) => c.op === 'abort')).toEqual({ op: 'abort', args: { turnId: 't-old' } })
+    await answered
+    const ending = h.complete('t-old', 'aborted')
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'compact').length).toBe(1)
+    h.compactions[0]!.finish({ messages: [], tokensBefore: 9, tokensAfter: 1 })
+    await ending
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ result: { turnId: null } })
+  })
+
+  test("a subagent's request names no main turn: nothing is recovered from it", async () => {
+    const h = harness(RELOADED)
+    await h.ready()
+    await h.step({ turnId: 'ts', index: 0, model: 'm', messageCount: 1, agentId: 'a7' }, [{ kind: 'text', index: 0, text: 'sub' }])
+    expect(h.ofType('turn')).toEqual([])
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ result: { turnId: null } })
   })
 })
 

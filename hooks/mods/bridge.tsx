@@ -503,6 +503,9 @@ function resyncEvent(): BridgeEvent {
     delivered: Object.fromEntries(state.delivered),
     // Each loop's last row notice: every row up to it has been named.
     cut: { main: null, ...Object.fromEntries(state.cut) },
+    // What the session started as: a child whose session start was lost (the
+    // first post failed, and its recovery is this resync) still knows it.
+    ...(state.info !== undefined && { sessionInfo: { session: state.session, ...state.info } }),
     t: Date.now(),
   }
 }
@@ -672,6 +675,19 @@ function retire() {
   state.heartbeat = undefined
   state.isPosterRunning = false
   stopChild()
+}
+
+/**
+ * A main turn this module saw no `turn.start` of (it was reloaded while the
+ * turn ran), taken from the turn's next request: a main-loop `turn.step`
+ * fires only inside a turn, under the id `turn.start`, `turn.complete` and
+ * `$.turn.abort` use (2.1.300). From here interrupt, steer and compact act on
+ * it as on a live turn, and the stream gets its start, marked `recovered`.
+ */
+function recoverMainTurn(turnId: string) {
+  state.mainTurn = turnId
+  state.loopTurns.set(loopKey(undefined), turnId)
+  emit({ type: 'turn', phase: 'start', turnId, agentId: null, text: null, recovered: true })
 }
 
 /** Answers one command line with a `result` event. M3 adds its ops here. */
@@ -1703,6 +1719,9 @@ export function registerBridge(on: On) {
     // reader through the transcript.
     const isShown = state.isSeeded || state.freshLoops.has(e.agentId ?? 'main')
     const isMain = e.agentId === undefined
+    if (isMain && state.mainTurn === undefined) {
+      recoverMainTurn(e.turnId)
+    }
     releaseStepEnd(loopKey(e.agentId))
     // The model chosen through the bridge is the main loop's: a subagent runs
     // on what its definition or its caller chose.

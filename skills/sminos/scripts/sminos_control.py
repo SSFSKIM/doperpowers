@@ -313,8 +313,11 @@ def follow_stream(path):
     snapshot first), then None at its end. A stream the child ended because
     the mod resent its state is followed on at once: the fresh snapshot comes
     next in the queue, so a settlement that happened in between is read from
-    its `settled`."""
+    its `settled`. A child not ready yet (503: the mod's first resync has
+    not reached it) is asked again until the first snapshot's window
+    (FIRST_WAIT_S) runs out."""
     events = queue.Queue()
+    first_by = time.monotonic() + FIRST_WAIT_S
 
     def follow():
         pid = None
@@ -326,6 +329,11 @@ def follow_stream(path):
                             break   # another child: what this one followed is gone
                         pid = e.get("pid")
                     events.put(e)
+            except B.NotReady:
+                if pid is None and time.monotonic() < first_by:
+                    time.sleep(0.1)
+                    continue
+                break
             except (OSError, http.client.HTTPException, ValueError):
                 break
             status = B.probe(path)
