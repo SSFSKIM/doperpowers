@@ -61,7 +61,10 @@ a mark, so a session without the output style is left alone. From then on:
   agents to finish`) draws only while the run of the row before it is
   unfolded; otherwise nothing. The attachment rows the engine draws on its
   own (`Found N new diagnostic issues`) are not a render component a hook
-  can reach, and still draw.
+  can reach, and still draw. Re-checked on 2.1.300 (2026-10-15): the
+  engine's attachment renderer raises no `ui.render`, `session.append` can
+  rewrite an engine row's text but not drop it, and `prompt.attachment`
+  changes only what the model reads.
 - A question asked through `AskUserQuestion`, or through the ask mod's
   `mcp__doperpowers__AskUserQuestion` (an open async ask with its
   `[ answer ]` included), draws as it would unfolded (the question and the
