@@ -244,7 +244,28 @@ the spec's Decision Log entry "the branch review round"
   (with "and decided, as a field", and at times the window cases beside
   it), whose waits are fixed 0.4–0.6 s sleeps around the session record's
   `waiting` status; it fails the same way on the base `958db2cf` at load
-  ~220. Same trigger, same fix.
+  ~220. Same trigger, same fix. A candidate in the class (desk DC7
+  final fix, 2026-10-15): `tests/sminos/test-uplink.sh`'s "the tick loop
+  is still in the fetch all along" failed once at load ~218 (the tick
+  moved 0.4 s inside the hung-fetch window) and passed alone at ~137;
+  the branch's only change in that file is a call after `open()`'s POST,
+  away from the tick loop. Trigger: a failure at normal load.
+- **T3 — a compact's nonce is lost when the RPC ledger is unreadable at
+  start and repaired later.** `sminos_rpc.py` (desk DC7 final fix):
+  compact command ids are restored from the ledger only when it loads at
+  start; a ledger read fail-closed then (every RPC refused) and repaired
+  while the daemon runs restores none, so a compaction already queued at
+  turn end is relayed with `rpc: null`. Display only (DX4 `compact`).
+  Fix: restore them on the re-read that clears the fail-closed state.
+  Trigger: a ledger seen unreadable at a daemon start.
+- **T3 — a non-`OSError` from the RPC claim's write leaves that RPC
+  unanswered.** `sminos_rpc.py` `Rpcs.run()` (desk DC7): the claim's
+  `ledger.put` catches only `OSError`; anything else (a value the JSON
+  writer cannot serialize) escapes after planning, so the nonce leaves
+  flight with no outcome. The claim holds only strings and numbers, so
+  nothing reaches it today. Fix: treat any exception there as the
+  `OSError` case (`failed`, nothing ran). Trigger: a field of another
+  type added to the claim.
 - **T3 — an uplink POST past its 60 s deadline can leave its worker
   alive.** `sminos_uplink.py` `post()`/`exchange()` (desk DC4 M3): on the
   whole-exchange deadline the main thread shuts `HTTPConnection.sock`,
