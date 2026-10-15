@@ -186,6 +186,7 @@ assert_equals "$(field_of "$HELLO" op)" "hello" "the child's first line is hello
 assert_equals "$(field_of "$HELLO" session)" "$SID" "naming the session"
 assert_equals "$(field_of "$HELLO" socket)" "$SOCK" "and the socket it serves"
 assert_equals "$(field_of "$HELLO" protocol)" "1" "and the protocol version"
+assert_contains "$(field_of "$HELLO" presence)" "$HOME/.claude/sessions/" "and the session's engine record (<config>/sessions/<the session's pid>.json), which the mod reads for idle after a reload"
 run ctl get "$SOCK" /status
 assert_contains "$OUT" "200 " "status answers 200"
 assert_equals "$(field_of "${OUT#200 }" session)" "$SID" "naming the session"

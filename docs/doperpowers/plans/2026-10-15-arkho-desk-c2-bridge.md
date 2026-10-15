@@ -629,8 +629,9 @@ listed stand as M1–M3 left them. Changed rows are marked **[M4]**.
 | `block-row` | M3, **[M4]** | `uuid, turnId, agentId, step, index` — **[M4]** also the response row's **notice**: emitted in the `session.append` hook once the append resolves (the row is written), so notice order is write order within a loop. The child moves the loop's cut to `uuid` in the same step that settles the block |
 | `row-seen` | **[M4]** | `uuid, agentId, door` — the notice of every other row the session keeps, once its append resolves: <ul><li>any door but `response` and `queue`;</li><li>a response row whose block never streamed, the rows of an excluded request (the seed, below) included: nothing of theirs ever streamed;</li><li>door `note` (a plugin's own append) only once kept, never when refused;</li><li>the bridge's own steer row from the append's returned uuid (door `note`), after it is written.</li></ul> None for door `queue`, and none for a `hook_success` with no text (raised but never written by 2.1.300). Rows a plugin's own calls write that pass no hook of the plugin's get none: a compaction the bridge runs, the engine's reload notice |
 | `step` (`phase: "end"`) | M1, **[M4, fix wave 1]** | unchanged fields. **Ordered after every `block-row` of its step**: the engine can append a response row after the request's result (it withholds a refusal or max-output row until the stream is done, and closes a block the stream left open), so the mod holds the end until each block that streamed has its row named, at most 1 s (`STEP_END_WAIT_MS`), and posts it before anything later of its loop (the next request, the turn's end, the subagent's stop). **[fix wave 2]** Once a step's end is out, whichever released it, the step's pairing is closed: a row of it that comes later is named by `row-seen`, never a `block-row` after its step's end. DX4's `step-end` relies on this order. **The child removes the step's whole message from `streaming` at its end, under the lock that applies events (as M1 said; M3's per-block settling did not change it), whether or not a `block-row` came for each block**, so a block aborted mid-response is in no later snapshot; a turn's `complete` removes its messages too |
+| `turn` (`phase: "start"`) | M1, **[final-review wave]** | may carry **`recovered: true`** with `text: null`: a main turn the module saw no `turn.start` of (it was reloaded while the turn ran), taken from the turn's next main-loop request (`turn.step`'s `turnId`, the id `turn.complete` and `$.turn.abort` use). The turn's own `complete` follows as usual |
 | `export` | **[M4]** | `records: [{type: "assistant"\|"user", uuid, message: {content}}]` — main-loop rows as the transcript keeps them: <ul><li>a text row that may hold a mark (its text blocks; not sent past 65,536 characters);</li><li>an async ask's call row with its result row.</li></ul> **Consumed by the child, never handed to subscribers.** The child appends their host events to the project's log with `sminos.export_live`: the Stop hook's writer, `host_events` and `(kind, src)` dedup (`message`: `<row uuid>#<span index>`; `question`: the call id). Membership on sight; one export at a time, in order, off the stream's lock |
-| `resync` | M1–M3, **[M4]** | gains **`cut`**: `{"main": <uuid>\|null, "<agentId>": <uuid>, …}`, each loop's last notice, seeded as below. `null` (or a loop it does not name): this loop had no rows before the module loaded, and none noticed since. The child replaces its cut with it. A loop it does not name is gone |
+| `resync` | M1–M3, **[M4]** | gains **`cut`**: `{"main": <uuid>\|null, "<agentId>": <uuid>, …}`, each loop's last notice, seeded as below. `null` (or a loop it does not name): this loop had no rows before the module loaded, and none noticed since. The child replaces its cut with it. A loop it does not name is gone. **[final-review wave]** also gains **`sessionInfo`** `{session, cwd, surface, isInteractive, model, version}`, what the session started as: the child takes it as its `sessionInfo` (an `ended` it already had stays), so a child whose `session` start was lost with the first post still has the export's `cwd` |
 
 ##### Subscription (`GET /events`)
 
@@ -642,8 +643,10 @@ listed stand as M1–M3 left them. Changed rows are marked **[M4]**.
     not. A post refused by the fence (409) is never applied.
   - Meanwhile `GET /events` is held with no response line at all, for at most 5 s
     (`SMINOS_BRIDGE_READY_WAIT`), then answered 503 `{"error": "the session's state has
-    not reached its bridge yet"}`. `GET /status` answers `ready: false`. `sminos watch` and
-    the control verbs retry a 503 within their reconnect window.
+    not reached its bridge yet"}`. `GET /status` answers `ready: false`. `sminos watch` retries a
+    503 within its reconnect window; **[final-review wave]** `decide`, `answer` and
+    `compact` retry it (every 0.1 s after each 5 s hold) until their first snapshot's
+    8 s window runs out.
   - That first resync always carries every loop's cut. At a module's first hello the mod
     adopts the hello's `seed` before it queues `[session start, resync]`. A replacement
     child gets the module's current cut (seeded at the first hello, moved by notices since).
@@ -745,6 +748,21 @@ the real child.
 
 The stale rule reads: a socket file refused 3 times, 0.1 s apart, is stale (a listener with
 a full backlog refuses too). The child's listen backlog is 128.
+
+#### Final-review wave 2 (unknown turn state after a load; supersedes rows above where they differ)
+
+- **The child's hello** gains `presence`: the session's engine record
+  (`<config>/sessions/<pid>.json`).
+- **Commands `steer`, `interrupt`, `compact`** gain the refusal `{ok: false, error: "turn
+  state unknown since the bridge reloaded; retry after the next model request"}`. It is
+  given while the mod cannot know whether a main turn runs (after a load into an existing
+  conversation, until a main turn starts, completes or is recovered from its next
+  request, or the session record says idle).
+- **`ping`'s and `heartbeat`'s `state`** gain `isTurnUnknown: true` while unknown (absent
+  otherwise).
+- **Verbs:** `sminos interrupt|steer|compact` exit 1 with that reason. Before this wave,
+  interrupt said "idle: nothing to interrupt" with exit 0, compact ran at once, and steer
+  was refused as idle.
 
 ## Decision Log
 
@@ -1140,6 +1158,17 @@ a full backlog refuses too). The child's listen backlog is 128.
   average ~220; live thinking chunks carry `text: ""` and no signature.
   Date/Author: 2026-10-15, controller with M4 executor and the composite's
   writer.
+- Decision (whole-branch review): Three fixes. The `resync` restates the
+  session's start (`sessionInfo`), so a child that lost its first post
+  still exports. A reload mid-turn takes the main turn back from its next
+  main-loop request (`turn` start with `recovered: true`); until then the
+  turn's state is *unknown* — unless the session's engine record (named in
+  the hello as `presence`) reads idle, or the load was a fresh start — and
+  `interrupt`, `steer` and `compact` refuse with that reason rather than
+  answer a false idle. The control verbs retry a not-ready (503) child
+  within their 8 s first-snapshot window.
+  Date/Author: 2026-10-15, controller, from the `high` review and its two
+  re-reviews.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
   `scripts/bump-version.sh` above the first; no version number is merged by
@@ -1194,4 +1223,73 @@ a full backlog refuses too). The child's listen backlog is 128.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-10-15, at finish (doperpowers 7.155.0).** DC2's four gates are met
+on one machine, without a hub:
+
+- **G1.** The bridge mod spawns its session-lifetime child, which serves
+  the session's endpoint. DX5 is written in Interfaces above, has been
+  reviewed at every milestone, and has been folded into the composite as
+  its writer took each extension.
+- **G2.** `sminos watch`, `steer`, `interrupt`, `model`, `compact`,
+  `decide` and `answer` drive a terminal session and a `--bg` job.
+  Delivery of a `human` arrives as the human's words, once under
+  redelivery. A session without the bridge falls back as §2 says.
+- **G3.** Every raised request is settled exactly once, naming the side
+  whose answer the engine used. Settlement is read from the engine's own
+  `tool_decision` record by call id; nothing is inferred. All four cases
+  hold.
+- **G4.** `<message>` spans and async questions reach the log as their
+  rows are written, and the Stop hook de-duplicates against them.
+
+Evidence for the gates:
+- The final live walk passed 45/45 across a terminal session and a `--bg`
+  job, with every carried item driven: a reload mid-response, a
+  foreground subagent under interrupt, `send --wait` through a seat, and
+  the `[ answer ]` press.
+- The three earlier live checks were re-run on M4's code.
+- The suites are green apart from environmental daemon timing checks
+  outside the bridge.
+- The `high` whole-branch review returned three P2 findings. Two
+  re-reviews closed them.
+
+What the build changed in the design, all agreed with the composite's
+writer:
+- **Settlement.** It comes from the `tool_decision` telemetry record, not
+  a grace window.
+- **Pairing.** A streaming block pairs with its transcript row through
+  `block-row` and the row's uuid, because the mod never sees the API
+  message id.
+- **Ordering, added for DC7.** Row notices, the per-loop cut, readiness,
+  notices posted after the write, and a disk-order consumer together give
+  a gap-free join of disk rows and the stream.
+- **The cut seed.** Each loop's cut is seeded at load. A loop the mod saw
+  from birth is seeded null.
+- **The fence.** Posts are fenced to the module instance by the hello's
+  nonce.
+- **Reloads.** After a reload, a turn whose state is unknown refuses
+  control rather than answering a false idle.
+
+Retrospective:
+- Every milestone needed fix waves, ten in all, and nearly every finding
+  sat at an asynchronous boundary the happy path never crosses: a reload,
+  a lost post, a race between two answerers, the engine's own write order.
+- The live checks found facts no test could:
+  - the rewritten model is sent verbatim;
+  - a fetch dies with an aborted hook;
+  - `--bg` jobs run in `auto`;
+  - the transcript mark lags its decision by the tool's whole run;
+  - the disk writer reorders rows within one batch.
+- The independent task reviews found what the live checks could not reach
+  (stale-module resyncs, settled blocks resurrected by a resync, and a
+  test that leaked 120 processes over a day).
+- Working against a contract consumer while building helped. DC7's and
+  DC6's reviews pulled in scope that would otherwise have been found only
+  at integration: the cut, readiness, `step-end`, and the seed.
+- Next time, the reload and recovery paths deserve their own milestone
+  rather than a fix wave per milestone.
+
+Left for later (the PR's Residue):
+- nothing sweeps the `bridge/<id>.json` files (offered to DC7);
+- `bridge.tsx` is about 1,850 lines, and `$` cannot cross files;
+- the plugin's own appends get no notice;
+- the press check needs a fullscreen click.

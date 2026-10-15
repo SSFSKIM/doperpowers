@@ -1080,13 +1080,28 @@ describe('model and effort', () => {
 })
 
 describe('a module reloaded mid-turn', () => {
-  /** A module loaded into a session whose main turn is running: it saw no turn.start. */
+  /** A module loaded into a session that already had its conversation (a reload, a resume): it saw no turn.start. */
   const RELOADED = { messages: [{ role: 'user', text: 'earlier' }] }
+  const UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
+  const RECORD = '/cfg/sessions/4242.json'
+  /** The child's hello, naming the session record it reads (the engine's `<config>/sessions/<pid>.json`). */
+  const helloWithRecord = () => line({ op: 'hello', session: SID, pid: 7, socket: SOCK, protocol: 1, nonce: NONCE, presence: RECORD })
+
+  test('until the turn state is known, interrupt, steer and compact refuse, saying why; nothing is aborted, appended or compacted', async () => {
+    const h = harness(RELOADED)
+    await h.start()
+    h.children[0]!.write(helloWithRecord())
+    await h.settle()
+    for (const body of [{ op: 'interrupt' }, { op: 'steer', text: 'and the date' }, { op: 'compact' }]) {
+      expect(await h.command(body)).toMatchObject({ ok: false, error: UNKNOWN })
+    }
+    expect(h.calls).toEqual([])
+    expect((await h.command({ op: 'ping' })).result).toMatchObject({ state: { mainTurn: null, isTurnUnknown: true } })
+  })
 
   test("the running main turn is taken from its next request: interrupt aborts it, steer is taken, compact queues until it ends; the stream gets the turn, marked recovered", async () => {
     const h = harness(RELOADED)
     await h.ready()
-    expect(await h.command({ op: 'interrupt' })).toMatchObject({ result: { turnId: null } })
     await h.step({ turnId: 't-old', index: 3, model: 'm', messageCount: 9 }, [{ kind: 'text', index: 0, text: 'still going' }])
     expect(h.ofType('turn')).toEqual([expect.objectContaining({ phase: 'start', turnId: 't-old', agentId: null, text: null, recovered: true })])
     expect(await h.command({ op: 'steer', text: 'and the date' })).toMatchObject({ ok: true, result: { row: expect.any(String) } })
@@ -1101,7 +1116,38 @@ describe('a module reloaded mid-turn', () => {
     expect(h.calls.filter((c) => c.op === 'compact').length).toBe(1)
     h.compactions[0]!.finish({ messages: [], tokensBefore: 9, tokensAfter: 1 })
     await ending
-    expect(await h.command({ op: 'interrupt' })).toMatchObject({ result: { turnId: null } })
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: true, result: { turnId: null } })
+  })
+
+  test("the turn's own completion ends the unknown state: idle from there", async () => {
+    const h = harness(RELOADED)
+    await h.ready()
+    await h.complete('t-old')
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: true, result: { turnId: null } })
+    expect(await h.command({ op: 'compact' })).toMatchObject({ ok: true, result: { started: true } })
+  })
+
+  test('the session record saying idle ends it: read when a verb asks, and at each heartbeat', async () => {
+    const h = harness(RELOADED)
+    h.files[RECORD] = JSON.stringify({ pid: 4242, sessionId: SID, status: 'busy' })
+    await h.start()
+    h.children[0]!.write(helloWithRecord())
+    await h.settle()
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: false, error: UNKNOWN })
+    // Another session's record, or one that cannot be read, says nothing.
+    h.files[RECORD] = JSON.stringify({ pid: 4242, sessionId: 'someone-else', status: 'idle' })
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: false, error: UNKNOWN })
+    h.files[RECORD] = JSON.stringify({ pid: 4242, sessionId: SID, status: 'idle' })
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: true, result: { turnId: null } })
+    const g = harness(RELOADED)
+    g.files[RECORD] = JSON.stringify({ pid: 4242, sessionId: SID, status: 'idle' })
+    await g.start()
+    g.children[0]!.write(helloWithRecord())
+    await g.settle()
+    g.timers.find((t) => t.kind === 'every')!.fn()
+    await g.settle()
+    expect((await g.command({ op: 'ping' })).result).toMatchObject({ state: { mainTurn: null } })
+    expect(((await g.command({ op: 'ping' })).result as { state: Record<string, unknown> }).state.isTurnUnknown).toBeUndefined()
   })
 
   test("a subagent's request names no main turn: nothing is recovered from it", async () => {
@@ -1109,7 +1155,13 @@ describe('a module reloaded mid-turn', () => {
     await h.ready()
     await h.step({ turnId: 'ts', index: 0, model: 'm', messageCount: 1, agentId: 'a7' }, [{ kind: 'text', index: 0, text: 'sub' }])
     expect(h.ofType('turn')).toEqual([])
-    expect(await h.command({ op: 'interrupt' })).toMatchObject({ result: { turnId: null } })
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: false, error: UNKNOWN })
+  })
+
+  test('a session the module started with (no message at load) is known idle from the start', async () => {
+    const h = harness()
+    await h.ready()
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: true, result: { turnId: null } })
   })
 })
 

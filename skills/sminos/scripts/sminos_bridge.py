@@ -1089,7 +1089,10 @@ def serve(session):
         # The seed is read last, so the mod reads the hello after the read
         # returned: a model request it saw begin before then never streams.
         bridge.emit({"op": "hello", "session": session, "pid": os.getpid(), "socket": path, "protocol": PROTOCOL,
-                     "nonce": bridge.nonce, "kept": bridge.kept, "seed": read_seed(session)})
+                     "nonce": bridge.nonce, "kept": bridge.kept, "seed": read_seed(session),
+                     # The session's engine record, which the mod reads for an idle
+                     # session while it cannot know (a reload) whether a turn runs.
+                     "presence": bridge.presence})
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
         threading.Thread(target=bridge.run_exports, daemon=True).start()

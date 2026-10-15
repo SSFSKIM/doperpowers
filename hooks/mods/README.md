@@ -61,7 +61,10 @@ a mark, so a session without the output style is left alone. From then on:
   agents to finish`) draws only while the run of the row before it is
   unfolded; otherwise nothing. The attachment rows the engine draws on its
   own (`Found N new diagnostic issues`) are not a render component a hook
-  can reach, and still draw.
+  can reach, and still draw. Re-checked on 2.1.300 (2026-10-15): the
+  engine's attachment renderer raises no `ui.render`, `session.append` can
+  rewrite an engine row's text but not drop it, and `prompt.attachment`
+  changes only what the model reads.
 - A question asked through `AskUserQuestion`, or through the ask mod's
   `mcp__doperpowers__AskUserQuestion` (an open async ask with its
   `[ answer ]` included), draws as it would unfolded (the question and the
@@ -468,11 +471,13 @@ empty, so no response streaming at that moment, nor one begun before the new
 child's hello, is streamed (its rows are named as they are written, and a
 reader takes them from the transcript); a turn running across a reload is
 taken back at its next model request (interrupt, steer and compact act on it
-from there, and the stream gets its start marked `recovered`): until then,
-during a long tool call or a dialog with no further request, the session reads
-as idle, and calls begun before the reload are not the new module's (an
-interrupt's abort stops them, but none the abort moved to the background is
-stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
+from there, and the stream gets its start marked `recovered`); until then, or
+until the turn completes or the session's engine record says idle, the module
+does not know whether a turn runs, and those three verbs are refused with
+"turn state unknown since the bridge reloaded; retry after the next model
+request" (exit 1), never answered as idle; calls begun before the reload are
+not the new module's (an interrupt's abort stops them, but none the abort
+moved to the background is stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
 a `--bg` job starts in permission mode `auto`, where most calls raise no
 request; rows the plugin's own calls write pass no hook of the plugin's: the
 steer's row is named from the append's answer, after it is written, and the
