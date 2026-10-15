@@ -15,7 +15,7 @@
 
 ## Progress
 
-- [ ] M1 — Presence and the session plane (DC7.G1, its first half)
+- [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); the proof against DC2's real M4 child, with a seeded cut, waits on DC2's M4
 - [ ] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses)
 - [ ] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses)
 - [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
@@ -376,7 +376,9 @@ against the local hub; until it lands, the stand-in.
   session, rerun when the socket's inode changes or the answer is 2 s
   old; it wakes the uplink on a change), so a stalled endpoint cannot
   hold another session's presence. A pid seen dead loses its cached
-  identity and is checked anew. The ceiling is `permissions.defaultMode`
+  identity and is checked anew, and a running pid's identity is read
+  again every 10 s, so a pid reused between two polls is found within
+  that bound. The ceiling is `permissions.defaultMode`
   as the settings write it, else `"default"` (missing or malformed file
   included, as the engine reads it). `step-end` (composite `34ee27ca`) is
   relayed in DX5's order, so after its step's `block-row`s; rows waiting
