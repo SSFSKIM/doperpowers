@@ -466,7 +466,13 @@ From another terminal: `sminos watch|steer|interrupt|model|compact|decide|answer
 Known limits: a module reload kills the child and starts the module's state
 empty, so no response streaming at that moment, nor one begun before the new
 child's hello, is streamed (its rows are named as they are written, and a
-reader takes them from the transcript); a text row past 65,536 characters is left to the Stop hook's export;
+reader takes them from the transcript); a turn running across a reload is
+taken back at its next model request (interrupt, steer and compact act on it
+from there, and the stream gets its start marked `recovered`): until then,
+during a long tool call or a dialog with no further request, the session reads
+as idle, and calls begun before the reload are not the new module's (an
+interrupt's abort stops them, but none the abort moved to the background is
+stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
 a `--bg` job starts in permission mode `auto`, where most calls raise no
 request; rows the plugin's own calls write pass no hook of the plugin's: the
 steer's row is named from the append's answer, after it is written, and the

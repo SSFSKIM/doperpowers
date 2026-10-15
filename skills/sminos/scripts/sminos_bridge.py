@@ -545,7 +545,12 @@ class Bridge:
                 self.changed.notify_all()
         elif kind == "resync":
             # The mod's own copy of the live state, whole: it replaces this one,
-            # and what is kept for the session with it.
+            # and what is kept for the session with it. Its sessionInfo is what
+            # the session started as, so a child whose session start was lost
+            # (the first post failed) still knows it (the export's cwd).
+            if isinstance(e.get("sessionInfo"), dict):
+                ended = (self.session_info or {}).get("ended")
+                self.session_info = {**e["sessionInfo"], **({"ended": ended} if ended is not None else {})}
             self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
             streaming = {}
             for entry in e.get("streaming") or []:

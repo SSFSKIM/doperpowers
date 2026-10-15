@@ -236,6 +236,29 @@ assert_equals "$(events_of "$SA")" "joined message:e1#0 message:e1#1 question:to
 "$SMINOS" chat exdemo --host > "$T/host" 2>&1 || true
 assert_contains "$(cat "$T/host")" "exa: first to the host" "chat --host prints what the bridge exported"
 
+echo "a recovery resync (the first post lost):"
+# The mod's first post, [session start, resync], never reached the child; its
+# recovery is a gap and a resync, which carries the session's start info.
+SD=5b000001-0000-4000-8000-0000000000e4
+peer "$SD" exrec interactive cli
+start_child "$SD"
+ctl post "$SMINOS_HOME/bridge/$SD.sock" "[{\"type\":\"gap\",\"dropped\":2,\"t\":1},{\"type\":\"resync\",\"turns\":[],\"streaming\":[],\"agents\":[],\"sessionInfo\":{\"session\":\"$SD\",\"cwd\":\"$REPO\",\"surface\":\"terminal\",\"isInteractive\":true},\"t\":1}]" >/dev/null
+SNAP_SD="$(python3 - "$SMINOS_HOME/bridge/$SD.sock" <<'PY2'
+import http.client, json, socket, sys
+class C(http.client.HTTPConnection):
+    def __init__(self, p):
+        super().__init__("bridge", timeout=10); self.p = p
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); self.sock.connect(self.p)
+c = C(sys.argv[1]); c.request("GET", "/events")
+print(json.dumps(json.loads(c.getresponse().readline()).get("sessionInfo")))
+PY2
+)"
+assert_contains "$SNAP_SD" "\"cwd\": \"$REPO\"" "the resync's sessionInfo is the child's: its snapshot carries the session's start info"
+ctl post "$SMINOS_HOME/bridge/$SD.sock" "$(rows export marks)" >/dev/null
+until_true 100 has "$SD" "message:e1#1" || true
+assert_contains "$(events_of "$SD")" "message:e1#0 message:e1#1" "and an export lands, its cwd the resync's"
+
 echo "who the export is for:"
 SB=5b000001-0000-4000-8000-0000000000e2
 peer "$SB" exsdk interactive sdk-cli
