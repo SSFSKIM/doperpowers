@@ -1089,9 +1089,12 @@ class Uplink(unittest.TestCase):
         m.text(0, "streamed ")
         m.text(0, "through the hub")
         m.row(0)
+        m.end()
         self.fake.usage(42)
-        self.assertTrue(self.feed(b, lambda: b.usage and len(b.rows) == len(self.fake.rows())))
+        self.assertTrue(self.feed(b, lambda: b.usage and b.step_ends and len(b.rows) == len(self.fake.rows())))
         self.assertClean(b)
+        self.assertEqual(b.step_ends, [(m.turn, None, 0)], "the step's end, relayed through the hub")
+        self.assertLess(b.kinds.index("block-row"), b.kinds.index("step-end"))
         oldest = b.rows[1]["uuid"]
         self.hub.send({"t": "rows", "project": self.project, "session": self.sid, "agentId": None, "sub": b.sub,
                        "before": oldest, "limit": 5})
@@ -1213,6 +1216,15 @@ class Uplink(unittest.TestCase):
             self.assertClean(b, b.agent)
         self.assertEqual(after[0].other.get(self.fake.rows("a7")[-1]["uuid"]), "cut tail",
                          "the subagent's text streamed whole in the main view")
+        main.end()
+        sa.end()
+        self.assertTrue(self.feed(after[0], lambda: len(after[0].step_ends) == 2))
+        self.assertEqual(sorted(after[0].step_ends, key=str), sorted([(main.turn, None, 0), (sa.turn, "a7", 0)], key=str),
+                         "a main sub carries every loop's step-end")
+        self.feed(after[1], lambda: False, timeout=0.5)
+        self.assertEqual(after[1].step_ends, [(sa.turn, "a7", 0)], "an agent sub its own")
+        for b in after:
+            self.assertEqual(b.errors, [])
 
 
 if __name__ == "__main__":
