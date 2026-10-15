@@ -226,6 +226,17 @@ the spec's Decision Log entry "the branch review round"
   2026-10-15) and passed on every run since; one machine, no remote, no
   hub. Trigger: a second failure, or a CI gate on the shell suites
   (item 4); then make its wait condition event-driven rather than timed.
+- **T3 — an uplink POST past its 60 s deadline can leave its worker
+  alive.** `sminos_uplink.py` `post()`/`exchange()` (desk DC4 M3): on the
+  whole-exchange deadline the main thread shuts `HTTPConnection.sock`,
+  but `http.client` drops that attribute after `getresponse()` for an
+  HTTP/1.0 or `Connection: close` answer, so a body trickled faster than
+  the socket timeout keeps the abandoned worker and its socket until the
+  hub finishes; `NotDelivered` then reconnects in the same process, so
+  repeats could accumulate them. Stop and orphan exit are unaffected.
+  Fix: keep the response's socket for the deadline's cleanup. Trigger: a
+  hub or proxy seen trickling answers, or an uplink's thread count
+  growing.
 - **Backlog, not debt — MAWS async questions never reach the log** (§9 of
   the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
   whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are

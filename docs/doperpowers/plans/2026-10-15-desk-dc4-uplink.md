@@ -23,7 +23,10 @@
   former names per session, malformed hubs closed, the code off argv and
   out of every parse error); G1 also passed against DC3's local hub at
   MAWS 4d2c492f (55/55)
-- [ ] M3 — Sync through the hub (DC4.G2)
+- [x] M3 — Sync through the hub (DC4.G2) — 2026-10-15, reviewed clean
+  (5f890398..fa5fe015; two fix waves: rejection state that round-trips,
+  cancellable uploads, projects leaving the uplink, spent as a
+  tombstone); the real-hub walk 32/32 at MAWS 71083dd4
 - [ ] M4 — The archive, the two-machine walk, docs, version (DC4.G3)
 
 ## Constraints that bind every milestone
