@@ -934,7 +934,14 @@ Order, batching (≤ 500) and one post in flight are unchanged.
   a cut row. The engine's message list (`$.session.messages()`) carries no
   row uuids, so the seed cannot come from it; the means are M4's executor's
   to choose against the invariant, proven by a race test (a row flushed
-  between the module's load and the seed).
+  between the module's load and the seed). Ruled the same day: the seed is
+  each loop's transcript tail, and a message whose step began before the
+  tail read *completed* never enters `streaming`; its chunks reach no
+  subscriber, and it surfaces only through its rows (at or before the seed
+  in history, or past the cut and released live, its `block-row` settling
+  nothing). Accepted cost: no partial text for a message streaming at a
+  module load. Tests: the race, and a message beginning while the read is
+  in flight (excluded).
   Date/Author: 2026-10-15, controller with the composite's writer.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
