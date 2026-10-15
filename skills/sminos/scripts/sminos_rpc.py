@@ -84,7 +84,6 @@ STEER_TRACE_S = 30        # a claimed steer's row is looked for this long after 
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
 COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
-KEPT_WAIT_S = 2.0         # a model change: how long the child may take to keep it before the next reads it
 SPAWN_TIMEOUT = 600
 VERB_TIMEOUT = 120
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
@@ -273,6 +272,7 @@ class Rpcs:
         self.compact_held = []    # [(project id, session, event, at)]: events whose command is not named yet
         self.compact_flight = {}  # nonce → session: compact RPCs whose command's id is not known yet
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
+        self.model_in_force = {}  # session → {model, effort} its bridge last answered, or UNKNOWN
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
         self.next_reconcile = 0.0
@@ -431,7 +431,7 @@ class Rpcs:
             if name == "interrupt":
                 return lambda: interrupt(path)
             if name == "model":
-                return lambda: model(path, sid, args, self.model_lock(sid))
+                return lambda: model(path, sid, args, self.model_lock(sid), self.model_in_force)
             if name == "compact":
                 return lambda: self.compact(path, rpc, sid)
             if name == "answer":
@@ -705,25 +705,36 @@ def interrupt(path):
                  "running": list(r.get("running") or [])})
 
 
-def model(path, sid, args, lock):
+UNKNOWN = "unknown"   # a model command whose answer never came: what is in force is not known
+
+
+def model(path, sid, args, lock, in_force):
     """The mod replaces model and effort together: the one not asked keeps
-    the choice in force (what the child keeps for the session). Two at once
-    would each read the old pair, so the read, the command, and the child's
-    keeping its answer are one step per session: the next reads what this
-    one left (or, past KEPT_WAIT_S, what the child keeps by then)."""
+    the choice in force. That is the pair the bridge last answered for the
+    session (`in_force`, kept per session here, read and changed under the
+    session's lock, so two at once take turns); the child's kept file is
+    read only before any answer, since its write can fail and be retried
+    later (DX5). After a command whose answer never came the pair is not
+    known: only a change naming both is sent until one is answered."""
     with lock:
-        kept = bridge.load_kept(sid)["override"] or {}
-        body = {"op": "model", "model": args.get("model", kept.get("model")),
-                "effort": args.get("effort", kept.get("effort"))}
-        out, _ = command(path, body)
+        known = in_force.get(sid)
+        whole = "model" in args and "effort" in args
+        if known == UNKNOWN and not whole:
+            raise Refused("failed", "the model and effort in force are not known (the last change got no answer): "
+                                    "name both")
+        base = known if isinstance(known, dict) else (bridge.load_kept(sid)["override"] or {})
+        body = {"op": "model", "model": args.get("model", base.get("model")),
+                "effort": args.get("effort", base.get("effort"))}
+        try:
+            out, _ = command(path, body)
+        except Refused:
+            in_force[sid] = UNKNOWN   # it may have reached the session
+            raise
         if not out.get("ok"):
-            raise Refused("failed", refusal(out))
+            raise Refused("failed", refusal(out))   # refused: nothing changed
         r = out.get("result") or {}
         now = {"model": r.get("model"), "effort": r.get("effort")}
-        want = None if now == {"model": None, "effort": None} else now
-        deadline = time.monotonic() + KEPT_WAIT_S
-        while bridge.load_kept(sid)["override"] != want and time.monotonic() < deadline:
-            time.sleep(0.05)
+        in_force[sid] = now
         return done(now)
 
 

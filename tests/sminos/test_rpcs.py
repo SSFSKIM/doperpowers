@@ -154,6 +154,7 @@ class Mod(tpr.Bridge):
         self.hold = 0.0
         self.answer_steer = True  # False: the row is written, the answer never comes
         self.unknown = False      # True: loaded into a conversation, its turn state not known yet (DC2 27c46947)
+        self.keep_model = True
         self.rows = []
         super().__init__(sid)
 
@@ -189,7 +190,8 @@ class Mod(tpr.Bridge):
                                           "running": []}}
         elif op == "model":
             model = None if cmd.get("model") in (None, "default") else cmd["model"]
-            self.post({"type": "model", "model": model, "effort": cmd.get("effort")})
+            if self.keep_model:   # False: the child's write of what it keeps fails (DX5: retried later)
+                self.post({"type": "model", "model": model, "effort": cmd.get("effort")})
             res = {"ok": True, "result": {"model": model, "effort": cmd.get("effort")}}
         elif op == "compact":
             if self.turn is not None:
@@ -270,6 +272,7 @@ class Checks(unittest.TestCase):
         self.mod.hold = 0.0
         self.mod.answer_steer = True
         self.mod.unknown = False
+        self.mod.keep_model = True
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -517,8 +520,7 @@ class Checks(unittest.TestCase):
         model = self.send("model", {"session": self.bridged.sid, "model": "claude-opus-4-1"})
         self.assertEqual(self.outcome(model), {"state": "done", "result": {"model": "claude-opus-4-1",
                                                                            "effort": None}})
-        # The kept choice: an effort alone keeps the model chosen before.
-        import sminos_bridge as bridge
+        # The choice in force: an effort alone keeps the model chosen before.
         self.mod.post({"type": "model", "model": "claude-opus-4-1", "effort": None})
         wait_for(lambda: (bridge.load_kept(self.bridged.sid)["override"] or {}).get("model"))
         effort = self.send("model", {"session": self.bridged.sid, "effort": "high"})
@@ -677,6 +679,37 @@ class Checks(unittest.TestCase):
         r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
         self.assertEqual(results(r.due({self.pid}), nonce),
                          [{"state": "done", "result": {"session": sid, "alias": "web-found"}}])
+
+    def test_f_a_stale_kept_file_never_reverses_an_acknowledged_change(self):
+        """What the bridge last answered for a session is in force, not a
+        kept file whose write failed; a session whose last answer never came
+        takes no partial change (re-review of 4dc19fa7)."""
+        import sminos_bridge as bridge
+        from unittest import mock
+        sid = self.bridged.sid
+        self.mod.post({"type": "model", "model": "old-model", "effort": "low"})
+        wait_for(lambda: bridge.load_kept(sid)["override"] == {"model": "old-model", "effort": "low"})
+        self.mod.keep_model = False   # from here the child's kept file stays at {old-model, low}
+        first = self.send("model", {"session": sid, "model": "new-model"})
+        self.assertEqual(self.outcome(first), {"state": "done", "result": {"model": "new-model", "effort": "low"}})
+        second = self.send("model", {"session": sid, "effort": "high"})
+        self.assertEqual(self.outcome(second), {"state": "done", "result": {"model": "new-model", "effort": "high"}},
+                         "the acknowledged model stands; the stale file does not bring old-model back")
+        self.assertEqual(bridge.load_kept(sid)["override"], {"model": "old-model", "effort": "low"}, "still stale")
+        # A command whose answer never came: what is in force is unknown.
+        with mock.patch.object(rpcs.control, "post_command", side_effect=rpcs.control.Unanswered("timed out")):
+            lost = self.send("model", {"session": sid, "model": "lost-model"})
+            self.assertEqual(self.outcome(lost)["state"], "failed")
+        partial = self.send("model", {"session": sid, "effort": "max"})
+        o = self.outcome(partial)
+        self.assertEqual(o["state"], "failed", o)
+        self.assertIn("not known", o["error"]["message"])
+        self.assertNotEqual(self.mod.ops("model")[-1].get("effort"), "max", "nothing was sent")
+        whole = self.send("model", {"session": sid, "model": "default", "effort": "medium"})
+        self.assertEqual(self.outcome(whole), {"state": "done", "result": {"model": None, "effort": "medium"}},
+                         "naming both is a whole change, and makes the state known again")
+        again = self.send("model", {"session": sid, "effort": "low"})
+        self.assertEqual(self.outcome(again), {"state": "done", "result": {"model": None, "effort": "low"}})
 
     def test_f_concurrent_partial_model_changes_both_hold(self):
         """A model-only and an effort-only RPC at once: each keeps the
