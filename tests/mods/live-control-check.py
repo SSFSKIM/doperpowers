@@ -4,7 +4,8 @@
 What only a running engine shows, pinned so a release that breaks it fails
 loudly, in a terminal session and in `--bg` jobs:
 - a steer during a long Bash call does not end it, and the model acts on it
-  at its next request; the terminal shows the mirror line;
+  at its next request; the terminal shows the mirror line; a steer given
+  during the final answer wakes the session once, without repeating it;
 - an interrupt ends the turn within 2 s and stops the Bash call the abort
   moved to the background;
 - a model change takes the next request, survives a module reload, and leaves
@@ -206,6 +207,26 @@ class Control(LB.Live):
                        next((l.strip() for l in pane.splitlines() if "steer:" in l), "(no mirror line on screen)"))
         self.idle(endpoint)
 
+    def final_steer_check(self, who, stream, endpoint):
+        """A steer given while the model writes its final answer: the turn ends
+        before any request reads it, so the bridge wakes the session once, with a
+        prompt that does not repeat the steer, and the next request reads the row."""
+        t = time.time()
+        self.prompt("Write a 600-word story about a lighthouse keeper. Use no tools.")
+        wait_for("the story's text", 90, lambda: stream.seen(
+            lambda e: is_main(e, "chunk") and e["chunk"].get("kind") == "text", t))
+        r = self.cli("steer", who, "After the story, also say the word PINEAPPLE.")
+        first = self.turn_end(stream, t)
+        woke = wait_for("the wake turn", 60, lambda: stream.seen(
+            lambda e: is_main(e, "turn", "start") and "added a note" in str(e.get("text")), t))
+        self.idle(endpoint)
+        starts = stream.seen(lambda e: is_main(e, "turn", "start"), t)
+        text = main_text(stream, t)
+        self.check("terminal: a steer during the final answer wakes the session once, read without repeating it",
+                   r.returncode == 0 and first and len(woke) == 1 and len(starts) == 2
+                   and "PINEAPPLE" not in str(woke[0].get("text")) and "PINEAPPLE" in text,
+                   "%s; turns %d, wake prompt %r" % (r.stdout.strip(), len(starts), str(woke[0].get("text"))[:70]))
+
     def interrupt_check(self, who, stream, endpoint, prompt, label):
         m = self.marker + "i" + label
         t = time.time()
@@ -242,6 +263,7 @@ class Control(LB.Live):
 
         # -- the terminal session
         self.steer_check(NAME, term, self.endpoint(), self.prompt, "terminal")
+        self.final_steer_check(NAME, term, self.endpoint())
         self.interrupt_check(NAME, term, self.endpoint(), self.prompt, "terminal")
 
         settings = os.path.join(self.cfg, "settings.json")

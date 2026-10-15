@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { HEARTBEAT_MS, TEXT_CAP, registerBridge, resetBridge, splitLines } from '../../hooks/mods/bridge'
+import { HEARTBEAT_MS, STEER_WAKE, TEXT_CAP, registerBridge, resetBridge, splitLines } from '../../hooks/mods/bridge'
 
 tier('user')
 
@@ -75,7 +75,7 @@ function fakeChild(argv: readonly string[]) {
  * spawned children, posts (each released by the test when `hold` is set),
  * timers fired by hand.
  */
-function harness(options: { env?: Record<string, string>; hold?: boolean; failAt?: number[] } = {}) {
+function harness(options: { env?: Record<string, string>; hold?: boolean; failAt?: number[]; holdAppend?: boolean; taskStopFails?: string[] } = {}) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
@@ -90,6 +90,8 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
   /** What the control ops asked of the engine, in order. */
   const calls: { op: string; args: unknown }[] = []
   const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
+  /** Appends held by `holdAppend`, each released by the test. */
+  const appends: (() => void)[] = []
   let session = SID
   const $ = {
     plugin: { name: 'doperpowers', root: '/plug' },
@@ -99,9 +101,13 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       model: async () => 'claude-haiku',
       version: async () => ({ version: '2.1.300' }),
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
-      append: async (args: unknown) => {
+      append: (args: unknown) => {
         calls.push({ op: 'append', args })
-        return { uuid: `row-${calls.length}`, message: {} }
+        const stored = { uuid: `row-${calls.length}`, message: {} }
+        if (!options.holdAppend) {
+          return Promise.resolve(stored)
+        }
+        return new Promise((resolve) => appends.push(() => resolve(stored)))
       },
       compact: (args: unknown) => {
         calls.push({ op: 'compact', args })
@@ -116,6 +122,9 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     tool: {
       call: async (args: Record<string, unknown>) => {
         calls.push({ op: 'tool', args })
+        if (options.taskStopFails?.includes(String(args.task_id))) {
+          return { text: `No task found with ID: ${String(args.task_id)}`, isError: true }
+        }
         return { text: `Successfully stopped task: ${String(args.task_id)}` }
       },
     },
@@ -234,6 +243,7 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     children,
     calls,
     compactions,
+    appends,
     command,
     turn,
     complete,
@@ -591,13 +601,54 @@ describe('steer', () => {
     expect(h.calls.length).toBe(0)
   })
 
-  test("a steer no model request read before the turn answered is submitted as the human's prompt when it ends", async () => {
+  test('a steer that arrives during the final response wakes the session once at the turn end, without repeating its text', async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
-    await h.command({ op: 'steer', text: 'use tabs' })
+    // The final response streams; the steer is appended during it; the response ends the turn.
+    await h.step({ turnId: 't1', index: 2, model: 'm', messageCount: 5 }, [{ kind: 'text', index: 0, text: 'Done.' }], async () => {
+      await h.command({ op: 'steer', text: 'use tabs' })
+    })
     await h.complete('t1')
-    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([{ op: 'submit', args: { text: 'use tabs', asUser: true } }])
+    const submits = h.calls.filter((c) => c.op === 'submit').map((c) => c.args as { text: string; asUser?: boolean })
+    expect(submits.length).toBe(1)
+    expect(submits[0]!.asUser).toBe(true)
+    expect(submits[0]!.text).not.toContain('use tabs')
+    expect(submits[0]!.text).toBe(STEER_WAKE)
+    // The next turn's end owes nothing.
+    await h.turn('t2')
+    await h.complete('t2')
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(1)
+  })
+
+  test("a steer whose append is still pending when its turn ends is bound to that turn: it wakes once the row is in, and no later turn's end", async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    h.children[0]!.write(line({ id: 'late', op: 'steer', text: 'mind the tests' }))
+    await h.settle()
+    expect(h.appends.length).toBe(1)
+    await h.complete('t1') // the turn ends while the append is pending
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(0)
+    await h.turn('t2') // an unrelated turn starts before the append lands
+    h.appends[0]!()
+    await h.settle()
+    expect(h.ofType('result').find((e) => e.id === 'late')).toMatchObject({ ok: true, result: { row: 'row-1' } })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE])
+    await h.complete('t2')
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(1)
+  })
+
+  test('a pending steer whose turn is interrupted wakes nothing when its row lands', async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    h.children[0]!.write(line({ id: 'late', op: 'steer', text: 'stop that' }))
+    await h.settle()
+    await h.complete('t1', 'aborted')
+    h.appends[0]!()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(0)
   })
 
   test('a steer a later request read is not submitted again; nor one whose turn was interrupted', async () => {
@@ -630,7 +681,7 @@ describe('interrupt', () => {
     finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /tmp/o')
     await running
     const r = await answered
-    expect(r).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'] } })
+    expect(r).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } })
     expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: 'b5y6zo7fe' } }])
   })
 
@@ -638,8 +689,49 @@ describe('interrupt', () => {
     const h = harness()
     await h.ready()
     const r = await h.command({ op: 'interrupt' })
-    expect(r).toMatchObject({ ok: true, result: { turnId: null, stopped: [] } })
+    expect(r).toMatchObject({ ok: true, result: { turnId: null, stopped: [], running: [] } })
     expect(h.calls.length).toBe(0)
+  })
+
+  test("only the aborted turn's calls: a background subagent's own background Bash in the same window is left running; a foreground subagent's is stopped", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const spawn = async (agentId: string, background: boolean) => {
+      const e = { tool_use_id: `tu-${agentId}`, prompt: 'p', description: agentId, subagentType: 'general-purpose', background, fork: false, parentModel: 'm', provider: { plugin: 'engine', tier: 'core' } }
+      await h.hook('agent.spawn', e)(h.engine, e, async () => ({ model: 'm', agentId }))
+    }
+    await spawn('bgagent', true)
+    await spawn('fgagent', false)
+    const finishers: Record<string, (text: string) => void> = {}
+    const run = (id: string, agentId?: string) =>
+      h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: id, command: 'sleep', ...(agentId !== undefined && { agentId }) }, () => new Promise((resolve) => (finishers[id] = (text) => resolve({ text }))))
+    const calls = [run('tu-main'), run('tu-bg', 'bgagent'), run('tu-fg', 'fgagent')]
+    await h.settle()
+    const answered = h.command({ op: 'interrupt' })
+    await h.settle()
+    finishers['tu-main']!('Command running in background with ID: mainbash. Output is being written to: /o')
+    // The background subagent launches its own background Bash in the window: the same words.
+    finishers['tu-bg']!('Command running in background with ID: subbash. Output is being written to: /o')
+    finishers['tu-fg']!('Command running in background with ID: fgbash. Output is being written to: /o')
+    await Promise.all(calls)
+    const r = await answered
+    expect(r).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['mainbash', 'fgbash'], running: [] } })
+    expect(h.calls.filter((c) => c.op === 'tool').map((c) => (c.args as { task_id: string }).task_id)).toEqual(['mainbash', 'fgbash'])
+  })
+
+  test('a TaskStop that fails is no success: the answer names the task still running', async () => {
+    const h = harness({ taskStopFails: ['stuck01'] })
+    await h.ready()
+    await h.turn('t1')
+    let finish: (text: string) => void = () => undefined
+    const running = h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'sleep' }, () => new Promise((resolve) => (finish = (text) => resolve({ text }))))
+    await h.settle()
+    const answered = h.command({ op: 'interrupt' })
+    await h.settle()
+    finish('Command running in background with ID: stuck01. Output is being written to: /o')
+    await running
+    expect(await answered).toMatchObject({ ok: true, result: { turnId: 't1', stopped: [], running: ['stuck01'] } })
   })
 })
 

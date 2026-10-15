@@ -42,6 +42,12 @@ const CLEAR_POLL_TRIES = 50
 const DRAIN_TRIES = 10
 /** After a post that failed, the next waits this long. */
 const RETRY_MS = 500
+/**
+ * The prompt that wakes a session whose turn answered before any model request
+ * read a steer: the steer's row is already in the conversation, so this names
+ * it rather than repeating it.
+ */
+export const STEER_WAKE = 'I added a note to the conversation while you were finishing your answer. Read it and act on it.'
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -75,8 +81,18 @@ type Command = Record<string, unknown> & { id: string; op: string }
 type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string }
 /** The model and effort chosen for this session through the bridge; null keeps the session's own. */
 type Override = { model: string | null; effort: Effort | null }
-/** A tool call running now; `done` resolves with its result's text once it settles. */
-type Call = { tool: string; done: Promise<string | undefined>; settle: (text: string | undefined) => void }
+/**
+ * A tool call running now: `owner` is the main turn it belongs to (a main-loop
+ * call's turn, or the turn a foreground subagent it runs in was spawned in);
+ * `done` resolves with its result's text once it settles.
+ */
+type Call = { tool: string; owner: string | undefined; done: Promise<string | undefined>; settle: (text: string | undefined) => void }
+/**
+ * A steer, bound to the main turn it was given in before its row is appended.
+ * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
+ * `ended`: how its turn ended, when that came before the row was in.
+ */
+type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string }
 /** A message still streaming, as the child's snapshot carries it (DX4). */
 type Streaming = { turnId: string; agentId: string | null; step: number; model: string; text: string; thinking: string; upTo: number }
 
@@ -127,8 +143,10 @@ type BridgeState = {
   delivered: Map<string, number>
   /** Whether what the child keeps (override, delivered) was taken from its hello: once per module. */
   isKeptLoaded: boolean
-  /** Steers appended in the running main turn, and whether a model request began after each. */
-  steers: { text: string; isRead: boolean }[]
+  /** Steers given in the main turn, and those whose turn ended before their row was in. */
+  steers: Steer[]
+  /** For each running foreground subagent, the main turn it belongs to (its tool calls are that turn's). */
+  foreground: Map<string, string>
   /** A compaction asked for during the main turn, run when it ends. */
   compact?: { id: string; instructions?: string }
 }
@@ -149,6 +167,7 @@ const fresh = (): BridgeState => ({
   delivered: new Map(),
   isKeptLoaded: false,
   steers: [],
+  foreground: new Map(),
 })
 
 let state = fresh()
@@ -385,44 +404,82 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
   }
-  const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+  // Bound to its turn before the append: the turn may end while it is pending.
+  const pending: Steer = { turnId: state.mainTurn, isAppended: false, isRead: false }
+  state.steers.push(pending)
+  let stored: Awaited<ReturnType<EngineInterface['session']['append']>>
+  try {
+    stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+  } catch (error) {
+    state.steers = state.steers.filter((s) => s !== pending)
+    throw error
+  }
   if (stored.deny !== undefined) {
+    state.steers = state.steers.filter((s) => s !== pending)
     return { ok: false, error: `the row was refused: ${stored.deny}` }
   }
-  state.steers.push({ text, isRead: false })
+  pending.isAppended = true
   $.ui.log(`steer: ${text}`)
+  if (pending.ended !== undefined) {
+    // Its turn ended while the row went in: no request of that turn read it.
+    state.steers = state.steers.filter((s) => s !== pending)
+    if (pending.ended === 'answer') {
+      wakeForSteer($)
+    }
+  }
   return { ok: true, result: { row: stored.uuid } }
+}
+
+/**
+ * Wakes the session for a steer its turn answered before reading: the row is
+ * already in the conversation, so the prompt points to it rather than
+ * repeating it, and the next request reads both.
+ */
+function wakeForSteer($: EngineInterface) {
+  void $.prompt
+    .submit({ text: STEER_WAKE, asUser: true })
+    .catch((error: unknown) => $.ui.log(`bridge: the wake for an unread steer was not submitted: ${message(error)}`, { to: 'debug' }))
 }
 
 /**
  * Esc's effect: the main turn aborted, then each Bash call it moved to the
  * background (the abort backgrounds a running Bash rather than killing it)
- * stopped with TaskStop. The calls running at the abort are the ones it can
- * have moved; each says where it went in its result.
+ * stopped with TaskStop. Only that turn's calls count: the main loop's, and
+ * those of a foreground subagent spawned in it, which the abort ends with it;
+ * a background subagent's calls are its own. Each says where it went in its
+ * result. A task TaskStop could not stop is named in `running`.
  */
 async function interrupt($: EngineInterface): Promise<Answer> {
   const turnId = state.mainTurn
   if (turnId === undefined) {
-    return { ok: true, result: { turnId: null, stopped: [] } }
+    return { ok: true, result: { turnId: null, stopped: [], running: [] } }
   }
-  const running = [...state.calls.values()].filter((c) => c.tool === 'Bash')
+  const ours = [...state.calls.values()].filter((c) => c.tool === 'Bash' && c.owner === turnId)
   await $.turn.abort({ turnId })
   const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
-  const texts = await Promise.all(running.map((c) => Promise.race([c.done, bound])))
+  const texts = await Promise.all(ours.map((c) => Promise.race([c.done, bound])))
   const stopped: string[] = []
+  const running: string[] = []
   for (const text of texts) {
     const task = BACKGROUNDED.exec(text ?? '')?.[1]
     if (task === undefined) {
       continue
     }
-    const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
-    if (r.isError === true) {
-      $.ui.log(`bridge: TaskStop ${task} failed: ${r.text ?? ''}`, { to: 'debug' })
-    } else {
+    let failure: string | undefined
+    try {
+      const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
+      failure = r.isError === true ? (r.text ?? 'TaskStop failed') : undefined
+    } catch (error) {
+      failure = message(error)
+    }
+    if (failure === undefined) {
       stopped.push(task)
+    } else {
+      $.ui.log(`bridge: TaskStop ${task} failed: ${failure}`, { to: 'debug' })
+      running.push(task)
     }
   }
-  return { ok: true, result: { turnId, stopped } }
+  return { ok: true, result: { turnId, stopped, running } }
 }
 
 /**
@@ -524,23 +581,26 @@ function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
 }
 
 /**
- * The end of the main turn: a compaction held for it, then the steers no
- * model request read (the turn answered first), submitted as the human's
- * prompt, as a prompt typed mid-turn would be. An interrupted or failed
- * turn's steers are dropped.
+ * The end of the main turn: a compaction held for it, then, when the turn
+ * answered before any request read a steer given in it, one wake (the row is
+ * in the conversation already), as a prompt typed mid-turn would start the
+ * next turn. A steer whose row is not in yet is marked with how its turn
+ * ended, and wakes when it lands. An interrupted or failed turn wakes nothing.
  */
-async function mainTurnEnded($: EngineInterface, reason: string) {
-  const unread = state.steers.filter((s) => !s.isRead).map((s) => s.text)
-  state.steers = []
+async function mainTurnEnded($: EngineInterface, turnId: string, reason: string) {
+  const mine = state.steers.filter((s) => s.turnId === turnId)
+  const unread = mine.some((s) => s.isAppended && !s.isRead)
+  for (const s of mine) {
+    s.ended = reason
+  }
+  state.steers = state.steers.filter((s) => s.turnId !== turnId || !s.isAppended)
   const request = state.compact
   state.compact = undefined
   if (request !== undefined) {
     await runCompaction($, request)
   }
-  if (reason === 'answer' && unread.length > 0) {
-    void $.prompt
-      .submit({ text: unread.join('\n\n'), asUser: true })
-      .catch((error: unknown) => $.ui.log(`bridge: an unread steer was not submitted: ${message(error)}`, { to: 'debug' }))
+  if (reason === 'answer' && unread) {
+    wakeForSteer($)
   }
 }
 
@@ -783,7 +843,7 @@ export function registerBridge(on: On) {
       } catch (error) {
         $.ui.log(`bridge: usage not read: ${message(error)}`, { to: 'debug' })
       }
-      await mainTurnEnded($, e.reason)
+      await mainTurnEnded($, e.turnId, e.reason)
     }
     return result
   })
@@ -801,9 +861,11 @@ export function registerBridge(on: On) {
     emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
     if (isMain) {
       state.steps++
-      // This request carries every row appended before it.
+      // This request carries every row of its turn appended before it.
       for (const s of state.steers) {
-        s.isRead = true
+        if (s.isAppended && s.turnId === e.turnId) {
+          s.isRead = true
+        }
       }
     }
     let chunkIndex = 0
@@ -836,7 +898,8 @@ export function registerBridge(on: On) {
     emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
     let settle: (text: string | undefined) => void = () => undefined
     const done = new Promise<string | undefined>((resolve) => (settle = resolve))
-    state.calls.set(call, { tool: String(e.tool), done, settle })
+    const owner = e.agentId === undefined ? state.mainTurn : state.foreground.get(e.agentId)
+    state.calls.set(call, { tool: String(e.tool), owner, done, settle })
     let resultText: string | undefined
     try {
       const result = await next(e)
@@ -862,6 +925,12 @@ export function registerBridge(on: On) {
   on('agent.spawn', { tool_use_id: /^/ }, async (_, e, next) => {
     const result = await next(e)
     if (result.agentId !== undefined) {
+      // A foreground subagent's calls belong to the main turn it runs in (an
+      // interrupt of that turn ends it); a nested one's, to its parent's.
+      const owner = e.parentAgentId === undefined ? state.mainTurn : state.foreground.get(e.parentAgentId)
+      if (!e.background && owner !== undefined) {
+        state.foreground.set(result.agentId, owner)
+      }
       emit({
         type: 'agent',
         phase: 'spawn',
@@ -879,6 +948,7 @@ export function registerBridge(on: On) {
   })
 
   on('classic.SubagentStop', { hook_event_name: 'SubagentStop' }, async (_, e, next) => {
+    state.foreground.delete(e.agent_id)
     emit({ type: 'agent', phase: 'stop', agentId: e.agent_id, agentType: e.agent_type })
     return next(e)
   })

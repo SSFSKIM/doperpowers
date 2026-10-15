@@ -23,6 +23,7 @@ import queue
 import re
 import socket
 import threading
+import time
 
 import sminos as S
 import sminos_bridge as B
@@ -235,9 +236,13 @@ def cmd_interrupt(a):
         print("%s is idle: nothing to interrupt" % a.member)
         return
     stopped = result.get("stopped") or []
+    running = result.get("running") or []
     print("interrupted %s: turn %s stopped%s" % (
         a.member, str(result["turnId"])[:8],
         "; background task%s %s stopped" % ("s" if len(stopped) > 1 else "", ", ".join(stopped)) if stopped else ""))
+    if running:
+        S.die("interrupt of %s is incomplete: background task%s %s still running (TaskStop failed)" % (
+            a.member, "s" if len(running) > 1 else "", ", ".join(running)), 1)
 
 
 def cmd_model(a):
@@ -287,9 +292,10 @@ def cmd_compact(a):
     if result.get("queued"):
         print("compaction of %s queued: it runs when the running turn ends" % a.member)
         return
+    deadline = time.monotonic() + COMPACT_WAIT_S
     while True:
         try:
-            e = events.get(timeout=COMPACT_WAIT_S)
+            e = events.get(timeout=max(0.0, deadline - time.monotonic()))
         except queue.Empty:
             S.die("compact: no outcome from %s within %d s (it may still be compacting)" % (a.member, COMPACT_WAIT_S), 1)
         if e is None:

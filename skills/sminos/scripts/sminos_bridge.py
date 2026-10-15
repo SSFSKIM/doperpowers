@@ -203,6 +203,8 @@ class Bridge:
         self.waiters = {}        # command id → [threading.Event, result event]
         self.closing = threading.Event()
         self.kept = load_kept(session)
+        self.saved = self.kept    # what the file holds: kept is written until it is
+        self.notes = []          # the child's own events, made while applying the mod's
 
     # -- the mod's events
 
@@ -212,12 +214,14 @@ class Bridge:
             self.mod_last = time.time()
             for e in events:
                 self._apply(e)
-                for sub in list(self.subscribers):
-                    try:
-                        sub.put_nowait(e)
-                    except queue.Full:   # its writer drains the backlog, then ends it
-                        self.subscribers.discard(sub)
-                        sub.cut = True
+                for item in [e] + self.notes:
+                    for sub in list(self.subscribers):
+                        try:
+                            sub.put_nowait(item)
+                        except queue.Full:   # its writer drains the backlog, then ends it
+                            self.subscribers.discard(sub)
+                            sub.cut = True
+                self.notes = []
 
     def _apply(self, e):
         kind, phase = e.get("type"), e.get("phase")
@@ -299,11 +303,14 @@ class Bridge:
                 w[0].set()
 
     def _keep(self, kept):
-        """What is kept for the session, written whole when it changed (under
-        the lock, by the event that changed it)."""
-        if kept == self.kept:
-            return
+        """What is kept for the session (the mod's copy), written whole while it
+        differs from what the file holds (under the lock, by the event that
+        changed it). `saved` moves only once a write succeeded, so a write that
+        failed is tried again at the next event; the failure is said on the
+        stream as the child's own `kept` event."""
         self.kept = kept
+        if kept == self.saved:
+            return
         path = kept_path(self.session)
         tmp = "%s.%d.tmp" % (path, os.getpid())
         try:
@@ -312,7 +319,15 @@ class Bridge:
                 json.dump(kept, f)
             os.replace(tmp, path)
         except OSError as err:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             sys.stderr.write("sminos bridge: %s not kept: %s\n" % (path, err))
+            self.notes.append({"type": "kept", "ok": False, "error": "%s not written: %s" % (path, err),
+                               "t": int(time.time() * 1000)})
+            return
+        self.saved = kept
 
     def snapshot(self):
         return {"type": "snapshot", "session": self.session, "protocol": PROTOCOL, "pid": os.getpid(),
@@ -680,6 +695,8 @@ class Renderer:
             self.line("· delivered %s:%s %s" % (k.get("writer"), k.get("seq"), e.get("outcome")))
         elif kind == "gap":
             self.line("· %s events were lost on the way from the session" % e.get("dropped"))
+        elif kind == "kept" and not e.get("ok"):
+            self.line("· the bridge could not keep its state on disk: %s" % e.get("error"))
 
     def _name(self, a):
         if a.get("agentId"):

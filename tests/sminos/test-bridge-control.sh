@@ -140,7 +140,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
     # mod would; mode-file says whether a turn is running ("busy"), the
     # session is idle ("idle"), or deliveries are refused ("refuse").
     sminos, session, out, modefile = sys.argv[2:6]
-    child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE, text=True)
+    # The child's stderr is the mod's debug log: kept beside the lines.
+    child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE,
+                             stderr=open(out + ".err", "a"), text=True)
     sock = None
     delivered = {}
     with open(out, "a") as f:
@@ -159,8 +161,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                 result = {"ok": False, "error": "no turn is running to steer: send it instead"} if mode == "idle" \
                     else {"ok": True, "result": {"row": "row-uuid-1"}}
             elif o == "interrupt":
-                result = {"ok": True, "result": {"turnId": "t1", "stopped": ["b5y6zo7fe"]}} if mode != "idle" \
-                    else {"ok": True, "result": {"turnId": None, "stopped": []}}
+                result = {"ok": True, "result": {"turnId": None, "stopped": [], "running": []}} if mode == "idle" \
+                    else {"ok": True, "result": {"turnId": "t1", "stopped": ["b5y6zo7fe"], "running": ["stuck01"]}} \
+                    if mode == "stuck" else {"ok": True, "result": {"turnId": "t1", "stopped": ["b5y6zo7fe"], "running": []}}
             elif o == "model":
                 pick = {"model": msg.get("model"), "effort": msg.get("effort")}
                 events.append({"type": "model", **pick})
@@ -232,6 +235,28 @@ assert_equals "$(field_of "$(sed -n 1p "$T/lines-b")" kept)" '{"override": {"mod
 # The first fakemod's parent role ended with its child; stop it.
 kill "${PIDS[0]}" 2>/dev/null || true
 
+# A write that fails is said on the stream, and not taken as kept: the next
+# change writes the whole of what the mod handed over, the failed part included.
+WATCHK="$T/wk"
+"$SMINOS" watch "$SID" --json > "$WATCHK" 2>&1 &
+PIDS+=("$!")
+until_true 100 test -s "$WATCHK" || true
+chmod 500 "$SMINOS_HOME/bridge"
+ctl post "$SOCK" '[{"type":"model","model":"claude-fable-5","effort":"max"}]' >/dev/null
+chmod 700 "$SMINOS_HOME/bridge"
+until_true 100 grep -q '"type": "kept"' "$WATCHK" || true
+KEPTEV="$(grep -m1 '"type": "kept"' "$WATCHK" || echo '{}')"
+assert_equals "$(field_of "$KEPTEV" ok)" "false" "a write the child could not make is said on the stream as a kept event"
+assert_contains "$(field_of "$KEPTEV" error)" "ermission denied" "with the reason"
+assert_not_contains "$(cat "$KEPT")" "claude-fable-5" "and the file still holds what it held"
+ctl post "$SOCK" '[{"type":"model","model":"claude-fable-5","effort":"max"}]' >/dev/null
+assert_contains "$(cat "$KEPT")" '"model": "claude-fable-5"' "the same choice sent again is written: a failed write was not taken as kept"
+ctl post "$SOCK" '[{"type":"delivered","key":{"writer":"testhost/human","seq":9},"outcome":"submitted"}]' >/dev/null
+assert_equals "$(cat "$KEPT")" '{"override": {"model": "claude-fable-5", "effort": "max"}, "delivered": {"testhost/human": 9, "other/x": 1}}' \
+  "the next change writes the model choice that failed to land as well"
+ctl post "$SOCK" '[{"type":"model","model":"opus","effort":null},
+ {"type":"resync","turns":[],"streaming":[],"agents":[],"override":{"model":"opus","effort":null},"delivered":{"testhost/human":3,"other/x":1}}]' >/dev/null
+
 echo "the control verbs, bridged:"
 mode busy
 run "$SMINOS" steer "$SID" "also print the date"
@@ -246,6 +271,11 @@ mode busy
 run "$SMINOS" interrupt "$SID"
 assert_rc 0 "$RC" "interrupt exits 0"
 assert_contains "$OUT" "b5y6zo7fe" "naming the background task it stopped"
+mode stuck
+run "$SMINOS" interrupt "$SID"
+assert_rc 1 "$RC" "an interrupt that left a background task running exits 1"
+assert_contains "$OUT" "stuck01" "naming the task still running"
+assert_contains "$OUT" "still running" "and saying so"
 mode idle
 run "$SMINOS" interrupt "$SID"
 assert_contains "$OUT" "nothing to interrupt" "an idle session has nothing to interrupt, said so"
