@@ -636,7 +636,9 @@ against the local hub; until it lands, the stand-in.
   overwrite a retire" (a `sleep 0.8` race), and "the say lands within two
   seconds" (the mirror daemon's push). Recorded as load flakes. (M3) The
   last also fails on origin/main `9e7d3d30` at load ~150 (2.4 s), so it
-  predates this branch; it goes to tech debt.
+  predates this branch. All three are already in
+  `docs/doperpowers/TECH-DEBT.md` (the kill-before-settle entry, extended
+  by DC4 with the load class), so no new entry is added.
 - (M1) DC3's local hub at `f22e0839` passed the uplink walks 7/7 on two
   runs; it does not yet list `step-end` among its subscription kinds.
 - (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
