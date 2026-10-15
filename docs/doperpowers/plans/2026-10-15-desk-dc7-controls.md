@@ -505,6 +505,15 @@ against the local hub; until it lands, the stand-in.
   walk is rerun at the hub that accepts `step-end`.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision: The hub takes a repeated `settled` for one request once, with
+  no second broadcast or audit record (composite `f5a2046b`, built by
+  DC3); the machine keeps its own duplicate filter as well. Merge order is
+  DC2, then DC4, then DC7: M4's bump runs `scripts/bump-version.sh` over
+  the latest main merged when the PR opens (main 7.154.0, DC4's branch
+  7.155.0 at this writing), and the composite's writer checks the numbers
+  at merge.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
