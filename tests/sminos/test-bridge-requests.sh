@@ -163,6 +163,7 @@ elif op == "fakemod":       # sminos session lines-file decisions-file mode-file
             f.flush()
             msg = json.loads(line)
             if msg.get("op") == "hello":
+                post(msg["socket"], [{"type": "resync", "turns": [], "streaming": [], "agents": []}])
                 sock = msg["socket"]
                 continue
             cid, o = msg["id"], msg["op"]
@@ -176,7 +177,7 @@ elif op == "fakemod":       # sminos session lines-file decisions-file mode-file
     child.wait()
 PY
 ctl() { python3 "$T/ctl.py" "$@"; }
-answers() { ctl get "$1" /status >/dev/null 2>&1; }
+answers() { ctl get "$1" /status 2>/dev/null | grep -q '"ready": true'; }
 snapshot() { python3 -c 'import http.client, socket, sys
 class C(http.client.HTTPConnection):
     def connect(self):

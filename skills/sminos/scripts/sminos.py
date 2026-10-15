@@ -29,9 +29,11 @@ member too, seat-less, from the first call that reads its project.
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
     sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
-    sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin)
+    sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin);
+                   a session with the bridge has its marks exported as they are written, and this finds them there
     sminos watch    <member> [--json]                     # a session's live stream through its bridge: the
-                   conversation as it streams, subagents labelled (--json: the endpoint's lines)
+                   conversation as it streams, subagents labelled (--json: the endpoint's lines); a stream
+                   the bridge ends (its state resent, the child restarted) is followed on
     sminos steer    <member> <text>                       # into the running turn, read at its next model
                    request; the running tool goes on (no bridge: a --bg job's supervisor, else a frame)
     sminos interrupt <member>                             # stop the running turn, and any Bash it moved to
@@ -2271,10 +2273,10 @@ def record_session(project, session, tpath, event, last_message=""):
     position is set, so its first turn counts whole at its Stop. A session
     that is not a member records nothing. At Stop, the export first waits a
     little for the turn's last message to reach the transcript (await_flush)."""
-    seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
-    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
-    if peer is not None and str(peer.get("pid")) in internal_pids():
+    seen = _on_sight(project, session)
+    if seen is None:
         return
+    seat, peer = seen
     if seat is None and peer is None:
         if event == "SessionStart":
             position_init(project, session, tpath)
@@ -2283,21 +2285,62 @@ def record_session(project, session, tpath, event, last_message=""):
         return
     if event == "SessionStart":
         position_init(project, session, tpath)
-    own = _own_events(project, session)
-    if latest_membership(own) != "joined":
-        join_on_sight(project, session, seat, peer, True)
-        own = _own_events(project, session)
-    if event != "Stop" or latest_membership(own) != "joined":
+    alias = _member_alias(project, session, seat, peer)
+    if event != "Stop" or alias is None:
         return
-    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
-    if not alias:
-        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
-        alias = str(named[-1]["alias"]) if named else session[:8]
     until = time.time() + FLUSH_WAIT
     if _RECORD_DEADLINE is not None:
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def _on_sight(project, session):
+    """(seat, peer): the seat that binds a session of this machine in the
+    project, and the harness's record of it, either None when there is none;
+    None for derive's internal fork, which is never a member."""
+    seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
+    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    if peer is not None and str(peer.get("pid")) in internal_pids():
+        return None
+    return seat, peer
+
+
+def _member_alias(project, session, seat, peer):
+    """Joins a joinable session the log does not hold as a member yet (a live
+    process is evidence of activation), and returns the alias its messages to
+    the host carry: its seat's, else its harness name, else the last name the
+    log gave it. None when it is no member."""
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        join_on_sight(project, session, seat, peer, True)
+        own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        return None
+    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
+    if not alias:
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
+        alias = str(named[-1]["alias"]) if named else session[:8]
+    return alias
+
+
+def export_live(project, session, records):
+    """The bridge's export (DC2 G4, desk §3): the host events of transcript
+    records the session just wrote, as the bridge's child received them, in
+    the shape host_events reads. They are appended as the Stop hook's export
+    appends them: the same writer, the same (kind, src), one batch that drops
+    what the file already holds, so whichever of the two comes second adds
+    nothing. Membership on sight as the hook decides it; the export position
+    is the hook's and is not moved. The child is long-lived, so the harness's
+    records are read afresh each time. Returns the events appended."""
+    global _PEERS
+    _PEERS = None
+    seen = _on_sight(project, session)
+    if seen is None or not joinable(*seen):
+        return []
+    alias = _member_alias(project, session, *seen)
+    events = host_events(records, alias) if alias is not None else []
+    return log_append_batch(project, writer_id(session), events) if events else []
 
 
 # The hook is bounded in time (§4: it never blocks a turn): its waits are,

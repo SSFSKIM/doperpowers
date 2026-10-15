@@ -278,9 +278,13 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     ) as Promise<Record<string, unknown>>
   let rows = 0
   /** A row the session keeps, through the session.append hooks. */
-  const append = async (door: string, message: Record<string, unknown>, extra: { uuid?: string; agentId?: string; origin?: Record<string, unknown> } = {}) => {
+  const append = async (
+    door: string,
+    message: Record<string, unknown>,
+    extra: { uuid?: string; agentId?: string; origin?: Record<string, unknown>; next?: (inner: Record<string, unknown>) => Promise<unknown> } = {},
+  ) => {
     const e = { door, message, uuid: extra.uuid ?? `u${++rows}`, origin: extra.origin ?? { kind: 'engine' }, ...(extra.agentId !== undefined && { agentId: extra.agentId }) }
-    await hook('session.append', { door })(engine, e, async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid }))
+    await hook('session.append', { door })(engine, e, extra.next ?? (async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid })))
     await settle()
   }
   /** A model response row holding one block. */
@@ -1572,5 +1576,171 @@ describe('requests from outside: questions', () => {
     await h.settle()
     expect(h.ofType('raised').map((e) => e.request)).toEqual(['toolu_a1'])
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_a1', winner: 'terminal', outcome: 'answered', by: 'terminal' })])
+  })
+})
+
+describe('the export to the host', () => {
+  const FRUIT = { question: 'Which fruit?', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple', description: 'a' }, { label: 'Mango', description: 'm' }] }
+  const WAITING = 'Your questions are waiting for the human.'
+  const askUse = (id: string, isAsync: boolean) => ({ type: 'tool_use', id, name: ASK_TOOL, input: { questions: [FRUIT], async: isAsync } })
+  /** The ask tool's result row, as the engine keeps it. */
+  const askResult = (h: ReturnType<typeof harness>, id: string, uuid: string) =>
+    h.append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: WAITING }] }, { uuid, origin: { kind: 'tool', tool: ASK_TOOL } })
+
+  test("a main-loop text row that may hold a mark goes to the child whole, as the transcript keeps it, keyed by the row's uuid", async () => {
+    const h = harness()
+    await h.ready()
+    const text = 'Reading.\n<message>done with the parser</message>\nAnd `<message>a literal</message>`.'
+    await h.responseRow({ type: 'text', text }, { uuid: 'r-m' })
+    expect(h.ofType('export')).toEqual([
+      expect.objectContaining({ type: 'export', records: [{ type: 'assistant', uuid: 'r-m', message: { content: [{ type: 'text', text }] } }] }),
+    ])
+  })
+
+  test("every alias of the mark, and the form the streaming hook draws, may hold one; the child's parser decides", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow({ type: 'text', text: 'note <insight>this</insight>' }, { uuid: 'r-alias' })
+    await h.responseRow({ type: 'text', text: '\x1b[1;32mmessage\x1b[0m drawn' }, { uuid: 'r-drawn' })
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid)).toEqual(['r-alias', 'r-drawn'])
+  })
+
+  test("a row with no mark, a thinking row, and a subagent's row are not exported (the Stop hook reads the main chain only)", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow({ type: 'text', text: 'plain working text' })
+    await h.responseRow({ type: 'thinking', thinking: '<message>thought</message>', signature: 's' })
+    await h.responseRow({ type: 'text', text: '<message>from a subagent</message>' }, { agentId: 'a7' })
+    expect(h.ofType('export')).toEqual([])
+  })
+
+  test("a text past the events' cap is left to the Stop hook's export, which reads it whole, and said so in the debug log", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow({ type: 'text', text: `<message>${'x'.repeat(TEXT_CAP)}</message>` }, { uuid: 'r-long' })
+    expect(h.ofType('export')).toEqual([])
+    expect(h.logs.some((l) => l.includes('r-long'))).toBe(true)
+  })
+
+  test('an async ask goes with its result, both rows in one export, whichever row the engine keeps first', async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(askUse('toolu_q1', true), { uuid: 'r-use1' })
+    expect(h.ofType('export')).toEqual([])
+    await askResult(h, 'toolu_q1', 'r-res1')
+    await askResult(h, 'toolu_q2', 'r-res2')
+    await h.responseRow(askUse('toolu_q2', true), { uuid: 'r-use2' })
+    const result = (id: string, uuid: string) => ({ type: 'user', uuid, message: { content: [{ type: 'tool_result', tool_use_id: id, content: WAITING }] } })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [{ type: 'assistant', uuid: 'r-use1', message: { content: [askUse('toolu_q1', true)] } }, result('toolu_q1', 'r-res1')],
+      [{ type: 'assistant', uuid: 'r-use2', message: { content: [askUse('toolu_q2', true)] } }, result('toolu_q2', 'r-res2')],
+    ])
+  })
+
+  test("a blocking ask, an async one whose result never came, and another tool's result are not exported", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(askUse('toolu_b', false), { uuid: 'r-b' })
+    await askResult(h, 'toolu_b', 'r-bres')
+    await h.responseRow(askUse('toolu_open', true), { uuid: 'r-open' })
+    await h.resultRow('toolu_bash', 'a Bash result')
+    expect(h.ofType('export')).toEqual([])
+  })
+})
+
+describe('row notices and the cut', () => {
+  const notices = (h: ReturnType<typeof harness>) =>
+    h.events().filter((e) => e.type === 'block-row' || e.type === 'row-seen').map((e) => `${String(e.type)}:${String(e.uuid)}`)
+
+  test("every row is noticed once, in write order, posted before it is written: a response row by its block-row, any other by row-seen, with its loop and door", async () => {
+    const h = harness()
+    await h.ready()
+    let posted: string[] = []
+    const next = async (inner: Record<string, unknown>) => {
+      await h.settle()
+      posted = notices(h)
+      return { message: inner.message, uuid: inner.uuid }
+    }
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'Hi' }], async () => {
+      await h.append('response', { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Hi' }] }, { uuid: 'r-text', origin: { kind: 'model', model: 'm' }, next })
+      expect(posted).toEqual(['block-row:r-text'])
+    })
+    await h.append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] }, { uuid: 'r-res', next })
+    expect(posted).toEqual(['block-row:r-text', 'row-seen:r-res'])
+    await h.append('attachment', { type: 'attachment', name: 'nested_memory', role: 'user', content: [] }, { uuid: 'r-att', agentId: 'a7' })
+    await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, { uuid: 'r-prompt' })
+    expect(notices(h)).toEqual(['block-row:r-text', 'row-seen:r-res', 'row-seen:r-att', 'row-seen:r-prompt'])
+    expect(h.ofType('row-seen')).toEqual([
+      expect.objectContaining({ uuid: 'r-res', agentId: null, door: 'tool-result' }),
+      expect.objectContaining({ uuid: 'r-att', agentId: 'a7', door: 'attachment' }),
+      expect.objectContaining({ uuid: 'r-prompt', agentId: null, door: 'prompt' }),
+    ])
+  })
+
+  test('a response row whose block never streamed (a server tool) is noticed by row-seen; a queue record, no row of the conversation, by none', async () => {
+    const h = harness()
+    await h.ready()
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'a' }], async () => {
+      await h.responseRow({ type: 'server_tool_use', id: 'srv_1', name: 'web_search' }, { uuid: 'r-srv' })
+      await h.responseRow({ type: 'text', text: 'a' }, { uuid: 'r-a' })
+    })
+    await h.append('queue', { type: 'user', role: 'user', content: [{ type: 'text', text: 'later' }] }, { uuid: 'q-1' })
+    expect(notices(h)).toEqual(['row-seen:r-srv', 'block-row:r-a'])
+  })
+
+  test("a hook's success with nothing to say, which the engine raises but never writes to the transcript, is named by none; one with text is", async () => {
+    const h = harness()
+    await h.ready()
+    await h.append('hook-context', { type: 'attachment', name: 'hook_success', role: 'user', content: [] }, { uuid: 'r-empty' })
+    await h.append('hook-context', { type: 'attachment', name: 'hook_success', role: 'user', content: [{ type: 'text', text: ' ' }] }, { uuid: 'r-blank' })
+    await h.append('hook-context', { type: 'attachment', name: 'hook_success', role: 'user', content: [{ type: 'text', text: 'context' }] }, { uuid: 'r-said' })
+    await h.append('hook-context', { type: 'attachment', name: 'hook_permission_decision', role: 'user', content: [] }, { uuid: 'r-mark' })
+    expect(notices(h)).toEqual(['row-seen:r-said', 'row-seen:r-mark'])
+  })
+
+  test("another plugin's own append (door note), which a hook beneath may refuse, is noticed once it is kept, and never when refused", async () => {
+    const h = harness()
+    await h.ready()
+    let before: string[] = []
+    await h.append('note', { type: 'user', role: 'user', content: [{ type: 'text', text: 'n' }] }, {
+      uuid: 'r-note',
+      next: async (inner) => {
+        await h.settle()
+        before = notices(h)
+        return { message: inner.message, uuid: inner.uuid }
+      },
+    })
+    await h.append('note', { type: 'user', role: 'user', content: [{ type: 'text', text: 'm' }] }, { uuid: 'r-refused', next: async () => ({ deny: 'no' }) })
+    expect(before).toEqual([])
+    expect(notices(h)).toEqual(['row-seen:r-note'])
+  })
+
+  test("the bridge's own steer row, which its hook does not see, is noticed from the append's returned uuid", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'steer', text: 'also print the date' })
+    expect(h.ofType('row-seen')).toEqual([expect.objectContaining({ uuid: 'row-1', agentId: null, door: 'note' })])
+  })
+
+  test("every resync carries the cut, each loop's last notice (main null when none since the module loaded); a /clear starts it anew", async () => {
+    const h = harness()
+    await h.ready()
+    expect(h.ofType('resync')[0]).toMatchObject({ cut: { main: null } })
+    await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, { uuid: 'r-1' })
+    await h.append('attachment', { type: 'attachment', name: 'x', role: 'user', content: [] }, { uuid: 'r-sub', agentId: 'a7' })
+    await h.append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] }, { uuid: 'r-2' })
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 'r-2', a7: 'r-sub' } })
+    h.setSession('5b000002-0000-4000-8000-00000000005b')
+    await h.hook('session.end')(h.engine, { reason: 'clear' }, async () => undefined)
+    for (let i = 0; i < 5; i++) {
+      await h.fire(100)
+    }
+    h.children.at(-1)!.write(hello('5b000002-0000-4000-8000-00000000005b', '/tmp/s/bridge/5b000002-0000-4000-8000-00000000005b.sock'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: null } })
+    expect(Object.keys(h.ofType('resync').at(-1)!.cut as object)).toEqual(['main'])
   })
 })

@@ -153,6 +153,7 @@ elif op == "fakemod":       # sminos session lines-file mode-file
             if msg.get("op") == "hello":
                 sock = msg["socket"]
                 delivered = dict((msg.get("kept") or {}).get("delivered") or {})
+                post(sock, [{"type": "resync", "turns": [], "streaming": [], "agents": []}])
                 continue
             mode = open(modefile).read().strip() if os.path.exists(modefile) else "busy"
             cid, o = msg["id"], msg["op"]
@@ -193,7 +194,7 @@ elif op == "fakemod":       # sminos session lines-file mode-file
     child.wait()
 PY
 ctl() { python3 "$T/ctl.py" "$@"; }
-answers() { ctl get "$1" /status >/dev/null 2>&1; }
+answers() { ctl get "$1" /status 2>/dev/null | grep -q '"ready": true'; }
 fakemod() { # session lines-file → starts the stand-in, which starts the child
   python3 "$T/ctl.py" fakemod "$SMINOS" "$1" "$2" "$T/mode" &
   FAKEMOD=$!

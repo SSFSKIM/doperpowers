@@ -39,6 +39,18 @@ import type { AskNote } from './ask'
  *
  * Streaming is per content block: each response row the engine writes is
  * paired with its block (`block-row`), which settles the block.
+ *
+ * Row order (DC2 M4, for DC7): every row the session keeps is named once, in
+ * the order it is written, before it is written: a response row by its
+ * `block-row`, any other by `row-seen`. Each loop's last notice is its cut,
+ * which the resync carries, so a reader of the transcript knows which rows
+ * the stream has accounted for and which are still to come.
+ *
+ * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
+ * text row with a mark and an async ask with its result, go to the child as
+ * they are kept (`export`), and the child appends them to the project's log
+ * through the Stop hook's own writer and keys, so they reach the log as they
+ * complete and the Stop hook's export finds them already there.
  */
 
 export const HEARTBEAT_MS = 5_000
@@ -124,6 +136,14 @@ const DENIED = 'The human denied this request.'
 const REFUSAL = "The user doesn't want to proceed with this tool use."
 /** A response row's block, as its chunks name its kind. */
 const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', redacted_thinking: 'thinking', tool_use: 'tool' }
+/**
+ * A text that may hold a mark for the host: an opening tag of the mark or one
+ * of its aliases, or the header the streaming hook draws (hooks/to-human-stream.sh).
+ * A superset of what sminos_marks.py reads as a span; the child's parser decides.
+ */
+const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
+/** Async asks whose other row (the call, or its result) has not been kept yet. */
+const ASKS_KEPT = 50
 /** A chunk's block kind: an `input` chunk is a tool call's arguments. */
 const BLOCK_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', tool: 'tool', input: 'tool' }
 
@@ -183,6 +203,8 @@ type Request = {
   /** The session's transcript (the PermissionRequest's `transcript_path`): where its loop's rows are read when no record came. */
   transcript?: string
 }
+/** A row as the session's transcript keeps it, in the shape the Stop hook's export reads (`sminos record`). */
+type TranscriptRecord = { type: 'assistant' | 'user'; uuid: string; message: { content: Record<string, unknown>[] } }
 /** A call the engine's check put to the dialog. */
 type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
 
@@ -260,6 +282,10 @@ type BridgeState = {
   records: Map<string, { source: string; isAccepted: boolean }>
   /** An async question answered through a dialog whose request had not settled yet: dialog id → question id. */
   askDialogs: Map<string, string>
+  /** Each loop's last row notice (`main`, or the subagent's id): the cut a resync carries. */
+  cut: Map<string, string>
+  /** The ask tool's calls and results on the main loop, by call, until both rows of an async ask are kept (`export`). */
+  asks: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
   requests: Map<string, Request>
   settled: Record<string, unknown>[]
@@ -274,6 +300,8 @@ const fresh = (): BridgeState => ({
   decidedChecks: [],
   records: new Map(),
   askDialogs: new Map(),
+  cut: new Map(),
+  asks: new Map(),
   requests: new Map(),
   settled: [],
   minted: 0,
@@ -442,6 +470,8 @@ function resyncEvent(): BridgeEvent {
     settled: state.settled.map((s) => ({ ...s })),
     override: state.override ?? null,
     delivered: Object.fromEntries(state.delivered),
+    // Each loop's last row notice: every row up to it has been named.
+    cut: { main: null, ...Object.fromEntries(state.cut) },
     t: Date.now(),
   }
 }
@@ -462,6 +492,8 @@ function forgetLive() {
   state.decidedChecks = []
   state.records.clear()
   state.askDialogs.clear()
+  state.cut.clear()
+  state.asks.clear()
   state.requests.clear()
   state.settled = []
 }
@@ -630,6 +662,8 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
     return { ok: false, error: `the row was refused: ${stored.deny}` }
   }
   pending.isAppended = true
+  // The hook does not see the plugin's own append: named once it is in.
+  noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
   $.ui.log(`steer: ${text}`)
   settleSteers($, pending.turnId)
   return { ok: true, result: { row: stored.uuid } }
@@ -1051,12 +1085,36 @@ function resultText(content: unknown): string {
   return Array.isArray(content) ? content.map((b) => (isRecord(b) && typeof b.text === 'string' ? b.text : '')).join('\n') : ''
 }
 
-/** A row the session kept: a response row names its block (`block-row`); a call's result may settle a request. */
-function observeRow(door: string, message: { name?: string; content?: unknown }, uuid: string, agentId: string | null) {
+/** A row's notice: its loop's cut moves to it. */
+function noticeRow(e: BridgeEvent & { uuid: string; agentId: string | null }) {
+  state.cut.set(e.agentId ?? 'main', e.uuid)
+  emit(e)
+}
+
+/**
+ * A row about to be kept, named on the stream before it is written: a
+ * response row by the block it holds (`block-row`), any other, a response
+ * row whose block never streamed included, by `row-seen`. A queue record is
+ * no row of the conversation, and is named by none.
+ */
+function announceRow(door: string, message: { name?: string; content?: unknown }, uuid: string, agentId: string | null) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
-  if (door === 'response') {
-    nameBlock(agentId, uuid, content[0])
-  } else if (door === 'tool-result') {
+  // A hook's success with nothing to say is raised here but never written
+  // to the transcript (the engine keeps one only with content or output):
+  // named, it would be a row a reader waits for and never finds.
+  const isUnkept = message.name === 'hook_success' && !content.some((b) => typeof b.text === 'string' && b.text.trim() !== '')
+  if (door === 'queue' || isUnkept) {
+    return
+  }
+  if (door !== 'response' || !nameBlock(agentId, uuid, content[0])) {
+    noticeRow({ type: 'row-seen', uuid, agentId, door })
+  }
+}
+
+/** A row the session kept: a call's result may settle a request. */
+function observeRow(door: string, message: { name?: string; content?: unknown }, uuid: string) {
+  const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
+  if (door === 'tool-result') {
     for (const block of content) {
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         callEnded(block.tool_use_id, { text: resultText(block.content), uuid })
@@ -1066,23 +1124,73 @@ function observeRow(door: string, message: { name?: string; content?: unknown },
 }
 
 /**
+ * The main loop's rows that may hold a message to the host, handed to the
+ * child as the transcript keeps them, so `sminos record`'s own reading of
+ * them (sminos.host_events) decides what is logged: a text row that may hold
+ * a mark, and an async ask once both its call and its result are kept, in
+ * whichever order. A text past TEXT_CAP is left to the Stop hook's export,
+ * which reads the transcript whole and appends it under the same keys.
+ */
+function exportRow(door: string, message: { content?: unknown }, uuid: string, origin: unknown) {
+  const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
+  if (door === 'response') {
+    const texts = content.filter((b) => b.type === 'text' && typeof b.text === 'string')
+    if (texts.some((b) => MAY_MARK.test(b.text as string))) {
+      if (texts.some((b) => (b.text as string).length > TEXT_CAP)) {
+        state.log?.(`bridge: row ${uuid}: a text past ${TEXT_CAP} characters; the Stop hook exports it`)
+      } else {
+        emit({ type: 'export', records: [{ type: 'assistant', uuid, message: { content: texts } }] })
+      }
+    }
+    for (const b of content) {
+      if (b.type === 'tool_use' && b.name === ASK_TOOL && typeof b.id === 'string' && isRecord(b.input) && b.input.async === true) {
+        keepAsk(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
+      }
+    }
+  } else if (door === 'tool-result') {
+    const isAsk = isRecord(origin) && origin.kind === 'tool' && origin.tool === ASK_TOOL
+    for (const b of content) {
+      if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isAsk || state.asks.has(b.tool_use_id))) {
+        keepAsk(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })
+      }
+    }
+  }
+}
+
+/** One row of an ask call; once its call and its result are both kept, the pair is exported. */
+function keepAsk(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
+  const ask = { ...state.asks.get(id), ...row }
+  if (ask.use !== undefined && ask.result !== undefined) {
+    state.asks.delete(id)
+    emit({ type: 'export', records: [ask.use, ask.result] })
+    return
+  }
+  state.asks.set(id, ask)
+  if (state.asks.size > ASKS_KEPT) {
+    state.asks.delete(state.asks.keys().next().value as string)
+  }
+}
+
+/**
  * Pairs a response row with its block: by the row's block type and the order
  * the loop's latest request started its blocks (a tool call by its id), not
- * by the row's own position. A row whose block never streamed names none.
+ * by the row's own position. A row whose block never streamed names none
+ * (false).
  */
-function nameBlock(agentId: string | null, uuid: string, block: Record<string, unknown> | undefined) {
+function nameBlock(agentId: string | null, uuid: string, block: Record<string, unknown> | undefined): boolean {
   const s = state.stepBlocks.get(loopKey(agentId))
   const kind = ROW_KIND[String(block?.type)]
   if (s === undefined || kind === undefined) {
-    return
+    return false
   }
   const open = s.starts.filter((b) => b.kind === kind && !s.named.has(b.index))
   const start = (kind === 'tool' ? open.find((b) => b.id === block?.id) : undefined) ?? open[0]
   if (start === undefined) {
-    return
+    return false
   }
   s.named.add(start.index)
-  emit({ type: 'block-row', uuid, turnId: s.turnId, agentId: s.agentId, step: s.step, index: start.index })
+  noticeRow({ type: 'block-row', uuid, turnId: s.turnId, agentId: s.agentId, step: s.step, index: start.index })
+  return true
 }
 
 /**
@@ -1592,11 +1700,25 @@ export function registerBridge(on: On) {
     return next(e)
   }).catch((_, e, next) => next(e))
 
-  // Every row the session keeps: a response row's block, a call's result.
+  // Every row the session keeps: named before it is written (row order), then
+  // a call's result, a main-loop row that may hold a message to the host. A
+  // plugin's own append (door note) may yet be refused beneath: it is named
+  // once it is kept.
   on('session.append', { door: /^/ }, async (_, e, next) => {
+    const isLive = state.post !== undefined
+    const agentId = e.agentId ?? null
+    if (isLive && e.door !== 'note') {
+      announceRow(e.door, e.message, e.uuid, agentId)
+    }
     const stored = await next(e)
-    if (state.post !== undefined) {
-      observeRow(e.door, e.message, stored.uuid ?? e.uuid, e.agentId ?? null)
+    if (isLive && stored.deny === undefined) {
+      if (e.door === 'note') {
+        announceRow(e.door, stored.message, stored.uuid, agentId)
+      }
+      observeRow(e.door, e.message, stored.uuid)
+      if (agentId === null) {
+        exportRow(e.door, stored.message, stored.uuid, e.origin)
+      }
     }
     return stored
   }).catch((_, e, next) => next(e))

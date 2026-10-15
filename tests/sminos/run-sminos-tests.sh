@@ -5007,6 +5007,12 @@ if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and del
 echo
 if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
   fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
+  fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
+  fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
