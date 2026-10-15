@@ -60,6 +60,9 @@ export function describeCompact(threshold: number | undefined): string {
     "reading of the rest, the work ahead gets the room once this work's",
     'state is recorded, and every call re-reads the whole context, so cost',
     'grows with size.',
+    'Read the size in tokens, never as a percentage of the window or of the',
+    'auto-compact point: degradation and cost grow with the tokens',
+    'themselves, so 300k in a 1M window is 300k, not "only 30%".',
     '- Under about 250k: when the work at hand is done, or little of',
     '  substance remains.',
     '- 250k–450k: at any reasonable checkpoint.',
@@ -77,7 +80,7 @@ export function describeCompact(threshold: number | undefined): string {
 }
 
 export function describeUsage(): string {
-  return 'Your context size now: tokens used, window, percent. Free. Main conversation only. Call it at a checkpoint in your work to judge whether to compact.'
+  return 'Your context size now in tokens, with the window and where the harness compacts on its own. Free. Main conversation only. Call it at a checkpoint in your work to judge whether to compact.'
 }
 
 export type ContextFigures = {
@@ -88,16 +91,16 @@ export type ContextFigures = {
 }
 
 /**
- * The context_usage result: the last response's input tokens over the
- * compaction window, and where the engine compacts on its own.
+ * The context_usage result: the last response's input tokens, the compaction
+ * window, and where the engine compacts on its own. No percentage: the model
+ * is to weigh the count itself, which a share of a 1M window understates.
  */
 export function usageText(context: ContextFigures, threshold: number): string {
   const own = `The harness compacts on its own at about ${n(threshold)} tokens.`
   if (context.tokens === undefined) {
     return `Context: no model response yet this session; window ${n(context.window)} tokens. ${own}`
   }
-  const percent = Math.round((context.tokens / context.window) * 100)
-  return `Context: ${n(context.tokens)} of ${n(context.window)} tokens (${percent}%). ${own}`
+  return `Context: ${n(context.tokens)} tokens; window ${n(context.window)}. ${own}`
 }
 
 /**
