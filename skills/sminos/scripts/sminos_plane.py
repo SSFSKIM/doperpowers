@@ -77,6 +77,7 @@ BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
 LOCATE_EVERY = 1.0        # s: how often a transcript not found yet is looked for
 MEMBERS_EVERY = 10.0      # s: how often the members are read again when no session came or went
+IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (a `ps` per running session this often)
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
@@ -635,9 +636,10 @@ class Records:
     """The engine's session registry, read only where it changed: the record
     of every session whose process runs, by session id."""
 
-    def __init__(self):
+    def __init__(self, clock=time.monotonic):
         self.files = {}      # path → (mtime_ns, size, record)
-        self.same = {}       # (pid, procStart) → whether the pid is still that process
+        self.same = {}       # (pid, procStart) → (whether the pid is that process, when that was read)
+        self.clock = clock
 
     def scan(self):
         live = {}
@@ -670,18 +672,20 @@ class Records:
 
     def running(self, rec):
         """The record's pid is alive and is the process the record describes.
-        What was learned of a pid is dropped once the pid is seen dead, so a
-        record left behind whose pid is later reused is checked against the
-        process the pid holds now."""
+        The identity (`ps`'s start time against the record's) is read again
+        every IDENTITY_EVERY, and at once once the pid is seen dead: a pid
+        reused between two polls, alive at both, is found out within that
+        bound. Polls between reads cost an os.kill each, not a `ps`."""
         pid = rec.get("pid")
         if not sminos.pid_alive(pid):
             self.same = {k: v for k, v in self.same.items() if k[0] != pid}
             return False
-        key = (pid, rec.get("procStart"))
-        if key not in self.same:
+        key, now = (pid, rec.get("procStart")), self.clock()
+        held = self.same.get(key)
+        if held is None or now - held[1] >= IDENTITY_EVERY:
             sminos.forget_caches()  # the start time ps gives now, not one sminos read for this pid before
-            self.same[key] = sminos.same_process(rec)
-        return self.same[key]
+            held = self.same[key] = (sminos.same_process(rec), now)
+        return held[0]
 
 
 def record_body(rec):

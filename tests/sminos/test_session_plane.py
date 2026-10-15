@@ -609,6 +609,29 @@ class Lifecycle(unittest.TestCase):
             alive[0], start[0] = True, "Fri Oct 16 11:00:00 2026"
             self.assertNotIn(self.sid, records.scan(), "its pid now holds another process")
 
+    def test_a_pid_reused_between_two_polls(self):
+        """The process exits and its pid is reused between two scans: alive at
+        both, only its start time changed. The identity is read again within
+        IDENTITY_EVERY, so the stale session leaves within that bound."""
+        clock = Clock()
+        records = plane.Records(clock=clock)
+        start, reads = ["Thu Oct 15 09:52:25 2026"], []
+
+        def proc_start(pid):
+            reads.append(pid)
+            return start[0]
+
+        with mock.patch.object(plane.sminos, "pid_alive", lambda _pid: True), \
+                mock.patch.object(plane.sminos, "proc_start", proc_start):
+            self.assertIn(self.sid, records.scan())
+            start[0] = "Fri Oct 16 11:00:00 2026"  # reused between polls, never seen dead
+            clock.advance(plane.PRESENCE_EVERY)
+            self.assertIn(self.sid, records.scan(), "within the bound the identity is not read again")
+            self.assertEqual(len(reads), 1, "ps is not asked at every poll")
+            clock.advance(plane.IDENTITY_EVERY)
+            self.assertNotIn(self.sid, records.scan(), "past the bound the pid's start time is read again")
+            self.assertEqual(len(reads), 2)
+
     def test_the_ceiling_is_the_settings_default_mode(self):
         settings = os.path.join(os.environ["HOME"], ".claude", "settings.json")
         import sminos_hublog as hublog
