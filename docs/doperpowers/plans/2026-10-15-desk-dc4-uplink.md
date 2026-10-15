@@ -476,6 +476,24 @@ produces nothing new for other children beyond the stream DC7 builds on.
   stream; after every reconnect the uplink sends `hello` for each project
   on the new generation before it uploads anything.
   Date/Author: 2026-10-15, the composite's writer (from DC3's M2 review).
+- Decision: **G2's refusal cases split by how a forgery can reach a
+  daemon.** The hub gets no test hook: a write path into the Worker
+  that skips its checks would be a backdoor in production code. (1)
+  Through the hub's real browser API, against DC3's local hub: a DX3 test
+  client signed in as a member through the local stand-in for Access
+  sends a `human` sealed with a wrong code or key (an event without a
+  valid code), and a `human` sealed for project A into project B's socket
+  (an authentic event replayed into another feed). The hub, which holds
+  no key, stores both as `hub/<member>` and streams them; every daemon
+  refuses them before the log and reports `rejected`, and the hub shows
+  the report on the project's browser socket (DX3 `rejected`) —
+  acceptance 8's path end to end. (2) What only a compromised hub could
+  send, against the Python stand-in playing a lying hub: a `say` under
+  another machine's writer (the real hub refuses that upload as
+  `writer-not-yours`), a `hub/` event carrying a field its code does not
+  cover (`via`, `msg_id`), and a malformed `hub/` position. G2 thus
+  proves the real path and the daemon's defense against a hub that lies.
+  Date/Author: 2026-10-15, the composite's writer.
 
 ## Surprises & Discoveries
 
