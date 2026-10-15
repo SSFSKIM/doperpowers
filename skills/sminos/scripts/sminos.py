@@ -1018,12 +1018,23 @@ def internal_pids():
         return set()
 
 
+DESK_MEMBER_ENV = "SMINOS_DESK_MEMBER"  # set by the daemon running a verb for a desk RPC: the member's id
+MEMBER_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def desk_member():
+    """The desk member a verb acts for, when the daemon runs it for an RPC
+    (32 hex, else nothing); never inside a session."""
+    m = os.environ.get(DESK_MEMBER_ENV, "")
+    return m if not os.environ.get("CLAUDE_CODE_SESSION_ID") and MEMBER_ID_RE.fullmatch(m) else ""
+
+
 def caller_alias():
     """Who a lifecycle event names as its actor (`by`): the calling session's
-    seat alias (a provisional seat's too), else its harness name; "" for the
-    operator."""
+    seat alias (a provisional seat's too), else its harness name; for the
+    operator, the desk member a daemon verb acts for, else ""."""
     if not os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        return ""
+        return desk_member()
     caller = caller_seat()
     return caller["alias"] if caller else default_from("")
 
@@ -4365,7 +4376,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     prev = reload_seat(seat_id) if seat_id else None
     project = seat_project({"cwd": cwd, "group": group})
     by = caller_alias()
-    preamble = render_preamble(project.name, alias, by)
+    # A desk member is the human, whom the preamble calls "the operator".
+    preamble = render_preamble(project.name, alias, "" if desk_member() else by)
     task_text = compose_task(task, brief or "", preamble)
     short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree,
                                               permission_mode) + [task_text], cwd, settings)

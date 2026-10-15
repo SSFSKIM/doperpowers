@@ -82,8 +82,9 @@ KEPT_S = 86400            # the ledger keeps an entry a day
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
 STEER_TRACE_S = 30        # a claimed steer's row is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
-COMPACT_HELD_S = 60       # a `compact` event waits this long for its command's result to name it
+COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
+KEPT_WAIT_S = 2.0         # a model change: how long the child may take to keep it before the next reads it
 SPAWN_TIMEOUT = 600
 VERB_TIMEOUT = 120
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
@@ -162,30 +163,50 @@ class Ledger:
     """`daemon/rpcs.json`: nonce → {project, rpc, session, at, text_sha256?,
     outcome?, acked?}. An entry without `outcome` is a claim. Written whole
     at every change, under a lock (the main thread and the workers write);
-    entries older than KEPT_S go at load and at every write."""
+    entries older than KEPT_S go at every write.
+
+    A ledger that exists and cannot be read could hold claims and answered
+    nonces: it is never replaced (`broken` says why), and `readable` tries it
+    again, so the RPCs wait for it rather than run a nonce twice."""
 
     def __init__(self, clock):
         self.clock = clock
         self.path = os.path.join(sminos.root(), "daemon", LEDGER_FILE)
         self.lock = threading.Lock()
-        self.entries = self.load()
+        self.broken = None
+        self.entries = {}
+        self.load()
 
     def load(self):
         try:
             with open(self.path) as f:
                 d = json.load(f)
+            if not isinstance(d, dict):
+                raise ValueError("not an object")
         except FileNotFoundError:
-            return {}
+            d = {}
         except (OSError, ValueError) as e:
-            # A ledger that cannot be read could hold claims: nothing known
-            # is lost by saying so, and its nonces are past their minute
-            # within a minute.
-            log("the ledger %s is unreadable (%s): starting a new one" % (self.path, e))
-            return {}
-        return {n: e for n, e in d.items() if isinstance(e, dict)} if isinstance(d, dict) else {}
+            if self.broken is None:
+                log("the ledger %s cannot be read (%s): no RPC runs until it can" % (self.path, e))
+            self.broken = str(e) or type(e).__name__
+            return
+        if self.broken is not None:
+            log("the ledger %s can be read again" % self.path)
+        self.broken = None
+        self.entries = {n: e for n, e in d.items() if isinstance(e, dict)}
+
+    def readable(self):
+        """Whether the ledger is known: a broken one is read again first."""
+        with self.lock:
+            if self.broken is not None:
+                self.load()
+            return self.broken is None
 
     def save(self):
-        """Raises OSError when the ledger could not be written."""
+        """Raises OSError when the ledger could not be written, or must not
+        be: a ledger that could not be read is never replaced."""
+        if self.broken is not None:
+            raise OSError("the ledger %s cannot be read (%s): it is not replaced" % (self.path, self.broken))
         cutoff = self.clock() - KEPT_S
         self.entries = {n: e for n, e in self.entries.items()
                         if isinstance(e.get("at"), (int, float)) and e["at"] >= cutoff}
@@ -250,6 +271,9 @@ class Rpcs:
         self.sent_here = set()    # nonces whose result went up on this stream
         self.compact_ids = {}     # a bridge's compact command id → (project id, session, nonce, at)
         self.compact_held = []    # [(project id, session, event, at)]: events whose command is not named yet
+        self.compact_flight = {}  # nonce → session: compact RPCs whose command's id is not known yet
+        self.model_locks = {}     # session → the lock its model and effort are read and changed under
+        self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
         self.next_reconcile = 0.0
         self.reconcile()
@@ -282,6 +306,9 @@ class Rpcs:
         if name != "spawn" and not (isinstance(sid, str) and sminos.UUID_RE.match(sid)
                                     and here.has_session(project, sid)):
             return self.refuse_loose(rpc, "no-session", "no session %s of %s on this machine" % (sid, project.name))
+        if not self.ledger.readable():
+            return self.refuse_loose(rpc, "failed", "this machine's RPC ledger cannot be read (%s): no RPC runs "
+                                     "until it can, so none runs twice" % self.ledger.broken)
         known = self.ledger.get(nonce)
         if known is not None or nonce in self.flight:
             if known is not None and "outcome" in known:
@@ -295,8 +322,10 @@ class Rpcs:
             return
         record = here.record(sid) if sid else None
         facts = {"running": record is not None, "bg": control.bg_job(record or {}), "root": project.root,
-                 "checkout": args.get("checkout")}
+                 "checkout": args.get("checkout"), "status": (record or {}).get("status")}
         self.flight.add(nonce)
+        if name == "compact":
+            self.compact_flight[nonce] = sid
         threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
 
     def admit(self, rpc, project, args, here):
@@ -383,7 +412,7 @@ class Rpcs:
         """The action an RPC runs once claimed, or Refused (checks 7-8)."""
         name, args, nonce = rpc["rpc"], rpc["args"], rpc["nonce"]
         if name == "spawn":
-            return lambda: spawn(args, nonce, facts["checkout"])
+            return lambda: spawn(args, nonce, facts["checkout"], rpc["member"])
         sid = args["session"]
         if name == "resume":
             raise Refused("unsupported", "Resume is not built on this machine yet (DC7's M4)")
@@ -393,7 +422,7 @@ class Rpcs:
         if name in ("answer", "decide") and bridged:
             check_digest(path, sid, args["digest"])
         if name == "retire":
-            return lambda: retire(sid, facts["root"])
+            return lambda: retire(sid, facts["root"], rpc["member"])
         if not facts["running"]:
             raise Refused("unsupported", "the session is not running: only Resume brings it back")
         if bridged:
@@ -402,7 +431,7 @@ class Rpcs:
             if name == "interrupt":
                 return lambda: interrupt(path)
             if name == "model":
-                return lambda: model(path, sid, args)
+                return lambda: model(path, sid, args, self.model_lock(sid))
             if name == "compact":
                 return lambda: self.compact(path, rpc, sid)
             if name == "answer":
@@ -413,9 +442,16 @@ class Rpcs:
                 body["message"] = args["message"]
             return lambda: decide(path, args["digest"]["request"], body)
         if name == "steer":
+            if facts["status"] == "idle":
+                # The engine's own record says no turn runs (composite 21c32db7).
+                raise Refused("idle", "no turn is running to steer: send it instead")
             return lambda: steer_without_bridge(sid, args["text"], facts["root"])
         raise Refused("unsupported", "%s needs the session's bridge; %s has none (§5)" % (
             name, "this --bg job" if facts["bg"] else "this terminal session"))
+
+    def model_lock(self, sid):
+        with self.locks_lock:
+            return self.model_locks.setdefault(sid, threading.Lock())
 
     def compact(self, path, rpc, sid):
         result, cid = command(path, {"op": "compact"})
@@ -436,6 +472,7 @@ class Rpcs:
                 return
             if kind == "done":
                 self.flight.discard(data)
+                self.compact_flight.pop(data, None)
             elif kind == "loose":
                 nonce, pid, outcome = data
                 self.loose[nonce] = (pid, outcome, self.clock())
@@ -444,27 +481,31 @@ class Rpcs:
                 self.compact_ids[cid] = (pid, sid, nonce, self.clock())
 
     def compacted(self, items):
-        """The bridges' `compact` events (session, project id, event): those
-        of a command this daemon issued become DX4 `compact`; one whose
-        command's result has not come back yet waits COMPACT_HELD_S."""
+        """The bridges' `compact` events (session, project id, event): every
+        compaction of a bridged session becomes DX4 `compact` (composite
+        21c32db7), carrying the nonce of the DX6 `compact` that asked for it,
+        or null for one nobody here asked for. An event no command is known
+        to have issued waits while a compact RPC of its session is still
+        waiting for its command's id, since the bridge may say the compaction
+        started before it answers the command (at most COMPACT_HELD_S)."""
         self.take()
         now = self.clock()
-        pending = self.compact_held + [(pid, sid, e, now) for sid, pid, e in items]
+        pending = self.compact_held + [(pid, sid, e, now) for sid, pid, e in items if isinstance(e, dict) and pid]
         self.compact_held = []
+        asking = set(self.compact_flight.values())
         for pid, sid, e, at in pending:
-            cid = e.get("id") if isinstance(e, dict) else None
+            cid = e.get("id")
             named = self.compact_ids.get(cid)
-            if named is None:
-                if now - at < COMPACT_HELD_S:
-                    self.compact_held.append((pid, sid, e, at))
+            if named is None and sid in asking and now - at < COMPACT_HELD_S:
+                self.compact_held.append((pid, sid, e, at))
                 continue
-            body = {"rpc": named[2], "phase": e.get("phase")}
+            body = {"rpc": named[2] if named else None, "phase": e.get("phase")}
             for k in ("tokensBefore", "tokensAfter", "skip", "error"):
                 if k in e:
                     body[k] = e[k]
             self.compact_out.append({"t": "session", "message": {
-                "project": named[0], "machine": self.machine, "session": named[1], "kind": "compact", "sub": None,
-                "n": None, "body": body}})
+                "project": named[0] if named else pid, "machine": self.machine, "session": named[1] if named else sid,
+                "kind": "compact", "sub": None, "n": None, "body": body}})
             if e.get("phase") == "end":
                 self.compact_ids.pop(cid, None)
         self.compact_ids = {c: v for c, v in self.compact_ids.items() if now - v[3] < KEPT_S}
@@ -664,16 +705,26 @@ def interrupt(path):
                  "running": list(r.get("running") or [])})
 
 
-def model(path, sid, args):
+def model(path, sid, args, lock):
     """The mod replaces model and effort together: the one not asked keeps
-    the choice in force (what the child keeps for the session)."""
-    kept = bridge.load_kept(sid)["override"] or {}
-    body = {"op": "model", "model": args.get("model", kept.get("model")), "effort": args.get("effort", kept.get("effort"))}
-    out, _ = command(path, body)
-    if not out.get("ok"):
-        raise Refused("failed", refusal(out))
-    r = out.get("result") or {}
-    return done({"model": r.get("model"), "effort": r.get("effort")})
+    the choice in force (what the child keeps for the session). Two at once
+    would each read the old pair, so the read, the command, and the child's
+    keeping its answer are one step per session: the next reads what this
+    one left (or, past KEPT_WAIT_S, what the child keeps by then)."""
+    with lock:
+        kept = bridge.load_kept(sid)["override"] or {}
+        body = {"op": "model", "model": args.get("model", kept.get("model")),
+                "effort": args.get("effort", kept.get("effort"))}
+        out, _ = command(path, body)
+        if not out.get("ok"):
+            raise Refused("failed", refusal(out))
+        r = out.get("result") or {}
+        now = {"model": r.get("model"), "effort": r.get("effort")}
+        want = None if now == {"model": None, "effort": None} else now
+        deadline = time.monotonic() + KEPT_WAIT_S
+        while bridge.load_kept(sid)["override"] != want and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return done(now)
 
 
 def decide(path, rid, body):
@@ -697,18 +748,23 @@ def decide(path, rid, body):
     raise Refused("failed", "the bridge answered %d: %s" % (status, out.get("error")))
 
 
-def verb_env():
+def verb_env(member=None):
     """The daemon's environment for a `sminos` verb, as the operator's: never
-    a session's (a CLAUDE_CODE_SESSION_ID would make the verb a member's)."""
+    a session's (a CLAUDE_CODE_SESSION_ID would make the verb a member's).
+    With `member`, the verb's lifecycle events name the desk member it acts
+    for as `by` (composite 21c32db7)."""
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
+    env.pop(sminos.DESK_MEMBER_ENV, None)
+    if member:
+        env[sminos.DESK_MEMBER_ENV] = member
     return env
 
 
-def run_verb(argv, cwd, timeout):
+def run_verb(argv, cwd, timeout, member=None):
     """(exit code, stdout, stderr) of a `sminos` verb."""
     try:
-        p = subprocess.run([SMINOS_CLI] + argv, cwd=cwd, env=verb_env(), stdin=subprocess.DEVNULL,
+        p = subprocess.run([SMINOS_CLI] + argv, cwd=cwd, env=verb_env(member), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Refused("failed", "sminos %s did not finish within %d s" % (argv[0], timeout))
@@ -735,7 +791,7 @@ def steer_without_bridge(sid, text, root):
     raise Refused("failed", last_line(err) or "sminos steer exited %d" % rc)
 
 
-def spawn(args, nonce, checkout):
+def spawn(args, nonce, checkout, member):
     """`sminos spawn` into the checkout, the RPC's nonce stamped on the
     seat's record from its first write, the brief as its in-charge line."""
     alias = alias_for(nonce)
@@ -744,32 +800,36 @@ def spawn(args, nonce, checkout):
     for flag in ("worktree", "model", "effort"):
         if args.get(flag):
             argv.append("--%s=%s" % (flag, args[flag]))
-    rc, out, err = run_verb(argv + ["--", alias, SPAWN_TASK], checkout, SPAWN_TIMEOUT)
+    rc, out, err = run_verb(argv + ["--", alias, SPAWN_TASK], checkout, SPAWN_TIMEOUT, member)
     if rc != 0:
         raise Refused("failed", last_line(err) or "sminos spawn exited %d" % rc)
     found = spawned(nonce)
     if found is not None:
         return found
     m = SEAT_RE.search(out)
-    if m:
+    if m and sminos.UUID_RE.match(m.group(1)):
         return done({"session": m.group(1), "alias": alias})
     raise Refused("failed", "sminos spawn named no session: %s" % last_line(out))
 
 
 def spawned(nonce):
     """The outcome a seat stamped with this nonce stands for, or None when
-    there is none (yet). Seat records are read from their files, no cache."""
+    there is none yet: no seat, or a provisional one still waiting for the
+    harness to name its session (spawn_fresh polls for the uuid after the
+    launch). Only a launch spawn_fresh gave up on (`status` error) has
+    failed. Seat records are read from their files, no cache."""
     for s in sminos.seats():
         if s.get("rpc_nonce") == nonce:
             if s["current"] and sminos.UUID_RE.match(s["current"]):
                 return done({"session": s["current"], "alias": s["alias"]})
-            return failed("failed", "the spawn started no session the harness named (seat %s, %s)" % (
-                s["seat_id"], s["status"]))
+            if s["status"] == "error":
+                return failed("failed", "the spawn started no session the harness named (seat %s)" % s["seat_id"])
+            return None
     return None
 
 
-def retire(sid, root):
-    rc, _, err = run_verb(["retire", "--", sid], root, VERB_TIMEOUT)
+def retire(sid, root, member):
+    rc, _, err = run_verb(["retire", "--", sid], root, VERB_TIMEOUT, member)
     if rc != 0:
         raise Refused("failed", last_line(err) or "sminos retire exited %d" % rc)
     return done({})

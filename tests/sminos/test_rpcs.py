@@ -189,6 +189,7 @@ class Mod(tpr.Bridge):
                                           "running": []}}
         elif op == "model":
             model = None if cmd.get("model") in (None, "default") else cmd["model"]
+            self.post({"type": "model", "model": model, "effort": cmd.get("effort")})
             res = {"ok": True, "result": {"model": model, "effort": cmd.get("effort")}}
         elif op == "compact":
             if self.turn is not None:
@@ -272,8 +273,8 @@ class Checks(unittest.TestCase):
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
-        live = {self.bridged.sid: {"pid": self.bridged.holder.pid, "kind": "interactive"},
-                self.plain.sid: {"pid": self.plain.holder.pid, "kind": "interactive"}}
+        live = {self.bridged.sid: {"pid": self.bridged.holder.pid, "kind": "interactive", "status": "busy"},
+                self.plain.sid: {"pid": self.plain.holder.pid, "kind": "interactive", "status": "busy"}}
         self.here = Here(self.project, {self.bridged.sid, self.plain.sid, self.ended}, live)
         self.frames = []
 
@@ -499,6 +500,9 @@ class Checks(unittest.TestCase):
     # ------------------------------------------------ execution, through DC2's protocol
 
     def test_f_steer_interrupt_model(self):
+        import sminos_bridge as bridge
+        self.mod.post({"type": "model", "model": None, "effort": None})
+        wait_for(lambda: bridge.load_kept(self.bridged.sid)["override"] is None)
         idle = self.send("steer", {"session": self.bridged.sid, "text": "too late"})
         self.refused(idle, "idle")
         self.mod.turn = "turn-1"
@@ -536,6 +540,11 @@ class Checks(unittest.TestCase):
                              {"state": "failed", "error": {"code": "failed", "message": TURN_UNKNOWN}}, name)
 
     def test_f_a_steer_to_a_session_without_a_bridge_takes_sminos_steer(self):
+        # Its engine record says idle: no turn runs, so nothing is steered (composite 21c32db7).
+        self.here.live[self.plain.sid]["status"] = "idle"
+        self.refused(self.send("steer", {"session": self.plain.sid, "text": "not now"}), "idle")
+        self.assertNotIn("not now", self.plain.inbox.texts())
+        self.here.live[self.plain.sid]["status"] = "busy"
         rpc = self.send("steer", {"session": self.plain.sid, "text": "-n also the changelog"})
         self.assertEqual(self.outcome(rpc, timeout=30), {"state": "done", "result": {"row": None}},
                          "delivered; no row is named without a bridge")
@@ -589,6 +598,9 @@ class Checks(unittest.TestCase):
         seat = [s for s in sminos.seats() if s.get("rpc_nonce") == rpc["nonce"]]
         self.assertEqual([(s["current"], s["alias"], s["brief"]) for s in seat], [(sid, alias, "tidy the docs")],
                          "the seat carries its nonce, and the brief as its in-charge line")
+        sminos.forget_caches()
+        joined = sminos.view_of(self.project, titles=False).info[sid]["joined"]
+        self.assertEqual(joined["by"], MEMBER, "joined by the member who asked (composite 21c32db7)")
         again = self.send("spawn", {"checkout": self.root, "brief": "tidy the docs", "model": "claude-sonnet-4-5",
                                     "effort": "low"}, nonce=rpc["nonce"], created=rpc["created"])
         self.assertTrue(wait_for(lambda: len(results(self.collect(), rpc["nonce"])) >= 2))
@@ -604,6 +616,7 @@ class Checks(unittest.TestCase):
         sminos.forget_caches()
         latest = sminos.view_of(self.project, titles=False).info[sid]["latest"]
         self.assertEqual(latest["kind"], "retired", "recorded as sminos retire records it")
+        self.assertEqual(latest["by"], MEMBER, "retired by the member who asked")
 
     def test_g_a_permission_mode_at_or_below_the_ceiling_is_passed(self):
         tpr.set_policy({"read_only": False, "ceiling": "auto"})
@@ -664,6 +677,98 @@ class Checks(unittest.TestCase):
         r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
         self.assertEqual(results(r.due({self.pid}), nonce),
                          [{"state": "done", "result": {"session": sid, "alias": "web-found"}}])
+
+    def test_f_concurrent_partial_model_changes_both_hold(self):
+        """A model-only and an effort-only RPC at once: each keeps the
+        other's change (the read-modify-write is serialized per session)."""
+        import sminos_bridge as bridge
+        self.mod.post({"type": "model", "model": None, "effort": None})
+        wait_for(lambda: bridge.load_kept(self.bridged.sid)["override"] is None)
+        self.mod.hold = 0.4
+        m = self.send("model", {"session": self.bridged.sid, "model": "claude-opus-4-1"})
+        e = self.send("model", {"session": self.bridged.sid, "effort": "max"})
+        self.assertEqual(self.outcome(m)["state"], "done")
+        self.assertEqual(self.outcome(e)["state"], "done")
+        self.assertEqual({k: self.mod.ops("model")[-1].get(k) for k in ("model", "effort")},
+                         {"model": "claude-opus-4-1", "effort": "max"}, "the second carried the first's change")
+        self.assertTrue(wait_for(lambda: bridge.load_kept(self.bridged.sid)["override"] ==
+                                 {"model": "claude-opus-4-1", "effort": "max"}), "and both are in force")
+
+    def test_h_an_unreadable_ledger_runs_nothing_and_is_kept(self):
+        """A ledger that exists and cannot be read could hold claims: every
+        RPC is refused, reported, and the file is never replaced."""
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write('{"half-written": ')
+        self.mod.turn = "t-l"
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.r = r
+        rpc = self.send("steer", {"session": self.bridged.sid, "text": "twice?"})
+        o = self.outcome(rpc)
+        self.assertEqual(o["state"], "failed")
+        self.assertIn("ledger", o["error"]["message"])
+        self.assertEqual(self.mod.ops("steer"), [], "nothing ran")
+        with open(path) as f:
+            self.assertEqual(f.read(), '{"half-written": ', "the unreadable ledger is left as it was")
+        # Readable again (the owner repaired it): its claims stand, and a
+        # nonce it knows is answered from it, never run.
+        done_before = {"state": "done", "result": {"row": "r-1"}}
+        with open(path, "w") as f:
+            json.dump({rpc["nonce"]: {"project": self.pid, "rpc": "steer", "session": self.bridged.sid,
+                                      "at": time.time(), "outcome": done_before, "acked": False}}, f)
+        self.r.receive(rpc, self.here)
+        got = wait_for(lambda: done_before in results(self.collect(), rpc["nonce"]) and True)
+        self.assertTrue(got, "answered from the repaired ledger")
+        self.assertEqual(self.mod.ops("steer"), [], "and never run")
+
+    def test_h_a_provisional_spawn_seat_waits_for_its_uuid(self):
+        nonce = "FFFFFFFFFFFFFFFFFFFFFA"
+        rec = str(uuidlib.uuid4())
+        sminos.meta_set(rec, {"uuid": rec, "current": "", "alias": "web-prov", "group": "rpcproj", "cwd": self.root,
+                              "status": "working", "rpc_nonce": nonce})
+        self.claim(nonce, "spawn", None, time.time())
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual(results(r.due({self.pid}), nonce), [], "a launch still polling for its uuid is not failed")
+        self.assertIsNone(self.ledger()[nonce].get("outcome"))
+        sid = str(uuidlib.uuid4())
+        sminos.meta_set(rec, {"current": sid})
+        self.clock[0] += rpcs.RECONCILE_EVERY + 0.1
+        self.assertEqual(results(r.due({self.pid}), nonce),
+                         [{"state": "done", "result": {"session": sid, "alias": "web-prov"}}], "then found")
+        # An established failed launch is failed at once.
+        nonce2 = "GGGGGGGGGGGGGGGGGGGGGA"
+        rec2 = str(uuidlib.uuid4())
+        sminos.meta_set(rec2, {"uuid": rec2, "current": "", "alias": "web-err", "group": "rpcproj",
+                               "cwd": self.root, "status": "error", "pending_short": "abcd1234", "rpc_nonce": nonce2})
+        self.claim(nonce2, "spawn", None, time.time())
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual([o["error"]["code"] for o in results(r.due({self.pid}), nonce2)], ["failed"])
+
+    def test_i_every_compaction_of_a_bridged_session_is_relayed(self):
+        """One the session started itself carries `rpc: null`; one an RPC
+        asked for, that RPC's nonce."""
+        reqs = requests.Requests(KEY, "testhost")
+        reqs.follow({self.bridged.sid: self.pid})
+        try:
+            self.assertTrue(wait_for(lambda: reqs.take() or self.bridged.sid in reqs.synced))
+            self.mod.post({"type": "compact", "phase": "start", "id": "auto-1"},
+                          {"type": "compact", "phase": "end", "id": "auto-1", "tokensBefore": 5000, "tokensAfter": 900})
+            asked = self.send("compact", {"session": self.bridged.sid})
+
+            def compacts():
+                reqs.take()
+                self.r.compacted(reqs.take_compacts())
+                return [f["message"]["body"] for f in self.collect() if f.get("t") == "session"
+                        and f["message"]["kind"] == "compact"]
+            got = wait_for(lambda: len(compacts()) >= 4 and compacts())
+            self.assertTrue(got, "four compact messages: %s" % compacts())
+            self.assertEqual([b for b in got if b["rpc"] is None],
+                             [{"rpc": None, "phase": "start"},
+                              {"rpc": None, "phase": "end", "tokensBefore": 5000, "tokensAfter": 900}])
+            self.assertEqual([b["phase"] for b in got if b["rpc"] == asked["nonce"]], ["start", "end"])
+        finally:
+            reqs.close()
 
     def test_i_results_are_republished_until_acknowledged(self):
         self.mod.turn = "t9"
