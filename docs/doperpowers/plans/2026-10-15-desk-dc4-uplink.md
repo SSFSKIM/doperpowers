@@ -612,6 +612,14 @@ produces nothing new for other children beyond the stream DC7 builds on.
   name>`. (5) No run for a `.smns` whose hub is malformed. (6) The
   retry after the remote moved is tested white-box.
   Date/Author: 2026-10-15, M4's executor, folded by the controller.
+  Ruled (composite `b6cb686b`): DX2 now says a `hello` for a project
+  already open on the stream is allowed and idempotent, answered with a
+  fresh `have` and the backlog past its vector; a hub push on a
+  designation change was rejected (a new frame and hub work, for an
+  archive whose latency does not matter). SKILL.md stays out of this
+  branch: one sminos-skill update for the whole desk (hub projects, the
+  bridge, the web's controls) after the children merge. Version 7.155.0.
+  Date/Author: 2026-10-15, the composite's writer.
 
 ## Surprises & Discoveries
 
