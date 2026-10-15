@@ -18,7 +18,10 @@
   clean 2026-10-15 (`fbd19b1a`, fixes `79bb122b`, `6ac34e14`). Carried to
   M4's walk: a `--bg` run, and a module reload in the middle of a response
   (the resync source is module-local state).
-- [ ] M2 — The control verbs and delivery (DC2.G2)
+- [x] M2 — The control verbs and delivery (DC2.G2) — reviewed clean
+  2026-10-15 (`56619f3d`, fixes `75faba58`, `7842ae4e`). Carried to M4's
+  walk: `send --wait` to a bridged seat, model and compact on a bridged
+  `--bg` job, and a foreground subagent's Bash under interrupt.
 - [ ] M3 — Requests from outside and their settlement (DC2.G2, G3)
 - [ ] M4 — Live export, the acceptance walk, docs, version (DC2.G4)
 
@@ -404,6 +407,107 @@ ended or on Ctrl-C. A bridge that comes back within 5 s (a module reload) is fol
 snapshot, each streaming message whole, then follows on (DX4's rule on a discontinuity).
 With `--json`, the `gap` and its `resync` are passed through for the reader to act on.
 
+#### M2 extension (as reviewed clean; rows changed by its fix waves marked [fw1]/[fw2])
+
+Every DX5 row M2 built or changed, as it should now read (rows fix waves 1 and 2 changed are also marked **[fw1]** and **[fw2]**). Rows not listed here stand as
+M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
+
+##### Parties
+
+- **Local clients**: the CLI (`sminos watch`; `steer`, `interrupt`, `model`, `compact`;
+  the log's delivery, `deliver_next` and `send`, through `push_live`) and the daemon
+  (DC7). **[M2]**
+
+##### What the child keeps (built, M2) **[M2]**
+
+- **File:** `$SMINOS_HOME/bridge/<session-id>.json`, mode 0600, written whole
+  (temporary name, then rename) whenever it changes:
+  `{"override": {"model": <id or null>, "effort": <effort or null>} | null, "delivered": {"<writer>": <seq>}}`.
+- **Written from the mod's events:** `model` (sets `override`; null when both are null),
+  `delivered` with outcome `submitted` (raises the writer's seq), `resync` (replaces
+  `override` and `delivered` with the mod's copy).
+- **[fw1] A failed write is not taken as kept.** The child holds the mod's copy in memory and
+  writes it whole whenever it differs from what the file holds; what the file holds moves
+  only after a write succeeds. **[fw2]** The write is made at the end of every batch of the
+  mod's events (`POST /events`), whatever the batch carries, so a failed write is retried by
+  any later event — a duplicate `delivered`, a heartbeat — not only by one that changes what
+  is kept. Writing that starts to fail is said once as the child's own `kept {ok: false}`
+  event, and writing that works again as `kept {ok: true}` (below).
+- **Lifetime:** outlives the child (a module reload) and the session's process (a session
+  resumed under its id goes on with both). Discovery (DC7) lists `*.sock` only.
+
+##### The child's stdout: lines for the mod
+
+- First, once the socket answers:
+  `{"op": "hello", "session": "<id>", "pid": <child pid>, "socket": "<path>", "protocol": 1, "kept": {"override": …, "delivered": {…}}}`
+  **[M2]** `kept` is what the child keeps for the session (above). A module that holds no
+  kept state yet (fresh, after a reload) takes it; one that already holds its own (a child
+  restarted, a /clear) keeps its own and hands it to the child in the resync. The mod's
+  first post is still the session's `start` then a `resync` (fw1).
+
+| Op | Built | Arguments | Result |
+| --- | --- | --- | --- |
+| `steer` | M2 **[M2]** **[fw1]** | `{text}` | `{row: <uuid of the appended user row>}`. During the main turn: `$.session.append` of a user row (one text block), read at the main loop's next model request; the running tool goes on; mirrored as the transcript line `steer: <text>` (`$.ui.log`). Refused idle (`ok: false`, "no turn is running to steer: send it instead"). **[fw1]** The steer is bound to the main turn it was given in before the append is awaited. When that turn ends with `answer` and no main-loop request of it began after the row was in (or the turn ended while the append was pending, and the row then lands), the bridge submits **one wake prompt** (`asUser`) that does not repeat the steer. **[fw2]** The wake is owned by the originating turn: it is decided once the turn has ended *and* every append given in it has settled (in, refused, or failed), and is issued at most once per turn: "I added a note to the conversation while you were finishing your answer. Read it and act on it." (`STEER_WAKE`); the next request reads the row. A turn ending `aborted`/`error`/`refusal` wakes nothing. One wake per turn, however many steers |
+| `interrupt` | M2 **[M2]** **[fw1]** | — | `{turnId, stopped: [<task ids>], running: [<task ids>]}`: `$.turn.abort` on the main turn, then `TaskStop` (`$.tool.call`) on each Bash call **attributable to that turn** and running at the abort whose result names the background task the abort moved it to (`running in background with ID: <id>`; their results awaited at most 3 s). **[fw1]** Attributable: a main-loop call made during that turn, or a call of a foreground subagent spawned in it (nested foreground subagents inherit their parent's turn); a background subagent's calls never are. **[fw1]** `running` names each task whose TaskStop failed (an `isError` result or a rejection): the interrupt is incomplete when it is not empty. Idle: `{turnId: null, stopped: [], running: []}` |
+| `model` | M2 **[M2]** | `{model, effort?}` — `model` an id, a family alias, `"default"` or null; `effort` one of `low medium high xhigh max`, or null | `{model, effort}` now in force (null: the session's own). Rewritten on every **main-loop** `turn.step` request, subagents untouched; never `$.config.set`. A family alias (`haiku`, `sonnet`, `opus`, `fable`) is resolved through the session's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; one it does not map is refused, naming the id to use. Emits `model`; kept by the child |
+| `compact` | M2 **[M2]** | `{instructions?}` | During the main turn `{queued: true, turnId}`: held, and run inside that turn's `turn.complete` (a second while one is held keeps the first). Idle `{started: true}`: run at once. Either way the outcome follows on the stream as `compact` events carrying this command's `id` |
+| `deliver` | M2 **[M2]** **[fw1]** | `{key: {writer, seq}, text}` | `{submitted: true}` or `{duplicate: true}`. `text` is submitted with `$.prompt.submit({text, asUser: true})` (queued until the session is idle; not awaited). **The delivery key** is the log event's `(writer, seq)` — for a push carrying several events of one writer, the last. A key whose seq is at or below the highest already submitted for its writer is a duplicate and dropped (delivery goes per writer in seq order). The per-writer seqs are kept by the child across reloads; a /clear starts them anew (a new id is a new recipient). **[fw1]** The `delivered` event is emitted before the submission is made, so it is the next thing posted. Deduplication across a module reload is **best effort when the reload lands mid-submission**: a key submitted whose `delivered` had not reached the child is not kept, and a redelivery of it may submit again (a residual of at-least-once delivery, §3) |
+
+##### Events (the mod's posts; the stream's lines)
+
+| `type` / `phase` | Built | Fields |
+| --- | --- | --- |
+| `step` / `start` | M1, **[M2]** | `turnId, agentId, step, model, effort, messageCount` — **[M2]** `model` and `effort` are what the request was sent with, after the bridge's rewrite |
+| `resync` | M1 **[fw1]**, **[M2]** | `turns, streaming, agents` (fw1) **and `override, delivered`** — what the child keeps, which it replaces with these |
+| `model` | M2 **[M2]** | `model, effort` — the choice now in force (null: the session's own) |
+| `compact` / `start` | M2 **[M2]** | `id` — the `compact` command's id |
+| `compact` / `end` | M2 **[M2]** | `id`, and one of: `tokensBefore, tokensAfter` (null when the engine recorded none); `skip` (a hook vetoed it); `error` (the engine refused it, as during a turn) |
+| `delivered` | M2 **[M2]** (was reserved) | `key: {writer, seq}, outcome: "submitted" \| "duplicate" \| "refused"`, `reason?` — `refused` follows a `submitted` when the engine later dropped or rejected the prompt |
+| `kept` | M2 **[fw1]** **[fw2]** (the child's own) | `ok: false, error` when writing `<id>.json` starts to fail (said once, however many batches it keeps failing; retried at the end of every batch); `ok: true` when a write works again after a failure |
+
+##### Subscription (`GET /events`)
+
+- **Line 1, the snapshot** gains **`"override": {model, effort} | null`** **[M2]**: the
+  session's model choice made through the bridge (the session start's `model` stays the
+  launch model).
+
+##### The control verbs (built, M2) **[M2]**
+
+`<member>` resolves as for `watch` (a name, `alias#short`, a seat, or a session id; exit 4
+for unknown, seatless, or another machine's).
+
+| Verb | Bridged | No bridge | Exit |
+| --- | --- | --- | --- |
+| `sminos steer <member> <text>` | op `steer` | live `--bg` job: the supervisor's `reply` (raw text, human origin, `nextTurn`); else a live session: inbox frame `[sminos steer from human]\n<text>`; not live: exit 4 | 0; 1 refused (idle) or no answer |
+| `sminos interrupt <member>` | op `interrupt`; prints the stopped tasks, or "idle: nothing to interrupt". **[fw1]** A non-empty `running` is printed as "incomplete: background task(s) … still running (TaskStop failed)" and exits 1 | refused, exit 4 "no bridge" | 0; 1 |
+| `sminos model <member> <model\|default> [--effort E]` | op `model` | refused, exit 4 | 0; 1; 2 bad effort |
+| `sminos compact <member> [instructions]` | subscribes, then op `compact`; queued: says so and exits; started: waits (≤ 300 s from the command, **[fw1]** a monotonic deadline, not reset by other events) for its `compact` end and prints the counts | refused, exit 4 | 0; 1 error or no outcome |
+
+##### Delivery's last hop (`push_live`, built, M2) **[M2]**
+
+For a live recipient, `deliver_next` (through `push_member`) and `send` (through
+`send_to_seat` / `send_to_member`) push the frame text the inbox would carry, in this
+order:
+
+1. **The bridge**, when the push carries a log event: op `deliver` keyed by the last event
+   (wait 10 s). Answered `ok` (submitted or duplicate): delivered (`sent`). No bridge
+   answering: next path. Refused (nothing submitted): a warning, next path. Taken and not
+   answered: uncertain (`sent?`, settled, never pushed again).
+2. **The engine supervisor**, for a `human` event to a live `--bg` job (the engine record's
+   `kind: "bg"` and 8-hex `jobId`): `{"proto": 1, "op": "reply", "short", "text", "auth":
+   <~/.claude/daemon/control.key>, "nextTurn": true}` on
+   `/tmp/cc-daemon-<uid>/<sha256(abspath(~/.claude))[:8]>/control.sock`. `ok`: delivered;
+   refused or unreachable: next path; written and unanswered: uncertain.
+3. **The inbox frame**, as before.
+
+A push with no log event (a seat outside any project, the raw session-name route) goes
+straight to the inbox frame.
+
+##### Reserved for M3 (unchanged)
+
+The `/requests/…` routes, the `raised` and `settled` events, and the snapshot's `pending`
+and `settled` stand as M1 reserved them.
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
@@ -579,6 +683,50 @@ With `--json`, the `gap` and its `resync` are passed through for the reader to a
   3. DX4 (the composite's): a transcript row whose `uuid` a `block-row`
      named settles that block.
   Date/Author: 2026-10-15, controller with the composite's writer.
+- Decision (M2): Delivery. The key is deduplicated per writer as a
+  high-water seq (delivery runs per writer in seq order and stops a writer
+  at its first failure), and a push carrying several events of one writer is
+  keyed by the last. Both `human` and `say` reach a bridged session
+  `asUser` with the inbox frame's text, as this plan's M2 says. A push the
+  bridge accepted is `sent` (the submission queues until idle); a refusal
+  falls through to the next path; taken and unanswered is `sent?`. A
+  module reload landing between a submission and the child persisting its
+  key can submit it twice: accepted as a residual of at-least-once
+  delivery (composite §3), since persisting first would trade it for a
+  loss window. The child keeps the per-writer seqs and the model choice in
+  `$SMINOS_HOME/bridge/<id>.json`, written at the end of every batch while
+  it differs from the file, a failing stretch reported once as `kept`.
+  Date/Author: 2026-10-15, M2 executor; reload residual ruled by the
+  controller.
+- Decision (M2): Without a bridge, a `human` to a live `--bg` job goes
+  through the supervisor's `control.sock` `reply` with `nextTurn: true`
+  (without it the reply could answer an open question dialog); a peer's
+  `say` stays the inbox frame, since `reply` stamps human origin. The
+  socket is computed as the engine does from `~/.claude`, so a temporary
+  `HOME` always names a temporary supervisor.
+  Date/Author: 2026-10-15, M2 executor.
+- Decision (M2): Steer. Refused idle. Bound to its originating main turn
+  before the append is awaited; if that turn answers with a steer row
+  unread, one wake prompt that does not repeat the text is submitted once
+  every append of that turn has settled; an aborted or failed turn wakes
+  nothing.
+  Date/Author: 2026-10-15, M2 executor, after two review rounds.
+- Decision (M2): Interrupt stops only the aborted turn's Bash calls the
+  abort moved to the background: the main loop's and those of foreground
+  subagents spawned in that turn (the abort ends them, as Esc does), never a
+  background subagent's. A TaskStop that fails is reported in `running`,
+  and `sminos interrupt` exits 1.
+  Date/Author: 2026-10-15, M2 executor.
+- Decision (M2): Model applies to the main loop only. A `turn.step` model
+  rewrite is sent on the wire as given, so the bridge resolves a family
+  alias through the session's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and refuses
+  one it does not map; the web should offer model ids. `step/start` reports
+  the model actually sent.
+  Date/Author: 2026-10-15, M2 executor.
+- Decision (M2): Compact answers at once (`queued` mid-turn, `started` idle)
+  and reports its outcome as `compact` events; `sminos compact` waits on a
+  fixed 300 s deadline for a started one.
+  Date/Author: 2026-10-15, M2 executor.
 
 ## Surprises & Discoveries
 
@@ -593,6 +741,20 @@ With `--json`, the `gap` and its `resync` are passed through for the reader to a
   about 75 bytes.
 - (M1) The session's `end` event is best effort (the process exits right
   after); a consumer should read a vanished endpoint as the session gone.
+- (M2) A `turn.step` model rewrite reaches the API verbatim: `sonnet`
+  failed every request at the gateway (`400 … got sonnet`); the resolved id
+  worked.
+- (M2) The module validator requires `$.env.get` to take a literal name.
+- (M2) The aborted Bash call's result (`Command running in background with
+  ID: …`) reaches the bridge's outermost `tool.call` hook; no
+  `session.append` hook is needed to find the task. Abort to turn end
+  0.64–0.65 s live.
+- (M2) A bridged delivery's prompt row is `origin: {kind: "plugin", name:
+  "doperpowers", asUser: true}`; a supervisor `reply` row is `origin: {kind:
+  "human"}, promptSource: "queued"`.
+- (M2) A supervisor under a temporary config needs
+  `CLAUDE_CODE_DAEMON_COLD_START=transient` so it does not offer to install
+  a service; `claude daemon stop --any` under that config stops it.
 - (M1) Live, the model again ran a "foreground" Agent call in the
   background (as in DC1); subagent chunks streamed with their `agentId`
   either way.
