@@ -539,6 +539,21 @@ With `--json`, the `gap` and its `resync` are passed through for the reader to a
   socket theft under overlapping startups, and a 5-second window in which a
   cleared session's events reached the old endpoint.
   Date/Author: 2026-10-15, controller, from M1's review and fix waves 1–2.
+- Decision (for M3, agreed with the composite's writer for DC3): DX4's
+  pending-request values. `settled.outcome` is one of `allow | deny |
+  answered | withdrawn`; `withdrawn` means the request ended with no answer
+  the engine used (the turn aborted with the dialog open, the session
+  ended, the call settled otherwise), with winner `other` and by `bridge`.
+  `settled.by` is the member id when the web won (carried from the decision
+  body's `by`, which DC7 fills from the RPC's `member`), `cli` when the CLI
+  won (winner `other`, since DX4's winner is `web | terminal | other`), and
+  `terminal` when the terminal won. `raised.deadline` is optional, present
+  only for a background subagent's 3-second window. A passed deadline
+  settles nothing: the request stays pending, no longer answerable from
+  outside (the web shows "waiting in the terminal"), until the terminal's
+  answer settles it with winner `terminal` and its real outcome — exactly
+  one `settled` per `raised`.
+  Date/Author: 2026-10-15, controller with the composite's writer.
 
 ## Surprises & Discoveries
 
