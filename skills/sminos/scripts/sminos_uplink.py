@@ -34,7 +34,6 @@ import http.client
 import json
 import os
 import queue
-import select
 import signal
 import socket
 import ssl
@@ -294,7 +293,7 @@ def post(cred, generation, frames, ended=lambda: False):
     under the stream's generation. NotDelivered unless the hub answers 200 —
     a POST of an older stream is refused stale-generation, and a hub whose
     replies failed to reach the stream answers something else. The hub holds
-    its answer until its replies are on the stream, so the wait for it is
+    its answer until its replies are on the stream, so each exchange is
     watched: Stopping, within POLL, once `ended()` (and before each body)."""
     bodies, body, size = [], [], 0
     for line in (line.encode("utf-8") for frame in frames for line in to_wire(frame)):
@@ -309,25 +308,55 @@ def post(cred, generation, frames, ended=lambda: False):
     for lines in bodies:
         if ended():
             raise Stopping("the uplink is ending")
-        conn = connection(cred, POST_TIMEOUT)
+        status, answer = exchange(cred, path, generation, b"\n".join(lines) + b"\n", ended)
+        if status != 200:
+            raise NotDelivered("the hub answered %d %s" % (
+                status, " ".join(answer.decode("utf-8", "replace").split())[:300]))
+
+
+def exchange(cred, path, generation, body, ended):
+    """One POST, (status, answer): the whole HTTP exchange — connect, the
+    body sent, the head and the answer read — runs on a thread of its own,
+    and this one watches it. Once `ended()`, within POLL whichever step it is
+    blocked in, its socket is shut and Stopping raised (the exchange's
+    thread, a daemon, dies with the process that is ending); NotDelivered on
+    any failure, or when it outlasts twice the socket bound (a hub that
+    answers a byte at a time)."""
+    out = {}
+
+    def run():
+        conn = out["conn"] = connection(cred, POST_TIMEOUT)
         try:
-            conn.request("POST", path, body=b"\n".join(lines) + b"\n", headers={
+            conn.request("POST", path, body=body, headers={
                 "Content-Type": "application/x-ndjson", "X-Desk-Generation": str(generation), **admission(cred)})
-            deadline = time.time() + POST_TIMEOUT
-            while not select.select([conn.sock], [], [], POLL)[0]:
-                if ended():
-                    raise Stopping("the uplink is ending while the hub holds a POST's answer")
-                if time.time() > deadline:
-                    raise NotDelivered("no answer within %ds" % POST_TIMEOUT)
             resp = conn.getresponse()
-            answer = resp.read(ANSWER_MAX)
+            out["answer"] = (resp.status, resp.read(ANSWER_MAX))
         except (OSError, http.client.HTTPException) as e:
-            raise NotDelivered(" ".join(str(e).split()) or type(e).__name__) from None
+            out["error"] = " ".join(str(e).split()) or type(e).__name__
         finally:
             conn.close()
-        if resp.status != 200:
-            raise NotDelivered("the hub answered %d %s" % (
-                resp.status, " ".join(answer.decode("utf-8", "replace").split())[:300]))
+
+    worker = threading.Thread(target=run, name="uplink-post", daemon=True)
+    worker.start()
+    deadline = time.time() + 2 * POST_TIMEOUT
+    while True:
+        worker.join(POLL)
+        if not worker.is_alive():
+            break
+        late = time.time() > deadline
+        if ended() or late:
+            sock = out["conn"].sock if out.get("conn") else None
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            if late:
+                raise NotDelivered("no whole answer within %ds" % (2 * POST_TIMEOUT))
+            raise Stopping("the uplink is ending during a POST")
+    if "error" in out:
+        raise NotDelivered(out["error"])
+    return out["answer"]
 
 
 # ------------------------------------------------------------- the projects

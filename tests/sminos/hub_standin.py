@@ -61,7 +61,9 @@ The test's own hands (the stand-in plays a hub that may lie):
   (answered 503, nothing applied), `apply-502` (applied, its replies written,
   then answered 502: a hub whose answer was lost), `hold` (recorded as
   `held`, its answer held back until `POST /control/release`, then 503,
-  nothing applied); with `machine`, only that machine's POSTs meet it, with
+  nothing applied), `stall-headers` and `stall-body` (held the same way,
+  after half a status head, or after a whole head announcing ten bytes and
+  one of them, then the connection closed); with `machine`, only that machine's POSTs meet it, with
   `has`, only a POST carrying a frame of that `t`. `posted` records each
   POST's machine, generation, status, and body.
 - `POST /control/archive` `{"project", "machine"}` designates the project's
@@ -101,6 +103,7 @@ NAME_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 PROJECT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 B64URL = re.compile(r"[A-Za-z0-9_-]+")
 BATCH = 200  # events per `events` frame of a backlog
+HELD = ("hold", "stall-headers", "stall-body")  # POST faults whose answer waits for /control/release
 
 lock = threading.Condition()
 state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults": [], "post_faults": [],
@@ -437,15 +440,27 @@ class Handler(BaseHTTPRequestHandler):
             if fault == "503":
                 state["posted"].append({**record, "status": 503})
                 return self.reply(503, {"error": "unavailable"})
-            if fault == "hold":
-                state["posted"].append({**record, "status": "held"})
+            if fault in HELD:
+                state["posted"].append({**record, "status": "held", "fault": fault})
                 release = state["release"]
-        if fault == "hold":
-            release.wait(60)
+        if fault in HELD:
             try:
-                return self.reply(503, {"error": "held, then released unapplied"})
+                if fault == "stall-headers":  # half a head, then nothing
+                    self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-")
+                    self.wfile.flush()
+                elif fault == "stall-body":  # a whole head, one byte of its ten, then nothing
+                    self.send_response(200)
+                    self.send_header("Content-Length", "10")
+                    self.end_headers()
+                    self.wfile.write(b"{")
+                    self.wfile.flush()
+                release.wait(60)
+                if fault == "hold":
+                    self.reply(503, {"error": "held, then released unapplied"})
             except OSError:
-                return None  # the poster gave up on it
+                pass  # the poster gave up on it
+            self.close_connection = True
+            return None
         with lock:
             frames = []
             for i, line in enumerate(text.split("\n")):

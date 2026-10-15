@@ -483,34 +483,44 @@ for i in range(3):
 PY
 }
 held_count() { local h; h="$(ctl held)"; [ "$(wc -w <<<"$h" | tr -d ' ')" -ge "$1" ]; }
-start_run
-ctl fault events hold
-backlog "first backlog"
-until_true 200 held_count 1 || true
-if held_count 1; then pass "the hub holds the answer to the first upload of a backlog of three"; else fail "the hub holds an upload's answer"; fi
-kill "$UP"
-until_true 20 dead "$UP" || true
-if dead "$UP"; then pass "SIGTERM ends the uplink within a second while the hub holds its POST"; else
-  fail "SIGTERM ends the uplink within a second while the hub holds its POST"; fi
-assert_contains "$(cat "$DLOG")" "the uplink is ending while the hub holds a POST's answer" "saying so"
-assert_equals "$(ctl after-held)" 0 "no later batch of the backlog is posted on that stream"
-until_true 60 restarted_after "$UP" || true
-if restarted_after "$UP"; then pass "its lock is free at once: the supervisor's next uplink holds it"; else
-  fail "its lock is free at once"; fi
-UP="$(uplink_pid)"
-ctl fault events hold
-backlog "second backlog"
-until_true 200 held_count 2 || true
-UP="$(uplink_pid)"
-kill -9 "$RUN"
-set +e; wait "$RUN" 2>/dev/null; set -e
-until_true 40 dead "$UP" || true
-if [[ -n "$UP" ]] && dead "$UP"; then pass "the orphan of a killed daemon run ends within 2 s while the hub holds its POST"; else
-  fail "the orphan of a killed daemon run ends within 2 s while the hub holds its POST"; echo "    uplink pid '$UP'"; fi
-assert_equals "$(ctl after-held)" 0 "and posts no later batch"
-until_true 40 uplink_free || true
-if uplink_free; then pass "and releases uplink.lock"; else fail "and releases uplink.lock"; fi
-ctl release
+HELD=0
+# The hub holds the answer: sending no byte of it (hold), half its status head
+# (stall-headers), or its head and one byte of a ten-byte body (stall-body).
+for fault in hold stall-headers stall-body; do
+  for ending in SIGTERM "a killed daemon run"; do
+    start_run
+    ctl fault events "$fault"
+    backlog "backlog under $fault"
+    HELD=$((HELD + 1))
+    until_true 200 held_count "$HELD" || true
+    if held_count "$HELD"; then pass "$fault: the hub stalls the answer to the first upload of a backlog of three"; else
+      fail "$fault: the hub stalls an upload's answer"; fi
+    UP="$(uplink_pid)"
+    if [[ "$ending" == SIGTERM ]]; then
+      kill "$UP"
+      until_true 20 dead "$UP" || true
+      if dead "$UP"; then pass "$fault, $ending: the uplink ends within a second"; else
+        fail "$fault, $ending: the uplink ends within a second"; fi
+      until_true 60 restarted_after "$UP" || true
+      if restarted_after "$UP"; then pass "$fault, $ending: its lock is free at once (the supervisor's next uplink holds it)"; else
+        fail "$fault, $ending: its lock is free at once"; fi
+      kill "$RUN"
+      set +e; wait "$RUN"; set -e
+    else
+      kill -9 "$RUN"
+      set +e; wait "$RUN" 2>/dev/null; set -e
+      until_true 40 dead "$UP" || true
+      if [[ -n "$UP" ]] && dead "$UP"; then pass "$fault, $ending: the orphan ends within 2 s"; else
+        fail "$fault, $ending: the orphan ends within 2 s"; echo "    uplink pid '$UP'"; fi
+      until_true 40 uplink_free || true
+      if uplink_free; then pass "$fault, $ending: uplink.lock is released"; else fail "$fault, $ending: uplink.lock is released"; fi
+    fi
+    assert_equals "$(ctl after-held)" 0 "$fault, $ending: no later batch of the backlog is posted on that stream"
+    ctl release
+  done
+done
+if [ "$(grep -c "the uplink is ending during a POST" "$DLOG")" -ge 6 ]; then pass "each of the six says it ended during a POST"; else
+  fail "each of the six says it ended during a POST"; grep "ending" "$DLOG" | tail -8; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
