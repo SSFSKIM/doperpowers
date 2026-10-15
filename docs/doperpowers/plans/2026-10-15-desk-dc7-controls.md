@@ -295,10 +295,12 @@ against the local hub; until it lands, the stand-in.
   Date/Author: 2026-10-15, controller.
 
 - Decision: Pre-flight. The hub stand-in for the session plane and the
-  RPC frames extends DC4's `tests/sminos/hub_standin.py` (the DX2 log
-  plane's stand-in) rather than adding a second server; DC3's local hub
+  RPC frames builds on DC4's `tests/sminos/hub_standin.py` (the DX2 log
+  plane's stand-in) from a file of this child's own that imports it, so
+  DC4's still-moving branch merges without conflict; DC3's local hub
   replaces it in the proofs once its M3 lands, as the dispatch announces.
-  Date/Author: 2026-10-15, controller.
+  The default ceiling is read from the user's own settings, never written.
+  Date/Author: 2026-10-15, controller, confirmed by the composite's writer.
 
 ## Surprises & Discoveries
 
