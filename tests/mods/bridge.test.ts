@@ -88,6 +88,8 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
   const posts: { url: string; socketPath?: string; events: Record<string, unknown>[]; release: () => void; fail: () => void }[] = []
   /** The engine's clock (`$.clock.now`), moved by the test. */
   let clockNow = 1_000_000
+  /** While held (`holdClock`), `$.clock.now` waits. */
+  let clockGate: Promise<void> = Promise.resolve()
   /** The mod's polls on the child (GET /requests/…), each held until the test answers it. */
   const polls: { url: string; socketPath?: string; respond: (status: number, body?: unknown) => void; fail: () => void }[] = []
   const timers: { kind: 'after' | 'every'; ms: number; fn: () => void; cancelled: boolean }[] = []
@@ -179,7 +181,10 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
         return { cancel: () => (t.cancelled = true) }
       },
       sleep: async () => undefined,
-      now: async () => clockNow,
+      now: async () => {
+        await clockGate
+        return clockNow
+      },
     },
     ui: { log: (text: string) => logs.push(text) },
     fs: {
@@ -317,6 +322,12 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
   return {
     now: () => clockNow,
     advance: (ms: number) => (clockNow += ms),
+    /** Holds `$.clock.now` until the returned function is called. */
+    holdClock: () => {
+      let release: () => void = () => undefined
+      clockGate = new Promise((resolve) => (release = resolve))
+      return release
+    },
     check,
     permission,
     append,
@@ -1305,6 +1316,21 @@ describe('requests from outside: a permission prompt', () => {
     expect(h.ofType('settled')).toEqual([])
   })
 
+  test("answered at the dialog while the hook reads the clock, after the hooks beneath: still nothing is raised", async () => {
+    const h = harness()
+    await h.ready()
+    await h.check('toolu_1', 'Bash', INPUT)
+    const release = h.holdClock()
+    const answer = h.permission('Bash', INPUT)
+    await h.settle()
+    await h.recorded('toolu_1', 'user_temporary')
+    release()
+    expect(await answer).toEqual({})
+    await h.settle()
+    expect(h.ofType('raised')).toEqual([])
+    expect(h.polls).toEqual([])
+  })
+
   test('a turn that ends with the request unanswered withdraws it, and the poll ends there', async () => {
     const { h, answer, poll } = await raised()
     await h.complete('t1', 'aborted')
@@ -1525,5 +1551,26 @@ describe('requests from outside: questions', () => {
       expect.objectContaining({ request: 'toolu_plugin_9', by: 'terminal' }),
       expect.objectContaining({ request: 'toolu_a1', winner: 'terminal', outcome: 'answered', by: 'terminal' }),
     ])
+  })
+
+  test("an async question's dialog answered in the terminal while its settings hooks still ran: no dialog request, and the question is the terminal's", async () => {
+    const h = harness()
+    await h.ready()
+    onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })
+    await h.check('toolu_plugin_9', 'AskUserQuestion', { questions: [FRUIT] })
+    let beneath: (v: Record<string, unknown>) => void = () => undefined
+    const answer = h.hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
+      h.engine,
+      { hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [FRUIT] }, session_id: SID, transcript_path: '/t', cwd: '/w' },
+      Object.assign(() => new Promise((resolve) => (beneath = resolve)), { signal: new AbortController().signal }),
+    )
+    await h.settle()
+    await h.recorded('toolu_plugin_9', 'user_temporary', 'accept', 'AskUserQuestion')
+    beneath({})
+    expect(await answer).toEqual({})
+    onAskNote({ kind: 'answered', id: 'toolu_a1', dialog: 'toolu_plugin_9' })
+    await h.settle()
+    expect(h.ofType('raised').map((e) => e.request)).toEqual(['toolu_a1'])
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_a1', winner: 'terminal', outcome: 'answered', by: 'terminal' })])
   })
 })

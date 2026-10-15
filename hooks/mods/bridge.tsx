@@ -115,6 +115,8 @@ const POLL_RETRY_MS = 250
 const POLL_RETRIES = 16
 /** Tool checks put to the dialog, kept for their PermissionRequest (and those decided, for a late one); recent settlements, for a late subscriber. */
 const CHECKS_KEPT = 50
+/** Decision records kept for a request raised, or a dialog attributed, after its record came. */
+const RECORDS_KEPT = 200
 const SETTLED_KEPT = 100
 /** A deny that carries no words of its own. */
 const DENIED = 'The human denied this request.'
@@ -250,9 +252,12 @@ type BridgeState = {
   checks: Check[]
   /** Checks whose decision the engine recorded before a PermissionRequest took them (no dialog, or answered at once). */
   decidedChecks: Check[]
-  /** Calls a PermissionRequest hook took and has not raised yet; those of them already decided. */
-  claiming: Set<string>
-  preDecided: Set<string>
+  /**
+   * The engine's recent decision records by call, oldest first: kept until a
+   * request is raised or an async question's dialog is attributed, which may
+   * come after the record (the person answered while the hook still ran).
+   */
+  records: Map<string, { source: string; isAccepted: boolean }>
   /** An async question answered through a dialog whose request had not settled yet: dialog id → question id. */
   askDialogs: Map<string, string>
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
@@ -267,8 +272,7 @@ const fresh = (): BridgeState => ({
   stepBlocks: new Map(),
   checks: [],
   decidedChecks: [],
-  claiming: new Set(),
-  preDecided: new Set(),
+  records: new Map(),
   askDialogs: new Map(),
   requests: new Map(),
   settled: [],
@@ -456,7 +460,7 @@ function forgetLive() {
   state.stepBlocks.clear()
   state.checks = []
   state.decidedChecks = []
-  state.preDecided.clear()
+  state.records.clear()
   state.askDialogs.clear()
   state.requests.clear()
   state.settled = []
@@ -938,8 +942,10 @@ const parsed = (text: string): Record<string, unknown> | undefined => {
 /**
  * The engine recorded the decision on a call (DX4's evidence of who won,
  * tied to the call's id): a PermissionRequest hook's, the person's at the
- * dialog (`user_*`), or neither (its rules or mode, an interrupt). A call
- * not raised yet is taken as decided, so it is never raised.
+ * dialog (`user_*`), or neither (its rules or mode, an interrupt). The
+ * record is kept: a call whose PermissionRequest has not raised it yet is
+ * never raised, and an async question answered through a dialog that was
+ * never raised is attributed by it.
  */
 function decisionRecorded(id: string, source: string, isAccepted: boolean) {
   const at = state.checks.findIndex((c) => c.toolUseId === id)
@@ -949,8 +955,9 @@ function decisionRecorded(id: string, source: string, isAccepted: boolean) {
       state.decidedChecks.shift()
     }
   }
-  if (state.claiming.has(id)) {
-    state.preDecided.add(id)
+  state.records.set(id, { source, isAccepted })
+  if (state.records.size > RECORDS_KEPT) {
+    state.records.delete(state.records.keys().next().value as string)
   }
   const r = state.requests.get(id)
   if (r !== undefined && !r.isAsync) {
@@ -1113,10 +1120,14 @@ export function onAskNote(note: AskNote) {
       return
     }
     const done = state.settled.find((s) => s.request === note.dialog)
+    const record = state.records.get(note.dialog)
     if (done !== undefined) {
       answeredThrough(note.id, { outcome: String(done.outcome), by: String(done.by) })
     } else if (state.requests.has(note.dialog)) {
       state.askDialogs.set(note.dialog, note.id)
+    } else if (record !== undefined && PERSON_SOURCES.has(record.source)) {
+      // Its dialog was answered before it was raised: only the person could have.
+      answeredThrough(note.id, { outcome: 'answered', by: 'terminal' })
     } else {
       answeredThrough(note.id, { outcome: 'withdrawn', by: 'bridge' })
     }
@@ -1540,19 +1551,14 @@ export function registerBridge(on: On) {
       return next(e)
     }
     const id = claimed?.toolUseId ?? `request-${Date.now().toString(36)}-${++state.minted}`
-    state.claiming.add(id)
-    let beneath: Awaited<ReturnType<typeof next>>
-    try {
-      beneath = await next(e)
-    } finally {
-      state.claiming.delete(id)
-    }
-    const isDecided = state.preDecided.delete(id)
-    if (beneath.decision !== undefined || isDecided || state.isEnding) {
+    const beneath = await next(e)
+    const now = await $.clock.now()
+    // Decided after the last await, so a record that came meanwhile is seen:
+    // a call already decided is never raised.
+    if (beneath.decision !== undefined || state.records.has(id) || state.isEnding) {
       return beneath
     }
     const input = capped(e.tool_input)
-    const now = await $.clock.now()
     const r: Request = {
       id,
       tool: e.tool_name,
