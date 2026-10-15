@@ -5,7 +5,8 @@ A project whose .smns names a remote, and no desk hub, keeps its log/ as a
 git working tree of that remote: the MIRROR. A hub project syncs through its
 hub alone (the uplink), never through git: two live transports writing the
 same writer files would bring back the conflicts one writer per file
-removed; its remote is only the log's archive. Every machine writes only files named after itself,
+removed; its remote is only the log's archive, which the one machine the hub
+designates writes from a clone of its own (sminos_archive.py). Every machine writes only files named after itself,
 so integrating the remote never conflicts; `machines/<machine>.json` claims a
 name for one instance (`$SMINOS_HOME/daemon/machine.json`), and a daemon that finds
 its name claimed by another instance refuses to run.
@@ -29,7 +30,9 @@ every project known here, each in the order of §8:
                  `renamed` on a harness rename
   4. deliver     everything owed to a local member, through deliver_next
   5. push        (mirrored projects) commit what the tick appended, push
-  6. derive      once an hour, `derive --all` as a child it does not wait on
+  6. archive     (hub projects with a remote, on the machine the hub
+                 designates) copy the log into the archive clone, push
+  7. derive      once an hour, `derive --all` as a child it does not wait on
 
 `daemon run` loops the tick, and beside it supervises the uplink to the desk
 hub (`daemon uplink`, sminos_uplink.py) as a child process it restarts with
@@ -72,7 +75,7 @@ UPLINK_STOP_GRACE = 3
 # The scripts `daemon run` runs, itself and its uplink child: a change to one
 # ends the loop for a restart on the new code.
 OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
-            "sminos_codes.py")
+            "sminos_codes.py", "sminos_archive.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
@@ -477,8 +480,8 @@ def shared(project):
 def tick(project, all_seats=None):
     """One tick of one project, its duties in §8's order. `all_seats` is the
     seat read the caller shares across projects."""
-    out = {"integrated": False, "reconciled": 0, "published": 0, "delivered": 0, "pushed": False, "to": [],
-           "error": ""}
+    out = {"integrated": False, "reconciled": 0, "published": 0, "delivered": 0, "pushed": False,
+           "archived": False, "to": [], "error": ""}
     errors = []
     record = daemon_record(project)
     if mirrored(project):
@@ -498,6 +501,10 @@ def tick(project, all_seats=None):
             out["pushed"] = sync_out(project)
         except SyncFailed as e:
             errors.append(str(e))
+    if project.hub is not None and project.remote:
+        out["archived"], error = sminos.sibling_module("sminos_archive").duty(project, record)
+        if error:
+            errors.append("archive: %s" % error)
     out["error"] = "; ".join(errors)
     if out["error"] and out["error"] != record.get("error"):
         # Logged when it changes: an unreachable remote is one line, not one a tick.
@@ -520,6 +527,8 @@ def tick_line(project, out):
     bits.append("delivered %d%s" % (out.get("delivered") or 0, (" to " + ", ".join(to)) if to else ""))
     if out.get("pushed"):
         bits.append("pushed")
+    if out.get("archived"):
+        bits.append("archived")
     if out.get("error"):
         bits.append("error: %s" % out["error"])
     return "%s: %s" % (project.name, " · ".join(bits))
@@ -527,7 +536,7 @@ def tick_line(project, out):
 
 def worth_saying(out, before):
     """For the loop's output: a tick that did something, or whose error is new."""
-    return (out["reconciled"] or out["published"] or out["delivered"] or out["pushed"]
+    return (out["reconciled"] or out["published"] or out["delivered"] or out["pushed"] or out["archived"]
             or (out["error"] and out["error"] != before))
 
 

@@ -23,10 +23,13 @@ uplink sends `hello` with its vector and its machine's presence (DX4
 from then on what they append; it answers each heartbeat with `hb-ack`,
 follows `resend`, says each `refused` in daemon.log, and imports what the hub
 sends (sminos_hublog.py: each event's code verified before it enters the
-log, a refused one reported up as `rejected`). A POST the hub does not answer
-200 ends the stream, and the next one redoes the handshake: nothing posted is
-taken as landed without its answer. Frames larger than a frame's bound travel
-as parts, both ways.
+log, a refused one reported up as `rejected`). Every archive period it says
+`hello` again for each project it opened, so the hub's answer — whether this
+machine writes the project's git archive (sminos_archive.py) — is never
+older than a period, even on a stream that never drops. A POST the hub does
+not answer 200 ends the stream, and the next one redoes the handshake:
+nothing posted is taken as landed without its answer. Frames larger than a
+frame's bound travel as parts, both ways.
 """
 
 import fcntl
@@ -44,6 +47,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
+import sminos_archive as archive  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
@@ -416,6 +420,7 @@ class Link:
         self.ack_due = None       # the newest heartbeat's `at`, while unanswered
         self.acked_at = 0.0
         self.next_scan = self.next_upload = 0.0
+        self.next_confirm = 0.0   # when the opened projects are `hello`ed again (sminos_archive)
         self.nudge = daemon.nudged_at()
         self.passed = set()
         self.failing = ""
@@ -463,6 +468,7 @@ class Link:
         for hl in self.logs.values():
             hl.reset()
         self.next_scan = 0.0
+        self.next_confirm = time.time() + archive.archive_every()
         log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
 
     def on_hb(self, frame, _stream):
@@ -555,6 +561,13 @@ class Link:
                         self.cred["org"], ", ".join(self.logs[pid].project.name for pid in gone)))
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
+            every = archive.archive_every()
+            if every > 0 and now >= self.next_confirm:
+                # The hub reads the archive designation at each hello: asked
+                # again, it answers with the designation as it is now.
+                self.next_confirm = now + every
+                if self.opened:
+                    self.post([self.logs[pid].hello() for pid in sorted(self.opened)])
             if now >= self.next_upload or nudged:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):

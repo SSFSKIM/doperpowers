@@ -34,8 +34,10 @@ the hub to send what is missing. Then whatever was appended is delivered at
 once and the tick loop nudged.
 
 Its state between streams lives in the project's home, `uplink.json`: the
-spent positions, and the rejections not yet reported (a report whose POST
-failed is sent again after the next `hello`).
+spent positions, the rejections not yet reported (a report whose POST
+failed is sent again after the next `hello`), and whether the hub's latest
+`have` named this machine the project's archive machine, with when it said
+so (`archive`, `archive_at`: what sminos_archive runs on).
 """
 
 import glob
@@ -44,6 +46,7 @@ import hmac
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
@@ -401,6 +404,14 @@ class HubLog:
         self.archive = frame.get("archive") is True
         self.sent = {w: s for w, s in self.have.items() if self.own(w)}
         self.stuck = set()
+        # The designation as the hub said it now: the tick loop's archive
+        # duty (sminos_archive) runs on it.
+        d = self.state()
+        if d.get("archive") != self.archive:
+            log("the hub says this machine %s the archive of %s" % ("writes" if self.archive else "does not write",
+                                                                   self.project.name))
+        d.update(archive=self.archive, archive_at=time.time())
+        self.save(d)
 
     def on_resend(self, frame):
         writer, start = frame.get("writer"), frame.get("from")
