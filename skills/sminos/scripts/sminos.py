@@ -30,6 +30,10 @@ member too, seat-less, from the first call that reads its project.
     sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
     sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
     sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin)
+    sminos watch    <member> [--json]                     # a session's live stream through its bridge: the
+                   conversation as it streams, subagents labelled (--json: the endpoint's lines)
+    sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
+                   endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
     sminos reply    <seat>                                # latest reply text
@@ -5413,6 +5417,18 @@ def daemon_module():
     return sibling_module("sminos_daemon")
 
 
+def bridge_module():
+    return sibling_module("sminos_bridge")
+
+
+def cmd_bridge(a):
+    bridge_module().cmd_bridge(a)
+
+
+def cmd_watch(a):
+    bridge_module().cmd_watch(a)
+
+
 def tick(project):
     """One daemon tick of one project (§8): integrate, reconcile, publish,
     deliver, push. {"integrated", "reconciled", "published", "delivered",
@@ -5602,6 +5618,15 @@ def build_parser():
         dsub.add_parser(op, add_help=False)
     dm.set_defaults(fn=cmd_daemon)
 
+    br = sub.add_parser("bridge", add_help=False)
+    br.add_argument("--session", default="")
+    br.set_defaults(fn=cmd_bridge)
+
+    wa = sub.add_parser("watch", add_help=False)
+    wa.add_argument("member")
+    wa.add_argument("--json", action="store_true")
+    wa.set_defaults(fn=cmd_watch)
+
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")
     r.set_defaults(fn=cmd_reply)
@@ -5682,6 +5707,11 @@ def main(argv=None):
         return
     if a.cmd == "record":
         run_record()
+        return
+    if a.cmd == "bridge":
+        # A session's own child, started in every session: it reads no
+        # registry, so it runs no migration (which takes the registry's lock).
+        cmd_bridge(a)
         return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":

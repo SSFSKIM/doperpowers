@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+#
+# The bridge's session endpoint (DC2 M1, DX5): `sminos bridge --session <id>`,
+# the child the bridge mod spawns for a session's life, and `sminos watch`, the
+# local client that prints its live stream. A stand-in for the mod (fakemod)
+# spawns the child as the mod does, reads its command lines from stdout and
+# answers each over the socket; the test posts the mod's events itself.
+# Hermetic: HOME and SMINOS_HOME are temporary (SMINOS_HOME short, since a
+# Unix socket's path holds about 100 bytes), and no real session runs.
+# run-sminos-tests.sh runs this file beside its own cases.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SMINOS="$REPO_ROOT/skills/sminos/scripts/sminos"
+
+FAILURES=0
+PASSES=0
+T="$(mktemp -d /tmp/smb.XXXXXX)"
+PIDS=()
+cleanup() {
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
+  # Every child a fakemod started dies with it (its parent is gone); wait for that.
+  for _ in $(seq 1 60); do pgrep -f "bridge --session .*$T" >/dev/null 2>&1 || break; sleep 0.05; done
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+pass() { PASSES=$((PASSES + 1)); echo "  ok   $1"; }
+fail() { FAILURES=$((FAILURES + 1)); echo "  FAIL $1"; }
+assert_equals() {
+  if [[ "$1" == "$2" ]]; then pass "$3"; else
+    fail "$3"; echo "    expected: $2"; echo "    actual:   $1"; fi
+}
+assert_contains() {
+  if grep -Fq -- "$2" <<<"$1"; then pass "$3"; else
+    fail "$3"; echo "    expected to find: $2"; echo "    in: ${1:0:900}"; fi
+}
+assert_not_contains() {
+  if grep -Fq -- "$2" <<<"$1"; then
+    fail "$3"; echo "    expected NOT to find: $2"; echo "    in: ${1:0:900}"
+  else pass "$3"; fi
+}
+assert_rc() { if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3"; echo "    expected rc $1, got $2"; fi; }
+run() { set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e; }
+mode_of() { python3 -c 'import os, sys; print("%04o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
+until_true() { # tries command... — poll every 50 ms
+  local tries="$1"; shift
+  for _ in $(seq 1 "$tries"); do "$@" && return 0; sleep 0.05; done
+  return 1
+}
+
+unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME
+export HOME="$T/home"
+export SMINOS_HOME="$T/s"
+export SMINOS_BRIDGE_RECONNECT=1
+mkdir -p "$HOME/.claude/sessions"
+mkdir -m 700 "$SMINOS_HOME"
+SID=5b000001-0000-4000-8000-00000000005b
+SOCK="$SMINOS_HOME/bridge/$SID.sock"
+
+# The test's own hands on the endpoint: post the mod's events, send a command,
+# read a route, leave a stale socket file behind; and the mod's stand-in.
+cat > "$T/ctl.py" <<'PY'
+import http.client, json, os, socket, subprocess, sys, threading, time
+
+class Conn(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("bridge", timeout=10)
+        self.path = path
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(10)
+        self.sock.connect(self.path)
+
+def request(path, method, url, body=None):
+    c = Conn(path)
+    c.request(method, url, body=body, headers={"content-type": "application/json"})
+    r = c.getresponse()
+    return r.status, r.read().decode()
+
+op = sys.argv[1]
+if op == "post":            # sock events-json
+    print(request(sys.argv[2], "POST", "/events", sys.argv[3])[0])
+elif op == "get":           # sock url
+    status, text = request(sys.argv[2], "GET", sys.argv[3])
+    print(status, text)
+elif op == "cmd":           # sock body [wait]
+    url = "/command" + ("?wait=%s" % sys.argv[4] if len(sys.argv) > 4 else "")
+    status, text = request(sys.argv[2], "POST", url, sys.argv[3])
+    print(status, text)
+elif op == "stale":         # path: a socket file nobody listens on
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(sys.argv[2])
+    s.close()
+elif op == "fakemod":       # sminos session lines-file
+    # Spawns the child as the mod does and answers its command lines: `ping`
+    # with a pong, anything else as an unknown op. Lives until killed; the
+    # child, whose parent it is, follows it.
+    sminos, session, out = sys.argv[2], sys.argv[3], sys.argv[4]
+    child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE, text=True)
+    sock = None
+    with open(out, "a") as f:
+        for line in child.stdout:
+            f.write(line)
+            f.flush()
+            msg = json.loads(line)
+            if msg.get("op") == "hello":
+                sock = msg["socket"]
+                continue
+            if "id" not in msg:
+                continue
+            if msg["op"] == "ping":
+                ev = {"type": "result", "id": msg["id"], "op": "ping", "ok": True, "result": {"pong": True}}
+            else:
+                ev = {"type": "result", "id": msg["id"], "op": msg["op"], "ok": False, "error": "unknown op: %s" % msg["op"]}
+            request(sock, "POST", "/events", json.dumps([ev]))
+    child.wait()
+PY
+ctl() { python3 "$T/ctl.py" "$@"; }
+fakemod() { # session lines-file → starts the stand-in, which starts the child
+  python3 "$T/ctl.py" fakemod "$SMINOS" "$1" "$2" &
+  FAKEMOD=$!
+  PIDS+=("$FAKEMOD")
+}
+answers() { ctl get "$1" /status >/dev/null 2>&1; }
+child_pid() { ctl get "$1" /status | python3 -c 'import json, sys; print(json.loads(sys.stdin.read().split(" ", 1)[1])["pid"])'; }
+nth_line() { sed -n "$2p" "$1"; }
+field_of() { # json-text dotted.path
+  python3 -c 'import json, sys
+v = json.loads(sys.argv[1])
+for k in sys.argv[2].split("."):
+    v = v[int(k)] if isinstance(v, list) else v.get(k)
+print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
+}
+watch_json() { # session out-file → a background `watch --json`
+  "$SMINOS" watch "$1" --json > "$2" 2>&1 &
+  WATCHER=$!
+  PIDS+=("$WATCHER")
+}
+lines_in() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
+has_lines() { [ "$(lines_in "$1")" -ge "$2" ]; }
+
+echo "the bridge endpoint:"
+
+run "$SMINOS" bridge
+assert_rc 2 "$RC" "bridge without --session is a usage error"
+run "$SMINOS" bridge --session not-a-session
+assert_rc 2 "$RC" "bridge with a session that is no session id is a usage error"
+assert_contains "$OUT" "not a session id" "saying so"
+
+# The child serves the session's endpoint once its first line, hello, is out.
+fakemod "$SID" "$T/lines-a"
+until_true 100 answers "$SOCK" || true
+assert_equals "$(answers "$SOCK" && echo yes || echo no)" "yes" "the child answers on \$SMINOS_HOME/bridge/<session>.sock"
+assert_equals "$(mode_of "$SMINOS_HOME/bridge")" "0700" "the bridge directory is owner-only"
+assert_equals "$(mode_of "$SOCK")" "0600" "and so is the socket"
+HELLO="$(nth_line "$T/lines-a" 1)"
+assert_equals "$(field_of "$HELLO" op)" "hello" "the child's first line is hello"
+assert_equals "$(field_of "$HELLO" session)" "$SID" "naming the session"
+assert_equals "$(field_of "$HELLO" socket)" "$SOCK" "and the socket it serves"
+assert_equals "$(field_of "$HELLO" protocol)" "1" "and the protocol version"
+run ctl get "$SOCK" /status
+assert_contains "$OUT" "200 " "status answers 200"
+assert_equals "$(field_of "${OUT#200 }" session)" "$SID" "naming the session"
+assert_equals "$(field_of "${OUT#200 }" protocol)" "1" "and the protocol"
+assert_equals "$(ls -A "$SMINOS_HOME")" "bridge" "the child touches nothing else under SMINOS_HOME (no migration)"
+
+# Commands: a line on the child's stdout, the mod's result relayed back.
+run ctl cmd "$SOCK" '{"op":"ping"}' 3000
+assert_contains "$OUT" "200 " "a command waited for answers 200"
+assert_equals "$(field_of "${OUT#200 }" ok)" "true" "with the mod's result"
+assert_equals "$(field_of "${OUT#200 }" result.pong)" "true" "carrying what the mod answered"
+CID="$(field_of "${OUT#200 }" id)"
+assert_contains "$(cat "$T/lines-a")" "\"id\": \"$CID\", \"op\": \"ping\"" "the command reached the mod as one stdout line, id first"
+run ctl cmd "$SOCK" '{"op":"levitate","height":3}' 3000
+assert_equals "$(field_of "${OUT#200 }" ok)" "false" "an op the mod does not know comes back refused"
+assert_contains "$(cat "$T/lines-a")" '"height": 3' "the command's arguments ride the line"
+run ctl cmd "$SOCK" '{"op":"ping"}' 0
+assert_contains "$OUT" "202 " "without a wait, a command is accepted at once (202)"
+assert_contains "$OUT" '"id"' "with its id"
+run ctl cmd "$SOCK" '{"nop":1}'
+assert_contains "$OUT" "400 " "a command without an op is refused (400)"
+run ctl cmd "$SOCK" '{"op":"hello"}'
+assert_contains "$OUT" "400 " "and so is one that would pass for the child's own hello"
+run ctl get "$SOCK" /nowhere
+assert_contains "$OUT" "404 " "an unknown route is 404"
+
+# The stream: a snapshot, then every event the mod posts, numbered from 1.
+watch_json "$SID" "$T/w1"
+until_true 100 has_lines "$T/w1" 1 || true
+SNAP="$(nth_line "$T/w1" 1)"
+assert_equals "$(field_of "$SNAP" type)" "snapshot" "a subscription opens with a snapshot"
+assert_equals "$(field_of "$SNAP" session)" "$SID" "of this session"
+TURN=11111111-aaaa-4aaa-8aaa-111111111111
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$TURN'","agentId":null,"text":"build it"},
+ {"type":"step","phase":"start","turnId":"'$TURN'","agentId":null,"step":0,"model":"m"},
+ {"type":"chunk","turnId":"'$TURN'","agentId":null,"step":0,"chunkIndex":0,"chunk":{"kind":"text","index":0,"text":"Hel"}},
+ {"type":"chunk","turnId":"'$TURN'","agentId":null,"step":0,"chunkIndex":1,"chunk":{"kind":"text","index":0,"text":"lo"}}]' >/dev/null
+ctl post "$SOCK" '[{"type":"agent","phase":"spawn","agentId":"a7","subagentType":"general-purpose","description":"scout","background":true},
+ {"type":"step","phase":"start","turnId":"t-sub","agentId":"a7","step":0,"model":"m"},
+ {"type":"chunk","turnId":"t-sub","agentId":"a7","step":0,"chunkIndex":0,"chunk":{"kind":"text","index":0,"text":"sub says"}}]' >/dev/null
+until_true 100 has_lines "$T/w1" 8 || true
+assert_equals "$(field_of "$(nth_line "$T/w1" 2)" n)" "1" "live messages are numbered from 1"
+assert_equals "$(field_of "$(nth_line "$T/w1" 2)" type)" "turn" "in the order the mod posted them"
+CH="$(nth_line "$T/w1" 5)"
+assert_equals "$(field_of "$CH" n)" "4" "each numbered one past the last"
+assert_equals "$(field_of "$CH" chunk.text)" "lo" "a chunk carries the engine's chunk verbatim"
+assert_equals "$(field_of "$CH" chunkIndex)" "1" "its index in its message"
+assert_equals "$(field_of "$CH" turnId)" "$TURN" "and its turn"
+SUBCH="$(nth_line "$T/w1" 8)"
+assert_equals "$(field_of "$SUBCH" agentId)" "a7" "a subagent's chunk carries its agentId"
+
+# A subscriber that arrives mid-message gets the partial text and its watermark.
+watch_json "$SID" "$T/w2"
+until_true 100 has_lines "$T/w2" 1 || true
+SNAP2="$(nth_line "$T/w2" 1)"
+MAIN="$(python3 -c 'import json, sys
+s = json.loads(sys.argv[1])
+print(json.dumps([m for m in s["streaming"] if m["agentId"] is None][0]))' "$SNAP2")"
+assert_equals "$(field_of "$MAIN" text)" "Hello" "the snapshot carries a streaming message's partial text"
+assert_equals "$(field_of "$MAIN" upTo)" "1" "and upTo, the last chunk that text includes"
+assert_equals "$(field_of "$MAIN" step)" "0" "identified by turn, agent and step"
+assert_equals "$(field_of "$SNAP2" turns.0.turnId)" "$TURN" "the snapshot lists the open turns"
+assert_contains "$(field_of "$SNAP2" agents)" '"a7"' "and the subagents"
+assert_equals "$(field_of "$SNAP2" pending)" "[]" "and the pending requests (none yet)"
+ctl post "$SOCK" '[{"type":"chunk","turnId":"'$TURN'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":0,"text":"!"}},
+ {"type":"step","phase":"end","turnId":"'$TURN'","agentId":null,"step":0,"stopReason":"end_turn"},
+ {"type":"turn","phase":"complete","turnId":"'$TURN'","agentId":null,"reason":"answer"}]' >/dev/null
+until_true 100 has_lines "$T/w2" 4 || true
+assert_equals "$(field_of "$(nth_line "$T/w2" 2)" chunkIndex)" "2" "after it, the late subscriber reads on from the next chunk"
+watch_json "$SID" "$T/w3"
+until_true 100 has_lines "$T/w3" 1 || true
+assert_equals "$(field_of "$(nth_line "$T/w3" 1)" turns)" "[]" "a completed turn leaves the snapshot"
+assert_not_contains "$(field_of "$(nth_line "$T/w3" 1)" streaming)" "$TURN" "and so do its messages"
+
+# The human view: the conversation as it streams, subagents labelled.
+"$SMINOS" watch "$SID" > "$T/h1" 2>&1 &
+PIDS+=("$!")
+until_true 100 grep -q "watching" "$T/h1" || true
+T2=22222222-aaaa-4aaa-8aaa-222222222222
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T2'","agentId":null,"text":"tidy the docs\nplease"},
+ {"type":"step","phase":"start","turnId":"'$T2'","agentId":null,"step":0,"model":"m"},
+ {"type":"chunk","turnId":"'$T2'","agentId":null,"step":0,"chunkIndex":0,"chunk":{"kind":"text","index":0,"text":"On it"}},
+ {"type":"tool","phase":"call","toolUseId":"tu1","tool":"Bash","agentId":null,"input":{"command":"ls docs"}},
+ {"type":"chunk","turnId":"t-sub","agentId":"a7","step":0,"chunkIndex":1,"chunk":{"kind":"text","index":0,"text":" more"}},
+ {"type":"tool","phase":"result","toolUseId":"tu1","tool":"Bash","agentId":null,"isError":true,"text":"ls: docs: No such file"},
+ {"type":"turn","phase":"complete","turnId":"'$T2'","agentId":null,"reason":"answer"}]' >/dev/null
+until_true 100 grep -q "turn ended" "$T/h1" || true
+HV="$(cat "$T/h1")"
+assert_contains "$HV" "» tidy the docs" "the human view prints the prompt a turn starts with"
+assert_contains "$HV" "[main] On it" "the main loop's text as it streams"
+assert_contains "$HV" "Bash ls docs" "a tool call with what it runs"
+assert_contains "$HV" "[general-purpose a7]  more" "a subagent's text under its own label"
+assert_contains "$HV" "ls: docs: No such file" "a failed tool's error"
+assert_not_contains "$HV" '"type"' "and no raw JSON"
+
+# What the session started as stays in the snapshot past its end.
+ctl post "$SOCK" '[{"type":"session","phase":"start","session":"'$SID'","cwd":"/w","model":"m"},
+ {"type":"session","phase":"end","reason":"clear"}]' >/dev/null
+watch_json "$SID" "$T/w6"
+until_true 100 has_lines "$T/w6" 1 || true
+assert_equals "$(field_of "$(nth_line "$T/w6" 1)" sessionInfo.cwd)" "/w" "the snapshot carries what the session started as"
+assert_equals "$(field_of "$(nth_line "$T/w6" 1)" sessionInfo.ended)" "clear" "and why it ended, once it has"
+
+# Ending: the child follows its parent, and a watcher says the bridge ended.
+kill "$FAKEMOD"
+wait "$FAKEMOD" 2>/dev/null || true
+until_true 100 test ! -e "$SOCK" || true
+assert_equals "$([ -e "$SOCK" ] && echo present || echo gone)" "gone" "the child exits when the session (its parent) is gone, removing its socket"
+set +e; wait "$WATCHER"; WRC=$?; set -e
+assert_rc 1 "$WRC" "a watcher whose bridge ended exits 1"
+assert_contains "$(cat "$T/w6")" "the bridge ended" "saying so"
+
+# No bridge, and a stale socket: said, non-zero, and the stale file removed.
+run "$SMINOS" watch "$SID"
+assert_rc 4 "$RC" "watch on a session with no bridge exits 4"
+assert_contains "$OUT" "no bridge" "saying it has no bridge"
+ctl stale "$SOCK"
+run "$SMINOS" watch "$SID" --json
+assert_rc 4 "$RC" "a socket file nobody answers is no bridge either"
+assert_equals "$([ -e "$SOCK" ] && echo present || echo gone)" "gone" "whoever finds a stale socket removes it"
+
+# A stale socket left by a dead child is replaced by the next child.
+ctl stale "$SOCK"
+fakemod "$SID" "$T/lines-b"
+until_true 100 answers "$SOCK" || true
+assert_equals "$(answers "$SOCK" && echo yes || echo no)" "yes" "a new child replaces a stale socket"
+FIRST="$(child_pid "$SOCK")"
+
+# A newer child for the same session takes the endpoint over (a module reload
+# spawns one before the old is gone); the older exits without removing it.
+watch_json "$SID" "$T/w4"
+until_true 100 has_lines "$T/w4" 1 || true
+fakemod "$SID" "$T/lines-c"
+until_true 100 bash -c '[ "$(python3 "$1/ctl.py" get "$2" /status 2>/dev/null | python3 -c "import json, sys; print(json.loads(sys.stdin.read().split(\" \", 1)[1])[\"pid\"])" 2>/dev/null)" != "$3" ]' _ "$T" "$SOCK" "$FIRST" || true
+SECOND="$(child_pid "$SOCK")"
+assert_equals "$([ "$SECOND" != "$FIRST" ] && echo replaced || echo same)" "replaced" "a newer child for the session takes the endpoint over"
+until_true 100 bash -c '! kill -0 "$1" 2>/dev/null' _ "$FIRST" || true
+assert_equals "$(kill -0 "$FIRST" 2>/dev/null && echo alive || echo exited)" "exited" "the superseded child exits"
+assert_equals "$(answers "$SOCK" && echo yes || echo no)" "yes" "leaving the newer child's socket in place"
+until_true 100 grep -q "reconnected" "$T/w4" || true
+assert_contains "$(cat "$T/w4")" "reconnected" "a watcher follows the endpoint to the newer child"
+assert_equals "$(grep -c '"type": "snapshot"' "$T/w4")" "2" "taking a fresh snapshot there"
+
+# A member by name: resolved in the working directory's project.
+R="$T/repo"
+mkdir -p "$R"
+git -c init.defaultBranch=main init -q "$R"
+(cd "$R" && "$SMINOS" project init --name bridgedemo >/dev/null)
+printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$$" "$SID" "$R" > "$HOME/.claude/sessions/rover.json"
+OTHER=5c000002-0000-4000-8000-00000000005c
+printf '{"pid":%s,"sessionId":"%s","name":"idler","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$$" "$OTHER" "$R" > "$HOME/.claude/sessions/idler.json"
+(cd "$R" && exec "$SMINOS" watch rover --json > "$T/w5" 2>&1) &
+PIDS+=("$!")
+until_true 100 has_lines "$T/w5" 1 || true
+assert_equals "$(field_of "$(nth_line "$T/w5" 1)" session)" "$SID" "watch resolves a member by its alias"
+set +e; OUT="$(cd "$R" && "$SMINOS" watch idler 2>&1)"; RC=$?; set -e
+assert_rc 4 "$RC" "a member with no bridge exits 4"
+assert_contains "$OUT" "idler has no bridge" "naming the member"
+set +e; OUT="$(cd "$R" && "$SMINOS" watch nobody 2>&1)"; RC=$?; set -e
+assert_rc 4 "$RC" "an unknown member exits 4"
+
+# The endpoint's path must fit a Unix socket's: a long SMINOS_HOME is refused.
+LONGHOME="$T/$(printf 'x%.0s' $(seq 1 80))"
+mkdir -p "$LONGHOME"
+run env SMINOS_HOME="$LONGHOME" "$SMINOS" bridge --session "$SID"
+assert_rc 1 "$RC" "an endpoint path too long for a Unix socket fails the child"
+assert_contains "$OUT" "too long" "saying why"
+
+echo
+if [ "$FAILURES" -eq 0 ]; then
+  echo "all $PASSES bridge assertions passed"
+else
+  echo "$FAILURES of $((PASSES + FAILURES)) bridge assertions FAILED"
+  exit 1
+fi

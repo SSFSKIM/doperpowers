@@ -4997,6 +4997,11 @@ assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"
 unset STUB_COUNTER
 
+# The bridge's session endpoint has a file of its own (short socket paths, a
+# stand-in for the mod); its assertions count here as one.
+echo
+if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES assertions passed"
