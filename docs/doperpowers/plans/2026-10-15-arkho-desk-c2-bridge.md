@@ -22,7 +22,10 @@
   2026-10-15 (`56619f3d`, fixes `75faba58`, `7842ae4e`). Carried to M4's
   walk: `send --wait` to a bridged seat, model and compact on a bridged
   `--bg` job, and a foreground subagent's Bash under interrupt.
-- [ ] M3 — Requests from outside and their settlement (DC2.G2, G3)
+- [x] M3 — Requests from outside and their settlement (DC2.G2, G3) —
+  reviewed clean 2026-10-15 (`3a33efcd`, fixes `10f913d5`, `4b13cb9e`).
+  Carried to M4's walk: an async question's `[ answer ]` pressed in the
+  terminal (needs a mouse press; harness-covered).
 - [ ] M4 — Live export, the acceptance walk, docs, version (DC2.G4)
 
 ## Constraints that bind every milestone
@@ -508,6 +511,84 @@ straight to the inbox frame.
 The `/requests/…` routes, the `raised` and `settled` events, and the snapshot's `pending`
 and `settled` stand as M1 reserved them.
 
+#### M3 extension (as reviewed clean; rows changed by its fix waves marked [fw1]/[fw2])
+
+Every DX5 row M3 built or changed, as it should now read. Rows not listed stand as M1
+and M2 left them. Changed rows are marked **[M3]**; rows fix wave 1 changed are also marked **[fw1]**.
+
+##### Parties
+
+- **Local clients**: the CLI (`watch`; `steer`, `interrupt`, `model`, `compact`;
+  **`decide`, `answer`**; the log's delivery) and the daemon (DC7). **[M3]**
+
+##### Routes
+
+| Route | Built | Body | Answer |
+| --- | --- | --- | --- |
+| `GET /requests` | M3 **[M3]** | — | 200 `{pending: [<raised>…], settled: [<settlement>…]}` (the snapshot's two lists) |
+| `GET /requests/<request>` | M3 **[M3]** | — | 200 the pending request's `raised` fields plus `session` (DC7's digest check); 404 `{error}` when not pending; 410 `{error: "settled", settled}` once settled |
+| `GET /requests/<request>/wait?ms=` | M3 **[M3]** **[fw1]** (the mod's) | — | Held up to `min(ms, 20000)`. 200 `{decision: {behavior, message?, updatedInput?}, by}`: a client's decision, handed out once. 410 `{reason: "terminal"}`: the terminal answered it (the session record left `waiting`); this only ends the poll and closes the request to new decisions, and settles nothing. 410 `{reason: "settled", settled}`: settled. 204: nothing yet (an unknown request is held too, since its `raised` may still be in flight). **[fw1]** `watch=1` is gone: once its hook stops polling, nothing watches a request; the engine's record settles it |
+| `POST /requests/<request>/decision` | M3 **[M3]** | `{behavior: "allow"\|"deny", message?, updatedInput?: {answers: {<question>: <answer>}}, by}`. `by` is `cli` or a member id (`terminal` and `bridge` are reserved). `updatedInput` only for a question, whose allow requires `answers` keyed by its questions. An async question cannot be denied | 200 `{accepted: true, request}`: the settlement follows on the stream. 400 `{error}`: malformed or not allowed. 404: not pending. 409 `{error: "already settled", settled}`. 409 `{error: "already answered by <by>; …"}`. 409 `{error: "the window … closed; the terminal answers it", terminalOnly: true}`: past a background deadline minus 200 ms. 409 `{error: "the terminal answered it; …"}`. For an async question, the child relays it as op `answer` (wait 5 s); the mod's refusal is a 409 carrying its error |
+
+##### The child's stdout: lines for the mod
+
+| Op | Built | Arguments | Result |
+| --- | --- | --- | --- |
+| `answer` | M3 **[M3]** | `{request, answers: {<question>: <answer>}, by}`: an async question's answer, relayed from `POST …/decision` | `{answered: true}` once the ask mod took it, which delivers it as tool-result context or as a plugin prompt when the session is idle; `ok: false` with the ask mod's reason otherwise (not pending, already answered, its dialog is up, not serving) |
+
+##### Events
+
+| `type` / `phase` | Built | Fields |
+| --- | --- | --- |
+| `raised` | M3 **[M3]** (was reserved) | `request` (the call's tool-use id; `toolu_plugin_…` for the ask mod's dialog; `request-<base36>-<n>` for a call no check named), `tool`, `input` (strings capped, fw1), `agentId`, `deadline?` (epoch ms, only for a background subagent: raise + 3000), `async?: true` (an ask mod async question, tool `mcp__doperpowers__AskUserQuestion`), `truncated?`. DX4's pending request. Raised only when the settings hooks beneath did not decide. A person-only prompt raises nothing |
+| `settled` | M3 **[M3]** (was reserved), **[fw1]** | `request, winner, outcome, by`. `outcome` ∈ `allow \| deny \| answered \| withdrawn`. `winner` ∈ `terminal \| other \| web`. `by` is `terminal` when the terminal's answer was used, `cli` when the CLI's was (winner `other`), the member id when the web's was (winner `web`), and `bridge` for `withdrawn` (winner `other`). A passed deadline settles nothing: the request stays pending, answerable only in the terminal, until the terminal's answer settles it as `terminal` with its real outcome. Exactly one per `raised`. **[fw1] Evidence, all tied to the call's own id:** (1) the engine's `tool_decision` record for the call, which arrives at decision time: source `hook` with the bridge's handed-out decision of the same behavior means the decider; `user_temporary`, `user_permanent` or `user_reject` means the terminal, with the record's real outcome (accept is `allow`/`answered`, reject is `deny`); anything else (`user_abort`, `config`, a hook's decision the bridge did not hand out) means `withdrawn` by `bridge`. A request the bridge's interrupt aborted is `withdrawn` whatever the record says. (2) With no record within 1 s of a real call's result row, the call's transcript (its subagent's own for a subagent) once the result row is in it: a `hook_permission_decision` mark carrying the call's `toolUseID` means the hook's answer was used (then as (1) with source `hook`); none means the terminal's, with the outcome the result shows. (3) Neither available (the ask mod's dialog keeps no rows; the transcript unreadable or the result never written within about 2 s): `withdrawn` by `bridge`. A turn's end and the session's end withdraw as before. An async question answered through a dialog a press opened settles with that dialog's request: `answered` by its `by` (or `withdrawn` when the dialog's was) |
+| `block-row` | M3 **[M3]** | `uuid, turnId, agentId, step, index`: the transcript row `uuid` holds block `index` of that message. Posted from `session.append` for each response row, paired by the row's block type and the order of the step's block starts (a tool row by its call id), never by position. The child removes the block from `streaming` under the lock; later chunks of that block are ignored. A row whose block never streamed (a server tool) names none |
+| `chunk` | M1, **[M3]** | Unchanged on the wire. The child now folds each chunk into its **block** (`chunk.index`) |
+| `resync` | M1 fw1, M2, **[M3]**, **[fw1]** | `turns, streaming` (per block, as the snapshot's, **[fw1]** each entry also carrying `settled: [<index>…]`, the blocks a `block-row` settled), `agents, override, delivered`, **`pending`** (each `raised`'s fields with `t`), **`settled`** (recent settlements). The child replaces its pending set with `pending` (keeping a request's decided/closed state) and merges `settled` with its own. **[fw1]** The child keeps an entry's `settled` blocks out of the message and ignores their late chunks, and a block it saw settled itself stays settled across the resync, even when the copy does not name it (the snapshot's `streaming` entry shape is unchanged: `settled` is never shown) |
+
+**The mod's evidence [fw1].** The mod hooks `telemetry.log` (`{to: "collector"}`) and
+reads the engine's `tool_decision` records: `attributes.tool_use_id`, `source`, `decision`.
+The engine raises them to plugins whether or not an OTel collector is configured. This
+was confirmed live on 2.1.300, including with `DISABLE_TELEMETRY=1` and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` both set, so no machine yet known runs the
+transcript fallback. Should a release stop raising them, the fallback (2) above runs for
+real calls, and the ask mod's dialogs settle `withdrawn` (3). DC7 and the web will see
+that difference. The live check pins the records.
+
+**Posting [M3].** The mod's posts all begin in one poster loop started at
+`session.start`. Events emitted inside any hook are queued and the loop is woken. A post
+begun inside another hook's dispatch would be aborted with it (an Esc, an interrupt).
+Order, batching (≤ 500) and one post in flight are unchanged.
+
+##### Subscription (`GET /events`)
+
+- **Line 1, the snapshot** **[M3]**:
+  - `"streaming": [{turnId, agentId, step, model?, upTo, blocks: [{index, kind, text, upTo, id?, name?}]}]`.
+    One entry per message still streaming. `blocks` are its blocks with no
+    `block-row` yet, in index order.
+    - `kind` is `text`, `thinking` or `tool`.
+    - `text` is the block's partial text (for a tool, its streamed argument JSON;
+      `id` and `name` are the call's).
+    - A block's `upTo` is the last chunk folded into it.
+    - The message's `upTo` is the last chunk of the message applied, and is the fw1
+      continuity check: a chunk that does not follow it takes the message out until
+      the next `resync`.
+  - `"pending": [<raised fields>…]`: the requests pending now.
+  - `"settled": [{request, winner, outcome, by, t}…]`: the last 100 settlements, so a
+    subscriber that arrives after a request settled sees it settled (G3's fourth case),
+    and a late answer is refused as already settled.
+- `sminos watch` prints a raised request as `· [<loop>] permission: <tool> <summary> — request <id>`
+  (or `question: …` with its options, `async question: …`, and ", answerable from outside
+  until HH:MM:SS" for a window), its settlement as `· request <id> settled: <outcome> (<by>)`, and the
+  snapshot's pending requests and per-block text.
+
+##### The verbs (built, M3) **[M3]**
+
+| Verb | Bridged | No bridge | Exit |
+| --- | --- | --- | --- |
+| `sminos decide <member> <request> allow\|deny [--message M]` | Subscribes and finds the request in the snapshot (by exact id or a unique prefix). Then `POST …/decision` `{behavior, message?, by: "cli"}`, then waits up to 30 s for its `settled`. Prints "<member>: request <id> settled from here: <outcome>" | exit 4 "no bridge" | 0 the engine used this answer; 1 already settled (snapshot or 409), not pending, window closed, terminal answered, another side's answer used (naming it), or no settlement; 2 a 400 |
+| `sminos answer <member> <request> <answer>…` | As `decide`, with `allow` and `updatedInput.answers`: one answer per question, in order. An answer is an option's number or label (any case), a multi-select's labels comma-separated, or free text | exit 4 | as `decide`; 2 also for a count that does not match the questions, or a request that asks no question |
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
@@ -727,6 +808,52 @@ and `settled` stand as M1 reserved them.
   and reports its outcome as `compact` events; `sminos compact` waits on a
   fixed 300 s deadline for a started one.
   Date/Author: 2026-10-15, M2 executor.
+- Decision (M3): Request identity. A request's id is its call's
+  `tool_use_id`, matched from the bridge's `tool.check` (the
+  PermissionRequest input carries none); every PermissionRequest takes its
+  check whether or not anything is raised. The ask mod's blocking question
+  has the engine's `toolu_plugin_…` id; a request no check names gets a
+  synthetic `request-<base36>-<n>`.
+  Date/Author: 2026-10-15, M3 executor, check consumption after review.
+- Decision (M3): Raised after the settings hooks beneath, not before (DC1
+  suggested before): a request a settings hook then decided would need a
+  fourth `by`. Cost: up to about 0.4 s before the web sees it. Confirmed by
+  the composite's writer. The raise-or-skip decision is made after the
+  hook's last await.
+  Date/Author: 2026-10-15, M3 executor; confirmed by the composite's writer.
+- Decision (M3, after review): Settlement names the winner from the
+  engine's own exact-id evidence, never a guess. Primary: the OTel
+  `tool_decision` record the engine raises to a mod's `telemetry.log` hook
+  at decision time (~0.1–0.2 s), carrying `tool_use_id`, `decision` and
+  `source` — `hook` with the bridge's decision handed out: the decider
+  wins; `user_*`: the terminal wins with its real outcome, except
+  `user_abort`, which is `withdrawn` by `bridge`; `hook` with none of ours
+  handed out (a mod above decided): `withdrawn`. Fallback for a real call
+  with no record: the transcript's `hook_permission_decision` mark by
+  `toolUseID` at the call's result (hook won) or its absence (terminal
+  won). Only where neither exists is a request `withdrawn` by `bridge`.
+  Records are kept by call id (last 200) until a raise or an attribution
+  has used them. A live witness mod pins the record. It still arrives with
+  `DISABLE_TELEMETRY` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set.
+  Rejected: the 1.5 s grace and answer comparison of M3's first build,
+  which could credit the wrong side.
+  Date/Author: 2026-10-15, controller with M3 executor, from M3's review.
+- Decision (M3): Async questions from the ask mod are raised with `async:
+  true`, cannot be denied, settle `answered` or `withdrawn` (when the ask
+  mod forgets them; a turn's end does not withdraw them), and an answer
+  given through the dialog an async ask opened is credited to whoever
+  answered that dialog. A decision may carry `updatedInput` only as a
+  question's answers; `by: terminal` and `by: bridge` are reserved (400).
+  A decision within 200 ms of a background request's deadline gets 409
+  `{terminalOnly: true}`. The snapshot keeps the last 100 settlements; the
+  resync carries `pending`, `settled`, and each streaming message's settled
+  block indexes, so a resync never resurrects a settled block.
+  Date/Author: 2026-10-15, M3 executor.
+- Decision (M3): The mod posts to the child only from a loop started at
+  `session.start`: a `$.http.fetch` begun inside a hook's dispatch dies when
+  that hook is aborted. Pinned by the live check (no gaps across an
+  interrupt).
+  Date/Author: 2026-10-15, M3 executor.
 
 ## Surprises & Discoveries
 
@@ -755,6 +882,19 @@ and `settled` stand as M1 reserved them.
 - (M2) A supervisor under a temporary config needs
   `CLAUDE_CODE_DAEMON_COLD_START=transient` so it does not offer to install
   a service; `claude daemon stop --any` under that config stops it.
+- (M3) The `hook_permission_decision` mark is written only with the call's
+  result (+20.24 s on a 20 s call), but the engine's `tool_decision`
+  telemetry record reaches a mod's `telemetry.log` hook at decision time,
+  for permission dialogs and the ask mod's question alike.
+- (M3) A `$.http.fetch` begun inside a hook's dispatch is aborted with that
+  dispatch (Esc, interrupt), even through a `$` captured earlier.
+- (M3) In three live runs the nth response row of a step was block n every
+  time; the bridge still pairs rows by kind and start order.
+- (M3) A `--bg` job starts in permission mode `auto` (2.1.300); a plain
+  Bash call raises nothing there. Requests come from a `--bg` job only in a
+  prompting mode or for calls `auto` escalates.
+- (M3) A background subagent's dialog is drawn only once the hook returns,
+  as DC1 found; with the 3 s window it appeared just after the deadline.
 - (M1) Live, the model again ran a "foreground" Agent call in the
   background (as in DC1); subagent chunks streamed with their `agentId`
   either way.
