@@ -313,6 +313,15 @@ type BridgeState = {
   cut: Map<string, string>
   /** The loops this module saw from their first row (as `cut` keys them): no seed, nothing held back. */
   freshLoops: Set<string>
+  /**
+   * Whether a main turn may be running unseen: a module loaded into a session
+   * that had its conversation (a reload, a resume) knows neither, until a
+   * main turn starts or completes, its next request names it, or the
+   * session's engine record says idle.
+   */
+  isTurnUnknown: boolean
+  /** The session's engine record (`<config>/sessions/<pid>.json`), from the child's hello. */
+  record?: string
   /** The ask tool's calls and results on the main loop, by call, until both rows of an async ask are kept (`export`). */
   asks: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
@@ -331,6 +340,7 @@ const fresh = (): BridgeState => ({
   askDialogs: new Map(),
   cut: new Map(),
   freshLoops: new Set(),
+  isTurnUnknown: false,
   asks: new Map(),
   requests: new Map(),
   settled: [],
@@ -372,7 +382,12 @@ export function splitLines(pending: string, text: string): { lines: string[]; re
 
 /** Where the session stands, for a command's answer and the heartbeat. */
 function turnState() {
-  return { mainTurn: state.mainTurn ?? null, isStreaming: state.steps > 0, tools: [...state.calls.values()].map((c) => c.tool) }
+  return {
+    mainTurn: state.mainTurn ?? null,
+    ...(state.isTurnUnknown && { isTurnUnknown: true }),
+    isStreaming: state.steps > 0,
+    tools: [...state.calls.values()].map((c) => c.tool),
+  }
 }
 
 /**
@@ -527,6 +542,8 @@ function forgetLive() {
   state.records.clear()
   state.askDialogs.clear()
   state.cut.clear()
+  // A /clear comes between turns: the new session's main loop is idle.
+  state.isTurnUnknown = false
   state.asks.clear()
   state.requests.clear()
   state.settled = []
@@ -686,15 +703,40 @@ function retire() {
  */
 function recoverMainTurn(turnId: string) {
   state.mainTurn = turnId
+  state.isTurnUnknown = false
   state.loopTurns.set(loopKey(undefined), turnId)
   emit({ type: 'turn', phase: 'start', turnId, agentId: null, text: null, recovered: true })
 }
 
 /** Answers one command line with a `result` event. M3 adds its ops here. */
+/** What a verb that needs the main turn's state says while it is unknown. */
+export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
+const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
+
+/**
+ * Whether the main turn's state is still unknown, the session's engine record
+ * read first: a record of this session saying `idle` makes it known idle.
+ */
+async function isTurnStillUnknown(): Promise<boolean> {
+  if (state.isTurnUnknown && state.record !== undefined && state.read !== undefined) {
+    try {
+      const record = JSON.parse(await state.read(state.record)) as { sessionId?: unknown; status?: unknown }
+      if (state.isTurnUnknown && record.sessionId === state.session && record.status === 'idle' && state.mainTurn === undefined) {
+        state.isTurnUnknown = false
+      }
+    } catch {
+      // No record to read (yet): still unknown.
+    }
+  }
+  return state.isTurnUnknown
+}
+
 async function runCommand($: EngineInterface, command: Command) {
   let answer: Answer
   try {
-    answer = await commandAnswer($, command)
+    // A false idle would be a lie: interrupt saying there is nothing to stop,
+    // a compaction run at once, while a turn the module did not see runs.
+    answer = TURN_OPS.has(command.op) && (await isTurnStillUnknown()) ? { ok: false, error: TURN_UNKNOWN } : await commandAnswer($, command)
   } catch (error) {
     answer = { ok: false, error: message(error) }
   }
@@ -1444,6 +1486,9 @@ function onLine($: EngineInterface, generation: number, line: string) {
   if (msg.op === 'hello' && typeof msg.socket === 'string') {
     state.socket = msg.socket
     state.nonce = typeof msg.nonce === 'string' ? msg.nonce : undefined
+    if (typeof msg.presence === 'string') {
+      state.record = msg.presence
+    }
     // What the child kept on disk is this module's only after a reload; a
     // module that holds its own hands it to the child in the resync. So is
     // the seed: a later child's tail may hold rows whose notices are still
@@ -1586,6 +1631,7 @@ async function beat($: EngineInterface) {
   } catch (error) {
     $.ui.log(`bridge: the session id could not be read: ${message(error)}`, { to: 'debug' })
   }
+  await isTurnStillUnknown()
   emit({ type: 'heartbeat', state: turnState() })
 }
 
@@ -1613,6 +1659,11 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   // reload or a resume): its main loop is seen from its first row.
   if (!state.isSeeded && (await $.session.messages().then((m) => Array.isArray(m) && m.length === 0, () => false))) {
     state.freshLoops.add('main')
+  }
+  // Loaded into a session with its conversation (a reload, a resume), the
+  // module cannot know whether a main turn is running until it sees one.
+  if (!state.isSeeded) {
+    state.isTurnUnknown = !state.freshLoops.has('main')
   }
   state.info = {
     cwd: e.cwd,
@@ -1674,6 +1725,7 @@ export function registerBridge(on: On) {
   on('turn.start', { turnId: /^/ }, (_, e, next) => {
     if (e.agentId === undefined) {
       state.mainTurn = e.turnId
+      state.isTurnUnknown = false
     }
     state.loopTurns.set(loopKey(e.agentId), e.turnId)
     const text = capped(e.text)
@@ -1685,6 +1737,9 @@ export function registerBridge(on: On) {
     const result = await next(e)
     if (e.agentId === undefined && state.mainTurn === e.turnId) {
       state.mainTurn = undefined
+    }
+    if (e.agentId === undefined && state.mainTurn === undefined) {
+      state.isTurnUnknown = false
     }
     if (state.loopTurns.get(loopKey(e.agentId)) === e.turnId) {
       state.loopTurns.delete(loopKey(e.agentId))

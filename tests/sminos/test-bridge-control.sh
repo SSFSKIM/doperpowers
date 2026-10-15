@@ -182,7 +182,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
             mode = open(modefile).read().strip() if os.path.exists(modefile) else "busy"
             cid, o = msg["id"], msg["op"]
             events, result = [], None
-            if o == "steer":
+            if mode == "unknown" and o in ("steer", "interrupt", "compact"):
+                result = {"ok": False, "error": "turn state unknown since the bridge reloaded; retry after the next model request"}
+            elif o == "steer":
                 result = {"ok": False, "error": "no turn is running to steer: send it instead"} if mode == "idle" \
                     else {"ok": True, "result": {"row": "row-uuid-1"}}
             elif o == "interrupt":
@@ -324,6 +326,16 @@ assert_contains "$OUT" "still running" "and saying so"
 mode idle
 run "$SMINOS" interrupt "$SID"
 assert_contains "$OUT" "nothing to interrupt" "an idle session has nothing to interrupt, said so"
+# After a module reload, until the mod knows whether a turn runs, the verbs
+# that need it are refused with the reason: never a false idle.
+mode unknown
+for VERB in "interrupt" "steer|and the date" "compact"; do
+  IFS='|' read -r V ARG <<<"$VERB"
+  if [ -n "$ARG" ]; then run "$SMINOS" "$V" "$SID" "$ARG"; else run "$SMINOS" "$V" "$SID"; fi
+  assert_rc 1 "$RC" "$V while the turn state is unknown exits 1"
+  assert_contains "$OUT" "turn state unknown since the bridge reloaded; retry after the next model request" "saying why ($V)"
+done
+mode idle
 run "$SMINOS" model "$SID" sonnet --effort high
 assert_rc 0 "$RC" "model exits 0"
 assert_contains "$OUT" "sonnet" "saying the model in force"
