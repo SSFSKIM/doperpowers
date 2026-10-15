@@ -399,6 +399,39 @@ produces nothing new for other children beyond the stream DC7 builds on.
   any other machine (DX2 refuses `<old>/…` as `writer-not-yours`).
   Date/Author: 2026-10-15, the composite's writer (confirmation) and
   controller (the means).
+- Decision: M2's executor's calls, kept. (1) Whether a project is a hub
+  project is on `Project` (`hub`) and recorded in `project.json`, so the
+  tick still knows when the checkout's root is gone; M1's uplink keeps
+  reading `.smns` itself (a long-lived uplink must not see
+  `resolve_project`'s per-process cache). (2) A `.smns` whose `hub` is
+  present but malformed is still a hub project, with a warning: no git
+  sync, and nothing imported (its org is empty) — fail closed. (3)
+  `lifecycle` guards and `_own_events` read a session's files under its
+  former names too, so an ended member retires across a rename. (4)
+  `publish_state` runs for hub projects too (they have other machines).
+  (5) The CLI's decoder refuses, beyond the hub's, only spellings no
+  browser origin produces (blanks, `https:host`, `127.1`, a written-out
+  IPv6 loopback); on every code the hub's encoder builds it agrees,
+  pinned by `enroll_parity.py`. (6) Exit 2 for a refused code or
+  `--name`, 1 for a hub refusal, an enrollment already held, or `--hub`
+  unenrolled. (7) After a rename the hint says to use a new code, since
+  the redeemed token is bound to the name. (8) `sminos hub show` prints
+  the identity, never a secret. (9) The stand-in's error order is DC3's
+  registry's (expired, confirmed, token-used, name-taken). (10) A lost
+  answer is retried three times (1 s, 2 s), 30 s per attempt.
+  Date/Author: 2026-10-15, M2's executor, folded by the controller.
+- Decision: For M3, from the composite's writer's rulings on M2's
+  concerns. (1) The uplink's reader catches any exception once `closing`
+  is set (a chunked stream closed from this end raises `AttributeError`
+  inside http.client; reproduced by `/tmp/dc4m2/streamclose.sh`). (2)
+  When M3 opens a hub project, each live local member whose latest
+  `joined` was written under a former name is re-joined once — a fresh
+  `joined` under the enrolled name — so a renamed machine's live sessions
+  show on the hub; their earlier history stays local. Tested with a
+  rename across a live seat. (3) The supervisor restarts the uplink when
+  `hub.json` changes, as the loop restarts on its own code, so `hub
+  enroll --replace` takes effect at once.
+  Date/Author: 2026-10-15, the composite's writer.
 
 ## Surprises & Discoveries
 
@@ -414,5 +447,11 @@ produces nothing new for other children beyond the stream DC7 builds on.
 - `peer_live`'s probe (connect, send nothing, close) reaches an inbox
   stand-in as an empty connection; a stand-in that holds should hold only
   on a real frame. (M1's tests)
+- DC3's M2 landed at MAWS `bd266073` during M2: its local hub
+  (`local/run.ts`) runs as documented and serves `POST
+  /standin/enrollment-code`, which builds a code as the browser will. G1
+  passed against it (51/51) as well as against the Python stand-in. (M2)
+- sminos.py already needs Python 3.10+ (`float | None` in `Member`);
+  macOS's `/usr/bin/python3` is 3.9. New code stays 3.9-safe. (M2)
 
 ## Outcomes & Retrospective
