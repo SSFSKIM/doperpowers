@@ -73,9 +73,32 @@ class Conn(http.client.HTTPConnection):
         self.sock.settimeout(10)
         self.sock.connect(self.path)
 
-def request(path, method, url, body=None):
+# The nonce each child named in its hello, kept by the stand-in that read it:
+# a post of the mod's events carries it, as the mod's do (DX5's fence).
+NONCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonces")
+
+def keep_nonce(hello):
+    os.makedirs(NONCES, exist_ok=True)
+    path = os.path.join(NONCES, os.path.basename(hello["socket"]))
+    with open(path + ".tmp", "w") as f:
+        f.write(hello["nonce"])
+    os.replace(path + ".tmp", path)
+
+def nonce_of(sock):
+    try:
+        with open(os.path.join(NONCES, os.path.basename(sock))) as f:
+            return f.read()
+    except OSError:
+        return None
+
+def request(path, method, url, body=None, nonce=None):
+    headers = {"content-type": "application/json"}
+    if method == "POST" and url == "/events":
+        nonce = nonce if nonce is not None else nonce_of(path)
+        if nonce:
+            headers["X-Bridge-Nonce"] = nonce
     c = Conn(path)
-    c.request(method, url, body=body, headers={"content-type": "application/json"})
+    c.request(method, url, body=body, headers=headers)
     r = c.getresponse()
     return r.status, r.read().decode()
 
@@ -107,6 +130,9 @@ elif op == "fakemod":       # sminos session lines-file
             msg = json.loads(line)
             if msg.get("op") == "hello":
                 sock = msg["socket"]
+                keep_nonce(msg)
+                # As the mod's first post: its copy of the live state (DX5).
+                request(sock, "POST", "/events", json.dumps([{"type": "resync", "turns": [], "streaming": [], "agents": []}]))
                 continue
             if "id" not in msg:
                 continue
@@ -123,7 +149,7 @@ fakemod() { # session lines-file → starts the stand-in, which starts the child
   FAKEMOD=$!
   PIDS+=("$FAKEMOD")
 }
-answers() { ctl get "$1" /status >/dev/null 2>&1; }
+answers() { ctl get "$1" /status 2>/dev/null | grep -q '"ready": true'; }
 child_pid() { ctl get "$1" /status | python3 -c 'import json, sys; print(json.loads(sys.stdin.read().split(" ", 1)[1])["pid"])'; }
 nth_line() { sed -n "$2p" "$1"; }
 field_of() { # json-text dotted.path
@@ -160,6 +186,7 @@ assert_equals "$(field_of "$HELLO" op)" "hello" "the child's first line is hello
 assert_equals "$(field_of "$HELLO" session)" "$SID" "naming the session"
 assert_equals "$(field_of "$HELLO" socket)" "$SOCK" "and the socket it serves"
 assert_equals "$(field_of "$HELLO" protocol)" "1" "and the protocol version"
+assert_contains "$(field_of "$HELLO" presence)" "$HOME/.claude/sessions/" "and the session's engine record (<config>/sessions/<the session's pid>.json), which the mod reads for idle after a reload"
 run ctl get "$SOCK" /status
 assert_contains "$OUT" "200 " "status answers 200"
 assert_equals "$(field_of "${OUT#200 }" session)" "$SID" "naming the session"
@@ -218,8 +245,11 @@ SNAP2="$(nth_line "$T/w2" 1)"
 MAIN="$(python3 -c 'import json, sys
 s = json.loads(sys.argv[1])
 print(json.dumps([m for m in s["streaming"] if m["agentId"] is None][0]))' "$SNAP2")"
-assert_equals "$(field_of "$MAIN" text)" "Hello" "the snapshot carries a streaming message's partial text"
-assert_equals "$(field_of "$MAIN" upTo)" "1" "and upTo, the last chunk that text includes"
+assert_equals "$(field_of "$MAIN" blocks.0.text)" "Hello" "the snapshot carries a streaming block's partial text"
+assert_equals "$(field_of "$MAIN" blocks.0.kind)" "text" "its kind"
+assert_equals "$(field_of "$MAIN" blocks.0.index)" "0" "and its index, the one its chunks carry"
+assert_equals "$(field_of "$MAIN" blocks.0.upTo)" "1" "and upTo, the last chunk that text includes"
+assert_equals "$(field_of "$MAIN" upTo)" "1" "the message's upTo is the last chunk the snapshot accounts for"
 assert_equals "$(field_of "$MAIN" step)" "0" "identified by turn, agent and step"
 assert_equals "$(field_of "$SNAP2" turns.0.turnId)" "$TURN" "the snapshot lists the open turns"
 assert_contains "$(field_of "$SNAP2" agents)" '"a7"' "and the subagents"
@@ -254,15 +284,65 @@ assert_equals "$(streaming_of "$(nth_line "$T/w7" 1)" "$T3")" "none" "a message 
 ctl post "$SOCK" '[{"type":"gap","dropped":2},
  {"type":"resync","turns":[{"turnId":"'$T3'","agentId":null}],
   "agents":[{"agentId":"a7","subagentType":"general-purpose","running":true}],
-  "streaming":[{"turnId":"'$T3'","agentId":null,"step":0,"model":"m","text":"ABC","thinking":"","upTo":2}]},
+  "streaming":[{"turnId":"'$T3'","agentId":null,"step":0,"model":"m","upTo":2,"blocks":[{"index":0,"kind":"text","text":"ABC","upTo":2}]}]},
  {"type":"chunk","turnId":"'$T3'","agentId":null,"step":0,"chunkIndex":3,"chunk":{"kind":"text","index":0,"text":"D"}}]' >/dev/null
 watch_json "$SID" "$T/w8"
 until_true 100 has_lines "$T/w8" 1 || true
 M3="$(streaming_of "$(nth_line "$T/w8" 1)" "$T3")"
-assert_equals "$(field_of "$M3" text)" "ABCD" "after the resync the message is whole again, the next chunk on it"
-assert_equals "$(field_of "$M3" upTo)" "3" "its upTo the last chunk its text holds"
+assert_equals "$(field_of "$M3" blocks.0.text)" "ABCD" "after the resync the message is whole again, the next chunk on it"
+assert_equals "$(field_of "$M3" blocks.0.upTo)" "3" "its upTo the last chunk its text holds"
 assert_equals "$(field_of "$(nth_line "$T/w8" 1)" turns.0.turnId)" "$T3" "the resync replaced the open turns"
 assert_equals "$(field_of "$(nth_line "$T/w8" 1)" agents.0.agentId)" "a7" "and the subagents"
+
+# Streaming is per content block: a thinking block, then text, then a tool
+# call whose arguments stream. A block-row (the engine wrote the block's
+# transcript row) settles its block: the snapshot keeps only the blocks
+# without one, and a late chunk for a settled block is ignored.
+block_indexes() { python3 -c 'import json, sys; print([b["index"] for b in json.loads(sys.argv[1])["blocks"]])' "$1"; }
+T6=66666666-aaaa-4aaa-8aaa-666666666666
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T6'","agentId":null,"text":"x"},
+ {"type":"step","phase":"start","turnId":"'$T6'","agentId":null,"step":0,"model":"m"},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":0,"chunk":{"kind":"thinking","index":0,"text":"hm"}},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":1,"chunk":{"kind":"text","index":1,"text":"Run"}},
+ {"type":"block-row","uuid":"row-think","turnId":"'$T6'","agentId":null,"step":0,"index":0},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":1,"text":"ning"}},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":3,"chunk":{"kind":"tool","index":2,"id":"toolu_9","name":"Bash"}},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":4,"chunk":{"kind":"input","index":2,"json":"{\"comm"}}]' >/dev/null
+watch_json "$SID" "$T/w10"
+until_true 100 has_lines "$T/w10" 1 || true
+M6="$(streaming_of "$(nth_line "$T/w10" 1)" "$T6")"
+assert_equals "$(block_indexes "$M6")" "[1, 2]" "a block whose row was written leaves the snapshot; the others stay, by index"
+assert_equals "$(field_of "$M6" blocks.0.text)" "Running" "a text block holds its text"
+assert_equals "$(field_of "$M6" blocks.1.kind)/$(field_of "$M6" blocks.1.name)/$(field_of "$M6" blocks.1.id)" "tool/Bash/toolu_9" \
+  "a tool block names the tool and the call"
+assert_equals "$(field_of "$M6" blocks.1.text)" '{"comm' "and holds its arguments as they stream"
+assert_equals "$(field_of "$M6" upTo)" "4" "the message's upTo counts every chunk, a settled block's included"
+ctl post "$SOCK" '[{"type":"block-row","uuid":"row-text","turnId":"'$T6'","agentId":null,"step":0,"index":1},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":5,"chunk":{"kind":"text","index":1,"text":"late"}}]' >/dev/null
+watch_json "$SID" "$T/w11"
+until_true 100 has_lines "$T/w11" 1 || true
+M6="$(streaming_of "$(nth_line "$T/w11" 1)" "$T6")"
+assert_equals "$(block_indexes "$M6")" "[2]" "a chunk for a settled block is ignored"
+assert_equals "$(field_of "$M6" upTo)" "5" "though the message's upTo moves past it"
+# A resync between the block-row and a late chunk: the block stays settled,
+# from this child's own memory when the mod's copy does not name it, and from
+# the copy's `settled` for a message this child never saw (a child that took
+# over from another).
+T7=77777777-aaaa-4aaa-8aaa-777777777777
+ctl post "$SOCK" '[{"type":"resync","turns":[{"turnId":"'$T6'","agentId":null},{"turnId":"'$T7'","agentId":null}],"agents":[{"agentId":"a7","subagentType":"general-purpose","running":true}],
+ "streaming":[{"turnId":"'$T6'","agentId":null,"step":0,"model":"m","upTo":5,"blocks":[{"index":1,"kind":"text","text":"Running","upTo":2},{"index":2,"kind":"tool","text":"{\"comm","upTo":4,"id":"toolu_9","name":"Bash"}]},
+  {"turnId":"'$T7'","agentId":null,"step":0,"model":"m","upTo":1,"settled":[0],"blocks":[{"index":1,"kind":"text","text":"B","upTo":1}]}]},
+ {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":6,"chunk":{"kind":"text","index":1,"text":"later"}},
+ {"type":"chunk","turnId":"'$T7'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":0,"text":"late"}}]' >/dev/null
+watch_json "$SID" "$T/w11b"
+until_true 100 has_lines "$T/w11b" 1 || true
+assert_equals "$(block_indexes "$(streaming_of "$(nth_line "$T/w11b" 1)" "$T6")")" "[2]" \
+  "after a resync whose copy still holds a block this child saw settled, its late chunk is ignored"
+M7="$(streaming_of "$(nth_line "$T/w11b" 1)" "$T7")"
+assert_equals "$(block_indexes "$M7")" "[1]" "a resync's settled blocks stay settled in a child that never saw their rows"
+assert_equals "$(field_of "$M7" upTo)" "2" "the late chunk still moves the message on"
+ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T6'","agentId":null,"reason":"answer"},
+ {"type":"turn","phase":"complete","turnId":"'$T7'","agentId":null,"reason":"answer"}]' >/dev/null
 
 # The human view: the conversation as it streams, subagents labelled.
 "$SMINOS" watch "$SID" > "$T/h1" 2>&1 &
@@ -298,12 +378,31 @@ until_true 100 grep -q "\[main\] one" "$T/h2" || true
 ctl post "$SOCK" '[{"type":"gap","dropped":1},
  {"type":"resync","turns":[{"turnId":"'$T5'","agentId":null}],
   "agents":[{"agentId":"a7","subagentType":"general-purpose","running":true}],
-  "streaming":[{"turnId":"'$T5'","agentId":null,"step":0,"model":"m","text":"one two ","thinking":"","upTo":1}]},
+  "streaming":[{"turnId":"'$T5'","agentId":null,"step":0,"model":"m","upTo":1,"blocks":[{"index":0,"kind":"text","text":"one two ","upTo":1}]}]},
  {"type":"chunk","turnId":"'$T5'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":0,"text":"three"}}]' >/dev/null
 until_true 100 grep -q "three" "$T/h2" || true
 HV2="$(cat "$T/h2")"
 assert_contains "$HV2" "events were lost" "a gap is said in the human view"
 assert_contains "$HV2" "[main] one two three" "and the message is printed whole again from a fresh snapshot, the next chunk on it"
+ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T5'","agentId":null,"reason":"answer"}]' >/dev/null
+
+# A later resync ends every subscription (DX5's one discontinuity): a
+# watcher subscribes again to the same child and goes on from a fresh
+# snapshot; no subscriber is handed the resync itself.
+"$SMINOS" watch "$SID" > "$T/h3" 2>&1 &
+PIDS+=("$!")
+watch_json "$SID" "$T/w12"
+until_true 100 grep -q "watching" "$T/h3" || true
+until_true 100 has_lines "$T/w12" 1 || true
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[]}]' >/dev/null
+until_true 100 grep -q "resubscribed" "$T/h3" || true
+until_true 100 has_lines "$T/w12" 3 || true
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T5'","agentId":null,"text":"after the resync"}]' >/dev/null
+until_true 100 grep -q "after the resync" "$T/h3" || true
+assert_contains "$(cat "$T/h3")" "· the session's state was sent again; resubscribed" "a watcher whose stream a resync ended says so and subscribes again"
+assert_contains "$(cat "$T/h3")" "» after the resync" "and follows on"
+assert_equals "$(grep -c '"type": "snapshot"' "$T/w12")" "2" "with --json, the fresh snapshot follows"
+assert_not_contains "$(cat "$T/w12")" '"resync"' "and no subscriber is handed the resync"
 ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T5'","agentId":null,"reason":"answer"}]' >/dev/null
 
 # What the session started as stays in the snapshot past its end.
@@ -358,13 +457,13 @@ assert_equals "$(grep -c '"type": "snapshot"' "$T/w4")" "2" "taking a fresh snap
 T4=44444444-aaaa-4aaa-8aaa-444444444444
 ctl post "$SOCK" '[{"type":"session","phase":"start","session":"'$SID'","cwd":"/w"},
  {"type":"resync","turns":[{"turnId":"'$T4'","agentId":null}],"agents":[],
-  "streaming":[{"turnId":"'$T4'","agentId":null,"step":1,"model":"m","text":"Hel","thinking":"","upTo":0}]},
+  "streaming":[{"turnId":"'$T4'","agentId":null,"step":1,"model":"m","upTo":0,"blocks":[{"index":0,"kind":"text","text":"Hel","upTo":0}]}]},
  {"type":"chunk","turnId":"'$T4'","agentId":null,"step":1,"chunkIndex":1,"chunk":{"kind":"text","index":0,"text":"lo"}}]' >/dev/null
 watch_json "$SID" "$T/w9"
 until_true 100 has_lines "$T/w9" 1 || true
 M4="$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])["streaming"][0]))' "$(nth_line "$T/w9" 1)")"
-assert_equals "$(field_of "$M4" text)" "Hello" "a child that came in mid-message holds the message whole from the resync on"
-assert_equals "$(field_of "$M4" upTo)" "1" "with the upTo of its last chunk"
+assert_equals "$(field_of "$M4" blocks.0.text)" "Hello" "a child that came in mid-message holds the message whole from the resync on"
+assert_equals "$(field_of "$M4" blocks.0.upTo)" "1" "with the upTo of its last chunk"
 
 # Two children starting at once: the older one moves its socket in, the newer
 # one moves its own over it before the older has looked. The older must know

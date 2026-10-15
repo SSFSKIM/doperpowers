@@ -409,15 +409,16 @@ async function imageLines($: EngineInterface, paths: readonly string[]): Promise
 
 // The dialog.
 
-export type DialogOutcome =
+export type DialogOutcome = (
   | { kind: 'answered'; text: string; record: unknown; images: string[] } // text: the engine's result text; images: paths pasted in this dialog
   | { kind: 'refused'; text: string; hasFeedback: boolean; images: string[] } // text: the refusal; hasFeedback: "Chat about this"; images: kept with it
+) & { toolUseId?: string } // the dialog's own call: the bridge names who answered it
 
 /** "Chat about this" refuses with the human's words after this. */
 const FEEDBACK = 'To tell you how to proceed, the user said:'
 
 /** One raised dialog: its question set, the token its one-question raise carries as the header, and what it settled with. */
-type Entry = { token: string; questions: AskQuestion[]; isClaimed: boolean; outcome?: DialogOutcome }
+type Entry = { token: string; questions: AskQuestion[]; isClaimed: boolean; outcome?: DialogOutcome; toolUseId?: string }
 
 let entries: Entry[] = []
 let raised = 0
@@ -440,6 +441,35 @@ let builtinDescription: string | undefined
 let isDescribed = false
 let describedFrom: string | undefined
 
+/**
+ * What the session's asks do, as an observer (the bridge) is told: an async
+ * ask opened, was answered (`by` whoever answered it from outside, or
+ * through the `dialog` a press opened, whose answer the bridge attributes),
+ * or was forgotten (a new conversation); a dialog this mod raised settled,
+ * with what the engine returned for its call.
+ */
+export type AskNote =
+  | { kind: 'open'; id: string; questions: AskQuestion[] }
+  | { kind: 'answered'; id: string; by: string }
+  | { kind: 'answered'; id: string; dialog: string }
+  | { kind: 'forgotten'; ids: string[] }
+  | { kind: 'dialog'; toolUseId: string; isError: boolean; text: string }
+
+let observer: ((note: AskNote) => void) | undefined
+
+/** Sets the one observer of the session's asks. */
+export function observeAsks(fn: (note: AskNote) => void) {
+  observer = fn
+}
+
+function note(n: AskNote) {
+  try {
+    observer?.(n)
+  } catch {
+    // The observer's failure is its own; the ask goes on.
+  }
+}
+
 /** Forgets every ask and the session's state; for tests, which share this module. */
 export function resetAsk() {
   entries = []
@@ -454,6 +484,7 @@ export function resetAsk() {
   taken = new Set()
   forgetAsyncAsks()
   isTurnRunning = false
+  external = undefined
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -496,10 +527,11 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
         throw error
       }
     }
-    const outcome = entry.outcome as DialogOutcome | undefined
-    if (outcome === undefined) {
+    const widened = entry.outcome as DialogOutcome | undefined
+    if (widened === undefined) {
       throw new Error(`the dialog for "${first.question}" settled without being widened (${entry.token})`)
     }
+    const outcome: DialogOutcome = { ...widened, ...(entry.toolUseId !== undefined && { toolUseId: entry.toolUseId }) }
     const pasted = newImages(before, await storedImages($, folder), taken)
     pasted.forEach((name) => taken.add(name))
     // Only an answer or "Chat about this" carries pictures; Esc carries none.
@@ -873,10 +905,14 @@ let raisedAsks = new Set<string>()
 let isTurnRunning = false
 
 function forgetAsyncAsks() {
+  const open = asks.filter((ask) => ask.status === 'open').map((ask) => ask.id)
   asks = []
   held = []
   undelivered = new Set()
   raisedAsks = new Set()
+  if (open.length > 0) {
+    note({ kind: 'forgotten', ids: open })
+  }
 }
 
 /** The session's async asks, open and answered, oldest first. */
@@ -887,41 +923,116 @@ export function asyncAsks(): readonly OpenAsk[] {
 /** Takes every held answer, in one synchronous step, so no other route takes them too. */
 const takeHeld = () => held.splice(0)
 
+/**
+ * What a delivery reaches the engine through: a hook's `$`, or the one the
+ * session started with, which an answer from outside the terminal uses (it
+ * arrives in no hook of this mod's).
+ */
+type Out = {
+  submit: (text: string) => Promise<{ drop?: string }>
+  invalidate: () => void
+  toast: (text: string) => void
+  log: (text: string) => void
+}
+
+const outOf = ($: EngineInterface): Out => ({
+  submit: (text) => $.prompt.submit({ text }),
+  invalidate: () => $.ui.invalidate('ui.render'),
+  toast: (text) => $.ui.toast(text),
+  log: (text) => $.ui.log(text, { to: 'debug' }),
+})
+
+/** The session's own `Out`, made as it started: undefined where the tool does not serve. */
+let external: Out | undefined
+
 /** A route delivered `items`: their asks read delivered. */
-function delivered($: EngineInterface, items: readonly Delivery[]) {
+function delivered(out: Out, items: readonly Delivery[]) {
   items.forEach((item) => undelivered.delete(item.id))
-  $.ui.invalidate('ui.render')
+  out.invalidate()
 }
 
 /** A route failed: `items` go back ahead of any answered meanwhile, for the next route to try. */
-function putBack($: EngineInterface, items: readonly Delivery[], why: string) {
+function putBack(out: Out, items: readonly Delivery[], why: string) {
   held.unshift(...items)
-  $.ui.toast(`An answer did not reach the model (${why}); it goes with the next message.`)
-  $.ui.log(`ask: a delivery failed, ${items.length} put back: ${why}`, { to: 'debug' })
+  out.toast(`An answer did not reach the model (${why}); it goes with the next message.`)
+  out.log(`ask: a delivery failed, ${items.length} put back: ${why}`)
 }
 
 /** Submits `items` as one prompt of the plugin's, which runs once the session is idle. Never awaited inside a hook: the turn it waits for may be the hook's own. */
-async function submitDeliveries($: EngineInterface, items: Delivery[]) {
+async function submitDeliveries(out: Out, items: Delivery[]) {
   try {
-    const entered = await $.prompt.submit({ text: items.map((item) => item.text).join('\n\n') })
+    const entered = await out.submit(items.map((item) => item.text).join('\n\n'))
     if (entered.drop !== undefined) {
-      putBack($, items, entered.drop)
+      putBack(out, items, entered.drop)
       return
     }
-    delivered($, items)
+    delivered(out, items)
   } catch (error) {
-    putBack($, items, message(error))
+    putBack(out, items, message(error))
   }
 }
 
 /** An ask answered: held while a turn runs, else submitted at once with whatever was held before it. */
-function deliver($: EngineInterface, item: Delivery) {
+function deliver(out: Out, item: Delivery) {
   undelivered.add(item.id)
   if (isTurnRunning) {
     held.push(item)
     return
   }
-  void submitDeliveries($, [...takeHeld(), item])
+  void submitDeliveries(out, [...takeHeld(), item])
+}
+
+/** The engine's closing sentences for answers that are all options, and for any other. */
+const CHOSEN_END = 'You can now continue with these answers in mind.'
+const TYPED_END = 'Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.'
+
+/**
+ * The text the engine returns for `answers` to `questions` (its AskUserQuestion
+ * result): each answered question as `"<question>"="<answer>"`, then the
+ * sentence for answers that each name an option (a multi-select's labels
+ * joined with ", "), or the one for any typed answer.
+ */
+export function answerText(questions: readonly AskQuestion[], answers: Readonly<Record<string, string>>): string {
+  const given = questions.filter((q) => typeof answers[q.question] === 'string' && answers[q.question] !== '')
+  if (given.length === 0) {
+    return 'The user did not answer the questions.'
+  }
+  const pairs = given.map((q) => `"${q.question}"="${answers[q.question]}"`).join(', ')
+  const isChosen = given.every((q) => {
+    const labels = new Set(q.options.map((o) => o.label))
+    const answer = answers[q.question] as string
+    return labels.has(answer) || (q.multiSelect && answer.split(', ').every((part) => labels.has(part)))
+  })
+  return isChosen ? `Your questions have been answered: ${pairs}. ${CHOSEN_END}` : `The user answered: ${pairs}. ${TYPED_END}`
+}
+
+/**
+ * An async ask answered from outside the terminal (the bridge, for a person
+ * at the CLI or the web): delivered as a press's answer is, in the words the
+ * dialog would have produced, and the observer told `by` whom. Refused for
+ * an ask that is not open, or whose dialog the terminal has up.
+ */
+export function answerAsync(id: string, answers: Readonly<Record<string, string>>, by: string): { ok: true } | { ok: false; error: string } {
+  const ask = asks.find((candidate) => candidate.id === id)
+  if (ask === undefined) {
+    return { ok: false, error: `no async question ${id} is open in this session` }
+  }
+  if (ask.status !== 'open') {
+    return { ok: false, error: `the question ${id} was already answered` }
+  }
+  if (raisedAsks.has(id)) {
+    return { ok: false, error: `the question ${id} is open in the terminal's dialog` }
+  }
+  if (external === undefined) {
+    return { ok: false, error: 'the ask tool does not serve this session' }
+  }
+  const text = answerText(ask.questions, answers)
+  ask.status = 'answered'
+  ask.answer = text
+  deliver(external, { id, text: deliveryText(id, text) })
+  external.invalidate()
+  note({ kind: 'answered', id, by })
+  return { ok: true }
 }
 
 /** A press: opens the ask's dialog, and hands an answer, or "Chat about this", to the model. Esc leaves it open. */
@@ -948,8 +1059,11 @@ async function answerAsk($: EngineInterface, id: string) {
   const answer = [outcome.text, ...(await imageLines($, outcome.images))].join('\n')
   ask.status = 'answered'
   ask.answer = answer
-  deliver($, { id, text: deliveryText(id, answer) })
+  deliver(outOf($), { id, text: deliveryText(id, answer) })
   $.ui.invalidate('ui.render')
+  // The dialog goes through the PermissionRequest hooks like any other, so
+  // its answer may have come from outside: the bridge names who gave it.
+  note({ kind: 'answered', id, dialog: outcome.toolUseId ?? '' })
 }
 
 /**
@@ -1115,6 +1229,9 @@ export function registerAsk(on: On) {
       return next(e)
     }
     isServing = true
+    // An answer from outside the terminal comes in no hook of this mod's: it
+    // is delivered through the session's own `$`.
+    external = outOf($)
     const result = await next(e)
     await askStart($)
     return result
@@ -1132,6 +1249,9 @@ export function registerAsk(on: On) {
     if (e.source === 'resume' || e.source === 'fork') {
       asks = await readAsks($, e.transcript_path)
       $.ui.invalidate('ui.render')
+      for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
+        note({ kind: 'open', id: ask.id, questions: ask.questions })
+      }
     }
     return next(e)
   }).catch((_, e, next) => next(e))
@@ -1155,7 +1275,7 @@ export function registerAsk(on: On) {
     if (e.agentId === undefined) {
       isTurnRunning = false
       if (e.reason === 'answer' && !isLatched && held.length > 0) {
-        void submitDeliveries($, takeHeld())
+        void submitDeliveries(outOf($), takeHeld())
       } else if (held.length > 0 || isLatched) {
         $.ui.log(`ask: the turn ended (${e.reason}${isLatched ? ', latched' : ''}); ${held.length} held for the next prompt`, { to: 'debug' })
       }
@@ -1175,13 +1295,13 @@ export function registerAsk(on: On) {
       result = await next({ ...e, context: [...(e.context ?? []), ...items.map((item) => item.text)] })
     } catch (error) {
       // The failure policy below lets the prompt through without them: they wait for the next route.
-      putBack($, items, message(error))
+      putBack(outOf($), items, message(error))
       throw error
     }
     if (result.drop !== undefined) {
-      putBack($, items, result.drop)
+      putBack(outOf($), items, result.drop)
     } else {
-      delivered($, items)
+      delivered(outOf($), items)
     }
     return result
   }).catch((_, e, next) => next(e))
@@ -1307,7 +1427,7 @@ export function registerAsk(on: On) {
       return result
     }
     const items = takeHeld()
-    delivered($, items)
+    delivered(outOf($), items)
     return { ...result, context: [...(result.context ?? []), ...items.map((item) => item.text)] }
   }).catch((_, e, next) => next(e))
 
@@ -1324,6 +1444,10 @@ export function registerAsk(on: On) {
     }
     const result = await next({ ...e, questions: entry.questions } as typeof e)
     entry.outcome = outcomeOf(result as Parameters<typeof outcomeOf>[0])
+    entry.toolUseId = e.tool_use_id
+    // What the engine returned for this dialog's call, which the bridge's
+    // own hooks do not see (the call is this plugin's): whose answer it used.
+    note({ kind: 'dialog', toolUseId: e.tool_use_id ?? '', isError: entry.outcome.kind === 'refused', text: entry.outcome.text })
     return result
   }).catch((_, e, next) =>
     // Failed before passing the call on, the withdrawal still holds for the model.
@@ -1341,8 +1465,10 @@ export function registerAsk(on: On) {
     }
     const { questions } = input as AskInput
     if ((input as AskInput).async === true) {
-      asks.push({ id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' })
+      const ask: OpenAsk = { id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' }
+      asks.push(ask)
       $.ui.invalidate('ui.render')
+      note({ kind: 'open', id: ask.id, questions })
       return { result: ASYNC_RESULT }
     }
     let outcome: DialogOutcome

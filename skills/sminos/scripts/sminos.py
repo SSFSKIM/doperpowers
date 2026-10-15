@@ -29,9 +29,23 @@ member too, seat-less, from the first call that reads its project.
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
     sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
-    sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin)
+    sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin);
+                   a session with the bridge has its marks exported as they are written, and this finds them there
     sminos watch    <member> [--json]                     # a session's live stream through its bridge: the
-                   conversation as it streams, subagents labelled (--json: the endpoint's lines)
+                   conversation as it streams, subagents labelled (--json: the endpoint's lines); a stream
+                   the bridge ends (its state resent, the child restarted) is followed on
+    sminos steer    <member> <text>                       # into the running turn, read at its next model
+                   request; the running tool goes on (no bridge: a --bg job's supervisor, else a frame)
+    sminos interrupt <member>                             # stop the running turn, and any Bash it moved to
+                   the background, as Esc does (needs the bridge)
+    sminos model    <member> <model|default> [--effort E] # the model (and effort) of this session's next
+                   requests; the user's settings untouched (needs the bridge)
+    sminos compact  <member> [instructions]               # compact now, or when the running turn ends
+                   (needs the bridge)
+    sminos decide   <member> <request> allow|deny [--message M]   # a permission prompt the session raised
+                   (`watch` prints its id; a unique prefix will do), racing the terminal's own dialog
+    sminos answer   <member> <request> <answer>...        # a question it asked, one answer per question
+                   (an option's label or number; multi-select: "1,3"); its async questions too
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
@@ -66,7 +80,11 @@ Messaging is one verb, `send`: to a live seat it writes a frame to the
 session's inbox socket — the socket the harness's native cross-session
 SendMessage tool also rides — which the harness delivers as a peer message
 (an idle session starts a new turn, a busy one reads it at its next tool
-round); a stopped seat is resumed with the frame as its message. `resume` is
+round); a stopped seat is resumed with the frame as its message. A session
+with a bridge (the bridge mod) takes the same frame through it instead, as
+the human's words, submitted once per log event however often it is
+delivered; a --bg job with none takes a human's message through the engine
+supervisor's `reply`. `resume` is
 the process-level continuation the board pipeline relays through: a fresh
 `claude --bg --resume` carrying the invoking environment.
 
@@ -1506,7 +1524,8 @@ def push_event(project, member, session, e, events, cursor):
     settles as recorded, as it does for a retired seat."""
     if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
         return "recorded"
-    return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session)
+    return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session,
+                       event=e)
 
 
 def compose_chat_frame(project_name, ref, sender, target, unread, text):
@@ -1674,20 +1693,22 @@ class ResumeRefused(Exception):
         self.code = code
 
 
-def push_member(member, text, tagged, session=None):
-    """Push one frame to a member: its inbox socket when live; for a seat, a
-    resume when it is stopped and the message is addressed to it (`tagged`).
-    A session sminos did not spawn is never resumed: it is the human's to
-    reopen, and reads the chat when it is back. Given `session`, a seat that
-    now holds another session is not this message's recipient: delivery goes
-    by session id, so a replacement cannot misroute it."""
+def push_member(member, text, tagged, session=None, event=None):
+    """Push one frame to a member: to the live session (push_live: its bridge,
+    keyed by `event`, the log event the frame carries; its supervisor; its
+    inbox socket); for a seat, a resume when it is stopped and the message is
+    addressed to it (`tagged`). A session sminos did not spawn is never
+    resumed: it is the human's to reopen, and reads the chat when it is back.
+    Given `session`, a seat that now holds another session is not this
+    message's recipient: delivery goes by session id, so a replacement cannot
+    misroute it."""
     session = session or member.session
     if member.seat is None:
         peer = peer_for_session(session)
         if not peer:
             return "recorded"
         try:
-            send_frame(socket_path_of(peer), text)
+            control_module().push_live(peer, session, text, event)
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -1712,7 +1733,7 @@ def push_member(member, text, tagged, session=None):
     peer = peer_for_session(fresh["current"])
     if peer:
         try:
-            send_frame(socket_path_of(peer), text)
+            control_module().push_live(peer, fresh["current"], text, event)
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -2295,10 +2316,10 @@ def record_session(project, session, tpath, event, last_message=""):
     position is set, so its first turn counts whole at its Stop. A session
     that is not a member records nothing. At Stop, the export first waits a
     little for the turn's last message to reach the transcript (await_flush)."""
-    seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
-    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
-    if peer is not None and str(peer.get("pid")) in internal_pids():
+    seen = _on_sight(project, session)
+    if seen is None:
         return
+    seat, peer = seen
     if seat is None and peer is None:
         if event == "SessionStart":
             position_init(project, session, tpath)
@@ -2307,21 +2328,62 @@ def record_session(project, session, tpath, event, last_message=""):
         return
     if event == "SessionStart":
         position_init(project, session, tpath)
-    own = _own_events(project, session)
-    if latest_membership(own) != "joined":
-        join_on_sight(project, session, seat, peer, True)
-        own = _own_events(project, session)
-    if event != "Stop" or latest_membership(own) != "joined":
+    alias = _member_alias(project, session, seat, peer)
+    if event != "Stop" or alias is None:
         return
-    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
-    if not alias:
-        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
-        alias = str(named[-1]["alias"]) if named else session[:8]
     until = time.time() + FLUSH_WAIT
     if _RECORD_DEADLINE is not None:
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def _on_sight(project, session):
+    """(seat, peer): the seat that binds a session of this machine in the
+    project, and the harness's record of it, either None when there is none;
+    None for derive's internal fork, which is never a member."""
+    seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
+    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    if peer is not None and str(peer.get("pid")) in internal_pids():
+        return None
+    return seat, peer
+
+
+def _member_alias(project, session, seat, peer):
+    """Joins a joinable session the log does not hold as a member yet (a live
+    process is evidence of activation), and returns the alias its messages to
+    the host carry: its seat's, else its harness name, else the last name the
+    log gave it. None when it is no member."""
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        join_on_sight(project, session, seat, peer, True)
+        own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        return None
+    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
+    if not alias:
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
+        alias = str(named[-1]["alias"]) if named else session[:8]
+    return alias
+
+
+def export_live(project, session, records):
+    """The bridge's export (DC2 G4, desk §3): the host events of transcript
+    records the session just wrote, as the bridge's child received them, in
+    the shape host_events reads. They are appended as the Stop hook's export
+    appends them: the same writer, the same (kind, src), one batch that drops
+    what the file already holds, so whichever of the two comes second adds
+    nothing. Membership on sight as the hook decides it; the export position
+    is the hook's and is not moved. The child is long-lived, so the harness's
+    records are read afresh each time. Returns the events appended."""
+    global _PEERS
+    _PEERS = None
+    seen = _on_sight(project, session)
+    if seen is None or not joinable(*seen):
+        return []
+    alias = _member_alias(project, session, *seen)
+    events = host_events(records, alias) if alias is not None else []
+    return log_append_batch(project, writer_id(session), events) if events else []
 
 
 # The hook is bounded in time (§4: it never blocks a turn): its waits are,
@@ -4801,7 +4863,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the socket delivery, and the status write, so a
     concurrent fill/resume/retire cannot slip between them. A live seat takes
-    the frame on its inbox socket and is recorded `working`; a stopped one is
+    the frame (push_live: its bridge, else its inbox socket) and is recorded
+    `working`; a stopped one is
     resumed with the frame as its message; vacant, retired, and gone seats
     are refused, pointing at the verb that can reach them. Given `session`,
     the one the name bound (find_target), a seat that no longer holds it is
@@ -4862,7 +4925,10 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
     # the peer record's own status — never from normalising an empty state.
     was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
     try:
-        send_frame(sock, delivery.payload(True) if delivery else text)
+        if delivery:
+            control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1])
+        else:
+            send_frame(sock, text)
     except SendFailed as e:
         if e.phase == "before":
             # Nothing reached the peer (the session exited between the
@@ -5019,8 +5085,9 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
 def send_to_member(project, m, sender, via, text, msg_id):
     """send to a member that holds no seat here. A remote member's send is
     recorded and owed: its own machine's daemon delivers it. A local one is
-    reached over its inbox socket while it runs; a session sminos did not
-    spawn is never resumed — it is the human's to reopen."""
+    reached while it runs (push_live: its bridge, else its inbox socket); a
+    session sminos did not spawn is never resumed — it is the human's to
+    reopen."""
     if not m.local:
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
         print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
@@ -5036,7 +5103,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
         print("sent to %s (delivered by a concurrent delivery)" % m.alias)
         return
     try:
-        send_frame(socket_path_of(peer), delivery.payload(True))
+        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1])
     except SendFailed as e:
         if e.phase == "after":
             delivery.settle()
@@ -5500,8 +5567,11 @@ def sibling_module(name):
     """Import a sibling module (sminos_chart, sminos_tui) bound to THIS module
     instance: when sminos.py runs as __main__ a plain `import sminos` inside the
     sibling would execute the file a second time and give it its own, separate
-    harness caches."""
-    sys.modules.setdefault("sminos", sys.modules[__name__])
+    harness caches. A copy loaded without a place in sys.modules (a test's
+    spec_from_file_location) has none to bind: its sibling imports its own."""
+    me = sys.modules.get(__name__)
+    if me is not None:
+        sys.modules.setdefault("sminos", me)
     if SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SCRIPT_DIR)
     return importlib.import_module(name)
@@ -5519,12 +5589,40 @@ def bridge_module():
     return sibling_module("sminos_bridge")
 
 
+def control_module():
+    return sibling_module("sminos_control")
+
+
 def cmd_bridge(a):
     bridge_module().cmd_bridge(a)
 
 
 def cmd_watch(a):
     bridge_module().cmd_watch(a)
+
+
+def cmd_steer(a):
+    control_module().cmd_steer(a)
+
+
+def cmd_interrupt(a):
+    control_module().cmd_interrupt(a)
+
+
+def cmd_model(a):
+    control_module().cmd_model(a)
+
+
+def cmd_compact(a):
+    control_module().cmd_compact(a)
+
+
+def cmd_decide(a):
+    control_module().cmd_decide(a)
+
+
+def cmd_answer(a):
+    control_module().cmd_answer(a)
 
 
 def tick(project):
@@ -5741,6 +5839,39 @@ def build_parser():
     wa.add_argument("member")
     wa.add_argument("--json", action="store_true")
     wa.set_defaults(fn=cmd_watch)
+
+    se = sub.add_parser("steer", add_help=False)
+    se.add_argument("member")
+    se.add_argument("text")
+    se.set_defaults(fn=cmd_steer)
+
+    it = sub.add_parser("interrupt", add_help=False)
+    it.add_argument("member")
+    it.set_defaults(fn=cmd_interrupt)
+
+    mo = sub.add_parser("model", add_help=False)
+    mo.add_argument("member")
+    mo.add_argument("model")
+    mo.add_argument("--effort", default=None, choices=("low", "medium", "high", "xhigh", "max"))
+    mo.set_defaults(fn=cmd_model)
+
+    co = sub.add_parser("compact", add_help=False)
+    co.add_argument("member")
+    co.add_argument("instructions", nargs="?", default="")
+    co.set_defaults(fn=cmd_compact)
+
+    de = sub.add_parser("decide", add_help=False)
+    de.add_argument("member")
+    de.add_argument("request")
+    de.add_argument("behavior", choices=("allow", "deny"))
+    de.add_argument("--message", default="")
+    de.set_defaults(fn=cmd_decide)
+
+    an = sub.add_parser("answer", add_help=False)
+    an.add_argument("member")
+    an.add_argument("request")
+    an.add_argument("answers", nargs="+")
+    an.set_defaults(fn=cmd_answer)
 
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")
