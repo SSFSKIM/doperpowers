@@ -652,6 +652,12 @@ produces nothing new for other children beyond the stream DC7 builds on.
   (M4)
 - DC2's branch also took 7.154.0; this branch moves to the next number
   above, per the composite's writer. (M4)
+- The suite's "say lands within two seconds" (two git-mirror daemon
+  loops) failed on this branch at 2.1 s in three runs under load. Timed
+  against the base, interleaved: the same CPU and the same git processes
+  per tick, and the base misses the bound as often under the same load;
+  the hub-less mirror is not slowed. Recorded in TECH-DEBT with a
+  proposed load-scaled bound. (final check)
 
 - Decision: The whole-branch review (`high`, 4dddfb4b..043d1449) found
   one P1 and four P2 at the seams between milestones, all fixed in
