@@ -749,6 +749,21 @@ the real child.
 The stale rule reads: a socket file refused 3 times, 0.1 s apart, is stale (a listener with
 a full backlog refuses too). The child's listen backlog is 128.
 
+#### Final-review wave 2 (unknown turn state after a load; supersedes rows above where they differ)
+
+- **The child's hello** gains `presence`: the session's engine record
+  (`<config>/sessions/<pid>.json`).
+- **Commands `steer`, `interrupt`, `compact`** gain the refusal `{ok: false, error: "turn
+  state unknown since the bridge reloaded; retry after the next model request"}`. It is
+  given while the mod cannot know whether a main turn runs (after a load into an existing
+  conversation, until a main turn starts, completes or is recovered from its next
+  request, or the session record says idle).
+- **`ping`'s and `heartbeat`'s `state`** gain `isTurnUnknown: true` while unknown (absent
+  otherwise).
+- **Verbs:** `sminos interrupt|steer|compact` exit 1 with that reason. Before this wave,
+  interrupt said "idle: nothing to interrupt" with exit 0, compact ran at once, and steer
+  was refused as idle.
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
@@ -1143,6 +1158,17 @@ a full backlog refuses too). The child's listen backlog is 128.
   average ~220; live thinking chunks carry `text: ""` and no signature.
   Date/Author: 2026-10-15, controller with M4 executor and the composite's
   writer.
+- Decision (whole-branch review): Three fixes. The `resync` restates the
+  session's start (`sessionInfo`), so a child that lost its first post
+  still exports. A reload mid-turn takes the main turn back from its next
+  main-loop request (`turn` start with `recovered: true`); until then the
+  turn's state is *unknown* — unless the session's engine record (named in
+  the hello as `presence`) reads idle, or the load was a fresh start — and
+  `interrupt`, `steer` and `compact` refuse with that reason rather than
+  answer a false idle. The control verbs retry a not-ready (503) child
+  within their 8 s first-snapshot window.
+  Date/Author: 2026-10-15, controller, from the `high` review and its two
+  re-reviews.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
   `scripts/bump-version.sh` above the first; no version number is merged by
