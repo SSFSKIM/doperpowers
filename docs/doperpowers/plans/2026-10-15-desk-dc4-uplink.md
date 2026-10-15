@@ -596,6 +596,22 @@ produces nothing new for other children beyond the stream DC7 builds on.
   (the hub verbs are the human's). (5) The version moves by a minor
   (`scripts/bump-version.sh`), in M4's commit.
   Date/Author: 2026-10-15, controller (before M4's dispatch).
+- Decision: M4's executor's calls (`dd6730d3`). (1) The uplink sends
+  `hello` again for each open project once per archive period: DX2 tells
+  a machine its designation only in `have`, so a stream that never drops
+  would never learn it moved (DC3's `project.ts` accepts the repeat with
+  no side effect; raised with the composite's writer for DX2's text).
+  (2) The tick archives once per fresh `have` naming this machine, at
+  most once per half period, so a machine that lost the designation, or
+  is cut off from the hub, runs nothing; a run started on an older
+  confirmation may push once. (3) The designation is `archive` and
+  `archive_at` in `uplink.json` (the uplink's alone); the run's record is
+  under `archive` in `daemon.json`. (4) Each writer file is read under
+  its own lock, never `.sync.lock`, and copied whole; the clone is reset
+  hard to `origin/main` and cleaned first; commits by `sminos@<enrolled
+  name>`. (5) No run for a `.smns` whose hub is malformed. (6) The
+  retry after the remote moved is tested white-box.
+  Date/Author: 2026-10-15, M4's executor, folded by the controller.
 
 ## Surprises & Discoveries
 
@@ -617,5 +633,11 @@ produces nothing new for other children beyond the stream DC7 builds on.
   passed against it (51/51) as well as against the Python stand-in. (M2)
 - sminos.py already needs Python 3.10+ (`float | None` in `Member`);
   macOS's `/usr/bin/python3` is 3.9. New code stays 3.9-safe. (M2)
+- `skills/sminos/SKILL.md` has been stale for hub projects since M2: its
+  mirror and daemon sections say a `remote` makes `log/` a git mirror.
+  Left unedited (a skill change needs eval evidence); carried as residue.
+  (M4)
+- DC2's branch also took 7.154.0; this branch moves to the next number
+  above, per the composite's writer. (M4)
 
 ## Outcomes & Retrospective
