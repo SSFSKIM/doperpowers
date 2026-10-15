@@ -481,6 +481,26 @@ against the local hub; until it lands, the stand-in.
   delivered and recorded again on the next pass.
   Date/Author: 2026-10-15, M2 executor.
 
+- Decision: DC2's M4 is reviewed clean (code `f0242560`, plan
+  `89c9f8da` on `worktree-smns-erb`; the composite's DX5 refreshed at
+  `ceb34bd4`). M1's real-child wave runs between M2 and M3, after this
+  branch merges DC2's at `89c9f8da`, and matches the scripted endpoint to
+  the real child: notices posted once the append resolves; a row past the
+  cut released on its own notice, a later row's in its loop, or 2 s after
+  it was first seen on disk (rows written together come out together);
+  the hello's `seed` and the snapshot's `cut`, `null` meaning the loop had
+  no rows before the module loaded, and in a loop older than the module a
+  request begun before the hello never streams, its rows named by
+  `row-seen`; a step's end held until its `block-row`s are posted, at
+  most 1 s, after which the step's pairing is closed (a later row named
+  by `row-seen`, never `block-row`) and its whole message leaves
+  `streaming`; `GET /events` held with no snapshot until the mod's first
+  resync to that child, else 503 after 5 s, which the reader retries
+  within its reconnect window (`GET /status` has `ready`); the stream
+  ends on any later resync or a subscriber 10 000 behind. M1's local-hub
+  walk is rerun at the hub that accepts `step-end`.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
