@@ -3184,11 +3184,12 @@ def pid_alive(pid):
 _PSTART = {}
 
 
-def proc_start(pid):
+def proc_start(pid, fresh=False):
     """The live process's start time as `ps -o lstart=` prints it, whitespace
-    normalised; "" when ps cannot tell."""
+    normalised; "" when ps cannot tell. `fresh` asks ps again and leaves the
+    invocation's cache alone (for a thread beside the one that owns it)."""
     key = str(pid)
-    if key not in _PSTART:
+    if fresh or key not in _PSTART:
         try:
             # The harness records procStart in the C locale ("Tue Sep  1 20:27:08
             # 2026"); ps must print the same shape, not the user's locale.
@@ -3196,6 +3197,8 @@ def proc_start(pid):
                                  timeout=5, env={**os.environ, "LC_ALL": "C", "LANG": "C"}).stdout
         except Exception:
             out = ""
+        if fresh:
+            return " ".join(out.split())
         _PSTART[key] = " ".join(out.split())
     return _PSTART[key]
 
@@ -3207,8 +3210,9 @@ def _parse_lstart(s):
         return None
 
 
-def same_process(rec):
-    """Is the record's pid still the process the record described?
+def same_process(rec, fresh=False):
+    """Is the record's pid still the process the record described? (`fresh`
+    as proc_start's.)
 
     Both sides are wall-clock strings with no zone in them: `ps -o lstart=`
     prints the LOCAL zone, while the harness writes `procStart` in UTC (every
@@ -3222,7 +3226,7 @@ def same_process(rec):
     connect. When either side cannot be parsed the check is skipped and the
     pid + socket rule decides.
     """
-    live = _parse_lstart(proc_start(rec.get("pid")))
+    live = _parse_lstart(proc_start(rec.get("pid"), fresh))
     recorded = _parse_lstart(rec.get("procStart"))
     if not live or not recorded:
         return True

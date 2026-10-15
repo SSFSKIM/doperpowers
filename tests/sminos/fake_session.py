@@ -21,6 +21,8 @@ extension in DC2's plan, reviewed clean at f0242560):
   leaves `streaming`, as a turn's end takes the turn's messages;
 - the snapshot carries `cut`, the last notice applied per loop (`"main"` or
   the agent id), under the lock that applies chunks and block-rows;
+- a `resync` replaces what streams with the mod's own copy (a block the
+  mod settled is gone, the text so far of one still streaming kept);
 - `GET /status` says `ready` once the mod's first `resync` is applied, and
   `GET /events` holds until then (at most 5 s, else 503);
 - a later `resync`, or a subscriber BACKLOG events behind, ends a
@@ -95,6 +97,16 @@ class Endpoint:
             self.resyncs += 1
             self.ready = True
             self.cut = {k: v for k, v in (e.get("cut") or {}).items() if v}
+            # The mod's own copy of what streams replaces this one, as the
+            # child's resync does: a block the mod settled is gone, whatever
+            # this copy still held of it.
+            self.streaming = {}
+            for m in e.get("streaming") or []:
+                settled = set(m.get("settled") or [])
+                self.streaming[(m["turnId"], m["agentId"], m["step"])] = {
+                    "turnId": m["turnId"], "agentId": m["agentId"], "step": m["step"], "model": m.get("model"),
+                    "upTo": m.get("upTo", -1),
+                    "blocks": {b["index"]: dict(b) for b in m.get("blocks") or [] if b["index"] not in settled}}
             if self.resyncs > 1:
                 for q in self.subscribers:
                     q.put(None)
@@ -257,6 +269,9 @@ class Message:
         self.ended = False
         self.next_chunk = 0
         self.texts = {}
+        self.up_to = {}       # block index → its last chunk
+        self.settled = set()  # blocks whose block-row the mod posted
+        fake.messages.append(self)
         self.post([{"type": "step", "phase": "start", "turnId": turn, "agentId": agent, "step": step,
                     "model": "m", "t": 0}])
 
@@ -272,27 +287,44 @@ class Message:
 
     def text(self, index, text):
         self.texts[index] = self.texts.get(index, "") + text
+        self.up_to[index] = self.next_chunk
         e = {"type": "chunk", **self.ids(), "chunkIndex": self.next_chunk,
              "chunk": {"kind": "text", "index": index, "text": text}, "t": 0}
         self.next_chunk += 1
         self.post([e])
 
-    def notice(self, index, uuid):
+    def notice(self, index, uuid, lost=False):
+        """The row's notice; `lost`: posted, and dropped by a gap before the
+        child applied it (the mod's own copy moves, the child's does not)."""
         if self.streams() and not self.ended:
-            self.fake.post([{"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": 0}])
+            self.settled.add(index)
+            e = {"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": 0}
         else:
-            self.fake.seen(uuid, self.agent)
+            e = {"type": "row-seen", "uuid": uuid, "agentId": self.agent, "door": "append", "t": 0}
+        (self.fake.lose if lost else self.fake.post)([e])
 
-    def row(self, index, post=True, disk=True, uuid=None):
+    def row(self, index, post=True, disk=True, uuid=None, lost=False):
         """The block's row: its uuid; `disk` writes it, then `post` sends its
         block-row (the notice trails the flush, as the producer posts it once
-        the engine has taken the row)."""
+        the engine has taken the row), which a gap takes when `lost`."""
         uuid = uuid or str(uuidlib.uuid4())
         if disk:
             self.write(index, uuid)
-        if post:
-            self.notice(index, uuid)
+        if post or lost:
+            self.notice(index, uuid, lost)
         return uuid
+
+    def live(self):
+        """Whether the mod still streams this request (its resync names it)."""
+        return self.streams() and not self.ended
+
+    def entry(self):
+        """The request as the mod's resync carries it: its unsettled blocks'
+        text so far, and the blocks it settled."""
+        return {**self.ids(), "model": "m", "upTo": self.next_chunk - 1,
+                "blocks": [{"index": i, "kind": "text", "text": t, "upTo": self.up_to[i]}
+                           for i, t in sorted(self.texts.items()) if i not in self.settled],
+                "settled": sorted(self.settled)}
 
     def write(self, index, uuid):
         self.fake.write_row(self.agent, {"type": "assistant", "uuid": uuid, "agentId": self.agent,
@@ -323,6 +355,7 @@ class FakeSession:
         self.child = None     # or the real child
         self.module = None    # the module instance now loaded: what a Message streams under
         self.cut = {}         # the mod's own copy of each loop's cut, which its resyncs carry
+        self.messages = []    # every request begun: the ones still streaming are in a resync
         self.turns = 0
 
     # -------------------------------------------------- the transcript
@@ -443,18 +476,25 @@ class FakeSession:
         self.endpoint = None
 
     def post(self, events):
-        for e in events:
-            if e.get("type") in ("block-row", "row-seen"):
-                self.cut[e.get("agentId") or "main"] = e["uuid"]
+        self.lose(events)
         if self.child is not None:
             self.child.post(events)
         elif self.endpoint is not None:
             self.endpoint.post(events)
 
+    def lose(self, events):
+        """Events the mod posted: its own copy moves. Alone, a gap took them
+        before the child applied them."""
+        for e in events:
+            if e.get("type") in ("block-row", "row-seen"):
+                self.cut[e.get("agentId") or "main"] = e["uuid"]
+
     def resync(self):
         """The mod's whole state again (a gap's sequel, or a child's first
-        post): its cut included."""
-        self.post([{"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": dict(self.cut), "t": 0}])
+        post): what still streams under this module, and its cut."""
+        streaming = [m.entry() for m in self.messages if m.live()]
+        self.post([{"type": "resync", "turns": [], "streaming": streaming, "agents": [], "cut": dict(self.cut),
+                    "t": 0}])
 
     def gap(self):
         self.post([{"type": "gap", "dropped": 3, "t": 0}])

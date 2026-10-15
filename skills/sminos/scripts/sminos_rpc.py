@@ -44,7 +44,17 @@ request's decision, by the member. A steer to a live session without a
 bridge takes `sminos steer`'s own fallbacks (the supervisor's `reply`, the
 inbox frame), so its result names no row. Spawn and retire run `sminos spawn`
 and `sminos retire`, which record `joined` and `retired` as they always do.
-Resume is DC7's M4: answered `unsupported` until it lands.
+
+Resume runs `claude --bg --resume <session>` in the session's working
+directory with nothing else on the line (any flag makes the engine start a
+copy), one per session at a time, once no process of this machine holds the
+session (`session-live`: its transcript is here, so here is everywhere it
+can run). The engine continues it under its own id unless it finds the
+session open meanwhile, when it starts a copy and says so: the copy is
+stopped and the RPC fails `copy-started`. The session rejoins as any session
+that runs again does (sminos's reconciliation, at the daemon's next tick,
+which the Resume asks for at once), and what was recorded for it while it
+was closed is delivered then.
 
 A compaction's outcome reaches browsers as DX4 `compact`, carrying the RPC's
 nonce, from the bridge's `compact` events for the command this daemon issued
@@ -58,6 +68,7 @@ queued, and the main thread posts it.
 """
 
 import calendar
+import glob
 import hashlib
 import http.client
 import json
@@ -83,6 +94,9 @@ KEPT_S = 86400            # the ledger keeps an entry a day
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
 STEER_TRACE_S = 30        # a claimed steer's row is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
+RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
+RESUME_HELD_S = 10        # how long a Resume waits for its job's process to hold the session
+LAUNCH_TIMEOUT = 300      # `claude --bg` hands the launch to the harness's supervisor
 COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
@@ -96,6 +110,8 @@ WORKTREE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 CREATED_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?Z")
 SEAT_RE = re.compile(r"\[[0-9a-f]+ / ([0-9a-f-]{36})\]")
 STEER_ROW_RE = re.compile(r"\(row ([0-9a-f-]{36})\)")
+BG_SHORT_RE = re.compile(r"backgrounded · ([0-9a-f]+)")
+COPY_RE = re.compile(r"started a copy as ([0-9a-f]+)")
 IDLE = "no turn is running"   # the mod's steer refusal (DX5): "no turn is running to steer: send it instead"
 SMINOS_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sminos")
 
@@ -274,6 +290,7 @@ class Rpcs:
         self.compact_held = []    # [(project id, session, event, at)]: events whose command is not named yet
         self.compact_flight = {}  # nonce → session: compact RPCs whose command's id is not known yet
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
+        self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
         self.next_reconcile = 0.0
@@ -324,6 +341,10 @@ class Rpcs:
         record = here.record(sid) if sid else None
         facts = {"running": record is not None, "bg": control.bg_job(record or {}), "root": project.root,
                  "checkout": args.get("checkout"), "status": (record or {}).get("status")}
+        if name == "resume":
+            seat = next((s for s in sminos.seats() if s["current"] == sid), None)
+            facts.update(cwd=here.cwd(project, sid),
+                         retired_seat=seat["alias"] if seat and seat["status"] == "retired" else None)
         self.flight.add(nonce)
         if name == "compact":
             self.compact_flight[nonce] = sid
@@ -416,7 +437,12 @@ class Rpcs:
             return lambda: spawn(args, nonce, facts["checkout"], rpc["member"])
         sid = args["session"]
         if name == "resume":
-            raise Refused("unsupported", "Resume is not built on this machine yet (DC7's M4)")
+            if facts["retired_seat"]:
+                # A retired seat's session would run outside the family:
+                # sminos re-joins a retired seat only through its own verbs.
+                raise Refused("unsupported", "the seat %s holding it was retired: `sminos fill` or `sminos send` "
+                                             "brings it back" % facts["retired_seat"])
+            return lambda: resume(sid, facts["cwd"], self.lock_of(self.resume_locks, sid))
         path = bridge.endpoint(sid)
         status = bridge.probe(path)
         bridged = status is not None and status.get("session") == sid
@@ -432,7 +458,7 @@ class Rpcs:
             if name == "interrupt":
                 return lambda: interrupt(path)
             if name == "model":
-                return lambda: model(path, sid, args, self.model_lock(sid))
+                return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid))
             if name == "compact":
                 return lambda: self.compact(path, rpc, sid)
             if name == "answer":
@@ -450,9 +476,10 @@ class Rpcs:
         raise Refused("unsupported", "%s needs the session's bridge; %s has none (§5)" % (
             name, "this --bg job" if facts["bg"] else "this terminal session"))
 
-    def model_lock(self, sid):
+    def lock_of(self, locks, sid):
+        """The session's lock in `locks` (one RPC kind's)."""
         with self.locks_lock:
-            return self.model_locks.setdefault(sid, threading.Lock())
+            return locks.setdefault(sid, threading.Lock())
 
     def compact(self, path, rpc, sid):
         result, cid = command(path, {"op": "compact"})
@@ -851,6 +878,91 @@ def spawned(nonce):
     return None
 
 
+def holders(sid):
+    """The engine's records of the processes of this machine holding the
+    session: each record whose pid runs and is the process it describes.
+    Read afresh, off sminos's caches (a worker's call)."""
+    out = []
+    for path in glob.glob(os.path.join(glob.escape(sminos.home_dir()), ".claude", "sessions", "*.json")):
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("sessionId") == sid and sminos.pid_alive(rec.get("pid")) \
+                and sminos.same_process(rec, fresh=True):
+            out.append(rec)
+    return out
+
+
+def held_by(recs):
+    return ", ".join("%s, pid %s" % ("a --bg job" if r.get("kind") == "bg" else "a terminal session", r.get("pid"))
+                     for r in recs)
+
+
+def launch_resume(sid, cwd):
+    """`claude --bg --resume <session>` in `cwd`, nothing else on the line:
+    (the job's short id, or "" when none started; the banner)."""
+    env = verb_env()
+    env.pop("RUNNER_TRACKING_ID", None)
+    try:
+        p = subprocess.run(["claude", "--bg", "--resume", sid], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=LAUNCH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "", str(e)
+    banner = sminos.ANSI_RE.sub("", p.stdout or "")
+    m = BG_SHORT_RE.search(banner)
+    return (m.group(1) if m and p.returncode == 0 else ""), banner
+
+
+def job_session(short):
+    """The session id the harness reports for a job it just started (its
+    `claude agents` row can lag the banner), or None."""
+    for _ in range(int(os.environ.get("SMINOS_UUID_POLL") or "30")):
+        try:
+            p = subprocess.run(["claude", "agents", "--json", "--all"], capture_output=True, text=True, timeout=60)
+            rows = json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else []
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            rows = []
+        for r in rows if isinstance(rows, list) else []:
+            if isinstance(r, dict) and r.get("id") == short and r.get("sessionId"):
+                return r["sessionId"]
+        time.sleep(sminos.poll_interval())
+    return None
+
+
+def resume(sid, cwd, lock):
+    """§5's Resume of a session no process of this machine holds. One per
+    session at a time: the second of two finds the first's job holding it.
+    The engine's own check is the last word on a reopen racing the launch:
+    it starts a copy, which is stopped, and the RPC fails `copy-started`."""
+    with lock:
+        live = holders(sid)
+        if live:
+            raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
+                          % held_by(live))
+        if not (cwd and os.path.isdir(cwd)):
+            raise Refused("failed", "the session's working directory %r is gone: nothing was launched" % (cwd,))
+        short, banner = launch_resume(sid, cwd)
+        if not short:
+            raise Refused("failed", "claude --bg --resume started no job: %s" % (last_line(banner) or "no output"))
+        copy = COPY_RE.search(banner)
+        reported = None if copy else job_session(short)
+        if copy or (reported is not None and reported != sid):
+            stopped = sminos.claude_stop(short)
+            raise Refused("copy-started", "the session was opened elsewhere meanwhile, so the engine started a copy "
+                                          "(%s) instead of continuing it; the copy %s" % (
+                                              short, "was stopped" if stopped else
+                                              "could not be stopped: `claude stop %s` failed" % short))
+        if reported is None:
+            raise Refused("failed", "the harness named no session for job %s: it may be running" % short)
+        deadline = time.time() + RESUME_HELD_S
+        while not holders(sid) and time.time() < deadline:
+            time.sleep(0.1)
+        sminos.nudge_daemon()   # its tick re-joins the session and delivers what was kept for it
+        return done({"session": sid})
+
+
 def retire(sid, root, member):
     rc, _, err = run_verb(["retire", "--", sid], root, VERB_TIMEOUT, member)
     if rc != 0:
@@ -898,4 +1010,7 @@ def trace(nonce, e):
     if e.get("rpc") == "steer" and e.get("session") and e.get("text_sha256"):
         row = steer_row(e["session"], e["text_sha256"], e.get("at", 0))
         return (done({"row": row}) if row else None), STEER_TRACE_S
+    if e.get("rpc") == "resume" and e.get("session"):
+        ran = any(r.get("kind") == "bg" for r in holders(e["session"]))
+        return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0

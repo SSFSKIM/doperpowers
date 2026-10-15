@@ -445,6 +445,10 @@ class Here:
     def checkouts(self, project):
         return policy.known_checkouts(project)
 
+    def cwd(self, project, sid):
+        """The working directory the session joined the project from here."""
+        return self.link.plane.here.get(project.id, {}).get(sid) or ""
+
 
 class Link:
     """One stream's conversation with the hub. Frames down are dispatched by

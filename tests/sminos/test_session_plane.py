@@ -443,6 +443,34 @@ class Engine(unittest.TestCase):
         again, b2 = self.subscribe()
         self.assertTrue(self.pump(again, b2, lambda: b2.snapshot is not None), "a fresh one is served")
 
+    def test_a_resync_replaces_what_streams(self):
+        """A gap drops a block's notice; the mod's resync carries its own
+        copy of what streams (the live block's text so far, the settled one
+        gone), and the next snapshot is that copy, not the child's stale
+        partial text beside a row history already holds."""
+        self.fake.start_bridge()
+        self.fake.user_row("question")
+        m = self.fake.message()
+        m.text(0, "Hel")
+        m.text(1, "draft")
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual(b.blocks, {("turn-1", None, 0, 0): "Hel", ("turn-1", None, 0, 1): "draft"})
+        self.fake.gap()
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+        self.assertEqual(b.end["reason"], "discontinuity")
+        u = m.row(1, lost=True)  # its row flushed; the gap took its block-row
+        m.text(0, "lo")
+        self.fake.resync()
+        again, b2 = self.subscribe()
+        self.assertTrue(self.pump(again, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(b2.blocks, {("turn-1", None, 0, 0): "Hello"}, "the mod's copy: block 1 settled")
+        self.assertIn(u, b2.uuids(), "its row in history, to the mod's cut")
+        m.text(0, ", world")
+        m.row(0)
+        self.assertTrue(self.pump(again, b2, lambda: len(b2.rows) == len(self.fake.rows())))
+        self.assertClean(b2)
+
     def test_bridge_not_ready_past_the_window_is_a_discontinuity(self):
         self.fake.start_bridge(ready=False)
         sub, b = self.subscribe()
@@ -712,6 +740,48 @@ class Lifecycle(unittest.TestCase):
         finally:
             if os.path.exists(settings):
                 os.unlink(settings)
+
+    def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
+        """A session no process runs leaves its kept file once it has been
+        quiet a day (its transcript, else the file), so a Resume soon after
+        keeps its model choice; a socket nobody listens on goes with its
+        session's end; a running session's files stay, however old."""
+        import sminos
+        import sminos_daemon as daemon
+        d = os.path.join(os.environ["SMINOS_HOME"], "bridge")
+        os.makedirs(d, exist_ok=True)
+        old = time.time() - 2 * 86400
+        holder = subprocess.Popen(["sleep", "60"])
+        rec = os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % holder.pid)
+        try:
+            ids = {k: new_session() for k in ("quiet", "recent", "no-transcript", "running", "dead-socket")}
+            with open(rec, "w") as f:
+                json.dump({"pid": holder.pid, "sessionId": ids["running"], "status": "idle"}, f)
+            transcripts = os.path.join(os.environ["HOME"], ".claude", "projects", "-sweep")
+            os.makedirs(transcripts, exist_ok=True)
+            for k in ("quiet", "recent", "running"):
+                t = os.path.join(transcripts, ids[k] + ".jsonl")
+                with open(t, "w") as f:
+                    f.write("{}\n")
+                if k != "recent":
+                    os.utime(t, (old, old))
+            kept = {k: os.path.join(d, sid + ".json") for k, sid in ids.items() if k != "dead-socket"}
+            for k, p in kept.items():
+                with open(p, "w") as f:
+                    json.dump({"override": {"model": "opus", "effort": None}, "delivered": {}}, f)
+                os.utime(p, (old, old))
+            dead = os.path.join(d, ids["dead-socket"] + ".sock")
+            fake_session.stalled_socket(dead).close()  # bound, then nobody listens
+            self.assertTrue(os.path.exists(dead))
+            sminos.forget_caches()
+            daemon.sweep_bridges()
+            self.assertEqual({k: os.path.exists(p) for k, p in kept.items()},
+                             {"quiet": False, "recent": True, "no-transcript": False, "running": True})
+            self.assertFalse(os.path.exists(dead), "a socket nobody listens on, of a session that ended")
+        finally:
+            holder.kill()
+            holder.wait()
+            os.unlink(rec)
 
 
 def call(url, method, path, body=None, headers=None):

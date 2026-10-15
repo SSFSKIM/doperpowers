@@ -8,7 +8,8 @@ Two halves.
 
 - `Checks` drives `sminos_rpc.Rpcs` in this process against DC2's real
   bridge child, with this test as its mod (`Mod`: commands answered as
-  bridge.tsx answers them), and a `claude` stand-in for spawn and retire.
+  bridge.tsx answers them), and a `claude` stand-in (fake_claude.py) for
+  spawn, retire, and resume.
   Each refusal of DX6's order is produced on purpose, and the ledger's
   claims are reconciled from their traces.
 - `Uplink` runs `sminos daemon uplink` against the hub stand-in
@@ -52,42 +53,6 @@ GIT = tpr.GIT
 wait_for = tpr.wait_for
 cli = tpr.cli
 
-FAKE_CLAUDE = r'''#!/usr/bin/env python3
-"""A stand-in for `claude` (tests only): `agents`, `stop <short>`, and a
-`--bg` launch, each call logged, every launch a row of `agents`."""
-import glob, json, os, sys, time, uuid
-state = os.environ["FAKE_CLAUDE_STATE"]
-os.makedirs(os.path.join(state, "agents"), exist_ok=True)
-args = sys.argv[1:]
-with open(os.path.join(state, "calls.log"), "a") as f:
-    f.write(json.dumps(args) + "\n")
-if args[:1] == ["agents"]:
-    print(json.dumps([json.load(open(p)) for p in sorted(glob.glob(os.path.join(state, "agents", "*.json")))]))
-    sys.exit(0)
-if args[:1] == ["stop"]:
-    p = os.path.join(state, "agents", args[1] + ".json")
-    if os.path.exists(p):
-        row = json.load(open(p))
-        row["state"] = "stopped"
-        json.dump(row, open(p, "w"))
-    print("stopped " + args[1])
-    sys.exit(0)
-if "--bg" in args:
-    try:
-        time.sleep(float(open(os.path.join(state, "bg-sleep")).read()))
-    except (OSError, ValueError):
-        pass
-    short = os.urandom(4).hex()
-    name = args[args.index("-n") + 1]
-    row = {"id": short, "sessionId": str(uuid.uuid4()), "kind": "background", "name": name,
-           "state": "working", "cwd": os.getcwd()}
-    json.dump(row, open(os.path.join(state, "agents", short + ".json"), "w"))
-    print("backgrounded · %s · %s" % (short, name))
-    sys.exit(0)
-sys.exit(0)
-'''
-
-
 TURN_UNKNOWN = "turn state unknown since the bridge reloaded; retry after the next model request"
 
 
@@ -98,12 +63,62 @@ def install_claude(name):
     os.makedirs(bindir, exist_ok=True)
     os.makedirs(state, exist_ok=True)
     path = os.path.join(bindir, "claude")
-    with open(path, "w") as f:
-        f.write(FAKE_CLAUDE)
-    os.chmod(path, 0o755)
+    if not os.path.lexists(path):
+        os.symlink(os.path.join(tsp.HERE, "fake_claude.py"), path)
     os.environ["PATH"] = bindir + os.pathsep + os.environ["PATH"]
     os.environ["FAKE_CLAUDE_STATE"] = state
     return state
+
+
+def stop_holders(state):
+    """Every session process the stand-in started, ended."""
+    try:
+        with open(os.path.join(state, "holders")) as f:
+            pids = [int(line.split()[0]) for line in f if line.strip()]
+    except OSError:
+        return
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def resumes(state, sid):
+    """The `--bg --resume` launches the stand-in saw for the session:
+    [{args, cwd}]."""
+    try:
+        with open(os.path.join(state, "resumes.log")) as f:
+            calls = [json.loads(line) for line in f if line.strip()]
+    except OSError:
+        return []
+    return [c for c in calls if c["args"][c["args"].index("--resume") + 1] == sid]
+
+
+def holders_of(sid):
+    """The engine's records of processes holding the session that run: [rec]."""
+    out = []
+    for name in os.listdir(os.path.join(os.environ["HOME"], ".claude", "sessions")):
+        try:
+            with open(os.path.join(os.environ["HOME"], ".claude", "sessions", name)) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if rec.get("sessionId") == sid and sminos.pid_alive(rec.get("pid")):
+            out.append(rec)
+    return out
+
+
+def ended_session(root):
+    """A terminal session of the project at `root` that ran here and ended:
+    joined, its process gone, its membership retired `ended`."""
+    s = tpr.Session(root, inbox=False)
+    sminos.reconcile(tpr.project_of(root))
+    s.end()
+    sminos.reconcile(tpr.project_of(root))
+    latest = sminos.view_of(tpr.project_of(root), titles=False).info[s.sid]["latest"]
+    assert (latest["kind"], latest.get("reason")) == ("retired", "ended"), latest
+    return s.sid
 
 
 def launches(state):
@@ -232,6 +247,11 @@ class Here:
     def checkouts(self, project):
         return policy.known_checkouts(project)
 
+    def cwd(self, project, sid):
+        sminos.forget_caches()
+        joined = (sminos.view_of(project, titles=False).info.get(sid) or {}).get("joined") or {}
+        return joined.get("cwd") or ""
+
 
 def results(frames, nonce):
     return [f["outcome"] for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == nonce]
@@ -259,6 +279,7 @@ class Checks(unittest.TestCase):
         cls.mod.stop()
         cls.bridged.end()
         cls.plain.end()
+        stop_holders(cls.claude)
 
     def setUp(self):
         tpr.clear_policy()
@@ -493,8 +514,7 @@ class Checks(unittest.TestCase):
                            ("decide", {"session": self.plain.sid, "decision": "allow",
                                        "digest": digest_of(self.plain.sid, "toolu_x", "Bash", {})}),
                            ("steer", {"session": self.ended, "text": "x"}),
-                           ("interrupt", {"session": self.ended}),
-                           ("resume", {"session": self.ended})):
+                           ("interrupt", {"session": self.ended})):
             self.refused(self.send(name, args), "unsupported")
 
     # ------------------------------------------------ execution, through DC2's protocol
@@ -812,6 +832,103 @@ class Checks(unittest.TestCase):
         finally:
             reqs.close()
 
+    # ------------------------------------------------ resume
+
+    def test_j_resume_brings_an_ended_terminal_session_back_under_its_id(self):
+        sid = ended_session(self.root)
+        self.here.sessions.add(sid)
+        rpc = self.send("resume", {"session": sid})
+        self.assertEqual(self.outcome(rpc, timeout=60), {"state": "done", "result": {"session": sid}})
+        self.assertEqual(resumes(self.claude, sid), [{"args": ["--bg", "--resume", sid], "cwd": os.path.realpath(
+            self.root)}], "claude --bg --resume <session> in its working directory, no other flag")
+        self.assertEqual([(r["kind"], r.get("jobId")) for r in holders_of(sid)], [("bg", sid[:8])],
+                         "a --bg job holds it, under its own id")
+        sminos.reconcile(tpr.project_of(self.root))
+        latest = sminos.view_of(tpr.project_of(self.root), titles=False).info[sid]["latest"]
+        self.assertEqual(latest["kind"], "joined", "it rejoins")
+        self.r.receive(rpc, self.here)
+        self.assertTrue(wait_for(lambda: len(results(self.collect(), rpc["nonce"])) >= 2))
+        again = self.send("resume", {"session": sid})
+        self.assertIn("running here", self.refused(again, "session-live")["error"]["message"])
+        self.assertEqual(len(resumes(self.claude, sid)), 1, "launched once")
+
+    def test_j_resume_is_refused_while_the_session_is_live(self):
+        self.refused(self.send("resume", {"session": self.plain.sid}), "session-live")
+        self.refused(self.send("resume", {"session": self.bridged.sid}), "session-live")
+        self.assertEqual(resumes(self.claude, self.plain.sid) + resumes(self.claude, self.bridged.sid), [])
+
+    def test_j_two_resumes_at_once_start_one_session(self):
+        sid = ended_session(self.root)
+        self.here.sessions.add(sid)
+        with open(os.path.join(self.claude, "bg-sleep"), "w") as f:
+            f.write("1.5")
+        try:
+            a = self.send("resume", {"session": sid})
+            b = self.send("resume", {"session": sid})
+            got = sorted((o["state"], (o.get("error") or {}).get("code")) for o in (self.outcome(a, 60),
+                                                                                      self.outcome(b, 60)))
+        finally:
+            os.unlink(os.path.join(self.claude, "bg-sleep"))
+        self.assertEqual(got, [("done", None), ("failed", "session-live")])
+        self.assertEqual(len(resumes(self.claude, sid)), 1, "one launch")
+        self.assertEqual(len(holders_of(sid)), 1, "one session holds the id")
+
+    def test_j_a_resume_racing_the_owner_reopening_stops_the_copy(self):
+        sid = ended_session(self.root)
+        self.here.sessions.add(sid)
+        open(os.path.join(self.claude, "reopen-first"), "w").close()
+        o = self.refused(self.send("resume", {"session": sid}), "copy-started")
+        self.assertIn("stopped", o["error"]["message"])
+        self.assertEqual([r["kind"] for r in holders_of(sid)], ["interactive"],
+                         "one session holds the id: the owner's")
+        copies = [c for c in launches(self.claude) if c[-1] == sid]
+        self.assertEqual(len(copies), 1)
+        with open(os.path.join(self.claude, "calls.log")) as f:
+            stops = [json.loads(line) for line in f if json.loads(line)[:1] == ["stop"]]
+        copy = [r for r in json.loads(subprocess.run(["claude", "agents"], capture_output=True, text=True).stdout)
+                if r["name"] == "resumed" and r["sessionId"] != sid and ["stop", r["id"]] in stops]
+        self.assertEqual([r["state"] for r in copy], ["stopped"], "the copy was stopped")
+        self.assertEqual([h for h in holders_of(copy[0]["sessionId"])], [], "and its process is gone")
+        for h in holders_of(sid):
+            os.kill(h["pid"], signal.SIGKILL)
+
+    def test_j_a_stopped_seat_resumes_and_a_retired_one_is_refused(self):
+        sid = str(uuidlib.uuid4())
+        sminos.meta_set(sid, {"uuid": sid, "current": sid, "alias": "resumable", "group": "rpcproj", "cwd": self.root,
+                              "status": "idle"})
+        sminos.forget_caches()
+        sminos.reconcile(tpr.project_of(self.root))
+        self.here.sessions.add(sid)
+        self.assertEqual(self.outcome(self.send("resume", {"session": sid}), 60),
+                         {"state": "done", "result": {"session": sid}})
+        sminos.forget_caches()
+        self.assertNotEqual(sminos.state(sminos.reload_seat(sid)), "stopped", "the seat reads as running")
+        for h in holders_of(sid):
+            os.kill(h["pid"], signal.SIGKILL)
+        gone = str(uuidlib.uuid4())
+        sminos.meta_set(gone, {"uuid": gone, "current": gone, "alias": "retiredone", "group": "rpcproj",
+                               "cwd": self.root, "status": "retired"})
+        self.here.sessions.add(gone)
+        o = self.refused(self.send("resume", {"session": gone}), "unsupported")
+        self.assertIn("retired", o["error"]["message"])
+        self.assertEqual(resumes(self.claude, gone), [])
+
+    def test_j_a_claimed_resume_is_reconciled_from_its_trace(self):
+        sid, late = ended_session(self.root), ended_session(self.root)
+        self.claim("JJJJJJJJJJJJJJJJJJJJJA", "resume", sid, self.clock[0])
+        self.claim("KKKKKKKKKKKKKKKKKKKKKA", "resume", late, self.clock[0] - rpcs.RESUME_TRACE_S - 1)
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        first = r.due({self.pid})
+        self.assertEqual(results(first, "JJJJJJJJJJJJJJJJJJJJJA"), [], "its job may still come")
+        self.assertEqual([x["error"]["code"] for x in results(first, "KKKKKKKKKKKKKKKKKKKKKA")], ["interrupted"],
+                         "past the window with no job holding it")
+        subprocess.run(["claude", "--bg", "--resume", sid], cwd=self.root, capture_output=True, check=True)
+        self.clock[0] += rpcs.RECONCILE_EVERY
+        self.assertEqual(results(r.due({self.pid}), "JJJJJJJJJJJJJJJJJJJJJA"),
+                         [{"state": "done", "result": {"session": sid}}], "a --bg job holds it: it ran")
+        for h in holders_of(sid):
+            os.kill(h["pid"], signal.SIGKILL)
+
     def test_i_results_are_republished_until_acknowledged(self):
         self.mod.turn = "t9"
         rpc = self.send("interrupt", {"session": self.bridged.sid})
@@ -875,6 +992,7 @@ class Uplink(unittest.TestCase):
         for p in cls.procs:
             p.wait(10)
         cls.session.end()
+        stop_holders(cls.claude)
 
     def setUp(self):
         tpr.clear_policy()
@@ -1065,6 +1183,63 @@ class Uplink(unittest.TestCase):
                          [{"rpc": compact["nonce"], "phase": "start"},
                           {"rpc": compact["nonce"], "phase": "end", "tokensBefore": 9000, "tokensAfter": 1200}])
         self.ack(compact)
+
+    def human_from_outside(self, sid, alias, text):
+        """A web `human` to the session: through a browser of the local hub,
+        or stored at the stand-in as the hub would store it. Its key."""
+        if self.local():
+            draft = {"kind": "human", "from": "human", "member": self.member, "text": text,
+                     "to": [{"session": sid, "alias": alias}], "created": sminos.now(ms=True)}
+            sealed = codes.seal(self.key, "log", self.pid, draft, codes.b64url(os.urandom(16)))
+            self.hub.socket.send({"t": "human", "event": sealed})
+            ack = wait_for(lambda: [f for f in self.hub.socket.received()
+                                    if f.get("t") == "human-ack" and f["nonce"] == sealed["mac"]["nonce"]])
+            self.assertTrue(ack, "the hub stored it")
+            return {"writer": ack[0]["writer"], "seq": ack[0]["seq"]}
+        e = tpr.hub_human(self.key, self.pid, sid, alias, text, 1)
+        status, body = tsp.call(self.hub.url, "POST", "/control/inject", {"project": self.pid, "events": [e]})
+        self.assertEqual(status, 200, body)
+        return {"writer": e["writer"], "seq": e["seq"]}
+
+    def delivery(self, key, sid, since):
+        """The outcomes the hub was told of for the event to the session."""
+        return [m["body"]["outcome"] for m in self.hub.messages()[since:]
+                if m["kind"] == "delivery" and m["body"]["event"] == key and m["session"] == sid]
+
+    def test_f_resume_brings_an_ended_session_back_and_what_was_recorded_is_delivered(self):
+        """G4 through the hub, with G3's last clause: a message from the web
+        to a closed terminal session is reported `recorded`; Resume brings the
+        session back as a --bg job under its own id; at the tick it asks for,
+        the session rejoins and the message is delivered, its outcome turning
+        `delivered`. A second Resume finds it live; a read-only machine
+        refuses Resume."""
+        sid = ended_session(self.root)
+        alias = sminos.view_of(tpr.project_of(self.root), titles=False).info[sid]["joined"]["alias"]
+        count = len(self.hub.messages())
+        key = self.human_from_outside(sid, alias, "pick up where you left off")
+        self.assertTrue(wait_for(lambda: self.delivery(key, sid, count) == ["recorded"], 20),
+                        "recorded for a closed terminal session: %s" % self.delivery(key, sid, count))
+        tpr.set_policy({"read_only": True})
+        self.assertEqual(self.outcome(self.send(self.rpc("resume", {"session": sid})))["error"]["code"], "read-only")
+        tpr.clear_policy()
+        self.assertEqual(resumes(self.claude, sid), [], "nothing launched on a read-only machine")
+        resume = self.send(self.rpc("resume", {"session": sid}))
+        self.assertEqual(self.outcome(resume, timeout=60), {"state": "done", "result": {"session": sid}})
+        self.ack(resume)
+        self.assertEqual(resumes(self.claude, sid), [{"args": ["--bg", "--resume", sid],
+                                                      "cwd": os.path.realpath(self.root)}])
+        r = cli("daemon", "tick")  # the tick the Resume nudged the loop for
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(wait_for(lambda: self.delivery(key, sid, count)[-1:] == ["delivered"], 20),
+                        "its outcome turns delivered: %s" % self.delivery(key, sid, count))
+        with open(os.path.join(self.claude, "inbox-%s.log" % sid)) as f:
+            self.assertIn("pick up where you left off", f.read(), "delivered to the resumed session")
+        latest = sminos.view_of(tpr.project_of(self.root), titles=False).info[sid]["latest"]
+        self.assertEqual(latest["kind"], "joined", "it rejoined")
+        again = self.send(self.rpc("resume", {"session": sid}))
+        self.assertEqual(self.outcome(again, timeout=60)["error"]["code"], "session-live")
+        self.ack(again)
+        self.assertEqual(len(resumes(self.claude, sid)), 1, "one session")
 
 
 if __name__ == "__main__":
