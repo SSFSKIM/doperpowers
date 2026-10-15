@@ -576,6 +576,22 @@ against the local hub; until it lands, the stand-in.
   additive DX5 change, DC2 having closed), pinned by a bridge test.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision (M3): The RPCs live in `sminos_rpc.py`. Freshness is checked
+  both ways (more than 60 s off the machine's clock either way is
+  stale). Refusals before the ledger (bad code, wrong machine, unknown
+  project, no session, an unknown RPC name) are not kept in it. Without a
+  bridge, the digest check is skipped and RPCs §5 gives no bridgeless
+  path answer `unsupported`; a steer to a live bridgeless session goes
+  through `sminos steer` and returns `{row: null}` (DX6 delta asked).
+  Spawn: alias `web-<hash of the nonce>`, the brief as the in-charge
+  line, first prompt "Begin with your brief.", the permission mode the
+  ceiling unless the RPC asks a stricter one (`sminos spawn
+  --permission-mode`), the nonce stamped on the seat record so a retried
+  spawn finds its one session. A model RPC naming only model or effort
+  keeps the other from the bridge's kept file. Resume answers
+  `unsupported` until M4.
+  Date/Author: 2026-10-15, M3 executor.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
