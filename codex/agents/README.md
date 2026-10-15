@@ -31,7 +31,7 @@ does not install these files. From this repository's root, copy them there:
 
 ```sh
 mkdir -p "$HOME/.codex/agents"
-for agent in agents/codex/*.toml; do
+for agent in codex/agents/*.toml; do
   cp "$agent" "$HOME/.codex/agents/doperpowers-$(basename "$agent")"
 done
 ```
