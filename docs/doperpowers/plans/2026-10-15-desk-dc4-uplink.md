@@ -399,6 +399,29 @@ produces nothing new for other children beyond the stream DC7 builds on.
   any other machine (DX2 refuses `<old>/…` as `writer-not-yours`).
   Date/Author: 2026-10-15, the composite's writer (confirmation) and
   controller (the means).
+- Decision: **A former name is self only for what this installation
+  wrote under it** (revises the means of "M2's identity rules", after
+  M2's task review). Treating every `<former>` event as local broke G1's
+  own scenario: installation B renamed to `beta` because A enrolled as
+  `alpha`, so A's live `alpha` sessions, imported into B's log, read as
+  B's own — local, then `gone`, then retired by B's reconcile. So
+  `hub.json`'s `former` records, per former name, the sessions this
+  installation held under it at enrollment (every session with a writer
+  file `<former>.<session>.jsonl` in this machine's project logs, and
+  every seat record whose `host` is the former name), and locality asks
+  `is_self(name, session)`: the current name, or a former name for one
+  of its recorded sessions. A session that starts after the rename writes
+  only under the enrolled name, so the set never grows.
+  Date/Author: 2026-10-15, controller (M2's review, finding 2).
+- Decision: **The enrollment code is read from a prompt, not argv.** The
+  code carries the org key in reversible base64url, and a positional
+  argument puts it in the process listing for the command's life and in
+  the shell's history. `sminos hub enroll` with no argument reads the
+  code from a hidden prompt on a terminal, or from stdin when piped; the
+  positional form stays (DX7 and §6 name `sminos hub enroll <code>`, and
+  DC5's web shows a command to run) until the composite's writer rules on
+  it — raised with it.
+  Date/Author: 2026-10-15, controller (M2's review, finding 4).
 - Decision: M2's executor's calls, kept. (1) Whether a project is a hub
   project is on `Project` (`hub`) and recorded in `project.json`, so the
   tick still knows when the checkout's root is gone; M1's uplink keeps
