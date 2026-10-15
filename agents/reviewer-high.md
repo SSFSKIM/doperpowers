@@ -3,7 +3,7 @@ name: reviewer-high
 description: Independent code reviewer, high rung (astra/high): a focused diff whose stakes warrant the frontier model. Read-only.
 model: astra
 effort: high
-autoCompactWindow: 600000
+autoCompactWindow: 750000
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---

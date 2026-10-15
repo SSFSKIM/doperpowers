@@ -3,7 +3,7 @@ name: plan-executor
 description: Executes a spec's Plan of Work — or a ticket body — on behalf of the session that authored it.
 model: opus
 effort: high
-autoCompactWindow: 600000
+autoCompactWindow: 750000
 color: green
 disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
 ---
