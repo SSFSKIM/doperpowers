@@ -138,6 +138,12 @@ and it is what the group chat and the direct channels are drawn from.
   already de-duplicates the two.
 - A command written while its machine is offline waits in the log and runs
   when the daemon reconnects; the log is its audit trail.
+- A project that names a hub syncs only through the hub; the hub exports
+  the log to the project's git remote on a schedule, as an archive and for
+  bootstrapping a new machine. Two live transports writing the same writer
+  files would bring back the conflicts one file per writer removed. A
+  project without a hub keeps the git mirror as `.smns` built it (owner,
+  2026-10-15).
 
 **The session plane** is live, served on demand, and not replicated: a
 session's transcript rows, its subagent tree and their transcripts, the
@@ -214,8 +220,9 @@ live session's permission mode, interrupting one subagent, rewind and fork.
 1. **The desk** (this design): hub, uplink, bridge, web; one owner, every
    machine. Done when a working day across two Macs needs no terminal.
 2. **The repository**: source control (worktrees, branches, commits, diffs),
-   pull requests, the board view over the Arkho board service, and, by the
-   owner's call, a web terminal.
+   pull requests, the board view over the Arkho board service, and a web
+   terminal in a session's working directory for break-glass, opened behind
+   a step-up check (owner, 2026-10-15; until then, SSH and `claude attach`).
 3. **The org**: invitations, roles (viewer, member, operator, admin),
    signed commands, presence, direct-channel privacy, and a review of what
    operating one member's subscription-backed sessions by several people
