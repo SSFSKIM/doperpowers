@@ -1715,6 +1715,81 @@ describe('requests from outside: questions', () => {
     expect(h.ofType('settled').map((e) => e.request)).not.toContain('toolu_a3')
   })
 
+  test("the ask mod's blocking question: raised under its dialog with the outer call's toolUseId; the dialog's own call and result are not posted", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const fromPlugin = <T extends object>(fn: T) => Object.assign(fn, { origin: { kind: 'tool', plugin: 'doperpowers' } })
+    let endOuter: (v: Record<string, unknown>) => void = () => undefined
+    const outer = h.hook('tool.call', { tool: ASK_TOOL })(
+      h.engine,
+      { tool: ASK_TOOL, tool_use_id: 'toolu_01outer', questions: [FRUIT] },
+      Object.assign(() => new Promise((resolve) => (endOuter = resolve)), { origin: { kind: 'engine', plugin: 'engine' } }),
+    )
+    await h.settle()
+    // The dialog the ask mod opens inside its call: one question, its token as the header.
+    let endDialog: (v: Record<string, unknown>) => void = () => undefined
+    const dialog = h.hook('tool.call', { tool: 'AskUserQuestion' })(
+      h.engine,
+      { tool: 'AskUserQuestion', tool_use_id: 'toolu_plugin_1', questions: [{ ...FRUIT, header: 'ask-1' }] },
+      fromPlugin(() => new Promise((resolve) => (endDialog = resolve))),
+    )
+    await h.check('toolu_plugin_1', 'AskUserQuestion', { questions: [FRUIT] })
+    const answer = h.permission('AskUserQuestion', { questions: [FRUIT] })
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', toolUseId: 'toolu_01outer', tool: 'AskUserQuestion' })])
+    poll.respond(200, { decision: { behavior: 'allow', updatedInput: { answers: { 'Which fruit?': 'Mango' } } }, by: 'm-7' })
+    await answer
+    endDialog({ text: answered('Mango') })
+    await dialog
+    endOuter({ text: answered('Mango') })
+    await outer
+    await h.recorded('toolu_plugin_1', 'hook', 'accept', 'AskUserQuestion')
+    await h.settle()
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', winner: 'web', by: 'm-7' })])
+    expect(h.ofType('tool').map((e) => [e.phase, e.toolUseId])).toEqual([['call', 'toolu_01outer'], ['result', 'toolu_01outer']])
+  })
+
+  test("two running asks sharing the dialog's first question: the pairing is ambiguous, so no toolUseId; the dialog's call and result still not posted", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const ends: ((v: Record<string, unknown>) => void)[] = []
+    const outers = ['toolu_01a', 'toolu_01b'].map((id) =>
+      h.hook('tool.call', { tool: ASK_TOOL })(
+        h.engine,
+        { tool: ASK_TOOL, tool_use_id: id, questions: [FRUIT] },
+        Object.assign(() => new Promise((resolve) => ends.push(resolve)), { origin: { kind: 'engine', plugin: 'engine' } }),
+      ),
+    )
+    await h.settle()
+    let endDialog: (v: Record<string, unknown>) => void = () => undefined
+    const dialog = h.hook('tool.call', { tool: 'AskUserQuestion' })(
+      h.engine,
+      { tool: 'AskUserQuestion', tool_use_id: 'toolu_plugin_2', questions: [{ ...FRUIT, header: 'ask-1' }] },
+      Object.assign(() => new Promise((resolve) => (endDialog = resolve)), { origin: { kind: 'tool', plugin: 'doperpowers' } }),
+    )
+    await h.check('toolu_plugin_2', 'AskUserQuestion', { questions: [FRUIT] })
+    void h.permission('AskUserQuestion', { questions: [FRUIT] })
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_plugin_2' })])
+    expect(h.ofType('raised')[0]).not.toHaveProperty('toolUseId')
+    poll.respond(410, { reason: 'settled' })
+    endDialog({ text: answered('Apple') })
+    await dialog
+    ends.forEach((end) => end({ text: answered('Apple') }))
+    await Promise.all(outers)
+    await h.settle()
+    expect(h.ofType('tool').map((e) => e.toolUseId)).toEqual(['toolu_01a', 'toolu_01b', 'toolu_01a', 'toolu_01b'])
+  })
+
+  test('a question raised under its own call carries no toolUseId', async () => {
+    const { h, poll } = await asked('toolu_01native')
+    expect(h.ofType('raised')[0]).toMatchObject({ request: 'toolu_01native' })
+    expect(h.ofType('raised')[0]).not.toHaveProperty('toolUseId')
+    poll.respond(410, { reason: 'settled' })
+  })
+
   test("an async question opened in the terminal, its dialog answered from outside: settled with the dialog's winner", async () => {
     const { h, answer, poll } = await asked('toolu_plugin_9')
     onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })

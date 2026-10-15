@@ -81,11 +81,17 @@ UPLINK_PARENT_ENV = "SMINOS_UPLINK_PARENT"
 # The scripts `daemon run` runs, itself and its uplink child: a change to one
 # ends the loop for a restart on the new code.
 OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
-            "sminos_codes.py", "sminos_archive.py")
+            "sminos_codes.py", "sminos_archive.py", "sminos_plane.py", "sminos_bridge.py", "sminos_policy.py",
+            "sminos_outcomes.py", "sminos_requests.py", "sminos_rpc.py", "sminos_control.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
 _DERIVE = None  # the derivation child this process started, while it may run
+# A bridge's kept file outlives its session's end this long (Resume soon after
+# keeps the session's model choice); the sweep runs at most this often.
+BRIDGE_QUIET_S = 86400
+BRIDGE_SWEEP_EVERY = 3600
+_BRIDGE_SWEPT = 0.0  # when this process last swept the bridges' files
 
 
 class SyncFailed(Exception):
@@ -491,7 +497,14 @@ def publish_renames(project, view):
 def deliver_owed(project, view):
     """Duty 4: for each local member with anything owed to it, deliver_next —
     the same operation the sender's fast path calls — in writer order from
-    its settled prefix. Returns (events delivered, the aliases reached)."""
+    its settled prefix. Returns (events delivered, the aliases reached).
+    An event from outside owed to a closed terminal session is reported
+    `recorded` once and stays owed (sminos_outcomes.report_closed)."""
+    try:
+        sminos.sibling_module("sminos_outcomes").report_closed(project, view)
+    except OSError as e:
+        sminos.daemon_log("delivery: what is owed to closed sessions of %s could not be reported: %s" % (
+            project.name, e))
     total, reached = 0, []
     for m in view.members:
         if not (m.local and m.session):
@@ -603,6 +616,7 @@ def tick_all(quiet=False):
         if not quiet or worth_saying(out, before):
             print(("%s " % sminos.now() if quiet else "") + tick_line(p, out))
     derive_duty()
+    bridge_duty()
 
 
 # ------------------------------------------------------------- derivation
@@ -658,6 +672,62 @@ def derive_duty():
         rec["derive"] = {"pid": _DERIVE.pid, "start": sminos.proc_start(_DERIVE.pid), "started": time.time()}
         sminos.write_json(daemon_path("state.json"), rec)
     sminos.daemon_log("derive --all started (pid %d)" % _DERIVE.pid)
+
+
+# ------------------------------------------------------------- the bridges' files
+
+
+def bridge_duty():
+    """The sweep of the bridges' files, at most once every BRIDGE_SWEEP_EVERY
+    per loop (a one-shot tick sweeps each time)."""
+    global _BRIDGE_SWEPT
+    if time.time() - _BRIDGE_SWEPT < BRIDGE_SWEEP_EVERY:
+        return
+    _BRIDGE_SWEPT = time.time()
+    sweep_bridges()
+
+
+def mtime(path):
+    try:
+        return os.stat(path).st_mtime
+    except (OSError, TypeError):
+        return None
+
+
+def sweep_bridges():
+    """What the bridge leaves under `$SMINOS_HOME/bridge/` for a session no
+    process of this machine runs any more (DC2 keeps them for its reloads,
+    and nothing else removed them): its kept file (`<id>.json`: the model
+    choice and the delivery keys) once the session has been quiet
+    BRIDGE_QUIET_S, neither its transcript nor the file touched that long, so
+    a Resume soon after the end keeps the choice; and its socket as soon as
+    nobody listens on it, which the child removes itself unless it was
+    killed. A delivery key the file forgets is an event the daemon settled
+    when the bridge took it, which is never pushed again. Read through the
+    main loop's caches, which tick_all has just forgotten."""
+    bridge = sminos.sibling_module("sminos_bridge")
+    d = bridge.bridge_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        sid, ext = os.path.splitext(name)
+        if ext not in (".json", ".sock") or not sminos.UUID_RE.fullmatch(sid) or sminos.session_running(sid):
+            continue
+        path = os.path.join(d, name)
+        if ext == ".sock":
+            bridge.remove_stale(path)
+            continue
+        last = max([t for t in (mtime(sminos.transcript_path(sid)), mtime(path)) if t is not None], default=None)
+        if last is None or now - last < BRIDGE_QUIET_S:
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            continue
+        sminos.daemon_log("removed %s: its session has run nowhere here for %d h" % (path, (now - last) // 3600))
 
 
 # ------------------------------------------------------------- the verbs
@@ -930,5 +1000,8 @@ def cmd_daemon(a):
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
     if a.op == "uplink":
         sminos.sibling_module("sminos_uplink").cmd_uplink(a)
+        return
+    if a.op == "policy":
+        sminos.sibling_module("sminos_policy").cmd_policy(a)
         return
     {"run": cmd_run, "tick": cmd_tick, "install": cmd_install, "status": cmd_status}[a.op](a)

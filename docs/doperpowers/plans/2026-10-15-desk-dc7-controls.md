@@ -15,10 +15,10 @@
 
 ## Progress
 
-- [ ] M1 — Presence and the session plane (DC7.G1, its first half)
-- [ ] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses)
-- [ ] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses)
-- [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
+- [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); proved against DC2's real M4 child (`sminos bridge`, seeded cut) and DC3's reviewed hub at `a190a6d8` with `step-end` in the real-child wave (`a7b38ace`, `4bf53309`), reviewed clean 2026-10-15
+- [x] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses) — reviewed clean 2026-10-15 (`c71b751f`, fixes `f357a00a`, `526b9eb8`); proved against DC3's local hub at `b7fc7ebd`+ (M2 uplink 3/3, M1 walk 7/7)
+- [x] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses) — reviewed clean 2026-10-15 (`99d8fd62`, `73c821fc`, `298254af`; fixes `4dc19fa7`, `74f078ea`, `3cd17348`); `test_rpcs.py` against DC3's local hub at `01ba7519` (contains `dabd37e8`) 30/30
+- [x] M4 — Resume; the walk against the local hub; docs and version (DC7.G4) — reviewed clean 2026-10-15 (`f263bbd5`, `69a9ad75`, `4bba978a`, `c317d37c`, `762f780a`; fixes `bd84f1c9`, `b870a9c0`); the walk 17/17 against DC3's local hub at MAWS `349f2512`; Resume live 5/5 against claude 2.1.301
 
 ## Constraints that bind every milestone
 
@@ -264,6 +264,535 @@ against the local hub; until it lands, the stand-in.
   moved to M2, ahead of every path it guards.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision: Pre-flight. Parent pin: the composite's blob `6c8015ef` at
+  MAWS `edf9dea7` (branch `smns-erb`), read at its live path, never from a
+  copy on this branch. The branch is DC2's `worktree-smns-erb` at
+  `664e4bd8` merged with DC4's branch at `7252a5d7` (the one conflict, the
+  suite's tail in `run-sminos-tests.sh`, keeps both sides' sub-suites).
+  Date/Author: 2026-10-15, controller.
+
+- Decision: Pre-flight. M1 builds the row ordering against the agreed
+  text (DC2's plan, Decision Log "M4 scope, agreed with the composite's
+  writer for DC7", rules 1–4), not against DC2's code, which is
+  uncommitted at dispatch: its tests drive a scripted DX5 endpoint that
+  emits `row-seen`, `block-row`, the snapshot's `cut`, `ready`, and a
+  stream ended on a later resync, as that text has them. When DC2's M4
+  commits, the controller merges it and M1's ordering is proved against
+  the real child (a follow-up wave on M1's executor); M1's tick means
+  reviewed clean against the contract, and the real-child proof is
+  recorded beside it when it lands.
+  Rationale: the contract is agreed and DC2 builds to it; waiting would
+  idle M1, and a mismatch found later is a contract question for the
+  composite's writer, not a local patch.
+  Date/Author: 2026-10-15, controller.
+
+- Decision: Pre-flight. M1 publishes DX4 `machine` on connect with the
+  checkouts and the policy read through one function M2 makes real; until
+  M2 that function returns the default (`read_only: false`, the ceiling
+  the user's settings give, or null when M1 cannot yet read it). M1 adds
+  no execution path and no new outside-origin delivery, so the policy's
+  place ahead of every path it guards (M2) holds.
+  Date/Author: 2026-10-15, controller.
+
+- Decision: Pre-flight. The hub stand-in for the session plane and the
+  RPC frames builds on DC4's `tests/sminos/hub_standin.py` (the DX2 log
+  plane's stand-in) from a file of this child's own that imports it, so
+  DC4's still-moving branch merges without conflict; DC3's local hub
+  replaces it in the proofs once its M3 lands, as the dispatch announces.
+  The default ceiling is read from the user's own settings, never written.
+  Date/Author: 2026-10-15, controller, confirmed by the composite's writer.
+
+- Decision (M1): The session plane is `sminos_plane.py`, served on the
+  uplink's stream through small seams (dispatch entries for `subscribe`,
+  `unsubscribe`, `rows`, `diff`; presence in `open()`'s POST; the plane's
+  tick in `Link.tick`; a wake item in `serve`). One plane per stream: a new
+  stream drops the old subscriptions silently, since the hub fences routes
+  by generation and ends them itself. `machine_policy()` in
+  `sminos_hublog.py` is the function M2 makes real; its default ceiling is
+  the string `"default"` (the engine's mode when settings name none), not
+  null as the pre-flight allowed, because DC3's hub refuses a non-string
+  ceiling.
+  Date/Author: 2026-10-15, M1 executor.
+
+- Decision (M1): Subscription edges. An `end` before any snapshot (unknown
+  session, a bridge answering 503 when not ready, a cut row never on disk)
+  is sent at `n` 0, as DC3's in-progress hub does. A bridge that answers
+  503 ends the subscription `discontinuity` rather than serving the
+  transcript alone, and a transcript-only subscription of a running
+  session is ended `discontinuity` once its bridge answers, so streaming
+  returns after a module reload. A session no longer running gets 1 s for
+  its last flushes, then `session-ended`; an ended session can still be
+  subscribed (snapshot, then `session-ended`). With a null cut, a
+  `block-row` for a row history already holds is dropped, unless the
+  subscriber holds that block's streamed text, in which case it ends
+  `discontinuity`. Presence goes to the project's local members; a
+  subscription may name any session that joined from this machine, ended
+  ones included. Rows are complete JSONL objects with a string `uuid`;
+  snapshots and pages carry up to 512 KiB of rows, at least one. The diff
+  base is `origin/HEAD`, else `main`, else `master`, with read-only git on
+  a worker thread, capped at 4 MiB.
+  Date/Author: 2026-10-15, M1 executor.
+
+- Decision: DX5's row order is disk order (composite `cd2667d8`, from
+  DC2's M4 review: a notice posted at hook entry could precede a row the
+  engine wrote earlier, and a compaction's unnamed rows were emitted after
+  the next prompt). The producer now posts a row's notice after `next()`
+  resolves, so within a loop notice order is write order and a notice may
+  trail the flush. The consumer: history is each loop's disk rows up to
+  and including its cut, once the cut's row is on disk (5 s, else
+  discontinuity); live, each loop's rows go out strictly in disk order, a
+  row past the cut released by the first of its own notice, a notice for
+  any later row of the same loop, or 2 s with neither, and every later row
+  waits behind it; a notice whose row is not on disk within 5 s is a
+  discontinuity; a `block-row` for a row already released unnamed is a
+  discontinuity; a `row-seen` for a released row is ignored. M1's
+  out-of-order note is void. Also decided there: an `end` may be a sub's
+  first message at `n` 0; a main-scope sub settles another agent's block
+  on its `block-row`; the ceiling reports the settings' `defaultMode`
+  (read only), `"default"` only when they name none, never as a
+  placeholder.
+  Date/Author: 2026-10-15, the composite's writer; M1's consumer adopts it
+  in its fix wave.
+
+- Decision: The producer seeds the cut (M1's review found a null-cut
+  snapshot could draw a flushed, un-noticed row beside its streaming
+  block). On its first `resync` the mod reports each loop's cut as the
+  last row that loop had when the module loaded, from the engine's own
+  message list, and no block of a loop enters `streaming` before its cut
+  is seeded; `null` means only "this loop has no rows". The consumer then
+  reads a null cut as empty history, every disk row live under the
+  disk-order rule; the wait for a cut row to reach disk covers a seed not
+  yet flushed. DX4's non-overlap holds with no exception. The consumer
+  keeps its current null-cut handling against the scripted endpoint until
+  DC2's M4 lands, then switches the endpoint to seed and is proved
+  against the real child.
+  Rejected: accepting the overlap as transient, healed by the
+  discontinuity.
+  Date/Author: 2026-10-15, the composite's writer (option a); DC2 builds
+  the seed in its M4.
+
+- Decision (M1 fix wave): Bridge presence is probed off the uplink's
+  thread by `Bridges` (kept across streams; one probe at a time per
+  session, rerun when the socket's inode changes or the answer is 2 s
+  old; it wakes the uplink on a change), so a stalled endpoint cannot
+  hold another session's presence. A pid seen dead loses its cached
+  identity and is checked anew, and a running pid's identity is read
+  again every 10 s, so a pid reused between two polls is found within
+  that bound. The ceiling is `permissions.defaultMode`
+  as the settings write it, else `"default"` (missing or malformed file
+  included, as the engine reads it). `step-end` (composite `34ee27ca`) is
+  relayed in DX5's order, so after its step's `block-row`s; rows waiting
+  for release do not hold it. The uplink tests run against DC3's local
+  hub when `DESK_HUB` names its stand-in for Access, enrolling through
+  `/standin/enrollment-code` and reading as a DX3 browser
+  (`tests/sminos/ws_client.py`); without it, against `hub_standin.py`.
+  Date/Author: 2026-10-15, M1 executor.
+
+- Decision: Unsubscribe differs between hubs and both stand. The real hub
+  drops a sub's route before forwarding `unsubscribe`, so the machine's
+  `end {reason: "unsubscribed"}` reaches no browser; the stand-in still
+  delivers it. The test asserts each hub's own behaviour. `step-end` is
+  not sent on local-hub runs until DC3's hub accepts it (DC3's plan
+  `73a33de2`). The local hub runs as `pnpm --filter desk-hub local --port
+  <n>` (no `--`).
+  Date/Author: 2026-10-15, the composite's writer (`0e7da91e`).
+
+- Decision: From DC2's live walk of its M4 (composite `2038124c`,
+  `10b2d830`), folded into M1's real-child wave (with the seeded cut),
+  since none blocks M2. (1) The bridge holds a step's `step end` until
+  its `block-row` notices are posted, for at most 1 s, released early by
+  the loop's next request, the turn's end, or the subagent's stop; a
+  `block-row` later than the cap is still relayed in order (the browser
+  ignores it for a block it dropped), and a step is never ended twice.
+  (2) A producer removes a block from its snapshot `streaming` at its
+  step's end as well as at its `block-row`, under the snapshot lock, so
+  an aborted block never appears in a later snapshot; the scripted
+  endpoint does the same. (3) A response row's `block-row` is never
+  preceded by a notice for a row written after it on disk; notice order
+  is otherwise the engine's append order, which can put a row ahead of
+  its parentUuid chain within one same-millisecond batch, and the release
+  rule absorbs that (the passed-over row released unnamed at once, its
+  late `row-seen` ignored). (4) The worst flush-to-notice lag measured is
+  0.68 s at load ~220, so the 2 s window stands; the module loads before
+  a `--bg` job's first prompt row, so the seed applies only to loops
+  older than the module.
+  Date/Author: 2026-10-15, the composite's writer, from DC2's M4 walk.
+
+- Decision: The local hub to prove against from M2 on is MAWS `d75f2924`
+  or later (DC3's M3 gate green, run 38763030113): it accepts `step-end`
+  (earlier hubs refuse it `bad-shape`), carries DX7's wrapped keys, holds
+  at most 32 subs per browser socket (the 33rd, or a reused `sub`, gets
+  `end {reason: "error"}`), and keeps a 45 s lease. M1's local-hub walk
+  is rerun there, `step-end` included, in its real-child wave.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision (M2): The policy is `$SMINOS_HOME/daemon/policy.json`, edited
+  by `sminos daemon policy [--read-only on|off] [--ceiling MODE|settings]`,
+  machine-wide (git-mirrored projects covered too), and fails closed: a
+  file that cannot be read as a policy makes the machine read-only. The
+  guard sits in `deliver_next`; "outside origin" is a writer whose machine
+  part is not this machine (`is_self`, former names included). An outcome
+  is recorded (`<project home>/outcomes.jsonl`) before its settlement, for
+  hub projects only; an uncertain push (`sent?`, `woken?`) reports
+  `delivered` with a reason starting "uncertain:" pending the composite's
+  ruling. `raised` carries DX4's fields only. Settlements made during an
+  outage are queued and sent ahead of the complete pending set; raises
+  are carried by the set. A request reader lives until its own stream
+  ends (a failed probe alone does not drop it). Known checkouts are every
+  session that joined from this machine, ended ones included. `machine`
+  is republished when its body changes (policy each 2 s scan, nudged by
+  the verb; checkouts each 10 s). New modules: `sminos_policy.py`,
+  `sminos_outcomes.py`, `sminos_requests.py`.
+  Date/Author: 2026-10-15, M2 executor.
+
+- Decision: M2's contract questions ruled (composite `6fa2252d`), built
+  in M2's fix wave. (1) A send to a closed terminal session is reported
+  `recorded` without settling, once per event and recipient, when it
+  first becomes owed to that session; it stays owed (smns §4), and when
+  Resume brings the session back and the event is delivered, `delivered`
+  follows for the same key (the hub keeps the latest). (2) DX4
+  `delivery.outcome` gains `uncertain`, for a push whose frame was taken
+  and never answered (`sent?`, `woken?`): settled, never pushed again,
+  drawn as possibly delivered. (3) `raised` gains optional `agentId`
+  (absent for the main thread) and `truncated: true`; the code covers
+  every field; `agentId` is sent only for a subagent (a non-empty
+  string) and `truncated` only as `true`, any other form being refused
+  `bad-shape`. DC3's hub admits all three from `b7fc7ebd` (MAWS), which
+  M2's local-hub run uses. Also: the complete `pending` set is held until the
+  request readers' first snapshots, within a bound, since an unread empty
+  set is not complete.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision (M2 fix wave): A closed terminal session is a seat-less
+  session that joined from this machine whose latest membership is
+  `retired` with reason `ended`; its `recorded` is written in
+  `deliver_owed` (the pass the uplink's import and the daemon tick both
+  run), "once" kept in `recorded/<session>.json` per writer. The hub's
+  `settled()` is not idempotent (each settlement is broadcast and
+  audited), so the machine filters duplicates: a settlement is seen once
+  queued or taken, the taken ones kept in `daemon/requests.json` across
+  restarts; every unseen settlement in a bridge's snapshot is relayed.
+  Bridges are followed by their endpoint file's existence, so `Link.open`
+  follows them before building the set; the complete pending set goes
+  once every followed session has its first snapshot, or after 8 s, a
+  reader that cannot snapshot counting as read and retrying with backoff
+  (1 s doubling to 30 s). Over the outbox cap only raises are dropped. An
+  outcome that cannot be written leaves its event unsettled, so it is
+  delivered and recorded again on the next pass. A closed session's
+  `recorded` is written under the session's delivery lock (delivery's
+  lock order), so it never lands after a `delivered` and two reporters
+  take turns; a raise the outbox cap drops marks its project stale, so the
+  open stream owes the complete set.
+  Date/Author: 2026-10-15, M2 executor.
+
+- Decision: DC2's M4 is reviewed clean (code `f0242560`, plan
+  `89c9f8da` on `worktree-smns-erb`; the composite's DX5 refreshed at
+  `ceb34bd4`). M1's real-child wave runs between M2 and M3, after this
+  branch merges DC2's at `89c9f8da`, and matches the scripted endpoint to
+  the real child: notices posted once the append resolves; a row past the
+  cut released on its own notice, a later row's in its loop, or 2 s after
+  it was first seen on disk (rows written together come out together);
+  the hello's `seed` and the snapshot's `cut`, `null` meaning the loop had
+  no rows before the module loaded, and in a loop older than the module a
+  request begun before the hello never streams, its rows named by
+  `row-seen`; a step's end held until its `block-row`s are posted, at
+  most 1 s, after which the step's pairing is closed (a later row named
+  by `row-seen`, never `block-row`) and its whole message leaves
+  `streaming`; `GET /events` held with no snapshot until the mod's first
+  resync to that child, else 503 after 5 s, which the reader retries
+  within its reconnect window (`GET /status` has `ready`); the stream
+  ends on any later resync or a subscriber 10 000 behind. M1's local-hub
+  walk is rerun at the hub that accepts `step-end`.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision: The hub takes a repeated `settled` for one request once, with
+  no second broadcast or audit record (composite `f5a2046b`, built by
+  DC3); the machine keeps its own duplicate filter as well. Merge order is
+  DC2, then DC4, then DC7: M4's bump runs `scripts/bump-version.sh` over
+  the latest main merged when the PR opens (main 7.154.0, DC4's branch
+  7.155.0 at this writing), and the composite's writer checks the numbers
+  at merge.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision (M1 real-child wave): A null cut is empty history, every disk
+  row of the loop live. A bridge answering 503 is retried for up to 5 s
+  (`sminos watch`'s reconnect window), after which the subscription ends
+  `discontinuity`; the plane's open wait rose from 10 s to 20 s to fit.
+  `fake_session.py` matches the real child, and `start_bridge(real=True)`
+  runs every engine case against `sminos bridge` itself, a test process
+  standing in for the mod; the scripted late-`block-row` case stays as a
+  guard. M2's request tests post under the hello's nonce and send the
+  mod's first resync. The plane reads neither a turn start's `recovered`
+  nor `resync`'s `sessionInfo` (DC2 `5003ca2e`), so it needed no change
+  for them.
+  Date/Author: 2026-10-15, M1 executor.
+
+- Decision: DC3's M3 is reviewed; its hub at MAWS `a190a6d8` (gate run
+  38775224532 green) is the one to prove against, and DX2, DX3, DX4, DX6
+  and DX7 in the composite are its reviewed text (`d1966938`). What the
+  machine side meets there: `raised.deadline` is ISO 8601 UTC with
+  milliseconds (converted from DX5's epoch ms), else `bad-shape`;
+  `rpc-result`, `pending`, and every `session` message need the project
+  opened on the current stream (`not-open`); every well-formed
+  `rpc-result` is answered `rpc-ack`; a subscription message for a `sub`
+  no browser holds is answered `unsubscribe` (an `end` excepted); the
+  lease is 45 s, an `hb-ack` of another generation renews nothing, and a
+  renewal after a lapse brings the machine back online without restoring
+  its subscriptions; `machines` lists a machine once it has sent DX4
+  `machine`, which goes after every reconnect; `settled` is taken once per
+  request (ids kept 30 days); `unsubscribe` is final at the hub at once.
+  M1's walk passed there 7/7 (real-child wave); M2's uplink tests rerun
+  there at M3's start.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision: DC2 closed (PR #195, main `a6c90a13`, 7.155.0); DX5 is final
+  in the composite at MAWS `361bee24`. Until the mod knows whether a main
+  turn runs after a load into an existing conversation, the bridge
+  refuses `steer`, `interrupt`, and `compact` with "turn state unknown
+  since the bridge reloaded; retry after the next model request"; M3
+  reports it as DX6 `failed` with that reason, never success or `idle`.
+  M3 merges `origin/main` for DC2's final code; DC4's re-bumped branch
+  merges when it lands, and this PR bumps above it. M4 takes DC2's
+  residue: nothing sweeps `$SMINOS_HOME/bridge/<id>.json`.
+  Date/Author: 2026-10-15, controller, from the composite's writer.
+
+- Decision: DC4 closed (PR #194, main `9e7d3d30`, 7.156.0); this branch
+  merges `origin/main` and the PR bumps to 7.157.0 unless something lands
+  first. DC3's M3 is final (ticked at MAWS `b3542038`; session plane at
+  `dabd37e8`, gate green on `54a9c171`): M3's RPC proofs run there. An
+  RPC retry that finds a lapsed lease answers `uncertain`; a resent
+  `settled` is accepted silently; an unread request body is drained up to
+  1 MiB and 1 s, then reset.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision: A refused decision says who won, as fields (composite
+  `bb8b8773`; DX6 by DC3 at `c547aaa5`). A failed outcome's error is
+  `{code, message, winner?, by?, terminalOnly?}`; a `decide` or `answer`
+  the bridge refuses with 409 maps to `not-pending` with `winner`/`by`
+  from `already settled`'s `settled`, `by` from "already answered by",
+  `terminalOnly` from a terminal-only 409, and `winner`/`by` `terminal`
+  from "the terminal answered it"; nothing else sets them, and no error
+  text is parsed. The bridge's two 409s gain those fields in M3 (an
+  additive DX5 change, DC2 having closed), pinned by a bridge test.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision (M3): The RPCs live in `sminos_rpc.py`. Freshness is checked
+  both ways (more than 60 s off the machine's clock either way is
+  stale). Refusals before the ledger (bad code, wrong machine, unknown
+  project, no session, an unknown RPC name) are not kept in it. Without a
+  bridge, the digest check is skipped and RPCs §5 gives no bridgeless
+  path answer `unsupported`; a steer to a live bridgeless session goes
+  through `sminos steer` and returns `{row: null}` (DX6 delta asked).
+  Spawn: alias `web-<hash of the nonce>`, the brief as the in-charge
+  line, first prompt "Begin with your brief.", the permission mode the
+  ceiling unless the RPC asks a stricter one (`sminos spawn
+  --permission-mode`), the nonce stamped on the seat record so a retried
+  spawn finds its one session. A model RPC naming only model or effort
+  keeps the other from the bridge's kept file. Resume answers
+  `unsupported` until M4.
+  Date/Author: 2026-10-15, M3 executor.
+
+- Decision: M3's contract questions ruled (composite `21c32db7`). DX6's
+  steer result is `{row: string | null}`, null when the session has no
+  bridge (a seat's `reply`, or a send), still refused `idle` where the
+  machine can tell no turn runs. `by` on spawn and retire is the RPC's
+  `member` id, never the operator `""`. Who-won fields come only from the
+  bridge's own record: its 409s, or the `settled` record its pending
+  snapshot reports when the digest check finds the request settled.
+  M3's other decisions stand but one: DX4 `compact` is relayed for every
+  compaction of a bridged session, tagged with the nonce of the DX6
+  `compact` that asked for it, null when none did (DX4's row as written),
+  from the same stream the request relay already follows.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision (M3 fix wave): An unreadable ledger fails closed: every RPC
+  is refused `failed` (DX6 has no ledger code; the message says nothing
+  ran), the file is never replaced, and it is re-read on each RPC. Only an
+  `error` spawn seat fails at once; any other provisional seat is
+  `interrupted` only past the 420 s window. Model and effort changes are
+  serialized per session, each waiting up to 2 s for the bridge to keep
+  its result before the next reads it. `by` reaches `joined` and
+  `retired` through `SMINOS_DESK_MEMBER` (a seam in `sminos.caller_alias`,
+  honoured only as 32 hex and only outside a session). A bridgeless steer
+  is refused `idle` when the engine's record says `status: "idle"`.
+  Compactions are relayed from the requests stream; an unnamed one waits
+  only while a compact RPC of that session awaits its command id.
+  A change naming only model or only effort reads the bridge's live
+  override (the `override` of its `GET /events` snapshot) under the
+  session lock just before sending, so another writer's newer choice (the
+  owner's `sminos model`) is kept; an unreadable override refuses the
+  partial change, and no daemon cache or kept file stands in for it. A
+  change landing between that read and the send is a race the whole-pair
+  `model` verb cannot close; accepted.
+  Date/Author: 2026-10-15, M3 executor.
+
+- Decision: A decision that does not fit its request is refused
+  `bad-shape` before the claim (composite `dd908dfa`): check 7 applies the
+  bridge's own rule to the pending request it fetches (a deny on an async
+  question, an `answer` to a permission prompt, an allow on a question
+  without its answers, answers keyed by anything but the request's
+  questions; a synchronous question's deny stays accepted); the bridge's
+  400 stays a backstop, `bad-shape` after the claim. DX6 lists
+  `bad-shape` among the daemon's codes. Built in M4's tail.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision: DX5 and DX4 `raised` gain `toolUseId?` (composite
+  `43a27604`): the outer `mcp__doperpowers__AskUserQuestion` call's
+  tool-use id, present only when `request` is the ask mod's engine dialog
+  (`toolu_plugin_…`), so the web can tie the card to its transcript row;
+  `request` stays the id a decision answers. The bridge stops posting the
+  dialog's own `tool/call` and `tool/result` (no transcript row holds
+  them), and the daemon relays `toolUseId` unchanged under the code.
+  Built in M4's tail (this branch carries DC2's bridge now that DC2 has
+  closed).
+  Date/Author: 2026-10-15, the composite's writer, from DC6's M3 and
+  DC3's recording.
+
+- Decision (M4): Resume runs `claude --bg --resume <session>` in the
+  session's directory with no other flags and no prompt, serialized per
+  session by a thread lock, after checking no process of this machine
+  holds the session; a stopped seat's session takes that direct path,
+  and a retired seat's is refused `unsupported` (the owner's ruling for
+  phase 1: retire is the owner's deliberate act of taking a session out
+  of the project, and Resume restores a session that ended, not one that
+  was retired; DC5 does not offer it on a retired session). Rejoin and
+  delivery happen at the next tick, which the Resume triggers at once. A
+  claimed Resume reconciles as done when a `--bg` process holds the
+  session, else `interrupted` after 420 s. The daemon sweeps ended
+  sessions' bridge files hourly: the `.json` after 24 h quiet, the socket
+  once nobody listens. A misfit decision's refusal before the claim is
+  still kept as the nonce's one answer. `toolUseId` pairs the ask mod's
+  dialog with the running ask call whose first question is the dialog's;
+  a dialog opened from an async ask's button names no call. When two
+  running ask calls share that first question the pairing is ambiguous,
+  and the bridge omits `toolUseId` rather than guess (the composite's
+  writer). Claims resting on a stand-in for `claude`: two Resumes at
+  once, delivery after Resume, claim reconciliation, the seat cases; the
+  live check (`tests/mods/live-resume-check.py`) proved Resume itself
+  against claude 2.1.301 under a temporary HOME. From M4's review: a
+  claimed Resume writes `launched_at` (and `job` once known) before
+  launching and reconciles as done only from a `--bg` holder started no
+  earlier than that launch with that job; a claim without `launched_at`
+  is `interrupted`; the "running here" check runs before the claim and
+  again under the lock; Resume answers done only once its job's process
+  holds the session, else `failed` naming the job, waiting up to 30 s on a
+  loaded machine. The sweep removes a kept file only when it and the
+  transcript are both 24 h quiet.
+  Date/Author: 2026-10-15, M4 executor; rulings by the composite's writer.
+
+- Decision (final review's fixes): On a read-only machine every
+  outside-origin event still owed to a closed terminal session, one
+  already reported `recorded` included, is settled `refused-read-only`
+  under its delivery lock (projects without a hub record no outcome). A
+  new stream publishes null presence for every session that joined from
+  here and is no member now and left since the project's watermark
+  (`daemon/presence.json`: the time of the last member read whose
+  presence the hub took, moved only after `open()`'s POST answers 200)
+  less 60 s, every one when no watermark is kept. A compact's command id
+  is kept on its ledger claim until the compaction ends and restored at
+  start. An HTTP read failure in the digest check is `not-pending`, in
+  the decision POST `failed`, and any other exception while planning is
+  `failed` ("nothing ran"), so no RPC is left unanswered.
+  Date/Author: 2026-10-15, final-review fixer, reviewed clean.
+
+- Decision: The suite gate under this machine's load. The three
+  assertions outside the session plane that fail only at load above 200
+  (Surprises, M1) are accepted as load flakes by the composite's writer
+  (`0e7da91e`); a milestone whose own suites and the sub-suites it
+  touches pass, with only those failing, meets the "stays green"
+  constraint. The final review's evidence repeats the full suite when the
+  load allows.
+  Date/Author: 2026-10-15, controller, from the composite's writer.
+
 ## Surprises & Discoveries
 
+- (M1) Under load above 200, three suite assertions outside the session
+  plane fail and pass again at normal load: "at most once more: two
+  frames in all" (in DC4's tech debt), "the watcher's finalize does not
+  overwrite a retire" (a `sleep 0.8` race), and "the say lands within two
+  seconds" (the mirror daemon's push). Recorded as load flakes. (M3) The
+  last also fails on origin/main `9e7d3d30` at load ~150 (2.4 s), so it
+  predates this branch. All three are already in
+  `docs/doperpowers/TECH-DEBT.md` (the kill-before-settle entry, extended
+  by DC4 with the load class), so no new entry is added.
+- (M1) DC3's local hub at `f22e0839` passed the uplink walks 7/7 on two
+  runs; it does not yet list `step-end` among its subscription kinds.
+- (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
+  `view_of` runs `ps` for every live session, so membership is re-read
+  when the set of running sessions changes, with a 10 s backstop, not on
+  every 2 s scan.
+- (M1) Presence within 1 s holds while the uplink's main thread is free;
+  an immediate delivery or a stalled POST holds it (the uplink is serial
+  by DC4's design).
+- (M1) Contract notes sent to the composite's writer: DX4's main scope
+  carries other agents' `block-row`s but not their rows, so the web needs
+  a rule to settle those blocks; DX5 rule 3 with a null cut can leave
+  streamed text beside its row (handled on the consumer side, above); a
+  row no notice names waits 2 s and can arrive after a later named row.
+
 ## Outcomes & Retrospective
+
+**Delivered (2026-10-15).** The daemon side of the desk's session plane
+and RPCs, at 7.157.0 over main's 7.156.1:
+- **Presence and subscriptions** (`sminos_plane.py`). It joins transcript
+  rows with the bridge's stream in disk order, using DX5's seeded cut and
+  notices. It is proven against DC2's real `sminos bridge` child and
+  DC3's reviewed hub, `step-end` included.
+- **The policy** (`sminos_policy.py`, `sminos daemon policy`). It fails
+  closed, and its guard sits at the one delivery boundary.
+- **Requests, settlements, and delivery outcomes** (`sminos_requests.py`,
+  `sminos_outcomes.py`). They carry codes, the complete pending set is
+  sent after the bridges' first snapshots, `recorded` goes to a closed
+  terminal session, and `uncertain` goes to an unanswered push.
+- **The RPCs** (`sminos_rpc.py`). They follow the plan's refusal order:
+  code, binding, ledger, freshness, policy, fit and digest, then kind. An
+  at-most-once ledger fails closed, and restart reconciliation works from
+  each action's own trace.
+- **Resume.** It is attributed to its own launch, proven live against
+  claude 2.1.301.
+- **Two additive bridge changes**, made after DC2 closed: `raised.toolUseId`,
+  and who-won fields on the bridge's 409s.
+
+**Review history.**
+- Each milestone took one to three fix waves before its task review came
+  back clean.
+- The final `high` review found four P2 defects that the per-milestone
+  reviews could not see, because each crossed modules or restarts:
+  - a read-only machine still owed to a closed session;
+  - presence not cleared after a disconnect;
+  - a compact's nonce lost across a restart;
+  - an RPC left unanswered on a truncated bridge read.
+
+  Its re-review confirmed all four fixed. One follow-up came out of it:
+  presence tombstones now go by a watermark the hub has accepted, instead
+  of a week's window.
+- Residue went to `docs/doperpowers/TECH-DEBT.md`: the suite's load flakes,
+  a compact nonce after a repaired ledger, and a non-`OSError` from the
+  claim write.
+
+**What the plan got right.** Putting the policy ahead of every path it
+guards (M2 before M3) meant no remote execution ever ran without it.
+Building against agreed contract text ahead of DC2's code, with a
+scripted endpoint later matched to the real child, kept M1 moving while
+the producer was still being built.
+
+**What it missed.**
+- The plan assumed DX5's ordering as first agreed. DC2's live walk
+  changed it twice:
+  - row order became disk order;
+  - the cut became seeded by the producer.
+
+  The consumer was rebuilt both times. The scripted endpoint carried that
+  churn cheaply, but only the real-child wave proved it.
+- The plan named no source of truth for a partial model change. Three
+  review rounds went to it, a daemon cache among them, before it settled
+  on reading the bridge's live override.
+- Restart recovery was specified per action (DX6) but not per relay. Two
+  of the final review's findings were state that lived only in memory: a
+  compact's nonce, and the last presence sent. A later plan of this kind
+  should list every in-memory association that crosses a restart.
+
+**Not proven live.** Two Resumes at once, delivery after Resume, claim
+reconciliation, and the seat cases rest on a stand-in for `claude`.
+Everything else that touches the engine ran against the real bridge child
+or a live engine.

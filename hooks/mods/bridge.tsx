@@ -1,6 +1,6 @@
 import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDecision, ProcessSpawnChunk, ProcessSpawnResult, SessionStartInput, Timer } from 'claude-code'
 
-import { ASK_TOOL, answerAsync, observeAsks } from './ask'
+import { ASK_TOOL, PLUGIN, answerAsync, observeAsks } from './ask'
 import type { AskNote } from './ask'
 
 /**
@@ -171,7 +171,15 @@ type Override = { model: string | null; effort: Effort | null }
  * call's turn, or the turn a foreground subagent it runs in was spawned in);
  * `done` resolves with its result's text once it settles.
  */
-type Call = { tool: string; owner: string | undefined; done: Promise<string | undefined>; settle: (text: string | undefined) => void }
+type Call = {
+  tool: string
+  owner: string | undefined
+  done: Promise<string | undefined>
+  settle: (text: string | undefined) => void
+  toolUseId?: string
+  /** An ask call's first question: what pairs it with the dialog the ask mod opens inside it. */
+  question?: unknown
+}
 /**
  * A steer, bound to the main turn it was given in before its row is appended.
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
@@ -223,6 +231,8 @@ type Request = {
   isAborted: boolean
   /** The session's transcript (the PermissionRequest's `transcript_path`): where its loop's rows are read when no record came. */
   transcript?: string
+  /** The ask mod's dialog: the call it opened inside, which the transcript names (DX5 `toolUseId`). */
+  toolUseId?: string
 }
 /** A row as the session's transcript keeps it, in the shape the Stop hook's export reads (`sminos record`). */
 type TranscriptRecord = { type: 'assistant' | 'user'; uuid: string; message: { content: Record<string, unknown>[] } }
@@ -309,6 +319,8 @@ type BridgeState = {
   records: Map<string, { source: string; isAccepted: boolean }>
   /** An async question answered through a dialog whose request had not settled yet: dialog id → question id. */
   askDialogs: Map<string, string>
+  /** The ask mod's dialogs running now: dialog id → the ask call it opened inside, if one runs. */
+  dialogCalls: Map<string, string | undefined>
   /** Each loop's last row notice (`main`, or the subagent's id): the cut a resync carries. */
   cut: Map<string, string>
   /** The loops this module saw from their first row (as `cut` keys them): no seed, nothing held back. */
@@ -338,6 +350,7 @@ const fresh = (): BridgeState => ({
   decidedChecks: [],
   records: new Map(),
   askDialogs: new Map(),
+  dialogCalls: new Map(),
   cut: new Map(),
   freshLoops: new Set(),
   isTurnUnknown: false,
@@ -501,6 +514,7 @@ const raisedFields = (r: Request) => ({
   ...(r.deadline !== undefined && { deadline: r.deadline }),
   ...(r.isAsync && { async: true }),
   ...(r.isTruncated && { truncated: true }),
+  ...(r.toolUseId !== undefined && { toolUseId: r.toolUseId }),
 })
 
 /** The live state whole, and what the child keeps for this session: what it replaces its own with. */
@@ -541,6 +555,7 @@ function forgetLive() {
   state.decidedChecks = []
   state.records.clear()
   state.askDialogs.clear()
+  state.dialogCalls.clear()
   state.cut.clear()
   // A /clear comes between turns: the new session's main loop is idle.
   state.isTurnUnknown = false
@@ -1689,6 +1704,28 @@ function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean }
   return capped(Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k))))
 }
 
+/** A call's first question text, from its `questions`; undefined when it has none. */
+function firstQuestion(questions: unknown): string | undefined {
+  const q = Array.isArray(questions) ? questions[0] : undefined
+  return isRecord(q) && typeof q.question === 'string' ? q.question : undefined
+}
+
+/**
+ * The ask call a dialog of the ask mod was opened inside: the one running
+ * call of the ask tool whose first question is the dialog's (the dialog
+ * carries it, under its own header) and that no other dialog was paired
+ * with. None for a dialog the human opened from an async ask's button, and
+ * none when two such calls run: the pairing would be a guess.
+ */
+function askCallFor(question: string | undefined): string | undefined {
+  if (question === undefined) {
+    return undefined
+  }
+  const paired = new Set(state.dialogCalls.values())
+  const calls = [...state.calls.values()].filter((c) => c.tool === ASK_TOOL && c.question === question && c.toolUseId !== undefined && !paired.has(c.toolUseId))
+  return calls.length === 1 ? calls[0]?.toolUseId : undefined
+}
+
 /**
  * Registered first in register.tsx, so its hooks are the outermost of the
  * plugin's: what they report is what the session showed and recorded. Each
@@ -1823,17 +1860,38 @@ export function registerBridge(on: On) {
     const call = `${e.tool_use_id ?? ''}#${++state.toolCalls}`
     const base = { toolUseId: e.tool_use_id || null, tool: e.tool, agentId: e.agentId ?? null }
     const input = toolInput(e as Record<string, unknown>)
-    emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
+    const first = firstQuestion((e as Record<string, unknown>).questions)
+    // The dialog the ask mod opens inside its own call: this plugin's only
+    // AskUserQuestion (the ask mod refuses any other). No transcript row
+    // names it, so its call and result are not posted; its request carries
+    // the call it opened inside.
+    const isDialog = e.tool === 'AskUserQuestion' && (next as { origin?: { plugin?: string } }).origin?.plugin === PLUGIN
+    if (isDialog && base.toolUseId !== null) {
+      state.dialogCalls.set(base.toolUseId, askCallFor(first))
+    }
+    if (!isDialog) {
+      emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
+    }
     let settle: (text: string | undefined) => void = () => undefined
     const done = new Promise<string | undefined>((resolve) => (settle = resolve))
     const owner = e.agentId === undefined ? state.mainTurn : state.foreground.get(e.agentId)
-    state.calls.set(call, { tool: String(e.tool), owner, done, settle })
+    state.calls.set(call, {
+      tool: String(e.tool),
+      owner,
+      done,
+      settle,
+      ...(base.toolUseId !== null && { toolUseId: base.toolUseId }),
+      ...(e.tool === ASK_TOOL && { question: first }),
+    })
     let resultText: string | undefined
     try {
       const result = await next(e)
       resultText = typeof result.text === 'string' ? result.text : undefined
       const text = capped(result.text)
       const denied = capped(result.deny)
+      if (isDialog) {
+        return result
+      }
       emit({
         type: 'tool',
         phase: 'result',
@@ -1847,6 +1905,9 @@ export function registerBridge(on: On) {
     } finally {
       state.calls.get(call)?.settle(resultText)
       state.calls.delete(call)
+      if (isDialog && base.toolUseId !== null) {
+        state.dialogCalls.delete(base.toolUseId)
+      }
     }
   }).catch((_, e, next) => next(e))
 
@@ -1900,6 +1961,10 @@ export function registerBridge(on: On) {
       turnId: state.loopTurns.get(loopKey(agentId)),
       isAborted: false,
       transcript: typeof e.transcript_path === 'string' && e.transcript_path !== '' ? e.transcript_path : undefined,
+    }
+    const outer = state.dialogCalls.get(id)
+    if (outer !== undefined && outer !== id) {
+      r.toolUseId = outer
     }
     raise(r)
     const decision = await awaitDecision($, r, next.signal)

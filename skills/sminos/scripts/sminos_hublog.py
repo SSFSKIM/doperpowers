@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
+import sminos_policy as policy  # noqa: E402
 
 NONCE_DOMAIN = "smns-hub-nonce-v1"
 STATE_FILE = "uplink.json"
@@ -210,40 +211,10 @@ def writer_and_last(path):
     return "", 0
 
 
-def git_branch(path):
-    """The branch checked out at `path`, read from git's HEAD without running
-    git; "" when detached or not a checkout."""
-    d = os.path.abspath(path)
-    while True:
-        dot = os.path.join(d, ".git")
-        if os.path.exists(dot):
-            break
-        parent = os.path.dirname(d)
-        if parent == d:
-            return ""
-        d = parent
-    try:
-        if os.path.isfile(dot):
-            with open(dot) as f:
-                line = f.read().strip()
-            dot = os.path.join(d, line[len("gitdir:"):].strip()) if line.startswith("gitdir:") else ""
-        with open(os.path.join(dot, "HEAD")) as f:
-            head = f.read().strip()
-    except OSError:
-        return ""
-    return head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""
-
-
-def permission_ceiling():
-    """The machine's permission ceiling as DX4's `machine` presence carries it:
-    the default mode the user's own settings give (§6), until DC7 lets the
-    owner set one."""
-    try:
-        with open(os.path.join(sminos.home_dir(), ".claude", "settings.json")) as f:
-            mode = ((json.load(f) or {}).get("permissions") or {}).get("defaultMode")
-    except (OSError, ValueError, AttributeError):
-        mode = None
-    return mode if isinstance(mode, str) and mode else "default"
+def machine_policy():
+    """The machine's policy as DX4's `machine` presence carries it (DX6's,
+    which DC7 owns: sminos_policy, read at every use)."""
+    return policy.machine_policy()
 
 
 class HubLog:
@@ -336,26 +307,17 @@ class HubLog:
 
     def presence(self):
         """DX4's `machine` message for this project: online (the hub's word,
-        from the lease), the policy, and the checkouts its members work in."""
-        paths = []
-        if self.project.root and os.path.isdir(self.project.root):
-            paths.append(self.project.root)
+        from the lease), the policy, and the project's known checkouts here."""
         try:
-            view = sminos.view_of(self.project, titles=False)
-            for m in view.members:
-                cwd = str(((view.info.get(m.session) or {}).get("joined") or {}).get("cwd") or "")
-                if m.local and cwd and os.path.isdir(cwd):
-                    p = sminos.resolve_project(cwd)
-                    if p is not None and p.id == self.project.id:
-                        paths.append(cwd)
+            checkouts = policy.known_checkouts(self.project)
         except (OSError, SystemExit) as e:
             log("the checkouts of %s could not be read: %r" % (self.project.name, e))
-        checkouts = [{"path": p, "branch": git_branch(p)} for p in dict.fromkeys(paths)]
+            checkouts = [{"path": self.project.root, "branch": policy.git_branch(self.project.root)}] \
+                if self.project.root and os.path.isdir(self.project.root) else []
         return {"t": "session", "message": {
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,
-            "body": {"online": True, "policy": {"read_only": False, "ceiling": permission_ceiling()},
-                     "checkouts": checkouts}}}
+            "body": {"online": True, "policy": machine_policy(), "checkouts": checkouts}}}
 
     def unreported(self):
         raw = self.state().get("unreported")

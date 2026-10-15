@@ -27,10 +27,20 @@ sends (sminos_hublog.py: each event's code verified before it enters the
 log, a refused one reported up as `rejected`). Every archive period it says
 `hello` again for each project it opened, so the hub's answer — whether this
 machine writes the project's git archive (sminos_archive.py) — is never
-older than a period, even on a stream that never drops. A POST the hub does
-not answer 200 ends the stream, and the next one redoes the handshake:
-nothing posted is taken as landed without its answer. Frames larger than a
-frame's bound travel as parts, both ways.
+older than a period, even on a stream that never drops. The session plane
+(sminos_plane.py) rides the same stream: each session's presence after the
+`hello` and whenever it changes, and the hub's subscriptions served as DX4
+messages; a bridge's reader wakes the main thread, so what it read goes up
+at once. The machine's policy (sminos_policy) goes up in `machine` on every
+connect and again whenever it changes; the requests the bridges raise and
+settle go up as DX4 `raised` and `settled` with their codes, and the
+complete pending set after every connect (sminos_requests); what
+delivery made of each event from outside, as DX4 `delivery`
+(sminos_outcomes); and the RPCs the hub forwards, verified, executed at most
+once, and answered as `rpc-result` until `rpc-ack` (sminos_rpc). A POST the
+hub does not answer 200 ends the stream, and the next one redoes the
+handshake: nothing posted is taken as landed without its answer. Frames
+larger than a frame's bound travel as parts, both ways.
 """
 
 import fcntl
@@ -52,6 +62,11 @@ import sminos_archive as archive  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
+import sminos_outcomes as outcomes  # noqa: E402
+import sminos_plane as plane  # noqa: E402
+import sminos_policy as policy  # noqa: E402
+import sminos_requests as requests  # noqa: E402
+import sminos_rpc as rpc  # noqa: E402
 
 STREAM_PATH = "/machine/stream"
 FRAMES_PATH = "/machine/frames"
@@ -68,6 +83,7 @@ ANSWER_MAX = 1 << 16
 ACK_GAP = 1.0             # heartbeats are answered at most once a second, the newest: a burst is answered once
 SCAN_EVERY = 2.0          # how often the projects known here are looked over for a hub project to open
 UPLOAD_EVERY = 0.5        # how often this machine's writers are looked at for events to upload
+CHECKOUTS_EVERY = 10.0    # how often the machine presence's checkouts are read again (the policy: every scan)
 
 
 class CredentialBad(Exception):
@@ -404,14 +420,45 @@ def hub_project(pid, cred):
 # ------------------------------------------------------------- one stream
 
 
+class Here:
+    """What the uplink knows of this machine, as an RPC's checks ask it
+    (sminos_rpc), on the main thread."""
+
+    def __init__(self, link):
+        self.link = link
+
+    def project(self, pid):
+        return hub_project(pid, self.link.cred)
+
+    def has_session(self, project, sid):
+        plane_ = self.link.plane
+        if sid not in plane_.here.get(project.id, {}):
+            sminos.forget_caches()
+            plane_.refresh(project)
+        return sid in plane_.here.get(project.id, {})
+
+    def record(self, sid):
+        plane_ = self.link.plane
+        plane_.live = plane_.records.scan()
+        return plane_.live.get(sid) if plane_.running(sid) else None
+
+    def checkouts(self, project):
+        return policy.known_checkouts(project)
+
+    def cwd(self, project, sid):
+        """The working directory the session joined the project from here."""
+        return self.link.plane.here.get(project.id, {}).get(sid) or ""
+
+
 class Link:
     """One stream's conversation with the hub. Frames down are dispatched by
-    `t`; those of the session plane and the RPCs (DC7's) are not handled here
-    yet and pass by. Frames up are posted under the stream's generation, and
-    a POST not answered 200 ends the stream: the next one redoes the
-    handshake, which is idempotent, rather than assume anything landed."""
+    `t`: the log plane's here, the session plane's to `self.plane`, the RPCs
+    to `self.rpcs`. Frames up are posted under
+    the stream's generation, and a POST not answered 200 ends the stream: the
+    next one redoes the handshake, which is idempotent, rather than assume
+    anything landed. `wake` asks the main thread for a tick now."""
 
-    def __init__(self, cred, logs, ended=lambda: False):
+    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None):
         self.cred = cred
         self.ended = ended
         self.logs = logs          # project id → HubLog, kept across streams
@@ -424,13 +471,28 @@ class Link:
         self.next_confirm = 0.0   # when the opened projects are `hello`ed again (sminos_archive)
         self.nudge = daemon.nudged_at()
         self.passed = set()
-        self.failing = ""
+        self.failing = self.plane_failing = ""
+        self.plane = plane.Plane(cred["machine"], wake, bridges)
+        self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
+        self.requests.wake = wake
+        self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"])  # kept across streams by the uplink
+        self.rpcs.wake = wake
+        self.machine_sent = {}    # project id → the `machine` body last posted on this stream
+        self.next_checkouts = 0.0
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
-                         "part": self.on_part}
+                         "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
+                         "rows": self.on_rows, "diff": self.on_diff, "rpc": self.on_rpc, "rpc-ack": self.on_rpc_ack}
 
     def post(self, frames):
         post(self.cred, self.generation, frames, self.ended)
+
+    def post_session(self, messages):
+        if messages:
+            self.post([plane.frame(m) for m in messages])
+
+    def close(self):
+        self.plane.close()
 
     def dispatch(self, frame, stream):
         t = frame.get("t") if isinstance(frame, dict) else None
@@ -466,8 +528,11 @@ class Link:
         stream.silent_after(SILENT_PERIODS * beat / 1000)
         self.generation = generation if type(generation) is int else None
         self.opened.clear()
+        self.machine_sent.clear()
         for hl in self.logs.values():
             hl.reset()
+        self.plane.close()
+        self.rpcs.reset()
         self.next_scan = 0.0
         self.next_confirm = time.time() + archive.archive_every()
         log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
@@ -516,6 +581,38 @@ class Link:
         if whole is not None:
             self.dispatch(whole, stream)
 
+    def opened_project(self, frame):
+        """The project a session-plane frame names, when this stream opened
+        it; else None (said in daemon.log)."""
+        pid = frame.get("project")
+        if pid in self.opened:
+            return self.logs[pid].project
+        log("a %r frame for project %r, not open on this stream: passed by" % (frame.get("t"), pid))
+        return None
+
+    def on_subscribe(self, frame, _stream):
+        project = self.opened_project(frame)
+        if project is not None:
+            self.post_session(self.plane.subscribe(project, frame))
+
+    def on_unsubscribe(self, frame, _stream):
+        if self.opened_project(frame) is not None:
+            self.post_session(self.plane.unsubscribe(frame.get("sub")))
+
+    def on_rows(self, frame, _stream):
+        if self.opened_project(frame) is not None:
+            self.post_session(self.plane.rows(frame))
+
+    def on_diff(self, frame, _stream):
+        if self.opened_project(frame) is not None:
+            self.post_session(self.plane.diff(frame))
+
+    def on_rpc(self, frame, _stream):
+        self.rpcs.receive(frame.get("rpc"), Here(self))
+
+    def on_rpc_ack(self, frame, _stream):
+        self.rpcs.ack(frame)
+
     # ---------------------------------------------------- frames up
 
     def open(self, hl):
@@ -526,14 +623,81 @@ class Link:
         upload carry it."""
         hl.rejoin_former()
         unreported = hl.unreported()
-        self.post([hl.hello(), hl.presence()] + unreported)
+        self.plane.refresh(hl.project)
+        sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
+        machine = hl.presence()
+        # The project's bridges are followed before its set is drawn up: the
+        # set goes now if they are read, else once they are (Requests.due).
+        self.requests.follow(self.bridged(self.opened | {hl.project.id}))
+        self.requests.take()
+        owed = self.requests.opening(hl.project.id)
+        results = self.rpcs.opening(hl.project.id)
+        self.post([hl.hello(), machine] + sessions + unreported + owed + results)
+        self.plane.accepted(hl.project.id)   # the hub took the leavers' presence: only later ones are said again
         self.opened.add(hl.project.id)
+        self.machine_sent[hl.project.id] = machine["message"]["body"]
         hl.reported(unreported)
+        self.requests.sent(owed)
+        self.rpcs.sent(results)
+        self.deliveries(hl)
 
     def upload(self, hl):
         for frame, reach in hl.uploads():
             self.post([frame])
             hl.took(reach)
+
+    def deliveries(self, hl):
+        """What delivery made of the events from outside, as DX4 `delivery`
+        messages sealed as they go; dropped from the outbox once the hub
+        answered the POST that carried them."""
+        box = outcomes.Outbox(hl.project)
+        if not box.waiting():
+            return
+        records, lines = box.take()
+        frames = [f for f in (outcomes.message(self.cred["key"], self.cred["machine"], hl.project.id, r)
+                              for r in records) if f is not None]
+        if frames:
+            self.post(frames)
+        box.drop(lines)
+
+    def machine_presence(self, now):
+        """`machine` again for each open project whose body changed: the
+        policy is read at every scan (a `daemon policy` nudges one), the
+        checkouts every CHECKOUTS_EVERY."""
+        current = policy.machine_policy()
+        if now < self.next_checkouts and all(self.machine_sent.get(pid, {}).get("policy") == current
+                                             for pid in self.opened):
+            return
+        self.next_checkouts = now + CHECKOUTS_EVERY
+        for pid in sorted(self.opened):
+            m = self.logs[pid].presence()
+            if m["message"]["body"] != self.machine_sent.get(pid):
+                self.post([m])
+                self.machine_sent[pid] = m["message"]["body"]
+
+    def bridged(self, pids):
+        """{session: project id}: the members of these projects with a bridge
+        endpoint here, whose requests are read."""
+        return {sid: pid for pid in pids for sid in self.plane.members.get(pid, ())
+                if os.path.exists(plane.bridge.endpoint(sid))}
+
+    def relay_requests(self):
+        """The requests of the open projects' bridged sessions: readers for
+        them, and what they read, up."""
+        self.requests.follow(self.bridged(self.opened))
+        self.requests.take()
+        frames = self.requests.due(self.opened)
+        if frames:
+            self.post(frames)
+            self.requests.sent(frames)
+
+    def relay_rpcs(self):
+        """The RPCs' results and their compactions' progress, up."""
+        self.rpcs.compacted(self.requests.take_compacts())
+        frames = self.rpcs.due(self.opened)
+        if frames:
+            self.post(frames)
+            self.rpcs.sent(frames)
 
     def tick(self):
         """Between frames: the heartbeat answered, new hub projects opened,
@@ -562,6 +726,7 @@ class Link:
                         self.cred["org"], ", ".join(self.logs[pid].project.name for pid in gone)))
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
+                self.machine_presence(time.monotonic())
             every = archive.archive_every()
             if every > 0 and now >= self.next_confirm:
                 # The hub reads the archive designation at each hello: asked
@@ -573,6 +738,7 @@ class Link:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid])
+                    self.deliveries(self.logs[pid])
             self.failing = ""
         except EndStream:
             raise
@@ -580,12 +746,40 @@ class Link:
             if repr(e) != self.failing:
                 self.failing = repr(e)
                 log("syncing failed: %r" % e)
+        try:
+            self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
+            self.relay_requests()
+            self.relay_rpcs()
+            self.plane_failing = ""
+        except EndStream:
+            raise
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — said once while it keeps failing
+            if repr(e) != self.plane_failing:
+                self.plane_failing = repr(e)
+                log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs):
+def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
     """Handle one stream's frames until it closes, a POST is not delivered,
-    or the uplink ends; whether the hub welcomed it."""
-    link, welcomed = Link(cred, logs, ended), False
+    or the uplink ends; whether the hub welcomed it. A wake (the session
+    plane's readers) is a tick now, between frames; at most one waits."""
+    woken = threading.Event()
+
+    def wake():
+        if not woken.is_set():
+            woken.set()
+            stream.items.put(("wake",))
+
+    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs)
+    try:
+        return serve_link(link, stream, ended, woken)
+    finally:
+        link.close()
+
+
+def serve_link(link, stream, ended, woken):
+    """serve's loop, the stream's frames and the wakes in arrival order."""
+    welcomed = False
     while True:
         # Before every frame, not only when the stream is quiet: a hub that
         # never pauses must not keep an orphan or a stopped uplink alive.
@@ -599,6 +793,9 @@ def serve(stream, cred, ended, logs):
             if item is not None and item[0] == "closed":
                 log("the stream closed: %s" % item[1])
                 return welcomed
+            if item is not None and item[0] == "wake":
+                woken.clear()
+                item = None
             if item is not None:
                 try:
                     frame = codes.loads(item[2])
@@ -670,14 +867,17 @@ def cmd_uplink(_a):
         return halt.is_set() or os.getppid() != parent
 
     log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
-    backoff, logs = 1, {}
+    backoff, logs, bridges = 1, {}, plane.Bridges()
+    reqs = requests.Requests(cred["key"], cred["machine"])
+    rpcs = rpc.Rpcs(cred["key"], cred["machine"])
     while not ended():
         stream = Stream(cred)
         stream.start()
-        welcomed = serve(stream, cred, ended, logs)
+        welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs)
         stream.close()
         backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
         deadline = time.time() + backoff
         while not ended() and time.time() < deadline:
             halt.wait(POLL)
+    reqs.close()
     log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() else ": its daemon is gone"))

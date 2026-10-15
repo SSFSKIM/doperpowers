@@ -51,6 +51,8 @@ member too, seat-less, from the first call that reads its project.
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
                    # --hub: the project syncs through this machine's desk hub, never git
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
+    sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # what this machine admits
+                   from outside: read-only delivers nothing written elsewhere; the ceiling bounds a spawn
     sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
                    there is its name everywhere (the writer host of what it writes). The code is
                    pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
@@ -134,6 +136,8 @@ if SCRIPT_DIR not in sys.path:
 import sminos_marks  # noqa: E402 — the mark grammar of hooks/mods/to-human.tsx, ported
 
 LAUNCHER = os.path.join(SCRIPT_DIR, "sminos")
+# The engine's permission modes (2.1.300), least permissive first.
+PERMISSION_MODES = ("plan", "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions")
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
 EXIT_USAGE = 2
@@ -1014,12 +1018,23 @@ def internal_pids():
         return set()
 
 
+DESK_MEMBER_ENV = "SMINOS_DESK_MEMBER"  # set by the daemon running a verb for a desk RPC: the member's id
+MEMBER_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def desk_member():
+    """The desk member a verb acts for, when the daemon runs it for an RPC
+    (32 hex, else nothing); never inside a session."""
+    m = os.environ.get(DESK_MEMBER_ENV, "")
+    return m if not os.environ.get("CLAUDE_CODE_SESSION_ID") and MEMBER_ID_RE.fullmatch(m) else ""
+
+
 def caller_alias():
     """Who a lifecycle event names as its actor (`by`): the calling session's
-    seat alias (a provisional seat's too), else its harness name; "" for the
-    operator."""
+    seat alias (a provisional seat's too), else its harness name; for the
+    operator, the desk member a daemon verb acts for, else ""."""
     if not os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        return ""
+        return desk_member()
     caller = caller_seat()
     return caller["alias"] if caller else default_from("")
 
@@ -1476,11 +1491,22 @@ def deliver_next(project, member):
     the settlement: per writer, push the owed events in seq order, settling
     each, and stop that writer at the first failure (it stays pending, retried
     by the next call, and is settled with a daemon.log line after
-    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}."""
+    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}.
+
+    The machine's policy is the boundary here, for every caller: on a
+    read-only machine an event written outside it (another machine's, or the
+    hub's) is pushed nothing — no frame, no resume — and settled undelivered
+    as `refused-read-only` (sminos_policy, read at each such event). Every
+    settlement of an outside-origin event of a hub project leaves its outcome
+    for the uplink (sminos_outcomes), recorded before the settlement: an
+    outcome that cannot be recorded leaves the event pending (pushed again by
+    a later pass, at least once as smns delivery is)."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
         return result
+    policy = sibling_module("sminos_policy")
+    outcomes = sibling_module("sminos_outcomes")
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
         events = log_read(project)
         streams = {}
@@ -1488,8 +1514,12 @@ def deliver_next(project, member):
             streams.setdefault(e["writer"], []).append(e)
         cursor = cursor_load(project, session)
         for writer, queue in streams.items():
+            outside = policy.outside_origin({"writer": writer})
             for i, e in enumerate(queue):
-                outcome = push_event(project, member, session, e, events, cursor)
+                if outside and policy.read_only():
+                    outcome = outcomes.READ_ONLY
+                else:
+                    outcome = push_event(project, member, session, e, events, cursor)
                 result["outcomes"].append((e, outcome))
                 if outcome.startswith("failed"):
                     if delivered_fail(project, session, writer, e["seq"]) < DELIVERY_ATTEMPTS:
@@ -1497,7 +1527,12 @@ def deliver_next(project, member):
                         break
                     daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
                         event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
-                elif outcome in PUSHED:
+                if outside and not outcomes.record(project, e, session, outcome, member):
+                    # Settled only once its outcome is kept: it stays pending,
+                    # and the next pass pushes and records it again.
+                    result["pending"] += len(queue) - i
+                    break
+                if outcome in PUSHED:
                     result["delivered"] += 1
                 delivered_settle(project, session, writer, e["seq"])
     return result
@@ -3149,19 +3184,25 @@ def pid_alive(pid):
 _PSTART = {}
 
 
-def proc_start(pid):
+def read_proc_start(pid):
     """The live process's start time as `ps -o lstart=` prints it, whitespace
-    normalised; "" when ps cannot tell."""
+    normalised; "" when ps cannot tell. Asked afresh, no cache: what a
+    thread beside the one owning the invocation's caches reads."""
+    try:
+        # The harness records procStart in the C locale ("Tue Sep  1 20:27:08
+        # 2026"); ps must print the same shape, not the user's locale.
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5, env={**os.environ, "LC_ALL": "C", "LANG": "C"}).stdout
+    except Exception:
+        out = ""
+    return " ".join(out.split())
+
+
+def proc_start(pid):
+    """read_proc_start, cached for the invocation."""
     key = str(pid)
     if key not in _PSTART:
-        try:
-            # The harness records procStart in the C locale ("Tue Sep  1 20:27:08
-            # 2026"); ps must print the same shape, not the user's locale.
-            out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
-                                 timeout=5, env={**os.environ, "LC_ALL": "C", "LANG": "C"}).stdout
-        except Exception:
-            out = ""
-        _PSTART[key] = " ".join(out.split())
+        _PSTART[key] = read_proc_start(pid)
     return _PSTART[key]
 
 
@@ -3172,8 +3213,9 @@ def _parse_lstart(s):
         return None
 
 
-def same_process(rec):
-    """Is the record's pid still the process the record described?
+def same_process(rec, fresh=False):
+    """Is the record's pid still the process the record described? (`fresh`:
+    its start time read afresh, read_proc_start.)
 
     Both sides are wall-clock strings with no zone in them: `ps -o lstart=`
     prints the LOCAL zone, while the harness writes `procStart` in UTC (every
@@ -3187,7 +3229,7 @@ def same_process(rec):
     connect. When either side cannot be parsed the check is skipped and the
     pid + socket rule decides.
     """
-    live = _parse_lstart(proc_start(rec.get("pid")))
+    live = _parse_lstart(read_proc_start(rec.get("pid")) if fresh else proc_start(rec.get("pid")))
     recorded = _parse_lstart(rec.get("procStart"))
     if not live or not recorded:
         return True
@@ -4186,13 +4228,13 @@ def compose_task(task, brief, preamble):
     return "\n\n".join(parts)
 
 
-def claude_args(alias, model, settings, effort, worktree=""):
+def claude_args(alias, model, settings, effort, worktree="", permission_mode="auto"):
     """argv for a FRESH background launch. Never used for a resume: a resumed
     background session keeps its saved options, and any flag on
     `claude --bg --resume` makes the harness start a COPY instead (observed
     live, v2.1.257: "keeps its own saved options, so the flags you passed
     started a copy")."""
-    args = ["--bg", "--permission-mode", "auto", "-n", alias]
+    args = ["--bg", "--permission-mode", permission_mode, "-n", alias]
     if worktree:
         args += ["--worktree", re.sub(r"[^a-zA-Z0-9._-]", "-", worktree)]
     if model:
@@ -4319,7 +4361,7 @@ def parse_stamps(items):
 
 
 def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
-                model, settings, effort, wait, locks, verb, stamp=None):
+                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto"):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -4341,10 +4383,11 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     prev = reload_seat(seat_id) if seat_id else None
     project = seat_project({"cwd": cwd, "group": group})
     by = caller_alias()
-    preamble = render_preamble(project.name, alias, by)
+    # A desk member is the human, whom the preamble calls "the operator".
+    preamble = render_preamble(project.name, alias, "" if desk_member() else by)
     task_text = compose_task(task, brief or "", preamble)
-    short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree) + [task_text],
-                                  cwd, settings)
+    short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree,
+                                              permission_mode) + [task_text], cwd, settings)
     if not short:
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
@@ -4515,7 +4558,7 @@ def cmd_spawn(a):
         role, brief = a.role or "", a.brief or ""
     spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
                 a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
-                stamp=parse_stamps(a.stamp))
+                stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode)
 
 
 def cmd_seat_add(a):
@@ -5634,7 +5677,8 @@ def tick(project):
 
 def cmd_daemon(a):
     if not a.op:
-        die("usage: sminos daemon run [--interval N] | tick | install | status")
+        die("usage: sminos daemon run [--interval N] | tick | install | status | policy [--read-only on|off] "
+            "[--ceiling MODE|settings]")
     daemon_module().cmd_daemon(a)
 
 
@@ -5736,6 +5780,9 @@ def build_parser():
     sp.add_argument("--worktree", default="")
     sp.add_argument("--stamp", action="append", default=None,
                     metavar="FIELD=VALUE", help="merge a field into the launch record (repeatable)")
+    # The mode the session runs under; `auto` unless a caller bounds it (the
+    # desk's spawn RPC passes the machine's ceiling, or a stricter mode).
+    sp.add_argument("--permission-mode", default="auto", choices=PERMISSION_MODES)
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)
@@ -5821,6 +5868,9 @@ def build_parser():
     dr.add_argument("--interval", type=float, default=5.0)
     for op in ("tick", "install", "status", "uplink"):
         dsub.add_parser(op, add_help=False)
+    dp = dsub.add_parser("policy", add_help=False)
+    dp.add_argument("--read-only", dest="read_only", choices=("on", "off"), default=None)
+    dp.add_argument("--ceiling", default=None)
     dm.set_defaults(fn=cmd_daemon)
 
     # `hub` takes its words as `wake` does (no word is an option to argparse,
