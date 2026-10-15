@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """sminos_daemon — the mirror and the daemon (§8 of the .smns design).
 
-A project whose .smns names a remote keeps its log/ as a git working tree of
-that remote: the MIRROR. Every machine writes only files named after itself,
+A project whose .smns names a remote, and no desk hub, keeps its log/ as a
+git working tree of that remote: the MIRROR. A hub project syncs through its
+hub alone (the uplink), never through git: two live transports writing the
+same writer files would bring back the conflicts one writer per file
+removed; its remote is only the log's archive. Every machine writes only files named after itself,
 so integrating the remote never conflicts; `machines/<machine>.json` claims a
 name for one instance (`$SMINOS_HOME/daemon/machine.json`), and a daemon that finds
 its name claimed by another instance refuses to run.
@@ -21,9 +24,9 @@ every project known here, each in the order of §8:
   1. integrate   (mirrored projects) commit, fetch, merge — the daemon
                  attaches a mirror it has not seen before
   2. reconcile   as every reading verb does
-  3. publish     (mirrored projects) `state` once a word has held for two
-                 ticks, the first at once; (every project) `renamed` on a
-                 harness rename
+  3. publish     (mirrored and hub projects) `state` once a word has held
+                 for two ticks, the first at once; (every project)
+                 `renamed` on a harness rename
   4. deliver     everything owed to a local member, through deliver_next
   5. push        (mirrored projects) commit what the tick appended, push
   6. derive      once an hour, `derive --all` as a child it does not wait on
@@ -396,14 +399,15 @@ def daemon_record(project):
 
 
 def publish_state(project, view, record):
-    """Duty 3, for a mirrored project: for each local member, a `state` event
+    """Duty 3, for a project another machine reads (`shared`): for each local member, a `state` event
     once a word other than the last one published for it has held for two
     consecutive ticks (one tick of persistence drops the flip inside a tool
     round) — the first word at once, so another machine never waits on an
     unpublished member. The word each member was last seen holding while it
     differed (its candidate) is kept in `record` between ticks. Into the
     session's own file. Only another machine reads a published word (a local
-    view computes it live), so a project with no remote publishes none.
+    view computes it live), so a project with neither a remote nor a hub
+    publishes none.
     Returns how many events it appended."""
     before = record.get("candidates")
     before = before if isinstance(before, dict) else {}
@@ -458,6 +462,17 @@ def deliver_owed(project, view):
     return total, reached
 
 
+def mirrored(project):
+    """Whether git syncs the project: it names a remote and no hub. A hub
+    project syncs through its hub alone; its remote is the log's archive."""
+    return bool(project.remote) and not project.hub
+
+
+def shared(project):
+    """Whether another machine reads the project's log, through git or a hub."""
+    return bool(project.remote or project.hub)
+
+
 def tick(project, all_seats=None):
     """One tick of one project, its duties in §8's order. `all_seats` is the
     seat read the caller shares across projects."""
@@ -465,7 +480,7 @@ def tick(project, all_seats=None):
            "error": ""}
     errors = []
     record = daemon_record(project)
-    if project.remote:
+    if mirrored(project):
         try:
             sync_in(project)
             out["integrated"] = True
@@ -473,7 +488,7 @@ def tick(project, all_seats=None):
             errors.append(str(e))
     view = sminos.view_of(project, all_seats, titles=False)
     out["reconciled"] = view.reconciled
-    if project.remote:
+    if shared(project):
         out["published"] = publish_state(project, view, record)
     out["published"] += publish_renames(project, view)
     out["delivered"], out["to"] = deliver_owed(project, view)
@@ -495,10 +510,10 @@ def tick_line(project, out):
     """A tick's outcome in one line: `<project>: synced · reconciled N ·
     published N · delivered N [to a, b] · pushed`."""
     bits = []
-    if project.remote:
+    if mirrored(project):
         bits.append("synced" if out.get("integrated") else "not synced")
     bits.append("reconciled %d" % (out.get("reconciled") or 0))
-    if project.remote or out.get("published"):
+    if shared(project) or out.get("published"):
         bits.append("published %d" % (out.get("published") or 0))
     to = out.get("to") or []
     bits.append("delivered %d%s" % (out.get("delivered") or 0, (" to " + ", ".join(to)) if to else ""))

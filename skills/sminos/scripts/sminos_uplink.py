@@ -61,6 +61,17 @@ def credential_path():
     return daemon.daemon_path("hub.json")
 
 
+def hub_admitted(hub):
+    """Whether a hub URL may carry the service token: https, or http on this
+    machine only (DX7's local runtime) — the token travels in every request."""
+    try:
+        url = urllib.parse.urlsplit(hub)
+        url.port  # noqa: B018 — a port that is no number is no URL
+    except ValueError:
+        return False
+    return bool(url.hostname) and (url.scheme == "https" or (url.scheme == "http" and url.hostname in LOOPBACK))
+
+
 def load_credential():
     """The machine's credential, `key` decoded; None when there is none (no
     enrollment). A hub reached over http must be on this machine (DX7's local
@@ -78,8 +89,7 @@ def load_credential():
     key = codes.b64url_bytes(d["key"], 32)
     if key is None:
         raise CredentialBad("%s: the org key is not 32 bytes of base64url" % credential_path())
-    url = urllib.parse.urlsplit(d["hub"])
-    if not (url.scheme == "https" or (url.scheme == "http" and url.hostname in LOOPBACK)) or not url.hostname:
+    if not hub_admitted(d["hub"]):
         raise CredentialBad("%s: the hub %s is neither https nor on this machine" % (credential_path(), d["hub"]))
     return {**d, "key": key}
 

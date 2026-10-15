@@ -68,17 +68,24 @@ def b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def b64url_bytes(text, size):
-    """The `size` bytes `text` encodes, or None: anything but the one unpadded
-    base64url encoding of exactly `size` bytes (another alphabet, padding, a
-    length, spare bits set) is not a value."""
+def b64url_decode(text):
+    """The bytes `text` encodes, or None: anything but the one unpadded
+    base64url encoding of some bytes (another alphabet, padding, a length no
+    encoding has, spare bits set) is not a value."""
     if not isinstance(text, str) or not B64URL_RE.fullmatch(text):
         return None
     try:
         raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
     except (binascii.Error, ValueError):
         return None
-    return raw if len(raw) == size and b64url(raw) == text else None
+    return raw if b64url(raw) == text else None
+
+
+def b64url_bytes(text, size):
+    """The `size` bytes `text` encodes, or None (b64url_decode, of exactly
+    `size` bytes)."""
+    raw = b64url_decode(text)
+    return raw if raw is not None and len(raw) == size else None
 
 
 # ------------------------------------------------------------- JSON in

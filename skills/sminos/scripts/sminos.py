@@ -34,8 +34,11 @@ member too, seat-less, from the first call that reads its project.
                    conversation as it streams, subagents labelled (--json: the endpoint's lines)
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
-    sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
+    sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
+                   # --hub: the project syncs through this machine's desk hub, never git
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
+    sminos hub      enroll <code> [--name N] [--replace] | show   # this machine at the desk hub: its
+                   name there is its name everywhere (the writer host of what it writes)
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
@@ -100,7 +103,7 @@ import tempfile
 import time
 import uuid as uuidlib
 from contextlib import contextmanager
-from typing import NamedTuple, NoReturn
+from typing import NamedTuple, NoReturn, Optional
 
 # Fleet state is private to the agent fleet: everything this CLI creates is
 # 700/600. All agents run as the same OS user, so nothing needs group/other.
@@ -444,6 +447,7 @@ class Project(NamedTuple):
     remote: str      # "" for a local project
     root: str        # directory holding .smns, or the owning repository
     home: str        # $SMINOS_HOME/projects/<id>
+    hub: Optional[dict] = None  # .smns's {url, org}: synced through the desk hub, never through git
 
 
 SMNS = ".smns"
@@ -538,14 +542,16 @@ def owning_repo(cwd):
     return os.path.dirname(os.path.abspath(common))
 
 
-def make_project(pid, name, remote, root_dir):
-    return Project(pid, name, remote, root_dir, os.path.join(projects_root(), pid))
+def make_project(pid, name, remote, root_dir, hub=None):
+    return Project(pid, name, remote, root_dir, os.path.join(projects_root(), pid), hub)
 
 
 def read_smns(path):
-    """(id, name, remote) from a .smns, or None — with a warning — when it is
-    unreadable or names no valid id: a broken file in one repository must not
-    stop every verb that resolves a seat living there."""
+    """(id, name, remote, hub) from a .smns, or None — with a warning — when it
+    is unreadable or names no valid id: a broken file in one repository must
+    not stop every verb that resolves a seat living there. A `hub` that is not
+    {url, org} still makes a hub project, which git never syncs, with a
+    warning: two live transports are worse than none."""
     try:
         with open(path) as f:
             d = json.load(f)
@@ -556,7 +562,13 @@ def read_smns(path):
     if not valid_name(pid):
         warn("ignoring %s: it names no valid project id" % path)
         return None
-    return pid, str(d.get("name") or pid), str(d.get("remote") or "")
+    hub = d.get("hub")
+    if hub is not None:
+        if not (isinstance(hub, dict) and all(isinstance(hub.get(k), str) and hub[k] for k in ("url", "org"))):
+            warn("%s: its hub is not {url, org}; the project syncs through neither git nor a hub until it is" % path)
+            hub = hub if isinstance(hub, dict) else {}
+        hub = {"url": str(hub.get("url") or ""), "org": str(hub.get("org") or "")}
+    return pid, str(d.get("name") or pid), str(d.get("remote") or ""), hub
 
 
 def resolve_project(cwd):
@@ -569,7 +581,7 @@ def resolve_project(cwd):
     while True:
         smns = read_smns(os.path.join(d, SMNS)) if os.path.isfile(os.path.join(d, SMNS)) else None
         if smns:
-            project = make_project(smns[0], smns[1], smns[2], d)
+            project = make_project(smns[0], smns[1], smns[2], d, smns[3])
             break
         parent = os.path.dirname(d)
         if parent == d:
@@ -623,6 +635,8 @@ def project_path(project, *parts):
     if project.id not in _HOMES:
         os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
         info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
+        if project.hub:
+            info["hub"] = project.hub
         path = os.path.join(project.home, "project.json")
         try:
             with open(path) as f:
@@ -649,7 +663,8 @@ def known_projects(all_seats=None):
         except (OSError, ValueError, KeyError, TypeError):
             continue
         if valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid:
-            out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""))
+            out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""),
+                                    d["hub"] if isinstance(d.get("hub"), dict) else None)
     for s in seats() if all_seats is None else all_seats:
         p = seat_project(s)
         if p:
@@ -1002,9 +1017,14 @@ def lifecycle(project, session, kind, guard=None, required=True, **fields):
     session's own file: a session's lifecycle has one writer, so its order is
     its seq. A failure raises LogWriteFailed — the event is part of the verb —
     except for reconciliation's own appends (`required=False`), which a
-    reading verb only warns about and the next one retries."""
+    reading verb only warns about and the next one retries. A guard reads
+    the session's events under this machine's former names first: a rename
+    moves where its lifecycle goes on, not what it is."""
     if project is None or not session:
         return []
+    before = _former_events(project, session) if guard is not None else []
+    if before:
+        guard = (lambda inner: lambda evs: inner(before + evs))(guard)
     try:
         return _append(project, writer_id(session), [{"kind": kind, "session": session, **fields}], guard=guard)
     except OSError as e:
@@ -1092,7 +1112,7 @@ def _reconcile(project, events, local, by_session):
     out = []
     for sid, e in joined.items():
         if (latest[sid] != "joined" or sid in by_session or sid in local
-                or str(e.get("machine") or "") != host_name() or session_running(sid)):
+                or not is_self(str(e.get("machine") or "")) or session_running(sid)):
             continue
 
         def ended(evs, sid=sid):
@@ -1284,7 +1304,7 @@ def _member(sid, r, seat, peer, local, title=True):
     elif peer and peer.get("name"):
         alias, name_source = str(peer["name"]), str(peer.get("nameSource") or name_source or "derived")
     machine = str(j.get("machine") or "")
-    local = local or bool(seat) or not machine or machine == host_name()
+    local = local or bool(seat) or not machine or is_self(machine)
     age = None
     if not local:
         published = (r or {}).get("state") or {}
@@ -2229,14 +2249,27 @@ def export_host(project, session, tpath, alias):
         return len(events)
 
 
-def _own_events(project, session):
-    """The session's own writer file, read directly (the hook reads nothing else of the log)."""
-    path = os.path.join(project.home, "log", writer_id(session).replace("/", ".") + ".jsonl")
+def _writer_events(project, host, session):
+    """The events of the writer `<host>/<session>`, read directly."""
+    path = os.path.join(project.home, "log", "%s.%s.jsonl" % (host, session))
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return [e for e in map(parse_event, f) if e]
     except OSError:
         return []
+
+
+def _former_events(project, session):
+    """The session's events under the names this machine wrote under before
+    it enrolled, oldest name first: still the session's own, though nothing
+    appends to them any more."""
+    return [e for host in machine_identity()[1] for e in _writer_events(project, host, session)]
+
+
+def _own_events(project, session):
+    """The session's own writer files, read directly (the hook reads nothing
+    else of the log): under this machine's former names, then its name now."""
+    return _former_events(project, session) + _writer_events(project, host_name(), session)
 
 
 def record_session(project, session, tpath, event, last_message=""):
@@ -2727,25 +2760,36 @@ def cmd_project(a):
         p = resolve_project(d)
         if p is None:
             die("no project at %s: no .smns above it and no git repository around it" % d, EXIT_UNKNOWN)
-        print("project  %s\nid       %s\nremote   %s\nroot     %s\nhome     %s" % (
-            p.name, p.id, p.remote or "-", p.root, p.home))
+        print("project  %s\nid       %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
+            p.name, p.id, p.remote or "-", "%s (org %s)" % (p.hub["url"], p.hub["org"]) if p.hub else "-",
+            p.root, p.home))
     else:
         project_attach(a)
 
 
 def project_init(a):
+    """Write .smns at the repository's root; with --hub, name this machine's
+    hub in it — added to a .smns that exists, which changes nothing else."""
     top = git_toplevel(os.getcwd())
     if not top:
         die("project init needs a git repository: .smns is committed at its root")
     path = os.path.join(top, SMNS)
+    hub = hub_module().enrolled_hub() if a.hub else None
     if os.path.exists(path):
         smns = read_smns(path)
+        if hub and smns:
+            hub_module().add_hub(path, smns, hub, a)
+            forget_caches()
+            project_path(resolve_project(top), "log")
+            return
         die("%s is already project %s (%s)" % (top, smns[1], smns[0]) if smns else
             "%s exists but is unreadable — fix or remove it first" % path)
     name = a.name or safe_name(os.path.basename(owning_repo(top) or top)) or "project"
     if "/" in name or "\n" in name or not name.strip():
         die("a project name is one line without '/': %r" % name)
     data = {"project": str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
+    if hub:
+        data["hub"] = hub
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
@@ -2753,15 +2797,20 @@ def project_init(a):
     os.chmod(path, 0o644)  # committed: every clone reads it
     _PROJECTS.clear()
     project_path(resolve_project(top), "log")
-    print("project %s (%s) at %s — commit it, so every clone is the same project" % (name, data["project"], path))
+    print("project %s (%s) at %s%s — commit it, so every clone is the same project" % (
+        name, data["project"], path, ", a hub project of %s (org %s)" % (hub["url"], hub["org"]) if hub else ""))
 
 
 def project_attach(a):
     """Adopt the existing log/ as a working tree of the project's remote —
-    the mirror's first half; sminos_daemon owns the mirror."""
+    the mirror's first half; sminos_daemon owns the mirror. A hub project has
+    no mirror: it syncs through its hub alone."""
     p = resolve_project(os.path.abspath(a.dir or os.getcwd()))
     if p is None:
         die("no project here to attach", EXIT_UNKNOWN)
+    if p.hub:
+        die("project %s syncs through its hub (%s), never through git: there is no mirror to attach%s" % (
+            p.name, p.hub["url"] or "unreadable", "; its remote is the log's archive" if p.remote else ""), 1)
     if not p.remote:
         die("project %s names no remote in its .smns: nothing to attach to" % p.name)
     daemon_module().attach(p)
@@ -2975,9 +3024,10 @@ def forget_caches():
     registry, process start times, resolved projects and their views — so a
     long-lived process (the chart TUI, the daemon's loop) sees the fleet as it
     is now rather than as it was at launch. Nothing is read until asked."""
-    global _AGENTS_LOADED, _PEERS
+    global _AGENTS_LOADED, _PEERS, _SELF
     _AGENTS_LOADED = False
     _PEERS = None
+    _SELF = None
     _PSTART.clear()
     _PROJECTS.clear()
     _HOMES.clear()
@@ -3252,8 +3302,41 @@ def state(seat):
     return seat_state(seat, peer_for_session(seat["current"]) if needs_probe(seat) else None)
 
 
+_SELF = None  # (this machine's name, the names it wrote under before), per invocation
+
+
+def machine_identity():
+    """(name, former): this installation's machine name — the name it enrolled
+    under at a desk hub (daemon/hub.json, written by `hub enroll`), else
+    DAEMON_HOST, else the system's host name — and the names it wrote under
+    before it enrolled, which are still this machine (is_self)."""
+    global _SELF
+    if _SELF is None:
+        try:
+            with open(os.path.join(root(), "daemon", "hub.json")) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            d = None
+        name, former = "", ()
+        if isinstance(d, dict) and isinstance(d.get("machine"), str) and valid_name(d["machine"]):
+            name = d["machine"]
+            if isinstance(d.get("former"), list):
+                former = tuple(n for n in d["former"] if isinstance(n, str) and n)
+        _SELF = (name or os.environ.get("DAEMON_HOST") or socket.gethostname(), former)
+    return _SELF
+
+
 def host_name():
-    return os.environ.get("DAEMON_HOST") or socket.gethostname()
+    """The machine every writer this installation creates is named after."""
+    return machine_identity()[0]
+
+
+def is_self(name):
+    """Whether a machine name a record carries (a member's `machine`, a seat's
+    `host`) is this machine: its name now, or one it wrote under before it
+    enrolled — a rename never makes its own seats and members another's."""
+    me, former = machine_identity()
+    return name == me or name in former
 
 
 def boot_id():
@@ -3281,7 +3364,7 @@ def boot_id():
 def identity_local(host, boot):
     """True iff a record's recorded host/boot identity belongs to this boot.
     Empty values preserve legacy local behavior."""
-    if host and host != host_name():
+    if host and not is_self(host):
         return False
     mine = boot_id()
     if boot and mine and boot != mine:
@@ -5442,6 +5525,16 @@ def cmd_daemon(a):
     daemon_module().cmd_daemon(a)
 
 
+def hub_module():
+    return sibling_module("sminos_hub")
+
+
+def cmd_hub(a):
+    if not a.op:
+        die("usage: sminos hub enroll <code> [--name N] [--replace] | show")
+    hub_module().cmd_hub(a)
+
+
 def cmd_chart(a):
     """The members as boxes, flat: one project's in a column, or — for every
     project — each project a rounded box with its members beside it; hidden
@@ -5604,6 +5697,7 @@ def build_parser():
     pi = psub.add_parser("init", add_help=False)
     pi.add_argument("--name", default="")
     pi.add_argument("--remote", default="")
+    pi.add_argument("--hub", action="store_true")
     pi.set_defaults(fn=cmd_project)
     for op in ("show", "attach"):
         po = psub.add_parser(op, add_help=False)
@@ -5617,6 +5711,15 @@ def build_parser():
     for op in ("tick", "install", "status", "uplink"):
         dsub.add_parser(op, add_help=False)
     dm.set_defaults(fn=cmd_daemon)
+
+    hb = sub.add_parser("hub", add_help=False)
+    hsub = hb.add_subparsers(dest="op")
+    he = hsub.add_parser("enroll", add_help=False)
+    he.add_argument("code")
+    he.add_argument("--name", default="")
+    he.add_argument("--replace", action="store_true")
+    hsub.add_parser("show", add_help=False)
+    hb.set_defaults(fn=cmd_hub)
 
     br = sub.add_parser("bridge", add_help=False)
     br.add_argument("--session", default="")
@@ -5717,7 +5820,7 @@ def main(argv=None):
         if a.cmd == "seat":
             die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--session S]")
         if a.cmd == "project":
-            die("usage: sminos project init [--name N] [--remote URL] | show [DIR] | attach [DIR]")
+            die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
     try:
