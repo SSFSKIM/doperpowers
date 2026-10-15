@@ -359,6 +359,11 @@ step; one that fails (a submission dropped or refused, the human's prompt
 dropped beneath) puts them back ahead of any answered meanwhile, toasts why, and
 leaves the next route to try.
 
+An async ask can also be answered from outside the terminal (`sminos answer`,
+later the web): the bridge hands the answers to `answerAsync`, which refuses
+one already answered or whose dialog is up, and otherwise delivers them by the
+same routes as a press's.
+
 A resumed session rebuilds its async asks from the transcript (the classic
 `SessionStart` payload's path). Without a rewind every row of the file is
 the conversation. Once the human rewound (the engine records it), only the
@@ -397,6 +402,90 @@ conversation (its asks come back, its deliveries close theirs); and a rewind
 inside a running session raises no event a hook sees, so the asks of the
 branch it left stay in the row's and the band's view until the session is
 resumed.
+
+## bridge (`bridge.tsx`)
+
+The session, reachable from outside it on this machine: its live stream for
+a reader, and its control for a client, through an endpoint of its own. At
+`session.start` the mod spawns a child for the session's life, `sminos
+bridge --session <id>` (`skills/sminos/scripts/sminos_bridge.py`), which
+serves HTTP on `$SMINOS_HOME/bridge/<id>.sock`; the socket answering is the
+session's bridge presence. The mod posts the session's events to it and
+reads commands from the child's stdout, one JSON line each. The protocol,
+routes, events and their fields are DX5, in
+`docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md`. It registers
+first in `register.tsx`, so its hooks are the outermost: what it reports is
+what the session showed and kept, after every other mod. Never in a session
+with `SMNS_INTERNAL` set (derive's headless fork).
+
+- **The stream.** Each chunk of every model request, the main loop's and
+  every subagent's (tagged with its turn, loop and index), tool calls and
+  results, turns, subagents, usage, a heartbeat, and the requests below.
+  Every row the session keeps is named once, as it is written (so in write
+  order): a response row by its `block-row` (which settles its block), any
+  other by `row-seen`, and a step's end follows every `block-row` of its step
+  (held, a second at most, for a row the engine appends after the request's
+  result); each loop's last notice is the snapshot's `cut`, so a reader
+  joining the transcript on disk with the stream knows which rows are
+  accounted for. A loop older than the module (a reload, a resume, a
+  subagent running at load) is cut first at its transcript's tail, which the
+  module's first child reads (its hello's `seed`), and a model request of it
+  begun before that hello streams to nobody: its rows reach a reader through
+  the transcript. A loop the module saw from its first row is cut by its
+  notices alone. The mod keeps its own copy of the live state and opens
+  every new child, and every post after a lost one, with a `resync`; the
+  child ends every subscription when a later one comes, and a subscriber
+  starts over from a fresh snapshot. Posts run from one loop started at
+  `session.start`: a fetch begun inside a hook dies with that hook's
+  dispatch (an Esc, an interrupt). Each carries the nonce the child's hello
+  named: a reload's old module, still posting to the session's path, is
+  turned away (409) and stops.
+- **Control.** `steer` appends a user row the loop reads at its next request
+  (the running tool goes on; a turn that answers before reading it is woken
+  once); `interrupt` aborts the turn and stops each Bash call the abort moved
+  to the background; `model` rewrites the main loop's requests (never
+  `$.config.set`, which is the user's default); `compact` runs at once, or at
+  the end of a running turn; `deliver` submits a log event as the human's
+  words, once per `(writer, seq)`.
+- **Requests from outside.** A permission prompt or a question the engine
+  puts to its dialog is raised, and its `PermissionRequest` hook long-polls
+  the child for a decision while the terminal's dialog stays up; an async
+  question of the ask mod is raised as it opens and answered through the ask
+  mod's external path (`answerAsync`). Each ends with one `settled` naming
+  the side whose answer the engine used, read from the engine's
+  `tool_decision` record of the call (raised to the mod through
+  `telemetry.log`), else the transcript's mark of a hook's decision.
+- **Messages to the host.** The main loop's rows that may carry one — a text
+  row with a mark, an async ask with its result — go to the child as the
+  transcript keeps them, and the child appends their `message` and
+  `question` events to the project's log through `sminos record`'s own
+  writer and `(kind, src)` keys, so they reach the log as they are written
+  and the Stop hook's export finds them there.
+
+From another terminal: `sminos watch|steer|interrupt|model|compact|decide|answer
+<member>`. Live checks under `tests/mods/live-*-check.py` run real sessions
+(they spend model calls; run by hand).
+
+Known limits: a module reload kills the child and starts the module's state
+empty, so no response streaming at that moment, nor one begun before the new
+child's hello, is streamed (its rows are named as they are written, and a
+reader takes them from the transcript); a turn running across a reload is
+taken back at its next model request (interrupt, steer and compact act on it
+from there, and the stream gets its start marked `recovered`); until then, or
+until the turn completes or the session's engine record says idle, the module
+does not know whether a turn runs, and those three verbs are refused with
+"turn state unknown since the bridge reloaded; retry after the next model
+request" (exit 1), never answered as idle; calls begun before the reload are
+not the new module's (an interrupt's abort stops them, but none the abort
+moved to the background is stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
+a `--bg` job starts in permission mode `auto`, where most calls raise no
+request; rows the plugin's own calls write pass no hook of the plugin's: the
+steer's row is named from the append's answer, after it is written, and the
+rows of a compaction the bridge runs (the boundary, the summary, the
+attachments that follow) and the engine's line for a module reload are named
+by none, so a reader emits them unnamed, on the next notice of their loop or
+after 2 seconds; a hook's success with nothing to say is raised to the hook
+but never written, so it is named by none.
 
 ## secrets
 

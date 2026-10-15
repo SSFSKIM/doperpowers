@@ -1,0 +1,1 @@
+{ "name": "live-decision-probe", "version": "0.0.0", "description": "live-requests-check.py's witness: the engine's tool_decision records, as a mod receives them through telemetry.log" }

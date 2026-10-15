@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 
 import { registerAgents } from './agents'
 import { registerAsk, registerAskBand } from './ask'
+import { registerBridge } from './bridge'
 import { registerCompact } from './compact'
 import { registerKairos } from './kairos'
 import { registerToHuman } from './to-human'
@@ -12,6 +13,9 @@ import { registerToHuman } from './to-human'
  * it run everywhere.
  */
 export function register(on: On) {
+  // First: the bridge's hooks are the outermost, so it reports what the
+  // session showed and recorded, after every other mod had its say.
+  registerBridge(on)
   // Before to-human: its band above the prompt draws without calling on, so
   // the ask's line there must be the outer hook, drawing above it.
   registerAskBand(on)

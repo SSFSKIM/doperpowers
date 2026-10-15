@@ -3005,7 +3005,7 @@ spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = impo
 project, seat_id, mode, record = mod.find_project(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
 member = next(m for m in mod.members(project) if m.session == seat_id)
 down = os.path.join(os.path.dirname(record), "push-down")
-def fake_push(member, text, tagged, session=None):
+def fake_push(member, text, tagged, session=None, event=None):
     body = text.split("\n", 1)[1]
     time.sleep(0.05)
     if body == "ten" and os.path.exists(down):
@@ -4996,6 +4996,23 @@ run env "${H1[@]}" "$SMINOS" daemon
 assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"
 unset STUB_COUNTER
+
+# The bridge's session endpoint has a file of its own (short socket paths, a
+# stand-in for the mod); its assertions count here as one.
+echo
+if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and delivery (test-bridge-control.sh)"; else
+  fail "the bridge's control and delivery (test-bridge-control.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
+  fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
+  fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
+  fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
