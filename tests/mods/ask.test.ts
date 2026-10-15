@@ -1,9 +1,11 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import type { AskQuestion } from '../../hooks/mods/ask'
+import type { AskNote, AskQuestion } from '../../hooks/mods/ask'
 import {
   ASK_TOOL,
+  answerAsync,
+  observeAsks,
   ASYNC_PARAGRAPH,
   ASYNC_RESULT,
   INPUT_SCHEMA,
@@ -1421,5 +1423,105 @@ describe('a resumed session', () => {
     expect(asyncAsks().length).toBe(1)
     await h.classicStart(T, 's2', 'clear')
     expect(asyncAsks()).toEqual([])
+  })
+})
+
+describe('answered from outside the terminal (the bridge)', () => {
+  /** A started session watched by an observer, with an async ask of BACKEND and FEATURES open. */
+  const opened = async () => {
+    const notes: AskNote[] = []
+    const h = harness()
+    observeAsks((note) => notes.push(note))
+    await h.start()
+    await h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    return { h, notes, id }
+  }
+
+  test('the observer is told of an async ask as it opens', async () => {
+    const { notes, id } = await opened()
+    expect(notes).toEqual([{ kind: 'open', id, questions: [BACKEND, FEATURES] }])
+  })
+
+  test('answered while idle: delivered at once, in the words the dialog would have produced, and the observer told who answered', async () => {
+    const { h, notes, id } = await opened()
+    expect(answerAsync(id, { 'Which backend?': 'SQLite', 'Which features?': 'Auth, Export' }, 'cli')).toEqual({ ok: true })
+    await h.settle()
+    const text = 'Your questions have been answered: "Which backend?"="SQLite", "Which features?"="Auth, Export". You can now continue with these answers in mind.'
+    expect(h.submitted()).toEqual([deliveryText(id, text)])
+    expect(asyncAsks()[0]).toMatchObject({ status: 'answered', answer: text })
+    expect(notes.at(-1)).toEqual({ kind: 'answered', id, by: 'cli' })
+    expect(answerRows([BACKEND, FEATURES], text)).toEqual([
+      ['Which backend?', 'SQLite'],
+      ['Which features?', 'Auth, Export'],
+    ])
+  })
+
+  test('an answer that names no option reads as the engine words free text', async () => {
+    const { h, id } = await opened()
+    answerAsync(id, { 'Which backend?': 'MySQL, if you can' }, 'm-1')
+    await h.settle()
+    expect(h.submitted()).toEqual([
+      deliveryText(
+        id,
+        'The user answered: "Which backend?"="MySQL, if you can". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.',
+      ),
+    ])
+  })
+
+  test('answered once: a second answer, or one for an ask that is none, is refused', async () => {
+    const { id } = await opened()
+    answerAsync(id, { 'Which backend?': 'SQLite' }, 'cli')
+    expect(answerAsync(id, { 'Which backend?': 'Postgres' }, 'cli')).toEqual({ ok: false, error: `the question ${id} was already answered` })
+    expect(answerAsync('toolu_none', { 'Which backend?': 'Postgres' }, 'cli')).toEqual({ ok: false, error: 'no async question toolu_none is open in this session' })
+  })
+
+  test('while a turn runs the answer is held, then rides the next model-made result', async () => {
+    const { h, id } = await opened()
+    await h.turnStart()
+    answerAsync(id, { 'Which backend?': 'SQLite' }, 'cli')
+    await h.settle()
+    expect(h.submitted()).toEqual([])
+    const { result } = await h.call('Bash', { command: 'ls' })
+    expect(result).toEqual({ ref: 9, result: 'ran', text: 'ran', context: [deliveryText(id, ANSWER)] })
+  })
+
+  test('refused while its dialog is open in the terminal: the terminal has it', async () => {
+    const { h, id } = await opened()
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    expect(answerAsync(id, { 'Which backend?': 'SQLite' }, 'cli')).toEqual({ ok: false, error: `the question ${id} is open in the terminal's dialog` })
+    await h.raise(0, answered(ANSWER))
+    await pressed
+  })
+
+  test("a press's answer is told to the observer as the terminal's", async () => {
+    const { h, notes, id } = await opened()
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    await h.raise(0, answered(ANSWER))
+    await pressed
+    await h.settle()
+    expect(notes.at(-1)).toEqual({ kind: 'answered', id, by: 'terminal' })
+  })
+
+  test('a dialog the mod raised is told to the observer as it settles, by its call id, with what the engine returned', async () => {
+    const { h, notes } = await opened()
+    const blocking = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    await h.raise(0, answered(ANSWER))
+    await blocking
+    expect(notes.filter((n) => n.kind === 'dialog')).toEqual([{ kind: 'dialog', toolUseId: 'nested_0', isError: false, text: ANSWER }])
+    const second = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    await h.raise(1, refused(ESC))
+    await second
+    expect(notes.filter((n) => n.kind === 'dialog').at(-1)).toEqual({ kind: 'dialog', toolUseId: 'nested_1', isError: true, text: ESC })
+  })
+
+  test('/clear forgets the open asks, and tells the observer which', async () => {
+    const { h, notes, id } = await opened()
+    await h.classicStart('/Users/me/.claude/projects/-w/s.jsonl', 's2', 'clear')
+    expect(notes.at(-1)).toEqual({ kind: 'forgotten', ids: [id] })
   })
 })

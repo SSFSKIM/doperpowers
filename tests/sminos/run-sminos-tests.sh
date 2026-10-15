@@ -5004,6 +5004,9 @@ if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)
 echo
 if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and delivery (test-bridge-control.sh)"; else
   fail "the bridge's control and delivery (test-bridge-control.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
+  fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

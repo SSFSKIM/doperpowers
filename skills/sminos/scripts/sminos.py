@@ -40,6 +40,10 @@ member too, seat-less, from the first call that reads its project.
                    requests; the user's settings untouched (needs the bridge)
     sminos compact  <member> [instructions]               # compact now, or when the running turn ends
                    (needs the bridge)
+    sminos decide   <member> <request> allow|deny [--message M]   # a permission prompt the session raised
+                   (`watch` prints its id; a unique prefix will do), racing the terminal's own dialog
+    sminos answer   <member> <request> <answer>...        # a question it asked, one answer per question
+                   (an option's label or number; multi-select: "1,3"); its async questions too
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] | show [DIR] | attach [DIR]
@@ -5472,6 +5476,14 @@ def cmd_compact(a):
     control_module().cmd_compact(a)
 
 
+def cmd_decide(a):
+    control_module().cmd_decide(a)
+
+
+def cmd_answer(a):
+    control_module().cmd_answer(a)
+
+
 def tick(project):
     """One daemon tick of one project (§8): integrate, reconcile, publish,
     deliver, push. {"integrated", "reconciled", "published", "delivered",
@@ -5689,6 +5701,19 @@ def build_parser():
     co.add_argument("member")
     co.add_argument("instructions", nargs="?", default="")
     co.set_defaults(fn=cmd_compact)
+
+    de = sub.add_parser("decide", add_help=False)
+    de.add_argument("member")
+    de.add_argument("request")
+    de.add_argument("behavior", choices=("allow", "deny"))
+    de.add_argument("--message", default="")
+    de.set_defaults(fn=cmd_decide)
+
+    an = sub.add_parser("answer", add_help=False)
+    an.add_argument("member")
+    an.add_argument("request")
+    an.add_argument("answers", nargs="+")
+    an.set_defaults(fn=cmd_answer)
 
     r = sub.add_parser("reply", add_help=False)
     r.add_argument("seat")

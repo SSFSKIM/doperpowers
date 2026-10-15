@@ -30,6 +30,7 @@ import sminos_bridge as B
 
 COMMAND_WAIT_MS = 10000     # the mod answers these at once; this bounds a session gone quiet
 COMPACT_WAIT_S = 300        # an idle compaction runs about 20 s; its outcome is waited for this long
+SETTLE_WAIT_S = 30          # a decision taken is settled within seconds (a background window's at its deadline)
 SUPERVISOR_TIMEOUT = 5      # the engine's own control client waits 5 s
 SHORT_RE = re.compile(r"^[a-f0-9]{8}$")
 KEY_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -311,3 +312,133 @@ def cmd_compact(a):
     if e.get("tokensBefore") is not None and e.get("tokensAfter") is not None:
         counts = ": %s → %s tokens" % (format(e["tokensBefore"], ","), format(e["tokensAfter"], ","))
     print("compacted %s%s" % (a.member, counts))
+
+
+# ------------------------------------------------------------------ requests from outside
+
+
+def follow_stream(path):
+    """The endpoint's stream on a thread: a queue of its events (the
+    snapshot first), then None at its end."""
+    events = queue.Queue()
+
+    def follow():
+        try:
+            for e in B.subscribe(path):
+                events.put(e)
+        except (OSError, http.client.HTTPException, ValueError):
+            pass
+        events.put(None)
+
+    threading.Thread(target=follow, daemon=True).start()
+    return events
+
+
+def find_request(member, verb, want):
+    """(path, the stream, the pending request `want` names): by its id or a
+    unique prefix of it, read from a snapshot subscribed before the decision
+    goes. Exits 1 when no pending request matches (saying so when it is
+    already settled), 4 when the member has no bridge."""
+    session = B.watch_session(member)
+    path = B.endpoint(session)
+    if B.probe(path) is None:
+        B.remove_stale(path)
+        no_bridge(member, verb)
+    events = follow_stream(path)
+    try:
+        snap = events.get(timeout=5)
+    except queue.Empty:
+        snap = None
+    if not snap or snap.get("type") != "snapshot":
+        S.die("%s: %s's bridge did not stream" % (verb, member), 1)
+
+    def named(items):
+        exact = [r for r in items if r.get("request") == want]
+        return exact or [r for r in items if str(r.get("request", "")).startswith(want)]
+
+    hits = named(snap.get("pending") or [])
+    if len(hits) > 1:
+        S.die("%s: '%s' names %d pending requests of %s: %s" % (
+            verb, want, len(hits), member, ", ".join(r["request"] for r in hits)), 1)
+    if hits:
+        return path, events, hits[0]
+    done = named(snap.get("settled") or [])
+    if done:
+        s = done[-1]
+        S.die("%s: request %s of %s is already settled: %s (%s)" % (
+            verb, s["request"], member, s.get("outcome"), s.get("by")), 1)
+    S.die("%s: %s has no pending request '%s'" % (verb, member, want), 1)
+
+
+def settle_decision(member, verb, path, events, raised, body):
+    """Posts the decision, then waits for the request's settlement on the
+    stream subscribed before it went: exit 0 when the engine used this
+    answer, 1 when it used another side's or the decision was refused."""
+    rid = raised["request"]
+    try:
+        status, out = B.request(path, "POST", "/requests/%s/decision" % rid, body)
+    except (OSError, http.client.HTTPException) as e:
+        S.die("%s: %s's bridge gave no answer (%s)" % (verb, member, e), 1)
+    out = out if isinstance(out, dict) else {}
+    if status == 400:
+        S.die("%s: %s" % (verb, out.get("error")), 2)
+    if status == 409 and isinstance(out.get("settled"), dict):
+        s = out["settled"]
+        S.die("%s: request %s is already settled: %s (%s)" % (verb, rid, s.get("outcome"), s.get("by")), 1)
+    if status != 200:
+        S.die("%s: request %s: %s" % (verb, rid, out.get("error") or "the bridge answered %d" % status), 1)
+    deadline = time.monotonic() + SETTLE_WAIT_S
+    while True:
+        try:
+            e = events.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            S.die("%s: request %s took the decision; no settlement came within %d s" % (verb, rid, SETTLE_WAIT_S), 1)
+        if e is None:
+            S.die("%s: %s's bridge ended before request %s settled" % (verb, member, rid), 1)
+        if e.get("type") == "settled" and e.get("request") == rid:
+            break
+    if e.get("by") != body["by"]:
+        S.die("%s: request %s settled with the %s's answer: %s (%s)" % (
+            verb, rid, e.get("winner"), e.get("outcome"), e.get("by")), 1)
+    print("%s: request %s settled from here: %s" % (member, rid, e.get("outcome")))
+
+
+def resolve_answer(question, text):
+    """An answer as the dialog records it: an option's label (named by its
+    number, or its label in any case), a multi-select's labels joined with
+    ", ", else the text as typed."""
+    labels = [str(o.get("label")) for o in question.get("options") or [] if isinstance(o, dict)]
+
+    def option(t):
+        t = t.strip()
+        if t.isdigit() and 1 <= int(t) <= len(labels):
+            return labels[int(t) - 1]
+        return next((label for label in labels if label.lower() == t.lower()), None)
+
+    if question.get("multiSelect"):
+        picked = [option(p) for p in text.split(",")]
+        return ", ".join(picked) if picked and all(picked) else text
+    return option(text) or text
+
+
+def cmd_decide(a):
+    path, events, raised = find_request(a.member, "decide", a.request)
+    body = {"behavior": a.behavior, "by": "cli"}
+    if a.message:
+        body["message"] = a.message
+    settle_decision(a.member, "decide", path, events, raised, body)
+
+
+def cmd_answer(a):
+    path, events, raised = find_request(a.member, "answer", a.request)
+    questions = [q for q in ((raised.get("input") or {}).get("questions") or []) if isinstance(q, dict)]
+    if not B.is_question(raised) or not questions:
+        S.die("answer: request %s asks no question (%s): decide it with allow or deny" % (
+            raised["request"], raised.get("tool")), 2)
+    if len(a.answers) != len(questions):
+        S.die("answer: request %s asks %d question%s; give one answer each, in order: %s" % (
+            raised["request"], len(questions), "" if len(questions) == 1 else "s",
+            " | ".join(str(q.get("question", "?")) for q in questions)), 2)
+    answers = {q["question"]: resolve_answer(q, t) for q, t in zip(questions, a.answers)}
+    body = {"behavior": "allow", "updatedInput": {"answers": answers}, "by": "cli"}
+    settle_decision(a.member, "answer", path, events, raised, body)
