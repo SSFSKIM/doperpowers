@@ -17,8 +17,10 @@ nothing without one — the daemon signs only what its bridges reported, as
 they reported it:
 
 - DX4 `raised` `{request, session, tool, input, agentId?, truncated?,
-  deadline?, async?}` (composite 6fa2252d): the bridge's fields; `agentId`
-  only for a subagent's request, `truncated` only as true; a background
+  deadline?, async?, toolUseId?}` (composite 6fa2252d, 43a27604): the
+  bridge's fields; `agentId` only for a subagent's request, `truncated` only
+  as true, `toolUseId` (the call an ask mod's dialog belongs to) only where
+  it differs from `request`; a background
   subagent's `deadline` (epoch ms on DX5) as ISO 8601 UTC with
   milliseconds, after which the hub marks the request `terminal_only`;
 - DX4 `settled` `{request, winner, outcome, by}` as the bridge settled it,
@@ -67,6 +69,7 @@ OUTBOX_MAX = 2000          # messages kept for the hub while it is out of reach 
 RELAYED_FILE = "requests.json"  # daemon/: the settlements the hub took, per session
 RELAYED_KEPT = 200
 RELAYED_SESSIONS = 1000
+TOOL_USE_ID_MAX = 512      # the hub's bound on `raised.toolUseId` (DC3, MAWS 4b5d0a67)
 WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"')   # a line carrying none of these is no line of ours
 
 
@@ -95,6 +98,9 @@ def raised_draft(sid, e):
         d["agentId"] = e["agentId"]
     if e.get("truncated") is True:
         d["truncated"] = True
+    call = e.get("toolUseId")
+    if isinstance(call, str) and call and call != rid and len(call) <= TOOL_USE_ID_MAX:
+        d["toolUseId"] = call
     return d
 
 

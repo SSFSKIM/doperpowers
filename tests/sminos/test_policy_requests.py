@@ -611,6 +611,23 @@ class Requests(unittest.TestCase):
             self.assertTrue(codes.verifies(KEY, "raised", self.PID, b), "the code covers every field")
             self.assertNotIn("t", b)
 
+    def test_the_ask_mods_dialog_carries_its_calls_tool_use_id(self):
+        """DX5 `raised.toolUseId` (composite 43a27604): the call a dialog of
+        the ask mod belongs to, carried into DX4 `raised` under the code, only
+        where it differs from `request`."""
+        q = {"questions": [{"question": "Which?", "options": [{"label": "a"}]}]}
+        self.bridge.raise_("toolu_plugin_7", tool="AskUserQuestion", input_=q, toolUseId="toolu_01outer")
+        self.bridge.raise_("toolu_01same", tool="AskUserQuestion", input_=q, toolUseId="toolu_01same")
+        self.bridge.raise_("toolu_01bad", tool="AskUserQuestion", input_=q, toolUseId="")
+        frames = self.due(lambda fs: len(messages(fs, "raised")) == 3)
+        dialog, same, bad = (m["body"] for m in messages(frames, "raised"))
+        self.assertEqual((dialog["request"], dialog["toolUseId"]), ("toolu_plugin_7", "toolu_01outer"))
+        self.assertTrue(codes.verifies(KEY, "raised", self.PID, dialog), "the code covers it")
+        self.assertNotIn("toolUseId", same, "only where it differs from request")
+        self.assertNotIn("toolUseId", bad, "only a non-empty string")
+        self.assertEqual([r.get("toolUseId") for r in self.r.pending_frame(self.PID)["raised"]
+                          if r["request"] == "toolu_plugin_7"], ["toolu_01outer"], "the pending set carries it")
+
     def test_a_reconnect_to_the_bridge_reconciles(self):
         """A module reload: a new child takes the endpoint over and the mod
         hands it its whole state (`resync`) before the child serves its
@@ -854,6 +871,19 @@ class Uplink(unittest.TestCase):
                          [], "carried by the set, not by a raise of its own")
         self.bridge.settle("toolu_up2")
         self.bridge.settle("toolu_up3")
+
+    def test_d_the_ask_mods_dialog_reaches_the_hub_with_its_calls_tool_use_id(self):
+        count = len(self.hub.messages())
+        self.bridge.raise_("toolu_plugin_up", tool="AskUserQuestion",
+                           input_={"questions": [{"question": "Ship it?", "options": [{"label": "yes"}]}]},
+                           toolUseId="toolu_01up")
+        ms = self.hub.wait(lambda ms: [m for m in self.mine(ms[count:], "raised")
+                                       if m["body"]["request"] == "toolu_plugin_up"])
+        self.assertIsNotNone(ms, "raised reaches the hub")
+        raised = [m for m in self.mine(ms[count:], "raised") if m["body"]["request"] == "toolu_plugin_up"][0]["body"]
+        self.assertEqual(raised["toolUseId"], "toolu_01up", "the hub relays it as received")
+        self.assertTrue(codes.verifies(self.key, "raised", self.project, raised), "under the machine's code")
+        self.bridge.settle("toolu_plugin_up", outcome="answered")
 
     def presences(self, ms):
         return [m["body"] for m in ms if m["kind"] == "presence" and m["session"] == self.sid]

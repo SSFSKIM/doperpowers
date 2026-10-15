@@ -7,7 +7,7 @@ import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 export const ASK_TOOL = 'mcp__doperpowers__AskUserQuestion'
 
 /** The plugin's name as a dispatch's origin carries it. */
-const PLUGIN = 'doperpowers'
+export const PLUGIN = 'doperpowers'
 
 export type AskOption = { label: string; description: string; preview?: string }
 export type AskQuestion = { question: string; header: string; options: AskOption[]; multiSelect: boolean }
