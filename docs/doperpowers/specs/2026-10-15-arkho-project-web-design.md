@@ -1,18 +1,18 @@
-# Arkho — the desk: the project's place on the web (2026-10-15)
+# The desk: MAWS on the web — the project's place on the web (2026-10-15)
 
-> **Parent:** the Arkho platform roadmap, `docs/specs/2026-08-04-arkho-platform-roadmap.md`
-> in `SSFSKIM/arkho`, re-chartered by this document (§2); child id **A8**,
-> which replaces A3 (web UI) and A6 (terminal gateway). **Level name:** Phase 1.
-> **Consumes:** the `.smns` project log as built in doperpowers 7.153.0
-> (`docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`, cited below
-> as *smns §n*); the MAWS renderer (`SSFSKIM/MAWS`, `src/renderer/`) as a UX
-> source; the Arkho board service (A1) for phase 2. Children dispatch per
-> their grain hint, each carrying its section as its spec; each child's
-> artifact opens by citing this document (path + child id + parent pin).
-> This document is doperpowers:brainstorming's approved design (2026-10-15)
-> extended in place: design up top, roadmap below. It was born in
-> doperpowers (worktree `smns-erb`) and moves to the arkho repository at
-> materialization, as the Arkho roadmap itself did.
+> **Parent:** root — a product of its own, closest to MAWS on the web
+> (owner, 2026-10-15; §1). **Level name:** Phase 1. **Consumes:** the
+> `.smns` project log as built in doperpowers 7.153.0
+> (`docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`, cited
+> below as *smns §n*); the MAWS renderer (`SSFSKIM/MAWS`, `src/renderer/`)
+> as a UX source; the Arkho board service's API, as an outside source, for
+> phase 2. Children dispatch per their grain hint, each carrying its
+> section as its spec; each child's artifact opens by citing this document
+> (path + child id + parent pin). This document is
+> doperpowers:brainstorming's approved design (2026-10-15) extended in
+> place: design up top, roadmap below. It lives in doperpowers until the
+> owner names the repository the hub and the web app live in, and moves
+> there with them.
 
 ## Purpose
 
@@ -27,7 +27,7 @@ that project. Today it is a terminal tab per session per machine, and SSH.
 After this unit, a browser tab per project is that place at the desk, and
 the same app on the phone's home screen carries what needs the owner when
 they are away from it. The owner opens
-Arkho, sees every project with its machines and how many sessions are
+the desk, sees every project with its machines and how many sessions are
 working and waiting on them, opens one, and works there: a group chat of
 everything the project's sessions said to the human, each session in depth
 (its live transcript streaming token by token, its subagents, the diff of
@@ -81,10 +81,11 @@ app, and the answer from the phone moves the session on the mini.
   whose client endpoints are unpublished.
 - **An open remote-execution surface.** The machine decides what it
   executes and verifies who asked; the hub routes.
-- **A fifth parallel control surface.** Arkho was chartered for this
-  purpose (2026-08-04) and is re-chartered; MAWS stays the local deep
-  workstation and lends its UX; afleet's Slack-like presentation
-  (2026-09-03) is the taste precedent.
+- **Bound to an older project.** It is not a child of Arkho (owner,
+  2026-10-15): Arkho stays the board's service, read here like any other
+  outside source. MAWS stays the local deep workstation and lends its UX;
+  afleet's Slack-like presentation (2026-09-03) is the taste precedent;
+  Arkho's board UI and its A6 terminal-gateway design are prior art.
 
 ## Parent-Level Acceptance
 
@@ -175,22 +176,28 @@ Terms used throughout:
 - **SSE** — Server-Sent Events, a one-way HTTP stream from server to
   client.
 
-### 1. What changes, in Arkho and in `.smns`
+### 1. Where it stands among the owner's projects, and what changes in `.smns`
 
-The 2026-08-04 Arkho roadmap made the board the human↔agent surface and
-recorded "the human does not steer live sessions" (its parent's Decision
-Log, 2026-08-04). The web UI (A3) and the terminal gateway (A6, deliberately
-late) were never dispatched; A1 (the board service) and A2 (the plugin's
-board adapter) closed in August. Practice since has gone the other way:
-sminos seats, MAWS, and `.smns` exist because the owner steers live
-sessions every day. **[binding — owner, 2026-10-15]** The re-charter
-reverses the steering decision and replaces A3 and A6 with this unit (A8).
-The board service stays the board's backend and returns as a view of the
-project in phase 2; A4, A5, and the A1 read surface stay on the roadmap as
-the board line, unchanged; A7 (a native macOS app) stays conditional, now
-next to MAWS. Contract X2 of the roadmap (one identity issuer) is revisited
-when the board view lands; in phase 1 the hub and the board authenticate
-separately.
+**[binding — owner, 2026-10-15]** This is a product of its own, closest to
+MAWS on the web: not a child of Arkho, and not bound to Arkho's roadmap.
+The owner's earlier control surfaces stay what they are and lend what
+they proved:
+- **Arkho** (2026-08-04 on) is the board: its service (A1), plugin
+  adapter (A2), board web UI (A3, live on Render since 2026-09-06),
+  GitHub mirrors (A4), and cutover (A5) have landed, and its A6 design
+  (approved 2026-09-13) bridges `claude attach` to a browser terminal
+  through a per-host gateway. Its roadmap recorded "the human does not
+  steer live sessions"; this product is built for steering them, which is
+  how the owner works now (sminos seats, MAWS, `.smns`). Phase 2's board
+  view reads the board service's API as an outside source; A6's design is
+  prior art for phase 2's web terminal.
+- **afleet** (2026-09-03) is the taste precedent for the Slack-like layout.
+- **MAWS** (2026-09-28 on) stays the local deep workstation and lends its
+  agent UX; its own P4 seed names "a cloud and web-hosted MAWS" and the
+  product for teachers.
+- **sminos hub** (2026-10-15, written in parallel in the MAWS repository)
+  is superseded by this design; four of its ideas were imported (Decision
+  Log).
 
 `.smns` says twice that remote control of a session's process is not part
 of it (smns §2, §9). This unit adds that control as a layer beside the log,
@@ -590,7 +597,7 @@ fork.
 
 1. **The desk** — this unit.
 2. **The repository** — source control (worktrees, branches, commits,
-   diffs), pull requests, the board view over the Arkho board service, and a
+   diffs), pull requests, the board view over the Arkho board service's API, and a
    web terminal in a session's working directory for break-glass, opened
    behind a step-up check (owner, 2026-10-15; until then SSH and
    `claude attach`).
@@ -604,7 +611,7 @@ fork.
    mobile app, wherever A7 sits (the web app is on the phone from phase
    1).
 
-Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
+Phases 2–4 are this product's later units, each cut at its dispatch.
 
 ### 8. Delegated unknowns
 
@@ -917,7 +924,7 @@ consumers start after that gate.
     "<member-id>"`;
   - every event on the hub carries `mac: {"nonce": "<128-bit random,
     base64url>", "value": "<HMAC-SHA256 with the org key, base64url>"}`.
-    The code covers the bytes `arkho-log-v1\n<project id>\n` followed by
+    The code covers the bytes `smns-hub-log-v1\n<project id>\n` followed by
     the canonical JSON (sorted keys, no whitespace, UTF-8) of **every field
     of the event except `mac`** — and, for a `hub/` writer only, except
     also `writer`, `seq`, and `ts`, which the hub assigns after the browser
@@ -1061,7 +1068,7 @@ C1 and C3 start at once. C3's G1 (the protocols) is its first deliverable
 because three children wait on it; C2's G1 likewise for C7. C5 and C6 build
 against C3's fake machine, so they do not wait for the machine side; the
 real two-Mac integration happens at recomposition. C2, C4, and C7 change
-doperpowers; C3, C5, and C6 change arkho.
+doperpowers; C3, C5, and C6 change the product's own repository, which the owner names.
 
 ## Risks & Mitigations
 
@@ -1153,6 +1160,12 @@ a hub that connects into machines (§2).
   dialog appeared at 3.3 s. Evidence: findings item 10.
 - Observation: the engine blocks a long foreground `sleep` ("Blocked: sleep
   30 followed by: echo …"). Evidence: findings, notes for the builder.
+- Observation: the Arkho checkout read during brainstorming was stale.
+  Evidence: `/Users/new/Developer/GitHub/arkho` sat on branch
+  `agent-grade-reads` at cb1be4e (2026-08-20); `origin/main` (632 commits,
+  last 2026-09-23) carries A3–A5 closed and A6 approved in its tracking
+  map. Lesson: ground another repository against its remote's default
+  branch, not its working tree.
 - Observation: a message to a closed terminal session does not revive it
   in `.smns` as built; the v1 design said it did.
   Evidence: `push_member` in `skills/sminos/scripts/sminos.py`: "A session
@@ -1306,6 +1319,17 @@ a hub that connects into machines (§2).
   sleep. C2 is dispatchable.
   Rationale: measured in real sessions (findings file); each change keeps
   the design's intent with the primitive that actually delivers it.
+  Date/Author: 2026-10-15, design session.
+- Decision: Not a child of Arkho (owner, 2026-10-15): "I don't want to be
+  bound to Arkho's existing project; it is closer to MAWS on the web." The
+  parent line, §1, the must-not list, and phase 2 revised; the title drops
+  "Arkho" and the unit's name "A8" (it remains in earlier commit messages
+  and the children's file names). Rejected then: re-chartering Arkho,
+  approved earlier the same day on a false premise this session supplied —
+  that Arkho's web UI (A3) and terminal gateway (A6) were never dispatched.
+  A3 has been live since 2026-09-06 and A6's design was approved
+  2026-09-13; the session had read a local checkout stopped at 2026-08-20
+  instead of `origin/main` (Surprises).
   Date/Author: 2026-10-15, design session.
 - Decision: C2 residue — the bridge child serves a per-session endpoint
   (`$SMINOS_HOME/bridge/<session-id>.sock`) that the CLI and the daemon
