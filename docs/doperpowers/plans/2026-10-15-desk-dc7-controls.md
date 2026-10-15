@@ -455,9 +455,10 @@ against the local hub; until it lands, the stand-in.
   and never answered (`sent?`, `woken?`): settled, never pushed again,
   drawn as possibly delivered. (3) `raised` gains optional `agentId`
   (absent for the main thread) and `truncated: true`; the code covers
-  every field. DC3's hub at `d75f2924` may refuse the new value and fields
-  `bad-shape` until its fix wave; those cases are proved against the
-  stand-in until then. Also: the complete `pending` set is held until the
+  every field; `agentId` is sent only for a subagent (a non-empty
+  string) and `truncated` only as `true`, any other form being refused
+  `bad-shape`. DC3's hub admits all three from `b7fc7ebd` (MAWS), which
+  M2's local-hub run uses. Also: the complete `pending` set is held until the
   request readers' first snapshots, within a bound, since an unread empty
   set is not complete.
   Date/Author: 2026-10-15, the composite's writer.
