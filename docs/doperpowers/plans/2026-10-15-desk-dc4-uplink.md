@@ -653,4 +653,76 @@ produces nothing new for other children beyond the stream DC7 builds on.
 - DC2's branch also took 7.154.0; this branch moves to the next number
   above, per the composite's writer. (M4)
 
+- Decision: The whole-branch review (`high`, 4dddfb4b..043d1449) found
+  one P1 and four P2 at the seams between milestones, all fixed in
+  `4d0dd34b`. (P1) `project init --hub` converts under the mirror's
+  `.sync-op.lock`, waiting for a sync in flight, and every git phase
+  re-reads `.smns` under that lock (before the sync, inside integrate,
+  before each push), so a tick that began before the switch neither
+  integrates nor pushes. (P2) A machine name that differs from the
+  current or a former one only in case is refused before redeeming (a
+  case-insensitive disk would give both one writer file; DX7 compares
+  names without case). (P2) A refusal is remembered at the writer's
+  lowest refused seq, and a `resend` at or past it does not reopen the
+  writer on that stream (a too-large event otherwise looped forever).
+  (P2) The supervisor passes its pid at spawn (`SMINOS_UPLINK_PARENT`)
+  and the uplink ends at once when its parent is another, startup
+  included. (P2) The former-name re-join's `joined` carries the
+  member's current alias and name source, then its `state`.
+  Date/Author: 2026-10-15, controller (from the branch review).
+
 ## Outcomes & Retrospective
+
+**Outcome (2026-10-15).** All four milestones landed and were reviewed
+clean, and the branch review's findings are fixed. DC4's acceptance,
+against the composite's DC4 section:
+
+- **G1 (enroll):** `sminos hub enroll` reads the code from a prompt or
+  stdin (the positional form refused, composite `2bce24bb`), redeems it at
+  DX7's endpoint, and stores `daemon/hub.json` at 0600 with no secret in
+  output, logs, or argv; a second installation claiming an enrolled name
+  is told to pick another; `project init --hub` writes the field. Proved
+  against the Python stand-in and DC3's local hub (55/55 at MAWS
+  `4d2c492f`).
+- **G2 (sync):** two machines simulated on one Mac converge — per-writer
+  counts, last seq, and payloads equal on both and the hub — after a burst,
+  a restart, and a dropped stream; a fresh machine bootstraps; no git for
+  a hub project; every refused case stays out of the log and is reported
+  up as `rejected`, the browser-path forgeries shown on the hub's
+  browser socket (real-hub walk 32/32 at MAWS `71083dd4`).
+- **G3 (archive):** the designated machine writes the log byte for byte
+  (`mac` and holes kept) from a clone outside `log/`; no other machine
+  pushes; a machine that loses the designation stops at its next run.
+- **G4 (concurrency):** the uplink is its own supervised process; a hung
+  git phase or a derivation does not delay it, and an event from the hub
+  is delivered within a second, exactly once against a concurrent tick.
+- The final walk against DC3's hub proved G1–G4 together, 73/73 (MAWS
+  `0e7da91e`, and again at `fa7f8e8d` after the branch review's fixes);
+  the full sminos suite is 1724/1724 at normal load.
+
+**What went well.** Pinning DX1 to the hub's own vectors, negatives
+included (`fails_by`), made four contract amendments — the position
+check, canonical base64url, the derived nonce, conflict — a file swap
+and a re-run each. Splitting the forgery cases by how a forgery can
+really reach a daemon (the real browser path against DC3's hub; a lying
+hub only against the stand-in) proved acceptance 8's path end to end
+without a backdoor in the hub.
+
+**What it cost.** Every review found real defects, most at a boundary
+the milestone did not own alone: the identity rule ("a former name is
+self") first claimed another machine's sessions; the code in argv; a
+busy stream outliving its daemon; refusal state that could not hold a
+lone surrogate; the archive writing through a remote symlink; and, only
+visible across the whole branch, the mirror-to-hub switch racing a tick.
+The lesson for DC7, which builds on this stream: the boundaries worth a
+test first are the transitions (enrollment, rename, conversion,
+reconnect, designation), not the steady states.
+
+**Known rough edges.** `project init --hub` waits silently, up to the
+git bound, behind a sync in flight. Two review Minors are deferred: an
+uplink POST past its 60 s deadline can leave its worker thread alive
+(TECH-DEBT), and a CRLF warning in a `test-archive.sh` fixture. The
+suite's timing assertions flake under heavy machine load, the base
+commit's too (TECH-DEBT). `skills/sminos/SKILL.md` still describes a
+`remote` as a git mirror; it is updated once for the whole desk after
+the children merge.
