@@ -255,6 +255,43 @@ assert_equals "$(git -C "$BARE" merge-base --is-ancestor "$STRANGER" main && ech
 assert_equals "$(ls "$ALOG"/stranger* "$BLOG"/stranger* 2>/dev/null | wc -l | tr -d ' ')" 0 "no machine's log holds the stranger's file"
 assert_not_contains "$(cat "$ALOG"/*.jsonl "$BLOG"/*.jsonl)" "edited in git" "nor the line edited in git"
 
+# ---- a remote that would steer the copy: a symlink out of the clone, an ignore rule, conversions
+echo "a remote that would steer the copy:"
+gitq -C "$T/stranger" fetch -q origin
+gitq -C "$T/stranger" reset -q --hard origin/main
+rm "$T/stranger/alpha.human.jsonl"
+ln -s ../log/beta.human.jsonl "$T/stranger/alpha.human.jsonl"   # from the archive clone: alpha's live beta writer
+printf '*.jsonl\n' > "$T/stranger/.gitignore"
+printf '*.jsonl ident text eol=crlf\n' > "$T/stranger/.gitattributes"
+gitq -C "$T/stranger" add -A
+gitq -C "$T/stranger" commit -q -m "a remote that would steer the copy"
+gitq -C "$T/stranger" push -q origin HEAD:main
+cp "$ALOG/beta.human.jsonl" "$T/beta-before"
+# shellcheck disable=SC2016 # the dollar signs are the ident attribute's keyword, written as they are
+(cd "$RA" && as a alpha && "$SMINOS" say 'ident probe $Id: kept as written $' >/dev/null)
+(cd "$RA" && as a alpha && python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+sminos.log_append(sminos.resolve_project(os.getcwd()), "alpha/late-feed", "say", **{"from": "human", "to": "*", "text": "a writer file new after the ignore rule"})
+PY
+)
+steered() { git -C "$BARE" cat-file -e main:alpha.late-feed.jsonl 2>/dev/null \
+  && git -C "$BARE" show main:alpha.human.jsonl 2>/dev/null | grep -q "ident probe"; }
+until_true 300 steered || true
+assert_equals "$(cmp -s "$T/beta-before" "$ALOG/beta.human.jsonl" && echo unchanged)" unchanged \
+  "the live log is unchanged: nothing was written through the remote's symlink"
+assert_equals "$(git -C "$BARE" ls-tree main alpha.human.jsonl | cut -c1-6)" 100644 "the writer file is a regular file in the archive again"
+until_true 100 archive_is "$ALOG" || true
+if archive_is "$ALOG"; then pass "every writer file byte for byte, the remote's .gitattributes (ident, text, eol) notwithstanding"; else
+  fail "every writer file byte for byte, the remote's .gitattributes notwithstanding"; fi
+# shellcheck disable=SC2016
+assert_contains "$(git -C "$BARE" show main:alpha.human.jsonl)" 'ident probe $Id: kept as written $' "the ident keyword kept as the log holds it"
+assert_contains "$(git -C "$BARE" show main:alpha.late-feed.jsonl 2>&1)" "a writer file new after the ignore rule" \
+  "a writer file the remote's .gitignore covers is archived all the same"
+assert_equals "$(git -C "$BARE" show main:.gitignore) | $(git -C "$BARE" show main:.gitattributes)" \
+  "*.jsonl | *.jsonl ident text eol=crlf" "the remote's own files stay as the remote has them"
+
 # ---- the designation moves to beta
 echo "the designation moves to beta:"
 ctl archive "$PID" beta
@@ -329,6 +366,27 @@ PY
 assert_equals "$OUT" "pushed: rejected then pushed" "the push the remote rejected is retried from a fresh fetch, and lands"
 assert_contains "$(git -C "$BARE" show main:stranger.x.jsonl)" '"text":"raced"' "keeping the commit that raced it"
 assert_contains "$(git -C "$BARE" show main:beta.human.jsonl)" "beta, raced" "with beta's log on top"
+
+# ---- a hello repeated on an open stream refreshes the designation, and leaves the upload as it was
+echo "a repeated hello:"
+assert_equals "$(python3 - <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos, sminos_hublog as hublog
+hl = hublog.HubLog(sminos.resolve_project(os.getcwd()), {"key": bytes(range(32)), "machine": "beta"})
+hl.on_have({"have": {"beta/human": 5, "alpha/human": 9}, "archive": False})
+opened = [dict(hl.sent), sorted(hl.stuck)]
+hl.stuck.add("beta/human")  # the hub refused it on this stream
+hl.on_have({"have": {"beta/human": 3}, "archive": True})  # an older vector, answering a repeated hello
+refreshed = [dict(hl.sent), sorted(hl.stuck), hl.archive]
+hl.on_have({"have": {"beta/human": 7}, "archive": True})
+ahead = dict(hl.sent)
+hl.reset()  # a new stream
+hl.on_have({"have": {"beta/human": 3}, "archive": False})
+print(json.dumps([opened, refreshed, ahead, [dict(hl.sent), sorted(hl.stuck)]]))
+PY
+)" '[[{"beta/human": 5}, []], [{"beta/human": 5}, ["beta/human"], true], {"beta/human": 7}, [{"beta/human": 3}, []]]' \
+  "its have moves what the hub holds only forward and keeps a refused writer stopped; a new stream starts both over"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

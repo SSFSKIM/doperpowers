@@ -28,7 +28,10 @@ clone into `log/`: git never feeds the live log of a hub project.
 import glob
 import json
 import os
+import shutil
+import stat
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -90,23 +93,55 @@ def duty(project, record):
     return bool(pushed), ""
 
 
+def held_as_file(dst):
+    """The bytes of a regular file at dst, never read through a symlink; None
+    for anything else there, or nothing."""
+    try:
+        if not stat.S_ISREG(os.lstat(dst).st_mode):
+            return None
+        fd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        return f.read()
+
+
 def copy_log(project, clone):
-    """Every writer file of log/ over its namesake in the clone, whole: read
-    under the file's own lock, so no append is caught half written."""
+    """Every writer file of log/ over its namesake at the clone's top, whole —
+    read under the file's own lock, so no append is caught half written — and
+    the names copied. Each is written as a regular file by rename inside the
+    clone: whatever the remote put at that name (a symlink, which the reset
+    checked out as one, a directory) is replaced, never written through, so
+    nothing the remote holds can steer a write out of the clone."""
     log = os.path.join(project.home, "log")
+    names = []
     for path in sorted(glob.glob(os.path.join(glob.escape(log), "*.jsonl"))):
+        name = os.path.basename(path)
         with sminos.flocked(path + ".lock"):
             with open(path, "rb") as f:
                 data = f.read()
-        dst = os.path.join(clone, os.path.basename(path))
+        names.append(name)
+        dst = os.path.join(clone, name)
+        if held_as_file(dst) == data:
+            continue
+        if os.path.isdir(dst) and not os.path.islink(dst):
+            shutil.rmtree(dst)
+        fd, tmp = tempfile.mkstemp(dir=clone, prefix=".sminos-archive-")
         try:
-            with open(dst, "rb") as f:
-                if f.read() == data:
-                    continue
-        except OSError:
-            pass
-        with open(dst, "wb") as f:
-            f.write(data)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, dst)  # a rename replaces a symlink itself, never its target
+        finally:
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
+    return names
+
+
+# The writer files are archived byte for byte, whatever the remote's
+# .gitattributes say: no eol conversion, no ident, no filter, no encoding.
+# $GIT_DIR/info/attributes outranks every .gitattributes in the tree.
+ATTRIBUTES = "*.jsonl -text -ident -filter -diff -merge -working-tree-encoding\n"
 
 
 def prepare(project, clone):
@@ -115,6 +150,11 @@ def prepare(project, clone):
         daemon.git_ok(clone, "init", "-q", "-b", "main")
     daemon.git_ok(clone, "config", "user.name", "sminos")
     daemon.git_ok(clone, "config", "user.email", "sminos@%s" % sminos.host_name())
+    daemon.git_ok(clone, "config", "core.autocrlf", "false")
+    info = os.path.join(clone, ".git", "info")
+    os.makedirs(info, exist_ok=True)
+    with open(os.path.join(info, "attributes"), "w") as f:
+        f.write(ATTRIBUTES)
     url = daemon.git(clone, "remote", "get-url", "origin")
     if url.returncode != 0:
         daemon.git_ok(clone, "remote", "add", "origin", project.remote)
@@ -139,9 +179,13 @@ def run(project):
             if daemon.git(clone, "rev-parse", "--verify", "-q", "origin/main").returncode == 0:
                 daemon.git_ok(clone, "reset", "-q", "--hard", "origin/main")
                 daemon.git_ok(clone, "clean", "-fdq")
-            copy_log(project, clone)
-            daemon.git_ok(clone, "add", "-A")
-            if daemon.git_ok(clone, "status", "--porcelain").stdout.strip():
+            names = copy_log(project, clone)
+            if names:
+                # Named, and forced past the remote's ignore rules: a writer
+                # file is archived whatever .gitignore says; nothing else the
+                # remote holds is touched.
+                daemon.git_ok(clone, "add", "-f", "--", *names)
+            if daemon.git(clone, "diff", "--cached", "--quiet").returncode != 0:
                 daemon.git_ok(clone, "commit", "-q", "-m", "sminos: %s archives %s" % (sminos.host_name(),
                                                                                        project.name))
             elif not daemon.ahead(clone):

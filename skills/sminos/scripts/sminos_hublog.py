@@ -400,10 +400,23 @@ class HubLog:
 
     def on_have(self, frame):
         have = frame.get("have")
-        self.have = {w: s for w, s in have.items() if type(s) is int} if isinstance(have, dict) else {}
+        have = {w: s for w, s in have.items() if type(s) is int} if isinstance(have, dict) else {}
+        opening, self.have = self.have is None, have
         self.archive = frame.get("archive") is True
-        self.sent = {w: s for w, s in self.have.items() if self.own(w)}
-        self.stuck = set()
+        if opening:
+            # The handshake: upload from the hub's vector, every writer free.
+            self.sent = {w: s for w, s in have.items() if self.own(w)}
+            self.stuck = set()
+        else:
+            # A `have` answering a `hello` repeated on an open stream (the
+            # uplink's periodic one, which refreshes the designation): the
+            # upload goes on as it was. `sent` only moves forward — an older
+            # vector still queued must not bring back what the hub has taken
+            # since — and a writer the hub refused stays stopped until a new
+            # stream, or a `resend`, frees it, as on the stream before.
+            for w, s in have.items():
+                if self.own(w) and s > self.sent.get(w, 0):
+                    self.sent[w] = s
         # The designation as the hub said it now: the tick loop's archive
         # duty (sminos_archive) runs on it.
         d = self.state()
