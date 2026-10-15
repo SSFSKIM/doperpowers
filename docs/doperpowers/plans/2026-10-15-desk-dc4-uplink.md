@@ -27,7 +27,12 @@
   (5f890398..fa5fe015; two fix waves: rejection state that round-trips,
   cancellable uploads, projects leaving the uplink, spent as a
   tombstone); the real-hub walk 32/32 at MAWS 71083dd4
-- [ ] M4 — The archive, the two-machine walk, docs, version (DC4.G3)
+- [x] M4 — The archive, the two-machine walk, docs, version (DC4.G3) —
+  2026-10-15, reviewed clean (dd6730d3..043d1449; one fix wave: no
+  write through a remote symlink, writer files staged and stored byte
+  for byte whatever the remote's git policy, a refresh `have` that only
+  moves forward; 7.155.0); the walk 73/73 against MAWS 0e7da91e, a
+  repeated `hello` included
 
 ## Constraints that bind every milestone
 
