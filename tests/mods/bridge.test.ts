@@ -74,7 +74,7 @@ function fakeChild(argv: readonly string[]) {
  * spawned children, posts (each released by the test when `hold` is set),
  * timers fired by hand.
  */
-function harness(options: { env?: Record<string, string>; hold?: boolean; failPosts?: boolean } = {}) {
+function harness(options: { env?: Record<string, string>; hold?: boolean; failAt?: number[] } = {}) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
@@ -83,7 +83,7 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failPo
     return { catch: () => undefined }
   }) as unknown as On
   const children: ReturnType<typeof fakeChild>[] = []
-  const posts: { url: string; socketPath?: string; events: Record<string, unknown>[]; release: () => void }[] = []
+  const posts: { url: string; socketPath?: string; events: Record<string, unknown>[]; release: () => void; fail: () => void }[] = []
   const timers: { kind: 'after' | 'every'; ms: number; fn: () => void; cancelled: boolean }[] = []
   const logs: string[] = []
   let session = SID
@@ -106,10 +106,12 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failPo
     http: {
       fetch: (url: string, init: { socketPath?: string; body?: string }) =>
         new Promise((resolve, reject) => {
-          const release = () => (options.failPosts ? reject(new Error('refused')) : resolve({ status: 204, ok: true, headers: {}, text: '' }))
-          posts.push({ url, socketPath: init.socketPath, events: JSON.parse(init.body ?? '[]'), release })
+          const release = () => resolve({ status: 204, ok: true, headers: {}, text: '' })
+          const fail = () => reject(new Error('refused'))
+          const n = posts.length
+          posts.push({ url, socketPath: init.socketPath, events: JSON.parse(init.body ?? '[]'), release, fail })
           if (!options.hold) {
-            release()
+            ;(options.failAt?.includes(n) ? fail : release)()
           }
         }),
     },
@@ -203,7 +205,7 @@ describe('the child', () => {
     expect(h.children[0]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID])
   })
 
-  test('nothing is posted before its hello; then the session start, then what happened meanwhile, to the socket hello names', async () => {
+  test('nothing is posted before its hello; then the session start, then a resync holding what happened meanwhile, to the socket hello names', async () => {
     const h = harness()
     await h.start()
     await h.hook('turn.start', { turnId: 't1' })(h.engine, { turnId: 't1', text: 'hi' }, async () => ({ turnId: 't1' }))
@@ -213,8 +215,9 @@ describe('the child', () => {
     await h.settle()
     expect(h.posts[0]!.url).toBe('http://bridge/events')
     expect(h.posts[0]!.socketPath).toBe(SOCK)
-    expect(h.events().map((e) => `${e.type}:${e.phase}`)).toEqual(['session:start', 'turn:start'])
-    expect(h.events()[0]).toMatchObject({ session: SID, cwd: '/w', model: 'claude-haiku', version: '2.1.300', isInteractive: true })
+    expect(h.events().map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(h.events()[0]).toMatchObject({ phase: 'start', session: SID, cwd: '/w', model: 'claude-haiku', version: '2.1.300', isInteractive: true })
+    expect(h.events()[1]).toMatchObject({ turns: [{ turnId: 't1', agentId: null }], streaming: [], agents: [] })
   })
 
   test('an internal fork (SMNS_INTERNAL) gets no bridge', async () => {
@@ -358,34 +361,95 @@ describe('the stream', () => {
     expect(h.posts[1]!.events.map((e) => e.turnId)).toEqual(['t1', 't2'])
   })
 
-  test('a failed post loses its events and the next one says how many', async () => {
-    const h = harness({ failPosts: true })
-    await h.ready()
-    await h.hook('turn.start', { turnId: 't1' })(h.engine, { turnId: 't1', text: '' }, async () => ({ turnId: 't1' }))
+  test('a post lost mid-message: the next opens with the gap and a resync whose text covers its upTo', async () => {
+    const h = harness({ hold: true })
+    await h.start()
+    h.children[0]!.write(hello())
     await h.settle()
-    expect(h.posts[1]!.events[0]).toMatchObject({ type: 'gap', dropped: 1 })
+    h.posts[0]!.release()
+    await h.settle()
+    const e = { turnId: 't1', index: 0, model: 'm', messageCount: 1 }
+    const tag = { turnId: 't1', agentId: null, step: 0 }
+    const gen = h.hook('turn.step', e)(h.engine, e, () => {
+      const g = (async function* () {
+        yield { kind: 'text', index: 0, text: 'A' }
+        yield { kind: 'text', index: 0, text: 'B' }
+        yield { kind: 'text', index: 0, text: 'C' }
+        return { turnId: 't1', index: 0, answer: 'ABC', toolUses: [], stopReason: 'end_turn', usage: null }
+      })() as AsyncGenerator<unknown, unknown> & { result: Promise<unknown> }
+      g.result = Promise.resolve({ turnId: 't1', index: 0, stopReason: 'end_turn', usage: null })
+      return g
+    }) as AsyncGenerator<unknown, unknown>
+    await gen.next() // step start posted (1); A queued
+    await h.settle()
+    h.posts[1]!.release()
+    await h.settle()
+    expect(h.posts[2]!.events).toMatchObject([{ type: 'chunk', ...tag, chunkIndex: 0 }])
+    await gen.next() // B queued behind the post of A
+    await h.settle()
+    h.posts[2]!.fail() // A and B never reach the child
+    await h.settle()
+    expect(h.posts.length).toBe(3) // the next post waits
+    h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
+    await h.settle()
+    const resent = h.posts[3]!.events
+    expect(resent[0]).toMatchObject({ type: 'gap', dropped: 2 })
+    expect(resent[1]).toMatchObject({ type: 'resync', streaming: [{ ...tag, text: 'AB', upTo: 1 }] })
+    h.posts[3]!.release()
+    await gen.next() // C follows the resync
+    await h.settle()
+    expect(h.posts[4]!.events).toMatchObject([{ type: 'chunk', ...tag, chunkIndex: 2, chunk: { text: 'C' } }])
   })
 
-  test('tool calls and their results; long text capped', async () => {
+  test('a child replaced mid-message gets the message so far in its first post', async () => {
+    const h = harness()
+    await h.ready()
+    await h.step({ turnId: 't0', index: 0, model: 'm', messageCount: 1 }, [], async () => {
+      // Mid-message: the child dies and the next says hello.
+      await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1, agentId: 'a1' }, [{ kind: 'text', index: 0, text: 'Hel' }], async () => {
+        h.children[0]!.end()
+        await h.settle()
+        h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
+        await h.settle()
+        h.children[1]!.write(hello())
+        await h.settle()
+        const first = h.posts.at(-1)!.events
+        expect(first.map((e) => e.type)).toEqual(['session', 'resync'])
+        expect(first[1]).toMatchObject({ streaming: [{ turnId: 't0', agentId: null, step: 0, text: '', upTo: -1 }, { turnId: 't1', agentId: 'a1', step: 0, text: 'Hel', upTo: 0 }] })
+      })
+    })
+  })
+
+  test('tool calls and their results; every string capped at any depth, and each cut flagged', async () => {
     const h = harness()
     await h.ready()
     const long = 'x'.repeat(TEXT_CAP + 10)
-    await h.hook('tool.call', { tool: 'Write' })(h.engine, { tool: 'Write', tool_use_id: 'tu9', agentId: 'a1', file_path: '/f', content: long }, async () => ({ text: long, isError: false }))
+    const edits = [{ old_string: long, new_string: 'y' }]
+    await h.hook('tool.call', { tool: 'MultiEdit' })(h.engine, { tool: 'MultiEdit', tool_use_id: 'tu9', agentId: 'a1', file_path: '/f', edits }, async () => ({ text: long, isError: false }))
     await h.settle()
     const [call, result] = h.ofType('tool')
-    expect(call).toMatchObject({ phase: 'call', toolUseId: 'tu9', tool: 'Write', agentId: 'a1', input: { file_path: '/f' }, truncated: true })
-    expect(String((call!.input as Record<string, unknown>).content).length).toBe(TEXT_CAP)
-    expect(Object.keys(call!.input as object).sort()).toEqual(['content', 'file_path'])
+    expect(call).toMatchObject({ phase: 'call', toolUseId: 'tu9', tool: 'MultiEdit', agentId: 'a1', input: { file_path: '/f', edits: [{ new_string: 'y' }] }, truncated: true })
+    const input = call!.input as { edits: { old_string: string }[] }
+    expect(input.edits[0]!.old_string.length).toBe(TEXT_CAP)
+    expect(Object.keys(input).sort()).toEqual(['edits', 'file_path'])
     expect(result).toMatchObject({ phase: 'result', toolUseId: 'tu9', isError: false, truncated: true })
     expect(String(result!.text).length).toBe(TEXT_CAP)
   })
 
-  test('a denied call is reported denied', async () => {
+  test('a denied call is reported denied; a long denial and a long prompt are cut and flagged', async () => {
     const h = harness()
     await h.ready()
     await h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu2', command: 'rm' }, async () => ({ deny: 'no' }))
+    await h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu3', command: 'rm' }, async () => ({ deny: 'n'.repeat(TEXT_CAP + 1) }))
+    await h.hook('turn.start', { turnId: 't1' })(h.engine, { turnId: 't1', text: 'p'.repeat(TEXT_CAP + 1) }, async () => ({ turnId: 't1' }))
     await h.settle()
-    expect(h.ofType('tool')[1]).toMatchObject({ phase: 'result', denied: 'no' })
+    const tools = h.ofType('tool')
+    expect(tools[1]).toMatchObject({ phase: 'result', denied: 'no' })
+    expect(tools[1]!.truncated).toBeUndefined()
+    expect(tools[3]).toMatchObject({ phase: 'result', truncated: true })
+    expect(String(tools[3]!.denied).length).toBe(TEXT_CAP)
+    expect(h.ofType('turn')[0]).toMatchObject({ phase: 'start', truncated: true })
+    expect(String(h.ofType('turn')[0]!.text).length).toBe(TEXT_CAP)
   })
 
   test('subagents: spawned and stopped', async () => {
@@ -413,6 +477,35 @@ describe('the stream', () => {
       { phase: 'complete', turnId: 't1', reason: 'answer', usage },
     ])
     expect(h.ofType('usage')[0]).toMatchObject({ context: { tokens: 5000, window: 200000 } })
+  })
+
+  test("a /clear: the old child gets the end and nothing after it; the new session's events reach its own child", async () => {
+    const h = harness()
+    await h.ready()
+    await h.hook('turn.start', { turnId: 'old' })(h.engine, { turnId: 'old', text: 'before' }, async () => ({ turnId: 'old' }))
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await h.settle()
+    // The new session's first turn, before its id is known.
+    await h.hook('turn.start', { turnId: 'new' })(h.engine, { turnId: 'new', text: 'after' }, async () => ({ turnId: 'new' }))
+    await h.settle()
+    const toOld = () => h.posts.filter((p) => p.socketPath === SOCK).flatMap((p) => p.events)
+    expect(toOld().at(-1)).toMatchObject({ type: 'session', phase: 'end', reason: 'clear' })
+    expect(toOld().some((e) => e.turnId === 'new')).toBe(false)
+    // The id is looked for at once, not at the heartbeat.
+    const NEW = '6c000002-0000-4000-8000-00000000006c'
+    const NEWSOCK = `/tmp/s/bridge/${NEW}.sock`
+    h.setSession(NEW)
+    h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
+    await h.settle()
+    expect(h.children[0]!.killed).toBe(true)
+    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    const toNew = h.posts.filter((p) => p.socketPath === NEWSOCK).flatMap((p) => p.events)
+    expect(toNew.map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(toNew[0]).toMatchObject({ phase: 'start', session: NEW })
+    expect(toNew[1]).toMatchObject({ turns: [{ turnId: 'new' }] })
+    expect(toOld().some((e) => e.turnId === 'new')).toBe(false)
   })
 
   test('the session end is reported', async () => {

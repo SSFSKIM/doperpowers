@@ -5,7 +5,8 @@ What only a running engine shows, pinned so a release that breaks it fails
 loudly: a command line reaches the mod idle, mid-model, with a permission
 dialog open and mid-Bash; a subagent's chunks carry its agentId; a child
 killed outright leaves a stale socket that the respawned child replaces; a
-module reload kills the child and spawns the next; `sminos watch` prints the
+module reload kills the child and spawns the next; a /clear moves the bridge
+to the new session id at once; `sminos watch` prints the
 stream, by session id and by name, and says so for a session with no bridge.
 
 It spends model calls (haiku, short prompts), so no suite runs it: run it by
@@ -326,6 +327,26 @@ class Live:
         wait_for("the subscription to follow", 10, lambda: self.subscriptions > subs)
         self.check("a subscriber follows the endpoint to the new child", self.subscriptions > subs,
                    "%d subscriptions in all" % self.subscriptions)
+
+        # A /clear: the conversation ends and the process goes on under a new
+        # id, with no session.start. The old child gets the end; the bridge
+        # moves to the new id at once, not at the next heartbeat.
+        old_session, old_endpoint = self.session, self.endpoint()
+        t4 = time.time()
+        self.prompt("/clear")
+        fresh = wait_for("the new session's endpoint", 20, lambda: [
+            n[:-5] for n in os.listdir(sock_dir)
+            if n.endswith(".sock") and not n.startswith(".") and n[:-5] != old_session])
+        moved_after = time.time() - t4
+        self.session = fresh[0]
+        st = wait_for("the new endpoint to answer", 10, self.status)
+        ended = self.seen(lambda e: e.get("type") == "session" and e.get("phase") == "end" and e.get("reason") == "clear", t4)
+        gone = wait_for("the old endpoint to go", 10, lambda: not os.path.exists(old_endpoint))
+        s, body = self.ping()
+        self.check("a /clear moves the bridge to the new session, the old child getting its end",
+                   ended and gone and st["session"] == self.session and s == 200 and body.get("ok"),
+                   "old %s, new %s, endpoint up %.1f s after /clear, end seen %s, old endpoint gone %s, ping %s" % (
+                       old_session[:8], self.session[:8], moved_after, bool(ended), gone, s))
 
     def cleanup(self):
         self.stop.set()

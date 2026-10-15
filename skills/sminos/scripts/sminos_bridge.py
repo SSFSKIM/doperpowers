@@ -162,6 +162,7 @@ class Bridge:
         self.out_lock = threading.Lock()
         self.subscribers = set()
         self.streaming = {}      # turnId|agentId|step → the message as streamed so far
+        self.broken = set()      # messages a chunk was missing from: left out until a resync
         self.turns = {}          # turnId → the open turn
         self.agents = {}         # agentId → what its spawn said, and whether it runs
         self.session_info = None
@@ -189,27 +190,47 @@ class Bridge:
     def _apply(self, e):
         kind, phase = e.get("type"), e.get("phase")
         if kind == "chunk":
-            m = self.streaming.get(_key(e))
-            if m is None:   # the step's start came before this child did
-                m = self.streaming[_key(e)] = {"turnId": e.get("turnId"), "agentId": e.get("agentId"),
-                                               "step": e.get("step"), "text": "", "thinking": "", "upTo": -1}
+            # A message's text is only ever whole up to its upTo: a chunk that
+            # does not follow the last one (a post lost, a start missed) takes
+            # the message out of the snapshot until the mod's resync.
+            k = _key(e)
+            m = self.streaming.get(k)
+            index = e.get("chunkIndex")
+            if k in self.broken:
+                return
+            if m is None and index == 0:
+                m = self.streaming[k] = {"turnId": e.get("turnId"), "agentId": e.get("agentId"),
+                                         "step": e.get("step"), "text": "", "thinking": "", "upTo": -1}
+            if m is None or index != m["upTo"] + 1:
+                self.streaming.pop(k, None)
+                self.broken.add(k)
+                return
             chunk = e.get("chunk") or {}
             if chunk.get("kind") == "text":
                 m["text"] += str(chunk.get("text") or "")
             elif chunk.get("kind") == "thinking":
                 m["thinking"] += str(chunk.get("text") or "")
-            m["upTo"] = e.get("chunkIndex", m["upTo"])
+            m["upTo"] = index
+        elif kind == "resync":
+            # The mod's own copy of the live state, whole: it replaces this one.
+            self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
+            self.streaming = {_key(m): dict(m) for m in e.get("streaming") or []}
+            self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
+            self.broken = set()
         elif kind == "step" and phase == "start":
+            self.broken.discard(_key(e))
             self.streaming[_key(e)] = {"turnId": e.get("turnId"), "agentId": e.get("agentId"), "step": e.get("step"),
                                        "model": e.get("model"), "text": "", "thinking": "", "upTo": -1}
         elif kind == "step" and phase == "end":
             self.streaming.pop(_key(e), None)
+            self.broken.discard(_key(e))
         elif kind == "turn" and phase == "start":
             self.turns[e.get("turnId")] = {"turnId": e.get("turnId"), "agentId": e.get("agentId"), "t": e.get("t")}
         elif kind == "turn" and phase == "complete":
             self.turns.pop(e.get("turnId"), None)
             for k in [k for k, m in self.streaming.items() if m["turnId"] == e.get("turnId")]:
                 del self.streaming[k]
+            self.broken = {k for k in self.broken if not k.startswith("%s|" % e.get("turnId"))}
         elif kind == "agent":
             a = self.agents.setdefault(e.get("agentId"), {"agentId": e.get("agentId")})
             a.update({k: v for k, v in e.items() if k not in ("type", "phase", "n")})
@@ -422,8 +443,11 @@ def serve(session):
     server.server_bind()
     os.chmod(tmp, 0o600)
     server.server_activate()
+    # This child's identity is its own socket's inode, read before the move:
+    # read after it, a newer child that moved its socket in meanwhile would
+    # pass for this one, which would then take its path at exit.
+    mine = os.lstat(tmp).st_ino
     os.replace(tmp, path)
-    mine = os.lstat(path).st_ino
     bridge = server.bridge = Bridge(session, path)
     parent = os.getppid()
 

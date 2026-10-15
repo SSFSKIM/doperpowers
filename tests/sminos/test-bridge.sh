@@ -21,7 +21,7 @@ PIDS=()
 cleanup() {
   for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
   # Every child a fakemod started dies with it (its parent is gone); wait for that.
-  for _ in $(seq 1 60); do pgrep -f "bridge --session .*$T" >/dev/null 2>&1 || break; sleep 0.05; done
+  for _ in $(seq 1 60); do pgrep -f "bridge --session 5b000001-0000-4000-8000-00000000005b" >/dev/null 2>&1 || break; sleep 0.05; done
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -234,6 +234,36 @@ until_true 100 has_lines "$T/w3" 1 || true
 assert_equals "$(field_of "$(nth_line "$T/w3" 1)" turns)" "[]" "a completed turn leaves the snapshot"
 assert_not_contains "$(field_of "$(nth_line "$T/w3" 1)" streaming)" "$TURN" "and so do its messages"
 
+# A snapshot never claims an upTo its text does not cover. A chunk lost on
+# the way (B) takes its message out of the snapshot; the mod's resync puts it
+# back whole, and the chunks after it follow on.
+streaming_of() { # snapshot-line turnId → that turn's streaming message, or "none"
+  python3 -c 'import json, sys
+s = json.loads(sys.argv[1])
+m = [m for m in s["streaming"] if m["turnId"] == sys.argv[2]]
+print(json.dumps(m[0]) if m else "none")' "$1" "$2"
+}
+T3=33333333-aaaa-4aaa-8aaa-333333333333
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T3'","agentId":null,"text":"x"},
+ {"type":"step","phase":"start","turnId":"'$T3'","agentId":null,"step":0,"model":"m"},
+ {"type":"chunk","turnId":"'$T3'","agentId":null,"step":0,"chunkIndex":0,"chunk":{"kind":"text","index":0,"text":"A"}},
+ {"type":"chunk","turnId":"'$T3'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":0,"text":"C"}}]' >/dev/null
+watch_json "$SID" "$T/w7"
+until_true 100 has_lines "$T/w7" 1 || true
+assert_equals "$(streaming_of "$(nth_line "$T/w7" 1)" "$T3")" "none" "a message a chunk is missing from is left out of the snapshot"
+ctl post "$SOCK" '[{"type":"gap","dropped":2},
+ {"type":"resync","turns":[{"turnId":"'$T3'","agentId":null}],
+  "agents":[{"agentId":"a7","subagentType":"general-purpose","running":true}],
+  "streaming":[{"turnId":"'$T3'","agentId":null,"step":0,"model":"m","text":"ABC","thinking":"","upTo":2}]},
+ {"type":"chunk","turnId":"'$T3'","agentId":null,"step":0,"chunkIndex":3,"chunk":{"kind":"text","index":0,"text":"D"}}]' >/dev/null
+watch_json "$SID" "$T/w8"
+until_true 100 has_lines "$T/w8" 1 || true
+M3="$(streaming_of "$(nth_line "$T/w8" 1)" "$T3")"
+assert_equals "$(field_of "$M3" text)" "ABCD" "after the resync the message is whole again, the next chunk on it"
+assert_equals "$(field_of "$M3" upTo)" "3" "its upTo the last chunk its text holds"
+assert_equals "$(field_of "$(nth_line "$T/w8" 1)" turns.0.turnId)" "$T3" "the resync replaced the open turns"
+assert_equals "$(field_of "$(nth_line "$T/w8" 1)" agents.0.agentId)" "a7" "and the subagents"
+
 # The human view: the conversation as it streams, subagents labelled.
 "$SMINOS" watch "$SID" > "$T/h1" 2>&1 &
 PIDS+=("$!")
@@ -302,6 +332,53 @@ assert_equals "$(answers "$SOCK" && echo yes || echo no)" "yes" "leaving the new
 until_true 100 grep -q "reconnected" "$T/w4" || true
 assert_contains "$(cat "$T/w4")" "reconnected" "a watcher follows the endpoint to the newer child"
 assert_equals "$(grep -c '"type": "snapshot"' "$T/w4")" "2" "taking a fresh snapshot there"
+# A new child knows nothing until the mod's first post: the session's start and
+# a resync carrying the message it replaced the old child in the middle of.
+T4=44444444-aaaa-4aaa-8aaa-444444444444
+ctl post "$SOCK" '[{"type":"session","phase":"start","session":"'$SID'","cwd":"/w"},
+ {"type":"resync","turns":[{"turnId":"'$T4'","agentId":null}],"agents":[],
+  "streaming":[{"turnId":"'$T4'","agentId":null,"step":1,"model":"m","text":"Hel","thinking":"","upTo":0}]},
+ {"type":"chunk","turnId":"'$T4'","agentId":null,"step":1,"chunkIndex":1,"chunk":{"kind":"text","index":0,"text":"lo"}}]' >/dev/null
+watch_json "$SID" "$T/w9"
+until_true 100 has_lines "$T/w9" 1 || true
+M4="$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])["streaming"][0]))' "$(nth_line "$T/w9" 1)")"
+assert_equals "$(field_of "$M4" text)" "Hello" "a child that came in mid-message holds the message whole from the resync on"
+assert_equals "$(field_of "$M4" upTo)" "1" "with the upTo of its last chunk"
+
+# Two children starting at once: the older one moves its socket in, the newer
+# one moves its own over it before the older has looked. The older must know
+# itself by its own socket, find the path taken, and leave without removing it.
+OVL=5d000003-0000-4000-8000-00000000005d
+OVLSOCK="$SMINOS_HOME/bridge/$OVL.sock"
+cat > "$T/overlap.py" <<'PY'
+import os, socket, sys
+sys.path.insert(0, sys.argv[1])
+import sminos_bridge as B
+real_replace = os.replace
+held = []
+def racing_replace(src, dst):
+    real_replace(src, dst)
+    if dst.endswith(".sock") and not held:
+        newer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        newer.bind(dst + ".n")
+        newer.listen(1)
+        held.append(newer)
+        real_replace(dst + ".n", dst)
+os.replace = racing_replace
+B.serve(sys.argv[2])
+PY
+python3 "$T/overlap.py" "$REPO_ROOT/skills/sminos/scripts" "$OVL" > "$T/overlap.out" 2>&1 &
+OVLPID=$!
+PIDS+=("$OVLPID")
+until_true 60 bash -c '! kill -0 "$1" 2>/dev/null' _ "$OVLPID" || true
+if kill -0 "$OVLPID" 2>/dev/null; then
+  fail "the older of two overlapping children exits, the path not its own"
+  kill "$OVLPID"; wait "$OVLPID" 2>/dev/null || true
+else
+  pass "the older of two overlapping children exits, the path not its own"
+fi
+assert_equals "$([ -e "$OVLSOCK" ] && echo present || echo gone)" "present" "leaving the newer child's socket where it is"
+rm -f "$OVLSOCK"
 
 # A member by name: resolved in the working directory's project.
 R="$T/repo"

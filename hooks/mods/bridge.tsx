@@ -12,10 +12,15 @@ import type { EngineInterface, HookStream, HttpResponse, On, ProcessSpawnChunk, 
  * one request in flight at a time, so they arrive in the order they happened
  * and batch themselves under load. A module reload kills the child and runs
  * `session.start` again, which spawns the next.
+ *
+ * The mod keeps the session's live state itself (open turns, every message
+ * still streaming with its text and last chunk index, the subagents), so
+ * whenever the child's copy may be wrong (a post was lost, a new child said
+ * hello) the next post opens with a `resync` that replaces it.
  */
 
 export const HEARTBEAT_MS = 5_000
-/** The longest text an event carries in one field; the rest is in the transcript. */
+/** The longest string an event carries; the rest is in the transcript. */
 export const TEXT_CAP = 65_536
 const BATCH_MAX = 500
 const QUEUE_MAX = 10_000
@@ -23,17 +28,30 @@ const RESPAWN_FIRST_MS = 1_000
 const RESPAWN_MAX_MS = 60_000
 /** A child that lived this long ended for a reason of its own: start again quickly. */
 const STABLE_MS = 30_000
+/** After a /clear: how often, and how many times, the new session's id is looked for. */
+export const CLEAR_POLL_MS = 100
+const CLEAR_POLL_TRIES = 50
+/** How many polls the old session's last events may take to reach its child before it is stopped. */
+const DRAIN_TRIES = 10
+/** After a post that failed, the next waits this long. */
+const RETRY_MS = 500
 
 type BridgeEvent = Record<string, unknown> & { type: string }
 type Command = Record<string, unknown> & { id: string; op: string }
+/** A message still streaming, as the child's snapshot carries it (DX4). */
+type Streaming = { turnId: string; agentId: string | null; step: number; model: string; text: string; thinking: string; upTo: number }
 
 type BridgeState = {
   /**
-   * Posting a batch and logging a line, made in session.start: its `$`
-   * outlives every hook, as the child's loop does, so the posts run on it.
+   * The calls that outlive a hook, made in session.start: its `$` lives as
+   * long as the child's loop does, so posts, timers and restarts run on it.
    */
   post?: (socketPath: string, body: string) => Promise<HttpResponse>
   log?: (text: string) => void
+  after?: (ms: number, fn: () => void) => void
+  readId?: () => Promise<string>
+  /** Stops the child and starts one for this session. */
+  restart?: (session: string) => void
   /** What the session start said, sent to each child once it says hello. */
   info?: Record<string, unknown>
   /** The session the child serves, the socket it named, and the child itself. */
@@ -46,8 +64,18 @@ type BridgeState = {
   heartbeat?: Timer
   queue: BridgeEvent[]
   isPosting: boolean
-  /** Events lost to failed posts, said in the next. */
-  dropped: number
+  /** A post failed: the next waits for RETRY_MS. */
+  isWaiting: boolean
+  /**
+   * Between a /clear's session.end and the new session's child: nothing is
+   * sent (the old child must not get the new session's events), and the live
+   * state they build reaches the new child as its first resync.
+   */
+  isEnding: boolean
+  /** The session's live state, the source of every resync. */
+  turns: Map<string, Record<string, unknown>>
+  messages: Map<string, Streaming>
+  agents: Map<string, Record<string, unknown>>
   mainTurn?: string
   /** Main-loop model requests streaming now. */
   steps: number
@@ -61,7 +89,11 @@ const fresh = (): BridgeState => ({
   respawnMs: RESPAWN_FIRST_MS,
   queue: [],
   isPosting: false,
-  dropped: 0,
+  isWaiting: false,
+  isEnding: false,
+  turns: new Map(),
+  messages: new Map(),
+  agents: new Map(),
   steps: 0,
   tools: new Map(),
   toolCalls: 0,
@@ -88,9 +120,86 @@ function turnState() {
   return { mainTurn: state.mainTurn ?? null, isStreaming: state.steps > 0, tools: [...state.tools.values()] }
 }
 
-/** A string held to TEXT_CAP, and whether it was cut. */
-function capped(text: string): [string, boolean] {
-  return text.length > TEXT_CAP ? [text.slice(0, TEXT_CAP), true] : [text, false]
+/**
+ * A value with every string in it, at any depth, held to TEXT_CAP; `cut`
+ * says whether any was.
+ */
+export function capped(value: unknown): { value: unknown; cut: boolean } {
+  if (typeof value === 'string') {
+    return value.length > TEXT_CAP ? { value: value.slice(0, TEXT_CAP), cut: true } : { value, cut: false }
+  }
+  if (Array.isArray(value)) {
+    const items = value.map(capped)
+    return { value: items.map((i) => i.value), cut: items.some((i) => i.cut) }
+  }
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value).map(([k, v]) => [k, capped(v)] as const)
+    return { value: Object.fromEntries(entries.map(([k, c]) => [k, c.value])), cut: entries.some(([, c]) => c.cut) }
+  }
+  return { value, cut: false }
+}
+
+const messageKey = (turnId: unknown, agentId: unknown, step: unknown) => `${String(turnId)}|${String(agentId)}|${String(step)}`
+
+/** Folds an event into the session's live state. */
+function track(e: BridgeEvent) {
+  if (e.type === 'chunk') {
+    const m = state.messages.get(messageKey(e.turnId, e.agentId, e.step))
+    const chunk = e.chunk as { kind?: string; text?: string }
+    if (m !== undefined) {
+      if (chunk.kind === 'text') {
+        m.text += chunk.text ?? ''
+      } else if (chunk.kind === 'thinking') {
+        m.thinking += chunk.text ?? ''
+      }
+      m.upTo = Number(e.chunkIndex)
+    }
+  } else if (e.type === 'step' && e.phase === 'start') {
+    const m: Streaming = { turnId: String(e.turnId), agentId: (e.agentId as string | null) ?? null, step: Number(e.step), model: String(e.model), text: '', thinking: '', upTo: -1 }
+    state.messages.set(messageKey(m.turnId, m.agentId, m.step), m)
+  } else if (e.type === 'step' && e.phase === 'end') {
+    state.messages.delete(messageKey(e.turnId, e.agentId, e.step))
+  } else if (e.type === 'turn' && e.phase === 'start') {
+    state.turns.set(String(e.turnId), { turnId: e.turnId, agentId: e.agentId, t: e.t })
+  } else if (e.type === 'turn' && e.phase === 'complete') {
+    state.turns.delete(String(e.turnId))
+    for (const [k, m] of state.messages) {
+      if (m.turnId === e.turnId) {
+        state.messages.delete(k)
+      }
+    }
+  } else if (e.type === 'agent') {
+    const { type: _type, phase, t: _t, ...fields } = e
+    state.agents.set(String(e.agentId), { ...state.agents.get(String(e.agentId)), ...fields, running: phase !== 'stop' })
+  }
+}
+
+/** The live state whole: what the child replaces its own with. */
+function resyncEvent(): BridgeEvent {
+  return {
+    type: 'resync',
+    turns: [...state.turns.values()],
+    streaming: [...state.messages.values()].map((m) => ({ ...m })),
+    agents: [...state.agents.values()],
+    t: Date.now(),
+  }
+}
+
+/** Forgets the live state: the session after a /clear starts with none. */
+function forgetLive() {
+  state.turns.clear()
+  state.messages.clear()
+  state.agents.clear()
+}
+
+/**
+ * Events that reached no child: counted in a gap, and the queue replaced by
+ * that gap and a resync of the state as it stands now, which covers every
+ * event lost and every one queued behind them.
+ */
+function lose(events: BridgeEvent[]) {
+  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' ? 0 : 1), 0)
+  state.queue = [{ type: 'gap', dropped, t: Date.now() }, resyncEvent()]
 }
 
 function emit(event: BridgeEvent) {
@@ -98,10 +207,14 @@ function emit(event: BridgeEvent) {
   if (state.post === undefined) {
     return
   }
-  state.queue.push({ ...event, t: Date.now() })
+  const stamped = { ...event, t: Date.now() }
+  track(stamped)
+  if (state.isEnding) {
+    return
+  }
+  state.queue.push(stamped)
   if (state.queue.length > QUEUE_MAX) {
-    state.dropped += state.queue.length - QUEUE_MAX
-    state.queue.splice(0, state.queue.length - QUEUE_MAX)
+    lose(state.queue)
   }
   pump()
 }
@@ -109,18 +222,21 @@ function emit(event: BridgeEvent) {
 /** Posts what is queued, one request at a time, once a child has said where. */
 function pump() {
   const { post, socket: socketPath } = state
-  if (post === undefined || socketPath === undefined || state.isPosting || state.queue.length === 0) {
+  if (post === undefined || socketPath === undefined || state.isPosting || state.isWaiting || state.queue.length === 0) {
     return
   }
   const batch = state.queue.splice(0, BATCH_MAX)
-  if (state.dropped > 0) {
-    batch.unshift({ type: 'gap', dropped: state.dropped, t: Date.now() })
-    state.dropped = 0
-  }
+  const generation = state.generation
+  let failed = false
   state.isPosting = true
   const lost = (why: string) => {
-    state.dropped += batch.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : 1), 0)
+    failed = true
     state.log?.(`bridge: ${batch.length} events not delivered: ${why}`)
+    // A child replaced meanwhile gets its resync at its hello; one being
+    // retired after a /clear gets nothing more.
+    if (generation === state.generation && !state.isEnding) {
+      lose([...batch, ...state.queue])
+    }
   }
   post(socketPath, JSON.stringify(batch))
     .then(
@@ -133,7 +249,15 @@ function pump() {
     )
     .finally(() => {
       state.isPosting = false
-      pump()
+      if (failed && state.after !== undefined) {
+        state.isWaiting = true
+        state.after(RETRY_MS, () => {
+          state.isWaiting = false
+          pump()
+        })
+      } else {
+        pump()
+      }
     })
 }
 
@@ -163,8 +287,9 @@ function onLine($: EngineInterface, generation: number, line: string) {
   const msg = parsed as Record<string, unknown>
   if (msg.op === 'hello' && typeof msg.socket === 'string') {
     state.socket = msg.socket
-    // The child knows nothing of the session yet: what it started as comes first.
-    state.queue.unshift({ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() })
+    // A new child knows nothing of the session: what it started as, then
+    // where it stands. What was queued for no child is in that state.
+    state.queue = [{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, resyncEvent()]
     pump()
     return
   }
@@ -231,13 +356,63 @@ function stopChild() {
   void child?.return({ code: null, signal: null })
 }
 
-/** The heartbeat; and the session's id read again, since a /clear changes it with no session.start. */
+/**
+ * Moves the bridge to the session that took this one's place: once the old
+ * child has its last events (or after DRAIN_TRIES polls), it is stopped and a
+ * child for the new session started, whose hello resyncs what happened since.
+ */
+function switchSession(session: string, tries = 0) {
+  if ((state.queue.length > 0 || state.isPosting) && tries < DRAIN_TRIES && state.after !== undefined) {
+    state.after(CLEAR_POLL_MS, () => switchSession(session, tries + 1))
+    return
+  }
+  if (session === state.session) {
+    return
+  }
+  if (!state.isEnding) {
+    // Found by the heartbeat, with no session.end before it.
+    forgetLive()
+  }
+  state.isEnding = false
+  state.queue = []
+  state.restart?.(session)
+}
+
+/**
+ * After a /clear's session.end: the new session's id, looked for every
+ * CLEAR_POLL_MS (the heartbeat is the fallback). If the id never changes, this
+ * session goes on, resynced.
+ */
+function awaitNextSession(tries = 0) {
+  if (!state.isEnding || state.readId === undefined) {
+    return
+  }
+  const old = state.session
+  void state.readId().then(
+    (session) => {
+      if (!state.isEnding) {
+        return
+      }
+      if (session !== old) {
+        switchSession(session)
+      } else if (tries < CLEAR_POLL_TRIES) {
+        state.after?.(CLEAR_POLL_MS, () => awaitNextSession(tries + 1))
+      } else {
+        state.isEnding = false
+        state.queue.push(resyncEvent())
+        pump()
+      }
+    },
+    (error: unknown) => state.log?.(`bridge: the session id could not be read: ${message(error)}`),
+  )
+}
+
+/** The heartbeat; and the session's id read again, the fallback for a change of session missed. */
 async function beat($: EngineInterface) {
   try {
     const session = await $.session.id()
     if (session !== state.session) {
-      stopChild()
-      startChild($, session)
+      switchSession(session)
     }
   } catch (error) {
     $.ui.log(`bridge: the session id could not be read: ${message(error)}`, { to: 'debug' })
@@ -253,6 +428,12 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   state.post = (socketPath, body) =>
     $.http.fetch('http://bridge/events', { method: 'POST', socketPath, headers: { 'content-type': 'application/json' }, body })
   state.log = (text) => $.ui.log(text, { to: 'debug' })
+  state.after = (ms, fn) => void $.clock.after(ms, fn)
+  state.readId = () => $.session.id()
+  state.restart = (session) => {
+    stopChild()
+    startChild($, session)
+  }
   state.info = {
     cwd: e.cwd,
     surface: e.surface,
@@ -268,23 +449,9 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
 
 const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta'])
 
-/** A tool call's own arguments, each string held to TEXT_CAP. */
-function toolInput(e: Record<string, unknown>): { input: Record<string, unknown>; truncated: boolean } {
-  let truncated = false
-  const input: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(e)) {
-    if (RESERVED.has(key)) {
-      continue
-    }
-    if (typeof value === 'string') {
-      const [text, cut] = capped(value)
-      truncated ||= cut
-      input[key] = text
-    } else {
-      input[key] = value
-    }
-  }
-  return { input, truncated }
+/** A tool call's own arguments, every string in them held to TEXT_CAP. */
+function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean } {
+  return capped(Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k))))
 }
 
 /**
@@ -305,8 +472,15 @@ export function registerBridge(on: On) {
     return started
   })
 
+  // A /clear ends the conversation and goes on under a new id with no
+  // session.start: the old child gets this end and nothing after it.
   on('session.end', async (_, e, next) => {
     emit({ type: 'session', phase: 'end', reason: e.reason })
+    if (e.reason === 'clear' && state.post !== undefined) {
+      state.isEnding = true
+      forgetLive()
+      awaitNextSession()
+    }
     return next(e)
   })
 
@@ -314,7 +488,8 @@ export function registerBridge(on: On) {
     if (e.agentId === undefined) {
       state.mainTurn = e.turnId
     }
-    emit({ type: 'turn', phase: 'start', turnId: e.turnId, agentId: e.agentId ?? null, text: capped(e.text)[0] })
+    const text = capped(e.text)
+    emit({ type: 'turn', phase: 'start', turnId: e.turnId, agentId: e.agentId ?? null, text: text.value, ...(text.cut && { truncated: true }) })
     return next(e)
   })
 
@@ -371,20 +546,21 @@ export function registerBridge(on: On) {
   on('tool.call', { tool: /^/ }, async (_, e, next) => {
     const call = `${e.tool_use_id ?? ''}#${++state.toolCalls}`
     const base = { toolUseId: e.tool_use_id || null, tool: e.tool, agentId: e.agentId ?? null }
-    const { input, truncated } = toolInput(e as Record<string, unknown>)
-    emit({ type: 'tool', phase: 'call', ...base, input, ...(truncated && { truncated }) })
+    const input = toolInput(e as Record<string, unknown>)
+    emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
     state.tools.set(call, String(e.tool))
     try {
       const result = await next(e)
-      const [text, cut] = typeof result.text === 'string' ? capped(result.text) : [undefined, false]
+      const text = capped(result.text)
+      const denied = capped(result.deny)
       emit({
         type: 'tool',
         phase: 'result',
         ...base,
         isError: result.isError === true,
-        ...(result.deny !== undefined && { denied: capped(result.deny)[0] }),
-        ...(text !== undefined && { text }),
-        ...(cut && { truncated: true }),
+        ...(result.deny !== undefined && { denied: denied.value }),
+        ...(typeof result.text === 'string' && { text: text.value }),
+        ...((text.cut || denied.cut) && { truncated: true }),
       })
       return result
     } finally {
