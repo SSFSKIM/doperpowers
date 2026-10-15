@@ -364,6 +364,34 @@ produces nothing new for other children beyond the stream DC7 builds on.
   proves G1 against it, and again against DC3's local hub when its M2
   lands and its run instructions exist.
   Date/Author: 2026-10-15, controller (before M2's dispatch).
+- Decision: M2's identity rules, confirmed by the composite's writer with
+  two additions. The name is global — one machine, one name — never per
+  project. (a) The code's `machine` is what the browser proposes, but the
+  CLI's default is the current `host_name()` whenever that passes DX7's
+  grammar: an enrollment run as `sminos hub enroll <code>` on a machine
+  whose host name is admitted claims the host name (and says so when the
+  code proposed another), so most enrollments rename nothing; `--name`
+  is the only way to claim another. Pinning the name in `hub.json` also
+  stops macOS's `.local` drift (`SK-2.local` after a Bonjour conflict)
+  from changing the writer host. (b) **A rename never makes this
+  machine's own state read as another machine's.** `host_name()` is the
+  machine's identity throughout sminos.py — a seat's meta `host`,
+  `identity_local(host, boot)`, a member's `machine`, the ended-member
+  scan's `e["machine"] != host_name()` — and the log cannot be rewritten.
+  So `hub.json` records `former`, the names this installation wrote
+  under before enrolling (the pre-enrollment `host_name()`), and one
+  helper (`is_self(name)`: the current name or a former one) replaces
+  every equality test that decides locality; writers are created only
+  under the enrolled name. Chosen over rewriting the seat records at
+  enrollment because log events (`joined.machine`, `state.machine`)
+  carry the old name too and are append-only, so a rewrite would cover
+  only half of it. A test keeps a seat local and controllable (list,
+  send, retire) across a rename. On a rename the CLI states the real
+  consequence: events already written under the old name stay on this
+  machine and, once a project is a hub project, never reach the hub or
+  any other machine (DX2 refuses `<old>/…` as `writer-not-yours`).
+  Date/Author: 2026-10-15, the composite's writer (confirmation) and
+  controller (the means).
 
 ## Surprises & Discoveries
 
