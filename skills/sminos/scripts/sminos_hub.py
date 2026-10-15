@@ -29,6 +29,7 @@ a former name stays local.
 a project whose .smns names a hub is never synced through git.
 """
 
+import argparse
 import getpass
 import glob
 import http.client
@@ -269,8 +270,9 @@ def enroll(a):
                    "may have been seen" % ((" --name %s" % a.name if is_machine_name(a.name) else "")
                                            + (" --replace" if a.replace else "")))
     if a.name and not is_machine_name(a.name):
-        sminos.die("--name %r is not an admitted machine name: a letter or digit, then up to 62 letters, digits, "
-                   "'.', '_' or '-'; never hub or legacy" % a.name)
+        # The value is not repeated: it may be a code typed in the wrong place.
+        sminos.die("--name takes an admitted machine name: a letter or digit, then up to 62 letters, digits, "
+                   "'.', '_' or '-'; never hub or legacy")
     before = held()
     if before is not None and not a.replace:
         sminos.die("this machine is already enrolled at %s as %s (org %s): a new code would replace that identity — "
@@ -357,5 +359,37 @@ def add_hub(path, smns, hub, a):
         "; its remote %s is no longer synced live (it stays the log's archive)" % smns[2] if smns[2] else ""))
 
 
-def cmd_hub(a):
-    {"enroll": enroll, "show": show}[a.op](a)
+USAGE = "usage: sminos hub enroll [--name N] [--replace] (the code at its prompt, or on stdin) | show"
+
+
+def enroll_args(words):
+    """`hub enroll`'s words read by hand, so nothing on the command line is
+    ever printed back: --name N (or --name=N), --replace, and whether any
+    other word came — a code, most likely, which enroll refuses unread."""
+    a = argparse.Namespace(name="", replace=False, code=False)
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "--replace":
+            a.replace = True
+        elif w == "--name" and i + 1 < len(words):
+            a.name = words[i + 1]
+            i += 1
+        elif w.startswith("--name="):
+            a.name = w[len("--name="):]
+        else:
+            a.code = True
+        i += 1
+    return a
+
+
+def cmd_hub(words):
+    """The `hub` verb. Its words reach no parser that echoes them, and no
+    message here names one it did not accept."""
+    op = words[0] if words else ""
+    if op == "enroll":
+        enroll(enroll_args(words[1:]))
+    elif op == "show" and len(words) == 1:
+        show(None)
+    else:
+        sminos.die(USAGE)

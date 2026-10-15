@@ -5545,9 +5545,7 @@ def hub_module():
 
 
 def cmd_hub(a):
-    if not a.op:
-        die("usage: sminos hub enroll [--name N] [--replace] (the code at its prompt, or on stdin) | show")
-    hub_module().cmd_hub(a)
+    hub_module().cmd_hub(a.words)
 
 
 def cmd_chart(a):
@@ -5727,15 +5725,12 @@ def build_parser():
         dsub.add_parser(op, add_help=False)
     dm.set_defaults(fn=cmd_daemon)
 
-    hb = sub.add_parser("hub", add_help=False)
-    hsub = hb.add_subparsers(dest="op")
-    he = hsub.add_parser("enroll", add_help=False)
-    # Taken only to be refused unread (sminos_hub.enroll): any word here would
-    # otherwise reach argparse's error, which echoes it.
-    he.add_argument("code", nargs="*")
-    he.add_argument("--name", default="")
-    he.add_argument("--replace", action="store_true")
-    hsub.add_parser("show", add_help=False)
+    # `hub` takes its words as `wake` does (no word is an option to argparse,
+    # so its parse never fails): sminos_hub parses them and never prints one.
+    # An enrollment code typed on the command line must not reach argparse's
+    # error, which echoes the word it could not place.
+    hb = sub.add_parser("hub", add_help=False, prefix_chars="\0")
+    hb.add_argument("words", nargs="*")
     hb.set_defaults(fn=cmd_hub)
 
     br = sub.add_parser("bridge", add_help=False)

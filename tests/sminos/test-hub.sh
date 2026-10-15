@@ -155,6 +155,24 @@ assert_not_contains "$OUT" "$CODE_P" "without echoing it"
 run "$SMINOS" hub enroll --name alpha2 "$CODE_P" more words
 assert_rc 2 "$RC" "with other words too"
 assert_not_contains "$OUT" "$CODE_P" "still unechoed"
+# However the words fall, no parse of them echoes one: stdout and stderr apart.
+refused_unechoed() { # label words... (after `sminos hub`)
+  local label="$1"; shift
+  set +e; "$SMINOS" hub "$@" > "$T/hub.stdout" 2> "$T/hub.stderr" < /dev/null; RC=$?; set -e
+  cat "$T/hub.stdout" "$T/hub.stderr" >> "$T/all.out"
+  assert_rc 2 "$RC" "refused: $label"
+  assert_not_contains "$(cat "$T/hub.stdout")" "$CODE_P" "the code not on stdout: $label"
+  assert_not_contains "$(cat "$T/hub.stderr")" "$CODE_P" "nor on stderr: $label"
+}
+refused_unechoed "a word, then --name, then the code" enroll extra --name beta "$CODE_P"
+refused_unechoed "an unknown option carrying the code" enroll --bogus "$CODE_P"
+refused_unechoed "an unknown option=the code" enroll "--bogus=$CODE_P"
+refused_unechoed "the code as --name" enroll --name "$CODE_P"
+refused_unechoed "the code as --name=" enroll "--name=$CODE_P"
+refused_unechoed "the code after --replace, --name with no value" enroll --replace "$CODE_P" --name
+refused_unechoed "the code in place of the verb" "$CODE_P"
+refused_unechoed "the code after show" show "$CODE_P"
+refused_unechoed "the code before the verb's options" enroll "$CODE_P" --name=beta --replace
 assert_equals "$(redemptions)" 0 "no request reaches the hub"
 assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing is written"
 assert_equals "$(cat "$SMINOS_HOME/daemon.log" 2>/dev/null | wc -l | tr -d " ")" 0 "nor logged"
@@ -166,7 +184,7 @@ assert_rc 2 "$RC" "a code naming a hub over plain http off this machine is refus
 assert_contains "$OUT" "enrollment code: the hub is not https" "saying why"
 enroll "$(code_for alpha)" --name hub
 assert_rc 2 "$RC" "--name hub is refused (the log's own prefix)"
-assert_contains "$OUT" "not an admitted machine name" "saying why"
+assert_contains "$OUT" "--name takes an admitted machine name" "saying why, without repeating the value"
 assert_equals "$(redemptions)" 0 "nothing refused by the CLI reaches the hub"
 assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "and nothing is stored"
 
