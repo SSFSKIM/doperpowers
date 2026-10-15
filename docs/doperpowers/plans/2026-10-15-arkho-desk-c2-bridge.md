@@ -287,12 +287,26 @@ M3 extend it in place, each extension sent the same way.
   Besides `CLAUDE_CONFIG_DIR`, a live session started with the worktree
   plugin runs with a temporary `HOME` and `SMINOS_HOME`, because the plugin
   itself runs sminos (the bridge child, and the Stop/SessionStart
-  `smns-record.sh` hook) and would otherwise reach the real registry. The
-  gateway credentials come from the process environment, as in C1; the
-  dispatching session's own `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`,
-  `CLAUDE_CODE_CHILD_SESSION`, and `CLAUDE_CODE_MESSAGING_*` are unset for
-  the launched session so it is not taken for this session's child.
-  Date/Author: 2026-10-15, controller (pre-flight).
+  `smns-record.sh` hook) and would otherwise reach the real registry.
+  Inference goes through the owner's loopback gateway, whose env lives in
+  the real `~/.claude/settings.json`, which a throwaway config dir does not
+  read. C1 carried it in the process environment, through an env file it
+  sourced (`/tmp/c1cfg/settings.json` holds only a model). So: the launch
+  passes exactly the keys a session needs — `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`,
+  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, and
+  `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` — from the executor's own
+  environment, or from a 0600 env file under `/tmp` outside the repo; a
+  tmux session gets them with `-e` or by sourcing that file, since a tmux
+  server does not inherit the client's environment. No other key from the
+  owner's settings is copied (not `CLAUDE_CODE_PLUGIN_DIRS`, not a browser
+  token), and no secret is ever written into the repository, a report, or a
+  log quoted in one. The dispatching session's own `CLAUDECODE`,
+  `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, and
+  `CLAUDE_CODE_MESSAGING_*` are unset for the launched session so it is not
+  taken for this session's child.
+  Date/Author: 2026-10-15, controller (pre-flight; gateway env refined the
+  same day at the composite writer's request).
 
 ## Surprises & Discoveries
 
