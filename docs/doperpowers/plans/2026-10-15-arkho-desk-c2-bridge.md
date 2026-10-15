@@ -941,7 +941,16 @@ Order, batching (≤ 500) and one post in flight are unchanged.
   in history, or past the cut and released live, its `block-row` settling
   nothing). Accepted cost: no partial text for a message streaming at a
   module load. Tests: the race, and a message beginning while the read is
-  in flight (excluded).
+  in flight (excluded). Refined the same day: the boundary the mod uses is
+  its receipt of the child's `hello`, which carries the seed (strictly more
+  conservative than the read's completion); an excluded message's rows are
+  named by `row-seen`, not `block-row`. A cut of `null` means "this loop had
+  no rows before the module loaded": a loop the mod observed from its first
+  row is seeded null and nothing in it is excluded, so a fresh session's
+  first reply streams. Only three cases get a tail seed and the exclusion:
+  a module reload, a resumed session, and a subagent already running at
+  load. Kept conservative if the engine loads the module after a `--bg`
+  job's first prompt row; M4 records which.
   Date/Author: 2026-10-15, controller with the composite's writer.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
