@@ -605,6 +605,20 @@ against the local hub; until it lands, the stand-in.
   from the same stream the request relay already follows.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision (M3 fix wave): An unreadable ledger fails closed: every RPC
+  is refused `failed` (DX6 has no ledger code; the message says nothing
+  ran), the file is never replaced, and it is re-read on each RPC. Only an
+  `error` spawn seat fails at once; any other provisional seat is
+  `interrupted` only past the 420 s window. Model and effort changes are
+  serialized per session, each waiting up to 2 s for the bridge to keep
+  its result before the next reads it. `by` reaches `joined` and
+  `retired` through `SMINOS_DESK_MEMBER` (a seam in `sminos.caller_alias`,
+  honoured only as 32 hex and only outside a session). A bridgeless steer
+  is refused `idle` when the engine's record says `status: "idle"`.
+  Compactions are relayed from the requests stream; an unnamed one waits
+  only while a compact RPC of that session awaits its command id.
+  Date/Author: 2026-10-15, M3 executor.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
@@ -620,7 +634,9 @@ against the local hub; until it lands, the stand-in.
   plane fail and pass again at normal load: "at most once more: two
   frames in all" (in DC4's tech debt), "the watcher's finalize does not
   overwrite a retire" (a `sleep 0.8` race), and "the say lands within two
-  seconds" (the mirror daemon's push). Recorded as load flakes.
+  seconds" (the mirror daemon's push). Recorded as load flakes. (M3) The
+  last also fails on origin/main `9e7d3d30` at load ~150 (2.4 s), so it
+  predates this branch; it goes to tech debt.
 - (M1) DC3's local hub at `f22e0839` passed the uplink walks 7/7 on two
   runs; it does not yet list `step-end` among its subscription kinds.
 - (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
