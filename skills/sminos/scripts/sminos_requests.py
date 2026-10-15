@@ -16,23 +16,30 @@ What goes up, each sealed with the org key under a fresh nonce (DX1), and
 nothing without one — the daemon signs only what its bridges reported, as
 they reported it:
 
-- DX4 `raised` `{request, session, tool, input, deadline?, async?}`: the
-  bridge's fields; a background subagent's `deadline` (epoch ms on DX5) as
-  ISO 8601 UTC with milliseconds, after which the hub marks the request
-  `terminal_only`; the rest of DX5's (agentId, truncated) is not DX4's;
-- DX4 `settled` `{request, winner, outcome, by}` as the bridge settled it;
+- DX4 `raised` `{request, session, tool, input, agentId?, truncated?,
+  deadline?, async?}` (composite 6fa2252d): the bridge's fields; `agentId`
+  only for a subagent's request, `truncated` only as true; a background
+  subagent's `deadline` (epoch ms on DX5) as ISO 8601 UTC with
+  milliseconds, after which the hub marks the request `terminal_only`;
+- DX4 `settled` `{request, winner, outcome, by}` as the bridge settled it,
+  once each: every settlement a bridge reports, live or in a snapshot's
+  recent list, goes up unless it went before (the ones the hub took are
+  kept in `daemon/requests.json` across restarts; the hub records each it
+  is sent as a decision);
 - DX2 `pending` `{project, raised}`: the machine's complete set for the
   project, after every connect, and whenever a request left the set with no
   settlement the bridge reported (its bridge gone, a snapshot without it):
   the hub drops what the set no longer holds; nothing is settled in a
-  bridge's name.
+  bridge's name. A set is complete only once the bridges of the project's
+  sessions have been read (a snapshot each, or a reader that could get
+  none), so it waits for that, at most HOLD_MAX: an uplink that starts with
+  requests already pending does not empty the hub's set first.
 
 The state outlives the stream (the uplink keeps one Requests): a settlement
 made while the hub is out of reach goes up after the next connect, ahead of
-the complete set; a raise made then is in that set. A reader whose stream
-ends while the bridge still answers subscribes again, and its snapshot is
-reconciled against what was held: a request no longer pending that the
-snapshot lists as settled is sent settled, a new one raised.
+the complete set, and is never dropped; a raise made then is in that set. A
+reader whose stream ends while the bridge still answers subscribes again,
+and its snapshot is reconciled against what was held.
 
 Readers only read the bridge's socket and queue what they read; everything
 else runs on the uplink's main thread.
@@ -52,9 +59,14 @@ import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 
-RETRY = 1.0                # s: a reader whose stream ended subscribes again after this
+RETRY = 1.0                # s: a reader whose stream ended subscribes again after this,
+RETRY_MAX = 30.0           # doubling up to this while its bridge gives no snapshot
 CONNECT_WAIT = 10.0        # s: the bridge holds GET /events until it is ready, at most 5 s
-OUTBOX_MAX = 2000          # messages kept for the hub while it is out of reach; the oldest go first
+HOLD_MAX = 8.0             # s: the complete set waits for the bridges' snapshots at most this long
+OUTBOX_MAX = 2000          # messages kept for the hub while it is out of reach (settlements: all of them)
+RELAYED_FILE = "requests.json"  # daemon/: the settlements the hub took, per session
+RELAYED_KEPT = 200
+RELAYED_SESSIONS = 1000
 WANTED = (b'"raised"', b'"settled"', b'"resync"')   # a line carrying none of these is no line of ours
 
 
@@ -79,6 +91,10 @@ def raised_draft(sid, e):
         d["deadline"] = iso_ms(deadline)
     if e.get("async") is True:
         d["async"] = True
+    if isinstance(e.get("agentId"), str) and e["agentId"]:
+        d["agentId"] = e["agentId"]
+    if e.get("truncated") is True:
+        d["truncated"] = True
     return d
 
 
@@ -132,9 +148,11 @@ class Reader(threading.Thread):
                     if kind != "snapshot":
                         self.put("closed", "the bridge's stream began without a snapshot")
                         return
-                if kind in ("snapshot", "resync"):
-                    if isinstance(e.get("pending"), list):
-                        self.put(kind, (e["pending"], e.get("settled") if isinstance(e.get("settled"), list) else []))
+                listed = e.get("settled") if isinstance(e.get("settled"), list) else []
+                if kind == "snapshot":
+                    self.put(kind, (e.get("pending") if isinstance(e.get("pending"), list) else [], listed))
+                elif kind == "resync" and isinstance(e.get("pending"), list):
+                    self.put(kind, (e["pending"], listed))
                 elif kind in ("raised", "settled"):
                     self.put(kind, e)
         except (OSError, ValueError, http.client.HTTPException) as e:
@@ -157,26 +175,38 @@ class Requests:
     messages owed to the hub about them. Kept across streams by the uplink;
     `wake` is the current stream's."""
 
-    def __init__(self, key, machine, wake=lambda: None):
+    def __init__(self, key, machine, wake=lambda: None, clock=time.monotonic):
         self.key = key
         self.machine = machine
         self.wake = wake
+        self.clock = clock
         self.items = queue.Queue()
         self.readers = {}     # session → its Reader
+        self.read = set()     # the readers that delivered their snapshot
         self.retry_at = {}    # session → when its reader may subscribe again
-        self.followed = {}    # session → project id: the sessions whose bridges answer now
+        self.fails = {}       # session → readers in a row that ended without a snapshot
+        self.followed = {}    # session → project id: the open projects' sessions with an endpoint
         self.project_of = {}  # session → project id, kept while it holds requests
         self.pending = {}     # session → {request: sealed DX4 raised}, in the order raised
+        self.synced = set()   # sessions whose bridge's state is known: a snapshot read, or none to be had
         self.outbox = []      # [(project id, frame)]: raised and settled messages not yet sent, in order
         self.stale = set()    # project ids whose complete pending set is owed
-        self.dropped = 0
+        self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
+        self.queued = set()   # (session, request) of the settlements in the outbox
+        self.relayed = load_relayed()  # session → [request]: the settlements the hub took
+        self.said = set()
+
+    def say_once(self, key, line):
+        if key not in self.said:
+            self.said.add(key)
+            log(line)
 
     # ---------------------------------------------------- the readers
 
     def follow(self, sessions):
-        """{session: project id} of the open projects' sessions whose bridge
-        answers: a reader for each. A session no longer here keeps its
-        reader until its stream ends; one with none loses its requests."""
+        """{session: project id} of the open projects' sessions whose
+        endpoint exists: a reader for each. A session no longer here keeps
+        its reader until its stream ends; one with none loses its requests."""
         self.followed = dict(sessions)
         self.project_of.update(sessions)
         for sid in [s for s in self.pending if s not in sessions and s not in self.readers]:
@@ -184,7 +214,7 @@ class Requests:
         self.start_due()
 
     def start_due(self):
-        now = time.monotonic()
+        now = self.clock()
         for sid in self.followed:
             if sid not in self.readers and self.retry_at.get(sid, 0.0) <= now:
                 r = self.readers[sid] = Reader(sid, self.items, lambda: self.wake())
@@ -195,8 +225,16 @@ class Requests:
         if self.pending.pop(sid, None) and self.project_of.get(sid):
             self.stale.add(self.project_of[sid])
         self.retry_at.pop(sid, None)
+        self.fails.pop(sid, None)
+        self.synced.discard(sid)
         if sid not in self.followed:
             self.project_of.pop(sid, None)
+
+    def ready(self, pid):
+        """Whether every followed session of the project has had its
+        bridge's state read (or has none to be read): only then is the set
+        held here complete."""
+        return all(sid in self.synced for sid, p in self.followed.items() if p == pid)
 
     def close(self):
         for r in self.readers.values():
@@ -218,6 +256,10 @@ class Requests:
             sid = r.sid
             pid = self.project_of.get(sid)
             if kind in ("snapshot", "resync"):
+                if kind == "snapshot":
+                    self.read.add(r)
+                    self.synced.add(sid)
+                    self.fails.pop(sid, None)
                 self.reconcile(sid, pid, *data)
             elif kind == "raised":
                 self.raised(sid, pid, data)
@@ -225,8 +267,18 @@ class Requests:
                 self.settled(sid, pid, data)
             elif kind == "closed":
                 del self.readers[sid]
+                snapped = r in self.read
+                self.read.discard(r)
                 if sid in self.followed and os.path.exists(bridge.endpoint(sid)):
-                    self.retry_at[sid] = time.monotonic() + RETRY
+                    fails = 0 if snapped else self.fails.get(sid, 0) + 1
+                    self.fails[sid] = fails
+                    self.retry_at[sid] = self.clock() + min(RETRY * 2 ** max(fails - 1, 0), RETRY_MAX)
+                    if not snapped:
+                        # No state to be had from it now: what is held stands,
+                        # and the set need not wait for it.
+                        self.synced.add(sid)
+                        self.say_once(("unread", sid), "%s's bridge could not be read (%s): its requests are "
+                                                       "read again when it answers" % (sid, data))
                 else:
                     self.drop(sid)
         self.start_due()
@@ -243,11 +295,13 @@ class Requests:
             "project": pid, "machine": self.machine, "session": sid, "kind": kind, "sub": None, "n": None,
             "body": body}}))
         if len(self.outbox) > OUTBOX_MAX:
-            del self.outbox[0]
-            self.dropped += 1
-            if self.dropped == 1:
-                log("more than %d messages wait for the hub: the oldest go (the complete set after the next "
-                    "connect still holds what is pending)" % OUTBOX_MAX)
+            # A raise is rebuilt by the complete set after the next connect;
+            # a settlement is not, so settlements are never dropped.
+            i = next((i for i, (_, f) in enumerate(self.outbox) if f["message"]["kind"] == "raised"), None)
+            if i is not None:
+                del self.outbox[i]
+                self.say_once("full", "more than %d messages wait for the hub: the oldest raises go (the "
+                                      "complete set after the next connect carries what is pending)" % OUTBOX_MAX)
 
     def raised(self, sid, pid, e):
         draft = raised_draft(sid, e)
@@ -263,30 +317,36 @@ class Requests:
             held[draft["request"]] = body
             self.queue(pid, sid, "raised", body)
 
+    def seen(self, sid, rid):
+        return (sid, rid) in self.queued or rid in self.relayed.get(sid, ())
+
     def settled(self, sid, pid, e):
         draft = settled_draft(e)
         if draft is None:
             log("a settled from %s's bridge without request, winner, outcome, or by: passed by" % sid)
             return
         self.pending.get(sid, {}).pop(draft["request"], None)
+        if self.seen(sid, draft["request"]):
+            return
         body = self.seal("settled", pid, draft)
         if body is not None:
+            self.queued.add((sid, draft["request"]))
             self.queue(pid, sid, "settled", body)
 
     def reconcile(self, sid, pid, pending, settled):
         """A snapshot or a resync: the session's pending set as the bridge
-        holds it now. Requests held here and gone there are sent settled when
-        it lists them as settled, else the complete set goes again; new ones
-        are raised."""
+        holds it now, and its recent settlements. Every settlement not yet
+        relayed goes up (one raised and settled while no reader was there
+        too); a request held here and gone there with none sends the complete
+        set again; new ones are raised."""
+        for s in settled:
+            if isinstance(s, dict):
+                self.settled(sid, pid, s)
         now = [r for r in pending if isinstance(r, dict) and isinstance(r.get("request"), str)]
         ids = {r["request"] for r in now}
-        by = {s.get("request"): s for s in settled if isinstance(s, dict)}
         for rid in [rid for rid in self.pending.get(sid, {}) if rid not in ids]:
-            if rid in by:
-                self.settled(sid, pid, by[rid])
-            else:
-                self.pending[sid].pop(rid, None)
-                self.stale.add(pid)
+            self.pending[sid].pop(rid, None)
+            self.stale.add(pid)
         for r in now:
             self.raised(sid, pid, r)
 
@@ -297,24 +357,80 @@ class Requests:
                 "raised": [b for sid, held in self.pending.items() if self.project_of.get(sid) == pid
                            for b in held.values()]}
 
+    def set_due(self, pid):
+        """Whether the project's owed set may go now: once its sessions'
+        bridges are read, or HOLD_MAX after it began to wait."""
+        if self.ready(pid):
+            return True
+        since = self.holding.setdefault(pid, self.clock())
+        if self.clock() - since < HOLD_MAX:
+            return False
+        self.say_once(("held", pid, since), "the pending set of %s went after %ds without every bridge read" % (
+            pid, HOLD_MAX))
+        return True
+
     def due(self, opened):
         """The frames owed to the hub for the projects open on the stream, in
-        order: raised and settled messages, then each complete set owed. Not
-        taken until `sent`."""
+        order: raised and settled messages, then each complete set owed and
+        due. Not taken until `sent`."""
         out = [f for pid, f in self.outbox if pid in opened]
-        return out + [self.pending_frame(pid) for pid in sorted(self.stale & set(opened))]
+        return out + [self.pending_frame(pid) for pid in sorted(self.stale & set(opened)) if self.set_due(pid)]
 
     def opening(self, pid):
         """What follows `hello` for a project on a new stream: the
-        settlements the hub has not had, then the complete pending set (the
-        raises it holds are not sent apart)."""
+        settlements the hub has not had, then the complete pending set — at
+        once when its sessions' bridges are read, else from `due` once they
+        are (within HOLD_MAX). The raises it carries are not sent apart."""
         self.outbox = [(p, f) for p, f in self.outbox if p != pid or f["message"]["kind"] != "raised"]
-        return [f for p, f in self.outbox if p == pid] + [self.pending_frame(pid)]
+        self.stale.add(pid)
+        backlog = [f for p, f in self.outbox if p == pid]
+        return backlog + ([self.pending_frame(pid)] if self.set_due(pid) else [])
 
     def sent(self, frames):
         """`frames` reached the hub (a POST answered 200)."""
         ids = {id(f) for f in frames}
         self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
+        took = False
         for f in frames:
             if f.get("t") == "pending":
                 self.stale.discard(f["project"])
+                self.holding.pop(f["project"], None)
+            elif f.get("t") == "session" and f["message"]["kind"] == "settled":
+                sid, rid = f["message"]["session"], f["message"]["body"]["request"]
+                self.queued.discard((sid, rid))
+                held = self.relayed.setdefault(sid, [])
+                if rid not in held:
+                    held.append(rid)
+                    del held[:-RELAYED_KEPT]
+                took = True
+        if took:
+            save_relayed(self.relayed)
+
+
+def relayed_path():
+    return os.path.join(sminos.root(), "daemon", RELAYED_FILE)
+
+
+def load_relayed():
+    """The settlements the hub took, per session, as kept across restarts."""
+    try:
+        with open(relayed_path()) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    return {sid: [r for r in rids if isinstance(r, str)] for sid, rids in d.items() if isinstance(rids, list)}
+
+
+def save_relayed(relayed):
+    """Kept whole, the most recent RELAYED_SESSIONS sessions (each with its
+    last RELAYED_KEPT settlements: a bridge's snapshot lists its last 100).
+    A write that fails is said and costs at most a settlement sent twice."""
+    while len(relayed) > RELAYED_SESSIONS:
+        del relayed[next(iter(relayed))]
+    try:
+        os.makedirs(os.path.dirname(relayed_path()), mode=0o700, exist_ok=True)
+        sminos.write_json(relayed_path(), relayed)
+    except OSError as e:
+        log("the settlements relayed could not be kept in %s: %s" % (relayed_path(), e))

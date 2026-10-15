@@ -578,7 +578,10 @@ class Link:
         self.plane.refresh(hl.project)
         sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
         machine = hl.presence()
-        self.requests.take()  # what the bridges said while no stream was open is in the set
+        # The project's bridges are followed before its set is drawn up: the
+        # set goes now if they are read, else once they are (Requests.due).
+        self.requests.follow(self.bridged(self.opened | {hl.project.id}))
+        self.requests.take()
         owed = self.requests.opening(hl.project.id)
         self.post([hl.hello(), machine] + sessions + unreported + owed)
         self.opened.add(hl.project.id)
@@ -621,12 +624,16 @@ class Link:
                 self.post([m])
                 self.machine_sent[pid] = m["message"]["body"]
 
+    def bridged(self, pids):
+        """{session: project id}: the members of these projects with a bridge
+        endpoint here, whose requests are read."""
+        return {sid: pid for pid in pids for sid in self.plane.members.get(pid, ())
+                if os.path.exists(plane.bridge.endpoint(sid))}
+
     def relay_requests(self):
         """The requests of the open projects' bridged sessions: readers for
-        the sessions whose bridge answers, and what they read, up."""
-        followed = {sid: pid for pid in self.opened for sid in self.plane.members.get(pid, ())
-                    if self.plane.bridges.known(sid)}
-        self.requests.follow(followed)
+        them, and what they read, up."""
+        self.requests.follow(self.bridged(self.opened))
         self.requests.take()
         frames = self.requests.due(self.opened)
         if frames:

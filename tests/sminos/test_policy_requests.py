@@ -90,6 +90,8 @@ class Inbox(threading.Thread):
         self.path = path
         self.frames = []
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if os.path.exists(path):
+            os.unlink(path)
         self.sock.bind(path)
         self.sock.listen(16)
         self.start()
@@ -116,6 +118,10 @@ class Inbox(threading.Thread):
 
     def close(self):
         self.sock.close()
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
 
 
 class Session:
@@ -345,6 +351,66 @@ class Delivery(unittest.TestCase):
         finally:
             gone.end() if gone.holder.poll() is None else None
 
+    def test_a_push_taken_and_never_answered_is_uncertain(self):
+        e = self.say_from_far("taken, unanswered")
+        with mock.patch.object(sminos, "push_event", return_value="sent?"):
+            self.deliver()
+        o = self.outcome_of(e)
+        self.assertEqual(o["outcome"], "uncertain")
+        self.assertEqual(sminos.owed(self.project, member_of(self.project, self.live.sid)), [],
+                         "settled: never pushed again")
+
+    def test_an_outcome_that_cannot_be_written_leaves_the_event_owed(self):
+        e = self.say_from_far("its outcome first")
+        with mock.patch.object(outcomes.Outbox, "record", side_effect=OSError("disk full")):
+            self.deliver()
+        self.assertIsNone(self.outcome_of(e))
+        self.assertIn(e["seq"], [x["seq"] for x in sminos.owed(self.project, member_of(self.project, self.live.sid))
+                                 if x["writer"] == e["writer"]], "not settled without its outcome")
+        self.deliver()
+        self.assertEqual(self.outcome_of(e)["outcome"], "delivered", "the next pass delivers and records it")
+        self.assertEqual(sminos.owed(self.project, member_of(self.project, self.live.sid)), [])
+
+    def test_a_closed_terminal_session_is_reported_recorded_until_it_is_back(self):
+        """A session whose process ended is no member: an event sent to it
+        is reported `recorded` once, stays owed, and when the session comes
+        back (Resume, M4; here its process again) is delivered, `delivered`
+        following for the same key."""
+        import sminos_daemon as daemon
+        gone = Session(self.root)
+        sid = gone.sid
+        try:
+            project = project_of(self.root)
+            sminos.reconcile(project)
+            alias = member_of(project, sid).alias
+            gone.end()
+            sminos.forget_caches()
+            view = sminos.view_of(project, titles=False)
+            self.assertNotIn(sid, [m.session for m in view.members], "its membership ended with its process")
+            e = sminos.log_append(project, self.far, "say",
+                                  **{"from": "far", "to": [{"session": sid, "alias": alias}],
+                                     "text": "to a closed terminal session"})
+            for _ in range(2):
+                sminos.forget_caches()
+                daemon.deliver_owed(project, sminos.view_of(project, titles=False))
+            mine = [o for o in self.outbox() if o["event"] == {"writer": e["writer"], "seq": e["seq"]}
+                    and o["session"] == sid]
+            self.assertEqual([o["outcome"] for o in mine], ["recorded"], "once, however many passes")
+            self.assertEqual([x["seq"] for x in sminos._owed(sminos.log_read(project), sid,
+                                                             sminos.delivered_load(project, sid))], [e["seq"]],
+                             "and it stays owed")
+            back = Session(self.root, sid=sid)
+            try:
+                sminos.forget_caches()
+                daemon.deliver_owed(project, sminos.view_of(project, titles=False))
+                self.assertIn("to a closed terminal session", back.inbox.texts(), "delivered once it is back")
+                self.assertEqual(self.outcome_of(e, sid)["outcome"], "delivered", "the same key, now delivered")
+            finally:
+                back.end()
+        finally:
+            if gone.holder.poll() is None:
+                gone.end()
+
     def test_a_delivery_given_up_is_failed(self):
         e = self.say_from_far("never lands")
         with mock.patch.object(sminos, "push_event", return_value="failed:the socket refused"), \
@@ -470,9 +536,13 @@ class Requests(unittest.TestCase):
         self.assertEqual(bg["deadline"], "2026-10-15T00:00:00.123Z", "DX4's deadline: ISO 8601 UTC, milliseconds")
         self.assertNotIn("async", bg)
         self.assertIs(q["async"], True)
+        self.assertEqual(bg["agentId"], "a7", "a subagent's request names it")
+        self.assertNotIn("agentId", q, "the main thread's names none")
+        self.assertIs(q["truncated"], True)
+        self.assertNotIn("truncated", bg, "truncated only as true")
         for b in (bg, q):
-            self.assertTrue(codes.verifies(KEY, "raised", self.PID, b))
-            self.assertFalse({"agentId", "truncated", "t"} & set(b), "only DX4's fields")
+            self.assertTrue(codes.verifies(KEY, "raised", self.PID, b), "the code covers every field")
+            self.assertNotIn("t", b)
 
     def test_a_reconnect_to_the_bridge_reconciles(self):
         """A module reload: a new child takes the endpoint over and the mod
@@ -512,6 +582,70 @@ class Requests(unittest.TestCase):
                          [{"t": "pending", "project": self.PID, "raised": []}],
                          "the complete set, without it: the hub drops it; nothing is settled in the bridge's name")
         self.assertEqual(messages(frames, "settled"), [])
+
+    def test_a_settlement_made_while_unread_is_relayed_once(self):
+        """Raised and settled while no reader held the bridge: the snapshot's
+        recent settlements carry it, and it goes up once — not again on the
+        next snapshot, nor from a Requests that starts anew (a restart)."""
+        self.r.close()
+        self.r = requests.Requests(KEY, "testhost")
+        self.bridge.raise_("toolu_quick")
+        self.bridge.settle("toolu_quick", outcome="allow", winner="other", by="cli")
+        self.r.follow({self.sid: self.PID})
+        frames = self.due(lambda fs: messages(fs, "settled"))
+        self.assertEqual([m["body"]["request"] for m in messages(frames, "settled")], ["toolu_quick"])
+        self.assertEqual(messages(frames, "raised"), [])
+        self.r.sent(frames)
+        again = requests.Requests(KEY, "testhost")
+        try:
+            again.follow({self.sid: self.PID})
+            self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
+            self.assertEqual(messages(again.due({self.PID})), [], "the hub took it: not sent again")
+        finally:
+            again.close()
+
+    def test_the_outbox_keeps_every_settlement(self):
+        with mock.patch.object(requests, "OUTBOX_MAX", 4):
+            for i in range(3):
+                self.bridge.raise_("toolu_r%d" % i)
+                self.bridge.settle("toolu_r%d" % i)
+            for i in range(3, 6):
+                self.bridge.raise_("toolu_r%d" % i)
+            frames = self.due(lambda fs: len(messages(fs, "settled")) == 3 and
+                              "toolu_r5" in [m["body"]["request"] for m in messages(fs, "raised")])
+        self.assertEqual([m["body"]["request"] for m in messages(frames, "settled")],
+                         ["toolu_r0", "toolu_r1", "toolu_r2"], "an overflow drops no settlement")
+        self.assertLess(len(messages(frames, "raised")), 6, "only raises, which the set rebuilds")
+        self.assertEqual(sorted(x["request"] for x in self.r.pending_frame(self.PID)["raised"]),
+                         ["toolu_r3", "toolu_r4", "toolu_r5"], "the set still holds every pending one")
+
+    def test_the_set_waits_for_the_bridges_snapshots(self):
+        """An uplink starting with a request already pending: the complete
+        set does not go empty before the bridge is read."""
+        self.r.close()
+        self.bridge.raise_("toolu_before")
+        clock = [100.0]
+        self.r = requests.Requests(KEY, "testhost", clock=lambda: clock[0])
+        self.r.follow({self.sid: self.PID})
+        first = self.r.opening(self.PID)
+        self.assertEqual([f for f in first if f.get("t") == "pending"], [], "no set before its bridge is read")
+        frames = self.due(lambda fs: [f for f in fs if f.get("t") == "pending"])
+        self.assertEqual([x["request"] for f in frames if f.get("t") == "pending" for x in f["raised"]],
+                         ["toolu_before"], "the set, once read, holds it")
+        self.r.sent(frames)
+        # A bridge that never gives a snapshot holds the set at most HOLD_MAX.
+        stalled_sid = str(uuidlib.uuid4())
+        stalled = tsp.fake_session.stalled_socket(os.path.join(os.environ["SMINOS_HOME"], "bridge",
+                                                               stalled_sid + ".sock"))
+        try:
+            self.r.follow({self.sid: self.PID, stalled_sid: self.PID})
+            self.assertEqual([f for f in self.r.opening(self.PID) if f.get("t") == "pending"], [])
+            clock[0] += requests.HOLD_MAX + 1
+            self.assertEqual([x["request"] for f in self.r.due({self.PID}) if f.get("t") == "pending"
+                              for x in f["raised"]], ["toolu_before"], "then it goes with what is known")
+        finally:
+            stalled.close()
+            os.unlink(os.path.join(os.environ["SMINOS_HOME"], "bridge", stalled_sid + ".sock"))
 
     def test_opening_a_project_republishes_the_set(self):
         self.bridge.raise_("toolu_p")
@@ -606,11 +740,12 @@ class Uplink(unittest.TestCase):
 
     def test_a_requests_and_settlements_reach_the_hub_and_are_republished(self):
         count = len(self.hub.messages())
-        self.bridge.raise_("toolu_up1", input_={"command": "make deploy"})
+        self.bridge.raise_("toolu_up1", input_={"command": "make deploy"}, agentId="a7", truncated=True)
         ms = self.hub.wait(lambda ms: self.mine(ms[count:], "raised"))
         self.assertIsNotNone(ms, "raised reaches the hub")
         raised = self.mine(ms[count:], "raised")[0]["body"]
-        self.assertEqual(raised["request"], "toolu_up1")
+        self.assertEqual((raised["request"], raised["agentId"], raised["truncated"]), ("toolu_up1", "a7", True),
+                         "a subagent's, its input capped: the hub takes both fields")
         self.assertTrue(codes.verifies(self.key, "raised", self.project, raised), "with its code")
         self.bridge.settle("toolu_up1", outcome="deny", winner="terminal", by="terminal")
         ms = self.hub.wait(lambda ms: self.mine(ms[count:], "settled"))
@@ -642,6 +777,30 @@ class Uplink(unittest.TestCase):
 
     def presences(self, ms):
         return [m["body"] for m in ms if m["kind"] == "presence" and m["session"] == self.sid]
+
+    def test_c_an_uplink_restart_keeps_what_is_pending(self):
+        """The uplink restarts (a daemon restart) while a request is
+        pending: the first set the new process publishes holds it."""
+        self.bridge.raise_("toolu_kept")
+        self.assertIsNotNone(self.hub.wait(lambda ms: [m for m in self.mine(ms, "raised")
+                                                       if m["body"]["request"] == "toolu_kept"]))
+        sets = len(self.pending_sets())
+        old = Uplink.uplink
+        old.terminate()
+        old.wait(10)
+        count = len(self.hub.messages())
+        Uplink.uplink = self.spawn([CLI, "daemon", "uplink"])
+        self.assertIsNotNone(self.hub.wait(lambda ms: [m for m in ms[count:] if m["kind"] == "presence"
+                                                       and m["session"] == self.sid], timeout=20),
+                             "the new uplink is connected")
+        if not self.local():
+            got = wait_for(lambda: self.pending_sets()[sets:], timeout=15)
+            self.assertTrue(got, "a set was published")
+        time.sleep(1.0)
+        after = self.pending_sets()[sets:]
+        self.assertTrue(all("toolu_kept" in s for s in after),
+                        "no set after the restart lacks it: %s" % after)
+        self.bridge.settle("toolu_kept")
 
     def deliver_from_outside(self, text):
         """An outside-origin `human` to the session: through a browser of

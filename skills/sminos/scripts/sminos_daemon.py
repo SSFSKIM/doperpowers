@@ -450,7 +450,14 @@ def publish_renames(project, view):
 def deliver_owed(project, view):
     """Duty 4: for each local member with anything owed to it, deliver_next —
     the same operation the sender's fast path calls — in writer order from
-    its settled prefix. Returns (events delivered, the aliases reached)."""
+    its settled prefix. Returns (events delivered, the aliases reached).
+    An event from outside owed to a closed terminal session is reported
+    `recorded` once and stays owed (sminos_outcomes.report_closed)."""
+    try:
+        sminos.sibling_module("sminos_outcomes").report_closed(project, view)
+    except OSError as e:
+        sminos.daemon_log("delivery: what is owed to closed sessions of %s could not be reported: %s" % (
+            project.name, e))
     total, reached = 0, []
     for m in view.members:
         if not (m.local and m.session):

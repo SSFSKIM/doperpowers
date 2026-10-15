@@ -1483,7 +1483,9 @@ def deliver_next(project, member):
     hub's) is pushed nothing — no frame, no resume — and settled undelivered
     as `refused-read-only` (sminos_policy, read at each such event). Every
     settlement of an outside-origin event of a hub project leaves its outcome
-    for the uplink (sminos_outcomes), recorded before the settlement."""
+    for the uplink (sminos_outcomes), recorded before the settlement: an
+    outcome that cannot be recorded leaves the event pending (pushed again by
+    a later pass, at least once as smns delivery is)."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
@@ -1510,10 +1512,13 @@ def deliver_next(project, member):
                         break
                     daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
                         event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
-                elif outcome in PUSHED:
+                if outside and not outcomes.record(project, e, session, outcome, member):
+                    # Settled only once its outcome is kept: it stays pending,
+                    # and the next pass pushes and records it again.
+                    result["pending"] += len(queue) - i
+                    break
+                if outcome in PUSHED:
                     result["delivered"] += 1
-                if outside:
-                    outcomes.record(project, e, session, outcome, member)
                 delivered_settle(project, session, writer, e["seq"])
     return result
 

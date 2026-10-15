@@ -10,12 +10,22 @@ the outcome here, in the project's `outcomes.jsonl`, before the settlement:
 
     {"event": {"writer", "seq"}, "session", "outcome", "reason"}
 
-`outcome` is DX4's: `delivered` (pushed to the live session, or the stopped
-seat resumed with it — also when the push was taken and its answer lost),
-`recorded` (the recipient was not running and is pushed nothing),
-`refused-read-only` (the machine's policy), `failed` (given up after
-DELIVERY_ATTEMPTS). A crash between the record and the settlement records it
-again at the next attempt; the hub keeps the latest per event and recipient.
+`outcome` is DX4's (composite 6fa2252d): `delivered` (pushed to the live
+session, or the stopped seat resumed with it), `uncertain` (the push was taken
+and its answer never came: settled, never pushed again), `recorded` (the
+recipient was not running and is pushed nothing), `refused-read-only` (the
+machine's policy), `failed` (given up after DELIVERY_ATTEMPTS). An outcome
+that cannot be written leaves the event unsettled, so it is pushed and
+recorded again later; a crash between the record and the settlement records
+it again too. The hub keeps the latest per event and recipient.
+
+One outcome comes without a settlement: an event owed to a closed terminal
+session (a seat-less session of this machine whose membership ended with its
+process) is reported `recorded` once, when it first becomes owed to it
+(report_closed), and stays owed; if the session comes back (Resume) and the
+event is delivered, `delivered` follows for the same key. What was reported
+is kept per session in the project's `recorded/<session>.json` ({writer: the
+last seq reported}).
 
 The uplink drains the file: it seals each record with the org key (DX1,
 `smns-hub-delivery-v1`) as it posts it, and drops what a POST answered 200
@@ -46,7 +56,7 @@ def of_push(push, member):
     if push == "woken":
         return "delivered", "the stopped seat was resumed with it"
     if push in UNCERTAIN:
-        return "delivered", UNCERTAIN[push]
+        return "uncertain", UNCERTAIN[push]
     if push.startswith("failed"):
         return "failed", "given up after %d attempts: %s" % (sminos.DELIVERY_ATTEMPTS, push[len("failed:"):])
     if member.seat is None:
@@ -124,16 +134,81 @@ class Outbox:
 
 def record(project, e, session, push, member):
     """Delivery's record of an outside-origin event settled for `session`,
-    for a hub project; nothing for another. A record that cannot be written
-    is said in daemon.log and does not hold delivery up."""
+    for a hub project (nothing for another): whether it is kept. One that
+    cannot be written is said in daemon.log and returns False — the caller
+    does not settle the event."""
     if not project.hub:
-        return
+        return True
     outcome, reason = of_push(push, member)
     try:
         Outbox(project).record(e, session, outcome, reason)
     except OSError as err:
-        sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded: %s" % (
+        sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): it stays owed" % (
             sminos.event_ref(e), session, err))
+        return False
+    return True
+
+
+CLOSED = "a terminal session that was closed: kept owed, and delivered if it comes back"
+
+
+def closed_sessions(view):
+    """The closed terminal sessions of this machine in a view: seat-less
+    sessions that joined from here whose membership ended with their process
+    (retired, reason `ended`; reconciliation retires a seat never so)."""
+    out = set()
+    for sid, r in view.info.items():
+        latest, joined = (r or {}).get("latest"), (r or {}).get("joined") or {}
+        if latest and latest["kind"] == "retired" and latest.get("reason") == "ended" and joined \
+                and sminos.is_self(str(joined.get("machine") or ""), sid):
+            out.add(sid)
+    return out
+
+
+def report_closed(project, view):
+    """`recorded` for each outside-origin event newly owed to a closed
+    terminal session of a hub project, once per event and session; the
+    event is not settled. How many were reported."""
+    if not project.hub:
+        return 0
+    closed = closed_sessions(view)
+    if not closed:
+        return 0
+    policy = sminos.sibling_module("sminos_policy")
+    owed = {}
+    for e in view.events:
+        to = e.get("to")
+        if not isinstance(to, list) or not policy.outside_origin(e):
+            continue
+        for sid in {r.get("session") for r in to if isinstance(r, dict)} & closed:
+            owed.setdefault(sid, []).append(e)
+    n = 0
+    box = Outbox(project)
+    for sid, events in owed.items():
+        settled = sminos.delivered_load(project, sid)
+        path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
+        try:
+            with open(path) as f:
+                reported = json.load(f)
+        except (OSError, ValueError):
+            reported = {}
+        reported = reported if isinstance(reported, dict) else {}
+        before = dict(reported)
+        for e in sorted(events, key=lambda e: (e["writer"], e["seq"])):
+            w = e["writer"]
+            if e["seq"] <= max(int(reported.get(w) or 0), sminos._delivery(settled, w)["settled"]):
+                continue
+            try:
+                box.record(e, sid, "recorded", CLOSED)
+            except OSError as err:
+                sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): reported later"
+                                  % (sminos.event_ref(e), sid, err))
+                break
+            reported[w] = e["seq"]
+            n += 1
+        if reported != before:
+            sminos.write_json(path, reported)
+    return n
 
 
 def message(key, machine, project_id, r):
