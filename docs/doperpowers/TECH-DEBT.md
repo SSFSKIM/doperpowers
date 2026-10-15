@@ -239,12 +239,13 @@ the spec's Decision Log entry "the branch review round"
   only at its next tick, ~0.3–0.4 s of CPU over 14 git processes. Fix
   proposed: a generous never-delivered limit (~15 s) plus a bound scaled
   to one idle tick timed before the loops start (interval + 3 × tick +
-  the say's own time). Also in the class (desk DC7 M4, 2026-10-15):
-  `tests/sminos/test-bridge-requests.sh`'s "the terminal won, as a field"
-  (with "and decided, as a field", and at times the window cases beside
-  it), whose waits are fixed 0.4–0.6 s sleeps around the session record's
-  `waiting` status; it fails the same way on the base `958db2cf` at load
-  ~220. Same trigger, same fix. A candidate in the class (desk DC7
+  the say's own time). Also in the class at times (desk DC7, 2026-10-15):
+  `tests/sminos/test-bridge-requests.sh`'s window cases, whose waits are
+  fixed 0.4–0.6 s sleeps around the session record's `waiting` status.
+  (Its "the terminal won, as a field" was a race in DC7's own assertion —
+  under load the watcher settles the request first and the refusal is
+  "already settled" — fixed by reading the winner from either refusal.)
+  A candidate in the class (desk DC7
   final fix, 2026-10-15): `tests/sminos/test-uplink.sh`'s "the tick loop
   is still in the fetch all along" failed once at load ~218 (the tick
   moved 0.4 s inside the hung-fetch window) and passed alone at ~137;

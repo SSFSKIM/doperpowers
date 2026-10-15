@@ -319,8 +319,12 @@ presence idle
 run ctl postto "$SOCK" /requests/toolu_perm03/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "409 " "a decision for a dialog the terminal has closed is refused"
 assert_contains "$OUT" "terminal" "saying the terminal answered it"
-assert_equals "$(field_of "${OUT#409 }" winner)" "terminal" "the terminal won, as a field"
-assert_equals "$(field_of "${OUT#409 }" by)" "terminal" "and decided, as a field"
+# Under load the watcher may settle the request before the decision lands:
+# the refusal is then "already settled", its winner under `settled`.
+WON=$(field_of "${OUT#409 }" winner); BY=$(field_of "${OUT#409 }" by)
+if [ "$WON" = null ]; then WON=$(field_of "${OUT#409 }" settled.winner); BY=$(field_of "${OUT#409 }" settled.by); fi
+assert_equals "$WON" "terminal" "the terminal won, as a field"
+assert_equals "$BY" "terminal" "and decided, as a field"
 presence waiting
 
 echo "a background subagent's window:"
