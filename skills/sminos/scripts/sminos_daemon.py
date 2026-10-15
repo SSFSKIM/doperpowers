@@ -699,7 +699,7 @@ def sweep_bridges():
     process of this machine runs any more (DC2 keeps them for its reloads,
     and nothing else removed them): its kept file (`<id>.json`: the model
     choice and the delivery keys) once the session has been quiet
-    BRIDGE_QUIET_S, its transcript (else the file) untouched that long, so
+    BRIDGE_QUIET_S, neither its transcript nor the file touched that long, so
     a Resume soon after the end keeps the choice; and its socket as soon as
     nobody listens on it, which the child removes itself unless it was
     killed. A delivery key the file forgets is an event the daemon settled
@@ -720,7 +720,7 @@ def sweep_bridges():
         if ext == ".sock":
             bridge.remove_stale(path)
             continue
-        last = mtime(sminos.transcript_path(sid)) or mtime(path)
+        last = max([t for t in (mtime(sminos.transcript_path(sid)), mtime(path)) if t is not None], default=None)
         if last is None or now - last < BRIDGE_QUIET_S:
             continue
         try:

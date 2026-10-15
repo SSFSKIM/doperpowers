@@ -50,7 +50,10 @@ Resume runs `claude --bg --resume <session>` in the session's working
 directory with nothing else on the line (any flag makes the engine start a
 copy), one per session at a time, once no process of this machine holds the
 session (`session-live`: its transcript is here, so here is everywhere it
-can run). The engine continues it under its own id unless it finds the
+can run; checked before the claim, and again under the lock). The launch
+is kept in the claim before it runs, and its job once known: a claim left
+by a stop is `done` only when a --bg process of that launch holds the
+session. The engine continues it under its own id unless it finds the
 session open meanwhile, when it starts a copy and says so: the copy is
 stopped and the RPC fails `copy-started`. The session rejoins as any session
 that runs again does (sminos's reconciliation, at the daemon's next tick,
@@ -96,7 +99,7 @@ LOOSE_S = 600             # a refusal kept out of the ledger waits this long for
 STEER_TRACE_S = 30        # a claimed steer's row is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
 RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
-RESUME_HELD_S = 10        # how long a Resume waits for its job's process to hold the session
+RESUME_HELD_S = 30        # how long a Resume waits for its job's process to hold the session
 LAUNCH_TIMEOUT = 300      # `claude --bg` hands the launch to the harness's supervisor
 COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
@@ -443,7 +446,12 @@ class Rpcs:
                 # sminos re-joins a retired seat only through its own verbs.
                 raise Refused("unsupported", "the seat %s holding it was retired: `sminos fill` or `sminos send` "
                                              "brings it back" % facts["retired_seat"])
-            return lambda: resume(sid, facts["cwd"], self.lock_of(self.resume_locks, sid))
+            live = holders(sid)
+            if live:
+                raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
+                              % held_by(live))
+            return lambda: resume(sid, facts["cwd"], self.lock_of(self.resume_locks, sid),
+                                  lambda **fields: self.note(nonce, fields))
         path = bridge.endpoint(sid)
         status = bridge.probe(path)
         bridged = status is not None and status.get("session") == sid
@@ -477,6 +485,18 @@ class Rpcs:
             return lambda: steer_without_bridge(sid, args["text"], facts["root"])
         raise Refused("unsupported", "%s needs the session's bridge; %s has none (§5)" % (
             name, "this --bg job" if facts["bg"] else "this terminal session"))
+
+    def note(self, nonce, fields):
+        """The action's own evidence added to its claim before the effect it
+        names (a Resume's launch, then its job), so a restart can tell that
+        launch's trace from anything else. Raises OSError when it could not
+        be kept."""
+        with self.ledger.lock:
+            e = self.ledger.entries.get(nonce)
+            if e is None or "outcome" in e:
+                return
+            e.update(fields)
+            self.ledger.save()
 
     def lock_of(self, locks, sid):
         """The session's lock in `locks` (one RPC kind's)."""
@@ -940,11 +960,33 @@ def job_session(short):
     return None
 
 
-def resume(sid, cwd, lock):
+def started_at(rec):
+    """When a holder's process started, in epoch seconds (whole seconds when
+    only `ps` can tell), or None."""
+    at = sminos.process_started(rec)
+    if at is not None:
+        return at
+    parsed = sminos._parse_lstart(sminos.read_proc_start(rec.get("pid")))
+    return time.mktime(parsed) if parsed else None   # ps prints the local zone
+
+
+def launched_by(rec, launched, job):
+    """Whether a holder of the session is the --bg process of the launch made
+    at `launched` (its job `job`, when known): started no earlier than it
+    (to the second ps reads it at), its job the one that launch started."""
+    started = started_at(rec)
+    return (rec.get("kind") == "bg" and started is not None and started >= int(launched)
+            and (job is None or rec.get("jobId") == job))
+
+
+def resume(sid, cwd, lock, note):
     """§5's Resume of a session no process of this machine holds. One per
     session at a time: the second of two finds the first's job holding it.
     The engine's own check is the last word on a reopen racing the launch:
-    it starts a copy, which is stopped, and the RPC fails `copy-started`."""
+    it starts a copy, which is stopped, and the RPC fails `copy-started`.
+    The launch is kept in the claim before it runs (`note`), and its job
+    once known, so a restart reconciles from this launch alone; done only
+    once that job's process holds the session."""
     with lock:
         live = holders(sid)
         if live:
@@ -952,9 +994,18 @@ def resume(sid, cwd, lock):
                           % held_by(live))
         if not (cwd and os.path.isdir(cwd)):
             raise Refused("failed", "the session's working directory %r is gone: nothing was launched" % (cwd,))
+        launched = time.time()
+        try:
+            note(launched_at=launched)
+        except OSError as e:
+            raise Refused("failed", "the launch could not be kept in the ledger (%s): nothing was launched" % e)
         short, banner = launch_resume(sid, cwd)
         if not short:
             raise Refused("failed", "claude --bg --resume started no job: %s" % (last_line(banner) or "no output"))
+        try:
+            note(job=short)
+        except OSError as e:
+            log("resume of %s: its job %s could not be kept in the ledger: %s" % (sid, short, e))
         copy = COPY_RE.search(banner)
         reported = None if copy else job_session(short)
         if copy or (reported is not None and reported != sid):
@@ -966,7 +1017,10 @@ def resume(sid, cwd, lock):
         if reported is None:
             raise Refused("failed", "the harness named no session for job %s: it may be running" % short)
         deadline = time.time() + RESUME_HELD_S
-        while not holders(sid) and time.time() < deadline:
+        while not any(launched_by(r, launched, short) for r in holders(sid)):
+            if time.time() >= deadline:
+                raise Refused("failed", "job %s took the session, but no process of it holds the session after "
+                                        "%g s: it did not start, or has not yet" % (short, RESUME_HELD_S))
             time.sleep(0.1)
         sminos.nudge_daemon()   # its tick re-joins the session and delivers what was kept for it
         return done({"session": sid})
@@ -1020,6 +1074,10 @@ def trace(nonce, e):
         row = steer_row(e["session"], e["text_sha256"], e.get("at", 0))
         return (done({"row": row}) if row else None), STEER_TRACE_S
     if e.get("rpc") == "resume" and e.get("session"):
-        ran = any(r.get("kind") == "bg" for r in holders(e["session"]))
+        launched = e.get("launched_at")
+        if not isinstance(launched, (int, float)) or isinstance(launched, bool):
+            return None, 0          # stopped before its launch: nothing ran
+        job = e.get("job") if isinstance(e.get("job"), str) else None
+        ran = any(launched_by(r, launched, job) for r in holders(e["session"]))
         return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0

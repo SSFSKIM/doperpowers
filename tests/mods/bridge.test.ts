@@ -1750,6 +1750,39 @@ describe('requests from outside: questions', () => {
     expect(h.ofType('tool').map((e) => [e.phase, e.toolUseId])).toEqual([['call', 'toolu_01outer'], ['result', 'toolu_01outer']])
   })
 
+  test("two running asks sharing the dialog's first question: the pairing is ambiguous, so no toolUseId; the dialog's call and result still not posted", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const ends: ((v: Record<string, unknown>) => void)[] = []
+    const outers = ['toolu_01a', 'toolu_01b'].map((id) =>
+      h.hook('tool.call', { tool: ASK_TOOL })(
+        h.engine,
+        { tool: ASK_TOOL, tool_use_id: id, questions: [FRUIT] },
+        Object.assign(() => new Promise((resolve) => ends.push(resolve)), { origin: { kind: 'engine', plugin: 'engine' } }),
+      ),
+    )
+    await h.settle()
+    let endDialog: (v: Record<string, unknown>) => void = () => undefined
+    const dialog = h.hook('tool.call', { tool: 'AskUserQuestion' })(
+      h.engine,
+      { tool: 'AskUserQuestion', tool_use_id: 'toolu_plugin_2', questions: [{ ...FRUIT, header: 'ask-1' }] },
+      Object.assign(() => new Promise((resolve) => (endDialog = resolve)), { origin: { kind: 'tool', plugin: 'doperpowers' } }),
+    )
+    await h.check('toolu_plugin_2', 'AskUserQuestion', { questions: [FRUIT] })
+    void h.permission('AskUserQuestion', { questions: [FRUIT] })
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_plugin_2' })])
+    expect(h.ofType('raised')[0]).not.toHaveProperty('toolUseId')
+    poll.respond(410, { reason: 'settled' })
+    endDialog({ text: answered('Apple') })
+    await dialog
+    ends.forEach((end) => end({ text: answered('Apple') }))
+    await Promise.all(outers)
+    await h.settle()
+    expect(h.ofType('tool').map((e) => e.toolUseId)).toEqual(['toolu_01a', 'toolu_01b', 'toolu_01a', 'toolu_01b'])
+  })
+
   test('a question raised under its own call carries no toolUseId', async () => {
     const { h, poll } = await asked('toolu_01native')
     expect(h.ofType('raised')[0]).toMatchObject({ request: 'toolu_01native' })

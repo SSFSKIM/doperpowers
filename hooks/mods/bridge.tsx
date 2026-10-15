@@ -1711,18 +1711,19 @@ function firstQuestion(questions: unknown): string | undefined {
 }
 
 /**
- * The ask call a dialog of the ask mod was opened inside: a running call of
- * the ask tool whose first question is the dialog's (the dialog carries it,
- * under its own header), not yet paired with another dialog, the oldest
- * first. None for a dialog the human opened from an async ask's button.
+ * The ask call a dialog of the ask mod was opened inside: the one running
+ * call of the ask tool whose first question is the dialog's (the dialog
+ * carries it, under its own header) and that no other dialog was paired
+ * with. None for a dialog the human opened from an async ask's button, and
+ * none when two such calls run: the pairing would be a guess.
  */
 function askCallFor(question: string | undefined): string | undefined {
   if (question === undefined) {
     return undefined
   }
   const paired = new Set(state.dialogCalls.values())
-  return [...state.calls.values()].find((c) => c.tool === ASK_TOOL && c.question === question && c.toolUseId !== undefined && !paired.has(c.toolUseId))
-    ?.toolUseId
+  const calls = [...state.calls.values()].filter((c) => c.tool === ASK_TOOL && c.question === question && c.toolUseId !== undefined && !paired.has(c.toolUseId))
+  return calls.length === 1 ? calls[0]?.toolUseId : undefined
 }
 
 /**

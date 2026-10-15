@@ -743,7 +743,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been
-        quiet a day (its transcript, else the file), so a Resume soon after
+        quiet a day (neither its transcript nor the file touched), so a Resume soon after
         keeps its model choice; a socket nobody listens on goes with its
         session's end; a running session's files stay, however old."""
         import sminos
@@ -754,12 +754,13 @@ class Lifecycle(unittest.TestCase):
         holder = subprocess.Popen(["sleep", "60"])
         rec = os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % holder.pid)
         try:
-            ids = {k: new_session() for k in ("quiet", "recent", "no-transcript", "running", "dead-socket")}
+            ids = {k: new_session() for k in ("quiet", "recent", "kept-recently", "no-transcript", "running",
+                                              "dead-socket")}
             with open(rec, "w") as f:
                 json.dump({"pid": holder.pid, "sessionId": ids["running"], "status": "idle"}, f)
             transcripts = os.path.join(os.environ["HOME"], ".claude", "projects", "-sweep")
             os.makedirs(transcripts, exist_ok=True)
-            for k in ("quiet", "recent", "running"):
+            for k in ("quiet", "recent", "kept-recently", "running"):
                 t = os.path.join(transcripts, ids[k] + ".jsonl")
                 with open(t, "w") as f:
                     f.write("{}\n")
@@ -769,14 +770,16 @@ class Lifecycle(unittest.TestCase):
             for k, p in kept.items():
                 with open(p, "w") as f:
                     json.dump({"override": {"model": "opus", "effort": None}, "delivered": {}}, f)
-                os.utime(p, (old, old))
+                if k != "kept-recently":
+                    os.utime(p, (old, old))
             dead = os.path.join(d, ids["dead-socket"] + ".sock")
             fake_session.stalled_socket(dead).close()  # bound, then nobody listens
             self.assertTrue(os.path.exists(dead))
             sminos.forget_caches()
             daemon.sweep_bridges()
             self.assertEqual({k: os.path.exists(p) for k, p in kept.items()},
-                             {"quiet": False, "recent": True, "no-transcript": False, "running": True})
+                             {"quiet": False, "recent": True, "kept-recently": True, "no-transcript": False,
+                              "running": True})
             self.assertFalse(os.path.exists(dead), "a socket nobody listens on, of a session that ended")
         finally:
             holder.kill()

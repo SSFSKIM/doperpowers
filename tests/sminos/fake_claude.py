@@ -11,7 +11,9 @@ runs is a process of its own (fake_holder.py) that the engine's record
 names, kind `bg`, with an inbox socket whose frames it keeps; `stop` ends
 it. `reopen-first` in the state directory makes the owner reopen the session
 (a terminal process holding it) just before the engine looks, as a reopen
-racing the launch does; `bg-sleep` holds every launch that many seconds."""
+racing the launch does; `no-hold` makes a resumed job whose process never
+holds the session (a start that failed); `bg-sleep` holds every launch that
+many seconds."""
 import glob
 import json
 import os
@@ -130,7 +132,8 @@ if "--bg" in args:
                    "copy as %s. Without flags, the same command continues it itself."
         new = str(uuid.uuid4()) if note else sid
         short = new[:8]
-        hold(new, "bg", short)
+        if not os.path.exists(os.path.join(state, "no-hold")):
+            hold(new, "bg", short)
         row(short, new, "resumed")
         print("backgrounded · %s · resumed" % short)
         if note:
