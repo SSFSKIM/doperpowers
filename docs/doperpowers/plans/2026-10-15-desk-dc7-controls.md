@@ -680,6 +680,21 @@ against the local hub; until it lands, the stand-in.
   transcript are both 24 h quiet.
   Date/Author: 2026-10-15, M4 executor; rulings by the composite's writer.
 
+- Decision (final review's fixes): On a read-only machine every
+  outside-origin event still owed to a closed terminal session, one
+  already reported `recorded` included, is settled `refused-read-only`
+  under its delivery lock (projects without a hub record no outcome). A
+  new stream publishes null presence for every session that joined from
+  here and is no member now and left since the project's watermark
+  (`daemon/presence.json`: the time of the last member read whose
+  presence the hub took, moved only after `open()`'s POST answers 200)
+  less 60 s, every one when no watermark is kept. A compact's command id
+  is kept on its ledger claim until the compaction ends and restored at
+  start. An HTTP read failure in the digest check is `not-pending`, in
+  the decision POST `failed`, and any other exception while planning is
+  `failed` ("nothing ran"), so no RPC is left unanswered.
+  Date/Author: 2026-10-15, final-review fixer, reviewed clean.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
