@@ -26,7 +26,10 @@
   reviewed clean 2026-10-15 (`3a33efcd`, fixes `10f913d5`, `4b13cb9e`).
   Carried to M4's walk: an async question's `[ answer ]` pressed in the
   terminal (needs a mouse press; harness-covered).
-- [ ] M4 — Live export, the acceptance walk, docs, version (DC2.G4)
+- [x] M4 — Live export, the acceptance walk, docs, version (DC2.G4) —
+  reviewed clean 2026-10-15 (`6d6aa211`, fixes `828ade6c`, `1d55316f`,
+  `f0242560`); live walk 45/45 on `1d55316f`, terminal session and `--bg`
+  job, every carried item driven.
 
 ## Constraints that bind every milestone
 
@@ -589,6 +592,160 @@ Order, batching (≤ 500) and one post in flight are unchanged.
 | `sminos decide <member> <request> allow\|deny [--message M]` | Subscribes and finds the request in the snapshot (by exact id or a unique prefix). Then `POST …/decision` `{behavior, message?, by: "cli"}`, then waits up to 30 s for its `settled`. Prints "<member>: request <id> settled from here: <outcome>" | exit 4 "no bridge" | 0 the engine used this answer; 1 already settled (snapshot or 409), not pending, window closed, terminal answered, another side's answer used (naming it), or no settlement; 2 a 400 |
 | `sminos answer <member> <request> <answer>…` | As `decide`, with `allow` and `updatedInput.answers`: one answer per question, in order. An answer is an option's number or label (any case), a multi-select's labels comma-separated, or free text | exit 4 | as `decide`; 2 also for a count that does not match the questions, or a request that asks no question |
 
+#### M4 extension (as reviewed clean after fix waves 1–2)
+
+Every DX5 row M4 built or changed, as it should now read (fix wave 1 included). Rows not
+listed stand as M1–M3 left them. Changed rows are marked **[M4]**.
+
+##### The child's hello [M4]
+
+`{"op": "hello", session, pid, socket, protocol: 1, kept, nonce, seed}`:
+
+- **`nonce`** **[M4, fix wave 1]**: minted by this child, said only in its hello. Every
+  `POST /events` carries it as `X-Bridge-Nonce`; a post without it, or with another, gets
+  409 and changes nothing (no cut, override, delivered, readiness or subscription moves).
+  A mod whose post gets 409 under the nonce it still holds stops for good: it posts nothing
+  more, its heartbeat stops, its child is stopped and never respawned. (A module reload's
+  old instance is fenced off this way. A 409 under an older nonce, from the module's own
+  child restarting, is only a lost post.)
+- **`seed`** **[M4, fix wave 1]**: `{"main": <uuid>, "<agentId>": <uuid>, …}`, each loop's
+  last whole row in the session's transcripts (under `CLAUDE_CONFIG_DIR`, or
+  `~/.claude`: `projects/*/<session>.jsonl` and `<session>/subagents/agent-<id>.jsonl`)
+  as the child read them, read backward from the end, a half-written last line passed
+  over. A loop with no row is left out. Read just before the hello is written.
+
+##### Routes
+
+| Route | Built | Body | Answer |
+| --- | --- | --- | --- |
+| `GET /status` | M1, **[M4]** | — | 200 `{session, pid, protocol: 1, socket, started, ready, subscribers, mod: {events, last}}`. **[M4]** `ready`: the mod's first `resync` to this child has been applied |
+| `POST /events` | M1, **[M4]** | the mod's events, with `X-Bridge-Nonce: <the hello's nonce>` | 204; **[M4]** 409 `{error}` without the nonce (the post is another module instance's) |
+| `GET /events` | M1, **[M4]** | — | **[M4]** Held until `ready`, at most 5 s (`SMINOS_BRIDGE_READY_WAIT`), else 503 `{error}`. Then 200 `application/x-ndjson`: the snapshot line, then every event with `n`. **[M4]** The stream ends (the connection closes) when the child applies any resync after its first, or when the subscriber falls 10,000 behind. That is the one discontinuity: a subscriber never sees a `resync` line, and subscribes again for a fresh snapshot |
+
+##### Events (the mod's posts)
+
+| `type` | Built | Fields |
+| --- | --- | --- |
+| `block-row` | M3, **[M4]** | `uuid, turnId, agentId, step, index` — **[M4]** also the response row's **notice**: emitted in the `session.append` hook once the append resolves (the row is written), so notice order is write order within a loop. The child moves the loop's cut to `uuid` in the same step that settles the block |
+| `row-seen` | **[M4]** | `uuid, agentId, door` — the notice of every other row the session keeps, once its append resolves: <ul><li>any door but `response` and `queue`;</li><li>a response row whose block never streamed, the rows of an excluded request (the seed, below) included: nothing of theirs ever streamed;</li><li>door `note` (a plugin's own append) only once kept, never when refused;</li><li>the bridge's own steer row from the append's returned uuid (door `note`), after it is written.</li></ul> None for door `queue`, and none for a `hook_success` with no text (raised but never written by 2.1.300). Rows a plugin's own calls write that pass no hook of the plugin's get none: a compaction the bridge runs, the engine's reload notice |
+| `step` (`phase: "end"`) | M1, **[M4, fix wave 1]** | unchanged fields. **Ordered after every `block-row` of its step**: the engine can append a response row after the request's result (it withholds a refusal or max-output row until the stream is done, and closes a block the stream left open), so the mod holds the end until each block that streamed has its row named, at most 1 s (`STEP_END_WAIT_MS`), and posts it before anything later of its loop (the next request, the turn's end, the subagent's stop). **[fix wave 2]** Once a step's end is out, whichever released it, the step's pairing is closed: a row of it that comes later is named by `row-seen`, never a `block-row` after its step's end. DX4's `step-end` relies on this order. **The child removes the step's whole message from `streaming` at its end, under the lock that applies events (as M1 said; M3's per-block settling did not change it), whether or not a `block-row` came for each block**, so a block aborted mid-response is in no later snapshot; a turn's `complete` removes its messages too |
+| `export` | **[M4]** | `records: [{type: "assistant"\|"user", uuid, message: {content}}]` — main-loop rows as the transcript keeps them: <ul><li>a text row that may hold a mark (its text blocks; not sent past 65,536 characters);</li><li>an async ask's call row with its result row.</li></ul> **Consumed by the child, never handed to subscribers.** The child appends their host events to the project's log with `sminos.export_live`: the Stop hook's writer, `host_events` and `(kind, src)` dedup (`message`: `<row uuid>#<span index>`; `question`: the call id). Membership on sight; one export at a time, in order, off the stream's lock |
+| `resync` | M1–M3, **[M4]** | gains **`cut`**: `{"main": <uuid>\|null, "<agentId>": <uuid>, …}`, each loop's last notice, seeded as below. `null` (or a loop it does not name): this loop had no rows before the module loaded, and none noticed since. The child replaces its cut with it. A loop it does not name is gone |
+
+##### Subscription (`GET /events`)
+
+- **[M4, fix wave 2] No snapshot before the seeded resync.**
+  - Every child serves no snapshot until the mod's first `resync` to it has been applied:
+    on a first start, after a module reload, and for a replacement child (one that ended
+    and was respawned, or one for a new id after `/clear`). Only a `resync` makes a child
+    ready (`_apply`, then `ready = True`). Other posts, the `session` start included, do
+    not. A post refused by the fence (409) is never applied.
+  - Meanwhile `GET /events` is held with no response line at all, for at most 5 s
+    (`SMINOS_BRIDGE_READY_WAIT`), then answered 503 `{"error": "the session's state has
+    not reached its bridge yet"}`. `GET /status` answers `ready: false`. `sminos watch` and
+    the control verbs retry a 503 within their reconnect window.
+  - That first resync always carries every loop's cut. At a module's first hello the mod
+    adopts the hello's `seed` before it queues `[session start, resync]`. A replacement
+    child gets the module's current cut (seeded at the first hello, moved by notices since).
+    After `/clear` the cut is cleared, so each loop is `null`: the new id had no rows.
+  - The wait runs from the child's spawn to its hello (the Python start, then the tail
+    read), then to the mod's first post (one post in flight, so it can wait behind a post
+    to the path that is failing or refused). Pinned by bridge_order.py `readiness`: the
+    request is held, then opens with a snapshot whose `cut` is the resync's; with a 1 s
+    wait it gets 503. Also pinned by the mod's "the first hello's seed is each loop's
+    cut".
+
+- **Line 1, the snapshot** gains **`"cut": {"main": <uuid>|null, "<agentId>": <uuid>, …}`**
+  **[M4]**. It is each loop's last notice applied, taken under the lock that applies events
+  and guards `streaming`. Every row at or before a loop's cut has had its notice applied,
+  so no block in `streaming` has its row at or before the cut.
+
+##### The seed rule [M4, fix wave 1] (for DC7)
+
+Each loop's cut is seeded at load, so `null` means only "this loop had no rows before the
+module loaded":
+
+- A loop that **pre-dates the module** — after a **module reload**, in a **resumed
+  session**, or a **subagent already running at load** — holds rows no notice of this
+  module named. Its first cut is its transcript tail, the hello's `seed` (unless the mod
+  noticed a row of it before the hello: the notice wins, and the loop's rows past the seed
+  are each noticed in turn).
+- In such a loop, a model request whose step began before the mod read the hello (the
+  hello is written after the tail read returns, so this is stricter than the read's
+  completion) **never enters `streaming`**: its chunks reach no subscriber, as for a
+  message that began before the child. It surfaces only through its rows, at or before
+  the seed in history, or past the cut and released live. Its rows are named by
+  `row-seen`, never `block-row`, since nothing of theirs streamed. Accepted cost: no
+  partial text for a message streaming at a module load.
+- A loop the mod **saw from its first row** takes no seed and holds nothing back: the main
+  loop of a session the module started with (no message in `$.session.messages()` at
+  `session.start`), and a subagent whose `agent.spawn` the mod saw. Its cut is its notices
+  alone, so a fresh `--bg` job or seat streams its first reply.
+- Invariant: no block of a loop enters `streaming` before that loop's cut is seeded, and
+  no block in `streaming` has its row at or before the cut.
+
+##### The consumer rule [M4] (DX5's, for DC7)
+
+As the plan's Decision Log states it (M4 review, agreed with the composite's writer), with
+fix wave 2's precision that the 2 s run from when each row was first seen on disk (so rows
+written together come out together, not 2 s apart):
+
+> History waits until each loop's cut row is on disk (5 s, else a discontinuity) and reads
+> up to and including it; live, disk rows are emitted strictly in disk order, a row past
+> the cut released on whichever comes first — its own notice, a notice for any later row
+> of the same loop (a row passed over is unnamed), or 2 s after it was first seen on disk
+> with neither — and every later row waits behind it. A notice whose row is not on disk within 5 s, and a `block-row` for
+> a uuid already released unnamed, end the subscription; a `row-seen` for an already
+> released uuid is ignored.
+
+**Notice order is the engine's append order, not strictly disk order.** The engine's disk
+writer can put a row ahead of its own parentUuid chain within one batch (2.1.300, observed
+in a first prompt's attachments: `agent_listing_delta` written before the `environment` and
+`model` rows it follows in the chain). The hook's `session.append` resolves before the
+write, which the REPL does not await. The rule absorbs it: the passed-over row is
+released unnamed, and its late `row-seen` is ignored.
+
+**The guarantee DC7 relies on:** a response row's `block-row` is never preceded by a
+notice for a row written after it on disk. The engine writes response rows one at a time
+while the request streams, each append awaited. The live walk fails on any such break,
+and reports `row-seen` breaks by kind and count.
+
+**Step end after its block-rows:** a step's `block-row`s are posted before its `step`
+end (the events table above). The hold is at most 1 s, and is released early by the
+loop's next request, the turn's end, or the subagent's stop. A response row follows the
+request's result in three engine cases (2.1.300): a refusal or max-output row the loop
+withholds until the stream is done; the `turn.step` tail closing a block a hook left open
+(no `stop` chunk); and a hook answering without a request (its rows released after the
+chain ends).
+
+With the seed: a loop whose cut is `null`, or that the cut does not name, has an empty
+history (it had no rows before the module loaded), and all its rows are live. A row is a
+transcript line carrying a `uuid`. The stream ending is the other discontinuity: the reader
+subscribes again and starts over from the fresh snapshot.
+
+Known rows with no notice, released unnamed (on the next notice of their loop, or 2 s when
+last on disk): the bridge's own compaction rows (boundary, summary, the attachments after),
+and the engine's line for a module reload.
+
+`tests/sminos/bridge_order.py` (`Consumer`) is the reference implementation, run against
+the real child.
+
+##### `sminos watch` and the verbs [M4]
+
+- `watch` follows a stream that ended while the endpoint still answers:
+  - the same child: "· the session's state was sent again; resubscribed";
+  - another child: "· the bridge restarted; reconnected";
+  - `--json` gets the fresh snapshot line.
+  - A 503 (not ready) is retried within the reconnect window.
+- `decide`, `answer` and `compact` follow the same child across an ended stream, and read a
+  settlement that fell in between from the fresh snapshot's `settled`. Their first-snapshot
+  wait is 8 s.
+
+##### Endpoint [M4]
+
+The stale rule reads: a socket file refused 3 times, 0.1 s apart, is stale (a listener with
+a full backlog refuses too). The child's listen backlog is 128.
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
@@ -895,6 +1052,94 @@ Order, batching (≤ 500) and one post in flight are unchanged.
   before the first resync, and a response row's notice delayed past the 2 s
   bound.
   Date/Author: 2026-10-15, controller with the composite's writer.
+- Decision (M4 review, agreed with the composite's writer): Notices follow
+  the write, and the consumer follows the disk. Superseding the entry
+  above where they differ. A notice posted at hook entry did not match the
+  engine's write order (live: a session's first prompt was noticed before
+  its environment attachment but written after it), and the reference
+  consumer emitted unnamed compaction rows behind a later prompt. So:
+  1. The mod posts a row's notice after `next()` resolves; notice order is
+     write order within a loop. The cut and its invariant are unchanged.
+  2. The consumer rule: history waits until each loop's cut row is on disk
+     (5 s, else a discontinuity) and reads up to and including it; live,
+     disk rows are emitted strictly in disk order, a row past the cut
+     released on whichever comes first — its own notice, a notice for any
+     later row of the same loop (a row passed over is unnamed), or 2 s
+     with neither — and every later row waits behind it. A notice whose
+     row is not on disk within 5 s, and a `block-row` for a uuid already
+     released unnamed, end the subscription; a `row-seen` for an already
+     released uuid is ignored.
+  3. The live walk fails on any break between notice order and disk order
+     and records the largest flush-to-notice lag it sees, while chunks
+     stream too; a lag near the 2 s window raises the window.
+  4. Posts are fenced to the module instance that read the child's
+     `hello`: the child mints a nonce there and refuses (409) any post
+     without it, so an old module's in-flight dispatch after a reload
+     cannot roll back the cut, the model override, or the delivery
+     high-water mark.
+  Date/Author: 2026-10-15, controller with the composite's writer, from
+  M4's review.
+- Decision (M4, from DC7's M1 review, ruled by the composite's writer):
+  Each loop's cut is seeded at load. A `null` cut sent history to EOF, so
+  a row flushed after the module loaded but before its notice could sit in
+  the snapshot's history while its block was still in `streaming`. Now the
+  mod's first `resync` reports each loop's cut as the last row that loop
+  had when the module loaded; `null` means only "this loop had no rows".
+  The invariant: no block of a loop enters `streaming` before that loop's
+  cut is seeded, and no block in `streaming` has its row at or before the
+  cut. A seed row not yet on disk is covered by the consumer's 5 s wait for
+  a cut row. The engine's message list (`$.session.messages()`) carries no
+  row uuids, so the seed cannot come from it; the means are M4's executor's
+  to choose against the invariant, proven by a race test (a row flushed
+  between the module's load and the seed). Ruled the same day: the seed is
+  each loop's transcript tail, and a message whose step began before the
+  tail read *completed* never enters `streaming`; its chunks reach no
+  subscriber, and it surfaces only through its rows (at or before the seed
+  in history, or past the cut and released live, its `block-row` settling
+  nothing). Accepted cost: no partial text for a message streaming at a
+  module load. Tests: the race, and a message beginning while the read is
+  in flight (excluded). Refined the same day: the boundary the mod uses is
+  its receipt of the child's `hello`, which carries the seed (strictly more
+  conservative than the read's completion); an excluded message's rows are
+  named by `row-seen`, not `block-row`. A cut of `null` means "this loop had
+  no rows before the module loaded": a loop the mod observed from its first
+  row is seeded null and nothing in it is excluded, so a fresh session's
+  first reply streams. Only three cases get a tail seed and the exclusion:
+  a module reload, a resumed session, and a subagent already running at
+  load. Kept conservative if the engine loads the module after a `--bg`
+  job's first prompt row; M4 records which.
+  Date/Author: 2026-10-15, controller with the composite's writer.
+- Decision (M4): Live export. The bridge writes the same `message` and
+  `question` events the Stop hook's `sminos record` writes — same writer,
+  same shapes, same `(kind, src)` (`<row uuid>#<span>` for a message, the
+  call's tool-use id for a question), same extraction code — from the row
+  as kept at `session.append` (main loop only), not from `turn.step`
+  chunks as M4's text said: the `src` needs the row's uuid, which only the
+  append has. The child joins the session on sight as the hook does (no
+  `migrate`), so a fresh session's first turn exports live. `answered`
+  stays the Stop hook's. A text over 65,536 characters is left to Stop.
+  The child consumes `export` and never fans it out.
+  Date/Author: 2026-10-15, M4 executor.
+- Decision (M4, after review): Engine write order and what DC7 may rely
+  on. The engine's disk writer can put a row ahead of its own parentUuid
+  chain within one batch (a first prompt's attachments, one millisecond
+  apart), so notice order is the engine's append order, not strictly disk
+  order; the release rule absorbs it (a passed-over row is released
+  unnamed, its late `row-seen` ignored). The guarantee: a response row's
+  `block-row` is never preceded by a notice for a row written after it on
+  disk. A step's `block-row`s precede its `step` end (held at most 1 s,
+  released early by the loop's next request, the turn's end, or the
+  subagent's stop); once a step's end is published its pairing is closed
+  and a later row of it is a `row-seen`. The endpoint drops all of a
+  step's blocks from `streaming` at its end. The consumer times every disk
+  row from when it was first seen. `GET /events` is held, with no snapshot,
+  until the mod's first resync to that child (every loop's cut seeded) is
+  applied — first start, module reload, replacement child alike — 503 after
+  5 s. The live walk fails only on a `block-row` break and reports
+  `row-seen` quirks. Measured: worst flush-to-notice lag 0.68 s at load
+  average ~220; live thinking chunks carry `text: ""` and no signature.
+  Date/Author: 2026-10-15, controller with M4 executor and the composite's
+  writer.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
   `scripts/bump-version.sh` above the first; no version number is merged by

@@ -5048,6 +5048,12 @@ if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: pr
 if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
   pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
   fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
+  fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
+  fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

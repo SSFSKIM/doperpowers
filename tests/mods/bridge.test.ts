@@ -2,14 +2,27 @@ import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
 import { ASK_TOOL } from '../../hooks/mods/ask'
-import { BACKGROUND_WINDOW_MS, HEARTBEAT_MS, RECORD_WAIT_MS, STEER_WAKE, TRANSCRIPT_RETRY_MS, TEXT_CAP, onAskNote, registerBridge, resetBridge, splitLines } from '../../hooks/mods/bridge'
+import {
+  BACKGROUND_WINDOW_MS,
+  HEARTBEAT_MS,
+  RECORD_WAIT_MS,
+  STEER_WAKE,
+  STEP_END_WAIT_MS,
+  TRANSCRIPT_RETRY_MS,
+  TEXT_CAP,
+  onAskNote,
+  registerBridge,
+  resetBridge,
+  splitLines,
+} from '../../hooks/mods/bridge'
 
 tier('user')
 
 const SID = '5b000001-0000-4000-8000-00000000005b'
 const SOCK = `/tmp/s/bridge/${SID}.sock`
-const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>) =>
-  `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, ...(kept !== undefined && { kept }) })}\n`
+const NONCE = 'n0'
+const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>, nonce = NONCE, seed?: Record<string, string>) =>
+  `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, nonce, ...(kept !== undefined && { kept }), ...(seed !== undefined && { seed }) })}\n`
 const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
 
 describe('splitLines', () => {
@@ -76,7 +89,18 @@ function fakeChild(argv: readonly string[]) {
  * spawned children, posts (each released by the test when `hold` is set),
  * timers fired by hand.
  */
-function harness(options: { env?: Record<string, string>; hold?: boolean; failAt?: number[]; holdAppend?: boolean; taskStopFails?: string[]; denyAppend?: string } = {}) {
+function harness(
+  options: {
+    env?: Record<string, string>
+    hold?: boolean
+    failAt?: number[]
+    holdAppend?: boolean
+    taskStopFails?: string[]
+    denyAppend?: string
+    /** What `$.session.messages()` answers at load: none, a session the module starts with; some, a reload or a resume. */
+    messages?: unknown[]
+  } = {},
+) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
@@ -85,7 +109,16 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     return { catch: () => undefined }
   }) as unknown as On
   const children: ReturnType<typeof fakeChild>[] = []
-  const posts: { url: string; socketPath?: string; events: Record<string, unknown>[]; release: () => void; fail: () => void }[] = []
+  const posts: {
+    url: string
+    socketPath?: string
+    nonce?: string
+    events: Record<string, unknown>[]
+    release: () => void
+    fail: () => void
+    /** The child answers 409: the post is not this module instance's. */
+    refuse: () => void
+  }[] = []
   /** The engine's clock (`$.clock.now`), moved by the test. */
   let clockNow = 1_000_000
   /** While held (`holdClock`), `$.clock.now` waits. */
@@ -109,6 +142,7 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       id: async () => session,
       model: async () => 'claude-haiku',
       version: async () => ({ version: '2.1.300' }),
+      messages: async () => options.messages ?? [],
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
       append: (args: unknown) => {
         calls.push({ op: 'append', args })
@@ -152,7 +186,7 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       },
     },
     http: {
-      fetch: (url: string, init: { socketPath?: string; body?: string }) =>
+      fetch: (url: string, init: { socketPath?: string; body?: string; headers?: Record<string, string> }) =>
         new Promise((resolve, reject) => {
           if (url.includes('/requests/')) {
             const respond = (status: number, body?: unknown) =>
@@ -162,8 +196,9 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
           }
           const release = () => resolve({ status: 204, ok: true, headers: {}, text: '' })
           const fail = () => reject(new Error('refused'))
+          const refuse = () => resolve({ status: 409, ok: false, headers: {}, text: '{"error":"another module\'s"}' })
           const n = posts.length
-          posts.push({ url, socketPath: init.socketPath, events: JSON.parse(init.body ?? '[]'), release, fail })
+          posts.push({ url, socketPath: init.socketPath, nonce: init.headers?.['x-bridge-nonce'], events: JSON.parse(init.body ?? '[]'), release, fail, refuse })
           if (!options.hold) {
             ;(options.failAt?.includes(n) ? fail : release)()
           }
@@ -278,9 +313,13 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     ) as Promise<Record<string, unknown>>
   let rows = 0
   /** A row the session keeps, through the session.append hooks. */
-  const append = async (door: string, message: Record<string, unknown>, extra: { uuid?: string; agentId?: string; origin?: Record<string, unknown> } = {}) => {
+  const append = async (
+    door: string,
+    message: Record<string, unknown>,
+    extra: { uuid?: string; agentId?: string; origin?: Record<string, unknown>; next?: (inner: Record<string, unknown>) => Promise<unknown> } = {},
+  ) => {
     const e = { door, message, uuid: extra.uuid ?? `u${++rows}`, origin: extra.origin ?? { kind: 'engine' }, ...(extra.agentId !== undefined && { agentId: extra.agentId }) }
-    await hook('session.append', { door })(engine, e, async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid }))
+    await hook('session.append', { door })(engine, e, extra.next ?? (async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid })))
     await settle()
   }
   /** A model response row holding one block. */
@@ -421,6 +460,61 @@ describe('the child', () => {
     expect(h.timers.filter((t) => t.kind === 'after').length).toBe(0)
   })
 
+  test("every post carries the nonce of the child's hello; a restarted child's posts carry its own", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.settle()
+    expect(h.posts.length).toBeGreaterThan(1)
+    expect(h.posts.every((p) => p.nonce === NONCE)).toBe(true)
+    const before = h.posts.length
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.find((t) => t.kind === 'after')!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    expect(h.posts.slice(before).map((p) => p.nonce)).toEqual(['n1'])
+    expect(h.posts[before]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+  })
+
+  test('a post refused as another module instance\'s (409, a reload took the session) stops this one for good', async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    h.posts[0]!.refuse()
+    await h.settle()
+    await h.turn('t1')
+    for (const t of h.timers) {
+      if (!t.cancelled) {
+        t.fn()
+      }
+    }
+    await h.settle()
+    // Nothing more is posted, resync included; no heartbeat; no child respawned or started.
+    expect(h.posts.length).toBe(1)
+    expect(h.timers.find((t) => t.kind === 'every')!.cancelled).toBe(true)
+    expect(h.children.length).toBe(1)
+    expect(h.children[0]!.killed).toBe(true)
+  })
+
+  test("a 409 under a nonce the module has since replaced (its own child restarted) is a lost post: the new child's posts go on", async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.find((t) => t.kind === 'after')!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    h.posts[0]!.refuse()
+    await h.settle()
+    h.timers.filter((t) => t.kind === 'after' && !t.cancelled).at(-1)!.fn()
+    await h.settle()
+    expect(h.posts.length).toBe(2)
+    expect(h.posts[1]!.nonce).toBe('n1')
+    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+  })
+
   test('the heartbeat carries the turn state', async () => {
     const h = harness()
     await h.ready()
@@ -497,6 +591,8 @@ describe('the stream', () => {
     const sent = h.ofType('chunk')
     expect(sent.map((e) => e.chunkIndex)).toEqual([0, 1, 2, 3])
     expect(sent[2]).toMatchObject({ turnId: 't1', agentId: null, step: 2, chunkIndex: 2, chunk: { kind: 'text', index: 1, text: 'lo' } })
+    // No row came for its blocks: the step's end waits for them, at most this long.
+    await h.fire(STEP_END_WAIT_MS)
     expect(h.ofType('step').map((e) => e.phase)).toEqual(['start', 'end'])
     expect(h.ofType('step')[0]).toMatchObject({ model: 'm', effort: 'high', messageCount: 4 })
     expect(h.ofType('step')[1]).toMatchObject({ stopReason: 'end_turn' })
@@ -1572,5 +1668,397 @@ describe('requests from outside: questions', () => {
     await h.settle()
     expect(h.ofType('raised').map((e) => e.request)).toEqual(['toolu_a1'])
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_a1', winner: 'terminal', outcome: 'answered', by: 'terminal' })])
+  })
+})
+
+describe('the export to the host', () => {
+  const FRUIT = { question: 'Which fruit?', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple', description: 'a' }, { label: 'Mango', description: 'm' }] }
+  const WAITING = 'Your questions are waiting for the human.'
+  const askUse = (id: string, isAsync: boolean) => ({ type: 'tool_use', id, name: ASK_TOOL, input: { questions: [FRUIT], async: isAsync } })
+  /** The ask tool's result row, as the engine keeps it. */
+  const askResult = (h: ReturnType<typeof harness>, id: string, uuid: string) =>
+    h.append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: WAITING }] }, { uuid, origin: { kind: 'tool', tool: ASK_TOOL } })
+
+  test("a main-loop text row that may hold a mark goes to the child whole, as the transcript keeps it, keyed by the row's uuid", async () => {
+    const h = harness()
+    await h.ready()
+    const text = 'Reading.\n<message>done with the parser</message>\nAnd `<message>a literal</message>`.'
+    await h.responseRow({ type: 'text', text }, { uuid: 'r-m' })
+    expect(h.ofType('export')).toEqual([
+      expect.objectContaining({ type: 'export', records: [{ type: 'assistant', uuid: 'r-m', message: { content: [{ type: 'text', text }] } }] }),
+    ])
+  })
+
+  test("every alias of the mark, and the form the streaming hook draws, may hold one; the child's parser decides", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow({ type: 'text', text: 'note <insight>this</insight>' }, { uuid: 'r-alias' })
+    await h.responseRow({ type: 'text', text: '\x1b[1;32mmessage\x1b[0m drawn' }, { uuid: 'r-drawn' })
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid)).toEqual(['r-alias', 'r-drawn'])
+  })
+
+  test("a row with no mark, a thinking row, and a subagent's row are not exported (the Stop hook reads the main chain only)", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow({ type: 'text', text: 'plain working text' })
+    await h.responseRow({ type: 'thinking', thinking: '<message>thought</message>', signature: 's' })
+    await h.responseRow({ type: 'text', text: '<message>from a subagent</message>' }, { agentId: 'a7' })
+    expect(h.ofType('export')).toEqual([])
+  })
+
+  test("a text past the events' cap is left to the Stop hook's export, which reads it whole, and said so in the debug log", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow({ type: 'text', text: `<message>${'x'.repeat(TEXT_CAP)}</message>` }, { uuid: 'r-long' })
+    expect(h.ofType('export')).toEqual([])
+    expect(h.logs.some((l) => l.includes('r-long'))).toBe(true)
+  })
+
+  test('an async ask goes with its result, both rows in one export, whichever row the engine keeps first', async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(askUse('toolu_q1', true), { uuid: 'r-use1' })
+    expect(h.ofType('export')).toEqual([])
+    await askResult(h, 'toolu_q1', 'r-res1')
+    await askResult(h, 'toolu_q2', 'r-res2')
+    await h.responseRow(askUse('toolu_q2', true), { uuid: 'r-use2' })
+    const result = (id: string, uuid: string) => ({ type: 'user', uuid, message: { content: [{ type: 'tool_result', tool_use_id: id, content: WAITING }] } })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [{ type: 'assistant', uuid: 'r-use1', message: { content: [askUse('toolu_q1', true)] } }, result('toolu_q1', 'r-res1')],
+      [{ type: 'assistant', uuid: 'r-use2', message: { content: [askUse('toolu_q2', true)] } }, result('toolu_q2', 'r-res2')],
+    ])
+  })
+
+  test("a blocking ask, an async one whose result never came, and another tool's result are not exported", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(askUse('toolu_b', false), { uuid: 'r-b' })
+    await askResult(h, 'toolu_b', 'r-bres')
+    await h.responseRow(askUse('toolu_open', true), { uuid: 'r-open' })
+    await h.resultRow('toolu_bash', 'a Bash result')
+    expect(h.ofType('export')).toEqual([])
+  })
+})
+
+describe('row notices and the cut', () => {
+  const notices = (h: ReturnType<typeof harness>) =>
+    h.events().filter((e) => e.type === 'block-row' || e.type === 'row-seen').map((e) => `${String(e.type)}:${String(e.uuid)}`)
+
+  test("every row is noticed once it is written (its append resolved), once: a response row by its block-row, any other by row-seen, with its loop and door", async () => {
+    const h = harness()
+    await h.ready()
+    let posted: string[] = []
+    const next = async (inner: Record<string, unknown>) => {
+      await h.settle()
+      posted = notices(h)
+      return { message: inner.message, uuid: inner.uuid }
+    }
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'Hi' }], async () => {
+      await h.append('response', { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Hi' }] }, { uuid: 'r-text', origin: { kind: 'model', model: 'm' }, next })
+      expect(posted).toEqual([])
+      expect(notices(h)).toEqual(['block-row:r-text'])
+    })
+    await h.append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] }, { uuid: 'r-res', next })
+    expect(posted).toEqual(['block-row:r-text'])
+    await h.append('attachment', { type: 'attachment', name: 'nested_memory', role: 'user', content: [] }, { uuid: 'r-att', agentId: 'a7' })
+    await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, { uuid: 'r-prompt' })
+    expect(notices(h)).toEqual(['block-row:r-text', 'row-seen:r-res', 'row-seen:r-att', 'row-seen:r-prompt'])
+    expect(h.ofType('row-seen')).toEqual([
+      expect.objectContaining({ uuid: 'r-res', agentId: null, door: 'tool-result' }),
+      expect.objectContaining({ uuid: 'r-att', agentId: 'a7', door: 'attachment' }),
+      expect.objectContaining({ uuid: 'r-prompt', agentId: null, door: 'prompt' }),
+    ])
+  })
+
+  test("notice order is write order: an append the engine began first but wrote second is noticed second (2.1.300: a session's first prompt, written after the attachments announced after it)", async () => {
+    const h = harness()
+    await h.ready()
+    let writePrompt: () => void = () => undefined
+    const prompt = h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, {
+      uuid: 'r-prompt',
+      next: (inner) => new Promise((resolve) => (writePrompt = () => resolve({ message: inner.message, uuid: inner.uuid }))),
+    })
+    await h.append('attachment', { type: 'attachment', name: 'environment', role: 'user', content: [] }, { uuid: 'r-env' })
+    writePrompt()
+    await prompt
+    await h.settle()
+    expect(notices(h)).toEqual(['row-seen:r-env', 'row-seen:r-prompt'])
+  })
+
+  test("a step's end follows every block-row of its step: one the engine appends after the request's result (a refusal or truncation row it withheld) holds the end until it is named", async () => {
+    const h = harness()
+    await h.ready()
+    const order = () => h.events().filter((e) => e.type === 'block-row' || (e.type === 'step' && e.phase === 'end')).map((e) => `${String(e.type)}:${String(e.step)}`)
+    // The usual path: the row is appended while the request streams.
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'a' }], async () => {
+      await h.responseRow({ type: 'text', text: 'a' }, { uuid: 'r-a' })
+    })
+    expect(order()).toEqual(['block-row:0', 'step:0'])
+    // A row withheld until the stream is done.
+    await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [{ kind: 'text', index: 0, text: 'b' }, { kind: 'tool', index: 1, id: 'toolu_1', name: 'Bash' }], async () => {
+      await h.responseRow({ type: 'text', text: 'b' }, { uuid: 'r-b' })
+    })
+    expect(order()).toEqual(['block-row:0', 'step:0', 'block-row:1'])
+    await h.responseRow({ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} }, { uuid: 'r-tool' })
+    expect(order()).toEqual(['block-row:0', 'step:0', 'block-row:1', 'block-row:1', 'step:1'])
+  })
+
+  test("a step's held end goes out after STEP_END_WAIT_MS with a block whose row never came, or before the loop's next request, whichever is first", async () => {
+    const h = harness()
+    await h.ready()
+    const ends = () => h.ofType('step').map((e) => `${String(e.phase)}:${String(e.step)}`)
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'cut short' }])
+    expect(ends()).toEqual(['start:0'])
+    await h.fire(STEP_END_WAIT_MS)
+    expect(ends()).toEqual(['start:0', 'end:0'])
+    // Its block, with no row, is in no later resync.
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.find((t) => t.kind === 'after' && t.ms === 1000 && !t.cancelled)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.streaming).toEqual([])
+    await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [{ kind: 'text', index: 0, text: 'again' }])
+    await h.step({ turnId: 't1', index: 2, model: 'm', messageCount: 5 }, [])
+    expect(ends()).toEqual(['start:0', 'end:0', 'start:1', 'end:1', 'start:2', 'end:2'])
+    await h.fire(STEP_END_WAIT_MS)
+    expect(ends()).toEqual(['start:0', 'end:0', 'start:1', 'end:1', 'start:2', 'end:2'])
+  })
+
+  test("once a step's end is out, its pairing is closed: a row of it that comes later is named by row-seen, after a timed-out hold or an end the turn's completion released", async () => {
+    const h = harness()
+    await h.ready()
+    const named = () => h.events().filter((e) => e.type === 'block-row' || e.type === 'row-seen' || (e.type === 'step' && e.phase === 'end')).map((e) => `${String(e.type)}:${String(e.uuid ?? e.step)}`)
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'late' }])
+    await h.fire(STEP_END_WAIT_MS)
+    await h.responseRow({ type: 'text', text: 'late' }, { uuid: 'late-row' })
+    expect(named()).toEqual(['step:0', 'row-seen:late-row'])
+    await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [{ kind: 'text', index: 0, text: 'ended' }])
+    await h.complete('t1')
+    await h.responseRow({ type: 'text', text: 'ended' }, { uuid: 'after-turn' })
+    expect(named()).toEqual(['step:0', 'row-seen:late-row', 'step:1', 'row-seen:after-turn'])
+  })
+
+  test('a response row whose block never streamed (a server tool) is noticed by row-seen; a queue record, no row of the conversation, by none', async () => {
+    const h = harness()
+    await h.ready()
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'a' }], async () => {
+      await h.responseRow({ type: 'server_tool_use', id: 'srv_1', name: 'web_search' }, { uuid: 'r-srv' })
+      await h.responseRow({ type: 'text', text: 'a' }, { uuid: 'r-a' })
+    })
+    await h.append('queue', { type: 'user', role: 'user', content: [{ type: 'text', text: 'later' }] }, { uuid: 'q-1' })
+    expect(notices(h)).toEqual(['row-seen:r-srv', 'block-row:r-a'])
+  })
+
+  test("a hook's success with nothing to say, which the engine raises but never writes to the transcript, is named by none; one with text is", async () => {
+    const h = harness()
+    await h.ready()
+    await h.append('hook-context', { type: 'attachment', name: 'hook_success', role: 'user', content: [] }, { uuid: 'r-empty' })
+    await h.append('hook-context', { type: 'attachment', name: 'hook_success', role: 'user', content: [{ type: 'text', text: ' ' }] }, { uuid: 'r-blank' })
+    await h.append('hook-context', { type: 'attachment', name: 'hook_success', role: 'user', content: [{ type: 'text', text: 'context' }] }, { uuid: 'r-said' })
+    await h.append('hook-context', { type: 'attachment', name: 'hook_permission_decision', role: 'user', content: [] }, { uuid: 'r-mark' })
+    expect(notices(h)).toEqual(['row-seen:r-said', 'row-seen:r-mark'])
+  })
+
+  test("another plugin's own append (door note), which a hook beneath may refuse, is noticed once it is kept, and never when refused", async () => {
+    const h = harness()
+    await h.ready()
+    let before: string[] = []
+    await h.append('note', { type: 'user', role: 'user', content: [{ type: 'text', text: 'n' }] }, {
+      uuid: 'r-note',
+      next: async (inner) => {
+        await h.settle()
+        before = notices(h)
+        return { message: inner.message, uuid: inner.uuid }
+      },
+    })
+    await h.append('note', { type: 'user', role: 'user', content: [{ type: 'text', text: 'm' }] }, { uuid: 'r-refused', next: async () => ({ deny: 'no' }) })
+    expect(before).toEqual([])
+    expect(notices(h)).toEqual(['row-seen:r-note'])
+  })
+
+  test("the bridge's own steer row, which its hook does not see, is noticed from the append's returned uuid", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'steer', text: 'also print the date' })
+    expect(h.ofType('row-seen')).toEqual([expect.objectContaining({ uuid: 'row-1', agentId: null, door: 'note' })])
+  })
+
+  test("every resync carries the cut, each loop's last notice (main null when the loop had no rows); a /clear starts it anew", async () => {
+    const h = harness()
+    await h.ready()
+    expect(h.ofType('resync')[0]).toMatchObject({ cut: { main: null } })
+    await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, { uuid: 'r-1' })
+    await h.append('attachment', { type: 'attachment', name: 'x', role: 'user', content: [] }, { uuid: 'r-sub', agentId: 'a7' })
+    await h.append('tool-result', { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] }, { uuid: 'r-2' })
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 'r-2', a7: 'r-sub' } })
+    h.setSession('5b000002-0000-4000-8000-00000000005b')
+    await h.hook('session.end')(h.engine, { reason: 'clear' }, async () => undefined)
+    for (let i = 0; i < 5; i++) {
+      await h.fire(100)
+    }
+    h.children.at(-1)!.write(hello('5b000002-0000-4000-8000-00000000005b', '/tmp/s/bridge/5b000002-0000-4000-8000-00000000005b.sock'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: null } })
+    expect(Object.keys(h.ofType('resync').at(-1)!.cut as object)).toEqual(['main'])
+  })
+})
+
+describe('the seed: each loop cut at load', () => {
+  /** A module loaded into a session that already had its conversation (a reload, a resume). */
+  const RELOADED = { messages: [{ role: 'user', text: 'earlier' }] }
+  const notices = (h: ReturnType<typeof harness>) =>
+    h.events().filter((e) => e.type === 'block-row' || e.type === 'row-seen').map((e) => `${String(e.type)}:${String(e.uuid)}`)
+  const streamed = (h: ReturnType<typeof harness>, turnId: string) => h.events().filter((e) => (e.type === 'chunk' || e.type === 'step') && e.turnId === turnId)
+  /** A model request whose chunks come as the test releases them, with its hook's iteration running meanwhile. */
+  const openStep = (h: ReturnType<typeof harness>, e: Record<string, unknown>) => {
+    const queued: Record<string, unknown>[] = []
+    let wake: (() => void) | undefined
+    let isDone = false
+    const result = { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    const next = () => {
+      const g = (async function* () {
+        for (;;) {
+          const c = queued.shift()
+          if (c !== undefined) {
+            yield c
+            continue
+          }
+          if (isDone) {
+            return result
+          }
+          await new Promise<void>((resolve) => (wake = resolve))
+        }
+      })() as AsyncGenerator<Record<string, unknown>, unknown> & { result: Promise<unknown> }
+      g.result = Promise.resolve(result)
+      return g
+    }
+    const gen = h.hook('turn.step', e)(h.engine, e, next) as AsyncGenerator<Record<string, unknown>, unknown>
+    const drained = (async () => {
+      for (;;) {
+        if ((await gen.next()).done) {
+          return
+        }
+      }
+    })()
+    return {
+      chunk: async (c: Record<string, unknown>) => {
+        queued.push(c)
+        wake?.()
+        await h.settle()
+      },
+      end: async () => {
+        isDone = true
+        wake?.()
+        await drained
+        await h.settle()
+      },
+    }
+  }
+
+  test("the first hello's seed is each loop's cut: the last row each loop had when the child read the transcripts", async () => {
+    const h = harness(RELOADED)
+    await h.start()
+    h.children[0]!.write(hello(SID, SOCK, undefined, NONCE, { main: 'm-9', a7: 's-3' }))
+    await h.settle()
+    expect(h.ofType('resync')[0]).toMatchObject({ cut: { main: 'm-9', a7: 's-3' } })
+  })
+
+  test("a loop noticed before the hello keeps its notice (its rows past the seed are each noticed in turn); a later child's hello seeds nothing", async () => {
+    const h = harness(RELOADED)
+    await h.start()
+    await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, { uuid: 'm-10' })
+    h.children[0]!.write(hello(SID, SOCK, undefined, NONCE, { main: 'm-9', a7: 's-3' }))
+    await h.settle()
+    expect(h.ofType('resync')[0]).toMatchObject({ cut: { main: 'm-10', a7: 's-3' } })
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.find((t) => t.kind === 'after')!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1', { main: 'm-77', a8: 's-1' }))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.cut).toEqual({ main: 'm-10', a7: 's-3' })
+  })
+
+  test('the race: a message that began before the seed, its row flushed before the read, never streams; its rows are named by row-seen', async () => {
+    const h = harness(RELOADED)
+    await h.start()
+    await h.turn('t1')
+    const m = openStep(h, { turnId: 't1', index: 0, model: 'm', messageCount: 1 })
+    await m.chunk({ kind: 'text', index: 0, text: 'Hi' })
+    await h.append('response', { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Hi' }] }, { uuid: 'r-hi', origin: { kind: 'model', model: 'm' } })
+    // The child read the transcript after that row was flushed: it is the seed.
+    h.children[0]!.write(hello(SID, SOCK, undefined, NONCE, { main: 'r-hi' }))
+    await h.settle()
+    await m.chunk({ kind: 'tool', index: 1, id: 'toolu_1', name: 'Bash' })
+    await h.append('response', { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} }] }, { uuid: 'r-tool', origin: { kind: 'model', model: 'm' } })
+    await m.end()
+    const resync = h.ofType('resync')[0]!
+    expect(resync).toMatchObject({ streaming: [], cut: { main: 'r-hi' } })
+    expect(streamed(h, 't1')).toEqual([])
+    // r-hi's notice came before the hello: the resync's cut accounts for it.
+    expect(notices(h)).toEqual(['row-seen:r-tool'])
+  })
+
+  test('the inverse: a message beginning while the read is in flight, its rows all written after it, is excluded too', async () => {
+    const h = harness(RELOADED)
+    await h.start()
+    await h.turn('t1')
+    const m = openStep(h, { turnId: 't1', index: 0, model: 'm', messageCount: 1 })
+    h.children[0]!.write(hello(SID, SOCK, undefined, NONCE, { main: 'r-0' }))
+    await h.settle()
+    await m.chunk({ kind: 'text', index: 0, text: 'late' })
+    await h.append('response', { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'late' }] }, { uuid: 'r-late', origin: { kind: 'model', model: 'm' } })
+    await m.end()
+    expect(h.ofType('resync')[0]).toMatchObject({ streaming: [], cut: { main: 'r-0' } })
+    expect(streamed(h, 't1')).toEqual([])
+    expect(notices(h)).toEqual(['row-seen:r-late'])
+    // The next request, begun after the seed, streams and pairs its rows.
+    const { yielded } = await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [{ kind: 'text', index: 0, text: 'on' }], async () => {
+      await h.responseRow({ type: 'text', text: 'on' }, { uuid: 'r-on' })
+    })
+    expect(yielded.length).toBe(1)
+    expect(streamed(h, 't1').map((e) => e.type)).toEqual(['step', 'chunk', 'step'])
+    expect(notices(h)).toEqual(['row-seen:r-late', 'block-row:r-on'])
+  })
+
+  test('a session the module started with (no message at load): its first request, begun before the hello, still streams; no seed is taken for it', async () => {
+    const h = harness()
+    await h.start()
+    await h.turn('t1')
+    const m = openStep(h, { turnId: 't1', index: 0, model: 'm', messageCount: 1 })
+    await m.chunk({ kind: 'text', index: 0, text: 'READY' })
+    h.children[0]!.write(hello(SID, SOCK, undefined, NONCE, { main: 'r-prompt' }))
+    await h.settle()
+    const resync = h.ofType('resync')[0]!
+    expect(resync.cut).toEqual({ main: null })
+    expect(resync.streaming).toEqual([expect.objectContaining({ turnId: 't1', blocks: [expect.objectContaining({ text: 'READY' })] })])
+    await m.chunk({ kind: 'text', index: 0, text: '!' })
+    await h.responseRow({ type: 'text', text: 'READY!' }, { uuid: 'r-ready' })
+    await m.end()
+    expect(h.ofType('chunk').map((e) => (e.chunk as { text: string }).text)).toEqual(['!'])
+    expect(notices(h)).toEqual(['block-row:r-ready'])
+  })
+
+  test('a subagent the module saw spawned streams before the hello and takes no seed; one running at load is seeded and held back', async () => {
+    const h = harness(RELOADED)
+    await h.start()
+    const spawn = { tool_use_id: 'tu', subagentType: 'general-purpose', description: 'd', background: true }
+    await h.hook('agent.spawn', spawn)(h.engine, spawn, async () => ({ model: 'm', agentId: 'a-new' }))
+    const fresh = openStep(h, { turnId: 'ts', index: 0, model: 'm', messageCount: 1, agentId: 'a-new' })
+    const old = openStep(h, { turnId: 'to', index: 0, model: 'm', messageCount: 1, agentId: 'a-old' })
+    await fresh.chunk({ kind: 'text', index: 0, text: 'new' })
+    await old.chunk({ kind: 'text', index: 0, text: 'old' })
+    h.children[0]!.write(hello(SID, SOCK, undefined, NONCE, { main: 'm-1', 'a-new': 's-new', 'a-old': 's-old' }))
+    await h.settle()
+    const resync = h.ofType('resync')[0]!
+    expect(resync.cut).toEqual({ main: 'm-1', 'a-old': 's-old' })
+    expect((resync.streaming as { agentId: string }[]).map((m) => m.agentId)).toEqual(['a-new'])
+    await fresh.end()
+    await old.end()
   })
 })

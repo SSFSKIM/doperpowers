@@ -312,12 +312,22 @@ class Requests(LC.Control):
         wait_for("the question's dialog", 20, lambda: "Apple" in self.pane() and "Mango" in self.pane())
         r = self.cli("answer", NAME, rid, "mango")
         _, s = self.settled(term, rid)
-        self.turn_end(term, t)
+        # The turn the question was asked in: a background subagent's
+        # completion can open a main turn of its own around this prompt, whose
+        # end is not this one's.
+        started = [e for t_e, e in term.seen_at(lambda e: is_main(e, "turn", "start")) if t_e <= at]
+        turn = started[-1].get("turnId") if started else None
+        if turn is not None:
+            wait_for("the question's turn to end", 150, lambda: term.seen(
+                lambda e: is_main(e, "turn", "complete") and e.get("turnId") == turn, t))
+        else:
+            self.turn_end(term, t)
         text = LC.main_text(term, t)
+        turns = [(str(e.get("text"))[:40], e.get("turnId", "")[:8]) for e in term.seen(lambda e: is_main(e, "turn", "start"), t)]
         self.check("a question answered with sminos answer reaches the model (the ask mod loaded)",
                    r.returncode == 0 and self.outcome(s) == "other/answered/cli" and "mango" in text.lower(),
-                   "%s; raised as %s; settled %s; model said %r" % (r.stdout.strip(), raised.get("tool"),
-                                                                    self.outcome(s), text[-100:]))
+                   "%s; raised as %s in turn %s; settled %s; model said %r; main turns since the prompt %s" % (
+                       r.stdout.strip(), raised.get("tool"), turn and turn[:8], self.outcome(s), text[-100:], turns))
         self.idle(self.endpoint())
 
     def async_question(self, term):

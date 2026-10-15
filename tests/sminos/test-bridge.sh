@@ -73,9 +73,32 @@ class Conn(http.client.HTTPConnection):
         self.sock.settimeout(10)
         self.sock.connect(self.path)
 
-def request(path, method, url, body=None):
+# The nonce each child named in its hello, kept by the stand-in that read it:
+# a post of the mod's events carries it, as the mod's do (DX5's fence).
+NONCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonces")
+
+def keep_nonce(hello):
+    os.makedirs(NONCES, exist_ok=True)
+    path = os.path.join(NONCES, os.path.basename(hello["socket"]))
+    with open(path + ".tmp", "w") as f:
+        f.write(hello["nonce"])
+    os.replace(path + ".tmp", path)
+
+def nonce_of(sock):
+    try:
+        with open(os.path.join(NONCES, os.path.basename(sock))) as f:
+            return f.read()
+    except OSError:
+        return None
+
+def request(path, method, url, body=None, nonce=None):
+    headers = {"content-type": "application/json"}
+    if method == "POST" and url == "/events":
+        nonce = nonce if nonce is not None else nonce_of(path)
+        if nonce:
+            headers["X-Bridge-Nonce"] = nonce
     c = Conn(path)
-    c.request(method, url, body=body, headers={"content-type": "application/json"})
+    c.request(method, url, body=body, headers=headers)
     r = c.getresponse()
     return r.status, r.read().decode()
 
@@ -107,6 +130,9 @@ elif op == "fakemod":       # sminos session lines-file
             msg = json.loads(line)
             if msg.get("op") == "hello":
                 sock = msg["socket"]
+                keep_nonce(msg)
+                # As the mod's first post: its copy of the live state (DX5).
+                request(sock, "POST", "/events", json.dumps([{"type": "resync", "turns": [], "streaming": [], "agents": []}]))
                 continue
             if "id" not in msg:
                 continue
@@ -123,7 +149,7 @@ fakemod() { # session lines-file → starts the stand-in, which starts the child
   FAKEMOD=$!
   PIDS+=("$FAKEMOD")
 }
-answers() { ctl get "$1" /status >/dev/null 2>&1; }
+answers() { ctl get "$1" /status 2>/dev/null | grep -q '"ready": true'; }
 child_pid() { ctl get "$1" /status | python3 -c 'import json, sys; print(json.loads(sys.stdin.read().split(" ", 1)[1])["pid"])'; }
 nth_line() { sed -n "$2p" "$1"; }
 field_of() { # json-text dotted.path
@@ -357,6 +383,25 @@ until_true 100 grep -q "three" "$T/h2" || true
 HV2="$(cat "$T/h2")"
 assert_contains "$HV2" "events were lost" "a gap is said in the human view"
 assert_contains "$HV2" "[main] one two three" "and the message is printed whole again from a fresh snapshot, the next chunk on it"
+ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T5'","agentId":null,"reason":"answer"}]' >/dev/null
+
+# A later resync ends every subscription (DX5's one discontinuity): a
+# watcher subscribes again to the same child and goes on from a fresh
+# snapshot; no subscriber is handed the resync itself.
+"$SMINOS" watch "$SID" > "$T/h3" 2>&1 &
+PIDS+=("$!")
+watch_json "$SID" "$T/w12"
+until_true 100 grep -q "watching" "$T/h3" || true
+until_true 100 has_lines "$T/w12" 1 || true
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[]}]' >/dev/null
+until_true 100 grep -q "resubscribed" "$T/h3" || true
+until_true 100 has_lines "$T/w12" 3 || true
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T5'","agentId":null,"text":"after the resync"}]' >/dev/null
+until_true 100 grep -q "after the resync" "$T/h3" || true
+assert_contains "$(cat "$T/h3")" "· the session's state was sent again; resubscribed" "a watcher whose stream a resync ended says so and subscribes again"
+assert_contains "$(cat "$T/h3")" "» after the resync" "and follows on"
+assert_equals "$(grep -c '"type": "snapshot"' "$T/w12")" "2" "with --json, the fresh snapshot follows"
+assert_not_contains "$(cat "$T/w12")" '"resync"' "and no subscriber is handed the resync"
 ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T5'","agentId":null,"reason":"answer"}]' >/dev/null
 
 # What the session started as stays in the snapshot past its end.

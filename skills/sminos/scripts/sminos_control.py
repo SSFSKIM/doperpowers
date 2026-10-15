@@ -31,6 +31,7 @@ import sminos_bridge as B
 COMMAND_WAIT_MS = 10000     # the mod answers these at once; this bounds a session gone quiet
 COMPACT_WAIT_S = 300        # an idle compaction runs about 20 s; its outcome is waited for this long
 SETTLE_WAIT_S = 30          # a decision taken is settled within seconds (a background window's at its deadline)
+FIRST_WAIT_S = 8            # a subscription's snapshot: the child holds it up to 5 s for the mod's first resync
 SUPERVISOR_TIMEOUT = 5      # the engine's own control client waits 5 s
 SHORT_RE = re.compile(r"^[a-f0-9]{8}$")
 KEY_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -267,19 +268,9 @@ def cmd_compact(a):
     if B.probe(path) is None:
         B.remove_stale(path)
         no_bridge(a.member, "compact")
-    events = queue.Queue()
-
-    def follow():
-        try:
-            for e in B.subscribe(path):
-                events.put(e)
-        except (OSError, http.client.HTTPException, ValueError):
-            pass
-        events.put(None)
-
-    threading.Thread(target=follow, daemon=True).start()
+    events = follow_stream(path)
     try:
-        first = events.get(timeout=5)
+        first = events.get(timeout=FIRST_WAIT_S)
     except queue.Empty:
         first = None
     if not first or first.get("type") != "snapshot":
@@ -319,15 +310,27 @@ def cmd_compact(a):
 
 def follow_stream(path):
     """The endpoint's stream on a thread: a queue of its events (the
-    snapshot first), then None at its end."""
+    snapshot first), then None at its end. A stream the child ended because
+    the mod resent its state is followed on at once: the fresh snapshot comes
+    next in the queue, so a settlement that happened in between is read from
+    its `settled`."""
     events = queue.Queue()
 
     def follow():
-        try:
-            for e in B.subscribe(path):
-                events.put(e)
-        except (OSError, http.client.HTTPException, ValueError):
-            pass
+        pid = None
+        while True:
+            try:
+                for e in B.subscribe(path):
+                    if e.get("type") == "snapshot":
+                        if pid is not None and e.get("pid") != pid:
+                            break   # another child: what this one followed is gone
+                        pid = e.get("pid")
+                    events.put(e)
+            except (OSError, http.client.HTTPException, ValueError):
+                break
+            status = B.probe(path)
+            if pid is None or status is None or status.get("pid") != pid:
+                break
         events.put(None)
 
     threading.Thread(target=follow, daemon=True).start()
@@ -346,7 +349,7 @@ def find_request(member, verb, want):
         no_bridge(member, verb)
     events = follow_stream(path)
     try:
-        snap = events.get(timeout=5)
+        snap = events.get(timeout=FIRST_WAIT_S)
     except queue.Empty:
         snap = None
     if not snap or snap.get("type") != "snapshot":
@@ -395,6 +398,11 @@ def settle_decision(member, verb, path, events, raised, body):
             S.die("%s: request %s took the decision; no settlement came within %d s" % (verb, rid, SETTLE_WAIT_S), 1)
         if e is None:
             S.die("%s: %s's bridge ended before request %s settled" % (verb, member, rid), 1)
+        if e.get("type") == "snapshot":
+            e = next((x for x in e.get("settled") or [] if x.get("request") == rid), None)
+            if e is not None:
+                break
+            continue
         if e.get("type") == "settled" and e.get("request") == rid:
             break
     if e.get("by") != body["by"]:

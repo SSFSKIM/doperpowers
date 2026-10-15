@@ -6,7 +6,8 @@ session's endpoint, HTTP over the Unix socket $SMINOS_HOME/bridge/<id>.sock
 in an owner-only directory:
 
     GET  /status          who serves here: session, pid, protocol, the mod's last word
-    POST /events          the mod's events, a JSON array in the order they happened
+    POST /events          the mod's events, a JSON array in the order they happened, with
+                          the hello's nonce (X-Bridge-Nonce; 409 without it)
     GET  /events          a subscription: one snapshot line, then every event, numbered n from 1
     POST /command[?wait=ms]  a command for the mod: relayed as one line on stdout
 
@@ -21,6 +22,10 @@ older one, finding the path no longer its own, exits without removing it.
 
 `sminos watch <member>` subscribes and prints the stream: the conversation as
 it streams, subagents labelled; `--json`, the lines as they come.
+
+Row order (DC2 M4): the hello's `seed` is each loop's last row in the
+session's transcripts as the child read them, which the mod's first resync
+carries as each loop's cut; the mod's row notices move it from there.
 
 What must outlive a module reload, which kills the child — the model chosen
 for the session and the delivery keys already submitted — the child keeps in
@@ -44,6 +49,7 @@ an `answer` command.
 """
 
 import collections
+import glob
 import http.client
 import json
 import os
@@ -72,9 +78,27 @@ SETTLED_KEPT = 100             # recent settlements a late subscriber still sees
 PRESENCE_EVERY = 0.25          # s: how often the session record is read while a dialog may be open
 WINDOW_MARGIN_MS = 200         # a background window's decision must reach the mod before its deadline
 ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
+EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
+STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
+TAIL_BLOCK = 65536             # a transcript's tail is read backward this many bytes at a time
+NOTICES = ("block-row", "row-seen")  # each row the session keeps is named by one, in write order (the cut)
+NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post without it is another module's
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
+
+
+def _ready_wait():
+    """How long a subscription waits for the mod's first resync (s)."""
+    try:
+        return float(os.environ.get("SMINOS_BRIDGE_READY_WAIT") or 5)
+    except ValueError:
+        return 5.0
+
+
+def _loop(agent):
+    """A loop's key in the cut: `main`, or the subagent's id."""
+    return "main" if agent is None else str(agent)
 
 
 def bridge_dir():
@@ -158,15 +182,20 @@ def remove_stale(path):
         before = os.lstat(path).st_ino
     except OSError:
         return
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2)
-    try:
-        s.connect(path)
-        return  # someone listens: not stale
-    except OSError:
-        pass
-    finally:
-        s.close()
+    # A listener whose backlog is full refuses a connect too: only a socket
+    # refused every time over a few tenths of a second is taken as dead.
+    for attempt in range(STALE_TRIES):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        try:
+            s.connect(path)
+            return  # someone listens: not stale
+        except OSError:
+            pass
+        finally:
+            s.close()
+        if attempt + 1 < STALE_TRIES:
+            time.sleep(STALE_PAUSE)
     try:
         if os.lstat(path).st_ino == before:
             os.unlink(path)
@@ -174,13 +203,20 @@ def remove_stale(path):
         pass
 
 
+class NotReady(OSError):
+    """The endpoint answers but has not had the session's state from the mod yet (503)."""
+
+
 def subscribe(path):
     """The endpoint's stream: yields each line, parsed, until it ends. Raises
-    OSError when nothing answers."""
+    OSError when nothing answers, NotReady when the child has not had the
+    mod's first resync within its wait."""
     c = _UnixConnection(path, timeout=None)
     try:
         c.request("GET", "/events")
         r = c.getresponse()
+        if r.status == 503:
+            raise NotReady("the bridge has not had the session's state yet")
         if r.status != 200:
             raise OSError("the bridge refused the subscription (%d)" % r.status)
         while True:
@@ -205,11 +241,75 @@ def _now_ms():
     return int(time.time() * 1000)
 
 
+def config_dir():
+    """The session's config dir, which the child inherits."""
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(S.home_dir(), ".claude")
+
+
 def presence_path(session_pid):
-    """The session record the engine writes for the session process: under
-    the session's config dir, which the child inherits."""
-    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(S.home_dir(), ".claude")
-    return os.path.join(cfg, "sessions", "%d.json" % session_pid)
+    """The session record the engine writes for the session process."""
+    return os.path.join(config_dir(), "sessions", "%d.json" % session_pid)
+
+
+def transcripts(session):
+    """The session's transcripts by loop: its own (`main`), and each
+    subagent's beside it (<id>/subagents/agent-<agentId>.jsonl). None yet for
+    a session that has written no row."""
+    hits = glob.glob(os.path.join(glob.escape(config_dir()), "projects", "*", session + ".jsonl"))
+    if not hits:
+        return {}
+    main = max(hits, key=S._mtime)
+    found = {"main": main}
+    for path in glob.glob(os.path.join(glob.escape(main[:-len(".jsonl")]), "subagents", "agent-*.jsonl")):
+        found[os.path.basename(path)[len("agent-"):-len(".jsonl")]] = path
+    return found
+
+
+def last_row(path):
+    """The uuid of a transcript's last whole row (its last complete line that
+    carries one), read backward from its end; None when it has none."""
+    try:
+        with open(path, "rb") as f:
+            at = f.seek(0, os.SEEK_END)
+            buf = b""
+            while at > 0:
+                start = max(0, at - TAIL_BLOCK)
+                f.seek(start)
+                buf = f.read(at - start) + buf
+                at = start
+                newline = buf.rfind(b"\n")
+                if newline < 0:
+                    continue
+                # Whole lines only: what follows the last newline is a line
+                # still being written, and the first piece, unless the file
+                # starts there, a line the block's start cut.
+                lines = buf[:newline].split(b"\n")
+                cut = lines.pop(0) if at > 0 else None
+                for line in reversed(lines):
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and isinstance(row.get("uuid"), str):
+                        return row["uuid"]
+                if cut is None:
+                    return None
+                buf = cut + b"\n"
+            return None
+    except OSError:
+        return None
+
+
+def read_seed(session):
+    """Each loop's last row now, by loop (`main`, or the subagent's id): the
+    mod's first resync carries it as the cut, every row up to it accounted
+    for. A loop with no row is left out (its cut is null: it had none)."""
+    seed = {}
+    for loop, path in transcripts(session).items():
+        uuid = last_row(path)
+        if uuid is not None:
+            seed[loop] = uuid
+    return seed
 
 
 def presence_status(path, session):
@@ -337,6 +437,18 @@ class Bridge:
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
+        # Minted for this child and said only in its hello, which only the
+        # module that spawned it reads: every post of the mod's carries it, so
+        # an older module instance still posting to the path (a reload keeps
+        # the session id, so the path) is turned away (409) and stops.
+        self.nonce = uuidlib.uuid4().hex
+        self.exports = queue.Queue(EXPORTS_QUEUED)   # (cwd, records) for the log, appended in order (run_exports)
+        # The mod's first resync applied: until then the state is not the
+        # session's, and a subscription waits for it (DX5's readiness).
+        self.ready = False
+        # Per loop, the uuid of the last row whose notice was applied (null:
+        # none since the module loaded), under the lock that guards streaming.
+        self.cut = {"main": None}
         self.failing = False     # the last write failed (said once, and again when one succeeds)
 
     # -- the mod's events
@@ -346,7 +458,20 @@ class Bridge:
             self.mod_events += len(events)
             self.mod_last = time.time()
             for e in events:
+                if e.get("type") == "export":
+                    self._export(e)
+                    continue
                 self._apply(e)
+                if e.get("type") == "resync":
+                    # The first makes the child ready; any later one replaced
+                    # what every subscriber's snapshot was built from, so each
+                    # subscription ends and takes a fresh snapshot: the stream
+                    # ending is the one discontinuity a subscriber sees.
+                    if self.ready:
+                        self._end_subscribers()
+                    self.ready = True
+                    self.changed.notify_all()
+                    continue
                 self._fan_out(e)
             # Whatever the batch did, what is kept and not yet on disk is
             # written now: an event that moves nothing still retries a failed
@@ -354,6 +479,19 @@ class Bridge:
             note = self._save()
             if note is not None:
                 self._fan_out(note)
+
+    def _end_subscribers(self):
+        for sub in list(self.subscribers):
+            self.subscribers.discard(sub)
+            sub.cut = True
+            try:
+                sub.put_nowait(None)   # its writer stops here, after what came before
+            except queue.Full:
+                pass                   # it drains the backlog, then ends on the cut
+
+    def wait_ready(self, seconds):
+        with self.lock:
+            return self.changed.wait_for(lambda: self.ready, seconds)
 
     def _fan_out(self, e):
         for sub in list(self.subscribers):
@@ -381,10 +519,14 @@ class Bridge:
                 self.broken.add(k)
                 return
             _fold(m, index, e)
-        elif kind == "block-row":
-            # The engine wrote the block's transcript row: the block is
-            # settled, and leaves the snapshot under this lock (DX4).
-            m = self.streaming.get(_key(e))
+        elif kind in NOTICES:
+            # A row is about to be written: its loop's cut moves to it. A
+            # response row's notice (block-row) also settles its block, which
+            # leaves the snapshot under this same lock (DX4): no block is
+            # still streaming whose row is at or before the cut.
+            if isinstance(e.get("uuid"), str) and e["uuid"]:
+                self.cut[_loop(e.get("agentId"))] = e["uuid"]
+            m = self.streaming.get(_key(e)) if kind == "block-row" else None
             if m is not None and isinstance(e.get("index"), int):
                 m["blocks"].pop(e["index"], None)
                 m["settled"].add(e["index"])
@@ -418,6 +560,8 @@ class Bridge:
             self.streaming = streaming
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
             self.broken = set()
+            cut = e.get("cut") if isinstance(e.get("cut"), dict) else {}
+            self.cut = {"main": None, **{str(k): v for k, v in cut.items() if v is None or isinstance(v, str)}}
             if isinstance(e.get("pending"), list):
                 pending = {}
                 for r in e["pending"]:
@@ -477,6 +621,39 @@ class Bridge:
                 w[1] = e
                 w[0].set()
 
+    def _export(self, e):
+        """Rows the mod hands over for the project's log (DC2 G4): queued for
+        run_exports, in the order they came; never handed to subscribers, who
+        have the same text from the stream, and the log has the result."""
+        records = e.get("records")
+        cwd = (self.session_info or {}).get("cwd")
+        if not (isinstance(records, list) and all(isinstance(r, dict) for r in records) and isinstance(cwd, str) and cwd):
+            return
+        try:
+            self.exports.put_nowait((cwd, records))
+        except queue.Full:
+            sys.stderr.write("sminos bridge: an export was dropped (%d waiting); the Stop hook's export has it\n"
+                             % EXPORTS_QUEUED)
+
+    def run_exports(self):
+        """Appends what the mod exports through the record path's own writer
+        (sminos.export_live), one export at a time and in order, apart from the
+        lock that serves the stream: the log's locks may be held a while (the
+        daemon's sync), and a slow append must not hold up the session's events.
+        A failure is the Stop hook's to make good: its export appends whatever
+        of the same rows the log does not hold."""
+        while not self.closing.is_set():
+            try:
+                cwd, records = self.exports.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                project = S.resolve_project(cwd)
+                if project is not None:
+                    S.export_live(project, self.session, records)
+            except (Exception, SystemExit) as err:  # noqa: BLE001 — the next export must still run
+                sys.stderr.write("sminos bridge: export to the log failed: %s: %s\n" % (type(err).__name__, err))
+
     def _keep(self, kept):
         """What is kept for the session: the mod's copy, written at the end of
         the batch that changed it (_save)."""
@@ -533,6 +710,9 @@ class Bridge:
                 "streaming": [_shown(m) for m in self.streaming.values()],
                 "agents": list(self.agents.values()), "usage": self.usage,
                 "override": self.kept["override"],
+                # Per loop, the last row whose notice is applied: every row up
+                # to it is the transcript's, none of them still streaming.
+                "cut": dict(self.cut),
                 # The requests pending in the session, and the ones settled
                 # recently, so a subscriber that arrives after a request
                 # settled sees it settled rather than still raised.
@@ -682,7 +862,7 @@ class Bridge:
     def status(self):
         with self.lock:
             return {"session": self.session, "pid": os.getpid(), "protocol": PROTOCOL, "socket": self.socket,
-                    "started": self.started, "subscribers": len(self.subscribers),
+                    "started": self.started, "ready": self.ready, "subscribers": len(self.subscribers),
                     "mod": {"events": self.mod_events, "last": self.mod_last}}
 
     # -- the mod's input: one line on stdout
@@ -778,6 +958,8 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._send(400, {"error": "the body is not JSON: %s" % e})
         if url.path == "/events":
+            if self.headers.get(NONCE_HEADER) != bridge.nonce:
+                return self._send(409, {"error": "this child is another module's: its posts carry its own nonce"})
             events = body if isinstance(body, list) else [body]
             if not all(isinstance(e, dict) and isinstance(e.get("type"), str) for e in events):
                 return self._send(400, {"error": "each event is an object with a type"})
@@ -803,8 +985,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _stream(self, bridge):
         """Close-delimited NDJSON: the snapshot line, then each event with its
-        n. A subscriber that falls SUBSCRIBER_BACKLOG events behind is cut off;
+        n. Held until the mod's first resync is applied (503 past the wait).
+        A subscriber that falls SUBSCRIBER_BACKLOG events behind is cut off,
+        and every subscription ends when a later resync replaces the state;
         it subscribes again for a fresh snapshot (DX4's rule on a gap)."""
+        if not bridge.wait_ready(_ready_wait()):
+            return self._send(503, {"error": "the session's state has not reached its bridge yet"})
         snap, q = bridge.subscribe()
         try:
             self.send_response(200)
@@ -822,6 +1008,8 @@ class _Handler(BaseHTTPRequestHandler):
                     if q.cut:
                         return
                     continue
+                if e is None:
+                    return
                 n += 1
                 self.wfile.write((json.dumps({"n": n, **e}) + "\n").encode())
                 self.wfile.flush()
@@ -835,6 +1023,9 @@ class _Handler(BaseHTTPRequestHandler):
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     allow_reuse_address = False
+    # Every subscriber reconnects at once when a resync ends the streams; a
+    # full backlog refuses a connect as a dead socket would (remove_stale).
+    request_queue_size = 128
 
     def handle_error(self, request, client_address):
         # A client that hung up mid-answer (a watcher closed, a session that
@@ -890,10 +1081,13 @@ def serve(session):
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
     try:
+        # The seed is read last, so the mod reads the hello after the read
+        # returned: a model request it saw begin before then never streams.
         bridge.emit({"op": "hello", "session": session, "pid": os.getpid(), "socket": path, "protocol": PROTOCOL,
-                     "kept": bridge.kept})
+                     "nonce": bridge.nonce, "kept": bridge.kept, "seed": read_seed(session)})
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
+        threading.Thread(target=bridge.run_exports, daemon=True).start()
         server.serve_forever(poll_interval=0.25)
     except (OSError, KeyboardInterrupt):
         pass
@@ -1108,17 +1302,20 @@ def cmd_watch(a):
         (render.line if render else lambda t: sys.stderr.write(t + "\n"))(text)
 
     ended = False
+    pid = None
     try:
         while True:
             lost = False
             try:
                 for e in subscribe(path):
+                    if e.get("type") == "snapshot":
+                        pid = e.get("pid")
                     show(e)
                     if e.get("type") == "session" and e.get("phase") == "end" and e.get("reason") != "clear":
                         ended = True
                     # What was printed misses the lost events: a fresh snapshot
                     # (DX4's rule on a gap) prints each message whole again.
-                    # --json passes the gap and its resync on to its reader.
+                    # --json passes the gap on; its stream ends at the resync.
                     if e.get("type") == "gap" and render is not None:
                         lost = True
                         break
@@ -1129,13 +1326,18 @@ def cmd_watch(a):
                 return
             if lost and probe(path) is not None:
                 continue
+            # The stream ended: the child replaced its state from the mod (a
+            # resync), restarted (a module reload), or is gone. Followed while
+            # an endpoint answers there again within the window.
             deadline = time.time() + _reconnect_window()
             while time.time() < deadline and probe(path) is None:
                 time.sleep(0.1)
-            if probe(path) is None:
+            now = probe(path)
+            if now is None:
                 remove_stale(path)
                 say("· the bridge ended")
                 sys.exit(1)
-            say("· the bridge restarted; reconnected")
+            say("· the session's state was sent again; resubscribed" if now.get("pid") == pid
+                else "· the bridge restarted; reconnected")
     except KeyboardInterrupt:
         return
