@@ -50,6 +50,17 @@ assert_file_absent() { if [[ ! -e "$1" ]]; then pass "$2"; else fail "$2"; echo 
 assert_rc() { # expected-rc actual-rc label
   if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3"; echo "    expected rc $1, got $2"; fi
 }
+# Waits for a condition (a command) to hold, polling. The ceiling is a liveness
+# bound, generous and uniform, not a claim about how fast the machine is: a
+# loaded host is slow, not wrong (ci-kit §6). Exit 1 if it never holds.
+LIVENESS_SECONDS=30
+wait_until() {
+  local end=$((SECONDS + LIVENESS_SECONDS))
+  until "$@"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.05
+  done
+}
 mode_of() { python3 -c 'import os, sys; print("%04o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
 field() { # seat-id field  → value (via python, never jq)
   python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); v = d.get(sys.argv[2], ""); print(v if isinstance(v, str) else json.dumps(v))' "$SMINOS_HOME/$1.json" "$2"
@@ -1046,10 +1057,12 @@ SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" send orchestrator "ACK-0" --wait
 assert_rc 1 "$RC" "send --wait without evidence of receipt exits 1"
 assert_not_contains "$OUT" "--- reply ---" "no reply block is printed without evidence"
 "$SMINOS" meta set orchestrator status idle >/dev/null
-( SMINOS_ACK_TIMEOUT=5 "$SMINOS" send orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
+# The window is a liveness bound: the send waits as long as it needs for the
+# frame to land, and returns as soon as the marker is in the transcript.
+( SMINOS_ACK_TIMEOUT="$LIVENESS_SECONDS" "$SMINOS" send orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
 ACKW=$!
-sleep 0.5
-ACK_ID="$(grep -o 'id=[0-9a-f]\{8\}' "$RECEIVED" | tail -1 | cut -d= -f2)"
+wait_until grep -qF 'ACK-1' "$RECEIVED" || echo "    (ACK-1 never reached the inbox)"
+ACK_ID="$(grep -F 'ACK-1' "$RECEIVED" | grep -o 'id=[0-9a-f]\{8\}' | tail -1 | cut -d= -f2)"
 mkdir -p "$HOME/.claude/projects/fake-proj"
 python3 - "$HOME/.claude/projects/fake-proj/$ORCH_UUID.jsonl" "$ACK_ID" <<'PY'
 import json, sys
