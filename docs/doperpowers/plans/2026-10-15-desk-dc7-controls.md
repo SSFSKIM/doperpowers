@@ -565,6 +565,17 @@ against the local hub; until it lands, the stand-in.
   1 MiB and 1 s, then reset.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision: A refused decision says who won, as fields (composite
+  `bb8b8773`; DX6 by DC3 at `c547aaa5`). A failed outcome's error is
+  `{code, message, winner?, by?, terminalOnly?}`; a `decide` or `answer`
+  the bridge refuses with 409 maps to `not-pending` with `winner`/`by`
+  from `already settled`'s `settled`, `by` from "already answered by",
+  `terminalOnly` from a terminal-only 409, and `winner`/`by` `terminal`
+  from "the terminal answered it"; nothing else sets them, and no error
+  text is parsed. The bridge's two 409s gain those fields in M3 (an
+  additive DX5 change, DC2 having closed), pinned by a bridge test.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
