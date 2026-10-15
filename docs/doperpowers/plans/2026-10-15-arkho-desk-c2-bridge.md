@@ -1,26 +1,26 @@
-# A8 C2 — the bridge: execution (2026-10-15)
+# The desk, DC2 — the bridge: execution (2026-10-15)
 
 > **Composite:** `docs/doperpowers/specs/2026-10-15-arkho-project-web-design.md`
-> (branch `worktree-smns-erb`), child **C2** (The bridge — plan). **Parent
+> (branch `worktree-smns-erb`), child **DC2** (The bridge — plan). **Parent
 > pin:** blob `8acb3958` of that file, as it stood at dispatch. The child's
 > section there is its design; this document carries only the constraints
 > and the milestones. Read the composite's §2 (Bridge, Without the bridge),
 > §3 (sending, liveness of messages), §5 (both tables), §6 (the bridge's
-> channel), X4, X5, and the C1 findings
+> channel), DX4, DX5, and the DC1 findings
 > (`docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md`) before M1.
 
 ## Progress
 
-- [ ] M1 — The bridge's spine and the local protocol (C2.G1)
-- [ ] M2 — The control verbs and delivery (C2.G2)
-- [ ] M3 — Requests from outside and their settlement (C2.G2, G3)
-- [ ] M4 — Live export, the acceptance walk, docs, version (C2.G4)
+- [ ] M1 — The bridge's spine and the local protocol (DC2.G1)
+- [ ] M2 — The control verbs and delivery (DC2.G2)
+- [ ] M3 — Requests from outside and their settlement (DC2.G2, G3)
+- [ ] M4 — Live export, the acceptance walk, docs, version (DC2.G4)
 
 ## Constraints that bind every milestone
 
 - **The composite has one writer**, the session that dispatched this plan.
   The controller records this plan's decisions in its own Decision Log
-  below and messages that session at M1's end with X5 and with any
+  below and messages that session at M1's end with DX5 and with any
   decision that touches a contract; it does not edit the composite.
 - **Isolation.** Every manual run of `sminos.py`, its daemon, or a hook uses
   a temporary `HOME` and `SMINOS_HOME` (the CLI's one-way `migrate` runs
@@ -29,11 +29,11 @@
   the real `~/.claude/sminos`; never run `daemon install` against the real
   `HOME`.
 - **Live sessions** for checks run the worktree's plugin with
-  `--plugin-dir` under a throwaway `CLAUDE_CONFIG_DIR` (C1 used
+  `--plugin-dir` under a throwaway `CLAUDE_CONFIG_DIR` (DC1 used
   `/tmp/c1cfg`), so the installed doperpowers mods do not load twice and
   nothing the session does reaches the owner's settings; prompts tiny,
   haiku or sonnet models; every `--bg` job started is stopped
-  (`claude stop <short>`), every tmux session killed. C1's probe
+  (`claude stop <short>`), every tmux session killed. DC1's probe
   (`/tmp/c1probe`: the mod, `bridge_child.py`, the stand-in `daemon.py`)
   and drivers (`/tmp/c1tools`) are working prior art.
 - **Engine.** Claude Code 2.1.300; the mod API is early access and loads
@@ -47,7 +47,7 @@
   `test-review-dispatch.sh` (run with `SMINOS_HOME` unset under a temporary
   `HOME`) stay green where delivery code changes.
 - **Not in this child:** the hub, the uplink, authentication codes, RPC
-  digests and the ledger, read-only policy (C3, C4, C7); the text of
+  digests and the ledger, read-only policy (DC3, DC4, DC7); the text of
   `skills/sminos/SKILL.md` (an agent-facing behavior change needs eval
   evidence; the new verbs are for the human and the daemon, documented in
   the CLI's help and CLAUDE.md).
@@ -71,7 +71,7 @@ stream live, subagents included, from another terminal on the machine.
 **Decision — the child is the per-session endpoint.** The child serves an
 HTTP API on `$SMINOS_HOME/bridge/<session-id>.sock` (directory mode 0700):
 the mod posts events and long-polls for answers there (`$.http.fetch` with
-`socketPath`); local clients — the CLI now, the daemon in C7 — send
+`socketPath`); local clients — the CLI now, the daemon in DC7 — send
 commands there, which the child writes to its stdout for the mod to read
 line by line, and subscribe to the event stream there. This puts local
 control in place without the daemon running, and the daemon, when it
@@ -80,7 +80,7 @@ is the bridge-presence signal (§2's "bridge connected"); a stale socket
 file whose child is gone is removed by whoever finds it. The composite's §2
 says the child connects "to the daemon's socket"; this is the same
 contract with the endpoint inverted, and the controller reports it to the
-composite's writer with X5. Rejected: a single daemon socket every child
+composite's writer with DX5. Rejected: a single daemon socket every child
 connects to, which would make the CLI verbs depend on the daemon running.
 
 **Touches:** `hooks/mods/bridge.tsx`, `hooks/mods/register.tsx`,
@@ -88,15 +88,15 @@ connects to, which would make the CLI verbs depend on the daemon running.
 module beside it if the child grows past a few hundred lines),
 `tests/mods/`, `tests/sminos/`.
 
-**Interfaces:** produces X5 (below, written at this milestone's end and
+**Interfaces:** produces DX5 (below, written at this milestone's end and
 sent to the composite's writer before M2 starts); produces the stream
-shapes X4 names for chunks (passed through verbatim plus the three tags).
+shapes DX4 names for chunks (passed through verbatim plus the three tags).
 
 **Does not touch:** delivery (`deliver_next`, `push_member`), any control
 verb, the daemon.
 
-**Proves:** C2.G1. Tests pin: the child receives a command line at any
-point of a turn (idle, mid-model, mid-Bash, dialog open — C1 item 1); the
+**Proves:** DC2.G1. Tests pin: the child receives a command line at any
+point of a turn (idle, mid-model, mid-Bash, dialog open — DC1 item 1); the
 child is respawned after a module reload and a stale socket is replaced;
 chunk events carry `agentId` for a subagent; `sminos watch` on a session
 with no bridge says so and exits non-zero.
@@ -112,17 +112,17 @@ with `sminos send`/`say` to a bridged member arrives as the human's words.
 **Decisions:**
 - *Steer* appends a user row with `$.session.append` (read at the loop's
   next request; the running tool keeps going) and mirrors it as a
-  `$.ui.log` line, since the terminal does not draw the appended row (C1
+  `$.ui.log` line, since the terminal does not draw the appended row (DC1
   item 3).
 - *Interrupt* is `$.turn.abort` on the main loop's turn, then `TaskStop`
   through `$.tool.call` on every Bash that the abort moved to the
-  background in that turn — Esc's effect (C1 item 4).
+  background in that turn — Esc's effect (DC1 item 4).
 - *Model and effort* are rewritten on each of the session's requests in
   `turn.step`; the session's choice lives in the bridge and in
   `$SMINOS_HOME/bridge/<session-id>.json` so a module reload keeps it.
-  `$.config.set` is never called: it writes the user's default (C1 item 7).
+  `$.config.set` is never called: it writes the user's default (DC1 item 7).
 - *Compact* asked during a turn is held and run at `turn.complete`; asked
-  idle, it runs at once (C1 item 9).
+  idle, it runs at once (DC1 item 9).
 - *Delivery.* `push_member` sends an owed `human` or `say` to a bridged
   member through the bridge: the bridge submits it with
   `$.prompt.submit({text, asUser: true})` (queued until idle), keyed by the
@@ -137,14 +137,14 @@ with `sminos send`/`say` to a bridged member arrives as the human's words.
 **Touches:** `hooks/mods/bridge.tsx`, `skills/sminos/scripts/sminos.py`
 (new verbs; `push_member`, `send_frame`'s callers), tests.
 
-**Interfaces:** consumes X5 from M1; extends it with the command lines for
+**Interfaces:** consumes DX5 from M1; extends it with the command lines for
 these verbs and the delivery key.
 
 **Does not touch:** permission and question handling (M3), export (M4),
 the daemon's tick beyond what delivery already calls.
 
 **Proves:** the steer, interrupt, model, compact, and send parts of
-C2.G2. Tests pin: a steer during a long Bash (a Python sleep — the engine
+DC2.G2. Tests pin: a steer during a long Bash (a Python sleep — the engine
 blocks a long foreground `sleep`) does not end it and is read next; an
 interrupt ends a backgrounded Bash; a model change leaves the throwaway
 config's `settings.json` untouched; a compact asked mid-turn runs after
@@ -159,7 +159,7 @@ with `sminos decide <member> <request> allow|deny` or `sminos answer
 the side whose answer the engine used; an async question from the ask mod
 is answerable the same way.
 
-**Decisions:** the composite's §2 bullets under "[binding — C1's
+**Decisions:** the composite's §2 bullets under "[binding — DC1's
 findings]" are this milestone's design: `classic.PermissionRequest`
 long-polls the child (looped under the 30-second fetch bound) and returns
 the decision, or `updatedInput: {questions, answers}` for an
@@ -180,13 +180,13 @@ the winner, the outcome, and who answered (`cli`, `terminal`, later
 `skills/sminos/scripts/sminos.py` (`decide`, `answer`), tests
 (`tests/mods/ask.test.ts` keeps passing).
 
-**Interfaces:** extends X5 with the long-poll, `raised`, and `settled`;
-produces X4's pending-request shapes.
+**Interfaces:** extends DX5 with the long-poll, `raised`, and `settled`;
+produces DX4's pending-request shapes.
 
 **Does not touch:** digests, authentication codes, the hub's pending set
-(C7, C3).
+(DC7, DC3).
 
-**Proves:** the answer and decide parts of C2.G2, and C2.G3: settlement
+**Proves:** the answer and decide parts of DC2.G2, and DC2.G3: settlement
 in four cases — answered from the CLI first, in the terminal first, both
 at once, and the CLI answering after the terminal did (refused as already
 settled). Tests pin: a background subagent's dialog appears after the
@@ -198,7 +198,7 @@ the doperpowers ask mod loaded.
 
 **At its end:** a bridged session's `<message>` spans and async questions
 reach the project log as each completes, not at Stop, and the Stop hook's
-export finds them already there; C2's gates walked live in a terminal
+export finds them already there; DC2's gates walked live in a terminal
 session and a `--bg` job; docs and the version current.
 
 **Decisions:** the bridge exports through the same writer and the same
@@ -216,7 +216,7 @@ version via `scripts/bump-version.sh`.
 
 **Does not touch:** `skills/sminos/SKILL.md`.
 
-**Proves:** C2.G4, and C2.G1–G3 again live. Concrete Steps has the walk.
+**Proves:** DC2.G4, and DC2.G1–G3 again live. Concrete Steps has the walk.
 
 ## Concrete Steps
 
@@ -244,7 +244,7 @@ Repeat with a `claude --bg` job; stop it afterwards.
 
 ## Interfaces and Dependencies
 
-X5 is written here at M1's end and sent to the composite's writer; M2 and
+DX5 is written here at M1's end and sent to the composite's writer; M2 and
 M3 extend it in place, each extension sent the same way.
 
 ## Decision Log
@@ -254,19 +254,19 @@ M3 extend it in place, each extension sent the same way.
   review through `doperpowers:review-code` at the end, run by the
   controller.
   Rationale: one repository, a mod and a CLI with a live-session walk;
-  the security boundary is C7's.
+  the security boundary is DC7's.
   Date/Author: 2026-10-15, the composite's writer at dispatch.
 - Decision: The bridge child serves a per-session socket (M1).
   Rationale and the rejected alternative: M1.
   Date/Author: 2026-10-15, the composite's writer at dispatch.
 - Decision: Parent re-pinned to blob `b5af3c65` (commit `b7a82a59`). The
   only change since `8acb3958` is the dispatch commit's own revision of §2,
-  §6, and X5 to the per-session endpoint this plan already assumes; no
+  §6, and DX5 to the per-session endpoint this plan already assumes; no
   sibling has landed, so no interface this plan consumes moved.
   Date/Author: 2026-10-15, controller (pre-flight).
-- Decision: G3's fourth case. The composite's C2.G3 names "the daemon
+- Decision: G3's fourth case. The composite's DC2.G3 names "the daemon
   reconnecting after the request was answered"; M3's Proves names "the CLI
-  answering after the terminal did". C2 covers both: with no daemon in this
+  answering after the terminal did". DC2 covers both: with no daemon in this
   child, the reconnecting party is any client of the session endpoint, so a
   subscription opened after a request settled shows that request settled
   (its snapshot carries the current pending set and the recent
@@ -290,7 +290,7 @@ M3 extend it in place, each extension sent the same way.
   `smns-record.sh` hook) and would otherwise reach the real registry.
   Inference goes through the owner's loopback gateway, whose env lives in
   the real `~/.claude/settings.json`, which a throwaway config dir does not
-  read. C1 carried it in the process environment, through an env file it
+  read. DC1 carried it in the process environment, through an env file it
   sourced (`/tmp/c1cfg/settings.json` holds only a model). So: the launch
   passes exactly the keys a session needs — `ANTHROPIC_BASE_URL`,
   `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`,
@@ -307,6 +307,14 @@ M3 extend it in place, each extension sent the same way.
   taken for this session's child.
   Date/Author: 2026-10-15, controller (pre-flight; gateway env refined the
   same day at the composite writer's request).
+- Decision: Ids follow the composite's rename at `573ff54b`: children
+  C1–C7 are DC1–DC7 and contracts X1–X8 are DX1–DX8, because the product's
+  code lands in the MAWS repository, whose charter already binds C1–C12
+  and X1–X8. This plan uses the new ids throughout. Parent re-pinned to
+  blob `300379dd`. The composite now frames the product as independent and
+  rooted in `.smns` rather than as Arkho's child; DC2's section, scope, and
+  design are unchanged.
+  Date/Author: 2026-10-15, controller.
 
 ## Surprises & Discoveries
 
