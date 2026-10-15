@@ -59,6 +59,7 @@ queued, and the main thread posts it.
 
 import calendar
 import hashlib
+import http.client
 import json
 import os
 import queue
@@ -86,6 +87,7 @@ COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its co
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
 VERB_TIMEOUT = 120
+SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod's first resync
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
 RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume")
@@ -272,7 +274,6 @@ class Rpcs:
         self.compact_held = []    # [(project id, session, event, at)]: events whose command is not named yet
         self.compact_flight = {}  # nonce → session: compact RPCs whose command's id is not known yet
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
-        self.model_in_force = {}  # session → {model, effort} its bridge last answered, or UNKNOWN
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
         self.next_reconcile = 0.0
@@ -431,7 +432,7 @@ class Rpcs:
             if name == "interrupt":
                 return lambda: interrupt(path)
             if name == "model":
-                return lambda: model(path, sid, args, self.model_lock(sid), self.model_in_force)
+                return lambda: model(path, sid, args, self.model_lock(sid))
             if name == "compact":
                 return lambda: self.compact(path, rpc, sid)
             if name == "answer":
@@ -705,37 +706,48 @@ def interrupt(path):
                  "running": list(r.get("running") or [])})
 
 
-UNKNOWN = "unknown"   # a model command whose answer never came: what is in force is not known
+def bridge_snapshot(path):
+    """The first line of the bridge's DX5 stream: its snapshot, which
+    carries the child's in-memory `override` as the mod last said it.
+    Raises OSError (or ValueError) when it cannot be had."""
+    c = bridge._UnixConnection(path, SNAPSHOT_TIMEOUT)
+    try:
+        c.request("GET", "/events")
+        r = c.getresponse()
+        if r.status != 200:
+            raise OSError("the bridge answered %d" % r.status)
+        snap = json.loads(r.readline())
+        if not isinstance(snap, dict) or snap.get("type") != "snapshot":
+            raise ValueError("the bridge's stream began without a snapshot")
+        return snap
+    finally:
+        c.close()
 
 
-def model(path, sid, args, lock, in_force):
-    """The mod replaces model and effort together: the one not asked keeps
-    the choice in force. That is the pair the bridge last answered for the
-    session (`in_force`, kept per session here, read and changed under the
-    session's lock, so two at once take turns); the child's kept file is
-    read only before any answer, since its write can fail and be retried
-    later (DX5). After a command whose answer never came the pair is not
-    known: only a change naming both is sent until one is answered."""
+def model(path, sid, args, lock):
+    """The mod replaces model and effort together, so a change naming one
+    keeps the other as the session's bridge holds it now: read live from
+    the child (its snapshot's `override`, what every writer's `model` event
+    left, the owner's `sminos model` included), never from its kept file,
+    whose write can fail (DX5). The read and the command are one step per
+    session, so two partial changes at once take turns. A live read that
+    fails refuses the change; a change naming both reads nothing."""
     with lock:
-        known = in_force.get(sid)
-        whole = "model" in args and "effort" in args
-        if known == UNKNOWN and not whole:
-            raise Refused("failed", "the model and effort in force are not known (the last change got no answer): "
-                                    "name both")
-        base = known if isinstance(known, dict) else (bridge.load_kept(sid)["override"] or {})
-        body = {"op": "model", "model": args.get("model", base.get("model")),
-                "effort": args.get("effort", base.get("effort"))}
-        try:
-            out, _ = command(path, body)
-        except Refused:
-            in_force[sid] = UNKNOWN   # it may have reached the session
-            raise
+        body = {"op": "model", "model": args.get("model"), "effort": args.get("effort")}
+        if "model" not in args or "effort" not in args:
+            try:
+                live = bridge_snapshot(path).get("override") or {}
+            except (OSError, ValueError, http.client.HTTPException) as e:
+                raise Refused("failed", "the model and effort in force could not be read from the session's "
+                                        "bridge (%s): name both, or try again" % e)
+            for k in ("model", "effort"):
+                if k not in args:
+                    body[k] = live.get(k)
+        out, _ = command(path, body)
         if not out.get("ok"):
-            raise Refused("failed", refusal(out))   # refused: nothing changed
+            raise Refused("failed", refusal(out))
         r = out.get("result") or {}
-        now = {"model": r.get("model"), "effort": r.get("effort")}
-        in_force[sid] = now
-        return done(now)
+        return done({"model": r.get("model"), "effort": r.get("effort")})
 
 
 def decide(path, rid, body):
