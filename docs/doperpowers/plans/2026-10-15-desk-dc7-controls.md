@@ -426,6 +426,25 @@ against the local hub; until it lands, the stand-in.
   is rerun there, `step-end` included, in its real-child wave.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision (M2): The policy is `$SMINOS_HOME/daemon/policy.json`, edited
+  by `sminos daemon policy [--read-only on|off] [--ceiling MODE|settings]`,
+  machine-wide (git-mirrored projects covered too), and fails closed: a
+  file that cannot be read as a policy makes the machine read-only. The
+  guard sits in `deliver_next`; "outside origin" is a writer whose machine
+  part is not this machine (`is_self`, former names included). An outcome
+  is recorded (`<project home>/outcomes.jsonl`) before its settlement, for
+  hub projects only; an uncertain push (`sent?`, `woken?`) reports
+  `delivered` with a reason starting "uncertain:" pending the composite's
+  ruling. `raised` carries DX4's fields only. Settlements made during an
+  outage are queued and sent ahead of the complete pending set; raises
+  are carried by the set. A request reader lives until its own stream
+  ends (a failed probe alone does not drop it). Known checkouts are every
+  session that joined from this machine, ended ones included. `machine`
+  is republished when its body changes (policy each 2 s scan, nudged by
+  the verb; checkouts each 10 s). New modules: `sminos_policy.py`,
+  `sminos_outcomes.py`, `sminos_requests.py`.
+  Date/Author: 2026-10-15, M2 executor.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
