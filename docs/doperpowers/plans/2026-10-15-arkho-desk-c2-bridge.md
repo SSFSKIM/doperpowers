@@ -854,6 +854,47 @@ Order, batching (≤ 500) and one post in flight are unchanged.
   that hook is aborted. Pinned by the live check (no gaps across an
   interrupt).
   Date/Author: 2026-10-15, M3 executor.
+- Decision (M4 scope, agreed with the composite's writer for DC7): Row
+  order and the snapshot cut. DC7 joins transcript rows read from disk with
+  the bridge's stream; DX4 needs one gap-free order in which no row is both
+  in the snapshot and still streaming. The mod's `session.append` hook runs
+  before `next()` writes the row, so it announces each row before disk has
+  it, and the daemon reads the content by uuid:
+  1. Every observed row gets exactly one notice, in write order, on the
+     ordered stream: a response row's is its `block-row` (atomic: the block
+     leaves `streaming` as the row becomes known); every other row's is
+     `{type: "row-seen", uuid, agentId, door}`; the bridge's own appends
+     (steer rows, which its hook does not see) get a `row-seen` from the
+     append's returned uuid; door `queue` (no transcript row) gets nothing.
+  2. The snapshot gains `cut: {"main" | <agentId>: <uuid> | null}`, the
+     last notice applied per loop, under the lock that guards `streaming`:
+     every row at or before a loop's cut has had its notice applied, so no
+     block in `streaming` has its row at or before the cut. `null`: nothing
+     observed since the module loaded. The mod's `resync` carries the cut.
+  3. The consumer rule (DX5's, for DC7): history is each loop's disk rows
+     up to and including its cut (null: to EOF at snapshot time, later
+     notices for uuids already emitted dropped); live, each notice emits the
+     row with that uuid from disk once flushed, in notice order, and a row
+     not on disk within 5 s ends the DX4 subscription; a disk row past the
+     cut that no notice named within 2 s is emitted in disk order; a
+     `row-seen` for a uuid already emitted is ignored; a `block-row` for a
+     uuid already emitted as an unnamed row ends the DX4 subscription (a
+     discontinuity; the fresh snapshot heals the block that would otherwise
+     stay beside its row).
+  4. Readiness: `GET /status` gains `ready` (the mod's first resync to this
+     child applied); `GET /events` holds until ready (≤ 5 s, else 503); the
+     child ends every open subscription when it applies any later resync, so
+     no subscriber sees a `resync` line and "the stream ended" is the one
+     discontinuity.
+  5. M4's live run compares notices with the transcripts (main and
+     `subagents/*.jsonl`) and reports every row kind without a notice.
+  Tests: the real child, with a reference consumer implementing rule 3 in
+  the test, through a disk flush ahead of a delayed notice across
+  subscription establishment and across a reconnect, a subscription opened
+  between a response's last chunk and its `block-row`, `GET /events` held
+  before the first resync, and a response row's notice delayed past the 2 s
+  bound.
+  Date/Author: 2026-10-15, controller with the composite's writer.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
   `scripts/bump-version.sh` above the first; no version number is merged by
