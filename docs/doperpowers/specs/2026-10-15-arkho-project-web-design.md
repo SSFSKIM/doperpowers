@@ -113,8 +113,9 @@ the hub deployed, checked by hand and recorded with evidence in Outcomes.
    the model's text streaming as it is generated, a running subagent's text
    streaming in the subagent tree, and the diff of the session's working
    tree against its base branch.
-6. **The three verbs.** Steer, typed while the session runs a `sleep 60`
-   Bash call, does not stop the call, and the model acts on it at its next
+6. **The three verbs.** Steer, typed while the session runs
+   `python3 -c 'import time; time.sleep(60)'` (the engine blocks a long
+   foreground `sleep`), does not stop the call, and the model acts on it at its next
    request; interrupt stops the running turn within 2 seconds; send to an
    idle session starts a turn whose prompt is the sent text, read by the
    model as the human's words.
@@ -255,13 +256,36 @@ point in a turn. It streams the session's live events to the daemon with
 main loop and every subagent (`turn.step` is the only source of subagent
 token deltas anywhere in the harness; the SDK wire streams the main thread
 only), tool calls and results, turn boundaries, subagent lifecycle, usage,
-and pending requests. Its permission and AskUserQuestion hooks long-poll
-the daemon (looped under `$.http.fetch`'s 30-second bound; a `$` call in
-flight stops the hook's 10-second budget) while the terminal's own dialog
-stays open; the first answer wins and the engine abandons the other. The
-strongest alternative, inbox frames consumed by a `session.receive` hook,
-lost: frames drain only at the next tool round, so a frame cannot answer
-the permission prompt that blocks that round.
+and pending requests. **[binding — C1's findings, measured on 2.1.300]**
+- **Requests from outside go through `classic.PermissionRequest`**, which
+  long-polls the daemon (looped under `$.http.fetch`'s 30-second bound; a
+  `$` call in flight stops the hook's 10-second budget) while the
+  terminal's own dialog stays open; a web answer closes the terminal's
+  dialog within a second. A native AskUserQuestion is answered the same
+  way, returning `updatedInput: {questions, answers}`: answering it from a
+  `tool.call` hook instead ends the turn `aborted` under the doperpowers ask
+  mod, and the `PermissionRequest` path works with or without it, so the
+  order of the two mods' hooks no longer matters.
+- **The bridge withdraws a request the terminal answered.** The engine
+  does not tell the hook when the terminal answers first: the poll would
+  run on and a late web answer would be silently ignored. The bridge
+  watches for the request's end itself — the session record leaving
+  `waiting`, the matching `tool.call` settling, `turn.complete` — then
+  stops polling and settles the request with the terminal as the winner.
+- **A background subagent's prompt gets a bounded window.** For a
+  background subagent the engine awaits the hooks before it draws the
+  dialog (no dialog for 40 seconds of polling in C1), so the bridge waits
+  at most 3 seconds there, publishes that deadline with the request, and
+  after it the prompt is the terminal's alone.
+- **A person-only prompt never reaches the hooks**; the web shows it as
+  waiting in the terminal, from the session record.
+- **A prompt the bridge submits** is drawn in the terminal as "› Prompt
+  from the doperpowers plugin"; the model reads it as the human's words
+  (`asUser`), and the web draws it as the human's.
+
+The strongest alternative, inbox frames consumed by a `session.receive`
+hook, lost: frames drain only at the next tool round, so a frame cannot
+answer the permission prompt that blocks that round.
 
 **Why a bridge and not an SDK host.** **[binding — owner, 2026-10-15]** A
 per-machine host running sessions on the SDK stream-json wire (MAWS's engine
@@ -444,11 +468,11 @@ afleet's. Taste-heavy surfaces are reviewed as mockups in the web children.
 | --- | --- | --- |
 | Send | log | `human` event → `deliver_next` → bridge `$.prompt.submit({asUser: true})`, queued until idle |
 | Steer | RPC | bridge `$.session.append` of a user row, read at the loop's next request |
-| Interrupt | RPC | bridge `$.turn.abort` (the main loop's turn) |
-| Answer a question | RPC | bridge: the `tool.call` hook's result for a native AskUserQuestion; the ask mod's external-answer path for an async one |
+| Interrupt | RPC | bridge `$.turn.abort` (the main loop's turn), then `TaskStop` through `$.tool.call` on any Bash the abort moved to the background, as Esc kills it in the terminal |
+| Answer a question | RPC | bridge: `classic.PermissionRequest` returning `updatedInput: {questions, answers}` for a native AskUserQuestion; the ask mod's external-answer path for an async one |
 | Allow / deny | RPC | bridge `classic.PermissionRequest`, racing the terminal's dialog |
-| Model | RPC | bridge `$.config.set({key: 'model'})` |
-| Compact | RPC | bridge `$.session.compact()` between turns; during a turn it returns busy |
+| Model, effort | RPC | bridge rewrites `model` and `effort` on each of the session's requests in `turn.step` (this session only). `$.config.set({key: 'model'})` was rejected: it also saves the model as the user's default in `settings.json` (C1) |
+| Compact | RPC | bridge `$.session.compact()`; asked during a turn, the bridge holds it and runs it at `turn.complete` (the engine refuses it mid-turn) |
 | Spawn | RPC | daemon runs `sminos spawn` (`claude --bg`) with brief, model, effort |
 | Retire | RPC | daemon runs `sminos retire` |
 | Resume an ended session | RPC | daemon runs `claude --bg --resume <session>` in the session's working directory with no other flags (a flag makes the engine start a copy, `claude_args` in `sminos.py`), serialized per session, after checking it is live nowhere; then verifies the session the engine reports is the same id and, if the engine started a copy (the owner reopened it in a terminal meanwhile), stops the copy and fails — the postcondition `resume_session` in `sminos.py` already checks for seats; it rejoins (smns §2) |
@@ -476,10 +500,10 @@ button is pressed; the acceptance timings cite it]**
 | --- | --- | --- | --- | --- |
 | Send | log → `deliver_next` → `$.prompt.submit`, queued until idle | `control.sock` `reply`, at the next step | cross-session frame, at the next tool round | in the log; delivered when the daemon reconnects |
 | Steer | `$.session.append`, at the next model request | `reply`, at the next step | as send | fails at once |
-| Interrupt | `$.turn.abort`, within 2 s | no | no | fails at once |
-| Question | native: `tool.call` hook racing the dialog; async: the ask mod's external path | native: `reply` answers it; async: none (the ask mod is itself a mod) | terminal only | shown, not answerable |
-| Allow / deny | `classic.PermissionRequest` racing the dialog; a background subagent's prompt as C1 finds; a person-only prompt at the terminal only | terminal only | terminal only | shown, not answerable |
-| Model / compact | yes / between turns | no | no | fails at once |
+| Interrupt | `$.turn.abort` and `TaskStop`, within 2 s | no | no | fails at once |
+| Question | native: `PermissionRequest` racing the dialog; async: the ask mod's external path | native: `reply` answers it; async: none (the ask mod is itself a mod) | terminal only | shown, not answerable |
+| Allow / deny | `PermissionRequest` racing the dialog; a background subagent's prompt within its 3 s window, then terminal only; a person-only prompt terminal only | terminal only | terminal only | shown, not answerable |
+| Model / compact | per request / at the turn's end | no | no | fails at once |
 | Messages to the human | as each span completes | at Stop (the record hook) | at Stop | already in the log |
 | Presence | the session record, within 1 s | same | same | the last `state` event, with its age |
 | Depth | rows (100 ms flush) and `turn.step` chunks, subagents included | rows | rows | unavailable |
@@ -580,14 +604,13 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 
 ### 8. Delegated unknowns
 
-1. **The bridge, live** (C1). Each primitive is in the 2.1.300 mod API's
-   declarations, and a probe module using them passed `claude plugin
-   validate`; the combination has not run in a session. Also: whether the
-   terminal draws a row appended by `$.session.append` (it is stored as
-   meta, "a user-side row the person does not see as typed"; if hidden, the
-   bridge mirrors the steer as a `$.ui.log` line so both surfaces show the
-   same conversation), and the hook order that lets a web answer settle
-   above the ask mod's.
+1. **The bridge, live** (C1) — **resolved 2026-10-15**: every primitive
+   works on 2.1.300 in a terminal session and a `--bg` job; six work
+   differently than v1 assumed, and §2 and §5 now say how (the findings
+   file, `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md`).
+   The terminal does not draw a row appended by `$.session.append`, so the
+   bridge mirrors each steer as a `$.ui.log` line and both surfaces show
+   the same conversation.
 2. **The uplink's transport and concurrency** (C4): the HTTP pair against a
    WebSocket, and thread against process. Against SSE: an object holding a
    machine's open stream never hibernates and is billed for the whole time
@@ -643,7 +666,7 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Contracts:** —
 - **Design inheritance:** §2 Bridge, §5, §8 unknown 1.
 - **Required:** required.
-- **Status:** in-flight (2026-10-15).
+- **Status:** landed (2026-10-15; findings folded).
 
 ### C2: The bridge — plan
 
@@ -657,7 +680,10 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
   - **G2 (local control):** on one machine, without a hub, sminos verbs
     drive a terminal session and a `--bg` job: `sminos steer`, `sminos
     interrupt`, `sminos answer`, `sminos decide`, `sminos model`, `sminos
-    compact` act as §5 says, compact answering busy during a turn; `sminos
+    compact` act as §5 says, a compact asked during a turn running at its
+    end, an interrupt also ending a Bash the abort backgrounded, a model
+    change staying in this session (the user's `settings.json` untouched),
+    a steer mirrored in the terminal; `sminos
     answer` also answers an async question from the ask mod, through an
     external-answer path added to `hooks/mods/ask.tsx`; `sminos watch
     <member>` prints the live stream (text chunks, subagents included); a
@@ -677,10 +703,13 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Design inheritance:** §2 Bridge and Without the bridge [binding], §3
   sending and liveness of messages, §5 [binding], §6 bridge channel.
   Advisory: `hooks/mods/bridge.tsx` beside the other mods, registered in
-  `hooks/mods/register.tsx` before `registerAsk` so its hooks settle above
-  the ask mod's; the order is pinned by a test, not left to accident.
+  `hooks/mods/register.tsx`; C1's probe (`/tmp/c1probe`, kept as evidence)
+  is a working starting point for the child, the stand-in daemon, and the
+  drivers (`/tmp/c1tools`). C1's measured rates bound X5: 50–70 chunks a
+  second per streaming subagent, a post to the daemon p50 1–3 ms, p95 at
+  most 35 ms.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C1).
+- **Status:** not-dispatched (dispatchable: C1 landed).
 
 ### C3: The hub — plan
 
@@ -1039,6 +1068,11 @@ doperpowers; C3, C5, and C6 change arkho.
 - **Function hooks are behind a flag.** Without
   `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` the bridge does nothing; the daemon
   reports bridge-less sessions in the web rather than failing silently.
+- **Organization-managed installs.** `claude plugin validate` warns that
+  `PermissionRequest` hooks do not run in a user-installed plugin where an
+  organization manages Claude Code; on such a machine permissions and
+  questions are the terminal's alone, as the §5 table's no-bridge columns
+  say. Not the owner's machines; it matters for the org phase.
 - **One Durable Object per project may not carry the stream** (unknown 3).
 - **Porting MAWS's renderer is the largest piece of work.** C5 copies the
   skeleton, not the app; Electron-only surfaces (the in-app browser, voice,
@@ -1073,7 +1107,7 @@ a hub that connects into machines (§2).
 
 | child | artifact | status |
 | --- | --- | --- |
-| C1 bridge spike | findings: `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` | in-flight (dispatched 2026-10-15 at 8257d780) |
+| C1 bridge spike | findings: `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` | **landed 2026-10-15**: 11 items, every primitive promoted, six with a change folded into §2 and §5; probe kept at `/tmp/c1probe` |
 | C2 bridge | — | not-dispatched |
 | C3 hub | — | not-dispatched |
 | C4 uplink | — | not-dispatched |
@@ -1095,6 +1129,25 @@ a hub that connects into machines (§2).
 - Observation: `turn.step` streams subagents' token deltas; the SDK wire
   does not. Evidence: mod API declarations 2.1.300; MAWS
   `research/sdk-wire-gap.md` row 14.
+- Observation: C1 (live, 2.1.300) — the engine never tells a
+  `PermissionRequest` hook that the terminal answered first; a web answer
+  arriving after that is silently ignored, and the hook polls on.
+  Evidence: findings item 5, `daemon.log` in `/tmp/c1probe`.
+- Observation: answering a native AskUserQuestion from a `tool.call` hook
+  ends the turn `aborted` when the doperpowers ask mod is loaded; the same
+  answer through `PermissionRequest` `updatedInput` works in every setup.
+  Evidence: findings item 6.
+- Observation: `$.config.set({key: 'model'})` switches the session and also
+  writes the model into the user's `settings.json` as the default for
+  every new session. Evidence: findings item 7 (seen in a throwaway config
+  directory, `/tmp/c1cfg/settings.json`).
+- Observation: `$.turn.abort` leaves a running Bash alive, moved to the
+  background; `TaskStop` on its task id ends it. Evidence: findings item 4.
+- Observation: a background subagent's prompt draws no dialog while its
+  `PermissionRequest` hook polls (40 s observed); with a 3 s bound the
+  dialog appeared at 3.3 s. Evidence: findings item 10.
+- Observation: the engine blocks a long foreground `sleep` ("Blocked: sleep
+  30 followed by: echo …"). Evidence: findings, notes for the builder.
 - Observation: a message to a closed terminal session does not revive it
   in `.smns` as built; the v1 design said it did.
   Evidence: `push_member` in `skills/sminos/scripts/sminos.py`: "A session
@@ -1235,6 +1288,19 @@ a hub that connects into machines (§2).
   Rationale: each import closes a gap this design had (a double spawn, a
   pending set lost to eviction) or follows the owner's scope call; none
   collides with a binding clause.
+  Date/Author: 2026-10-15, design session.
+- Decision: C1's verdicts folded (all 11 promoted; six with a change).
+  Questions are answered through `PermissionRequest` `updatedInput`, not a
+  `tool.call` result, which removes the hook-order question; the bridge
+  withdraws a request the terminal answered; a background subagent's
+  prompt gets a 3-second window with a published deadline; interrupt adds
+  `TaskStop` for a Bash the abort backgrounded; model and effort are
+  rewritten per request in `turn.step`, rejecting `$.config.set`, which
+  writes the user's default; compact asked mid-turn runs at the turn's
+  end; steers are mirrored as `$.ui.log` lines; acceptance 6 uses a Python
+  sleep. C2 is dispatchable.
+  Rationale: measured in real sessions (findings file); each change keeps
+  the design's intent with the primitive that actually delivers it.
   Date/Author: 2026-10-15, design session.
 
 ## Outcomes & Retrospective
