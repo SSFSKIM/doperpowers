@@ -395,6 +395,15 @@ against the local hub; until it lands, the stand-in.
   <n>` (no `--`).
   Date/Author: 2026-10-15, the composite's writer (`0e7da91e`).
 
+- Decision: The suite gate under this machine's load. The three
+  assertions outside the session plane that fail only at load above 200
+  (Surprises, M1) are accepted as load flakes by the composite's writer
+  (`0e7da91e`); a milestone whose own suites and the sub-suites it
+  touches pass, with only those failing, meets the "stays green"
+  constraint. The final review's evidence repeats the full suite when the
+  load allows.
+  Date/Author: 2026-10-15, controller, from the composite's writer.
+
 ## Surprises & Discoveries
 
 - (M1) Under load above 200, three suite assertions outside the session
