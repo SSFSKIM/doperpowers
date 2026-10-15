@@ -90,7 +90,7 @@ type Call = { tool: string; owner: string | undefined; done: Promise<string | un
 /**
  * A steer, bound to the main turn it was given in before its row is appended.
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
- * `ended`: how its turn ended, when that came before the row was in.
+ * `ended`: how its turn ended, while some append of that turn is still pending.
  */
 type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string }
 /** A message still streaming, as the child's snapshot carries it (DX4). */
@@ -412,22 +412,36 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
     stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
   } catch (error) {
     state.steers = state.steers.filter((s) => s !== pending)
+    settleSteers($, pending.turnId)
     throw error
   }
   if (stored.deny !== undefined) {
     state.steers = state.steers.filter((s) => s !== pending)
+    settleSteers($, pending.turnId)
     return { ok: false, error: `the row was refused: ${stored.deny}` }
   }
   pending.isAppended = true
   $.ui.log(`steer: ${text}`)
-  if (pending.ended !== undefined) {
-    // Its turn ended while the row went in: no request of that turn read it.
-    state.steers = state.steers.filter((s) => s !== pending)
-    if (pending.ended === 'answer') {
-      wakeForSteer($)
-    }
-  }
+  settleSteers($, pending.turnId)
   return { ok: true, result: { row: stored.uuid } }
+}
+
+/**
+ * The one wake a turn owes for its steers: once the turn has ended and every
+ * append given in it has settled (in, refused, or failed), its steers are let
+ * go, and if it answered while a row of them was in and unread, the session
+ * is woken once. Called at the turn's end and as each pending append settles.
+ */
+function settleSteers($: EngineInterface, turnId: string) {
+  const mine = state.steers.filter((s) => s.turnId === turnId)
+  const ended = mine[0]?.ended
+  if (ended === undefined || mine.some((s) => !s.isAppended)) {
+    return
+  }
+  state.steers = state.steers.filter((s) => s.turnId !== turnId)
+  if (ended === 'answer' && mine.some((s) => !s.isRead)) {
+    wakeForSteer($)
+  }
 }
 
 /**
@@ -581,27 +595,24 @@ function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
 }
 
 /**
- * The end of the main turn: a compaction held for it, then, when the turn
- * answered before any request read a steer given in it, one wake (the row is
- * in the conversation already), as a prompt typed mid-turn would start the
- * next turn. A steer whose row is not in yet is marked with how its turn
- * ended, and wakes when it lands. An interrupted or failed turn wakes nothing.
+ * The end of the main turn: a compaction held for it, then the turn's steers
+ * settled (settleSteers): when it answered before any request read one, one
+ * wake (the row is in the conversation already), as a prompt typed mid-turn
+ * would start the next turn — at once, or once the last of its pending
+ * appends settles. An interrupted or failed turn wakes nothing.
  */
 async function mainTurnEnded($: EngineInterface, turnId: string, reason: string) {
-  const mine = state.steers.filter((s) => s.turnId === turnId)
-  const unread = mine.some((s) => s.isAppended && !s.isRead)
-  for (const s of mine) {
-    s.ended = reason
+  for (const s of state.steers) {
+    if (s.turnId === turnId) {
+      s.ended = reason
+    }
   }
-  state.steers = state.steers.filter((s) => s.turnId !== turnId || !s.isAppended)
   const request = state.compact
   state.compact = undefined
   if (request !== undefined) {
     await runCompaction($, request)
   }
-  if (reason === 'answer' && unread) {
-    wakeForSteer($)
-  }
+  settleSteers($, turnId)
 }
 
 function onLine($: EngineInterface, generation: number, line: string) {

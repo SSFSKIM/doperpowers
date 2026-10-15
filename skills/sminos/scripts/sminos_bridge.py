@@ -204,7 +204,7 @@ class Bridge:
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
-        self.notes = []          # the child's own events, made while applying the mod's
+        self.failing = False     # the last write failed (said once, and again when one succeeds)
 
     # -- the mod's events
 
@@ -214,14 +214,21 @@ class Bridge:
             self.mod_last = time.time()
             for e in events:
                 self._apply(e)
-                for item in [e] + self.notes:
-                    for sub in list(self.subscribers):
-                        try:
-                            sub.put_nowait(item)
-                        except queue.Full:   # its writer drains the backlog, then ends it
-                            self.subscribers.discard(sub)
-                            sub.cut = True
-                self.notes = []
+                self._fan_out(e)
+            # Whatever the batch did, what is kept and not yet on disk is
+            # written now: an event that moves nothing still retries a failed
+            # write.
+            note = self._save()
+            if note is not None:
+                self._fan_out(note)
+
+    def _fan_out(self, e):
+        for sub in list(self.subscribers):
+            try:
+                sub.put_nowait(e)
+            except queue.Full:   # its writer drains the backlog, then ends it
+                self.subscribers.discard(sub)
+                sub.cut = True
 
     def _apply(self, e):
         kind, phase = e.get("type"), e.get("phase")
@@ -303,20 +310,25 @@ class Bridge:
                 w[0].set()
 
     def _keep(self, kept):
-        """What is kept for the session (the mod's copy), written whole while it
-        differs from what the file holds (under the lock, by the event that
-        changed it). `saved` moves only once a write succeeded, so a write that
-        failed is tried again at the next event; the failure is said on the
-        stream as the child's own `kept` event."""
+        """What is kept for the session: the mod's copy, written at the end of
+        the batch that changed it (_save)."""
         self.kept = kept
-        if kept == self.saved:
-            return
+
+    def _save(self):
+        """Writes what is kept, whole, while it differs from what the file
+        holds (under the lock, at the end of each batch of the mod's events).
+        `saved` moves only once a write succeeded, so a failed write is tried
+        again with the next batch, whatever it carries. The child's own `kept`
+        event says when writing starts to fail and when it works again; None
+        when there is nothing to say."""
+        if self.kept == self.saved:
+            return None
         path = kept_path(self.session)
         tmp = "%s.%d.tmp" % (path, os.getpid())
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
-                json.dump(kept, f)
+                json.dump(self.kept, f)
             os.replace(tmp, path)
         except OSError as err:
             try:
@@ -324,10 +336,16 @@ class Bridge:
             except OSError:
                 pass
             sys.stderr.write("sminos bridge: %s not kept: %s\n" % (path, err))
-            self.notes.append({"type": "kept", "ok": False, "error": "%s not written: %s" % (path, err),
-                               "t": int(time.time() * 1000)})
-            return
-        self.saved = kept
+            if self.failing:
+                return None
+            self.failing = True
+            return {"type": "kept", "ok": False, "error": "%s not written: %s" % (path, err),
+                    "t": int(time.time() * 1000)}
+        self.saved = self.kept
+        if not self.failing:
+            return None
+        self.failing = False
+        return {"type": "kept", "ok": True, "t": int(time.time() * 1000)}
 
     def snapshot(self):
         return {"type": "snapshot", "session": self.session, "protocol": PROTOCOL, "pid": os.getpid(),
@@ -695,8 +713,9 @@ class Renderer:
             self.line("· delivered %s:%s %s" % (k.get("writer"), k.get("seq"), e.get("outcome")))
         elif kind == "gap":
             self.line("· %s events were lost on the way from the session" % e.get("dropped"))
-        elif kind == "kept" and not e.get("ok"):
-            self.line("· the bridge could not keep its state on disk: %s" % e.get("error"))
+        elif kind == "kept":
+            self.line("· the bridge keeps its state on disk again" if e.get("ok") else
+                      "· the bridge could not keep its state on disk: %s" % e.get("error"))
 
     def _name(self, a):
         if a.get("agentId"):

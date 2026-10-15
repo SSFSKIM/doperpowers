@@ -75,7 +75,7 @@ function fakeChild(argv: readonly string[]) {
  * spawned children, posts (each released by the test when `hold` is set),
  * timers fired by hand.
  */
-function harness(options: { env?: Record<string, string>; hold?: boolean; failAt?: number[]; holdAppend?: boolean; taskStopFails?: string[] } = {}) {
+function harness(options: { env?: Record<string, string>; hold?: boolean; failAt?: number[]; holdAppend?: boolean; taskStopFails?: string[]; denyAppend?: string } = {}) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
@@ -103,7 +103,8 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
       append: (args: unknown) => {
         calls.push({ op: 'append', args })
-        const stored = { uuid: `row-${calls.length}`, message: {} }
+        const denied = options.denyAppend !== undefined && JSON.stringify(args).includes(options.denyAppend)
+        const stored = denied ? { deny: 'refused by a hook' } : { uuid: `row-${calls.length}`, message: {} }
         if (!options.holdAppend) {
           return Promise.resolve(stored)
         }
@@ -637,6 +638,60 @@ describe('steer', () => {
     expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE])
     await h.complete('t2')
     expect(h.calls.filter((c) => c.op === 'submit').length).toBe(1)
+  })
+
+  test('two steers pending when their turn answers wake it once, after both rows are in', async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    h.children[0]!.write(line({ id: 's1', op: 'steer', text: 'one' }))
+    h.children[0]!.write(line({ id: 's2', op: 'steer', text: 'two' }))
+    await h.settle()
+    expect(h.appends.length).toBe(2)
+    await h.complete('t1')
+    h.appends[0]!()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(0) // the second is still outstanding
+    h.appends[1]!()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE])
+  })
+
+  test('an appended unread steer and a pending one on one answered turn wake it once, when the pending one lands', async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    h.children[0]!.write(line({ id: 's1', op: 'steer', text: 'one' }))
+    await h.settle()
+    h.appends[0]!() // in, and no request reads it
+    await h.settle()
+    h.children[0]!.write(line({ id: 's2', op: 'steer', text: 'two' }))
+    await h.settle()
+    await h.complete('t1')
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(0) // waits for the outstanding append
+    h.appends[1]!()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE])
+    await h.turn('t2')
+    await h.complete('t2')
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(1)
+  })
+
+  test("a refused append settles its turn's wake: the other steer's row still wakes it once", async () => {
+    const h = harness({ holdAppend: true, denyAppend: 'blocked' })
+    await h.ready()
+    await h.turn('t1')
+    h.children[0]!.write(line({ id: 's1', op: 'steer', text: 'kept' }))
+    h.children[0]!.write(line({ id: 's2', op: 'steer', text: 'blocked' }))
+    await h.settle()
+    h.appends[0]!()
+    await h.settle()
+    await h.complete('t1')
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(0)
+    h.appends[1]!() // refused
+    await h.settle()
+    expect(h.ofType('result').find((e) => e.id === 's2')).toMatchObject({ ok: false })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE])
   })
 
   test('a pending steer whose turn is interrupted wakes nothing when its row lands', async () => {
