@@ -20,6 +20,7 @@ streamed text differs from its row. Hermetic: HOME and SMINOS_HOME are
 temporary; nothing reaches beyond 127.0.0.1 and this directory.
 """
 
+import base64
 import http.client
 import json
 import os
@@ -30,6 +31,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import uuid as uuidlib
 from unittest import mock
 
@@ -46,6 +48,7 @@ sys.path.insert(0, HERE)
 
 import fake_session  # noqa: E402
 import sminos_plane as plane  # noqa: E402
+import ws_client  # noqa: E402
 
 fake_session.READY_HOLD = 0.5
 PROJECT = "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59"
@@ -566,29 +569,25 @@ class Lifecycle(unittest.TestCase):
                 os.unlink(settings)
 
 
-class Hub:
-    """The test's hands on the hub stand-in."""
-
-    def __init__(self, port):
-        self.port = port
-
-    def call(self, method, path, body=None):
-        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
-        c.request(method, path, body=None if body is None else json.dumps(body),
-                  headers={"Content-Type": "application/json"})
+def call(url, method, path, body=None, headers=None):
+    u = urllib.parse.urlsplit(url)
+    c = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
+    c.request(method, path, body=None if body is None else json.dumps(body),
+              headers={"Content-Type": "application/json", **(headers or {})})
+    try:
         r = c.getresponse()
         return r.status, json.loads(r.read() or b"{}")
+    finally:
+        c.close()
 
-    def state(self):
-        return self.call("GET", "/control/state")[1]
 
-    def send(self, frame_):
-        status, body = self.call("POST", "/control/send", {"frames": [frame_]})
-        assert status == 200, body
-        return body
+class Hub:
+    """The hub the uplink talks to, as the tests use it: what it relays (the
+    DX4 messages a browser of the project would see, in order), the frames
+    a browser's subscription makes it send the machine, and a dropped stream.
+    The base reads its messages from `messages()`."""
 
-    def messages(self):
-        return [s["message"] for s in self.state()["sessions"]]
+    machine = "testhost"
 
     def wait(self, test, timeout=10.0):
         """The messages once `test(messages)` holds, else None."""
@@ -601,8 +600,134 @@ class Hub:
         return None
 
 
+class StandinHub(Hub):
+    """hub_standin.py (DX2's machine side): every `session` message a POST
+    carried, and any frame sent down as the test asks."""
+
+    org = "org-1"
+
+    def __init__(self, spawn):
+        port_file = os.path.join(T, "hub.port")
+        spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1", "2000"])
+        deadline = time.time() + 10
+        while not (os.path.exists(port_file) and read(port_file)) and time.time() < deadline:
+            time.sleep(0.05)
+        self.url = "http://127.0.0.1:%s" % read(port_file)
+
+    def enroll(self, _sminos_cli):
+        cred = os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")
+        os.makedirs(os.path.dirname(cred), exist_ok=True)
+        with open(cred, "w") as f:
+            json.dump({"hub": self.url, "org": self.org, "machine": self.machine, "client_id": "cid-1",
+                       "client_secret": "secret-1", "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}, f)
+        os.chmod(cred, 0o600)
+
+    def follow(self, _project):
+        pass
+
+    def state(self):
+        return call(self.url, "GET", "/control/state")[1]
+
+    def send(self, frame_):
+        status, body = call(self.url, "POST", "/control/send", {"frames": [frame_]})
+        assert status == 200, body
+
+    def messages(self):
+        return [s["message"] for s in self.state()["sessions"]]
+
+    def drop(self):
+        """Ends the uplink's stream; a predicate: whether a newer one opened."""
+        before = self.state()["generation"]
+        call(self.url, "POST", "/control/drop", {})
+        return lambda: self.state()["generation"] > before
+
+
+class LocalHub(Hub):
+    """DC3's local hub behind its stand-in for Access (DESK_HUB, its URL): the
+    machine enrolls with a code the stand-in mints, and the test is a
+    browser of the project (DX3), subscribing over its socket."""
+
+    org = "local"
+
+    def __init__(self, url):
+        self.url = url.rstrip("/")
+        self.socket = None
+        # The hub keeps its machines across runs: a name of this run's own.
+        self.machine = "testhost-" + uuidlib.uuid4().hex[:6]
+
+    def enroll(self, sminos_cli):
+        status, body = call(self.url, "POST", "/standin/enrollment-code", {"machine": self.machine})
+        assert status == 200, body
+        r = subprocess.run([sminos_cli, "hub", "enroll", "--name", self.machine], input=body["code"].encode(),
+                           capture_output=True)
+        assert r.returncode == 0, (r.stdout + r.stderr).decode()
+
+    def follow(self, project):
+        """Opens the browser's socket once the uplink registered the project."""
+        ws_url = "ws" + self.url[len("http"):] + "/api/projects/%s/socket" % project
+        deadline = time.time() + 20
+        while True:
+            try:
+                self.socket = ws_client.WebSocket(ws_url)
+                return
+            except OSError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.2)
+
+    def close(self):
+        if self.socket is not None:
+            self.socket.close()
+
+    def send(self, frame_):
+        """A down frame the test wants the machine to receive, as the browser
+        frame that makes the hub send it (DX3)."""
+        t = frame_["t"]
+        keep = {"subscribe": ("session", "agentId", "sub"), "unsubscribe": ("sub",), "rows": ("sub", "before", "limit"),
+                "diff": ("sub",)}[t]
+        out = {"t": t, **{k: frame_[k] for k in keep}}
+        if t == "subscribe":
+            out["machine"] = self.machine
+        self.socket.send(out)
+
+    def messages(self):
+        out = []
+        for f in self.socket.received():
+            if f.get("t") == "session":
+                out.append(f["message"])
+            elif f.get("t") == "machines":
+                out += [{"kind": "machine", "session": None, "sub": None, "machine": m["machine"],
+                         "body": {k: v for k, v in m.items() if k != "machine"}}
+                        for m in f["machines"] if m.get("machine") == self.machine]
+        return out
+
+    def drop(self):
+        """A second stream under the machine's credential ends the uplink's
+        (DX2: a new stream ends the previous one); the uplink reconnects and
+        ends it in turn. A predicate: whether the uplink's newer stream is
+        open, which the caller reads from its presence said again."""
+        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")) as f:
+            cred = json.load(f)
+        u = urllib.parse.urlsplit(self.url)
+        c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+        c.request("GET", "/machine/stream", headers={"CF-Access-Client-Id": cred["client_id"],
+                                                     "CF-Access-Client-Secret": cred["client_secret"],
+                                                     "Accept": "text/event-stream"})
+        r = c.getresponse()
+        assert r.status == 200, r.status
+        r.fp.readline()  # its welcome: the uplink's stream is over
+        c.close()
+        return lambda: True
+
+
+def make_hub(spawn):
+    url = os.environ.get("DESK_HUB")
+    return LocalHub(url) if url else StandinHub(spawn)
+
+
 class Uplink(unittest.TestCase):
-    """The plane on the uplink's stream, against the hub stand-in."""
+    """The plane on the uplink's stream, against the hub stand-in, or against
+    DC3's local hub when DESK_HUB names its stand-in for Access."""
 
     @classmethod
     def setUpClass(cls):
@@ -615,23 +740,18 @@ class Uplink(unittest.TestCase):
         os.chmod(os.path.join(cls.bin, "claude"), 0o755)
         os.environ["PATH"] = cls.bin + os.pathsep + os.environ["PATH"]
         os.environ["SMINOS_DERIVE_EVERY"] = "0"
-        port_file = os.path.join(T, "hub.port")
-        cls.spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1", "2000"])
-        deadline = time.time() + 10
-        while not (os.path.exists(port_file) and read(port_file)) and time.time() < deadline:
-            time.sleep(0.05)
-        cls.hub = Hub(int(read(port_file)))
-        url = "http://127.0.0.1:%d" % cls.hub.port
+        cls.hub = make_hub(cls.spawn)
+        sminos_cli = os.path.join(SCRIPTS, "sminos")
+        cls.hub.enroll(sminos_cli)
 
         cls.root = os.path.join(T, "hp")
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
         subprocess.run(git + ["init", "-q", cls.root], check=True)
-        sminos_cli = os.path.join(SCRIPTS, "sminos")
         subprocess.run([sminos_cli, "project", "init", "--name", "hubproj"], cwd=cls.root, check=True,
                        capture_output=True)
         smns = os.path.join(cls.root, ".smns")
         d = json.loads(read(smns))
-        d["hub"] = {"url": url, "org": "org-1"}
+        d["hub"] = {"url": cls.hub.url, "org": cls.hub.org}
         with open(smns, "w") as f:
             json.dump(d, f, indent=2)
         cls.project = d["project"]
@@ -648,15 +768,8 @@ class Uplink(unittest.TestCase):
         cls.fake = fake_session.FakeSession(home, sh, cls.sid)
         cls.fake.user_row("hello")
         subprocess.run([sminos_cli, "daemon", "tick"], check=True, capture_output=True)
-
-        key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-        os.makedirs(os.path.join(sh, "daemon"), exist_ok=True)
-        cred = os.path.join(sh, "daemon", "hub.json")
-        with open(cred, "w") as f:
-            json.dump({"hub": url, "org": "org-1", "machine": "testhost", "client_id": "cid-1",
-                       "client_secret": "secret-1", "key": key}, f)
-        os.chmod(cred, 0o600)
         cls.uplink = cls.spawn([sminos_cli, "daemon", "uplink"])
+        cls.hub.follow(cls.project)
         ok = cls.hub.wait(lambda ms: any(m["kind"] == "presence" and m["session"] == cls.sid for m in ms))
         assert ok is not None, "the uplink connected and said its sessions' presence"
 
@@ -678,6 +791,8 @@ class Uplink(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.fake.stop_bridge()
+        if isinstance(cls.hub, LocalHub):
+            cls.hub.close()
         for p in reversed(cls.procs):
             p.terminate()
         for p in cls.procs:
@@ -691,20 +806,16 @@ class Uplink(unittest.TestCase):
     def presences(self, ms):
         return [m["body"] for m in ms if m["kind"] == "presence" and m["session"] == self.sid]
 
-    def generation(self):
-        return self.hub.state()["generation"]
-
     def reconnect(self):
         """Drops the stream; returns once the uplink is back with presence said again."""
-        before = self.generation()
-        count = len(self.hub.state()["sessions"])
-        self.hub.call("POST", "/control/drop", {})
-        ok = self.hub.wait(lambda ms: len(ms) > count and self.generation() > before and any(
+        count = len(self.hub.messages())
+        newer = self.hub.drop()
+        ok = self.hub.wait(lambda ms: len(ms) > count and newer() and any(
             m["kind"] == "presence" and m["session"] == self.sid for m in ms[count:]), timeout=15)
         self.assertIsNotNone(ok, "the uplink reconnected and said presence again")
 
     def subscribe(self, agent=None):
-        sub = "sub-" + uuidlib.uuid4().hex[:12]
+        sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()  # DX3: 128 bits, base64url
         self.hub.send({"t": "subscribe", "project": self.project, "session": self.sid, "agentId": agent, "sub": sub})
         b = Browser()
         b.agent = agent
@@ -718,7 +829,7 @@ class Uplink(unittest.TestCase):
         while time.time() < deadline:
             mine = [m for m in self.hub.messages() if m.get("sub") == b.sub]
             for m in mine[b.seen:]:
-                self.assertEqual((m["project"], m["machine"], m["session"]), (self.project, "testhost", self.sid))
+                self.assertEqual((m["project"], m["machine"], m["session"]), (self.project, self.hub.machine, self.sid))
                 b.take(m)
             b.seen = len(mine)
             if until():
@@ -753,6 +864,8 @@ class Uplink(unittest.TestCase):
         self.assertIsNotNone(got, "a bridge that answers is said")
         self.assertLess(time.time() - t0, 1.0)
         self.write_record({"status": "busy"})
+        self.assertIsNotNone(self.hub.wait(lambda ms: (self.presences(ms) or [{}])[-1].get("record") == {"status": "busy"},
+                                           timeout=3), "said before the drop, so what follows it is the republish")
         self.reconnect()
         ms = self.hub.messages()
         self.assertEqual(self.presences(ms)[-1], {"record": {"status": "busy"}, "bridge": True},
@@ -849,12 +962,22 @@ class Uplink(unittest.TestCase):
         self.assertIn("+two", b.diff["text"])
         self.assertIn("+fresh", b.diff["text"])
         self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
-        self.assertTrue(self.feed(b, lambda: b.end is not None))
-        self.assertEqual(b.end["reason"], "unsubscribed")
+        if isinstance(self.hub, StandinHub):
+            # The stand-in shows what the machine posted: its end.
+            self.assertTrue(self.feed(b, lambda: b.end is not None))
+            self.assertEqual(b.end["reason"], "unsubscribed")
+        else:
+            # The hub drops the browser's route first, so the machine's end
+            # reaches nobody (relay: a message for a sub nobody holds); the
+            # sub falls silent while the session goes on.
+            seen = b.seen
+            self.fake.user_row("after the unsubscribe")
+            self.feed(b, lambda: False, timeout=1.0)
+            self.assertEqual(b.seen, seen, "nothing more for the sub")
         self.assertEqual(b.errors, [])
 
     def test_c_unknown_session(self):
-        sub = "sub-" + uuidlib.uuid4().hex[:12]
+        sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
         other = new_session()
         self.hub.send({"t": "subscribe", "project": self.project, "session": other, "agentId": None, "sub": sub})
         ms = self.hub.wait(lambda ms: any(m.get("sub") == sub for m in ms))
