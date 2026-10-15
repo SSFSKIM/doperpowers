@@ -7,10 +7,13 @@ they produce only rarely.
 
 The endpoint follows DX5 as DC2's M4 agreed it with the composite's writer
 (DC2's plan, Decision Log "M4 scope, agreed with the composite's writer for
-DC7", rules 1–4), not DC2's code:
+DC7", rules 1–4, with the row order made disk order by composite cd2667d8),
+not DC2's code:
 
-- every row the mod observes gets one notice on the ordered stream, before it
-  is written: `block-row` for a response row, `row-seen` for any other;
+- every row the mod observes gets one notice on the ordered stream once the
+  engine has taken it — so a row's notice follows its flush by default, and
+  may come before it when the test says: `block-row` for a response row,
+  `row-seen` for any other;
 - the snapshot carries `cut`, the last notice applied per loop (`"main"` or
   the agent id), under the lock that applies chunks and block-rows;
 - `GET /status` says `ready` once the mod's first `resync` is applied, and
@@ -208,13 +211,14 @@ class Message:
         self.fake.post([{"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": 0}])
 
     def row(self, index, post=True, disk=True, uuid=None):
-        """The block's row: its uuid; `post` sends its block-row, `disk` writes
-        it (the notice first when both)."""
+        """The block's row: its uuid; `disk` writes it, then `post` sends its
+        block-row (the notice trails the flush, as the producer posts it once
+        the engine has taken the row)."""
         uuid = uuid or str(uuidlib.uuid4())
-        if post:
-            self.notice(index, uuid)
         if disk:
             self.write(index, uuid)
+        if post:
+            self.notice(index, uuid)
         return uuid
 
     def write(self, index, uuid):
@@ -271,12 +275,16 @@ class FakeSession:
 
     def user_row(self, text, agent=None, post=True, disk=True, uuid=None):
         uuid = uuid or str(uuidlib.uuid4())
-        if post:
-            self.post([{"type": "row-seen", "uuid": uuid, "agentId": agent, "door": "append", "t": 0}])
         if disk:
             self.write_row(agent, {"type": "user", "uuid": uuid, "agentId": agent,
                                    "message": {"role": "user", "content": text}})
+        if post:
+            self.seen(uuid, agent)
         return uuid
+
+    def seen(self, uuid, agent=None):
+        """A row-seen notice for a row the engine took."""
+        self.post([{"type": "row-seen", "uuid": uuid, "agentId": agent, "door": "append", "t": 0}])
 
     # -------------------------------------------------- the endpoint
 

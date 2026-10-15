@@ -21,18 +21,21 @@ main one (`agentId` null) or one subagent's. The answer is DX4's: a snapshot
 the subagent tree; presence; the bridge's streaming entries; usage on a main
 one), then `row`, `chunk`, `block-row`, `subagents`, `usage`, each numbered,
 and `end`. Rows come from the transcript on disk and everything live from the
-bridge's DX5 stream, so the two are joined in one order (DX5's ordering rules,
-DC2's M4 as agreed for DC7):
+bridge's DX5 stream, so the two are joined in one order — the disk's (DX5's
+row order, composite cd2667d8):
 
-- every row the mod observes gets one notice on the bridge's stream before it
-  is written: `block-row` for a response row, `row-seen` for any other;
+- every row the mod observes gets one notice on the bridge's stream once the
+  engine has taken it, so within a loop notice order is write order and a
+  notice may trail the flush: `block-row` for a response row, `row-seen` for
+  any other;
 - the bridge's snapshot carries `cut`, per loop the last notice it applied:
-  history is the loop's rows up to and including it (to the end of the file
-  when it is null), so no block still streaming has its row in history;
-- live, each notice emits the row it names once the row is on disk, in notice
-  order, and a row not there within NOTICE_WAIT ends the subscription;
-- a row past the cut that no notice named within UNNAMED_WAIT is emitted in
-  disk order (a row the mod never sees);
+  history is the loop's rows up to and including it, once that row is on
+  disk (NOTICE_WAIT, else the subscription ends; to the end of the file when
+  the cut is null), so no block still streaming has its row in history;
+- live, each loop's rows go out strictly in disk order: a row past the cut
+  is released by its own notice, by a notice for any later row of the loop,
+  or after UNNAMED_WAIT with neither, and every later row waits behind it; a
+  notice whose row is not on disk within NOTICE_WAIT ends the subscription;
 - a `row-seen` for a row already emitted is passed over; a `block-row` for a
   row already emitted as unnamed, or for one the snapshot held while the
   subscriber still holds its block's streamed text, ends the subscription,
@@ -290,8 +293,8 @@ class Subscription:
         self.tail = Tail()
         self.rows = []                # read while the snapshot waits for its cut
         self.emitted = {}             # uuid → "history" | "named" | "unnamed"
-        self.pool = collections.OrderedDict()  # uuid → [row, first seen, named]: past the cut, not yet emitted
-        self.notices = collections.deque()     # [uuid, when]: rows named, in notice order
+        self.pool = collections.OrderedDict()  # uuid → [row, first seen]: past the cut, not yet emitted, disk order
+        self.noticed = {}             # uuid → when: notices whose row is not emitted yet
         self.upto = {}                # (turnId, agentId, step) → the snapshot's watermark
         self.held = set()             # (turnId, agentId, step, index): blocks whose text the subscriber holds
         self.stream_over = False      # the bridge's stream ended with the session
@@ -350,9 +353,8 @@ class Subscription:
             self.drain(now, out)
             if not self.ended:
                 self.read(now)
-                self.resolve(now, out)
+                self.release(now, out)
             if not self.ended:
-                self.age(now, out)
                 self.subagents(now, out)
                 self.finish(now, out)
         except Reset as e:
@@ -397,7 +399,7 @@ class Subscription:
         for u, _ in history:
             self.emitted[u] = "history"
         for u, row in past:
-            self.pool[u] = [row, now, False]
+            self.pool[u] = [row, now]
         shown, more = newest_first(history)
         streaming = []
         if self.bridged:
@@ -476,7 +478,7 @@ class Subscription:
             return
         kind = e.get("type")
         was = self.emitted.get(u)
-        if was is not None or any(q[0] == u for q in self.notices):
+        if was is not None or u in self.noticed:
             if kind == "row-seen":
                 return
             block = (e.get("turnId"), e.get("agentId"), e.get("step"), e.get("index"))
@@ -487,41 +489,40 @@ class Subscription:
             return
         if kind == "block-row":
             out.append(self.message("block-row", block_row(e)))
-        self.notices.append([u, now])
-        if u in self.pool:
-            self.pool[u][2] = True
+        self.noticed[u] = now
 
     def read(self, now):
         for u, row in self.tail.read(self.path(now)):
-            if u in self.emitted or u in self.pool:
-                continue
-            self.pool[u] = [row, now, any(q[0] == u for q in self.notices)]
+            if u not in self.emitted and u not in self.pool:
+                self.pool[u] = [row, now]
 
-    def resolve(self, now, out):
-        while self.notices:
-            u, at = self.notices[0]
-            if u in self.pool:
-                row = self.pool.pop(u)[0]
-                self.emitted[u] = "named"
-                out.append(self.message("row", {"row": row, "agentId": self.agent}))
-            elif u not in self.emitted:
-                if now - at > NOTICE_WAIT:
-                    out += self.end("discontinuity", "row %s, named by the bridge, did not reach the transcript "
-                                                     "within %g s" % (u, NOTICE_WAIT))
-                return
-            self.notices.popleft()
-
-    def age(self, now, out):
+    def release(self, now, out):
+        """The rows past the cut, strictly in disk order: the first goes once
+        its own notice came, or a notice for any later row of the loop (one
+        whose row is not on disk yet is later than every row that is), or
+        after UNNAMED_WAIT with neither; every later row waits behind it. A
+        notice whose row is not on disk within NOTICE_WAIT ends the
+        subscription."""
         wait = UNNAMED_WAIT if self.bridged else 0.0
-        for u in list(self.pool):
-            row, seen, named = self.pool[u]
-            if named:
-                continue
-            if now - seen < wait:
+        order = list(self.pool)
+        upto = len(order) - 1 if any(u not in self.pool for u in self.noticed) else \
+            max((i for i, u in enumerate(order) if u in self.noticed), default=-1)
+        for i, u in enumerate(order):
+            if i > upto and now - self.pool[u][1] < wait:
+                break
+            out.append(self.release_row(u))
+        for u, at in self.noticed.items():
+            if now - at > NOTICE_WAIT:
+                out += self.end("discontinuity", "row %s, named by the bridge, did not reach the transcript "
+                                                 "within %g s" % (u, NOTICE_WAIT))
                 return
-            del self.pool[u]
-            self.emitted[u] = "unnamed"
-            out.append(self.message("row", {"row": row, "agentId": self.agent}))
+
+    def release_row(self, u):
+        """The row message for a row past the cut; it counts as named when its
+        own notice came."""
+        row = self.pool.pop(u)[0]
+        self.emitted[u] = "named" if self.noticed.pop(u, None) is not None else "unnamed"
+        return self.message("row", {"row": row, "agentId": self.agent})
 
     def subagents(self, now, out):
         if self.agent is not None or now < self.next_tree:
@@ -542,9 +543,7 @@ class Subscription:
         if now < self.ending_at:
             return
         for u in list(self.pool):
-            row = self.pool.pop(u)[0]
-            self.emitted[u] = "unnamed"
-            out.append(self.message("row", {"row": row, "agentId": self.agent}))
+            out.append(self.release_row(u))
         out += self.end("session-ended")
 
     # ---------------------------------------------------- on request
@@ -651,16 +650,74 @@ class Records:
         return live
 
     def running(self, rec):
-        if not sminos.pid_alive(rec.get("pid")):
+        """The record's pid is alive and is the process the record describes.
+        What was learned of a pid is dropped once the pid is seen dead, so a
+        record left behind whose pid is later reused is checked against the
+        process the pid holds now."""
+        pid = rec.get("pid")
+        if not sminos.pid_alive(pid):
+            self.same = {k: v for k, v in self.same.items() if k[0] != pid}
             return False
-        key = (rec.get("pid"), rec.get("procStart"))
+        key = (pid, rec.get("procStart"))
         if key not in self.same:
+            sminos.forget_caches()  # the start time ps gives now, not one sminos read for this pid before
             self.same[key] = sminos.same_process(rec)
         return self.same[key]
 
 
 def record_body(rec):
     return {k: rec[k] for k in RECORD_FIELDS if k in rec} if rec is not None else None
+
+
+class Bridges:
+    """Whether each session's bridge answers (DX5's `GET /status` with its
+    session id), learned off the uplink's thread: `answers` returns what is
+    known at once and starts a probe when the socket changed or the answer is
+    BRIDGE_RECHECK old, one at a time per session, each on a thread of its
+    own; a probe whose answer differs wakes the uplink. A bridge that listens
+    and never answers holds only its own probe. Kept across streams."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.held = {}            # session → [socket inode, answered, probed at, probing]
+        self.wake = lambda: None
+
+    def answers(self, sid, now):
+        path = bridge.endpoint(sid)
+        try:
+            ino = os.stat(path).st_ino
+        except OSError:
+            with self.lock:
+                self.held.pop(sid, None)
+            return False
+        with self.lock:
+            h = self.held.setdefault(sid, [ino, False, None, False])
+            if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
+                h[3] = True
+                threading.Thread(target=self.probe, args=(sid, path, ino, now), name="plane-probe",
+                                 daemon=True).start()
+            return h[1]
+
+    def probe(self, sid, path, ino, now):
+        answered = False
+        try:
+            status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
+            answered = status == 200 and isinstance(body, dict) and body.get("session") == sid
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+        with self.lock:
+            h = self.held.get(sid)
+            if h is None:
+                return
+            changed = h[1] != answered
+            h[:] = [ino, answered, now, False]
+        if changed:
+            self.wake()
+
+    def known(self, sid):
+        with self.lock:
+            h = self.held.get(sid)
+            return bool(h and h[1])
 
 
 # ------------------------------------------------------------- the plane
@@ -671,16 +728,17 @@ class Plane:
     subscriptions it serves. Made anew with every stream; `close` lets the
     readers go."""
 
-    def __init__(self, machine, wake):
+    def __init__(self, machine, wake, bridges=None):
         self.machine = machine
         self.wake = wake
+        self.bridges = bridges or Bridges()   # kept across streams by the uplink: no answer is relearned
+        self.bridges.wake = wake
         self.records = Records()
         self.live = {}            # session → its engine record, as last scanned
         self.next_scan = 0.0
         self.here = {}            # project id → {session: cwd}: the sessions that joined it from this machine
         self.members = {}         # project id → {session}: its local members, whose presence is published
         self.sent = {}            # (project id, session) → presence body last sent
-        self.bridges = {}         # session → (socket inode, answered, checked at)
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
         self.read_for = None      # the running sessions the members were last read for
@@ -708,26 +766,8 @@ class Plane:
 
     # ---------------------------------------------------- presence
 
-    def bridge_answers(self, sid, now):
-        path = bridge.endpoint(sid)
-        try:
-            ino = os.stat(path).st_ino
-        except OSError:
-            self.bridges.pop(sid, None)
-            return False
-        held = self.bridges.get(sid)
-        if held is None or held[0] != ino or now - held[2] >= BRIDGE_RECHECK:
-            answered = False
-            try:
-                status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
-                answered = status == 200 and isinstance(body, dict) and body.get("session") == sid
-            except (OSError, http.client.HTTPException):
-                pass
-            held = self.bridges[sid] = (ino, answered, now)
-        return held[1]
-
     def presence_of(self, sid, now):
-        return {"record": record_body(self.live.get(sid)), "bridge": self.bridge_answers(sid, now)}
+        return {"record": record_body(self.live.get(sid)), "bridge": self.bridges.answers(sid, now)}
 
     def presence(self, pid, force=False, now=None):
         """DX4 presence for the project's sessions whose presence changed
@@ -771,10 +811,12 @@ class Plane:
             self.refresh(project)
             if sid not in self.here.get(project.id, {}):
                 return refuse("no session %s of %s on this machine" % (sid, project.name))
-        now = time.monotonic()
         self.live = self.records.scan()
         reader = None
-        if self.bridge_answers(sid, now):
+        if os.path.exists(bridge.endpoint(sid)):
+            # The reader finds out whether it answers, off this thread: a
+            # socket nobody listens on is "unavailable", and the
+            # subscription is served from the transcript alone.
             reader = BridgeReader(bridge.endpoint(sid), self.wake)
             reader.start()
         self.subs[sub] = Subscription(
@@ -850,7 +892,7 @@ class Plane:
         for pid in sorted(projects):
             out += self.presence(pid, now=now)
         for sub, s in list(self.subs.items()):
-            if not s.bridged and not s.ended and s.n is not None and self.bridges.get(s.session, (0, False))[1] \
+            if not s.bridged and not s.ended and s.n is not None and self.bridges.known(s.session) \
                     and self.running(s.session):
                 # A bridge answers now for a session served from its
                 # transcript alone: a fresh subscription streams.

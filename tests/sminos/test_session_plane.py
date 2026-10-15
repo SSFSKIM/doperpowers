@@ -31,6 +31,7 @@ import threading
 import time
 import unittest
 import uuid as uuidlib
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(HERE)), "skills", "sminos", "scripts")
@@ -361,13 +362,57 @@ class Engine(unittest.TestCase):
         m = self.fake.message()
         m.text(0, "x")
         m.row(0, disk=False)
-        later = self.fake.user_row("after it")
         self.settle(sub, b)
-        self.assertEqual(b.rows, [], "rows follow their notices in order: the later one waits")
-        self.clock.advance(plane.NOTICE_WAIT + 0.1)
+        self.clock.advance(plane.NOTICE_WAIT - 0.5)
+        self.settle(sub, b)
+        self.assertIsNone(b.end, "a notice may come before its flush")
+        self.clock.advance(0.6)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
         self.assertEqual(b.end["reason"], "discontinuity")
-        self.assertNotIn(later, b.uuids())
+
+    def test_an_unnamed_row_is_released_by_a_later_rows_notice(self):
+        """Disk order: a row no notice names (a compaction's) goes out as soon
+        as a later row of its loop is noticed, ahead of it — not 2 s later,
+        after it."""
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        quiet = self.fake.user_row("a compaction's row: no hook names it", post=False)
+        self.settle(sub, b)
+        self.assertEqual(b.rows, [], "held: a notice may still come")
+        said = self.fake.user_row("the next prompt")
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2), "released by the later row's notice")
+        self.assertEqual(b.uuids(), [quiet, said], "in disk order")
+        quiet2 = self.fake.user_row("another quiet row", post=False)
+        m = self.fake.message()
+        m.text(0, "noticed before its flush")
+        u = str(uuidlib.uuid4())
+        m.notice(0, u)  # a row not on disk yet is later than every row that is
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
+        self.assertEqual(b.uuids()[-1], quiet2)
+        m.write(0, u)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 4))
+        self.assertClean(b)
+        self.assertIsNone(b.end, "the clock never moved: nothing waited 2 s")
+
+    def test_rows_wait_behind_an_earlier_one(self):
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        first = self.fake.user_row("first, its notice late", post=False)
+        self.settle(sub, b)
+        self.clock.advance(1.5)
+        second = self.fake.user_row("second, never noticed", post=False)
+        self.settle(sub, b)
+        self.clock.advance(0.6)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 1))
+        self.assertEqual(b.uuids(), [first], "the first goes after 2 s; the second, younger, waits")
+        self.clock.advance(1.5)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2))
+        self.assertEqual(b.uuids(), [first, second])
+        self.fake.seen(first)
+        self.settle(sub, b)
+        self.assertIsNone(b.end, "a row-seen for a row released unnamed is passed over")
 
     def test_gap_ends_as_a_discontinuity(self):
         self.fake.start_bridge()
@@ -476,6 +521,49 @@ class Engine(unittest.TestCase):
         self.settle(sub, b)
         self.assertEqual(b.rows, [], "its rows stay in its own transcript")
         self.assertEqual(b.errors, [])
+
+
+class Lifecycle(unittest.TestCase):
+    """The engine's records as presence reads them, and the machine's policy."""
+
+    def setUp(self):
+        self.sid = new_session()
+        self.path = os.path.join(os.environ["HOME"], ".claude", "sessions", "lifecycle.json")
+        with open(self.path, "w") as f:
+            json.dump({"pid": 999999, "sessionId": self.sid, "procStart": "Thu Oct 15 09:52:25 2026",
+                       "status": "idle"}, f)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_a_record_left_behind_whose_pid_is_reused(self):
+        records = plane.Records()
+        alive, start = [True], ["Thu Oct 15 09:52:25 2026"]
+        with mock.patch.object(plane.sminos, "pid_alive", lambda _pid: alive[0]), \
+                mock.patch.object(plane.sminos, "proc_start", lambda _pid: start[0]):
+            self.assertIn(self.sid, records.scan(), "its process runs")
+            alive[0] = False
+            self.assertNotIn(self.sid, records.scan(), "the session crashed: its record is left behind")
+            alive[0], start[0] = True, "Fri Oct 16 11:00:00 2026"
+            self.assertNotIn(self.sid, records.scan(), "its pid now holds another process")
+
+    def test_the_ceiling_is_the_settings_default_mode(self):
+        settings = os.path.join(os.environ["HOME"], ".claude", "settings.json")
+        import sminos_hublog as hublog
+        try:
+            self.assertEqual(hublog.machine_policy(), {"read_only": False, "ceiling": "default"},
+                             "no settings: the engine's own default")
+            with open(settings, "w") as f:
+                json.dump({"permissions": {"defaultMode": "acceptEdits"}}, f)
+            before = os.stat(settings).st_mtime_ns
+            self.assertEqual(hublog.machine_policy()["ceiling"], "acceptEdits", "the settings' defaultMode")
+            self.assertEqual(os.stat(settings).st_mtime_ns, before, "read, never written")
+            with open(settings, "w") as f:
+                json.dump({"permissions": {"allow": ["Bash"]}}, f)
+            self.assertEqual(hublog.machine_policy()["ceiling"], "default", "settings that name no mode")
+        finally:
+            if os.path.exists(settings):
+                os.unlink(settings)
 
 
 class Hub:
@@ -692,6 +780,42 @@ class Uplink(unittest.TestCase):
         ms = self.hub.wait(lambda ms: {"record": None, "bridge": False} in said(ms), timeout=5)
         self.assertIsNotNone(ms, "and once its process is gone, said as not running")
 
+    def test_a3_stalled_bridges_do_not_hold_presence(self):
+        """Three sessions whose bridges listen and never answer: another
+        session's record changes still reach the hub within a second, each
+        time, while their probes time out."""
+        stalled = []
+        os.makedirs(os.path.join(os.environ["SMINOS_HOME"], "bridge"), mode=0o700, exist_ok=True)
+        try:
+            for _ in range(3):
+                holder = self.spawn(["sleep", "3600"])
+                sid = new_session()
+                with open(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % holder.pid), "w") as f:
+                    json.dump({"pid": holder.pid, "sessionId": sid, "cwd": self.root, "kind": "interactive",
+                               "status": "busy"}, f)
+                sock = fake_session.stalled_socket(os.path.join(os.environ["SMINOS_HOME"], "bridge", sid + ".sock"))
+                stalled.append((holder, sid, sock))
+            ok = self.hub.wait(lambda ms: all(any(m["kind"] == "presence" and m["session"] == sid for m in ms)
+                                              for _, sid, _ in stalled), timeout=5)
+            self.assertIsNotNone(ok, "the stalled sessions are members")
+            took = []
+            for status in ("busy", "idle", "busy", "idle", "busy", "idle"):
+                count = len(self.hub.messages())
+                t0 = time.time()
+                self.write_record({"status": status})
+                got = self.hub.wait(lambda ms: {"status": status} in [
+                    p["record"] for p in self.presences(ms[count:])], timeout=5)
+                took.append(round(time.time() - t0, 2))
+                self.assertIsNotNone(got)
+                time.sleep(0.4)
+            self.assertLess(max(took), 1.0, "every change within a second: %s" % took)
+        finally:
+            for holder, sid, sock in stalled:
+                sock.close()
+                os.unlink(os.path.join(os.environ["SMINOS_HOME"], "bridge", sid + ".sock"))
+                holder.terminate()
+                holder.wait(5)
+
     def test_b_subscription_rows_diff_and_end(self):
         b = self.subscribe()
         self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
@@ -745,6 +869,10 @@ class Uplink(unittest.TestCase):
         self.assertTrue(self.feed(b, lambda: b.end is not None))
         self.assertEqual(b.end["reason"], "discontinuity")
         b = self.subscribe()
+        # The snapshot first: on a fresh endpoint the cut is null, and a row
+        # flushed before the snapshot while its block still streams is the
+        # null-cut case the composite's writer holds (it ends the sub).
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
         m = self.fake.message()
         m.text(0, "after the reload")
         m.row(0)

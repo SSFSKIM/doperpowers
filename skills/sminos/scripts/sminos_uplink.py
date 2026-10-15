@@ -412,7 +412,7 @@ class Link:
     next one redoes the handshake, which is idempotent, rather than assume
     anything landed. `wake` asks the main thread for a tick now."""
 
-    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None):
+    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None):
         self.cred = cred
         self.ended = ended
         self.logs = logs          # project id → HubLog, kept across streams
@@ -425,7 +425,7 @@ class Link:
         self.nudge = daemon.nudged_at()
         self.passed = set()
         self.failing = self.plane_failing = ""
-        self.plane = plane.Plane(cred["machine"], wake)
+        self.plane = plane.Plane(cred["machine"], wake, bridges)
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -621,7 +621,7 @@ class Link:
                 log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs):
+def serve(stream, cred, ended, logs, bridges=None):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it. A wake (the session
     plane's readers) is a tick now, between frames; at most one waits."""
@@ -632,7 +632,7 @@ def serve(stream, cred, ended, logs):
             woken.set()
             stream.items.put(("wake",))
 
-    link = Link(cred, logs, ended, wake)
+    link = Link(cred, logs, ended, wake, bridges)
     try:
         return serve_link(link, stream, ended, woken)
     finally:
@@ -717,11 +717,11 @@ def cmd_uplink(_a):
         return halt.is_set() or os.getppid() != parent
 
     log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
-    backoff, logs = 1, {}
+    backoff, logs, bridges = 1, {}, plane.Bridges()
     while not ended():
         stream = Stream(cred)
         stream.start()
-        welcomed = serve(stream, cred, ended, logs)
+        welcomed = serve(stream, cred, ended, logs, bridges)
         stream.close()
         backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
         deadline = time.time() + backoff
