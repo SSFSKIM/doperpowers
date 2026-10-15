@@ -422,6 +422,13 @@ produces nothing new for other children beyond the stream DC7 builds on.
   DC5's web shows a command to run) until the composite's writer rules on
   it — raised with it.
   Date/Author: 2026-10-15, controller (M2's review, finding 4).
+  Ruled the same day (composite `2bce24bb`, §6, DX7, DC4.G1): the
+  positional form is refused — `sminos hub enroll <anything>` stops
+  before decoding or contacting anything and says to run it without the
+  code and paste the code at the prompt (a warning would come after the
+  code is already in `ps` and the history; an environment variable leaks
+  the same way). Tests and G1's walk feed the code on stdin; DC5's screen
+  says "run `sminos hub enroll` on the machine and paste this code".
 - Decision: M2's executor's calls, kept. (1) Whether a project is a hub
   project is on `Project` (`hub`) and recorded in `project.json`, so the
   tick still knows when the checkout's root is gone; M1's uplink keeps
