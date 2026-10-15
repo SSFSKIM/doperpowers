@@ -694,7 +694,9 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
     request cards issue authenticated X1 events and X6 RPCs, request cards
     carry the digest of what they drew, and results render; an event or a
     request whose code fails is not drawn; a send shows its X4 delivery
-    outcome per recipient, including after a reload.
+    outcome per recipient, including after a reload; when the fake machine
+    disconnects, its sessions' presence and depth show as unavailable while
+    the conversation stays.
   - **G3 (the key):** the org key derives from a passkey through PRF in the
     owner's browsers, or from a passphrase; the enrollment code it produces
     enrolls a machine through C4.
