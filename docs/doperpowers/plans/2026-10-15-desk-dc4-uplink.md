@@ -219,6 +219,78 @@ produces nothing new for other children beyond the stream DC7 builds on.
   anything enters the log or reaches a session — the execution boundary
   of §6 — in stdlib Python against a reference in TypeScript.
   Date/Author: 2026-10-15, the composite's writer at dispatch.
+- Decision: Refresh against the parent. The composite at MAWS `5c5aab90`
+  (blob `ff2454ff`) differs from the pin `1c4f1c42` only in the children's
+  status lines and the Tracking Map; DX1, DX2 and DX7 are as pinned. The
+  vectors come from MAWS `140c834b`
+  (`apps/desk-hub/src/protocol/vectors/codes.json`, unchanged since). A G1
+  amendment is being folded by the composite's writer (DX1 negatives for a
+  `hub/` event's writer, seq and ts; DX2's `hb-ack` and `rejected`
+  frames): when it lands, the vectors are re-copied from the commit it
+  cites and the test pins the new negatives. This child's branch is the
+  worktree's (`worktree-agent-a6d7f69a8ab5f500f`), not the
+  `smns-erb-uplink` the Tracking Map names: an earlier attempt there could
+  not run git.
+  Date/Author: 2026-10-15, controller (pre-flight).
+- Decision: **Process, not thread** (§8 unknown 2). The uplink is its own
+  process, `sminos daemon uplink`, which `daemon run` starts as a child and
+  supervises from a small supervisor thread (restart with backoff when it
+  exits; SIGTERM to it, then a kill, when the loop stops or restarts on a
+  change of its own code, which now counts the uplink and codes modules).
+  The uplink holds `daemon/uplink.lock` so at most one runs per
+  `SMINOS_HOME`, and exits when its parent is gone (an orphan left by a
+  killed loop does not outlive it). Inside, a reader thread only reads the
+  stream (SSE parse, no sminos calls) into a queue, and the process's main
+  thread does every sminos call — verify, import, deliver — so sminos's
+  per-invocation module caches (`_PROJECTS`, `_VIEWS`, `forget_caches`)
+  are never shared between threads.
+  Rationale: sminos.py's caches are module globals that `tick_all` clears
+  at its start, so an uplink thread calling `view_of` or `deliver_next`
+  beside the tick would race them; every cross-process interaction is
+  already file-locked, because the CLI's fast path already runs beside the
+  daemon (`deliver_next` under `delivered/<session>.lock`, `_append` under
+  `.sync.lock` shared and the file's lock). A process also isolates a
+  `sminos.die` (SystemExit) or a hang in either side from the other. Cost:
+  one more Python process per machine. The SSE trade (§8 unknown 2): the
+  machine's `Machine` object holding the open stream never hibernates and
+  is billed while it is open; accepted for a few machines.
+- Decision: **Delivery of an imported event is the uplink's own**, not
+  only a nudge of the tick loop: the nudge waits behind a tick that sits
+  in a 30-second git phase, which would break "within a second". After an
+  import the uplink runs `deliver_next` itself for that project's local
+  members with anything owed (the daemon's `deliver_owed`, the same
+  operation the sender's fast path calls), and touches `daemon/nudge` too.
+  A delivery that blocks (a seat being resumed) delays later imports but
+  never the reader thread, which keeps draining the stream.
+- Decision: **What M1 builds of the import path.** To prove G4's nudge,
+  M1 builds the import of an `events` frame per M3's decision bullet:
+  verify each event's code against the frame's `project`, check a `hub/`
+  event's writer, seq and ts by shape (DX1), append verbatim through a
+  locked append beside sminos's `_append` (the same `.sync.lock` shared
+  and the writer file's lock; an event at an existing `(writer, seq)` with
+  the same canonical form is skipped, with a different one refused; a seq
+  that is not one past the last is a gap, not appended), then deliver. A
+  refused event is logged to `daemon.log` and never appended; reporting it
+  up, `hello`/`have`, upload, `resend`, seen nonces, heartbeat answers,
+  and liveness belong to M3. An `events` frame is imported only into a
+  project known on this machine whose `.smns` names a hub; M1 reads the
+  `hub` field from the `.smns` file itself (no change to sminos.py's
+  `Project`), and M2's `project init --hub` writes it.
+- Decision: **The credential store** is one file,
+  `$SMINOS_HOME/daemon/hub.json`, mode 0600: `{hub, org, machine,
+  client_id, client_secret, key}` (`key` the org key as base64url). M1's
+  uplink reads it (absent → no uplink runs); M2's enrollment writes it.
+- Decision: **Where the code and tests go.** The codes module is
+  `skills/sminos/scripts/sminos_codes.py`, which also holds DX1's shape
+  check of a `hub/` event, so the vectors pin it; the uplink module is
+  `sminos_uplink.py`. The vectors are copied verbatim as
+  `tests/sminos/dx1-codes.json`, the MAWS commit named in
+  `tests/sminos/codes_parity.py` (the test, run from the suite as
+  `marks_parity.py` is); the stand-in hub is `tests/sminos/hub_standin.py`;
+  the uplink's tests live in `tests/sminos/test-uplink.sh`, called from
+  `run-sminos-tests.sh` as `test-bridge.sh` is, so DC2's edits to the
+  suite and these meet in a line or two.
+  Date/Author: 2026-10-15, controller (M1's decisions, before dispatch).
 
 ## Surprises & Discoveries
 
