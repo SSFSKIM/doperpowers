@@ -4602,20 +4602,25 @@ r = next(d for d in json.load(sys.stdin) if d["session"] == sys.argv[1])
 print(r["status"], r["machine"], r["local"], r["state"])' "$A")"
 assert_equals "$A_ROW" "reading the schema h1 False idle" "h2's list --json shows a remote, on h1, with its status and published state"
 
-# Both daemons running: the same say lands within two seconds.
+# Both daemons running: the same say lands with no tick run by hand. How soon
+# is the machine's business; the wait is a liveness bound (ci-kit §6).
+md_ticks() { cat "$MD/$1"/sminos/projects/*/daemon.json 2>/dev/null || true; }
+H1_TICKS="$(md_ticks h1)"; H2_TICKS="$(md_ticks h2)"
+md_loops_ticked() { [ "$(md_ticks h1)" != "$H1_TICKS" ] && [ "$(md_ticks h2)" != "$H2_TICKS" ]; }
 env "${H1[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h1.out" 2>&1 & RUN1=$!
 env "${H2[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h2.out" 2>&1 & RUN2=$!
-sleep 1.5
+wait_until md_loops_ticked || echo "    (a loop never ticked)"
 T0="$(clock)"
 CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b while both daemons run"
-for _ in $(seq 1 120); do grep -q 'while both daemons run' "$TEST_ROOT/in-md-b.received" 2>/dev/null && break; sleep 0.05; done
+md_b_got() { grep -q "$1" "$TEST_ROOT/in-md-b.received" 2>/dev/null; }
+wait_until md_b_got 'while both daemons run' || true
 LANDED="$(since "$T0")"
 tscript "env \$H1 sminos daemon run --interval 1 & env \$H2 sminos daemon run --interval 1 &" ""
 tscript "env \$H1 CLAUDE_CODE_SESSION_ID=<a> sminos say \"@b while both daemons run\"" "$OUT
 (landed in b's socket after ${LANDED}s)"
-if grep -q 'while both daemons run' "$TEST_ROOT/in-md-b.received" && python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 2.0)' "$LANDED"; then
-  pass "with daemon run --interval 1 under both homes the say lands within two seconds (${LANDED}s)"
-else fail "with daemon run --interval 1 under both homes the say lands within two seconds"; echo "    took ${LANDED}s"; fi
+if md_b_got 'while both daemons run'; then
+  pass "with daemon run --interval 1 under both homes the say lands in b's socket (${LANDED}s)"
+else fail "with daemon run --interval 1 under both homes the say lands in b's socket"; echo "    not there after ${LANDED}s"; fi
 run env "${H1[@]}" "$SMINOS" daemon run --interval 1
 assert_rc 1 "$RC" "a second run in the same home is refused"
 assert_contains "$OUT" "a daemon already runs" "saying one runs"
@@ -4627,15 +4632,19 @@ run env "${H1[@]}" "$SMINOS" daemon status
 assert_contains "$OUT" "daemon: not running here" "once stopped, status says so"
 # The sender's machine does not wait out its interval: a say to a remote member
 # asks the local loop for a tick at once.
-env "${H1[@]}" "$SMINOS" daemon run --interval 60 > "$MD/run-h1-slow.out" 2>&1 & RUN1=$!
-sleep 1.5
+# The loop's interval is far beyond the liveness bound, and the say comes
+# after its first tick: only the nudge can deliver it in time.
+H1_TICKS="$(md_ticks h1)"
+md_h1_ticked() { [ "$(md_ticks h1)" != "$H1_TICKS" ]; }
+env "${H1[@]}" "$SMINOS" daemon run --interval 3600 > "$MD/run-h1-slow.out" 2>&1 & RUN1=$!
+wait_until md_h1_ticked || echo "    (the slow loop never ticked)"
 T0="$(clock)"
 CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b nudged"
-for _ in $(seq 1 120); do grep -q 'nudged' "$TEST_ROOT/in-md-b.received" 2>/dev/null && break; sleep 0.05; done
+wait_until md_b_got 'nudged' || true
 NUDGED="$(since "$T0")"
-if grep -q 'nudged' "$TEST_ROOT/in-md-b.received" && python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 3.0)' "$NUDGED"; then
+if md_b_got 'nudged'; then
   pass "a say to a remote member has the sender's daemon push at once, whatever its interval (${NUDGED}s)"
-else fail "a say to a remote member has the sender's daemon push at once, whatever its interval"; echo "    took ${NUDGED}s"; fi
+else fail "a say to a remote member has the sender's daemon push at once, whatever its interval"; echo "    not there after ${NUDGED}s"; fi
 kill "$RUN1" "$RUN2"; wait "$RUN1" "$RUN2" || true
 assert_contains "$(cat "$MD/run-h2.out")" "delivered 1 to b" "the loop says what it delivered"
 
