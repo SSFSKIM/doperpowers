@@ -219,6 +219,13 @@ the spec's Decision Log entry "the branch review round"
   pair misroutes.
 - **T3 — a moved seat lists twice** from a directory in no project
   (deferred M2 review finding; addressing de-duplicates by seat id).
+- **T3 — the daemon kill-before-settle assertion is timing-sensitive.**
+  `tests/sminos/run-sminos-tests.sh` ~4842, "at most once more: two frames
+  in all" (smns M4's kill-before-settle case, `e4204b38`), failed once in
+  a full-suite run while a `wrangler dev` shared the CPU (desk DC4 M2,
+  2026-10-15) and passed on every run since; one machine, no remote, no
+  hub. Trigger: a second failure, or a CI gate on the shell suites
+  (item 4); then make its wait condition event-driven rather than timed.
 - **Backlog, not debt — MAWS async questions never reach the log** (§9 of
   the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
   whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are
