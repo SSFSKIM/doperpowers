@@ -514,6 +514,19 @@ against the local hub; until it lands, the stand-in.
   at merge.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision (M1 real-child wave): A null cut is empty history, every disk
+  row of the loop live. A bridge answering 503 is retried for up to 5 s
+  (`sminos watch`'s reconnect window), after which the subscription ends
+  `discontinuity`; the plane's open wait rose from 10 s to 20 s to fit.
+  `fake_session.py` matches the real child, and `start_bridge(real=True)`
+  runs every engine case against `sminos bridge` itself, a test process
+  standing in for the mod; the scripted late-`block-row` case stays as a
+  guard. M2's request tests post under the hello's nonce and send the
+  mod's first resync. The plane reads neither a turn start's `recovered`
+  nor `resync`'s `sessionInfo` (DC2 `5003ca2e`), so it needed no change
+  for them.
+  Date/Author: 2026-10-15, M1 executor.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
