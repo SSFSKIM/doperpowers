@@ -362,7 +362,7 @@ Every event is an object with `type` and `t` (the mod's clock, epoch ms). `agent
 | `tool` / `result` | M1 | `toolUseId, tool, agentId, isError, denied?, text?, truncated?` |
 | `agent` / `spawn` | M1 | `agentId, parentAgentId, subagentType, description, name, background, model, toolUseId` |
 | `agent` / `stop` | M1 | `agentId, agentType` |
-| `usage` | M1 | `context: {tokens, window, percent}, cost` — after each main turn |
+| `usage` | M1 | `context: {tokens?, window, percent?}, cost: {usd} \| null` — the engine's `$.session.usage()` context and cost as it returns them (tokens and percent absent before the first response; cost null without a ledger) — after each main turn |
 | `heartbeat` | M1 | `state` (as `ping`'s) — every 5 s |
 | `result` | M1 | `id, op, ok, result?, error?` — the mod's answer to a command |
 | `gap` | M1 | `dropped` — events that reached no child (a failed post, an overflowing queue). **[fw1]** Always followed at once by a `resync`; a live subscriber may also resubscribe |
