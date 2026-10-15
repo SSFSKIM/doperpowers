@@ -88,6 +88,9 @@ sys.exit(0)
 '''
 
 
+TURN_UNKNOWN = "turn state unknown since the bridge reloaded; retry after the next model request"
+
+
 def install_claude(name):
     """The `claude` stand-in first on PATH; its state directory."""
     bindir = os.path.join(T, "bin-" + name)
@@ -150,6 +153,7 @@ class Mod(tpr.Bridge):
         self.turn = None
         self.hold = 0.0
         self.answer_steer = True  # False: the row is written, the answer never comes
+        self.unknown = False      # True: loaded into a conversation, its turn state not known yet (DC2 27c46947)
         self.rows = []
         super().__init__(sid)
 
@@ -167,7 +171,9 @@ class Mod(tpr.Bridge):
         time.sleep(self.hold)
         op = cmd["op"]
         after = []
-        if op == "steer":
+        if self.unknown and op in ("steer", "interrupt", "compact"):
+            res = {"ok": False, "error": TURN_UNKNOWN}
+        elif op == "steer":
             if self.turn is None:
                 res = {"ok": False, "error": "no turn is running to steer: send it instead"}
             else:
@@ -262,6 +268,7 @@ class Checks(unittest.TestCase):
         self.mod.turn = None
         self.mod.hold = 0.0
         self.mod.answer_steer = True
+        self.mod.unknown = False
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -472,6 +479,16 @@ class Checks(unittest.TestCase):
         back = self.send("model", {"session": self.bridged.sid, "model": "default"})
         self.assertEqual(self.outcome(back)["state"], "done")
         self.assertEqual(self.mod.ops("model")[-1]["model"], "default")
+
+    def test_f_a_turn_state_unknown_is_a_failure_with_the_bridges_reason(self):
+        """After a load into a conversation the bridge cannot tell whether a
+        turn runs: it refuses rather than guess, and so does the RPC — never
+        a success, and never `idle`."""
+        self.mod.unknown = True
+        for name in ("steer", "interrupt", "compact"):
+            args = {"session": self.bridged.sid, **({"text": "x"} if name == "steer" else {})}
+            self.assertEqual(self.outcome(self.send(name, args)),
+                             {"state": "failed", "error": {"code": "failed", "message": TURN_UNKNOWN}}, name)
 
     def test_f_a_steer_to_a_session_without_a_bridge_takes_sminos_steer(self):
         rpc = self.send("steer", {"session": self.plain.sid, "text": "-n also the changelog"})

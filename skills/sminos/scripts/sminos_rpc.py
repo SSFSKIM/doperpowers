@@ -405,7 +405,7 @@ class Rpcs:
     def compact(self, path, rpc, sid):
         result, cid = command(path, {"op": "compact"})
         if not result["ok"]:
-            raise Refused("failed", "the session refused it: %s" % result.get("error"))
+            raise Refused("failed", refusal(result))
         if cid:
             self.finished.put(("compact", (cid, rpc["project"], sid, rpc["nonce"])))
         r = result.get("result") or {}
@@ -622,20 +622,27 @@ def command(path, body):
     return out, out.get("id")
 
 
+def refusal(out):
+    """The mod's reason for refusing a command, as the RPC's message: a
+    refusal is the session's answer (a turn state it cannot know yet after a
+    reload, a model it cannot map), never a success."""
+    return str(out.get("error") or "the session refused it")
+
+
 def steer(path, text):
     out, _ = command(path, {"op": "steer", "text": text})
     if not out.get("ok"):
         error = str(out.get("error") or "")
         if IDLE in error:
             raise Refused("idle", "no turn is running to steer: send it instead")
-        raise Refused("failed", "the session refused it: %s" % error)
+        raise Refused("failed", refusal(out))
     return done({"row": (out.get("result") or {}).get("row")})
 
 
 def interrupt(path):
     out, _ = command(path, {"op": "interrupt"})
     if not out.get("ok"):
-        raise Refused("failed", "the session refused it: %s" % out.get("error"))
+        raise Refused("failed", refusal(out))
     r = out.get("result") or {}
     return done({"turnId": r.get("turnId"), "stopped": list(r.get("stopped") or []),
                  "running": list(r.get("running") or [])})
@@ -648,7 +655,7 @@ def model(path, sid, args):
     body = {"op": "model", "model": args.get("model", kept.get("model")), "effort": args.get("effort", kept.get("effort"))}
     out, _ = command(path, body)
     if not out.get("ok"):
-        raise Refused("failed", "the session refused it: %s" % out.get("error"))
+        raise Refused("failed", refusal(out))
     r = out.get("result") or {}
     return done({"model": r.get("model"), "effort": r.get("effort")})
 
