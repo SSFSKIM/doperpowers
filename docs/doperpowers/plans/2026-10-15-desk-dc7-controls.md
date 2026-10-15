@@ -15,7 +15,7 @@
 
 ## Progress
 
-- [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); the proof against DC2's real M4 child, with a seeded cut, waits on DC2's M4
+- [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); proved against DC2's real M4 child (`sminos bridge`, seeded cut) and DC3's reviewed hub at `a190a6d8` with `step-end` in the real-child wave (`a7b38ace`, `4bf53309`), reviewed clean 2026-10-15
 - [x] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses) — reviewed clean 2026-10-15 (`c71b751f`, fixes `f357a00a`, `526b9eb8`); proved against DC3's local hub at `b7fc7ebd`+ (M2 uplink 3/3, M1 walk 7/7)
 - [ ] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses)
 - [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
