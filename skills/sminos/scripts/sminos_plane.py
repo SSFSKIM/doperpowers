@@ -83,7 +83,8 @@ METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is 
 LOCATE_EVERY = 1.0        # s: how often a transcript not found yet is looked for
 MEMBERS_EVERY = 10.0      # s: how often the members are read again when no session came or went
 IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (a `ps` per running session this often)
-ENDED_PRESENCE_WINDOW = 7 * 86400  # s: a session that left longer ago is not said again on a new stream
+TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its sessions' leaving was last said and taken
+TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
@@ -776,6 +777,23 @@ class Bridges:
             return bool(h and h[1])
 
 
+def tombstone_path():
+    return os.path.join(sminos.root(), "daemon", TOMBSTONE_FILE)
+
+
+def tombstone_marks():
+    """Project id → the time of the last read whose leavers the hub took
+    (Plane.accepted); {} when none is kept or the file is unreadable, which
+    says every leaver again."""
+    try:
+        with open(tombstone_path()) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in d.items() if isinstance(v, (int, float)) and not isinstance(v, bool)} \
+        if isinstance(d, dict) else {}
+
+
 # ------------------------------------------------------------- the plane
 
 
@@ -795,6 +813,8 @@ class Plane:
         self.here = {}            # project id → {session: cwd}: the sessions that joined it from this machine
         self.members = {}         # project id → {session}: its local members, whose presence is published
         self.left = {}            # project id → {session: when it left}: those of `here` no member now
+        self.read_at = {}         # project id → when its members were last read (wall clock)
+        self.tombstoned = {}      # project id → the read whose leavers a connect said, until the hub takes them
         self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
         self.subs = {}            # sub → Subscription
@@ -812,6 +832,7 @@ class Plane:
     def refresh(self, project):
         """The project's sessions on this machine, from its log as this
         machine reconciles it (sminos calls: the main thread's)."""
+        self.read_at[project.id] = self.wall()   # before the read: whoever leaves after it is newer than this
         view = sminos.view_of(project, titles=False)
         here = {}
         for sid, r in view.info.items():
@@ -834,22 +855,28 @@ class Plane:
         (every one when forced, after a connect); a member gone from the
         project is said once more as not running, then forgotten.
 
-        The hub keeps a session's presence across connections, and this
-        plane is new with its stream: when forced, each session that joined
-        from here and is no member now is said as not running too, so one
-        that ended while no stream was open is not left present at the hub.
-        Only those that left within ENDED_PRESENCE_WINDOW, by their latest
-        membership event (this machine writes it when it sees the process
-        gone), not every session that ever ended here."""
+        The hub keeps a session's presence across connections, with no
+        expiry, and this plane is new with its stream: when forced, each
+        session that joined from here and is no member now is said as not
+        running too, so one that ended while no stream was open, however
+        long, is not left present at the hub. Not every session that ever
+        ended here: only those that left (their latest membership event,
+        which this machine writes when it sees the process gone) since the
+        last read whose leavers the hub took (`accepted`), less
+        TOMBSTONE_MARGIN; every one when no such read is kept (a first run).
+        One whose leaving has no time is said every time."""
         now = time.monotonic() if now is None else now
         out = []
         if force:
             self.live = self.records.scan()
-            since = self.wall() - ENDED_PRESENCE_WINDOW
+            mark = tombstone_marks().get(pid)
+            since = None if mark is None else mark - TOMBSTONE_MARGIN
             for sid, at in sorted(self.left.get(pid, {}).items()):
-                if at is not None and at >= since:
+                if since is None or at is None or at >= since:
                     out.append(envelope(pid, self.machine, sid, "presence", None, None,
                                         {"record": None, "bridge": False}))
+            if pid in self.read_at:
+                self.tombstoned[pid] = self.read_at[pid]
         for sid in sorted(self.members.get(pid, ())):
             body = self.presence_of(sid, now)
             if force or self.sent.get((pid, sid)) != body:
@@ -861,6 +888,23 @@ class Plane:
                 out.append(envelope(pid, self.machine, key[1], "presence", None, None,
                                     {"record": None, "bridge": False}))
         return out
+
+    def accepted(self, pid):
+        """The hub answered 200 to the POST that carried a connect's presence
+        for the project: its leavers are said, so the next connect says only
+        those that left since that read. Kept across restarts; a mark that
+        cannot be written leaves the old one, which says more, never less."""
+        at = self.tombstoned.pop(pid, None)
+        if at is None:
+            return
+        path = tombstone_path()
+        marks = tombstone_marks()
+        marks[pid] = at   # the latest taken read covers whoever left before it
+        try:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            sminos.write_json(path, marks)
+        except OSError as e:
+            log("the presence mark of %s could not be kept (%s): the next connect says its leavers again" % (pid, e))
 
     # ---------------------------------------------------- the hub's frames
 

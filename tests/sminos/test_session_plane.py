@@ -741,54 +741,136 @@ class Lifecycle(unittest.TestCase):
             if os.path.exists(settings):
                 os.unlink(settings)
 
-    def test_a_new_stream_says_a_session_that_ended_meanwhile_is_not_running(self):
-        """The hub keeps each session's presence across connections, and a
-        new stream's plane has sent nothing: on connect, every session that
-        joined from this machine and is no member now (it ended, maybe while
-        the stream was down) is said as not running, within the window."""
+    def ended_presence_project(self, name):
+        """A project with one running member and one session that joined
+        from here and ended: (project, running sid, ended sid)."""
         import sminos
-        root = os.path.join(T, "ended-presence")
+        root = os.path.join(T, name)
         subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", root], check=True)
-        subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", "endedp"], cwd=root,
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", name], cwd=root,
                        check=True, capture_output=True)
         holders = {}
-        try:
-            for k in ("runs", "ended"):
-                holders[k] = (subprocess.Popen(["sleep", "3600"]), new_session())
-                p, sid = holders[k]
-                with open(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid), "w") as f:
-                    json.dump({"pid": p.pid, "sessionId": sid, "cwd": root, "kind": "interactive",
-                               "status": "idle"}, f)
-            sminos.forget_caches()
-            project = sminos.resolve_project(root)
-            sminos.view_of(project, titles=False)            # both join
-            p, ended = holders["ended"]
-            p.terminate()
-            p.wait(5)
-            os.unlink(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid))
-            sminos.forget_caches()
-            sminos.view_of(project, titles=False)            # it retires, ended, while no stream is open
-            runs = holders["runs"][1]
+        for k in ("runs", "ended"):
+            p, sid = subprocess.Popen(["sleep", "3600"]), new_session()
+            rec = os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid)
+            holders[k] = (p, sid, rec)
+            with open(rec, "w") as f:
+                json.dump({"pid": p.pid, "sessionId": sid, "cwd": root, "kind": "interactive", "status": "idle"}, f)
 
-            def said(pl):
-                pl.refresh(project)
-                return {m["session"]: m["body"] for m in pl.presence(project.id, force=True)}
-
-            got = said(plane.Plane("testhost", lambda: None))
-            self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said as not running: %s" % got)
-            self.assertEqual(got.get(runs), {"record": {"status": "idle"}, "bridge": False})
-            later = plane.Plane("testhost", lambda: None)
-            later.wall = lambda: time.time() + plane.ENDED_PRESENCE_WINDOW + 60
-            self.assertNotIn(ended, said(later), "a session that ended longer ago than the window is not said")
-        finally:
-            for p, _ in holders.values():
+        def cleanup():
+            for p, _, rec in holders.values():
                 if p.poll() is None:
                     p.terminate()
                     p.wait(5)
-                try:
-                    os.unlink(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid))
-                except OSError:
-                    pass
+                if os.path.exists(rec):
+                    os.unlink(rec)
+        self.addCleanup(cleanup)
+        sminos.forget_caches()
+        project = sminos.resolve_project(root)
+        sminos.view_of(project, titles=False)            # both join
+        p, ended, rec = holders["ended"]
+        p.terminate()
+        p.wait(5)
+        os.unlink(rec)
+        sminos.forget_caches()
+        sminos.view_of(project, titles=False)            # it retires, ended, while no stream is open
+        return project, holders["runs"][1], ended
+
+    @staticmethod
+    def connect(project, wall=None):
+        """A new stream's plane and the presence its connect says: (plane, {session: body})."""
+        pl = plane.Plane("testhost", lambda: None)
+        if wall is not None:
+            pl.wall = wall
+        pl.refresh(project)
+        return pl, {m["session"]: m["body"] for m in pl.presence(project.id, force=True)}
+
+    @staticmethod
+    def marks():
+        try:
+            with open(plane.tombstone_path()) as f:
+                return json.load(f)
+        except OSError:
+            return {}
+
+    def test_a_first_connect_with_no_mark_says_every_session_that_ended_here(self):
+        """The hub keeps each session's presence across connections with no
+        expiry, and a new stream's plane has sent nothing: with no mark kept
+        (a first run, an upgrade), every session that joined from here and
+        is no member now is said as not running, however long ago it left;
+        the mark is kept once the hub takes it, and the next connect says
+        none that left before it."""
+        project, runs, ended = self.ended_presence_project("ended-first")
+        self.assertNotIn(project.id, self.marks())
+        pl, got = self.connect(project, wall=lambda: time.time() + 30 * 86400)
+        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said as not running: %s" % got)
+        self.assertEqual(got.get(runs), {"record": {"status": "idle"}, "bridge": False})
+        self.assertNotIn(project.id, self.marks(), "no mark until the hub takes it")
+        pl.accepted(project.id)
+        self.assertIn(project.id, self.marks(), "kept once taken")
+        _, got = self.connect(project, wall=lambda: time.time() + 31 * 86400)
+        self.assertNotIn(ended, got, "a leaver the hub took is not said again")
+
+    def test_an_outage_longer_than_a_week_still_says_who_ended_in_it(self):
+        """The mark is the last connect the hub took, not a window: a session
+        that ended after it is said on a connect eight days later."""
+        project, _, ended = self.ended_presence_project("ended-outage")
+        pl, _ = self.connect(project, wall=lambda: time.time() - 3600)
+        pl.accepted(project.id)     # the last connect the hub took, an hour before the session ended
+        _, got = self.connect(project, wall=lambda: time.time() + 8 * 86400)
+        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said, eight days on: %s" % got)
+
+    def test_a_connect_the_hub_never_took_keeps_the_old_mark(self):
+        """A reconnect whose POST fails before the hub takes its presence
+        (Link.open, the hub answering 503) leaves the mark where it was, so
+        the leavers it carried are said on the next connect."""
+        import sminos_uplink as uplink
+        project, _, ended = self.ended_presence_project("ended-unaccepted")
+        old, _ = self.connect(project, wall=lambda: time.time() - 3600)
+        old.accepted(project.id)
+        mark = self.marks()[project.id]
+
+        class Log:
+            def __init__(self):
+                self.project = project
+
+            def rejoin_former(self):
+                pass
+
+            def unreported(self):
+                return []
+
+            def presence(self):
+                return {"t": "session", "message": {"kind": "machine", "body": {}}}
+
+            def hello(self):
+                return {"t": "hello", "project": project.id}
+
+            def reported(self, _):
+                pass
+
+        posted = []
+
+        def refused(frames):
+            posted.append(frames)
+            raise uplink.NotDelivered("the hub answered 503")
+
+        def link_of(post):
+            link = uplink.Link({"machine": "testhost", "key": b"k" * 32, "hub": "http://127.0.0.1:9"}, {})
+            link.plane.wall = lambda: time.time() + 3600
+            link.post = post
+            return link
+
+        with self.assertRaises(uplink.NotDelivered):
+            link_of(refused).open(Log())
+        self.assertTrue(any(f.get("t") == "session" and f["message"].get("session") == ended
+                            and f["message"]["body"] == {"record": None, "bridge": False}
+                            for f in posted[0]), "the leaver was in the POST that failed")
+        self.assertEqual(self.marks()[project.id], mark, "the mark stays where it was")
+        _, got = self.connect(project, wall=lambda: time.time() + 7200)
+        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "and the next connect says it again")
+        link_of(posted.append).open(Log())
+        self.assertGreater(self.marks()[project.id], mark, "taken: the mark moves")
 
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been

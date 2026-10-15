@@ -633,6 +633,7 @@ class Link:
         owed = self.requests.opening(hl.project.id)
         results = self.rpcs.opening(hl.project.id)
         self.post([hl.hello(), machine] + sessions + unreported + owed + results)
+        self.plane.accepted(hl.project.id)   # the hub took the leavers' presence: only later ones are said again
         self.opened.add(hl.project.id)
         self.machine_sent[hl.project.id] = machine["message"]["body"]
         hl.reported(unreported)
