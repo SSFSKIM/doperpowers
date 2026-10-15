@@ -32,7 +32,7 @@ FAILURES = []
 
 
 def check(name, ok, detail=""):
-    print("%s %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else " — %s" % detail), flush=True)
+    print("%s %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else " — %s" % (detail,)), flush=True)
     if not ok:
         FAILURES.append(name)
 
@@ -53,17 +53,24 @@ class Child:
 
     n = 0
 
-    def __init__(self, env=None):
+    def __init__(self, env=None, session=None):
         Child.n += 1
-        self.session = "5b000001-0000-4000-8000-%012d" % (0xf00 + Child.n)
+        self.session = session or "5b000001-0000-4000-8000-%012d" % (0xf00 + Child.n)
         self.proc = subprocess.Popen([SMINOS, "bridge", "--session", self.session], stdout=subprocess.PIPE,
                                      text=True, env={**os.environ, **(env or {})})
-        self.sock = json.loads(self.proc.stdout.readline())["socket"]
+        hello = json.loads(self.proc.stdout.readline())
+        self.sock, self.nonce = hello["socket"], hello.get("nonce")
 
-    def post(self, *events):
+    def post(self, *events, nonce=None, expect=204):
+        """Posts as the mod does, with this child's nonce (or `nonce`); the status."""
         c = Conn(self.sock)
-        c.request("POST", "/events", json.dumps([{"t": int(time.time() * 1000), **e} for e in events]))
-        assert c.getresponse().status == 204
+        headers = {"X-Bridge-Nonce": nonce if nonce is not None else self.nonce} if (nonce or self.nonce) else {}
+        if nonce == "":
+            headers = {}
+        c.request("POST", "/events", json.dumps([{"t": int(time.time() * 1000), **e} for e in events]), headers)
+        status = c.getresponse().status
+        assert expect is None or status == expect, "post answered %d" % status
+        return status
 
     def status(self):
         c = Conn(self.sock)
@@ -428,6 +435,44 @@ def notice_past_bound():
     child.stop()
 
 
+def fence():
+    """After a module reload the old instance's in-flight dispatches still
+    post to the session's path, which the new module's child now serves: the
+    child turns away every post without its own nonce, and changes nothing."""
+    old = Child()
+    stale = old.nonce
+    old.stop()
+    new = Child(session=old.session)
+    new.resync(cut={"main": "new-row"}, override={"model": "sonnet", "effort": None}, delivered={"m/human": 8})
+    sub = Sub(new)
+    before = dict(sub.snapshot)
+    kept_path = os.path.join(os.environ["SMINOS_HOME"], "bridge", new.session + ".json")
+    until(3, lambda: os.path.exists(kept_path))
+    with open(kept_path) as f:
+        kept_before = f.read()
+    stale_resync = {"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": {"main": "old-row"},
+                    "override": {"model": "haiku", "effort": None}, "delivered": {"m/human": 3}}
+    first = new.post(stale_resync, nonce=stale, expect=None)
+    second = new.post(seen("old-row2"), {"type": "gap", "dropped": 1}, nonce=stale, expect=None)
+    bare = new.post(stale_resync, nonce="", expect=None)
+    time.sleep(0.3)
+    after = Sub(new)
+    with open(kept_path) as f:
+        kept_after = f.read()
+    check("the hello carries a nonce, each child its own", bool(stale) and bool(new.nonce) and stale != new.nonce)
+    check("an old module instance's posts (its child's nonce, or none) are refused (409)",
+          (first, second, bare) == (409, 409, 409), (first, second, bare))
+    check("and change nothing: the cut, the model, the delivered keys, the open subscription",
+          after.snapshot["cut"] == before["cut"] == {"main": "new-row"} and after.snapshot["override"] == before["override"]
+          and kept_after == kept_before and not sub.ended and not sub.lines,
+          "cut %s, override %s, kept %s → %s, subscription ended %s, lines %s" % (
+              after.snapshot["cut"], after.snapshot["override"], kept_before, kept_after, sub.ended, sub.lines))
+    new.post(seen("next-row"))
+    until(2, lambda: sub.lines)
+    check("the new module's own posts go on", [e.get("uuid") for e in sub.lines] == ["next-row"], sub.lines)
+    new.stop()
+
+
 def subagent_loop():
     """Each loop is cut on its own: a subagent's rows in its own file."""
     child, disk = Child(), Disk("loops")
@@ -447,7 +492,7 @@ def subagent_loop():
     child.stop()
 
 
-for case in (readiness, cut, flush_ahead, between_chunk_and_row, notice_past_bound, subagent_loop):
+for case in (readiness, cut, flush_ahead, between_chunk_and_row, notice_past_bound, fence, subagent_loop):
     try:
         case()
     except Exception as e:  # noqa: BLE001 — a case that cannot go on is a failed case

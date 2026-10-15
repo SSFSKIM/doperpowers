@@ -73,9 +73,32 @@ class Conn(http.client.HTTPConnection):
         self.sock.settimeout(10)
         self.sock.connect(self.path)
 
-def request(path, method, url, body=None):
+# The nonce each child named in its hello, kept by the stand-in that read it:
+# a post of the mod's events carries it, as the mod's do (DX5's fence).
+NONCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonces")
+
+def keep_nonce(hello):
+    os.makedirs(NONCES, exist_ok=True)
+    path = os.path.join(NONCES, os.path.basename(hello["socket"]))
+    with open(path + ".tmp", "w") as f:
+        f.write(hello["nonce"])
+    os.replace(path + ".tmp", path)
+
+def nonce_of(sock):
+    try:
+        with open(os.path.join(NONCES, os.path.basename(sock))) as f:
+            return f.read()
+    except OSError:
+        return None
+
+def request(path, method, url, body=None, nonce=None):
+    headers = {"content-type": "application/json"}
+    if method == "POST" and url == "/events":
+        nonce = nonce if nonce is not None else nonce_of(path)
+        if nonce:
+            headers["X-Bridge-Nonce"] = nonce
     c = Conn(path)
-    c.request(method, url, body=body, headers={"content-type": "application/json"})
+    c.request(method, url, body=body, headers=headers)
     r = c.getresponse()
     return r.status, r.read().decode()
 
@@ -107,6 +130,7 @@ elif op == "fakemod":       # sminos session lines-file
             msg = json.loads(line)
             if msg.get("op") == "hello":
                 sock = msg["socket"]
+                keep_nonce(msg)
                 # As the mod's first post: its copy of the live state (DX5).
                 request(sock, "POST", "/events", json.dumps([{"type": "resync", "turns": [], "streaming": [], "agents": []}]))
                 continue

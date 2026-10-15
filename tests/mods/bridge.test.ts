@@ -8,8 +8,9 @@ tier('user')
 
 const SID = '5b000001-0000-4000-8000-00000000005b'
 const SOCK = `/tmp/s/bridge/${SID}.sock`
-const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>) =>
-  `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, ...(kept !== undefined && { kept }) })}\n`
+const NONCE = 'n0'
+const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>, nonce = NONCE) =>
+  `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, nonce, ...(kept !== undefined && { kept }) })}\n`
 const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
 
 describe('splitLines', () => {
@@ -85,7 +86,16 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
     return { catch: () => undefined }
   }) as unknown as On
   const children: ReturnType<typeof fakeChild>[] = []
-  const posts: { url: string; socketPath?: string; events: Record<string, unknown>[]; release: () => void; fail: () => void }[] = []
+  const posts: {
+    url: string
+    socketPath?: string
+    nonce?: string
+    events: Record<string, unknown>[]
+    release: () => void
+    fail: () => void
+    /** The child answers 409: the post is not this module instance's. */
+    refuse: () => void
+  }[] = []
   /** The engine's clock (`$.clock.now`), moved by the test. */
   let clockNow = 1_000_000
   /** While held (`holdClock`), `$.clock.now` waits. */
@@ -152,7 +162,7 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       },
     },
     http: {
-      fetch: (url: string, init: { socketPath?: string; body?: string }) =>
+      fetch: (url: string, init: { socketPath?: string; body?: string; headers?: Record<string, string> }) =>
         new Promise((resolve, reject) => {
           if (url.includes('/requests/')) {
             const respond = (status: number, body?: unknown) =>
@@ -162,8 +172,9 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
           }
           const release = () => resolve({ status: 204, ok: true, headers: {}, text: '' })
           const fail = () => reject(new Error('refused'))
+          const refuse = () => resolve({ status: 409, ok: false, headers: {}, text: '{"error":"another module\'s"}' })
           const n = posts.length
-          posts.push({ url, socketPath: init.socketPath, events: JSON.parse(init.body ?? '[]'), release, fail })
+          posts.push({ url, socketPath: init.socketPath, nonce: init.headers?.['x-bridge-nonce'], events: JSON.parse(init.body ?? '[]'), release, fail, refuse })
           if (!options.hold) {
             ;(options.failAt?.includes(n) ? fail : release)()
           }
@@ -423,6 +434,61 @@ describe('the child', () => {
     expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
     // The stopped child is not respawned.
     expect(h.timers.filter((t) => t.kind === 'after').length).toBe(0)
+  })
+
+  test("every post carries the nonce of the child's hello; a restarted child's posts carry its own", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.settle()
+    expect(h.posts.length).toBeGreaterThan(1)
+    expect(h.posts.every((p) => p.nonce === NONCE)).toBe(true)
+    const before = h.posts.length
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.find((t) => t.kind === 'after')!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    expect(h.posts.slice(before).map((p) => p.nonce)).toEqual(['n1'])
+    expect(h.posts[before]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+  })
+
+  test('a post refused as another module instance\'s (409, a reload took the session) stops this one for good', async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    h.posts[0]!.refuse()
+    await h.settle()
+    await h.turn('t1')
+    for (const t of h.timers) {
+      if (!t.cancelled) {
+        t.fn()
+      }
+    }
+    await h.settle()
+    // Nothing more is posted, resync included; no heartbeat; no child respawned or started.
+    expect(h.posts.length).toBe(1)
+    expect(h.timers.find((t) => t.kind === 'every')!.cancelled).toBe(true)
+    expect(h.children.length).toBe(1)
+    expect(h.children[0]!.killed).toBe(true)
+  })
+
+  test("a 409 under a nonce the module has since replaced (its own child restarted) is a lost post: the new child's posts go on", async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.find((t) => t.kind === 'after')!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    h.posts[0]!.refuse()
+    await h.settle()
+    h.timers.filter((t) => t.kind === 'after' && !t.cancelled).at(-1)!.fn()
+    await h.settle()
+    expect(h.posts.length).toBe(2)
+    expect(h.posts[1]!.nonce).toBe('n1')
+    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
   })
 
   test('the heartbeat carries the turn state', async () => {

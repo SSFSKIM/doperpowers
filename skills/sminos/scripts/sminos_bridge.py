@@ -6,7 +6,8 @@ session's endpoint, HTTP over the Unix socket $SMINOS_HOME/bridge/<id>.sock
 in an owner-only directory:
 
     GET  /status          who serves here: session, pid, protocol, the mod's last word
-    POST /events          the mod's events, a JSON array in the order they happened
+    POST /events          the mod's events, a JSON array in the order they happened, with
+                          the hello's nonce (X-Bridge-Nonce; 409 without it)
     GET  /events          a subscription: one snapshot line, then every event, numbered n from 1
     POST /command[?wait=ms]  a command for the mod: relayed as one line on stdout
 
@@ -74,7 +75,8 @@ WINDOW_MARGIN_MS = 200         # a background window's decision must reach the m
 ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
 EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
 STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
-NOTICES = ("block-row", "row-seen")   # each row the session keeps is named by one, in write order (the cut)
+NOTICES = ("block-row", "row-seen")  # each row the session keeps is named by one, in write order (the cut)
+NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post without it is another module's
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
@@ -365,6 +367,11 @@ class Bridge:
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
+        # Minted for this child and said only in its hello, which only the
+        # module that spawned it reads: every post of the mod's carries it, so
+        # an older module instance still posting to the path (a reload keeps
+        # the session id, so the path) is turned away (409) and stops.
+        self.nonce = uuidlib.uuid4().hex
         self.exports = queue.Queue(EXPORTS_QUEUED)   # (cwd, records) for the log, appended in order (run_exports)
         # The mod's first resync applied: until then the state is not the
         # session's, and a subscription waits for it (DX5's readiness).
@@ -881,6 +888,8 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._send(400, {"error": "the body is not JSON: %s" % e})
         if url.path == "/events":
+            if self.headers.get(NONCE_HEADER) != bridge.nonce:
+                return self._send(409, {"error": "this child is another module's: its posts carry its own nonce"})
             events = body if isinstance(body, list) else [body]
             if not all(isinstance(e, dict) and isinstance(e.get("type"), str) for e in events):
                 return self._send(400, {"error": "each event is an object with a type"})
@@ -1003,7 +1012,7 @@ def serve(session):
     signal.signal(signal.SIGHUP, on_signal)
     try:
         bridge.emit({"op": "hello", "session": session, "pid": os.getpid(), "socket": path, "protocol": PROTOCOL,
-                     "kept": bridge.kept})
+                     "nonce": bridge.nonce, "kept": bridge.kept})
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
         threading.Thread(target=bridge.run_exports, daemon=True).start()

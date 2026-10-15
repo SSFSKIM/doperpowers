@@ -87,9 +87,32 @@ class Conn(http.client.HTTPConnection):
         self.sock.settimeout(10)
         self.sock.connect(self.path)
 
-def request(path, method, url, body=None):
+# The nonce each child named in its hello, kept by the stand-in that read it:
+# a post of the mod's events carries it, as the mod's do (DX5's fence).
+NONCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonces")
+
+def keep_nonce(hello):
+    os.makedirs(NONCES, exist_ok=True)
+    path = os.path.join(NONCES, os.path.basename(hello["socket"]))
+    with open(path + ".tmp", "w") as f:
+        f.write(hello["nonce"])
+    os.replace(path + ".tmp", path)
+
+def nonce_of(sock):
+    try:
+        with open(os.path.join(NONCES, os.path.basename(sock))) as f:
+            return f.read()
+    except OSError:
+        return None
+
+def request(path, method, url, body=None, nonce=None):
+    headers = {"content-type": "application/json"}
+    if method == "POST" and url == "/events":
+        nonce = nonce if nonce is not None else nonce_of(path)
+        if nonce:
+            headers["X-Bridge-Nonce"] = nonce
     c = Conn(path)
-    c.request(method, url, body=body, headers={"content-type": "application/json"})
+    c.request(method, url, body=body, headers=headers)
     r = c.getresponse()
     return r.status, r.read().decode()
 
@@ -152,6 +175,7 @@ elif op == "fakemod":       # sminos session lines-file mode-file
             msg = json.loads(line)
             if msg.get("op") == "hello":
                 sock = msg["socket"]
+                keep_nonce(msg)
                 delivered = dict((msg.get("kept") or {}).get("delivered") or {})
                 post(sock, [{"type": "resync", "turns": [], "streaming": [], "agents": []}])
                 continue
@@ -334,7 +358,7 @@ mkdir -p "$R"
 git -c init.defaultBranch=main init -q "$R"
 (cd "$R" && "$SMINOS" project init --name ctldemo >/dev/null)
 INBOX="$T/rover.sock"
-ctl inbox "$INBOX" "$T/rover-inbox" &
+python3 "$T/ctl.py" inbox "$INBOX" "$T/rover-inbox" &
 PIDS+=("$!")
 until_true 100 test -S "$INBOX" || true
 printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
@@ -373,7 +397,7 @@ mode busy
 # supervisor's control socket (`reply`, human-origin), else the inbox frame.
 BG=5d000003-0000-4000-8000-0000000000c3
 BGINBOX="$T/bg.sock"
-ctl inbox "$BGINBOX" "$T/bg-inbox" &
+python3 "$T/ctl.py" inbox "$BGINBOX" "$T/bg-inbox" &
 PIDS+=("$!")
 until_true 100 test -S "$BGINBOX" || true
 printf '{"pid":%s,"sessionId":"%s","name":"bgone","nameSource":"user","kind":"bg","jobId":"0a1b2c3d","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
@@ -385,7 +409,7 @@ case "$SUPDIR" in /tmp/cc-daemon-*/????????) ;; *) echo "refusing an unexpected 
 [ -d "$(dirname "$SUPDIR")" ] || mkdir -m 700 "$(dirname "$SUPDIR")"
 mkdir -m 700 "$SUPDIR" "$HOME/.claude/daemon"
 printf '0123456789abcdef0123456789abcdef' > "$HOME/.claude/daemon/control.key"
-ctl supervisor "$SUP" "$T/sup-in" ok &
+python3 "$T/ctl.py" supervisor "$SUP" "$T/sup-in" ok &
 SUPPID=$!
 PIDS+=("$SUPPID")
 until_true 100 test -S "$SUP" || true
@@ -409,7 +433,7 @@ assert_contains "$(cat "$T/bg-inbox" 2>/dev/null)" "from a peer" "a session's sa
 assert_not_contains "$(cat "$T/sup-in")" "from a peer" "not the supervisor's reply"
 # The supervisor refusing: the inbox frame.
 kill "$SUPPID"; wait "$SUPPID" 2>/dev/null || true
-ctl supervisor "$SUP" "$T/sup-in" refuse &
+python3 "$T/ctl.py" supervisor "$SUP" "$T/sup-in" refuse &
 PIDS+=("$!")
 until_true 100 test -S "$SUP" || true
 set +e; OUT="$(cd "$R" && "$SMINOS" say "@bgone refused then framed" 2>&1)"; RC=$?; set -e
@@ -419,7 +443,7 @@ assert_contains "$(cat "$T/bg-inbox")" "refused then framed" "as the inbox frame
 # A terminal session with no bridge: a steer goes as a cross-session frame.
 TERM_SID=5e000004-0000-4000-8000-0000000000c4
 TINBOX="$T/term.sock"
-ctl inbox "$TINBOX" "$T/term-inbox" &
+python3 "$T/ctl.py" inbox "$TINBOX" "$T/term-inbox" &
 PIDS+=("$!")
 until_true 100 test -S "$TINBOX" || true
 printf '{"pid":%s,"sessionId":"%s","name":"termy","nameSource":"user","kind":"interactive","status":"busy","cwd":"%s","messagingSocketPath":"%s"}\n' \

@@ -61,7 +61,7 @@ PID_LOG="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pro
 LOG="$SMINOS_HOME/projects/$PID_LOG/log"
 
 cat > "$T/ctl.py" <<'PY'
-import http.client, json, socket, subprocess, sys
+import http.client, json, os, socket, subprocess, sys
 
 class Conn(http.client.HTTPConnection):
     def __init__(self, path, timeout=10):
@@ -72,9 +72,32 @@ class Conn(http.client.HTTPConnection):
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.path)
 
-def request(path, method, url, body=None):
+# The nonce each child named in its hello, kept by the stand-in that read it:
+# a post of the mod's events carries it, as the mod's do (DX5's fence).
+NONCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonces")
+
+def keep_nonce(hello):
+    os.makedirs(NONCES, exist_ok=True)
+    path = os.path.join(NONCES, os.path.basename(hello["socket"]))
+    with open(path + ".tmp", "w") as f:
+        f.write(hello["nonce"])
+    os.replace(path + ".tmp", path)
+
+def nonce_of(sock):
+    try:
+        with open(os.path.join(NONCES, os.path.basename(sock))) as f:
+            return f.read()
+    except OSError:
+        return None
+
+def request(path, method, url, body=None, nonce=None):
+    headers = {"content-type": "application/json"}
+    if method == "POST" and url == "/events":
+        nonce = nonce if nonce is not None else nonce_of(path)
+        if nonce:
+            headers["X-Bridge-Nonce"] = nonce
     c = Conn(path)
-    c.request(method, url, body=body, headers={"content-type": "application/json"})
+    c.request(method, url, body=body, headers=headers)
     r = c.getresponse()
     return r.status, r.read().decode()
 
@@ -97,6 +120,7 @@ elif op == "fakemod":       # sminos session: spawns the child, as the mod does,
     for line in child.stdout:
         msg = json.loads(line)
         if msg.get("op") == "hello":   # as the mod's first post: its copy of the live state (DX5)
+            keep_nonce(msg)
             request(msg["socket"], "POST", "/events", json.dumps([{"type": "resync", "turns": [], "streaming": [], "agents": []}]))
     child.wait()
 PY
@@ -155,7 +179,7 @@ peer() { # session name kind entrypoint — a running harness session in the pro
     "$$" "$1" "$2" "$3" "$4" "$REPO" > "$HOME/.claude/sessions/$2.json"
 }
 start_child() { # session
-  ctl fakemod "$SMINOS" "$1" &
+  python3 "$T/ctl.py" fakemod "$SMINOS" "$1" &
   PIDS+=("$!")
   until_true 200 test -S "$SMINOS_HOME/bridge/$1.sock" || true
   until_true 100 sh -c "python3 '$T/ctl.py' status '$SMINOS_HOME/bridge/$1.sock' 2>/dev/null | grep -q '200 ready'" || true
@@ -172,7 +196,7 @@ SOCK="$SMINOS_HOME/bridge/$SA.sock"
 TA="$HOME/.claude/projects/x/$SA.jsonl"
 peer "$SA" exa interactive cli
 start_child "$SA"
-ctl subscribe "$SOCK" "$T/stream" &
+python3 "$T/ctl.py" subscribe "$SOCK" "$T/stream" &
 PIDS+=("$!")
 ctl post "$SOCK" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SA\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
 ctl post "$SOCK" "$(rows export marks)" >/dev/null

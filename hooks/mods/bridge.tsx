@@ -14,7 +14,10 @@ import type { AskNote } from './ask'
  * answers with a `result` event. Events go to the socket as `POST /events`,
  * one request in flight at a time, so they arrive in the order they happened
  * and batch themselves under load. A module reload kills the child and runs
- * `session.start` again, which spawns the next.
+ * `session.start` again, which spawns the next. Each post carries the nonce
+ * its child's hello named, so the child turns away (409) what an older module
+ * instance still has in flight after a reload, and a module whose post is
+ * turned away stops for good.
  *
  * The mod keeps the session's live state itself (open turns, every message
  * still streaming with its text and last chunk index, the subagents), so
@@ -213,7 +216,7 @@ type BridgeState = {
    * The calls that outlive a hook, made in session.start: its `$` lives as
    * long as the child's loop does, so posts, timers and restarts run on it.
    */
-  post?: (socketPath: string, body: string) => Promise<HttpResponse>
+  post?: (socketPath: string, nonce: string | undefined, body: string) => Promise<HttpResponse>
   /** A file's text, outside any hook (a transcript read when no record of a decision came). */
   read?: (path: string) => Promise<string>
   log?: (text: string) => void
@@ -226,6 +229,8 @@ type BridgeState = {
   /** The session the child serves, the socket it named, and the child itself. */
   session?: string
   socket?: string
+  /** The child's, from its hello: every post carries it (DX5 fence). */
+  nonce?: string
   child?: HookStream<ProcessSpawnChunk, ProcessSpawnResult>
   /** Bumped whenever a child is started or stopped on purpose; a loop of an older one does nothing more. */
   generation: number
@@ -562,7 +567,7 @@ function pump() {
  */
 async function poster() {
   for (;;) {
-    const { post, socket: socketPath } = state
+    const { post, socket: socketPath, nonce } = state
     if (post === undefined || socketPath === undefined || state.isWaiting || state.queue.length === 0) {
       await new Promise<void>((resolve) => (state.wake = resolve))
       state.wake = undefined
@@ -581,15 +586,25 @@ async function poster() {
         lose([...batch, ...state.queue])
       }
     }
-    await post(socketPath, JSON.stringify(batch)).then(
+    let isFenced = false
+    await post(socketPath, nonce, JSON.stringify(batch)).then(
       (res) => {
-        if (!res.ok) {
+        // Refused under the nonce of the child this module still holds: the
+        // path is served by a child another instance spawned (a reload).
+        // Under an older nonce it is only a post that missed a restart.
+        if (res.status === 409 && nonce === state.nonce) {
+          isFenced = true
+        } else if (!res.ok) {
           lost(`status ${res.status}`)
         }
       },
       (error: unknown) => lost(message(error)),
     )
     state.isPosting = false
+    if (isFenced) {
+      retire()
+      return
+    }
     if (failed && state.after !== undefined) {
       state.isWaiting = true
       state.after(RETRY_MS, () => {
@@ -598,6 +613,21 @@ async function poster() {
       })
     }
   }
+}
+
+/**
+ * This module instance no longer owns the session's bridge (a reload's new
+ * instance does): it posts nothing more, its heartbeat stops, and its child,
+ * if any is left, is stopped and never respawned.
+ */
+function retire() {
+  state.log?.('bridge: the child serves another module instance now; this one stops')
+  state.post = undefined
+  state.queue = []
+  state.heartbeat?.cancel()
+  state.heartbeat = undefined
+  state.isPosterRunning = false
+  stopChild()
 }
 
 /** Answers one command line with a `result` event. M3 adds its ops here. */
@@ -1310,6 +1340,7 @@ function onLine($: EngineInterface, generation: number, line: string) {
   const msg = parsed as Record<string, unknown>
   if (msg.op === 'hello' && typeof msg.socket === 'string') {
     state.socket = msg.socket
+    state.nonce = typeof msg.nonce === 'string' ? msg.nonce : undefined
     // What the child kept on disk is this module's only after a reload; a
     // module that holds its own hands it to the child in the resync.
     if (!state.isKeptLoaded) {
@@ -1336,6 +1367,7 @@ function startChild($: EngineInterface, session: string) {
   const generation = ++state.generation
   state.session = session
   state.socket = undefined
+  state.nonce = undefined
   const startedAt = Date.now()
   void (async () => {
     let pending = ''
@@ -1362,6 +1394,7 @@ function startChild($: EngineInterface, session: string) {
       return
     }
     state.socket = undefined
+    state.nonce = undefined
     state.child = undefined
     if (Date.now() - startedAt >= STABLE_MS) {
       state.respawnMs = RESPAWN_FIRST_MS
@@ -1381,6 +1414,7 @@ function stopChild() {
   const child = state.child
   state.child = undefined
   state.socket = undefined
+  state.nonce = undefined
   // Leaving the stream kills the child.
   void child?.return({ code: null, signal: null })
 }
@@ -1454,8 +1488,13 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   if ((await $.env.get('SMNS_INTERNAL')) !== undefined) {
     return
   }
-  state.post = (socketPath, body) =>
-    $.http.fetch('http://bridge/events', { method: 'POST', socketPath, headers: { 'content-type': 'application/json' }, body })
+  state.post = (socketPath, nonce, body) =>
+    $.http.fetch('http://bridge/events', {
+      method: 'POST',
+      socketPath,
+      headers: { 'content-type': 'application/json', ...(nonce !== undefined && { 'x-bridge-nonce': nonce }) },
+      body,
+    })
   state.read = (path) => $.fs.read(path)
   state.log = (text) => $.ui.log(text, { to: 'debug' })
   state.after = (ms, fn) => void $.clock.after(ms, fn)
