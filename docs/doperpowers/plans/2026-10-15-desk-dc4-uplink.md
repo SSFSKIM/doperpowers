@@ -553,6 +553,23 @@ produces nothing new for other children beyond the stream DC7 builds on.
   it; a reader that assumed contiguous seqs is fixed there, proved by a
   test after a spent `hub/` position.
   Date/Author: 2026-10-15, the composite's writer.
+- Decision: M3's fix wave (`757b71bb`). Spent is a tombstone (confirmed
+  by the composite's writer): nothing is ever appended at a spent
+  position, even an event that verifies later — in a `hub/` feed the hub
+  gave that position to the refused event, and in a machine feed only a
+  lying hub could cause it. The reader audit found no sminos reader that
+  counts seqs (each compares them), so none needed a fix; a test delivers,
+  shows, and settles web humans past a spent position. **For M4: the
+  archive copies writer files whole and never re-sequences.** A refusal
+  of an event carrying a lone surrogate is reported with the string as
+  it arrived, the surrogate written as its JSON `\uXXXX` escape, and
+  `uplink.json` is written ASCII-only so it round-trips. `conflict`'s
+  mapping lives in one constant (`CONFLICT_REASON`). The uplink checks
+  for a stop before each POST and every 0.25 s while awaiting the hub's
+  answer. An opened project that stops being eligible (hub removed,
+  malformed, another org) ends the stream, and the next one opens only
+  what is eligible.
+  Date/Author: 2026-10-15, M3's executor, folded by the controller.
 
 ## Surprises & Discoveries
 
