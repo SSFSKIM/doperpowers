@@ -1276,13 +1276,16 @@ function nameBlock(agentId: string | null, uuid: string, block: Record<string, u
  * truncated answer) after the request's result, so an end whose blocks are
  * not all named yet is held until they are, STEP_END_WAIT_MS at most, and
  * goes out before anything later of its loop (its next request, its turn's
- * end, the subagent's stop).
+ * end, the subagent's stop). With the end out, the step's pairing closes.
  */
 function endStep(key: string, end: BridgeEvent) {
   const s = state.stepBlocks.get(key)
-  const isOpen = s !== undefined && s.turnId === end.turnId && s.step === end.step && s.starts.some((b) => !s.named.has(b.index))
-  if (!isOpen || state.after === undefined) {
+  const isThis = s !== undefined && s.turnId === end.turnId && s.step === end.step
+  if (!isThis || !s.starts.some((b) => !s.named.has(b.index)) || state.after === undefined) {
     emit(end)
+    if (isThis) {
+      state.stepBlocks.delete(key)
+    }
     return
   }
   s.heldEnd = end
@@ -1293,13 +1296,17 @@ function endStep(key: string, end: BridgeEvent) {
   })
 }
 
-/** Posts the loop's held step end, if one is held. */
+/**
+ * Posts the loop's held step end, if one is held. Once a step's end is out its
+ * pairing is closed: a row of it that comes later is named by `row-seen`.
+ */
 function releaseStepEnd(key: string) {
   const s = state.stepBlocks.get(key)
   const end = s?.heldEnd
   if (s !== undefined && end !== undefined) {
     s.heldEnd = undefined
     emit(end)
+    state.stepBlocks.delete(key)
   }
 }
 

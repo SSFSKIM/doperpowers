@@ -1826,6 +1826,20 @@ describe('row notices and the cut', () => {
     expect(ends()).toEqual(['start:0', 'end:0', 'start:1', 'end:1', 'start:2', 'end:2'])
   })
 
+  test("once a step's end is out, its pairing is closed: a row of it that comes later is named by row-seen, after a timed-out hold or an end the turn's completion released", async () => {
+    const h = harness()
+    await h.ready()
+    const named = () => h.events().filter((e) => e.type === 'block-row' || e.type === 'row-seen' || (e.type === 'step' && e.phase === 'end')).map((e) => `${String(e.type)}:${String(e.uuid ?? e.step)}`)
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'late' }])
+    await h.fire(STEP_END_WAIT_MS)
+    await h.responseRow({ type: 'text', text: 'late' }, { uuid: 'late-row' })
+    expect(named()).toEqual(['step:0', 'row-seen:late-row'])
+    await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [{ kind: 'text', index: 0, text: 'ended' }])
+    await h.complete('t1')
+    await h.responseRow({ type: 'text', text: 'ended' }, { uuid: 'after-turn' })
+    expect(named()).toEqual(['step:0', 'row-seen:late-row', 'step:1', 'row-seen:after-turn'])
+  })
+
   test('a response row whose block never streamed (a server tool) is noticed by row-seen; a queue record, no row of the conversation, by none', async () => {
     const h = harness()
     await h.ready()

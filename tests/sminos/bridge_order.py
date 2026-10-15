@@ -29,7 +29,7 @@ import time
 
 SMINOS, WORK = sys.argv[1], sys.argv[2]
 FLUSH_WAIT = 5.0     # a cut's row, or a named row, not on disk this long is a discontinuity
-UNNAMED_AFTER = 2.0  # a disk row past the cut released with no notice for it or any row after it
+UNNAMED_AFTER = 2.0  # from first seen on disk: a row past the cut released with no notice for it or any row after it
 FAILURES = []
 
 
@@ -147,8 +147,8 @@ class Consumer:
     discontinuity) and reads up to and including it; live, disk rows are
     emitted strictly in disk order, a row past the cut released on whichever
     comes first — its own notice, a notice for any later row of the same loop
-    (a row passed over is unnamed), or 2 s with neither — and every later row
-    waits behind it. A notice whose row is not on disk within 5 s, and a
+    (a row passed over is unnamed), or 2 s after it was first seen on disk with
+    neither — and every later row waits behind it. A notice whose row is not on disk within 5 s, and a
     `block-row` for a uuid already released unnamed, end the subscription; a
     `row-seen` for an already released uuid is ignored.
 
@@ -214,7 +214,7 @@ class Consumer:
                 self.emit(uuid, "history")
             released[loop] = len(rows)
         named = {}               # uuid → when its notice came, for a row not yet emitted
-        first_seen = {}          # a disk row past the cut → when it was first the loop's next
+        first_seen = {}          # a disk row past the cut → when it was first seen on disk
         stream_over = False
         while not self.stop.is_set():
             while True:
@@ -234,6 +234,8 @@ class Consumer:
             now = time.time()
             for loop in self.loops:
                 rows = self.disk.rows(loop)
+                for uuid in rows[released[loop]:]:
+                    first_seen.setdefault(uuid, now)
                 while released[loop] < len(rows):
                     head = rows[released[loop]]
                     if head in named:
@@ -241,7 +243,7 @@ class Consumer:
                         del named[head]
                     elif any(u in named for u in rows[released[loop] + 1:]):
                         self.emit(head, "unnamed")
-                    elif now - first_seen.setdefault(head, now) >= UNNAMED_AFTER:
+                    elif now - first_seen[head] >= UNNAMED_AFTER:
                         self.emit(head, "unnamed")
                     else:
                         break
@@ -290,11 +292,12 @@ def readiness():
     child.post({"type": "session", "phase": "start", "session": child.session, "cwd": "/w"})
     time.sleep(0.2)
     held = "status" not in got
-    child.resync()
+    child.resync(cut={"main": "seed-row", "a7": "s-seed"})
     th.join(5)
     check("before the mod's first resync the child is not ready, and says so", before is False, before)
-    check("a subscription is held until the first resync, then opens with the snapshot",
-          held and got.get("status") == 200 and got.get("at", 0) >= 0.6 and got["snap"]["sessionInfo"]["cwd"] == "/w",
+    check("a subscription is held until the first resync, then opens with the snapshot, its cut the resync's (the seed)",
+          held and got.get("status") == 200 and got.get("at", 0) >= 0.6 and got["snap"]["sessionInfo"]["cwd"] == "/w"
+          and got["snap"]["cut"] == {"main": "seed-row", "a7": "s-seed"},
           got)
     check("then the child is ready", child.status().get("ready") is True)
     child.stop()
@@ -510,14 +513,22 @@ def passed_over():
     waited = c.at.get("x1", t1) - t1
     check("an unnamed row last on disk waits the 2 s", c.out[3:] == [("x1", "unnamed")] and 1.9 <= waited < 3,
           "%s after %.2f s" % (c.out[3:], waited))
+    t2 = time.time()
+    for u in ("k1", "k2", "k3"):     # an idle compaction's rows, written together, none named
+        disk.write("main", u, "system")
+    c.wait("k3", 5, lambda: len(c.out) >= 7)
+    took = [round(c.at.get(u, t2 + 99) - t2, 2) for u in ("k1", "k2", "k3")]
+    check("unnamed rows written together, with no notice after them, all come out about 2 s after they were first on disk, in disk order",
+          c.out[4:7] == [("k1", "unnamed"), ("k2", "unnamed"), ("k3", "unnamed")] and all(1.9 <= x < 2.8 for x in took),
+          "%s after %s s" % (c.out[4:7], took))
     disk.write("main", "a")
     disk.write("main", "b")
     child.post(seen("b"))
-    c.wait("b", 3, lambda: len(c.out) >= 6)
+    c.wait("b", 3, lambda: len(c.out) >= 9)
     child.post(seen("a"))
     time.sleep(0.3)
     check("a notice for a later row releases the rows before it, unnamed; a row-seen for one released is ignored",
-          c.out[4:] == [("a", "unnamed"), ("b", "notice")] and c.ended is None, "%s, ended %s" % (c.out[4:], c.ended))
+          c.out[7:] == [("a", "unnamed"), ("b", "notice")] and c.ended is None, "%s, ended %s" % (c.out[7:], c.ended))
     child.stop()
 
 
