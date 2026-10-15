@@ -114,16 +114,23 @@ the hub deployed, checked by hand and recorded with evidence in Outcomes.
    request; interrupt stops the running turn within 2 seconds; send to an
    idle session starts a turn whose prompt is the sent text, read by the
    model as the human's words.
-7. **Spawn and retire.** "+ Session" on machine B, choosing a known checkout
-   and a brief, starts a `claude --bg` job that is in the sidebar within 10
-   seconds, carries the brief as its in-charge line, and can be attached
-   with `claude attach` on B; retiring it from the web ends it and records
-   `retired` with the owner as `by`.
-8. **The machine decides.** A `human` event or an RPC placed at the hub
-   without a valid signature by the owner's key (simulated by writing it
-   into the project's Durable Object directly) is refused by the daemon and
-   the refusal is visible in the web; a spawn into a directory that is not a
-   known checkout of the project on that machine is refused.
+7. **Spawn, retire, resume.** "+ Session" on machine B, choosing a known
+   checkout and a brief, starts a `claude --bg` job that is in the sidebar
+   within 10 seconds, carries the brief as its in-charge line, and can be
+   attached with `claude attach` on B; retiring it from the web ends it and
+   records `retired` with the owner as `by`. A terminal session the owner
+   closed keeps its channel and history; a message sent to it shows as
+   recorded, not delivered; Resume brings it back on its machine as a
+   `--bg` job with the same session id, and it rejoins.
+8. **The machine decides.** Each of these, placed at the hub without the
+   org key (simulated by writing into the project's Durable Object
+   directly), is refused by every daemon, and the refusal shows in the web:
+   a `human` event, a `say` under another machine's writer, and an RPC. An
+   Allow whose request card the hub altered (a different command shown than
+   the one pending) is refused because its digest does not match. A spawn
+   into a directory that is not a known checkout of the project on that
+   machine is refused. On a machine set read-only, a send to a live session
+   and to a stopped seat starts nothing and shows as not delivered.
 9. **Offline.** With machine B's daemon stopped, B's sessions show their
    depth and presence as unavailable, everything they sent is still in the
    group chat, and an RPC to B fails at once with "machine offline".
@@ -276,6 +283,15 @@ The group chat and the direct channels are drawn from it.
   order); browsers resume after an offset and never see writer vectors.
   This is Secure Scuttlebutt's feed replication without the gossip; it
   needs no conflict resolution because every file has one writer.
+- **One writer per feed, enforced.** The git mirror's machine-name claim
+  (smns §8, `check_claim` in `sminos_daemon.py`) runs inside git
+  integration, which hub projects no longer use, so the hub replaces it: a
+  machine enrolls under a name unique in the org (X7), its daemon writes
+  only under that name, the hub accepts from a machine's connection only
+  events whose writer begins with that name, and an event arriving at an
+  existing `(writer, seq)` with a different payload is refused and
+  reported, never silently dropped. Two installations sharing a host name
+  cannot both enroll it; the second picks another name.
 - **Hub projects sync only through the hub.** **[binding — owner,
   2026-10-15]** A project whose `.smns` names a hub stops using the git
   mirror as a live path; the log is archived to the project's git remote
@@ -284,22 +300,29 @@ The group chat and the direct channels are drawn from it.
   one file per writer removed. A project without a hub keeps the git
   mirror as smns §8 built it. The cost: two machines on one LAN with the
   internet down no longer see each other's events. The archive is written
-  by one machine's daemon holding the hub's archive lease, because a Worker
-  cannot run git and the GitHub API would bind the archive to GitHub.
+  by one machine the owner designates for the project (recorded in the
+  registry, X7), because a Worker cannot run git and the GitHub API would
+  bind the archive to GitHub; that daemon copies the log files into an
+  archive clone kept apart from the log directory and pushes, so git never
+  feeds the live log. If the machine is retired, the owner designates
+  another; one designated writer needs no lease.
 - **Web writes.** A human on the web writes through the hub into a
   hub-held feed, writer `hub/<member-id>`, sequenced by the project's
   Durable Object (its one writer). `from` stays `"human"`, as everywhere in
   `.smns`, so every member still sees one host; `member` names which of the
-  org's people wrote it. Every such event carries the member's signature
-  (§6).
+  org's people wrote it. Every event the hub carries, from any writer,
+  carries an authentication code (§6).
 - **Sending to a session** is the existing `human` event, delivered by
   `deliver_next` (smns §4) with the bridge as its last hop
   (`$.prompt.submit({asUser: true})`). Delivery stays at least once, so the
   push carries the event's `(writer, seq)` and the bridge drops a repeat
   before submitting. A `human` addressed to a member that is no longer live
-  resumes it (smns §4), so a message sent from the web to a closed terminal
-  session brings it back as a `--bg` job on its machine — intended: the web
-  is where the owner works, and a session they address should answer.
+  follows smns §4 as built: a seat is resumed; a session sminos did not
+  spawn, such as a terminal session the owner closed, is never resumed by
+  a message (`push_member`: "it is the human's to reopen") — the message is
+  recorded and the web shows it as not delivered. The session's channel
+  offers Resume instead, an RPC that brings it back on its machine (§5):
+  the human's explicit act of reopening.
 - **Liveness of messages.** The bridge exports `<message>` spans and async
   questions as they complete, not at Stop. The Stop hook's `sminos record`
   stays as the fallback for sessions without the bridge, and the existing
@@ -356,7 +379,8 @@ unavailable; everything they sent the human is still in the log.
 - **A direct channel** is one session's exchange with the human — its
   messages, questions, and permission prompts, and what the human sent it —
   with the working record between them folded, as the to-human mod draws a
-  session in the terminal. Unfolding opens the live transcript. A message
+  session in the terminal. Unfolding opens the live transcript. An ended
+  session's channel keeps its history and offers Resume. A message
   the bridge submitted as the human's words is drawn as the human's.
 - **The composer** has the terminal's three verbs. **Send** queues the text
   for when the session is idle. **Steer** puts it into the running turn at
@@ -381,9 +405,10 @@ afleet's. Taste-heavy surfaces are reviewed as mockups in the web children.
 | Answer a question | RPC | bridge: the `tool.call` hook's result for a native AskUserQuestion; the ask mod's external-answer path for an async one |
 | Allow / deny | RPC | bridge `classic.PermissionRequest`, racing the terminal's dialog |
 | Model | RPC | bridge `$.config.set({key: 'model'})` |
-| Compact | RPC | bridge `$.session.compact()` between turns |
+| Compact | RPC | bridge `$.session.compact()` between turns; during a turn it returns busy |
 | Spawn | RPC | daemon runs `sminos spawn` (`claude --bg`) with brief, model, effort |
 | Retire | RPC | daemon runs `sminos retire` |
+| Resume an ended session | RPC | daemon runs `claude --bg --resume <session>` in the session's working directory with no other flags (a flag makes the engine start a copy, `claude_args` in `sminos.py`), after checking the session is live nowhere; it rejoins (smns §2) |
 
 **[binding — one path means one behavior and one test surface]** Every
 control goes through the bridge, for every kind of session. The owner's
@@ -396,6 +421,10 @@ lost: the model reads `asUser` text as the human's words, the web draws it
 as the human's, and it would make a second internal, versioned surface
 primary beside the mod API.
 
+Every RPC that answers or decides a pending request carries the digest of
+the request as the browser drew it, and the daemon executes it only if the
+digest matches the request still pending in the session (§6).
+
 Not in phase 1, because the mod API cannot do them reliably: switching a
 live session's permission mode, interrupting one subagent, rewind, and
 fork.
@@ -404,49 +433,66 @@ fork.
 
 - **Humans** sign in through Access in front of the Worker. The registry
   holds one org with the owner as its admin.
-- **Machines** enroll with a one-time code shown on the web and typed into
-  `sminos hub enroll` on the machine; the machine receives an Access
-  service token kept under `$SMINOS_HOME/daemon/` (mode 0600). It connects
-  outbound only.
+- **Machines** enroll with a one-time code the browser generates and the
+  owner runs as `sminos hub enroll <code>` on the machine. The code carries
+  the hub's URL, a one-time token the hub exchanges for the machine's
+  Access service token, the machine name to claim (§3), and the org key
+  (below). The hub sees the token, never the key. Token and key live under
+  `$SMINOS_HOME/daemon/` (mode 0600). The machine connects outbound only.
 - **The daemon is the execution boundary.** It accepts only the RPCs of §5.
   It spawns only into checkouts of the project already known on that
   machine (the working directories its members joined from), with a
   permission mode no looser than the machine's ceiling (default: the mode
   the user's own settings give), and passes no arbitrary flags,
-  environment, or shell. A machine's owner can set it read-only.
-- **Web writes are signed.** **[binding — owner, 2026-10-15]** A `human`
-  message delivered to a session in auto mode is code execution, classifier
-  permitting, so the typed boundary alone would let a compromised hub, a
-  leaked token, or an Access misconfiguration execute on every enrolled
-  Mac. The browser therefore signs every `human` event and every RPC with
-  the member's Ed25519 key, and every daemon verifies the signature against
-  the member's public key before acting; the hub stores and routes but
-  cannot forge.
-  - The private key is derived in the browser from the member's passkey
-    through the WebAuthn PRF extension (any browser holding the passkey
-    derives the same key), or from a passphrase where PRF is unavailable.
-    It never leaves the page.
-  - The daemon learns the public key at enrollment, not from the hub: the
-    enrollment code the owner types on the machine carries the key's
-    fingerprint, so a hub that substituted a key would fail the check.
-  - The signed bytes are the canonical JSON (sorted keys, no whitespace) of
-    the fields in X1 and X6, including the project, the target machine for
-    an RPC, a random nonce, and the creation time. A daemon refuses a
-    signature older than 60 seconds for an RPC, and refuses a nonce it has
-    seen; `human` events, which may arrive late after an outage, carry the
-    nonce check only.
-  - What remains: a compromised deployment of the web app itself could
-    take the key from the page. The strongest alternative, Access alone for
-    one owner, lost on the owner's ruling; end-to-end encryption of the log
-    (Happy Coder's shape) lost because the hub must read `to` and `kind` to
-    route, and because the org phase would need group key distribution.
+  environment, or shell. A machine's owner can set it **read-only**: it
+  then executes no RPC and delivers nothing that came from outside it — a
+  `human` or `say` written on another machine or on the hub is recorded in
+  its log, settled undelivered, and shown in the web as not delivered,
+  while events written on the machine itself are delivered as before.
+- **Everything the hub carries that can cause execution is authenticated
+  with a key the hub never holds.** **[binding — owner, 2026-10-15: web
+  writes are signed; the spec review showed that signing only web writes
+  still lets the hub forge peer messages, which drive delivery and resume
+  just as `human` does (`_owed`, `push_event`, `push_member` in
+  `sminos.py`)]**
+  - *The org key* is a 256-bit secret derived in the browser from the
+    owner's passkey through the WebAuthn PRF extension (HKDF over the PRF
+    output with the org id), or from a passphrase where PRF is unavailable;
+    any browser holding the passkey derives the same key. It reaches each
+    machine only inside the enrollment code, by the owner's hand.
+  - *What carries a code:* every log event on the hub, from any writer (the
+    daemon adds the code when it uploads its machine's events; the browser
+    when it writes a `human`); every RPC; every pending request and its
+    settlement (X4). The code is HMAC-SHA256 over canonical JSON (X1, X4,
+    X6). Daemons verify before importing an event into their log or acting
+    on an RPC; browsers verify before drawing a log event or a request card.
+    What fails is refused, reported, and kept out of the log.
+  - *Approvals are bound to what was shown.* An answer or a decision RPC
+    carries the digest of the request as the browser drew it (session,
+    tool-use id, tool name, SHA-256 of the input), and the daemon executes
+    it only if the digest matches the request still pending in the session,
+    as the bridge reports it locally.
+  - *Freshness.* An RPC older than 60 seconds is refused, and a daemon
+    refuses a nonce it has seen; a web `human` event, which may arrive late
+    after an outage, carries the nonce check only.
+  - *Why a shared key and not per-member signatures:* the daemon is stdlib
+    Python, which has no Ed25519, and phase 1 is one owner whose browser
+    and machines are one trust domain. Accepted residual: an enrolled
+    machine that is compromised can forge any writer, and it can already
+    execute as the owner. The org phase moves to per-member asymmetric keys
+    and an admin-signed member list.
+  - *What remains:* a compromised deployment of the web app could read the
+    key from the page. Session depth (transcripts, streams, diffs) is
+    relayed without codes: it is display, and what the human approves is
+    bound by digest.
+  - *Alternatives rejected:* Access alone for one owner (the owner's
+    ruling); end-to-end encryption of the log (Happy Coder's shape), because
+    the hub must read `to` and `kind` to route and the org phase would need
+    group key distribution.
 - **The bridge's channel** is the daemon's socket in an owner-only
   directory; commands never travel as inbox frames.
 - **No redaction layer**, as `.smns` ruled (smns §3). Transcripts pass
   through the hub and are not stored there.
-- **Deferred to the org phase:** a member list signed by an admin, against
-  which daemons verify other members' keys; a passkey step-up for spawn and
-  approvals.
 
 ### 7. Phases
 
@@ -496,19 +542,22 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 
 - **Purpose:** Prove, in real sessions on 2.1.300, that a mod can do what
   §2 and §5 assume, before two children build on it.
-- **Acceptance:** findings recorded in this spec's Surprises & Discoveries,
-  with evidence, for each of: a session-lifetime child started with
-  `$.process.spawn` whose output lines reach the mod at any point in a turn
-  (idle, mid-model-call, mid-Bash); `$.prompt.submit({asUser: true})` from a
-  timer starting a turn in an idle session; `$.session.append` mid-turn
-  read at the next request, and whether the terminal draws it;
-  `$.turn.abort` stopping a running turn; a `classic.PermissionRequest`
-  hook long-polling a local socket and answering while the dialog is open,
-  and what happens when the terminal answers first; a `tool.call` hook
-  answering a native AskUserQuestion with the dialog open; `$.config.set`
-  switching the model; `turn.step` chunk rate with two subagents running;
-  all of the above in a terminal session and in a `--bg` job. Verdict per
-  item: promote (C2 builds it) or discard (with the fallback).
+- **Acceptance:** findings recorded in
+  `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` and folded
+  into this spec's Surprises & Discoveries, with evidence, for each of: a
+  session-lifetime child started with `$.process.spawn` whose output lines
+  reach the mod at any point in a turn (idle, mid-model-call, mid-Bash);
+  `$.prompt.submit({asUser: true})` from a timer starting a turn in an idle
+  session; `$.session.append` mid-turn read at the next request, and whether
+  the terminal draws it; `$.turn.abort` stopping a running turn; a
+  `classic.PermissionRequest` hook long-polling a local socket and
+  answering while the dialog is open, and what happens when the terminal
+  answers first; a `tool.call` hook answering a native AskUserQuestion with
+  the dialog open; `$.config.set` switching the model; `$.session.compact()`
+  between turns and during one; `turn.step` chunk rate with two subagents
+  running; all of it in a terminal session and in a `--bg` job. Verdict per
+  item: promote, promote with a change to this design, or discard with the
+  fallback.
 - **Edges:** blocks C2.
 - **Contracts:** —
 - **Design inheritance:** §2 Bridge, §5, §8 unknown 1.
@@ -518,24 +567,30 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 ### C2: The bridge — plan
 
 - **Purpose:** Every session on a machine becomes controllable by that
-  machine's daemon, and the daemon sees its live events: the mod, its
-  session-lifetime child, and the daemon's local endpoint, usable from the
-  CLI before the hub exists.
+  machine's daemon, and the daemon sees its live events and its pending
+  requests: the mod, its session-lifetime child, and the daemon's local
+  endpoint, usable from the CLI before the hub exists.
 - **Acceptance:**
-  - **G1 (local protocol):** X5 written into this spec's Interfaces and
-    reviewed; C4 may start on it.
+  - **G1 (local protocol):** X5 written into Interfaces and reviewed; C7
+    may start on it.
   - **G2 (local control):** on one machine, without a hub, sminos verbs
     drive a terminal session and a `--bg` job: `sminos steer`, `sminos
-    interrupt`, `sminos answer`, `sminos decide`, `sminos model` act as §5
-    says; `sminos answer` also answers an async question from the ask mod,
-    through an external-answer path added to `hooks/mods/ask.tsx`; `sminos
-    watch <member>` prints the live stream (text chunks, subagents
-    included); a `human` delivered by `deliver_next` to a bridged session
-    arrives as the human's words, once, under redelivery; a session without
-    the bridge falls back per §2.
-  - **G3 (export):** `<message>` spans and async questions reach the log as
+    interrupt`, `sminos answer`, `sminos decide`, `sminos model`, `sminos
+    compact` act as §5 says, compact answering busy during a turn; `sminos
+    answer` also answers an async question from the ask mod, through an
+    external-answer path added to `hooks/mods/ask.tsx`; `sminos watch
+    <member>` prints the live stream (text chunks, subagents included); a
+    `human` delivered by `deliver_next` to a bridged session arrives as the
+    human's words, once, under redelivery; a session without the bridge
+    falls back per §2.
+  - **G3 (settlement):** every request the bridge reports as raised is
+    followed by a settlement naming the side whose answer the engine used,
+    in four cases: answered from the CLI first, answered in the terminal
+    first, both at once, and the daemon reconnecting after the request was
+    answered.
+  - **G4 (export):** `<message>` spans and async questions reach the log as
     they complete, de-duplicated against the Stop hook's export.
-- **Edges:** blocked-by: C1; blocks: C4.
+- **Edges:** blocked-by: C1; blocks: C7.
 - **Contracts:** X5 (owner), X4 (producer), X1 (writer of `message` and
   `question`).
 - **Design inheritance:** §2 Bridge and Without the bridge [binding], §3
@@ -549,89 +604,100 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 ### C3: The hub — plan
 
 - **Purpose:** The cloud side: the Worker, the project Durable Objects, the
-  registry, Access for humans and service tokens for machines, log storage
-  with sync, the session-plane relay, RPC routing, the pending set, the
-  audit record, and enrollment.
+  registry, Access for humans and service tokens for machines, enrollment
+  and machine names, log storage with sync, the session-plane relay, RPC
+  routing, the pending set, the audit record, and a fake machine for the
+  web children.
 - **Acceptance:**
   - **G1 (protocols):** X2, X3, the X4 envelope, the X6 shapes, and X7
-    written into this spec's Interfaces and reviewed; C4, C5, C6 may start
-    on them.
-  - **G2 (log):** a fake machine (a test client speaking X2) syncs a
-    project's log in and out across reconnects and Worker redeploys with
-    no loss and no duplicates; a browser client resumes after its offset.
-  - **G3 (routing):** RPCs reach the named machine's connection and return
-    `done`/`failed`; an RPC to a machine without a connection fails at once;
-    session-plane subscriptions relay to the subscribing browsers; the
-    pending set survives a daemon reconnect.
+    written into Interfaces and reviewed; C4 and C5 may start on them.
+  - **G2 (log):** a fake machine speaking X2 syncs a project's log in and
+    out across reconnects and Worker redeploys with no loss and no
+    duplicates; a browser client resumes after its offset; an event under
+    another machine's name is refused at that connection; an event at an
+    existing `(writer, seq)` with a different payload is refused and
+    reported.
+  - **G3 (routing and requests):** RPCs reach the named machine's
+    connection and return `done` or `failed`; an RPC to a machine without a
+    connection fails at once; session subscriptions relay to the subscribing
+    browsers; a settlement removes its request from the pending set, and a
+    request the daemon no longer republishes after a reconnect is dropped;
+    the audit record holds the side that actually won, from the settlement,
+    not the web's attempt.
   - **G4 (deployed):** deployed to the owner's Cloudflare account behind
-    Access; enrollment issues a service token; the fake machine works
-    against the deployment.
-  - **G5 (a fake machine for the web children):** a tool that replays a
-    recorded session (transcript JSONL, presence, pending requests) through
-    X2, so C5 and C6 develop and test against the real protocol without a
-    Mac.
-- **Edges:** blocks: C4, C5, C6.
+    Access; enrollment issues a service token and claims a machine name,
+    refusing a name already enrolled; the designated archive machine is
+    recorded per project; the fake machine works against the deployment.
+  - **G5 (fake machine):** a tool that replays a recorded session
+    (transcript JSONL, presence, pending requests and their settlements,
+    two subagents) through X2 under the X4 subscription semantics, with the
+    org key, so C5 and C6 develop and test against the real protocol
+    without a Mac.
+- **Edges:** blocks: C4, C5 (start at G1; acceptance needs G5), C6
+  (acceptance needs G5).
 - **Contracts:** X2, X3, X7, the X4 envelope, the X6 shapes (owner); X1
-  (stores).
+  (stores, never alters).
 - **Design inheritance:** §2 Hub, §3 [binding parts], §6, §8 unknown 3.
 - **Required:** required.
 - **Status:** not-dispatched (dispatchable now).
 
 ### C4: The uplink — plan
 
-- **Purpose:** The machine side: the daemon becomes concurrent, connects to
-  the hub, syncs hub projects' logs, serves the session plane, verifies and
-  executes RPCs under the machine's policy, and enrolls the machine.
+- **Purpose:** The machine's connection to the hub and the log plane over
+  it: the daemon becomes concurrent, enrolls, syncs hub projects' logs with
+  authentication codes, and writes the archive.
 - **Acceptance:**
-  - **G1 (sync):** a hub project's log is identical (per-writer event
-    counts and last seq) between two machines and the hub after each of:
-    a burst of `say` on both, a daemon restart, a dropped connection; a
-    hub-less project's git mirror is unchanged in behavior (the existing
-    sminos suite passes).
-  - **G2 (session plane):** presence changes reach the hub within 1 second;
-    a subscribed session's transcript, subagent tree, stream, and diff flow
-    to the hub; pending requests are republished on reconnect.
-  - **G3 (RPCs and policy):** each RPC of §5 executes through C2's
-    protocol; an unsigned or mis-signed RPC or `human` event is refused and
-    the refusal reported; a spawn outside the known checkouts, or above the
-    ceiling, is refused; read-only mode refuses all RPCs.
-  - **G4 (enroll and archive):** `sminos hub enroll <code>` enrolls a
-    machine and pins the owner's key fingerprint; `sminos project init
-    --hub` writes the `hub` field; the archive lease holder writes the log
-    to the git remote on schedule.
-- **Edges:** blocked-by: C2.G1, C3.G1; blocks: — (integration at
-  recomposition).
-- **Contracts:** X6 policy (owner); X1 (verifier), X2, X5, X7 (consumer);
-  X4 (producer).
+  - **G1 (enroll):** `sminos hub enroll <code>` enrolls a machine under its
+    claimed name and stores the token and the org key; `sminos project init
+    --hub` writes the `hub` field; a second installation with the same host
+    name is refused at enrollment and told how to pick another name.
+  - **G2 (sync):** a hub project's log is identical (per-writer event
+    counts, last seq, and payload) between two machines and the hub after
+    each of: a burst of `say` on both, a daemon restart, a dropped
+    connection; a fresh machine bootstraps the project from the hub; the
+    daemon never fetches git for a hub project; an event without a valid
+    code is refused before it enters the log, including a forged `say`
+    under another machine's writer; a hub-less project's git mirror behaves
+    as before (the existing sminos suite passes).
+  - **G3 (archive):** the designated machine writes the log to the
+    project's git remote on schedule from a clone outside the log
+    directory; no other machine pushes it.
+  - **G4 (concurrency):** a slow git phase of a hub-less project or a
+    derivation does not delay the uplink; an event arriving from the hub
+    nudges delivery at once.
+- **Edges:** blocked-by: C3.G1; blocks: C7.
+- **Contracts:** X1 (verifier and uploader), X2 (consumer), X7 (consumer).
 - **Design inheritance:** §2 Daemon uplink [binding: outbound only, sole
-  connection], §3 [binding parts], §5, §6 [binding: the daemon as boundary,
-  signatures], §8 unknown 2.
+  connection], §3 log plane [binding parts], §6 org key, §8 unknown 2.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C2.G1, C3.G1).
+- **Status:** not-dispatched (blocked-by C3.G1).
 
 ### C5: The web — projects and the conversation — plan
 
-- **Purpose:** The web app's shell and everything drawn from the log
-  plane: sign-in, the member's signing key, the project grid, the project
-  view, the group chat, direct channels, the composer's three verbs and
-  model/compact, request cards for questions and permissions, the spawn and
-  retire sheets, notifications.
+- **Purpose:** The web app's shell and everything drawn from the log plane:
+  sign-in, the org key, the project grid, the project view, the group chat,
+  direct channels, the composer's three verbs and model and compact,
+  request cards for questions and permissions, the spawn, retire, and
+  resume actions, notifications.
 - **Acceptance:**
   - **G1 (shell):** MAWS's renderer skeleton copied and building as a web
-    app served by the Worker; the grid and the project view against C3's
-    fake machine.
-  - **G2 (conversation):** group chat and direct channels render a replayed
-    project's log as §4 says (folding, addressing grammar, system lines);
-    composer verbs and request cards issue signed X1 events and X6 RPCs and
-    render their results.
-  - **G3 (signing):** the key derives from a passkey through PRF in the
-    owner's browsers, or from a passphrase; the fingerprint shown matches
-    what `sminos hub enroll` pins.
-- **Edges:** blocked-by: C3.G1; blocks: — (integration at recomposition).
-- **Contracts:** X3, X4, X7 (consumer); X1, X6 (signer).
-- **Design inheritance:** §4, §5, §6 signing [binding], §8 unknown 4.
-  Advisory: taste-heavy surfaces (the grid card, the folded agent-traffic
-  row, the request cards) go to the owner as mockups before polish.
+    app served by the Worker, with X8 written into Interfaces; the grid and
+    the project view against C3's fake machine.
+  - **G2 (conversation):** group chat and direct channels draw a replayed
+    project's log as §4 says (folding, the addressing grammar, system
+    lines, an ended session's channel with Resume); composer verbs and
+    request cards issue authenticated X1 events and X6 RPCs, request cards
+    carry the digest of what they drew, and results render; an event or a
+    request whose code fails is not drawn.
+  - **G3 (the key):** the org key derives from a passkey through PRF in the
+    owner's browsers, or from a passphrase; the enrollment code it produces
+    enrolls a machine through C4.
+- **Edges:** blocked-by: C3.G1 to start, C3.G5 for G2; blocks: C6 (at G1).
+- **Contracts:** X8 (owner); X3, X4, X7 (consumer); X1, X6 (author, with
+  codes).
+- **Design inheritance:** §4, §5, §6 [binding], §8 unknown 4. Advisory:
+  taste-heavy surfaces (the grid card, the folded agent-traffic row, the
+  request cards) go to the owner as mockups before polish.
 - **Required:** required.
 - **Status:** not-dispatched (blocked-by C3.G1).
 
@@ -644,14 +710,50 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Acceptance:** against C3's fake machine replaying a recorded session
   with two subagents: the transcript streams and settles into the same
   rows a reload shows; the subagent tree matches the session's
-  `subagents/*.meta.json`; the diff renders; a reconnect resumes without
-  gaps or duplicates.
-- **Edges:** blocked-by: C3.G1; blocks: — (integration at recomposition).
-- **Contracts:** X3, X4 (consumer).
+  `subagents/*.meta.json`; the diff renders; a reconnect mid-response and a
+  hub restart each end in a fresh snapshot with no gap and no duplicate.
+- **Edges:** blocked-by: C5.G1 (X8), C3.G1 to start, C3.G5 for acceptance.
+- **Contracts:** X8, X3, X4 (consumer).
 - **Design inheritance:** §2 Web client (the adapter), §3 session plane, §4
   right panel.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by C3.G1).
+- **Status:** not-dispatched (blocked-by C5.G1, C3.G1).
+
+### C7: The machine's controls — plan
+
+- **Purpose:** The session plane and the RPCs on the machine side: presence
+  from the engine's session records, subscriptions served under the X4
+  semantics, pending requests and settlements relayed with codes, the RPCs
+  of §5 verified and executed through the bridge, the machine's policy, and
+  Resume.
+- **Acceptance:**
+  - **G1 (session plane):** presence changes reach the hub within 1
+    second; a subscribed session's snapshot and live stream follow X4,
+    verified by a reconnect mid-response and a Worker restart overlapping
+    transcript flushes, each including a subagent stream; pending requests
+    and their settlements reach the hub with codes and are republished on
+    reconnect.
+  - **G2 (RPCs):** each RPC of §5 executes through C2's protocol; an RPC
+    without a valid code, older than 60 seconds, or with a seen nonce is
+    refused and the refusal reported; an answer or decision whose digest
+    differs from the pending request is refused.
+  - **G3 (policy):** a spawn outside the known checkouts or above the
+    ceiling is refused; on a read-only machine every RPC is refused, and a
+    `human` or `say` from outside the machine, addressed to a live session
+    and to a stopped seat, starts nothing and settles undelivered with the
+    reason shown.
+  - **G4 (resume):** Resume brings an ended terminal session back on its
+    machine as a `--bg` job with the same session id, which rejoins; it is
+    refused while the session is live anywhere and on a read-only machine;
+    two Resumes at once start one session.
+- **Edges:** blocked-by: C2.G1, C4; blocks: — (integration at
+  recomposition).
+- **Contracts:** X6 policy (owner); X4 (producer); X5, X2 (consumer); X1,
+  X6 (verifier).
+- **Design inheritance:** §3 session plane [binding], §5 [binding], §6
+  [binding: the daemon as boundary, codes, digests, read-only].
+- **Required:** required.
+- **Status:** not-dispatched (blocked-by C2.G1, C4).
 
 ## Cross-Child Contracts
 
@@ -663,77 +765,111 @@ consumers start after that gate.
   events, extended and nothing more:
   - web writes use writer `hub/<member-id>`, sequenced by the project's
     Durable Object;
-  - a `human` event from the web carries `from: "human"`, `member:
-    "<member-id>"`, and `sig: {"key": "<key fingerprint>", "nonce": "<128-bit
-    random, base64url>", "created": "<ISO-8601 ms>", "value": "<Ed25519
-    signature, base64url>"}`, the signature over the canonical JSON (sorted
-    keys, no whitespace, UTF-8) of `{"created", "from", "kind", "member",
-    "nonce", "project", "text", "to", "wake"}`;
+  - a `human` event from the web carries `from: "human"` and `member:
+    "<member-id>"`;
+  - every event on the hub carries `mac: {"nonce": "<128-bit random,
+    base64url>", "value": "<HMAC-SHA256 with the org key, base64url>"}`.
+    For a machine's writers the code covers the canonical JSON (sorted
+    keys, no whitespace, UTF-8) of the whole event except `mac`, `writer`
+    and `seq` included, so an event cannot be moved to another position.
+    For a `hub/` writer, whose seq the browser cannot know, it covers
+    `{"created", "from", "kind", "member", "nonce", "project", "text",
+    "to", "wake"}`, and daemons refuse a nonce they have seen;
   - `.smns` gains `"hub": {"url": "<https url>", "org": "<org id>"}`;
   - no new log kinds for permission prompts or RPCs (§3).
   Binds C2 (writes `message` and `question` as today), C3 (stores, never
-  alters), C4 (verifies `sig` before delivery), C5 (writes `human`).
-- **X2 — Machine ↔ hub protocol (owner C3, delivered at C3.G1).** Outbound
-  from the machine; one connection per machine; per project the
-  version-vector handshake of §3, then live tail both ways; RPC requests
-  down and results up; session subscriptions down and X4 messages up;
-  machine and session presence and the pending set republished on every
-  reconnect. Binds C4.
+  alters), C4 (adds codes on upload, verifies on import), C5 (writes
+  `human`, verifies before drawing).
+- **X2 — Machine ↔ hub protocol (owner C3, at C3.G1).** Outbound from the
+  machine; one connection per machine, admitted by its service token and
+  bound to its enrolled name; per project the version-vector handshake of
+  §3, then live tail both ways; RPC requests down and results up; session
+  subscriptions down and X4 messages up; machine and session presence and
+  the pending set republished on every reconnect. Binds C4, C7.
 - **X3 — Browser ↔ hub protocol (owner C3, at C3.G1).** Resume by project
-  offset; log events, presence, the pending set, and X4 messages down;
-  signed `human` events and RPCs up, with their results. Binds C5, C6.
+  offset for the log; subscriptions for the session plane; log events,
+  presence, the pending set, and X4 messages down; authenticated `human`
+  events and RPCs up, with their results. Binds C5, C6.
 - **X4 — Session-plane messages (envelope owner C3, at C3.G1; producers C2
-  and C4).** An envelope `{project, machine, session, kind, body}` around
-  the engine's own shapes, passed through rather than re-modelled:
-  transcript rows are the engine's JSONL rows verbatim; stream chunks are
-  `turn.step`'s chunk objects verbatim plus `turnId` and `agentId`; session
-  presence is the `status`, `waitingFor`, and `needs` fields of
-  `~/.claude/sessions/<pid>.json` plus whether a bridge is connected; the
-  subagent tree is each `subagents/*.meta.json` verbatim; a pending request
-  is the tool name, its input, and its tool-use id; the diff is unified
-  diff text against the session's base branch; machine presence is online,
-  policy (read-only, ceiling), and the known checkouts per project (path,
-  branch), which the spawn sheet offers. The hub interprets only presence
-  and pending; everything else it relays. Binds C2, C4 (produce), C6, C5
-  (consume).
+  and C7; semantics complete here).** An envelope `{project, machine,
+  session, kind, sub, n, body}` around the engine's own shapes, passed
+  through rather than re-modelled:
+  - transcript rows are the engine's JSONL rows verbatim; stream chunks are
+    `turn.step`'s chunk objects verbatim plus `turnId`, `agentId`, and the
+    chunk's index in its message; session presence is the `status`,
+    `waitingFor`, and `needs` fields of `~/.claude/sessions/<pid>.json`
+    plus whether a bridge is connected; the subagent tree is each
+    `subagents/*.meta.json` verbatim; the diff is unified diff text against
+    the session's base branch; machine presence is online, policy
+    (read-only, ceiling), and the known checkouts per project (path,
+    branch), which the spawn sheet offers;
+  - **a subscription** (`sub`) delivers a snapshot, then live messages
+    numbered `n` from 1. The snapshot is the transcript rows on disk up to
+    the last flushed row, the subagent tree, presence, and the partial text
+    of every message still streaming. The daemon starts buffering live
+    messages before it reads the snapshot and drops buffered rows the
+    snapshot already holds, by row uuid — subscribe before snapshot, as
+    MAWS's hydration does (`src/renderer/src/transcript/source/hydrate.ts`).
+    A row's arrival settles the partial text of its message. Any
+    discontinuity — a gap in `n`, a hub restart, a dropped connection —
+    makes the browser subscribe again and take a fresh snapshot; nothing is
+    resumed from a hub buffer, which is an optimization only;
+  - **a pending request** is `raised {request: <tool-use id>, session,
+    tool, input, mac}`, followed by exactly one `settled {request, winner:
+    "web" | "terminal" | "other", outcome, by, mac}`, where the bridge names
+    the side whose answer the engine used. The hub removes the request on
+    `settled` and writes its audit record from it; after a reconnect it
+    drops any request the daemon does not republish.
+  The hub interprets only presence and pending; everything else it relays.
+  Binds C2 and C7 (produce), C3 (relays, implements the semantics in its
+  fake machine), C5 and C6 (consume).
 - **X5 — Local bridge protocol (owner C2, at C2.G1).** The bridge's event
   stream to the daemon socket, the command lines to the session-lifetime
   child, the long-poll for answers and decisions, the bridge-presence
-  signal, the redelivery key for `human`. Binds C4.
-- **X6 — RPCs (shapes owner C3, at C3.G1; policy owner C4).** The RPC set
-  of §5, each with its arguments, result, and errors, signed like X1 over
-  `{"args", "created", "machine", "member", "nonce", "project", "rpc"}`.
-  The policy C4 enforces: known checkouts, permission ceiling, read-only,
-  60-second freshness, nonce memory. Binds C5 (issues), C3 (routes), C4
-  (verifies and executes).
+  signal, the redelivery key for `human`, and the pending request's current
+  content for the daemon's digest check. Binds C7.
+- **X6 — RPCs (shapes owner C3, at C3.G1; policy owner C7).** The RPC set
+  of §5, each with its arguments, result, and errors, authenticated like X1
+  over `{"args", "created", "machine", "member", "nonce", "project",
+  "rpc"}`; an answer or decision carries in `args` the digest
+  `{session, request, tool, input_sha256}` of the request as drawn. The
+  policy C7 enforces: known checkouts, permission ceiling, read-only (RPCs
+  and outside-origin delivery), 60-second freshness, nonce memory, digest
+  match. Binds C5 (issues), C3 (routes), C7 (verifies and executes).
 - **X7 — Identity (owner C3, at C3.G1).** The registry's org, member,
-  machine, and project records; Access for members, service tokens for
-  machines; the enrollment code, which carries the owner's key fingerprint
-  to the machine by the human's hand. Binds C4, C5. Written to outlive this
-  unit: the org phase extends it.
+  machine, and project records; machine names unique in the org; the
+  project's designated archive machine; Access for members, service tokens
+  for machines; the enrollment code (hub URL, one-time token, machine name,
+  org key), generated in the browser so the hub never sees the key. Binds
+  C4, C5, C7. Written to outlive this unit: the org phase extends it.
+- **X8 — The web shell's slots (owner C5, at C5.G1).** The slot, layout,
+  session, and transcript-store interfaces the depth panel plugs into,
+  copied from MAWS's `src/renderer/src/app/slots.ts` and
+  `src/renderer/src/transcript/shell.tsx`. Binds C6.
 
 ## Interfaces
 
 Filled by the contract owners at their gates: X2, X3, the X4 envelope, the
-X6 shapes, and X7 by C3 at G1; X5 by C2 at G1. Each lands as a subsection
+X6 shapes, and X7 by C3 at G1; X5 by C2 at G1; X8 by C5 at G1. Each lands as a subsection
 here, reviewed with its gate, and a later change to one is a Decision Log
 entry that flags its consumers.
 
 ## Ordering & Dependency Map
 
 ```
-C1 spike ──► C2 bridge ──G1──┐
-                             ├──► C4 uplink ──┐
-C3 hub ─────────────G1───────┤                ├──► recomposition (acceptance 1–11)
-                             ├──► C5 web: conversation ──┤
-                             └──► C6 web: depth ─────────┘
+C1 spike ──► C2 bridge ──G1─────────────────────────┐
+                                                    ▼
+C3 hub ──G1──► C4 uplink ─────────────────────► C7 machine's controls ──┐
+        │                                                               ├──► recomposition
+        ├──G1──► C5 web: conversation ──G1──► C6 web: depth ────────────┤    (acceptance 1–11)
+        └──G5 (fake machine) ──► C5.G2 and C6 acceptance ───────────────┘
 ```
 
 C1 and C3 start at once. C3's G1 (the protocols) is its first deliverable
-because three children wait on it; C2's G1 likewise for C4. C5 and C6 build
-against C3's fake machine, so they do not wait for C4; the real two-Mac
-integration happens at recomposition. C2 and C4 change doperpowers; C3, C5,
-and C6 change arkho.
+because three children wait on it; C2's G1 likewise for C7. C5 and C6 build
+against C3's fake machine, so they do not wait for the machine side; the
+real two-Mac integration happens at recomposition. C2, C4, and C7 change
+doperpowers; C3, C5, and C6 change arkho.
 
 ## Risks & Mitigations
 
@@ -761,7 +897,11 @@ permission mode, interrupting one subagent, rewind and fork; the channel
 server path (§8 unknown 5); end-to-end encryption; sessions hosted by MAWS
 (they stay outside the family, as `.smns` decided); sminos `send` to a live
 seat moving from the inbox frame to the supervisor's `reply`, gaining
-human-origin delivery (a `.smns` improvement independent of this unit).
+human-origin delivery (a `.smns` improvement independent of this unit);
+per-member asymmetric keys, an admin-signed member list, and a passkey
+step-up for spawn and approvals (the org phase, §6); authentication codes on
+session depth (§6); a message reviving a closed terminal session by itself
+(§3: Resume is the explicit act instead).
 
 **Explicitly out of scope (standing exclusions):** the hub storing
 transcripts (§3); hosting sessions on the SDK wire (§2); depending on
@@ -778,6 +918,7 @@ a hub that connects into machines (§2).
 | C4 uplink | — | not-dispatched |
 | C5 web: conversation | — | not-dispatched |
 | C6 web: depth | — | not-dispatched |
+| C7 machine's controls | — | not-dispatched |
 
 ## Surprises & Discoveries
 
@@ -793,6 +934,16 @@ a hub that connects into machines (§2).
 - Observation: `turn.step` streams subagents' token deltas; the SDK wire
   does not. Evidence: mod API declarations 2.1.300; MAWS
   `research/sdk-wire-gap.md` row 14.
+- Observation: a message to a closed terminal session does not revive it
+  in `.smns` as built; the v1 design said it did.
+  Evidence: `push_member` in `skills/sminos/scripts/sminos.py`: "A session
+  sminos did not spawn is never resumed: it is the human's to reopen, and
+  reads the chat when it is back"; it returns `recorded` (spec review,
+  2026-10-15).
+- Observation: the daemon cannot verify Ed25519 signatures without a
+  dependency: it is stdlib Python, and the standard library has no Ed25519.
+  Evidence: `skills/sminos/scripts/sminos_daemon.py` imports only the
+  standard library; `hashlib`/`hmac` give HMAC-SHA256 only.
 
 ## Decision Log
 
@@ -801,7 +952,7 @@ a hub that connects into machines (§2).
   technical-heavy) and, in the same round, a second
   `doperpowers:adversarial-reviewer` on the children and contracts for
   buildability. Each plan child names its own branch-review rung in its
-  execution document, xhigh for C3, C4, and C5 by their size. Recomposition
+  execution document, xhigh for C3, C4, C5, and C7 by their size. Recomposition
   is a scale review: the two-Mac acceptance walk (Parent-Level Acceptance
   1–11) plus an xhigh panel per repository over the children's merged
   range.
@@ -823,12 +974,52 @@ a hub that connects into machines (§2).
   The critic conceded the bridge as the one primary path.
   Rationale: each change is argued where it lives in the design.
   Date/Author: 2026-10-15, design session with the critic.
-- Decision: The log's git archive is written by one machine's daemon
-  holding the hub's archive lease, not by the hub. The owner chose "hub
-  live, git as archive" (2026-10-15); who performs the export was not part
-  of the choice.
+- Decision: The log's git archive is written by one machine's daemon, not
+  by the hub. The owner chose "hub live, git as archive" (2026-10-15); who
+  performs the export was not part of the choice. (v1 said a machine
+  holding the hub's archive lease; the spec review found no child delivered
+  a lease, and a designated machine needs none — see the review entry.)
   Rationale: a Worker cannot run git, and committing through the GitHub API
   would tie the archive to GitHub when `.smns` remotes are any git URL.
+  Date/Author: 2026-10-15, design session.
+- Decision: Spec review round 1 (two `doperpowers:adversarial-reviewer`
+  runs: the whole document; the children for buildability), folded:
+  - **Authentication covers every actionable thing the hub carries, with
+    one org key (HMAC-SHA256) instead of Ed25519 signatures on web writes
+    only.** Rejected then: signing only `human` events and RPCs — a hub
+    could still forge a `say`, which `_owed`/`push_event`/`push_member`
+    deliver and which resumes a stopped seat; and Ed25519 — the stdlib
+    daemon cannot verify it. The owner's ruling (sign web writes, so the hub
+    cannot cause execution) is what this serves; the mechanism change is
+    reported to the owner.
+  - **Approvals carry the digest of the request as drawn**, checked by the
+    daemon against the request still pending; a hub that altered the card
+    can no longer turn an honest Allow into approval of another command.
+  - **Read-only covers delivery**: outside-origin `human` and `say` are
+    recorded and settled undelivered, not only RPCs refused.
+  - **No revival by message**: v1's "a message revives a closed terminal
+    session" misread smns §4 (Surprises); an explicit Resume RPC replaces it
+    (C7.G4).
+  - **Machine names are enforced by the hub** for hub projects, replacing
+    the git integration's claim check; divergent payloads at an existing
+    `(writer, seq)` are refused and reported.
+  - **The archive is written by a designated machine** (above), with
+    hub-only bootstrap and no git ingestion in C4's acceptance.
+  - **The session plane's semantics are written here** (X4: subscribe
+    before snapshot, numbered live messages, fresh snapshot on any
+    discontinuity; pending requests raised then settled with the winner),
+    so C6 does not wait on the machine side; C3's fake machine implements
+    them.
+  - **Settlement and audit have gates** (C2.G3, C3.G3), **compaction is in
+    the spike and the local gate** (C1, C2.G2), **C6 waits on C5's shell**
+    (X8, C5.G1), and **the fake machine gates acceptance, not start**
+    (C3.G5).
+  - **C4 split into C4 (the uplink and the log plane) and C7 (the machine's
+    controls: session plane, RPCs, policy, Resume)**: different state
+    owners (log files against live sessions) and verification strategies,
+    and v1's C4 carried both.
+  Rationale: each finding was reproduced against the code or the
+  contracts; none was dismissed.
   Date/Author: 2026-10-15, design session.
 
 ## Outcomes & Retrospective
