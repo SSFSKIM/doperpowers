@@ -71,7 +71,8 @@ UPLINK_BACKOFF_MAX = 60
 UPLINK_STOP_GRACE = 3
 # The scripts `daemon run` runs, itself and its uplink child: a change to one
 # ends the loop for a restart on the new code.
-OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_codes.py")
+OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
+            "sminos_codes.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
@@ -642,11 +643,21 @@ def nudged_at():
         return 0
 
 
+def credential_bytes():
+    """daemon/hub.json as it is on disk, or None when there is none."""
+    try:
+        with open(daemon_path("hub.json"), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 class UplinkSupervisor(threading.Thread):
     """`daemon run`'s keeper of the uplink: while the machine holds a hub
     credential (daemon/hub.json), one `daemon uplink` child runs, restarted
-    with backoff whenever it exits; `stop` ends it (SIGTERM, then a kill). The
-    child's output goes to daemon.log."""
+    with backoff whenever it exits, and at once on the credential it holds
+    when hub.json changes (an enrollment replaced, or a first one); `stop`
+    ends it (SIGTERM, then a kill). The child's output goes to daemon.log."""
 
     def __init__(self):
         super().__init__(name="uplink-supervisor", daemon=True)
@@ -656,8 +667,9 @@ class UplinkSupervisor(threading.Thread):
     def run(self):
         backoff = 1
         while not self.halt.is_set():
-            if not os.path.exists(daemon_path("hub.json")):
-                self.halt.wait(5)
+            held = credential_bytes()
+            if held is None:
+                self.halt.wait(1)
                 continue
             started = time.time()
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
@@ -665,17 +677,23 @@ class UplinkSupervisor(threading.Thread):
                     [sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon", "uplink"],
                     stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
             while self.proc.poll() is None and not self.halt.wait(0.2):
-                pass
-            if self.halt.is_set():
-                break
-            rc = self.proc.returncode
-            if time.time() - started > UPLINK_BACKOFF_MAX:
-                backoff = 1
-            sminos.daemon_log("uplink (pid %d) exited %s; restarting in %ds" % (
-                self.proc.pid, "on signal %d" % -rc if rc < 0 else "with %d" % rc, backoff))
-            if self.halt.wait(backoff):
-                break
-            backoff = min(backoff * 2, UPLINK_BACKOFF_MAX)
+                if credential_bytes() != held:
+                    sminos.daemon_log("uplink (pid %d): hub.json changed; restarting it on the credential as it "
+                                      "is now" % self.proc.pid)
+                    self.stop_child()
+                    backoff = 1
+                    break
+            else:
+                if self.halt.is_set():
+                    break
+                rc = self.proc.returncode
+                if time.time() - started > UPLINK_BACKOFF_MAX:
+                    backoff = 1
+                sminos.daemon_log("uplink (pid %d) exited %s; restarting in %ds" % (
+                    self.proc.pid, "on signal %d" % -rc if rc < 0 else "with %d" % rc, backoff))
+                if self.halt.wait(backoff):
+                    break
+                backoff = min(backoff * 2, UPLINK_BACKOFF_MAX)
         self.stop_child()
 
     def stop_child(self):

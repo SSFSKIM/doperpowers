@@ -5007,6 +5007,7 @@ echo
 if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
 if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
 if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
+if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

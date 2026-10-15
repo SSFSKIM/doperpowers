@@ -5,25 +5,28 @@
 child and restarts when it exits; at most one runs per $SMINOS_HOME
 (`daemon/uplink.lock`), and it ends when its parent does. It reads the
 machine's credential (`daemon/hub.json`, written by enrollment; without it
-nothing connects) and holds DX2's stream down — `GET /machine/stream`,
-Server-Sent Events — opened outbound, reconnecting with backoff.
+nothing connects) and holds DX2's connection, opened outbound: the stream
+down — `GET /machine/stream`, Server-Sent Events — and frames up by `POST
+/machine/frames`, each under the stream's generation. A stream silent for
+three heartbeat periods is dead; the uplink reconnects with backoff.
 
 Two threads: a reader that only reads the stream (the SSE parse, no sminos
 call) into a queue, so the stream is drained whatever the rest is doing; and
-the process's main thread, which does every sminos call. sminos's
-per-invocation caches are module globals no second thread may share, and a
-git phase of the tick loop, a derivation, or this process's own delivery
-never holds the reader up.
+the process's main thread, which does every sminos call and every POST.
+sminos's per-invocation caches are module globals no second thread may
+share, and a git phase of the tick loop, a derivation, or this process's own
+delivery never holds the reader up.
 
-An `events` frame is imported into a project known here whose .smns names a
-hub of this machine's org. Each event is all or nothing: its code verified
-against that project (DX1, with a `hub/` event's position checked by shape),
-then appended verbatim through the log's own locks; an event at an existing
-(writer, seq) with the same content is skipped, with another content refused,
-and one past a gap is not appended. A refused event is logged to daemon.log
-and never enters the log. Whatever was appended is delivered at once by this
-process — the same deliver_next the sender's fast path and the tick call,
-under the same per-session lock — and the tick loop is nudged.
+On every stream, for every hub project of this machine's org known here, the
+uplink sends `hello` with its vector and its machine's presence (DX4
+`machine`), then uploads its own writers' suffix past the hub's `have`, and
+from then on what they append; it answers each heartbeat with `hb-ack`,
+follows `resend`, says each `refused` in daemon.log, and imports what the hub
+sends (sminos_hublog.py: each event's code verified before it enters the
+log, a refused one reported up as `rejected`). A POST the hub does not answer
+200 ends the stream, and the next one redoes the handshake: nothing posted is
+taken as landed without its answer. Frames larger than a frame's bound travel
+as parts, both ways.
 """
 
 import fcntl
@@ -43,14 +46,23 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
+import sminos_hublog as hublog  # noqa: E402
 
 STREAM_PATH = "/machine/stream"
+FRAMES_PATH = "/machine/frames"
 HEARTBEAT_MS = 15000      # DX2's, until the stream's welcome says otherwise
 SILENT_PERIODS = 3        # a stream silent this many heartbeats is dead
 BACKOFF_MAX = 60
 POLL = 0.25               # how often the main thread looks up from an idle stream
 LINE_MAX = 2 << 20        # a frame is at most 1 MiB (DX2); its SSE line, a little more
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
+FRAME_LIMIT = 1 << 20     # every frame, either way, at most 1 MiB of UTF-8 (DX2); a larger one goes as parts
+POST_LIMIT = 4 << 20      # a POST's body
+POST_TIMEOUT = 30
+ANSWER_MAX = 1 << 16
+ACK_GAP = 1.0             # heartbeats are answered at most once a second, the newest: a burst is answered once
+SCAN_EVERY = 2.0          # how often the projects known here are looked over for a hub project to open
+UPLOAD_EVERY = 0.5        # how often this machine's writers are looked at for events to upload
 
 
 class CredentialBad(Exception):
@@ -98,6 +110,18 @@ def log(line):
     sminos.daemon_log("uplink: " + line)
 
 
+def connection(cred, timeout):
+    url = urllib.parse.urlsplit(cred["hub"])
+    if url.scheme == "https":
+        return http.client.HTTPSConnection(url.hostname, url.port, timeout=timeout,
+                                           context=ssl.create_default_context())
+    return http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
+
+
+def admission(cred):
+    return {"CF-Access-Client-Id": cred["client_id"], "CF-Access-Client-Secret": cred["client_secret"]}
+
+
 # ------------------------------------------------------------- the stream
 
 
@@ -137,21 +161,18 @@ class Stream(threading.Thread):
         self.cred = cred
         self.items = queue.Queue()
         self.conn = None
+        self.sock = None
         self.closing = threading.Event()
 
     def connect(self):
-        url = urllib.parse.urlsplit(self.cred["hub"])
-        timeout = SILENT_PERIODS * HEARTBEAT_MS / 1000
-        if url.scheme == "https":
-            conn = http.client.HTTPSConnection(url.hostname, url.port, timeout=timeout,
-                                               context=ssl.create_default_context())
-        else:
-            conn = http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
-        self.conn = conn
-        conn.request("GET", url.path.rstrip("/") + STREAM_PATH, headers={
-            "Accept": "text/event-stream", "Cache-Control": "no-cache",
-            "CF-Access-Client-Id": self.cred["client_id"], "CF-Access-Client-Secret": self.cred["client_secret"]})
-        return conn.getresponse()
+        self.conn = connection(self.cred, SILENT_PERIODS * HEARTBEAT_MS / 1000)
+        path = urllib.parse.urlsplit(self.cred["hub"]).path.rstrip("/") + STREAM_PATH
+        self.conn.request("GET", path, headers={"Accept": "text/event-stream", "Cache-Control": "no-cache",
+                                                **admission(self.cred)})
+        # Held here: a response that ends with its connection (HTTP/1.0, or
+        # Connection: close) takes the socket from `conn`, which forgets it.
+        self.sock = self.conn.sock
+        return self.conn.getresponse()
 
     def run(self):
         try:
@@ -163,28 +184,134 @@ class Stream(threading.Thread):
             for event, data in sse_events(resp):
                 self.items.put(("frame", event, data))
             self.items.put(("closed", "the hub ended the stream"))
-        except (OSError, http.client.HTTPException, ValueError) as e:
+        except Exception as e:  # noqa: BLE001 — a connection closed from this end raises from deep inside http.client
             self.items.put(("closed", "closed by this end" if self.closing.is_set() else str(e) or repr(e)))
 
     def silent_after(self, seconds):
         """The read bound once the stream's own heartbeat is known."""
-        sock = self.conn.sock if self.conn else None
-        if sock is not None:
-            sock.settimeout(seconds)
+        if self.sock is not None:
+            self.sock.settimeout(seconds)
 
     def close(self):
         self.closing.set()
-        sock = self.conn.sock if self.conn else None
-        if sock is not None:
+        if self.sock is not None:
             try:
-                sock.shutdown(socket.SHUT_RDWR)
+                self.sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
         if self.conn:
             self.conn.close()
 
 
-# ------------------------------------------------------------- import
+# ------------------------------------------------------------- frames on the wire
+
+
+def wire_text(frame):
+    """A frame's JSON text, one line. A string UTF-8 cannot carry (a lone
+    surrogate a lying hub sent, echoed in a report) is written escaped."""
+    text = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = json.dumps(frame, separators=(",", ":"))
+    return text
+
+
+def escaped_size(ch):
+    """The UTF-8 bytes a character of a frame's text takes once that text is
+    a JSON string itself (a part's `data`)."""
+    c = ord(ch)
+    if ch in ('"', "\\"):
+        return 2
+    if c < 0x20:
+        return 6
+    if c < 0x80:
+        return 1
+    if c < 0x800:
+        return 2
+    return 4 if c > 0xFFFF else 3
+
+
+def to_wire(frame, limit=FRAME_LIMIT):
+    """The lines a frame travels as (DX2): its JSON text when within `limit`
+    bytes, else `part` frames, each a slice of that text (parts.ts's toWire;
+    a Python str holds whole code points, so no slice splits a pair)."""
+    text = wire_text(frame)
+    if len(text.encode("utf-8")) <= limit:
+        return [text]
+    pid = codes.b64url(os.urandom(codes.NONCE_BYTES))
+    budget = limit - len(wire_text({"t": "part", "id": pid, "index": 999999999, "count": 999999999, "data": ""}))
+    slices, start, used = [], 0, 0
+    for i, ch in enumerate(text):
+        cost = escaped_size(ch)
+        if used + cost > budget:
+            slices.append(text[start:i])
+            start, used = i, 0
+        used += cost
+    slices.append(text[start:])
+    return [wire_text({"t": "part", "id": pid, "index": i, "count": len(slices), "data": data})
+            for i, data in enumerate(slices)]
+
+
+class Parts:
+    """Joins `part` sets (parts.ts's PartAssembler): `add` returns the whole
+    frame once its set is complete, in whatever order its parts came, and
+    None before; ValueError for a malformed part."""
+
+    def __init__(self):
+        self.sets = {}
+
+    def add(self, part):
+        pid, index, count, data = part.get("id"), part.get("index"), part.get("count"), part.get("data")
+        if not (isinstance(pid, str) and isinstance(data, str) and type(index) is int and type(count) is int
+                and 0 <= index < count):
+            raise ValueError("a malformed part")
+        held = self.sets.setdefault(pid, {"count": count, "slices": {}})
+        if held["count"] != count:
+            raise ValueError("a part whose count differs within its set")
+        held["slices"][index] = data
+        if len(held["slices"]) < count:
+            return None
+        del self.sets[pid]
+        return codes.loads("".join(held["slices"][i] for i in range(count)))
+
+
+class NotDelivered(Exception):
+    """A POST the hub did not answer 200: nothing in it may be taken as landed."""
+
+
+def post(cred, generation, frames):
+    """Frames up (DX2's POST): NDJSON, each body at most POST_LIMIT bytes,
+    under the stream's generation. NotDelivered unless the hub answers 200 —
+    a POST of an older stream is refused stale-generation, and a hub whose
+    replies failed to reach the stream answers something else."""
+    bodies, body, size = [], [], 0
+    for line in (line.encode("utf-8") for frame in frames for line in to_wire(frame)):
+        if body and size + len(line) + 1 > POST_LIMIT:
+            bodies.append(body)
+            body, size = [], 0
+        body.append(line)
+        size += len(line) + 1
+    if body:
+        bodies.append(body)
+    path = urllib.parse.urlsplit(cred["hub"]).path.rstrip("/") + FRAMES_PATH
+    for lines in bodies:
+        conn = connection(cred, POST_TIMEOUT)
+        try:
+            conn.request("POST", path, body=b"\n".join(lines) + b"\n", headers={
+                "Content-Type": "application/x-ndjson", "X-Desk-Generation": str(generation), **admission(cred)})
+            resp = conn.getresponse()
+            answer = resp.read(ANSWER_MAX)
+        except (OSError, http.client.HTTPException) as e:
+            raise NotDelivered(" ".join(str(e).split()) or type(e).__name__) from None
+        finally:
+            conn.close()
+        if resp.status != 200:
+            raise NotDelivered("the hub answered %d %s" % (
+                resp.status, " ".join(answer.decode("utf-8", "replace").split())[:300]))
+
+
+# ------------------------------------------------------------- the projects
 
 
 def smns_hub(root_dir):
@@ -199,132 +326,195 @@ def smns_hub(root_dir):
     return hub if sminos.hub_wellformed(hub) else None
 
 
-def hub_project(pid, cred):
-    """The project an `events` frame names, when this machine knows it and its
-    .smns names a hub of this machine's org; else None."""
-    if not (isinstance(pid, str) and sminos.valid_name(pid)):
-        return None
+def hub_projects(cred):
+    """{project id: project} of every project known here whose .smns, read as
+    it is now, names a hub of this machine's org."""
+    out = {}
     for p in sminos.known_projects():
-        if p.id != pid or not (p.root and os.path.isdir(p.root)):
+        if p.id in out or not (p.root and os.path.isdir(p.root)):
             continue
         fresh = sminos.resolve_project(p.root)
-        hub = smns_hub(fresh.root) if fresh is not None and fresh.id == pid else None
+        hub = smns_hub(fresh.root) if fresh is not None and fresh.id == p.id else None
         if hub and hub["org"] == cred["org"]:
-            return fresh
-    return None
+            out[p.id] = fresh
+    return out
 
 
-def position(e):
-    if not isinstance(e, dict):
-        return "an entry that is not an event"
-    nonce = e.get("mac", {}).get("nonce") if isinstance(e.get("mac"), dict) else None
-    return "%r:%r%s" % (e.get("writer"), e.get("seq"), " (nonce %r)" % nonce if nonce is not None else "")
-
-
-def refusal(key, project, e):
-    """Why an event from the hub may not enter this project's log, or ""."""
-    if not isinstance(e, dict):
-        return "not a log event"
-    writer = e.get("writer")
-    if not (isinstance(writer, str) and "/" in writer.strip("/") and writer.isprintable() and " " not in writer):
-        return "its writer is not one a log holds"
-    if not (codes.is_log_seq(e.get("seq")) and isinstance(e.get("ts"), str) and isinstance(e.get("kind"), str)):
-        return "it is not a log event (seq, ts, kind)"
-    return {
-        None: "",
-        "encoding": "its code or nonce is not the canonical base64url of 32 and 16 bytes",
-        "position": "a hub/ event whose writer, seq, or ts fails its shape",
-        "code": "its code does not verify for project %s" % project.id,
-    }[codes.failure(key, "log", project.id, e)]
-
-
-def payload(e):
-    """An event's content for comparison: its canonical form without its code
-    (an event this machine wrote is stored without one)."""
-    try:
-        return codes.canonical({k: v for k, v in e.items() if k != "mac"})
-    except codes.NotCanonical:
+def hub_project(pid, cred):
+    """The project a frame names, when this machine knows it and its .smns
+    names a hub of this machine's org; else None."""
+    if not (isinstance(pid, str) and sminos.valid_name(pid)):
         return None
+    return hub_projects(cred).get(pid)
 
 
-def append_verbatim(project, e):
-    """Append an imported event to its writer's file as it came, under the
-    locks every appender takes (`.sync.lock` shared, the file's own lock):
-    "appended"; "present" when that (writer, seq) holds the same content;
-    "conflict" when it holds another; "gap" when seq is not one past the last."""
-    if e["kind"] in sminos.LIFECYCLE:
-        sminos._VIEWS.pop(project.id, None)
-    path = sminos.writer_path(project, e["writer"])
-    with sminos.flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False), \
-            sminos.flocked(path + ".lock"):
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "r+b") as f:
-            last = sminos._last_seq(f)
-            if e["seq"] > last + 1:
-                return "gap"
-            if e["seq"] <= last:
-                f.seek(0)
-                for line in f.read().decode("utf-8", "replace").split("\n"):
-                    x = sminos.parse_event(line) if line.strip() else None
-                    if x and x["seq"] == e["seq"]:
-                        return "present" if payload(x) == payload(e) else "conflict"
-                return "conflict"
-            end = f.seek(0, os.SEEK_END)
-            if end:
-                f.seek(end - 1)
-                if f.read(1) != b"\n":
-                    f.write(b"\n")
-            f.write((json.dumps(e, ensure_ascii=False) + "\n").encode("utf-8"))
-    return "appended"
+# ------------------------------------------------------------- one stream
 
 
-def import_events(cred, frame):
-    """An `events` frame: verify and append each event, then deliver."""
-    project = hub_project(frame.get("project"), cred)
-    if project is None:
-        log("events for project %r, which is no hub project of org %s known here: ignored"
-            % (frame.get("project"), cred["org"]))
-        return
-    events = frame.get("events")
-    if not isinstance(events, list):
-        log("an events frame for %s without a list of events: ignored" % project.name)
-        return
-    appended = 0
-    for e in events:
-        why = refusal(cred["key"], project, e)
-        if why:
-            log("refused %s in %s: %s" % (position(e), project.name, why))
-            continue
-        # JSON's 3.0 is the number 3; the log's readers take an int. The code's
-        # canonical form is the same for both.
-        e = {**e, "seq": int(e["seq"])}
-        outcome = append_verbatim(project, e)
-        if outcome == "appended":
-            appended += 1
-        elif outcome != "present":
-            log("refused %s in %s: %s" % (position(e), project.name, {
-                "conflict": "another event holds that (writer, seq)",
-                "gap": "its seq is not one past the writer's last"}[outcome]))
-    if appended:
-        deliver(project)
-        sminos.nudge_daemon()
+class Link:
+    """One stream's conversation with the hub. Frames down are dispatched by
+    `t`; those of the session plane and the RPCs (DC7's) are not handled here
+    yet and pass by. Frames up are posted under the stream's generation, and
+    a POST not answered 200 ends the stream: the next one redoes the
+    handshake, which is idempotent, rather than assume anything landed."""
+
+    def __init__(self, cred, logs):
+        self.cred = cred
+        self.logs = logs          # project id → HubLog, kept across streams
+        self.generation = None
+        self.opened = set()       # the projects `hello`ed on this stream
+        self.parts = Parts()
+        self.ack_due = None       # the newest heartbeat's `at`, while unanswered
+        self.acked_at = 0.0
+        self.next_scan = self.next_upload = 0.0
+        self.nudge = daemon.nudged_at()
+        self.passed = set()
+        self.failing = ""
+        self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
+                         "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
+                         "part": self.on_part}
+
+    def post(self, frames):
+        post(self.cred, self.generation, frames)
+
+    def dispatch(self, frame, stream):
+        t = frame.get("t") if isinstance(frame, dict) else None
+        handler = self.handlers.get(t)
+        if handler is None:
+            if t not in self.passed:
+                self.passed.add(t)
+                log("%r frames are not handled here yet: passed by" % (t,))
+            return
+        try:
+            handler(frame, stream)
+        except NotDelivered:
+            raise
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — one frame's failure is not the stream's
+            log("handling a %r frame failed: %r" % (t, e))
+
+    def log_of(self, pid, known=None):
+        """The HubLog of a project known here as a hub project of this org, or None."""
+        project = (known or {}).get(pid) or hub_project(pid, self.cred)
+        if project is None:
+            return None
+        hl = self.logs.get(pid)
+        if hl is None:
+            hl = self.logs[pid] = hublog.HubLog(project, self.cred)
+        hl.project = project
+        return hl
+
+    # ---------------------------------------------------- frames down
+
+    def on_welcome(self, frame, stream):
+        generation, beat = frame.get("generation"), frame.get("heartbeat_ms")
+        beat = beat if type(beat) is int and beat > 0 else HEARTBEAT_MS
+        stream.silent_after(SILENT_PERIODS * beat / 1000)
+        self.generation = generation if type(generation) is int else None
+        self.opened.clear()
+        for hl in self.logs.values():
+            hl.reset()
+        self.next_scan = 0.0
+        log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
+
+    def on_hb(self, frame, _stream):
+        self.ack_due = frame.get("at") if isinstance(frame.get("at"), str) else ""
+
+    def on_have(self, frame, _stream):
+        hl = self.logs.get(frame.get("project"))
+        if hl is not None and hl.project.id in self.opened:
+            hl.on_have(frame)
+            self.upload(hl)
+
+    def on_events(self, frame, _stream):
+        hl = self.log_of(frame.get("project"))
+        if hl is None:
+            log("events for project %r, which is no hub project of org %s known here: ignored"
+                % (frame.get("project"), self.cred["org"]))
+            return
+        appended, rejections = hl.take(frame.get("events"))
+        if appended:
+            hl.deliver()
+            sminos.nudge_daemon()
+        if rejections and hl.project.id in self.opened:
+            self.post(rejections)
+            hl.reported(rejections)
+
+    def on_resend(self, frame, _stream):
+        hl = self.logs.get(frame.get("project"))
+        if hl is not None and hl.project.id in self.opened:
+            hl.on_resend(frame)
+            self.upload(hl)
+
+    def on_refused(self, frame, _stream):
+        hl = self.logs.get(frame.get("project"))
+        if hl is None:
+            log("the hub refused: %s" % json.dumps(frame.get("refusal"), ensure_ascii=False)[:300])
+            return
+        hl.on_refused(frame)
+        if hl.have is None and hl.project.id in self.opened:
+            self.opened.discard(hl.project.id)
+            self.open(hl)
+
+    def on_part(self, frame, stream):
+        whole = self.parts.add(frame)
+        if whole is not None:
+            self.dispatch(whole, stream)
+
+    # ---------------------------------------------------- frames up
+
+    def open(self, hl):
+        """`hello` for a project on this stream, with what DX2 republishes
+        after every connect that is this child's — the machine's presence —
+        and the rejections not yet reported. A live member that joined under a
+        former name of this machine joins again first, so the vector and the
+        upload carry it."""
+        hl.rejoin_former()
+        unreported = hl.unreported()
+        self.post([hl.hello(), hl.presence()] + unreported)
+        self.opened.add(hl.project.id)
+        hl.reported(unreported)
+
+    def upload(self, hl):
+        for frame, reach in hl.uploads():
+            self.post([frame])
+            hl.took(reach)
+
+    def tick(self):
+        """Between frames: the heartbeat answered, new hub projects opened,
+        and what this machine's writers appended uploaded — at once when a
+        sender nudged the daemon."""
+        if self.generation is None:
+            return
+        now = time.time()
+        if self.ack_due is not None and now - self.acked_at >= ACK_GAP:
+            at, self.ack_due, self.acked_at = self.ack_due, None, now
+            self.post([{"t": "hb-ack", "generation": self.generation, "at": at}])
+        nudge = daemon.nudged_at()
+        nudged, self.nudge = nudge != self.nudge, nudge
+        try:
+            if now >= self.next_scan or nudged:
+                self.next_scan = now + SCAN_EVERY
+                sminos.forget_caches()
+                known = hub_projects(self.cred)
+                for pid in sorted(set(known) - self.opened):
+                    self.open(self.log_of(pid, known))
+            if now >= self.next_upload or nudged:
+                self.next_upload = now + UPLOAD_EVERY
+                for pid in sorted(self.opened):
+                    self.upload(self.logs[pid])
+            self.failing = ""
+        except NotDelivered:
+            raise
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — said once while it keeps failing
+            if repr(e) != self.failing:
+                self.failing = repr(e)
+                log("syncing failed: %r" % e)
 
 
-def deliver(project):
-    """What the import made owed to this machine's members, delivered now."""
-    sminos.forget_caches()
-    total, reached = daemon.deliver_owed(project, sminos.view_of(project, titles=False))
-    if total:
-        log("delivered %d in %s to %s" % (total, project.name, ", ".join(reached)))
-
-
-# ------------------------------------------------------------- the loop
-
-
-def serve(stream, cred, ended):
-    """Handle one stream's frames until it closes or the uplink ends; whether
-    the hub welcomed it."""
-    welcomed = False
+def serve(stream, cred, ended, logs):
+    """Handle one stream's frames until it closes, a POST is not delivered,
+    or the uplink ends; whether the hub welcomed it."""
+    link, welcomed = Link(cred, logs), False
     while True:
         # Before every frame, not only when the stream is quiet: a hub that
         # never pauses must not keep an orphan or a stopped uplink alive.
@@ -333,30 +523,25 @@ def serve(stream, cred, ended):
         try:
             item = stream.items.get(timeout=POLL)
         except queue.Empty:
-            continue
-        if item[0] == "closed":
-            log("the stream closed: %s" % item[1])
+            item = None
+        try:
+            if item is not None and item[0] == "closed":
+                log("the stream closed: %s" % item[1])
+                return welcomed
+            if item is not None:
+                try:
+                    frame = codes.loads(item[2])
+                except ValueError as e:
+                    log("a frame that is not JSON (%s): ignored" % e)
+                    frame = None
+                if isinstance(frame, dict) and frame.get("t") == "welcome":
+                    welcomed = True
+                if frame is not None:
+                    link.dispatch(frame, stream)
+            link.tick()
+        except NotDelivered as e:
+            log("a POST was not delivered (%s): reconnecting, to redo the handshake" % e)
             return welcomed
-        try:
-            frame = codes.loads(item[2])
-        except ValueError as e:
-            log("a frame that is not JSON (%s): ignored" % e)
-            continue
-        t = frame.get("t") if isinstance(frame, dict) else None
-        try:
-            if t == "welcome":
-                welcomed = True
-                beat = frame.get("heartbeat_ms")
-                beat = beat if isinstance(beat, int) and not isinstance(beat, bool) and beat > 0 else HEARTBEAT_MS
-                stream.silent_after(SILENT_PERIODS * beat / 1000)
-                log("connected to %s as %s (stream %s)" % (cred["hub"], frame.get("machine"), frame.get("generation")))
-            elif t == "events":
-                import_events(cred, frame)
-            # `hb` keeps the read bound from lapsing; answering it, `have`,
-            # `resend`, `refused`, `part`, and the session plane's frames are
-            # later milestones' (DX2), and an unknown `t` is left for them.
-        except (Exception, SystemExit) as e:  # noqa: BLE001 — one frame's failure is not the stream's
-            log("handling a %r frame failed: %r" % (t, e))
 
 
 def take_lock():
@@ -396,11 +581,11 @@ def cmd_uplink(_a):
         return halt.is_set() or os.getppid() != parent
 
     log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
-    backoff = 1
+    backoff, logs = 1, {}
     while not ended():
         stream = Stream(cred)
         stream.start()
-        welcomed = serve(stream, cred, ended)
+        welcomed = serve(stream, cred, ended, logs)
         stream.close()
         backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
         deadline = time.time() + backoff
