@@ -545,6 +545,17 @@ against the local hub; until it lands, the stand-in.
   there at M3's start.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision: DC2 closed (PR #195, main `a6c90a13`, 7.155.0); DX5 is final
+  in the composite at MAWS `361bee24`. Until the mod knows whether a main
+  turn runs after a load into an existing conversation, the bridge
+  refuses `steer`, `interrupt`, and `compact` with "turn state unknown
+  since the bridge reloaded; retry after the next model request"; M3
+  reports it as DX6 `failed` with that reason, never success or `idle`.
+  M3 merges `origin/main` for DC2's final code; DC4's re-bumped branch
+  merges when it lands, and this PR bumps above it. M4 takes DC2's
+  residue: nothing sweeps `$SMINOS_HOME/bridge/<id>.json`.
+  Date/Author: 2026-10-15, controller, from the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
