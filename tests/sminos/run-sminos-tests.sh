@@ -1381,10 +1381,17 @@ assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "nothing 
 # neither status nor a reply over it.
 ( STUB_BG_STATE=working SMINOS_POLL_INTERVAL=0.1 DAEMON_TIMEOUT=20 "$SMINOS" spawn genseat "GEN" --wait > "$TEST_ROOT/gen.out" 2>&1; echo $? > "$TEST_ROOT/gen.rc" ) &
 GENW=$!
-sleep 0.8
-GEN="$(seat_id_of genseat)"
-run "$SMINOS" retire genseat
+# The retire must land once the spawn has written its record and let go of the
+# seat's lifecycle lock, when its watcher waits: until then a retire is refused
+# with the lock held (rc 4), and is simply tried again.
+genseat_recorded() { [ -n "$(seat_id_of genseat)" ]; }
+retire_genseat() { run "$SMINOS" retire genseat; [ "$RC" != 4 ]; }
+wait_until genseat_recorded || echo "    (genseat was never recorded)"
+wait_until retire_genseat || true
 assert_rc 0 "$RC" "retire while a watcher waits exits 0"
+# Read once the spawn has let go: until then its record may still be under its
+# provisional id, renamed to the session's once the harness names it.
+GEN="$(seat_id_of genseat)"
 wait "$GENW" || true
 assert_equals "$(field "$GEN" status)" "retired" "the watcher's finalize does not overwrite a retire"
 assert_file_absent "$SMINOS_HOME/$GEN.reply.txt" "no reply file is written over a retired seat"
