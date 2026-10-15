@@ -18,7 +18,7 @@
 - [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); proved against DC2's real M4 child (`sminos bridge`, seeded cut) and DC3's reviewed hub at `a190a6d8` with `step-end` in the real-child wave (`a7b38ace`, `4bf53309`), reviewed clean 2026-10-15
 - [x] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses) — reviewed clean 2026-10-15 (`c71b751f`, fixes `f357a00a`, `526b9eb8`); proved against DC3's local hub at `b7fc7ebd`+ (M2 uplink 3/3, M1 walk 7/7)
 - [x] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses) — reviewed clean 2026-10-15 (`99d8fd62`, `73c821fc`, `298254af`; fixes `4dc19fa7`, `74f078ea`, `3cd17348`); `test_rpcs.py` against DC3's local hub at `01ba7519` (contains `dabd37e8`) 30/30
-- [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
+- [x] M4 — Resume; the walk against the local hub; docs and version (DC7.G4) — reviewed clean 2026-10-15 (`f263bbd5`, `69a9ad75`, `4bba978a`, `c317d37c`, `762f780a`; fixes `bd84f1c9`, `b870a9c0`); the walk 17/17 against DC3's local hub at MAWS `349f2512`; Resume live 5/5 against claude 2.1.301
 
 ## Constraints that bind every milestone
 
@@ -669,7 +669,15 @@ against the local hub; until it lands, the stand-in.
   writer). Claims resting on a stand-in for `claude`: two Resumes at
   once, delivery after Resume, claim reconciliation, the seat cases; the
   live check (`tests/mods/live-resume-check.py`) proved Resume itself
-  against claude 2.1.301 under a temporary HOME.
+  against claude 2.1.301 under a temporary HOME. From M4's review: a
+  claimed Resume writes `launched_at` (and `job` once known) before
+  launching and reconciles as done only from a `--bg` holder started no
+  earlier than that launch with that job; a claim without `launched_at`
+  is `interrupted`; the "running here" check runs before the claim and
+  again under the lock; Resume answers done only once its job's process
+  holds the session, else `failed` naming the job, waiting up to 30 s on a
+  loaded machine. The sweep removes a kept file only when it and the
+  transcript are both 24 h quiet.
   Date/Author: 2026-10-15, M4 executor; rulings by the composite's writer.
 
 - Decision: The suite gate under this machine's load. The three
