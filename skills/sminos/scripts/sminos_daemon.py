@@ -465,12 +465,12 @@ def deliver_owed(project, view):
 def mirrored(project):
     """Whether git syncs the project: it names a remote and no hub. A hub
     project syncs through its hub alone; its remote is the log's archive."""
-    return bool(project.remote) and not project.hub
+    return bool(project.remote) and project.hub is None
 
 
 def shared(project):
     """Whether another machine reads the project's log, through git or a hub."""
-    return bool(project.remote or project.hub)
+    return bool(project.remote) or project.hub is not None
 
 
 def tick(project, all_seats=None):

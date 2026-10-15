@@ -37,8 +37,9 @@ member too, seat-less, from the first call that reads its project.
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
                    # --hub: the project syncs through this machine's desk hub, never git
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
-    sminos hub      enroll <code> [--name N] [--replace] | show   # this machine at the desk hub: its
-                   name there is its name everywhere (the writer host of what it writes)
+    sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
+                   there is its name everywhere (the writer host of what it writes). The code is
+                   pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
@@ -549,9 +550,10 @@ def make_project(pid, name, remote, root_dir, hub=None):
 def read_smns(path):
     """(id, name, remote, hub) from a .smns, or None — with a warning — when it
     is unreadable or names no valid id: a broken file in one repository must
-    not stop every verb that resolves a seat living there. A `hub` that is not
-    {url, org} still makes a hub project, which git never syncs, with a
-    warning: two live transports are worse than none."""
+    not stop every verb that resolves a seat living there. A `hub` key that is
+    not {url, org} — null included — still makes a hub project, which git
+    never syncs and no hub feeds (hub_wellformed), with a warning: two live
+    transports are worse than none."""
     try:
         with open(path) as f:
             d = json.load(f)
@@ -562,13 +564,20 @@ def read_smns(path):
     if not valid_name(pid):
         warn("ignoring %s: it names no valid project id" % path)
         return None
-    hub = d.get("hub")
-    if hub is not None:
-        if not (isinstance(hub, dict) and all(isinstance(hub.get(k), str) and hub[k] for k in ("url", "org"))):
+    hub = None
+    if "hub" in d:
+        raw = d["hub"] if isinstance(d["hub"], dict) else {}
+        hub = {k: raw[k] if isinstance(raw.get(k), str) else "" for k in ("url", "org")}
+        if not hub_wellformed(hub):
             warn("%s: its hub is not {url, org}; the project syncs through neither git nor a hub until it is" % path)
-            hub = hub if isinstance(hub, dict) else {}
-        hub = {"url": str(hub.get("url") or ""), "org": str(hub.get("org") or "")}
+            hub = {"url": "", "org": ""}  # a hub project nothing feeds
     return pid, str(d.get("name") or pid), str(d.get("remote") or ""), hub
+
+
+def hub_wellformed(hub):
+    """Whether a .smns `hub` is {url, org}, both non-empty strings: the only
+    hub a project syncs through. Any other value still bars git."""
+    return isinstance(hub, dict) and all(isinstance(hub.get(k), str) and hub[k] for k in ("url", "org"))
 
 
 def resolve_project(cwd):
@@ -635,7 +644,7 @@ def project_path(project, *parts):
     if project.id not in _HOMES:
         os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
         info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
-        if project.hub:
+        if project.hub is not None:
             info["hub"] = project.hub
         path = os.path.join(project.home, "project.json")
         try:
@@ -1112,7 +1121,7 @@ def _reconcile(project, events, local, by_session):
     out = []
     for sid, e in joined.items():
         if (latest[sid] != "joined" or sid in by_session or sid in local
-                or not is_self(str(e.get("machine") or "")) or session_running(sid)):
+                or not is_self(str(e.get("machine") or ""), sid) or session_running(sid)):
             continue
 
         def ended(evs, sid=sid):
@@ -1304,7 +1313,7 @@ def _member(sid, r, seat, peer, local, title=True):
     elif peer and peer.get("name"):
         alias, name_source = str(peer["name"]), str(peer.get("nameSource") or name_source or "derived")
     machine = str(j.get("machine") or "")
-    local = local or bool(seat) or not machine or is_self(machine)
+    local = local or bool(seat) or not machine or is_self(machine, sid)
     age = None
     if not local:
         published = (r or {}).get("state") or {}
@@ -2261,9 +2270,10 @@ def _writer_events(project, host, session):
 
 def _former_events(project, session):
     """The session's events under the names this machine wrote under before
-    it enrolled, oldest name first: still the session's own, though nothing
-    appends to them any more."""
-    return [e for host in machine_identity()[1] for e in _writer_events(project, host, session)]
+    it enrolled, for a session it held under them (is_self), oldest name
+    first: still the session's own, though nothing appends to them any more."""
+    return [e for host, held in machine_identity()[1].items() if session in held
+            for e in _writer_events(project, host, session)]
 
 
 def _own_events(project, session):
@@ -2761,7 +2771,8 @@ def cmd_project(a):
         if p is None:
             die("no project at %s: no .smns above it and no git repository around it" % d, EXIT_UNKNOWN)
         print("project  %s\nid       %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
-            p.name, p.id, p.remote or "-", "%s (org %s)" % (p.hub["url"], p.hub["org"]) if p.hub else "-",
+            p.name, p.id, p.remote or "-", ("%s (org %s)" % (p.hub["url"], p.hub["org"]) if hub_wellformed(p.hub) else "malformed: no git, no hub")
+            if p.hub is not None else "-",
             p.root, p.home))
     else:
         project_attach(a)
@@ -2808,9 +2819,9 @@ def project_attach(a):
     p = resolve_project(os.path.abspath(a.dir or os.getcwd()))
     if p is None:
         die("no project here to attach", EXIT_UNKNOWN)
-    if p.hub:
+    if p.hub is not None:
         die("project %s syncs through its hub (%s), never through git: there is no mirror to attach%s" % (
-            p.name, p.hub["url"] or "unreadable", "; its remote is the log's archive" if p.remote else ""), 1)
+            p.name, p.hub["url"] or "malformed", "; its remote is the log's archive" if p.remote else ""), 1)
     if not p.remote:
         die("project %s names no remote in its .smns: nothing to attach to" % p.name)
     daemon_module().attach(p)
@@ -3302,14 +3313,15 @@ def state(seat):
     return seat_state(seat, peer_for_session(seat["current"]) if needs_probe(seat) else None)
 
 
-_SELF = None  # (this machine's name, the names it wrote under before), per invocation
+_SELF = None  # (this machine's name, {former name: its sessions}), per invocation
 
 
 def machine_identity():
     """(name, former): this installation's machine name — the name it enrolled
     under at a desk hub (daemon/hub.json, written by `hub enroll`), else
-    DAEMON_HOST, else the system's host name — and the names it wrote under
-    before it enrolled, which are still this machine (is_self)."""
+    DAEMON_HOST, else the system's host name — and, for each name it wrote
+    under before it enrolled, the sessions it held under that name then
+    ({name: frozenset}, oldest name first)."""
     global _SELF
     if _SELF is None:
         try:
@@ -3317,11 +3329,12 @@ def machine_identity():
                 d = json.load(f)
         except (OSError, ValueError):
             d = None
-        name, former = "", ()
+        name, former = "", {}
         if isinstance(d, dict) and isinstance(d.get("machine"), str) and valid_name(d["machine"]):
             name = d["machine"]
-            if isinstance(d.get("former"), list):
-                former = tuple(n for n in d["former"] if isinstance(n, str) and n)
+            if isinstance(d.get("former"), dict):
+                former = {n: frozenset(s for s in ss if isinstance(s, str) and s)
+                          for n, ss in d["former"].items() if n and isinstance(ss, list)}
         _SELF = (name or os.environ.get("DAEMON_HOST") or socket.gethostname(), former)
     return _SELF
 
@@ -3331,12 +3344,14 @@ def host_name():
     return machine_identity()[0]
 
 
-def is_self(name):
-    """Whether a machine name a record carries (a member's `machine`, a seat's
-    `host`) is this machine: its name now, or one it wrote under before it
-    enrolled — a rename never makes its own seats and members another's."""
+def is_self(name, session=""):
+    """Whether what a record says ran on machine `name` (a member's `machine`,
+    a seat's `host`), for `session`, ran here: `name` is this machine's name
+    now, or a name it wrote under before it enrolled and `session` one it held
+    under that name. Another machine may enroll under a former name, so a
+    former name alone is never this machine."""
     me, former = machine_identity()
-    return name == me or name in former
+    return name == me or (bool(session) and session in former.get(name, ()))
 
 
 def boot_id():
@@ -3361,10 +3376,10 @@ def boot_id():
         return ""
 
 
-def identity_local(host, boot):
-    """True iff a record's recorded host/boot identity belongs to this boot.
-    Empty values preserve legacy local behavior."""
-    if host and not is_self(host):
+def identity_local(host, boot, session=""):
+    """True iff a record's recorded host/boot identity, for `session`, belongs
+    to this boot. Empty values preserve legacy local behavior."""
+    if host and not is_self(host, session):
         return False
     mine = boot_id()
     if boot and mine and boot != mine:
@@ -4638,7 +4653,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
         # row is host-local by construction; only a RECORDED short is gated on
         # the record's host identity, because shorts are reusable across boots.
         stop_short = row["id"]
-    elif not row and peer_for_session(cur) and s["short"] and identity_local(s["host"], s["boot_id"]):
+    elif not row and peer_for_session(cur) and s["short"] and identity_local(s["host"], s["boot_id"], cur):
         stop_short = s["short"]
     if stop_short:
         if not claude_stop(stop_short):
@@ -5267,7 +5282,7 @@ def stop_session(s):
     row = harness_row(s) if s["current"] else None
     if row and row.get("id"):
         claude_stop(row["id"])
-    elif s["short"] and identity_local(s["host"], s["boot_id"]):
+    elif s["short"] and identity_local(s["host"], s["boot_id"], s["current"]):
         claude_stop(s["short"])
 
 
@@ -5531,7 +5546,7 @@ def hub_module():
 
 def cmd_hub(a):
     if not a.op:
-        die("usage: sminos hub enroll <code> [--name N] [--replace] | show")
+        die("usage: sminos hub enroll [--name N] [--replace] (the code at its prompt, or on stdin) | show")
     hub_module().cmd_hub(a)
 
 
@@ -5715,7 +5730,9 @@ def build_parser():
     hb = sub.add_parser("hub", add_help=False)
     hsub = hb.add_subparsers(dest="op")
     he = hsub.add_parser("enroll", add_help=False)
-    he.add_argument("code")
+    # Taken only to be refused unread (sminos_hub.enroll): any word here would
+    # otherwise reach argparse's error, which echoes it.
+    he.add_argument("code", nargs="*")
     he.add_argument("--name", default="")
     he.add_argument("--replace", action="store_true")
     hsub.add_parser("show", add_help=False)

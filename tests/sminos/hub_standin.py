@@ -39,7 +39,9 @@ The test's own hands:
   the next redemptions of a known token meet, one each, in order: `lose`
   (applied, then the connection closed with no answer), `busy` (409, nothing
   applied), `mint-failed` (502 after the name is reserved, as the hub's failed
-  mint leaves it), `other-org` (applied, answered for another org).
+  mint leaves it), `other-org` (applied, answered for another org),
+  `truncate` (applied, then a 200 announcing its whole length that sends
+  half of it and closes).
 - `GET /control/state`: `{"generation", "connected", "posted", "machines",
   "enrollments", "redemptions", "faults"}` — `machines` without their
   secrets, `redemptions` every body `/machine/enroll` received, `faults`
@@ -218,6 +220,15 @@ class Handler(BaseHTTPRequestHandler):
             answer = {"org": "org-2" if fault == "other-org" else ORG, "machine": machine, "client_id": held["client_id"],
                       "client_secret": held["client_secret"]}
         if fault == "lose":
+            self.close_connection = True
+            return None
+        if fault == "truncate":
+            data = json.dumps(answer).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data[:len(data) // 2])
             self.close_connection = True
             return None
         return self.reply(200, answer)

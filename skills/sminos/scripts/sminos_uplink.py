@@ -188,14 +188,15 @@ class Stream(threading.Thread):
 
 
 def smns_hub(root_dir):
-    """The `hub` field of the .smns at root_dir, or None."""
+    """The `hub` field of the .smns at root_dir when it is a well-formed
+    {url, org}, or None: a malformed hub is fed by no hub."""
     try:
         with open(os.path.join(root_dir, sminos.SMNS)) as f:
             d = json.load(f)
     except (OSError, ValueError):
         return None
     hub = d.get("hub") if isinstance(d, dict) else None
-    return hub if isinstance(hub, dict) and isinstance(hub.get("org"), str) else None
+    return hub if sminos.hub_wellformed(hub) else None
 
 
 def hub_project(pid, cred):

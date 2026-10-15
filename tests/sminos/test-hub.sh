@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
 # Enrollment and hub projects (DC4 M2 of the desk), against hub_standin.py's
-# DX7 redemption. Pins DC4.G1: `sminos hub enroll <code>` decodes the code as
+# DX7 redemption. Pins DC4.G1: `sminos hub enroll` reads the code from stdin
+# (or a hidden prompt; never argv, which it refuses unread), decodes it as
 # the hub's decoder does (enroll_parity.py, over codes the hub's own encoder
 # built), redeems it, and stores the credential at mode 0600 — the org key and
 # the service token's secret never in any output or in daemon.log; every DX7
 # error said with what to do; a second installation claiming an enrolled name
 # is refused and told to pick another with --name; the enrolled name is the
-# writer host, and a rename leaves this machine's seats and members its own;
-# `project init --hub` writes the field; a hub project runs no git phase and
-# `project attach` refuses it.
+# writer host, and a rename leaves this machine's seats and members its own
+# while another machine enrolled under the old name stays another;
+# `project init --hub` writes the field; a hub project, a malformed hub
+# included, runs no git phase and `project attach` refuses it.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per installation;
 # `claude` is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -125,6 +127,13 @@ code_for() { # machine [ttl_s] — a fresh token's code proposing `machine`
 }
 redemptions() { ctl state 'len(d["redemptions"])'; }
 cred() { echo "$SMINOS_HOME/daemon/hub.json"; }
+# Every code is fed on stdin, as a human pastes it; each is kept, to be
+# searched for in every output and log at the end.
+enroll() { # code [args...]
+  local code="$1"; shift
+  printf '%s\n' "$code" >> "$T/codes"
+  run "$SMINOS" hub enroll "$@" <<<"$code"
+}
 mode_of() { python3 -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$1"; }
 
 # ---- the code, as the hub decodes it
@@ -136,13 +145,26 @@ done < <(python3 "$SCRIPT_DIR/enroll_parity.py" "$SCRIPTS" "$SCRIPT_DIR/dx7-enro
 as a alpha
 run "$SMINOS" hub show
 assert_contains "$OUT" "not enrolled" "an installation that never enrolled says so"
-run "$SMINOS" hub enroll "smns-enroll-v2.e30"
+CODE_P="$(code_for alpha)"
+printf '%s\n' "$CODE_P" >> "$T/codes"
+run "$SMINOS" hub enroll "$CODE_P"
+assert_rc 2 "$RC" "a code given as an argument is refused"
+assert_contains "$OUT" "never given on the command line" "saying the code belongs at the prompt"
+assert_contains "$OUT" "Run sminos hub enroll with no code and paste it at the prompt" "and how to give it"
+assert_not_contains "$OUT" "$CODE_P" "without echoing it"
+run "$SMINOS" hub enroll --name alpha2 "$CODE_P" more words
+assert_rc 2 "$RC" "with other words too"
+assert_not_contains "$OUT" "$CODE_P" "still unechoed"
+assert_equals "$(redemptions)" 0 "no request reaches the hub"
+assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing is written"
+assert_equals "$(cat "$SMINOS_HOME/daemon.log" 2>/dev/null | wc -l | tr -d " ")" 0 "nor logged"
+enroll "smns-enroll-v2.e30"
 assert_rc 2 "$RC" "a code of another version is refused as usage"
 assert_contains "$OUT" "enrollment code: not smns-enroll-v1" "in the hub decoder's words"
-run "$SMINOS" hub enroll "$(ctl code "http://desk.example.com" tok alpha "$KEY")"
+enroll "$(ctl code "http://desk.example.com" tok alpha "$KEY")"
 assert_rc 2 "$RC" "a code naming a hub over plain http off this machine is refused"
 assert_contains "$OUT" "enrollment code: the hub is not https" "saying why"
-run "$SMINOS" hub enroll "$(code_for alpha)" --name hub
+enroll "$(code_for alpha)" --name hub
 assert_rc 2 "$RC" "--name hub is refused (the log's own prefix)"
 assert_contains "$OUT" "not an admitted machine name" "saying why"
 assert_equals "$(redemptions)" 0 "nothing refused by the CLI reaches the hub"
@@ -150,7 +172,7 @@ assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "and nothin
 
 # ---- enrollment under this machine's own name
 echo "enrolling:"
-run "$SMINOS" hub enroll "$(code_for proposed-a)"
+enroll "$(code_for proposed-a)"
 assert_rc 0 "$RC" "enrollment succeeds"
 assert_contains "$OUT" "enrolled this machine as alpha" "under this machine's own name, not the one the code proposed"
 assert_contains "$OUT" "code proposed proposed-a" "saying which name the code proposed"
@@ -158,7 +180,7 @@ assert_contains "$OUT" "--name proposed-a" "and how to claim it instead"
 assert_not_contains "$OUT" "no longer as" "no rename: nothing is said of one"
 assert_equals "$(mode_of "$(cred)")" "0o600" "the credential is stored at mode 0600"
 assert_equals "$(json_get "$(cred)" '[d[k] for k in ("hub", "org", "machine", "key", "former")]')" \
-  "[\"$HUB\", \"org-1\", \"alpha\", \"$KEY\", []]" "with the hub, the org, the name, the key, and no former name"
+  "[\"$HUB\", \"org-1\", \"alpha\", \"$KEY\", {}]" "with the hub, the org, the name, the key, and no former name"
 assert_equals "$(json_get "$(cred)" 'd["client_id"]')" "$(ctl state '[m["client_id"] for m in d["machines"] if m["name"] == "alpha"][0]')" \
   "the service token is the one the hub minted for alpha"
 run ctl connect "$(cred)"
@@ -170,7 +192,7 @@ run "$SMINOS" hub show
 assert_contains "$OUT" "machine  alpha" "hub show names the machine"
 assert_contains "$OUT" "hub      $HUB (org org-1)" "and its hub"
 BEFORE="$(redemptions)"
-run "$SMINOS" hub enroll "$(code_for other-a)"
+enroll "$(code_for other-a)"
 assert_rc 1 "$RC" "an enrolled installation refuses a new code"
 assert_contains "$OUT" "already enrolled at $HUB as alpha" "saying what it is enrolled as"
 assert_contains "$OUT" "--replace" "and how to replace it"
@@ -181,14 +203,14 @@ assert_equals "$(json_get "$(cred)" 'd["machine"]')" '"alpha"' "the identity is 
 echo "a second installation named alpha:"
 as b alpha
 CODE_B="$(code_for alpha)"
-run "$SMINOS" hub enroll "$CODE_B"
+enroll "$CODE_B"
 assert_rc 1 "$RC" "claiming a name another machine holds is refused"
 assert_contains "$OUT" "another machine of this org is enrolled as alpha" "saying the name is taken"
-assert_contains "$OUT" "sminos hub enroll <the same code> --name <another name>" "and how to pick another with the same code"
+assert_contains "$OUT" "run sminos hub enroll --name <another name> and paste the same code at the prompt" \
+  "and how to pick another with the same code"
 assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing is stored"
-run "$SMINOS" hub enroll "$CODE_B" --name ALPHA
+enroll "$CODE_B" --name ALPHA
 assert_rc 1 "$RC" "the name is taken whatever its case"
-assert_not_contains "$(cat "$T/all.out")" "$CODE_B" "the code (it carries the key) is never echoed"
 
 # ---- this installation's state under alpha, before it is renamed
 echo "state before the rename:"
@@ -239,14 +261,15 @@ assert_equals "$(alpha_writers)" 2 "each joined under an alpha/ writer"
 
 # ---- enrolling under another name
 echo "the rename:"
-run "$SMINOS" hub enroll "$CODE_B" --name beta
+enroll "$CODE_B" --name beta
 assert_rc 0 "$RC" "the same code, under another name, enrolls"
 assert_contains "$OUT" "enrolled this machine as beta" "as beta"
 assert_contains "$OUT" "no longer as alpha" "saying this machine is renamed"
 assert_contains "$OUT" "already written under alpha stay on this machine" "that what it wrote as alpha stays here"
 assert_contains "$OUT" "never reach the hub" "and never reaches the hub or another machine"
 assert_contains "$OUT" "DAEMON_HOST" "and that DAEMON_HOST is no longer read"
-assert_equals "$(json_get "$(cred)" '[d["machine"], d["former"]]')" '["beta", ["alpha"]]' "hub.json records beta, and alpha as a former name"
+assert_equals "$(json_get "$(cred)" '[d["machine"], d["former"]]')" "[\"beta\", {\"alpha\": [\"$S1\", \"$S2\"]}]" \
+  "hub.json records beta, and alpha as a former name with the sessions this installation held under it"
 run "$SMINOS" list --json
 assert_contains "$OUT" '"alias": "s1"' "the seat is listed"
 assert_equals "$(machines)" "[('s1', 'beta', True), ('term', 'beta', True)]" "the seat and the session are this machine's, on beta"
@@ -259,77 +282,107 @@ set +e; wait "$SLEEPER" 2>/dev/null; set -e
 run "$SMINOS" list --all --json
 assert_contains "$(cat "$BLOG"/beta."$S2".jsonl 2>/dev/null)" '"reason": "ended"' \
   "a session that joined as alpha and ended is retired as this machine's own"
+# A's own alpha session, as the hub would bring it here: A holds alpha now.
+SA=5a00000a-0000-4000-8000-0000000000aa
+python3 - "$SCRIPTS" "$SA" "$PB" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+p = sminos.resolve_project(sys.argv[3])
+sminos.log_append(p, "alpha/" + sys.argv[2], "joined", session=sys.argv[2], alias="a-term", name_source="derived",
+                  machine="alpha", cwd="/elsewhere", worktree="", role="", seat="", by="")
+PY
+run "$SMINOS" list --all --json
+assert_contains "$(machines)" "('a-term', 'alpha', False)" "a session of the machine now enrolled as alpha is that machine's, not this one's"
+run "$SMINOS" list --all --json
+assert_equals "$(test -e "$BLOG/beta.$SA.jsonl" && echo there || echo none)" none "and this machine never retires it"
 echo "[]" > "$STUB_STATE/agents.json"
 run "$SMINOS" retire s1
 assert_rc 0 "$RC" "retire acts on the seat"
 assert_equals "$(cat "$STUB_STATE/stops" 2>/dev/null)" "b1short" "stopping the session it recorded on alpha"
 run "$SMINOS" say "said as beta"
 assert_contains "$(cat "$BLOG/beta.human.jsonl")" "said as beta" "new events are written under beta"
-assert_equals "$(alpha_writers)" 2 "and no new alpha/ writer appears"
+assert_equals "$(alpha_writers)" 3 "and no new alpha/ writer appears (two of this machine's, one of the other alpha's)"
 
 # ---- what the hub answers, said with what to do
 echo "the hub's answers:"
 as c gamma
 ctl fault lose
-run "$SMINOS" hub enroll "$(code_for gamma)"
+enroll "$(code_for gamma)"
 assert_rc 0 "$RC" "a lost answer is redeemed again, and enrolls"
 assert_equals "$(json_get "$(cred)" 'd["client_id"]')" "$(ctl state '[m["client_id"] for m in d["machines"] if m["name"] == "gamma"][0]')" \
   "with the credential of the second redemption, the one the hub holds"
 run ctl connect "$(cred)"
 assert_contains "$OUT" "200 event: welcome" "which opens the stream"
+as c2 gamma2
+ctl fault truncate
+enroll "$(code_for gamma2)"
+assert_rc 0 "$RC" "a 200 cut short of its length is redeemed again, and enrolls"
+assert_equals "$(json_get "$(cred)" 'd["client_id"]')" "$(ctl state '[m["client_id"] for m in d["machines"] if m["name"] == "gamma2"][0]')" \
+  "with the rotated credential the hub holds"
+as c3 gamma3
+CODE_C3="$(code_for gamma3)"
+ctl fault truncate truncate truncate
+enroll "$CODE_C3"
+assert_rc 1 "$RC" "answers cut short every time end the command"
+assert_contains "$OUT" "short of its length" "saying how the answer came back"
+assert_contains "$OUT" "run the same command again" "and to run it again"
+assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing stored"
+enroll "$CODE_C3"
+assert_rc 0 "$RC" "run again, it enrolls"
 as d delta
 CODE_D="$(code_for delta)"
 ctl fault lose lose lose
-run "$SMINOS" hub enroll "$CODE_D"
+enroll "$CODE_D"
 assert_rc 1 "$RC" "answers lost every time end the command"
 assert_contains "$OUT" "run the same command again" "saying to run it again"
 assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing stored"
 assert_equals "$(ctl state 'len(d["faults"])')" 0 "after three attempts"
-run "$SMINOS" hub enroll "$CODE_D"
+enroll "$CODE_D"
 assert_rc 0 "$RC" "the same command, run again, rotates the credential and enrolls"
 assert_equals "$(json_get "$(cred)" 'd["client_id"]')" "$(ctl state '[m["client_id"] for m in d["machines"] if m["name"] == "delta"][0]')" \
   "storing the rotated one"
 as e epsilon
 CODE_E="$(code_for epsilon)"
 ctl fault busy
-run "$SMINOS" hub enroll "$CODE_E"
+enroll "$CODE_E"
 assert_rc 1 "$RC" "busy ends the command"
 assert_contains "$OUT" "in flight" "saying a redemption is in flight"
 assert_contains "$OUT" "run the same command again" "and to run it again"
 ctl fault mint-failed
-run "$SMINOS" hub enroll "$CODE_E"
+enroll "$CODE_E"
 assert_rc 1 "$RC" "mint-failed ends the command"
 assert_contains "$OUT" "could not mint" "saying the mint failed"
 assert_contains "$OUT" "run the same command again" "and to run it again"
-run "$SMINOS" hub enroll "$CODE_E"
+enroll "$CODE_E"
 assert_rc 0 "$RC" "the same command then enrolls"
 as f zeta
-run "$SMINOS" hub enroll "$CODE_E" --name zeta
+enroll "$CODE_E" --name zeta
 assert_rc 1 "$RC" "a token bound to another name is refused"
 assert_contains "$OUT" "bound to the machine \"epsilon\"" "naming the name it is bound to"
 assert_contains "$OUT" "new code" "and saying to ask for a new code"
 as e epsilon
 ctl connect "$(cred)" >/dev/null
 as f zeta
-run "$SMINOS" hub enroll "$CODE_E" --name epsilon
+enroll "$CODE_E" --name epsilon
 assert_rc 1 "$RC" "a spent token is refused"
 assert_contains "$OUT" "spent" "saying so"
 as g eta
 CODE_X="$(code_for eta 1)"
 sleep 1.2
-run "$SMINOS" hub enroll "$CODE_X"
+enroll "$CODE_X"
 assert_rc 1 "$RC" "an expired token is refused"
 assert_contains "$OUT" "expired" "saying so"
-run "$SMINOS" hub enroll "$(ctl code "$HUB" never-minted eta "$KEY")"
+enroll "$(ctl code "$HUB" never-minted eta "$KEY")"
 assert_rc 1 "$RC" "a token the hub never issued is refused"
 assert_contains "$OUT" "does not know this code's token" "saying so"
 ctl fault other-org
-run "$SMINOS" hub enroll "$(code_for eta)"
+enroll "$(code_for eta)"
 assert_rc 1 "$RC" "an answer for another org than the code's is refused"
 assert_contains "$OUT" "nothing is stored" "and nothing is stored"
 assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "indeed"
 as h 'not a name'
-run "$SMINOS" hub enroll "$(code_for theta)"
+enroll "$(code_for theta)"
 assert_rc 0 "$RC" "a host name the hub would not admit leaves the code's name"
 assert_contains "$OUT" "enrolled this machine as theta" "which is claimed"
 
@@ -386,6 +439,42 @@ run "$SMINOS" daemon tick
 assert_not_contains "$OUT" "gitproj: synced" "a hub project whose checkout is gone still gets no git phase"
 assert_equals "$(git -C "$T/archive.git" rev-parse main)" "$REMOTE_HEAD" "its remote still not pushed"
 cd "$T"
+gitq init -q --bare "$T/archive-n.git"
+PN="$T/a/np"
+mkdir -p "$PN"
+gitq init -q "$PN"
+cd "$PN"
+"$SMINOS" project init --name nullhub --remote "$T/archive-n.git" >/dev/null
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["hub"] = None; json.dump(d, open(sys.argv[1], "w"), indent=2)' "$PN/.smns"
+"$SMINOS" say "under a null hub" >/dev/null 2>&1
+run "$SMINOS" daemon tick
+assert_not_contains "$OUT" "nullhub: synced" "a .smns whose hub is null gets no git phase"
+assert_contains "$OUT" "its hub is not {url, org}" "with a warning"
+assert_equals "$(git -C "$T/archive-n.git" rev-parse --verify -q main || echo none)" none "its remote is never pushed"
+run "$SMINOS" project attach
+assert_rc 1 "$RC" "project attach refuses it"
+run "$SMINOS" project init --hub
+assert_rc 1 "$RC" "--hub does not overwrite a malformed hub"
+assert_contains "$OUT" "fix its .smns by hand" "saying to fix it by hand"
+PO="$T/a/op"
+mkdir -p "$PO"
+gitq init -q "$PO"
+cd "$PO"
+"$SMINOS" project init --name orgonly >/dev/null
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["hub"] = {"org": "org-1"}; json.dump(d, open(sys.argv[1], "w"), indent=2)' "$PO/.smns"
+"$SMINOS" say "under an org-only hub" >/dev/null 2>&1
+importable() { # project dir — whether the uplink would import an events frame for it, for org-1
+  python3 - "$SCRIPTS" "$1" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import sminos_uplink
+pid = json.load(open(os.path.join(sys.argv[2], ".smns")))["project"]
+print("imports" if sminos_uplink.hub_project(pid, {"org": "org-1"}) else "refuses")
+PY
+}
+assert_equals "$(importable "$PO" 2>/dev/null)" refuses "the uplink imports nothing into a project whose hub carries only an org"
+assert_equals "$(importable "$PH" 2>/dev/null)" imports "and imports into a well-formed hub project of its org"
+cd "$T"
 as b2 beta2
 P0="$T/b2/p"
 mkdir -p "$P0"
@@ -408,6 +497,9 @@ PY
 for f in "$T"/*/s/daemon.log "$T/all.out"; do
   [ -f "$f" ] || continue
   assert_not_contains "$(cat "$f")" "$KEY" "the org key is not in ${f#"$T"/}"
+  while IFS= read -r c; do
+    if grep -Fq -- "$c" "$f"; then fail "an enrollment code is in ${f#"$T"/}"; echo "    ${c:0:40}…"; fi
+  done < "$T/codes"
   for s in $SECRETS; do
     assert_not_contains "$(cat "$f")" "$s" "no service token secret is in ${f#"$T"/}"
   done

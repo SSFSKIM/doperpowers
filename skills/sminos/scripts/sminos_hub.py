@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """sminos_hub — this machine's enrollment at the desk hub (DX7 of the desk).
 
-`sminos hub enroll <code>` redeems an enrollment code the owner's browser
-built: `smns-enroll-v1.` and the base64url of the JSON object {hub, org,
-token, machine, key}. The CLI decodes it as the hub's `decodeEnrollmentCode`
+`sminos hub enroll` redeems an enrollment code the owner's browser built:
+`smns-enroll-v1.` and the base64url of the JSON object {hub, org, token,
+machine, key}. The code carries the org key, so it is read from a hidden
+prompt (or stdin when piped), never from the command line, where the process
+listing shows it and the shell's history keeps it; a code given as an
+argument is refused unread. The CLI decodes it as the hub's `decodeEnrollmentCode`
 does (tests/sminos/enroll_parity.py pins the two), redeems the one-time token
 at `POST <hub>/machine/enroll {token, machine}` for the machine's Access
 service token, and stores what the uplink needs in `daemon/hub.json` (mode
@@ -16,14 +19,18 @@ writer it creates afterwards is `<name>/…`, hub project or not, because the
 hub takes from a machine only the writers under its name. It defaults to the
 current host name when the hub would admit it, so most enrollments rename
 nothing; `--name` claims another. The names the machine wrote under before
-are kept in hub.json as `former`, and `is_self` counts them as this machine,
-so its seats and members stay its own across a rename; what it wrote under a
-former name stays local.
+are kept in hub.json as `former`, each with the sessions it held under it
+then, and `is_self` counts those sessions under that name as this machine's —
+so its seats and members stay its own across a rename, while another machine
+that enrolls under the former name stays another machine. What it wrote under
+a former name stays local.
 
 `sminos project init --hub` writes the enrolled hub into .smns (`{url, org}`);
 a project whose .smns names a hub is never synced through git.
 """
 
+import getpass
+import glob
 import http.client
 import json
 import os
@@ -119,7 +126,9 @@ def decode_code(text):
 
 def redeem_once(hub, token, machine):
     """(status, answer object or None) of one `POST /machine/enroll`; Lost
-    when no answer came back."""
+    when no whole answer came back: none at all, a body cut short of its
+    length, or a success whose body is no JSON object (an enrollment the hub
+    may have made, whose secret this end never read)."""
     url = urllib.parse.urlsplit(hub)
     if url.scheme == "https":
         conn = http.client.HTTPSConnection(url.hostname, url.port, timeout=TIMEOUT)
@@ -130,15 +139,24 @@ def redeem_once(hub, token, machine):
                      headers={"Content-Type": "application/json", "Accept": "application/json"})
         resp = conn.getresponse()
         raw = resp.read(ANSWER_MAX)
+        # A bounded read returns what came before an early close, short of
+        # the length the answer announced, without raising.
+        cut = bool(resp.length)
     except (OSError, http.client.HTTPException) as e:
         raise Lost(" ".join(str(e).split()) or type(e).__name__) from None
     finally:
         conn.close()
+    if cut:
+        raise Lost("the answer ended after %d bytes, short of its length" % len(raw))
     try:
         answer = json.loads(raw)
     except ValueError:
         answer = None
-    return resp.status, answer if isinstance(answer, dict) else None
+    if not isinstance(answer, dict):
+        if resp.status == 200:
+            raise Lost("a 200 whose body is no JSON object")
+        answer = None
+    return resp.status, answer
 
 
 def redeem(code, machine):
@@ -173,8 +191,8 @@ def refusal(status, answer, machine):
         "confirmed": "this code is spent: the machine it enrolled has connected — ask the web for a new code",
         "token-used": "this code was redeemed under another name (%s): enroll with that name (--name), or ask the "
                       "web for a new code" % message,
-        "name-taken": "another machine of this org is enrolled as %s: pick another name — "
-                      "sminos hub enroll <the same code> --name <another name>" % machine,
+        "name-taken": "another machine of this org is enrolled as %s: pick another name — run "
+                      "sminos hub enroll --name <another name> and paste the same code at the prompt" % machine,
         "busy": "a redemption of this code is in flight at the hub: run the same command again in a moment",
         "mint-failed": "the hub could not mint this machine's service token (%s): run the same command again — "
                        "the same code and name rotate it" % message,
@@ -205,16 +223,51 @@ def enrolled_hub():
     machine is not enrolled."""
     d = held()
     if not (d and isinstance(d.get("hub"), str) and isinstance(d.get("org"), str) and d["hub"] and d["org"]):
-        sminos.die("this machine is not enrolled at a hub: run sminos hub enroll <code> first (the web gives the "
-                   "code)", 1)
+        sminos.die("this machine is not enrolled at a hub: run sminos hub enroll first, and paste the code the web "
+                   "gives at its prompt", 1)
     return {"url": d["hub"], "org": d["org"]}
 
 
-def enroll(a):
+def read_code():
+    """The enrollment code from a hidden prompt on a terminal, or from stdin
+    when piped; surrounding blanks (a paste's newline) are not the code's."""
     try:
-        code = decode_code(a.code)
-    except CodeRefused as e:
-        sminos.die("enrollment code: %s" % e)
+        if sys.stdin.isatty():
+            text = getpass.getpass("enrollment code (from the web; not echoed): ")
+        else:
+            text = sys.stdin.read(1 << 16)
+    except (EOFError, KeyboardInterrupt):
+        text = ""
+    text = text.strip()
+    if not text:
+        sminos.die("no enrollment code: paste it at the prompt, or pipe it on stdin")
+    return text
+
+
+def sessions_under(name):
+    """The sessions this installation held under the machine name `name`:
+    each with a writer file `<name>.<session>.jsonl` in a project log here,
+    and each a seat record whose `host` is `name` holds."""
+    held_ = set()
+    prefix = name + "."
+    for path in glob.glob(os.path.join(glob.escape(sminos.projects_root()), "*", "log", glob.escape(prefix) + "*.jsonl")):
+        session = os.path.basename(path)[len(prefix):-len(".jsonl")]
+        if sminos.UUID_RE.match(session):
+            held_.add(session)
+    for s in sminos.seats():
+        if s.get("host") == name and s.get("current"):
+            held_.add(s["current"])
+    return sorted(held_)
+
+
+def enroll(a):
+    if a.code:
+        # Refused unread and never echoed: the code is already exposed in argv.
+        sminos.die("an enrollment code is never given on the command line: it carries the org key, which every "
+                   "process can read in argv and the shell keeps in its history. Run sminos hub enroll%s with no "
+                   "code and paste it at the prompt (or pipe it on stdin); ask the web for a new code if this one "
+                   "may have been seen" % ((" --name %s" % a.name if is_machine_name(a.name) else "")
+                                           + (" --replace" if a.replace else "")))
     if a.name and not is_machine_name(a.name):
         sminos.die("--name %r is not an admitted machine name: a letter or digit, then up to 62 letters, digits, "
                    "'.', '_' or '-'; never hub or legacy" % a.name)
@@ -223,6 +276,10 @@ def enroll(a):
         sminos.die("this machine is already enrolled at %s as %s (org %s): a new code would replace that identity — "
                    "pass --replace to do so" % (before.get("hub") or "?", before.get("machine") or "?",
                                                 before.get("org") or "?"), 1)
+    try:
+        code = decode_code(read_code())
+    except CodeRefused as e:
+        sminos.die("enrollment code: %s" % e)
     old, old_former = sminos.machine_identity()
     machine = a.name or (old if is_machine_name(old) else code["machine"])
     status, answer = redeem(code, machine)
@@ -232,10 +289,12 @@ def enroll(a):
             and answer["org"] == code["org"] and answer["machine"] == machine):
         sminos.die("the hub answered the redemption for org %s as %s, not for org %s as %s: nothing is stored" % (
             said(answer.get("org")), said(answer.get("machine")), code["org"], machine), 1)
-    former = []
-    for name in (*old_former, old):
-        if name != machine and name not in former:
-            former.append(name)
+    # Each name this installation wrote under before, with the sessions it held
+    # under it: is_self's evidence, so a rename keeps them this machine's while
+    # another machine enrolled under the old name stays another (oldest first).
+    former = {name: sorted(held_) for name, held_ in old_former.items() if name != machine}
+    if old != machine:
+        former[old] = sorted(set(former.get(old, ())) | set(sessions_under(old)))
     path = uplink.credential_path()
     sminos.write_json(path, {"hub": code["hub"], "org": code["org"], "machine": machine,
                              "client_id": answer["client_id"], "client_secret": answer["client_secret"],
@@ -247,8 +306,8 @@ def enroll(a):
         machine, code["hub"], code["org"], path))
     if not a.name and machine != code["machine"]:
         print("The code proposed %s; this machine keeps its own name, %s, so nothing it wrote is renamed. To be "
-              "%s instead: sminos hub enroll <a new code> --name %s --replace (this code is now bound to %s)" % (
-                  code["machine"], machine, code["machine"], code["machine"], machine))
+              "%s instead, run sminos hub enroll --name %s --replace and paste a new code at the prompt (this code "
+              "is now bound to %s)." % (code["machine"], machine, code["machine"], code["machine"], machine))
     if machine != old:
         print("This machine now writes as %s, no longer as %s; its seats and members stay its own. Events already "
               "written under %s stay on this machine: in a hub project they never reach the hub or any other machine "
@@ -262,11 +321,14 @@ def enroll(a):
 def show(_a):
     d = held()
     if d is None:
-        print("this machine is not enrolled at a hub (sminos hub enroll <code>); it writes as %s" % sminos.host_name())
+        print("this machine is not enrolled at a hub (sminos hub enroll, then paste the code); it writes as %s"
+              % sminos.host_name())
         return
+    former = d.get("former") if isinstance(d.get("former"), dict) else {}
     print("machine  %s\nhub      %s (org %s)\nformer   %s\nsince    %s" % (
         d.get("machine") or "?", d.get("hub") or "?", d.get("org") or "?",
-        ", ".join(d.get("former") or []) or "-", d.get("enrolled") or "?"))
+        ", ".join("%s (%d sessions)" % (n, len(s) if isinstance(s, list) else 0) for n, s in former.items()) or "-",
+        d.get("enrolled") or "?"))
 
 
 def add_hub(path, smns, hub, a):
@@ -279,9 +341,10 @@ def add_hub(path, smns, hub, a):
     if smns[3] == hub:
         print("project %s is already a hub project of %s (org %s)" % (smns[1], hub["url"], hub["org"]))
         return
-    if d.get("hub") is not None:
-        sminos.die("project %s already names the hub %s (org %s): its hub is not changed here" % (
-            smns[1], (smns[3] or {}).get("url") or "?", (smns[3] or {}).get("org") or "?"), 1)
+    if "hub" in d:
+        sminos.die("project %s already names %s: its hub is not changed here" % (
+            smns[1], "the hub %s (org %s)" % (smns[3]["url"], smns[3]["org"]) if sminos.hub_wellformed(smns[3])
+            else "a hub that is not {url, org}, so it syncs through neither git nor a hub — fix its .smns by hand"), 1)
     d["hub"] = hub
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
