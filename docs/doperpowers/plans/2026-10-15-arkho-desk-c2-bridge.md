@@ -259,6 +259,40 @@ M3 extend it in place, each extension sent the same way.
 - Decision: The bridge child serves a per-session socket (M1).
   Rationale and the rejected alternative: M1.
   Date/Author: 2026-10-15, the composite's writer at dispatch.
+- Decision: Parent re-pinned to blob `b5af3c65` (commit `b7a82a59`). The
+  only change since `8acb3958` is the dispatch commit's own revision of §2,
+  §6, and X5 to the per-session endpoint this plan already assumes; no
+  sibling has landed, so no interface this plan consumes moved.
+  Date/Author: 2026-10-15, controller (pre-flight).
+- Decision: G3's fourth case. The composite's C2.G3 names "the daemon
+  reconnecting after the request was answered"; M3's Proves names "the CLI
+  answering after the terminal did". C2 covers both: with no daemon in this
+  child, the reconnecting party is any client of the session endpoint, so a
+  subscription opened after a request settled shows that request settled
+  (its snapshot carries the current pending set and the recent
+  settlements), never as still raised; and a late answer is refused as
+  already settled.
+  Date/Author: 2026-10-15, controller (pre-flight).
+- Decision: How "Tests pin" is met for engine behaviour. Logic is pinned in
+  the suites (`tests/mods/*.test.ts` under `claude-code/testing`,
+  `tests/sminos/`). A behaviour only a running engine shows (a command
+  reaching the mod mid-Bash, a reload respawning the child, an abort
+  backgrounding a Bash) is pinned by a scripted live check kept in the
+  repo, outside the default suites because it spends model calls, run at
+  its milestone and again in M4's walk, its output quoted in the report.
+  Rationale: the constraint wants a release that breaks a primitive to fail
+  loudly; a check nobody can re-run does not.
+  Date/Author: 2026-10-15, controller (pre-flight).
+- Decision: Live sessions are isolated on every axis the plugin touches.
+  Besides `CLAUDE_CONFIG_DIR`, a live session started with the worktree
+  plugin runs with a temporary `HOME` and `SMINOS_HOME`, because the plugin
+  itself runs sminos (the bridge child, and the Stop/SessionStart
+  `smns-record.sh` hook) and would otherwise reach the real registry. The
+  gateway credentials come from the process environment, as in C1; the
+  dispatching session's own `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`,
+  `CLAUDE_CODE_CHILD_SESSION`, and `CLAUDE_CODE_MESSAGING_*` are unset for
+  the launched session so it is not taken for this session's child.
+  Date/Author: 2026-10-15, controller (pre-flight).
 
 ## Surprises & Discoveries
 
