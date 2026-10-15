@@ -18,7 +18,11 @@
 - [x] M1 — Codes in Python, and a daemon that is concurrent (DC4.G4) —
   2026-10-15, reviewed clean (98bd8a69..cc3c49e1; one fix wave: a busy
   stream's shutdown, canonical base64url)
-- [ ] M2 — Enrollment and hub projects (DC4.G1)
+- [x] M2 — Enrollment and hub projects (DC4.G1) — 2026-10-15, reviewed
+  clean (182eacca..2eb64f63; two fix waves: lost answers mid-body,
+  former names per session, malformed hubs closed, the code off argv and
+  out of every parse error); G1 also passed against DC3's local hub at
+  MAWS 4d2c492f (55/55)
 - [ ] M3 — Sync through the hub (DC4.G2)
 - [ ] M4 — The archive, the two-machine walk, docs, version (DC4.G3)
 
