@@ -302,7 +302,8 @@ export STUB_PLUGIN_ROOT="$REPO_ROOT" STUB_SMINOS="$SMINOS"
 # receives to inbox.received, one connection at a time, forever. While
 # <received>.hold exists, a frame is written and marked (<received>.held), but
 # its ack waits for the hold to lift: a deliverer killed in that window has
-# pushed without settling.
+# pushed without settling. A connection that carries no frame (a liveness
+# probe connects and closes) is never held: the mark means a frame arrived.
 cat > "$TEST_ROOT/sockserver.py" <<'PY'
 import os, socket, sys, time
 path, out = sys.argv[1], sys.argv[2]
@@ -323,7 +324,7 @@ while True:
         buf += chunk
     with open(out, "ab") as f:
         f.write(buf)
-    if os.path.exists(out + ".hold"):
+    if buf and os.path.exists(out + ".hold"):
         open(out + ".held", "w").close()
         while os.path.exists(out + ".hold"):
             time.sleep(0.02)
@@ -4887,10 +4888,11 @@ touch "$TEST_ROOT/in-md-y.received.hold"
 rm -f "$TEST_ROOT/in-md-y.received.held"
 env "${SOLO[@]}" "$SMINOS" daemon tick > /dev/null 2>&1 & DOOMED=$!
 disown "$DOOMED"
-for _ in $(seq 1 100); do [ -f "$TEST_ROOT/in-md-y.received.held" ] && break; sleep 0.05; done
+wait_until test -f "$TEST_ROOT/in-md-y.received.held" || true
 assert_file_exists "$TEST_ROOT/in-md-y.received.held" "a tick pushes to y"
 kill -9 "$DOOMED"
-for _ in $(seq 1 100); do kill -0 "$DOOMED" 2>/dev/null || break; sleep 0.05; done
+doomed_gone() { ! kill -0 "$DOOMED" 2>/dev/null; }
+wait_until doomed_gone || true
 rm -f "$TEST_ROOT/in-md-y.received.hold"
 run env "${SOLO[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "delivered 1 to y" "killed before settling it, the restarted daemon pushes it again"
