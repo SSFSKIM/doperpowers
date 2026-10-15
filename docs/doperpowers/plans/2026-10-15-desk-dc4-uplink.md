@@ -15,9 +15,18 @@
 
 ## Progress
 
-- [ ] M1 — Codes in Python, and a daemon that is concurrent (DC4.G4)
-- [ ] M2 — Enrollment and hub projects (DC4.G1)
-- [ ] M3 — Sync through the hub (DC4.G2)
+- [x] M1 — Codes in Python, and a daemon that is concurrent (DC4.G4) —
+  2026-10-15, reviewed clean (98bd8a69..cc3c49e1; one fix wave: a busy
+  stream's shutdown, canonical base64url)
+- [x] M2 — Enrollment and hub projects (DC4.G1) — 2026-10-15, reviewed
+  clean (182eacca..2eb64f63; two fix waves: lost answers mid-body,
+  former names per session, malformed hubs closed, the code off argv and
+  out of every parse error); G1 also passed against DC3's local hub at
+  MAWS 4d2c492f (55/55)
+- [x] M3 — Sync through the hub (DC4.G2) — 2026-10-15, reviewed clean
+  (5f890398..fa5fe015; two fix waves: rejection state that round-trips,
+  cancellable uploads, projects leaving the uplink, spent as a
+  tombstone); the real-hub walk 32/32 at MAWS 71083dd4
 - [ ] M4 — The archive, the two-machine walk, docs, version (DC4.G3)
 
 ## Constraints that bind every milestone
@@ -219,7 +228,371 @@ produces nothing new for other children beyond the stream DC7 builds on.
   anything enters the log or reaches a session — the execution boundary
   of §6 — in stdlib Python against a reference in TypeScript.
   Date/Author: 2026-10-15, the composite's writer at dispatch.
+- Decision: Refresh against the parent. The composite at MAWS `5c5aab90`
+  (blob `ff2454ff`) differs from the pin `1c4f1c42` only in the children's
+  status lines and the Tracking Map; DX1, DX2 and DX7 are as pinned. The
+  vectors come from MAWS `140c834b`
+  (`apps/desk-hub/src/protocol/vectors/codes.json`, unchanged since). A G1
+  amendment is being folded by the composite's writer (DX1 negatives for a
+  `hub/` event's writer, seq and ts; DX2's `hb-ack` and `rejected`
+  frames): when it lands, the vectors are re-copied from the commit it
+  cites and the test pins the new negatives. This child's branch is the
+  worktree's (`worktree-agent-a6d7f69a8ab5f500f`), not the
+  `smns-erb-uplink` the Tracking Map names: an earlier attempt there could
+  not run git.
+  Date/Author: 2026-10-15, controller (pre-flight).
+- Decision: **Process, not thread** (§8 unknown 2). The uplink is its own
+  process, `sminos daemon uplink`, which `daemon run` starts as a child and
+  supervises from a small supervisor thread (restart with backoff when it
+  exits; SIGTERM to it, then a kill, when the loop stops or restarts on a
+  change of its own code, which now counts the uplink and codes modules).
+  The uplink holds `daemon/uplink.lock` so at most one runs per
+  `SMINOS_HOME`, and exits when its parent is gone (an orphan left by a
+  killed loop does not outlive it). Inside, a reader thread only reads the
+  stream (SSE parse, no sminos calls) into a queue, and the process's main
+  thread does every sminos call — verify, import, deliver — so sminos's
+  per-invocation module caches (`_PROJECTS`, `_VIEWS`, `forget_caches`)
+  are never shared between threads.
+  Rationale: sminos.py's caches are module globals that `tick_all` clears
+  at its start, so an uplink thread calling `view_of` or `deliver_next`
+  beside the tick would race them; every cross-process interaction is
+  already file-locked, because the CLI's fast path already runs beside the
+  daemon (`deliver_next` under `delivered/<session>.lock`, `_append` under
+  `.sync.lock` shared and the file's lock). A process also isolates a
+  `sminos.die` (SystemExit) or a hang in either side from the other. Cost:
+  one more Python process per machine. The SSE trade (§8 unknown 2): the
+  machine's `Machine` object holding the open stream never hibernates and
+  is billed while it is open; accepted for a few machines.
+- Decision: **Delivery of an imported event is the uplink's own**, not
+  only a nudge of the tick loop: the nudge waits behind a tick that sits
+  in a 30-second git phase, which would break "within a second". After an
+  import the uplink runs `deliver_next` itself for that project's local
+  members with anything owed (the daemon's `deliver_owed`, the same
+  operation the sender's fast path calls), and touches `daemon/nudge` too.
+  A delivery that blocks (a seat being resumed) delays later imports but
+  never the reader thread, which keeps draining the stream.
+- Decision: **What M1 builds of the import path.** To prove G4's nudge,
+  M1 builds the import of an `events` frame per M3's decision bullet:
+  verify each event's code against the frame's `project`, check a `hub/`
+  event's writer, seq and ts by shape (DX1), append verbatim through a
+  locked append beside sminos's `_append` (the same `.sync.lock` shared
+  and the writer file's lock; an event at an existing `(writer, seq)` with
+  the same canonical form is skipped, with a different one refused; a seq
+  that is not one past the last is a gap, not appended), then deliver. A
+  refused event is logged to `daemon.log` and never appended; reporting it
+  up, `hello`/`have`, upload, `resend`, seen nonces, heartbeat answers,
+  and liveness belong to M3. An `events` frame is imported only into a
+  project known on this machine whose `.smns` names a hub; M1 reads the
+  `hub` field from the `.smns` file itself (no change to sminos.py's
+  `Project`), and M2's `project init --hub` writes it.
+- Decision: **The credential store** is one file,
+  `$SMINOS_HOME/daemon/hub.json`, mode 0600: `{hub, org, machine,
+  client_id, client_secret, key}` (`key` the org key as base64url). M1's
+  uplink reads it (absent → no uplink runs); M2's enrollment writes it.
+- Decision: **Where the code and tests go.** The codes module is
+  `skills/sminos/scripts/sminos_codes.py`, which also holds DX1's shape
+  check of a `hub/` event, so the vectors pin it; the uplink module is
+  `sminos_uplink.py`. The vectors are copied verbatim as
+  `tests/sminos/dx1-codes.json`, the MAWS commit named in
+  `tests/sminos/codes_parity.py` (the test, run from the suite as
+  `marks_parity.py` is); the stand-in hub is `tests/sminos/hub_standin.py`;
+  the uplink's tests live in `tests/sminos/test-uplink.sh`, called from
+  `run-sminos-tests.sh` as `test-bridge.sh` is, so DC2's edits to the
+  suite and these meet in a line or two.
+  Date/Author: 2026-10-15, controller (M1's decisions, before dispatch).
+- Decision: Exactly-once delivery across the two processes is pinned by a
+  test (the composite's writer asked for it): a tick's push held at the
+  inbox while the uplink imports a `human` for the same member; the
+  uplink waits on `deliver_next`'s `delivered/<session>.lock`, and each
+  event arrives once with each writer settled once. The lock is the
+  mechanism; the test keeps it true.
+  Date/Author: 2026-10-15, the composite's writer, built in M1.
+- Decision: M1's executor's calls, kept. (1) "Nor the reverse" under the
+  process model: a tick that fails or hangs never stops the uplink; the
+  death of the `daemon run` process ends its uplink by design (launchd
+  restarts both). (2) An import at an existing `(writer, seq)` is
+  "present" when the canonical forms *without `mac`* agree, because this
+  machine's own events are stored without a code and the uploader adds it
+  on upload; M3 revisits this with the upload side. (3) A seq written
+  `3.0` is stored as `3` (sminos's readers skip a non-int seq; the code is
+  the same). (4) Beyond DX1, an imported event must be one sminos's log
+  can hold — a printable writer with one inner `/`, an integer seq, string
+  `ts` and `kind` — or it is refused. (5) A frame is imported only into a
+  project whose `.smns` `hub.org` is `hub.json`'s `org`; the URL is not
+  compared. (6) `hub.json`'s hub is `https`, or `http` on a loopback host
+  only, since the service token rides on every request. (7) The stream's
+  read bound is three heartbeat periods (DX2's liveness, simplest form;
+  M3 owns `hb-ack`). (8) No `hub.json`, no uplink; restarts back off from
+  1 s to 60 s. (9) The uplink stays in the daemon's process group, so
+  launchd's bootout reaps it. (10) A nonce must be a string, as the hub's
+  TypeScript requires, no stricter; an RPC without a string `nonce` is
+  refused.
+  Date/Author: 2026-10-15, M1's executor, folded by the controller.
+- Decision: Canonical base64url (composite MAWS `91f839ee`; hub
+  `e6bb0160`): no padding, the last character's unused bits zero, refused
+  otherwise and never normalized; a code value is exactly 32 bytes and a
+  nonce exactly 16, an event's `mac.nonce` and an RPC's `nonce` alike. The
+  vectors are re-copied from `e6bb0160` (four `fails_by: "encoding"`
+  negatives; checks in the order encoding, position, code). Reverses M1's
+  call (10), "a nonce only has to be a string".
+  Built in `cc3c49e1`: `sminos_codes.failure()` classifies in that order
+  (anything that is not a JSON object fails by `encoding`; a lone
+  surrogate, NaN or an infinity inside a well-encoded event fails by
+  `code`), and one strict decoder reads the code, the nonce, and
+  `hub.json`'s org key.
+  Date/Author: 2026-10-15, the composite's writer; built as M1's first fix.
+- Decision: **M2's shape** (against DX7's endpoints marked *M2,
+  provisional* in the composite at `91f839ee`). (1) `sminos hub enroll
+  <code> [--name <name>]` decodes the code as DX7's decoder does (prefix,
+  canonical base64url body, JSON object, every field a non-empty string,
+  `hub` https or http on a loopback host, `key` 32 bytes, `machine` an
+  admitted name, which `--name` replaces), redeems at `POST
+  <hub>/machine/enroll {token, machine}`, checks the answer's `org` and
+  `machine` against what it asked, and writes `daemon/hub.json` (mode
+  0600, written whole by rename) with the key; the key and the secret are
+  never printed or logged. Each DX7 error is said in a sentence that tells
+  what to do: `name-taken` names `--name` with the same code; `busy`,
+  `mint-failed`, and a lost answer say to run the same command again
+  (DX7: the same token and name rotate the credential), and the CLI
+  retries a lost answer itself a few times before saying so. (2) An
+  installation already enrolled refuses a new enrollment unless
+  `--replace` is given, so a stray code never swaps the machine's
+  identity. (3) **The enrolled name is the writer host**: `host_name()`
+  returns `hub.json`'s `machine` when this `SMINOS_HOME` is enrolled,
+  before `DAEMON_HOST` and the system name, so every writer this machine
+  creates afterwards — hub project or not — is under the enrolled name,
+  and nothing is written under the old one to a hub project. Enrolling
+  under a name other than the current `host_name()` says so, and says
+  that events already written under the old name stay local (the hub
+  admits only `<machine>/…` writers). The read is cached per process
+  (sminos's per-invocation rule). (4) `sminos project init --hub` writes
+  `"hub": {"url", "org"}` from this machine's enrollment (refused when
+  not enrolled); on a directory whose `.smns` exists, `--hub` adds the
+  field to it, keeping every other field, and changes nothing else. (5) A
+  project whose `.smns` names a hub is never synced through git from here
+  on: the tick skips its git phases and `project attach` refuses it; its
+  `remote` stays for M4's archive. (6) The Python stand-in gains DX7's
+  redemption (states `open`/`pending`/`confirmed`, rotation on a second
+  redemption while pending, `name-taken` compared without case,
+  `token-used`, `expired`) and a test-only way to mint a token; M2
+  proves G1 against it, and again against DC3's local hub when its M2
+  lands and its run instructions exist.
+  Date/Author: 2026-10-15, controller (before M2's dispatch).
+- Decision: M2's identity rules, confirmed by the composite's writer with
+  two additions. The name is global — one machine, one name — never per
+  project. (a) The code's `machine` is what the browser proposes, but the
+  CLI's default is the current `host_name()` whenever that passes DX7's
+  grammar: an enrollment run as `sminos hub enroll <code>` on a machine
+  whose host name is admitted claims the host name (and says so when the
+  code proposed another), so most enrollments rename nothing; `--name`
+  is the only way to claim another. Pinning the name in `hub.json` also
+  stops macOS's `.local` drift (`SK-2.local` after a Bonjour conflict)
+  from changing the writer host. (b) **A rename never makes this
+  machine's own state read as another machine's.** `host_name()` is the
+  machine's identity throughout sminos.py — a seat's meta `host`,
+  `identity_local(host, boot)`, a member's `machine`, the ended-member
+  scan's `e["machine"] != host_name()` — and the log cannot be rewritten.
+  So `hub.json` records `former`, the names this installation wrote
+  under before enrolling (the pre-enrollment `host_name()`), and one
+  helper (`is_self(name)`: the current name or a former one) replaces
+  every equality test that decides locality; writers are created only
+  under the enrolled name. Chosen over rewriting the seat records at
+  enrollment because log events (`joined.machine`, `state.machine`)
+  carry the old name too and are append-only, so a rewrite would cover
+  only half of it. A test keeps a seat local and controllable (list,
+  send, retire) across a rename. On a rename the CLI states the real
+  consequence: events already written under the old name stay on this
+  machine and, once a project is a hub project, never reach the hub or
+  any other machine (DX2 refuses `<old>/…` as `writer-not-yours`).
+  Date/Author: 2026-10-15, the composite's writer (confirmation) and
+  controller (the means).
+- Decision: **A former name is self only for what this installation
+  wrote under it** (revises the means of "M2's identity rules", after
+  M2's task review). Treating every `<former>` event as local broke G1's
+  own scenario: installation B renamed to `beta` because A enrolled as
+  `alpha`, so A's live `alpha` sessions, imported into B's log, read as
+  B's own — local, then `gone`, then retired by B's reconcile. So
+  `hub.json`'s `former` records, per former name, the sessions this
+  installation held under it at enrollment (every session with a writer
+  file `<former>.<session>.jsonl` in this machine's project logs, and
+  every seat record whose `host` is the former name), and locality asks
+  `is_self(name, session)`: the current name, or a former name for one
+  of its recorded sessions. A session that starts after the rename writes
+  only under the enrolled name, so the set never grows.
+  Date/Author: 2026-10-15, controller (M2's review, finding 2).
+- Decision: **The enrollment code is read from a prompt, not argv.** The
+  code carries the org key in reversible base64url, and a positional
+  argument puts it in the process listing for the command's life and in
+  the shell's history. `sminos hub enroll` with no argument reads the
+  code from a hidden prompt on a terminal, or from stdin when piped; the
+  positional form stays (DX7 and §6 name `sminos hub enroll <code>`, and
+  DC5's web shows a command to run) until the composite's writer rules on
+  it — raised with it.
+  Date/Author: 2026-10-15, controller (M2's review, finding 4).
+  Ruled the same day (composite `2bce24bb`, §6, DX7, DC4.G1): the
+  positional form is refused — `sminos hub enroll <anything>` stops
+  before decoding or contacting anything and says to run it without the
+  code and paste the code at the prompt (a warning would come after the
+  code is already in `ps` and the history; an environment variable leaks
+  the same way). Tests and G1's walk feed the code on stdin; DC5's screen
+  says "run `sminos hub enroll` on the machine and paste this code".
+- Decision: M2's executor's calls, kept. (1) Whether a project is a hub
+  project is on `Project` (`hub`) and recorded in `project.json`, so the
+  tick still knows when the checkout's root is gone; M1's uplink keeps
+  reading `.smns` itself (a long-lived uplink must not see
+  `resolve_project`'s per-process cache). (2) A `.smns` whose `hub` is
+  present but malformed is still a hub project, with a warning: no git
+  sync, and nothing imported (its org is empty) — fail closed. (3)
+  `lifecycle` guards and `_own_events` read a session's files under its
+  former names too, so an ended member retires across a rename. (4)
+  `publish_state` runs for hub projects too (they have other machines).
+  (5) The CLI's decoder refuses, beyond the hub's, only spellings no
+  browser origin produces (blanks, `https:host`, `127.1`, a written-out
+  IPv6 loopback); on every code the hub's encoder builds it agrees,
+  pinned by `enroll_parity.py`. (6) Exit 2 for a refused code or
+  `--name`, 1 for a hub refusal, an enrollment already held, or `--hub`
+  unenrolled. (7) After a rename the hint says to use a new code, since
+  the redeemed token is bound to the name. (8) `sminos hub show` prints
+  the identity, never a secret. (9) The stand-in's error order is DC3's
+  registry's (expired, confirmed, token-used, name-taken). (10) A lost
+  answer is retried three times (1 s, 2 s), 30 s per attempt.
+  Date/Author: 2026-10-15, M2's executor, folded by the controller.
+- Decision: For M3, from the composite's writer's rulings on M2's
+  concerns. (1) The uplink's reader catches any exception once `closing`
+  is set (a chunked stream closed from this end raises `AttributeError`
+  inside http.client; reproduced by `/tmp/dc4m2/streamclose.sh`). (2)
+  When M3 opens a hub project, each live local member whose latest
+  `joined` was written under a former name is re-joined once — a fresh
+  `joined` under the enrolled name — so a renamed machine's live sessions
+  show on the hub; their earlier history stays local. Tested with a
+  rename across a live seat. (3) The supervisor restarts the uplink when
+  `hub.json` changes, as the loop restarts on its own code, so `hub
+  enroll --replace` takes effect at once.
+  Date/Author: 2026-10-15, the composite's writer.
+- Decision: For M3, from DC3's M2 review (relayed by the composite's
+  writer; endpoint shapes unchanged). A POST to `/machine/frames` that
+  answers anything but 200 — including a hub whose replies failed to
+  reach the stream — was not delivered: the uplink resends it or
+  reconnects and redoes the handshake, never assuming its frames landed
+  (inserts are idempotent on `(writer, seq)`). A POST in flight across a
+  reconnect is refused `stale-generation` and cannot touch the new
+  stream; after every reconnect the uplink sends `hello` for each project
+  on the new generation before it uploads anything.
+  Date/Author: 2026-10-15, the composite's writer (from DC3's M2 review).
+- Decision: Parent re-pinned for M3: DX2, DX3 and DX7 final at composite
+  MAWS `8711949a` (DC3's reviewed M2; enrollment endpoints and the POST
+  answer as M2's G1 ran against them). For M3: `not-open` for a project
+  not opened by `hello` on the stream; the hub refuses as `bad-shape` a
+  writer with a control character or not `<prefix>/<feed>`, and any
+  non-canonical base64url; a POST answers only once its replies are on
+  the stream, else `503 delivery-failed` (not delivered: resend);
+  presence's shape fixed (DX4 `presence` envelope, `{record, bridge}`,
+  DC7's to publish); the local hub runs as `pnpm --filter desk-hub
+  local` on `127.0.0.1:8747`, always from a temp copy.
+  Date/Author: 2026-10-15, controller (relayed by the composite's writer).
+- Decision: **G2's refusal cases split by how a forgery can reach a
+  daemon.** The hub gets no test hook: a write path into the Worker
+  that skips its checks would be a backdoor in production code. (1)
+  Through the hub's real browser API, against DC3's local hub: a DX3 test
+  client signed in as a member through the local stand-in for Access
+  sends a `human` sealed with a wrong code or key (an event without a
+  valid code), and a `human` sealed for project A into project B's socket
+  (an authentic event replayed into another feed). The hub, which holds
+  no key, stores both as `hub/<member>` and streams them; every daemon
+  refuses them before the log and reports `rejected`, and the hub shows
+  the report on the project's browser socket (DX3 `rejected`) —
+  acceptance 8's path end to end. (2) What only a compromised hub could
+  send, against the Python stand-in playing a lying hub: a `say` under
+  another machine's writer (the real hub refuses that upload as
+  `writer-not-yours`), a `hub/` event carrying a field its code does not
+  cover (`via`, `msg_id`), and a malformed `hub/` position. G2 thus
+  proves the real path and the daemon's defense against a hub that lies.
+  Date/Author: 2026-10-15, the composite's writer.
+- Decision: M3's executor's calls (three pending the composite's writer,
+  marked). (1) `sminos_hublog.py` holds one project's log plane; the
+  uplink keeps the process, stream, POSTs and parts. (2) *Pending:* the
+  uploader seals its own events under a nonce derived from the event
+  (HMAC with the org key, domain `smns-hub-nonce-v1`, 128 bits), so a
+  re-upload after a lost POST is the same payload; local events stay
+  stored without a code. (3) "Present" (M1's call 2, revisited): an
+  event held here is present when every field both copies carry agrees,
+  the code included when the local copy has one. (4) *Pending:* a
+  refused event's `(writer, seq)` is spent (recorded in the project's
+  `uplink.json`): later events of that writer are not held behind it,
+  `hello`'s vector moves past it, each is reported once — needed because
+  the real hub stores a bad-code web `human`, which would otherwise block
+  that member's later messages on every daemon. (5) A `rejected` report
+  stays queued until a POST carrying it is answered 200. (6) *Pending:*
+  an event whose code verifies but whose position here holds another is
+  reported `bad-code` (DX2's `rejected` has no `conflict`); a gap is held
+  and logged, not reported. (7) Any non-200 POST ends the stream; the
+  next one redoes the handshake. (8) `hb-ack` answers the newest
+  heartbeat, at most once a second. (9) Upload every 0.5 s or at once on
+  `daemon/nudge`; new hub projects looked for every 2 s, whose first
+  `hello` is a fresh machine's bootstrap. (10) `machine` presence:
+  online, not read-only, ceiling from the user's settings' `defaultMode`
+  (else `default`), checkouts the project root and local members'
+  directories with the branch read from `.git/HEAD`. (11) `legacy/`
+  feeds uploaded when `have.archive` (untested: no legacy feed in the
+  tests). (12) The former-name re-join runs before `hello`. (13) The
+  supervisor restarts the uplink when `hub.json`'s bytes change. (14)
+  The reader holds its socket itself: over HTTP/1.0 `http.client` drops
+  `conn.sock`, so M1's three-heartbeat bound was never applied.
+  Date/Author: 2026-10-15, M3's executor, folded by the controller.
+- Decision: The three pending calls ruled (composite `fcb07a5e`). (2)
+  Accepted in DX1's form: a nonce is 128 bits never repeated under one
+  org key; random from a browser and for every RPC; for a machine's own
+  log events random or derived as the first 16 bytes of HMAC-SHA256
+  with the org key over `smns-hub-nonce-v1\n<project id>\n<JCS of the
+  event without mac>`. The derivation is aligned to exactly that and
+  pinned by a test (same event, same nonce; another position or project,
+  another). (6) `conflict` is a DX2 `rejected` reason; DC3 adds it to its
+  module at its M3, and until then the daemon keeps reporting such an
+  event as `bad-code` (a reason the hub's module does not yet know would
+  be refused), switching to `conflict` once DC3's module accepts it. (4) Spent positions accepted
+  on one condition the composite now states: sminos's readers keep a
+  per-writer high-water mark and tolerate the hole — delivery, `watch`,
+  the archive writer, and every reader of a writer's file carry on past
+  it; a reader that assumed contiguous seqs is fixed there, proved by a
+  test after a spent `hub/` position.
+  Date/Author: 2026-10-15, the composite's writer.
+- Decision: M3's fix wave (`757b71bb`). Spent is a tombstone (confirmed
+  by the composite's writer): nothing is ever appended at a spent
+  position, even an event that verifies later — in a `hub/` feed the hub
+  gave that position to the refused event, and in a machine feed only a
+  lying hub could cause it. The reader audit found no sminos reader that
+  counts seqs (each compares them), so none needed a fix; a test delivers,
+  shows, and settles web humans past a spent position. **For M4: the
+  archive copies writer files whole and never re-sequences.** A refusal
+  of an event carrying a lone surrogate is reported with the string as
+  it arrived, the surrogate written as its JSON `\uXXXX` escape, and
+  `uplink.json` is written ASCII-only so it round-trips. `conflict`'s
+  mapping lives in one constant (`CONFLICT_REASON`). The uplink checks
+  for a stop before each POST and every 0.25 s while awaiting the hub's
+  answer. An opened project that stops being eligible (hub removed,
+  malformed, another org) ends the stream, and the next one opens only
+  what is eligible.
+  Date/Author: 2026-10-15, M3's executor, folded by the controller.
 
 ## Surprises & Discoveries
+
+- The hub's `base64urlDecode` (MAWS `base64url.ts`) ignores the two spare
+  bits of a 43-character value, so one code has four spellings the hub
+  accepts; `sminos_codes` accepts only the canonical one. Harmless for
+  verification (same bytes); anything keyed on the value string should
+  know. Reported to the composite's writer for DC3. (M1, 2026-10-15)
+  Resolved the same day: base64url is canonical in every contract and
+  the hub's decoder strict (MAWS `91f839ee`, `e6bb0160`).
+- `part` frames are not reassembled in M1, so an `events` frame over
+  1 MiB is not imported until M3 builds parts. (M1)
+- `peer_live`'s probe (connect, send nothing, close) reaches an inbox
+  stand-in as an empty connection; a stand-in that holds should hold only
+  on a real frame. (M1's tests)
+- DC3's M2 landed at MAWS `bd266073` during M2: its local hub
+  (`local/run.ts`) runs as documented and serves `POST
+  /standin/enrollment-code`, which builds a code as the browser will. G1
+  passed against it (51/51) as well as against the Python stand-in. (M2)
+- sminos.py already needs Python 3.10+ (`float | None` in `Member`);
+  macOS's `/usr/bin/python3` is 3.9. New code stays 3.9-safe. (M2)
 
 ## Outcomes & Retrospective
