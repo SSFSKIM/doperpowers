@@ -1223,4 +1223,73 @@ a full backlog refuses too). The child's listen backlog is 128.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-10-15, at finish (doperpowers 7.155.0).** DC2's four gates are met
+on one machine, without a hub:
+
+- **G1.** The bridge mod spawns its session-lifetime child, which serves
+  the session's endpoint. DX5 is written in Interfaces above, has been
+  reviewed at every milestone, and has been folded into the composite as
+  its writer took each extension.
+- **G2.** `sminos watch`, `steer`, `interrupt`, `model`, `compact`,
+  `decide` and `answer` drive a terminal session and a `--bg` job.
+  Delivery of a `human` arrives as the human's words, once under
+  redelivery. A session without the bridge falls back as §2 says.
+- **G3.** Every raised request is settled exactly once, naming the side
+  whose answer the engine used. Settlement is read from the engine's own
+  `tool_decision` record by call id; nothing is inferred. All four cases
+  hold.
+- **G4.** `<message>` spans and async questions reach the log as their
+  rows are written, and the Stop hook de-duplicates against them.
+
+Evidence for the gates:
+- The final live walk passed 45/45 across a terminal session and a `--bg`
+  job, with every carried item driven: a reload mid-response, a
+  foreground subagent under interrupt, `send --wait` through a seat, and
+  the `[ answer ]` press.
+- The three earlier live checks were re-run on M4's code.
+- The suites are green apart from environmental daemon timing checks
+  outside the bridge.
+- The `high` whole-branch review returned three P2 findings. Two
+  re-reviews closed them.
+
+What the build changed in the design, all agreed with the composite's
+writer:
+- **Settlement.** It comes from the `tool_decision` telemetry record, not
+  a grace window.
+- **Pairing.** A streaming block pairs with its transcript row through
+  `block-row` and the row's uuid, because the mod never sees the API
+  message id.
+- **Ordering, added for DC7.** Row notices, the per-loop cut, readiness,
+  notices posted after the write, and a disk-order consumer together give
+  a gap-free join of disk rows and the stream.
+- **The cut seed.** Each loop's cut is seeded at load. A loop the mod saw
+  from birth is seeded null.
+- **The fence.** Posts are fenced to the module instance by the hello's
+  nonce.
+- **Reloads.** After a reload, a turn whose state is unknown refuses
+  control rather than answering a false idle.
+
+Retrospective:
+- Every milestone needed fix waves, ten in all, and nearly every finding
+  sat at an asynchronous boundary the happy path never crosses: a reload,
+  a lost post, a race between two answerers, the engine's own write order.
+- The live checks found facts no test could:
+  - the rewritten model is sent verbatim;
+  - a fetch dies with an aborted hook;
+  - `--bg` jobs run in `auto`;
+  - the transcript mark lags its decision by the tool's whole run;
+  - the disk writer reorders rows within one batch.
+- The independent task reviews found what the live checks could not reach
+  (stale-module resyncs, settled blocks resurrected by a resync, and a
+  test that leaked 120 processes over a day).
+- Working against a contract consumer while building helped. DC7's and
+  DC6's reviews pulled in scope that would otherwise have been found only
+  at integration: the cut, readiness, `step-end`, and the seed.
+- Next time, the reload and recovery paths deserve their own milestone
+  rather than a fix wave per milestone.
+
+Left for later (the PR's Residue):
+- nothing sweeps the `bridge/<id>.json` files (offered to DC7);
+- `bridge.tsx` is about 1,850 lines, and `$` cannot cross files;
+- the plugin's own appends get no notice;
+- the press check needs a fullscreen click.
