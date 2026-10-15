@@ -895,6 +895,33 @@ Order, batching (≤ 500) and one post in flight are unchanged.
   before the first resync, and a response row's notice delayed past the 2 s
   bound.
   Date/Author: 2026-10-15, controller with the composite's writer.
+- Decision (M4 review, agreed with the composite's writer): Notices follow
+  the write, and the consumer follows the disk. Superseding the entry
+  above where they differ. A notice posted at hook entry did not match the
+  engine's write order (live: a session's first prompt was noticed before
+  its environment attachment but written after it), and the reference
+  consumer emitted unnamed compaction rows behind a later prompt. So:
+  1. The mod posts a row's notice after `next()` resolves; notice order is
+     write order within a loop. The cut and its invariant are unchanged.
+  2. The consumer rule: history waits until each loop's cut row is on disk
+     (5 s, else a discontinuity) and reads up to and including it; live,
+     disk rows are emitted strictly in disk order, a row past the cut
+     released on whichever comes first — its own notice, a notice for any
+     later row of the same loop (a row passed over is unnamed), or 2 s
+     with neither — and every later row waits behind it. A notice whose
+     row is not on disk within 5 s, and a `block-row` for a uuid already
+     released unnamed, end the subscription; a `row-seen` for an already
+     released uuid is ignored.
+  3. The live walk fails on any break between notice order and disk order
+     and records the largest flush-to-notice lag it sees, while chunks
+     stream too; a lag near the 2 s window raises the window.
+  4. Posts are fenced to the module instance that read the child's
+     `hello`: the child mints a nonce there and refuses (409) any post
+     without it, so an old module's in-flight dispatch after a reload
+     cannot roll back the cut, the model override, or the delivery
+     high-water mark.
+  Date/Author: 2026-10-15, controller with the composite's writer, from
+  M4's review.
 - Decision: Merge order with DC4's branch. DC4 also bumps the version in
   its M4, so whichever branch merges second re-bumps through
   `scripts/bump-version.sh` above the first; no version number is merged by
