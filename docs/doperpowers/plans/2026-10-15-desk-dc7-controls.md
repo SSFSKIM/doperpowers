@@ -264,6 +264,42 @@ against the local hub; until it lands, the stand-in.
   moved to M2, ahead of every path it guards.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision: Pre-flight. Parent pin: the composite's blob `6c8015ef` at
+  MAWS `edf9dea7` (branch `smns-erb`), read at its live path, never from a
+  copy on this branch. The branch is DC2's `worktree-smns-erb` at
+  `664e4bd8` merged with DC4's branch at `7252a5d7` (the one conflict, the
+  suite's tail in `run-sminos-tests.sh`, keeps both sides' sub-suites).
+  Date/Author: 2026-10-15, controller.
+
+- Decision: Pre-flight. M1 builds the row ordering against the agreed
+  text (DC2's plan, Decision Log "M4 scope, agreed with the composite's
+  writer for DC7", rules 1–4), not against DC2's code, which is
+  uncommitted at dispatch: its tests drive a scripted DX5 endpoint that
+  emits `row-seen`, `block-row`, the snapshot's `cut`, `ready`, and a
+  stream ended on a later resync, as that text has them. When DC2's M4
+  commits, the controller merges it and M1's ordering is proved against
+  the real child (a follow-up wave on M1's executor); M1's tick means
+  reviewed clean against the contract, and the real-child proof is
+  recorded beside it when it lands.
+  Rationale: the contract is agreed and DC2 builds to it; waiting would
+  idle M1, and a mismatch found later is a contract question for the
+  composite's writer, not a local patch.
+  Date/Author: 2026-10-15, controller.
+
+- Decision: Pre-flight. M1 publishes DX4 `machine` on connect with the
+  checkouts and the policy read through one function M2 makes real; until
+  M2 that function returns the default (`read_only: false`, the ceiling
+  the user's settings give, or null when M1 cannot yet read it). M1 adds
+  no execution path and no new outside-origin delivery, so the policy's
+  place ahead of every path it guards (M2) holds.
+  Date/Author: 2026-10-15, controller.
+
+- Decision: Pre-flight. The hub stand-in for the session plane and the
+  RPC frames extends DC4's `tests/sminos/hub_standin.py` (the DX2 log
+  plane's stand-in) rather than adding a second server; DC3's local hub
+  replaces it in the proofs once its M3 lands, as the dispatch announces.
+  Date/Author: 2026-10-15, controller.
+
 ## Surprises & Discoveries
 
 ## Outcomes & Retrospective
