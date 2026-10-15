@@ -599,7 +599,10 @@ against the local hub; until it lands, the stand-in.
   `member` id, never the operator `""`. Who-won fields come only from the
   bridge's own record: its 409s, or the `settled` record its pending
   snapshot reports when the digest check finds the request settled.
-  M3's other decisions stand.
+  M3's other decisions stand but one: DX4 `compact` is relayed for every
+  compaction of a bridged session, tagged with the nonce of the DX6
+  `compact` that asked for it, null when none did (DX4's row as written),
+  from the same stream the request relay already follows.
   Date/Author: 2026-10-15, the composite's writer.
 
 - Decision: The suite gate under this machine's load. The three
