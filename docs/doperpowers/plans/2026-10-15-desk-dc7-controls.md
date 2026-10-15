@@ -648,6 +648,30 @@ against the local hub; until it lands, the stand-in.
   Date/Author: 2026-10-15, the composite's writer, from DC6's M3 and
   DC3's recording.
 
+- Decision (M4): Resume runs `claude --bg --resume <session>` in the
+  session's directory with no other flags and no prompt, serialized per
+  session by a thread lock, after checking no process of this machine
+  holds the session; a stopped seat's session takes that direct path,
+  and a retired seat's is refused `unsupported` (the owner's ruling for
+  phase 1: retire is the owner's deliberate act of taking a session out
+  of the project, and Resume restores a session that ended, not one that
+  was retired; DC5 does not offer it on a retired session). Rejoin and
+  delivery happen at the next tick, which the Resume triggers at once. A
+  claimed Resume reconciles as done when a `--bg` process holds the
+  session, else `interrupted` after 420 s. The daemon sweeps ended
+  sessions' bridge files hourly: the `.json` after 24 h quiet, the socket
+  once nobody listens. A misfit decision's refusal before the claim is
+  still kept as the nonce's one answer. `toolUseId` pairs the ask mod's
+  dialog with the running ask call whose first question is the dialog's;
+  a dialog opened from an async ask's button names no call. When two
+  running ask calls share that first question the pairing is ambiguous,
+  and the bridge omits `toolUseId` rather than guess (the composite's
+  writer). Claims resting on a stand-in for `claude`: two Resumes at
+  once, delivery after Resume, claim reconciliation, the seat cases; the
+  live check (`tests/mods/live-resume-check.py`) proved Resume itself
+  against claude 2.1.301 under a temporary HOME.
+  Date/Author: 2026-10-15, M4 executor; rulings by the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
