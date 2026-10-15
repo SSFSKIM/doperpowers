@@ -1,8 +1,11 @@
 # The desk, DC2 — the bridge: execution (2026-10-15)
 
-> **Composite:** `docs/doperpowers/specs/2026-10-15-arkho-project-web-design.md`
-> (branch `worktree-smns-erb`), child **DC2** (The bridge — plan). **Parent
-> pin:** blob `8acb3958` of that file, as it stood at dispatch. The child's
+> **Composite:** `docs/doperpowers/specs/2026-10-15-desk-design.md` in the
+> MAWS repository (`SSFSKIM/MAWS`, branch `smns-erb`; locally
+> `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
+> **DC2** (The bridge — plan). **Parent pin:** blob `7a6fae25` of that file
+> at MAWS commit `269f5212` (dispatched against doperpowers blob
+> `8acb3958` of the old path, now a pointer stub). The child's
 > section there is its design; this document carries only the constraints
 > and the milestones. Read the composite's §2 (Bridge, Without the bridge),
 > §3 (sending, liveness of messages), §5 (both tables), §6 (the bridge's
@@ -314,6 +317,14 @@ M3 extend it in place, each extension sent the same way.
   blob `300379dd`. The composite now frames the product as independent and
   rooted in `.smns` rather than as Arkho's child; DC2's section, scope, and
   design are unchanged.
+  Date/Author: 2026-10-15, controller.
+- Decision: The composite moved to MAWS
+  (`docs/doperpowers/specs/2026-10-15-desk-design.md`, MAWS commit
+  `269f5212`), re-pinned to its blob `7a6fae25`; the doperpowers path is a
+  pointer stub. Edits since the last pin touch DX1 (canonical JSON is RFC
+  8785), the hub's offset storage, and the uplink transport, none of which
+  DC2 consumes; the header now says which repository each path is in. The
+  DC1 findings stay in doperpowers.
   Date/Author: 2026-10-15, controller.
 
 ## Surprises & Discoveries
