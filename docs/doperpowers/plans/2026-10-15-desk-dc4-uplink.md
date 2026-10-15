@@ -536,6 +536,22 @@ produces nothing new for other children beyond the stream DC7 builds on.
   The reader holds its socket itself: over HTTP/1.0 `http.client` drops
   `conn.sock`, so M1's three-heartbeat bound was never applied.
   Date/Author: 2026-10-15, M3's executor, folded by the controller.
+- Decision: The three pending calls ruled (composite `fcb07a5e`). (2)
+  Accepted in DX1's form: a nonce is 128 bits never repeated under one
+  org key; random from a browser and for every RPC; for a machine's own
+  log events random or derived as the first 16 bytes of HMAC-SHA256
+  with the org key over `smns-hub-nonce-v1\n<project id>\n<JCS of the
+  event without mac>`. The derivation is aligned to exactly that and
+  pinned by a test (same event, same nonce; another position or project,
+  another). (6) `conflict` is a DX2 `rejected` reason; DC3 adds it to its
+  module at its M3, and the daemon reports `conflict` for a verified
+  event whose position here holds another. (4) Spent positions accepted
+  on one condition the composite now states: sminos's readers keep a
+  per-writer high-water mark and tolerate the hole — delivery, `watch`,
+  the archive writer, and every reader of a writer's file carry on past
+  it; a reader that assumed contiguous seqs is fixed there, proved by a
+  test after a spent `hub/` position.
+  Date/Author: 2026-10-15, the composite's writer.
 
 ## Surprises & Discoveries
 
