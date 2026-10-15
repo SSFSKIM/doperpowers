@@ -136,6 +136,8 @@ if SCRIPT_DIR not in sys.path:
 import sminos_marks  # noqa: E402 — the mark grammar of hooks/mods/to-human.tsx, ported
 
 LAUNCHER = os.path.join(SCRIPT_DIR, "sminos")
+# The engine's permission modes (2.1.300), least permissive first.
+PERMISSION_MODES = ("plan", "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions")
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
 EXIT_USAGE = 2
@@ -4208,13 +4210,13 @@ def compose_task(task, brief, preamble):
     return "\n\n".join(parts)
 
 
-def claude_args(alias, model, settings, effort, worktree=""):
+def claude_args(alias, model, settings, effort, worktree="", permission_mode="auto"):
     """argv for a FRESH background launch. Never used for a resume: a resumed
     background session keeps its saved options, and any flag on
     `claude --bg --resume` makes the harness start a COPY instead (observed
     live, v2.1.257: "keeps its own saved options, so the flags you passed
     started a copy")."""
-    args = ["--bg", "--permission-mode", "auto", "-n", alias]
+    args = ["--bg", "--permission-mode", permission_mode, "-n", alias]
     if worktree:
         args += ["--worktree", re.sub(r"[^a-zA-Z0-9._-]", "-", worktree)]
     if model:
@@ -4341,7 +4343,7 @@ def parse_stamps(items):
 
 
 def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
-                model, settings, effort, wait, locks, verb, stamp=None):
+                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto"):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -4365,8 +4367,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     by = caller_alias()
     preamble = render_preamble(project.name, alias, by)
     task_text = compose_task(task, brief or "", preamble)
-    short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree) + [task_text],
-                                  cwd, settings)
+    short, banner = run_claude_bg(claude_args(alias, model, launch_settings(settings), effort, worktree,
+                                              permission_mode) + [task_text], cwd, settings)
     if not short:
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
@@ -4537,7 +4539,7 @@ def cmd_spawn(a):
         role, brief = a.role or "", a.brief or ""
     spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
                 a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
-                stamp=parse_stamps(a.stamp))
+                stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode)
 
 
 def cmd_seat_add(a):
@@ -5759,6 +5761,9 @@ def build_parser():
     sp.add_argument("--worktree", default="")
     sp.add_argument("--stamp", action="append", default=None,
                     metavar="FIELD=VALUE", help="merge a field into the launch record (repeatable)")
+    # The mode the session runs under; `auto` unless a caller bounds it (the
+    # desk's spawn RPC passes the machine's ceiling, or a stricter mode).
+    sp.add_argument("--permission-mode", default="auto", choices=PERMISSION_MODES)
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)

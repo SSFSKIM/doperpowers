@@ -73,7 +73,7 @@ UPLINK_STOP_GRACE = 3
 # ends the loop for a restart on the new code.
 OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
             "sminos_codes.py", "sminos_plane.py", "sminos_bridge.py", "sminos_policy.py", "sminos_outcomes.py",
-            "sminos_requests.py")
+            "sminos_requests.py", "sminos_rpc.py", "sminos_control.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")

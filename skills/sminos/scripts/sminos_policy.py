@@ -14,9 +14,9 @@ publishes it in DX4's `machine` presence.
   delivered — an event whose writer is another machine's or the hub's
   (`hub/<member>`) is recorded in the log, settled undelivered, and reported
   `refused-read-only` — while events written on the machine itself deliver
-  as before. (M3: every RPC is refused too.)
+  as before. Every RPC is refused too (sminos_rpc).
 - `ceiling`: the loosest permission mode a session spawned from outside may
-  run under (M3). Absent, it is the mode the user's own settings give
+  run under (sminos_rpc). Absent, it is the mode the user's own settings give
   (`permissions.defaultMode` in ~/.claude/settings.json, read and never
   written; the engine's `default` when they name none).
 
@@ -24,7 +24,7 @@ No file is the default policy: not read-only, the settings' ceiling. A file
 that cannot be read as a policy is read as read-only — the owner meant
 something, and the boundary fails closed — and said in daemon.log.
 
-The known checkouts of a project (where a spawn from outside may run, M3) are
+The known checkouts of a project (where a spawn from outside may run) are
 the working directories its sessions joined from on this machine, and the
 project's own root.
 """
@@ -37,8 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 
 POLICY_FILE = "policy.json"
-# The engine's permission modes (2.1.300), least permissive first.
-MODES = ("plan", "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions")
+MODES = sminos.PERMISSION_MODES  # least permissive first
 FROM_SETTINGS = "settings"
 _SAID = {"bad": None}
 
@@ -115,7 +114,7 @@ def known_checkouts(project):
     """[{path, branch}]: the project's root, and every working directory a
     session of the project joined from on this machine that is still a
     directory of this project — the checkouts a spawn from outside may run
-    in (M3), as DX4's `machine` presence offers them."""
+    in (sminos_rpc), as DX4's `machine` presence offers them."""
     paths = []
     if project.root and os.path.isdir(project.root):
         paths.append(project.root)

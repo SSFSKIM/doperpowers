@@ -67,7 +67,7 @@ OUTBOX_MAX = 2000          # messages kept for the hub while it is out of reach 
 RELAYED_FILE = "requests.json"  # daemon/: the settlements the hub took, per session
 RELAYED_KEPT = 200
 RELAYED_SESSIONS = 1000
-WANTED = (b'"raised"', b'"settled"', b'"resync"')   # a line carrying none of these is no line of ours
+WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"')   # a line carrying none of these is no line of ours
 
 
 def log(line):
@@ -106,7 +106,8 @@ def settled_draft(e):
 class Reader(threading.Thread):
     """One bridge's stream, read for its requests: ("snapshot" | "resync",
     (pending, settled)), ("raised" | "settled", event), and its end,
-    ("closed", why), each queued as (reader, kind, data)."""
+    ("closed", why), each queued as (reader, kind, data). A compaction's
+    `compact` events ride along, for the RPCs (sminos_rpc)."""
 
     def __init__(self, sid, items, wake):
         super().__init__(name="requests-reader", daemon=True)
@@ -153,7 +154,7 @@ class Reader(threading.Thread):
                     self.put(kind, (e.get("pending") if isinstance(e.get("pending"), list) else [], listed))
                 elif kind == "resync" and isinstance(e.get("pending"), list):
                     self.put(kind, (e["pending"], listed))
-                elif kind in ("raised", "settled"):
+                elif kind in ("raised", "settled", "compact"):
                     self.put(kind, e)
         except (OSError, ValueError, http.client.HTTPException) as e:
             self.put("closed", "closed here" if self.closing.is_set() else str(e) or repr(e))
@@ -194,6 +195,7 @@ class Requests:
         self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
         self.queued = set()   # (session, request) of the settlements in the outbox
         self.relayed = load_relayed()  # session → [request]: the settlements the hub took
+        self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
         self.said = set()
 
     def say_once(self, key, line):
@@ -265,6 +267,8 @@ class Requests:
                 self.raised(sid, pid, data)
             elif kind == "settled":
                 self.settled(sid, pid, data)
+            elif kind == "compact":
+                self.compacts.append((sid, pid, data))
             elif kind == "closed":
                 del self.readers[sid]
                 snapped = r in self.read
@@ -282,6 +286,11 @@ class Requests:
                 else:
                     self.drop(sid)
         self.start_due()
+
+    def take_compacts(self):
+        """The `compact` events read since the last call, in order."""
+        out, self.compacts = self.compacts, []
+        return out
 
     def seal(self, kind, pid, draft):
         try:

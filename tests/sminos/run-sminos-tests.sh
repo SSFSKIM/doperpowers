@@ -5048,6 +5048,8 @@ if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: pr
 if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
   pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
   fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
+if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
+  fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
 echo
 if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
   fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
