@@ -249,10 +249,14 @@ Object holds as well as a WebSocket and which stdlib Python speaks without
 a hand-written RFC 6455 client (delegated unknown 2).
 
 **Bridge.** At session start it spawns a child for the session's life
-(`$.process.spawn` of `sminos bridge --session <id>`, connected to the
-daemon's socket) and reads commands from its output line by line, at any
-point in a turn. It streams the session's live events to the daemon with
-`$.http.fetch` over the daemon's `socketPath`: `turn.step` chunks for the
+(`$.process.spawn` of `sminos bridge --session <id>`), which serves the
+session's endpoint on `$SMINOS_HOME/bridge/<session-id>.sock` in an
+owner-only directory; the mod reads commands from the child's output line
+by line, at any point in a turn, and streams the session's live events to
+the child with `$.http.fetch` over that `socketPath`, where local clients —
+the CLI, the daemon — send commands and subscribe (C2's residue,
+2026-10-15: local control then works without the daemon running, and the
+daemon finds bridges by listing the directory): `turn.step` chunks for the
 main loop and every subagent (`turn.step` is the only source of subagent
 token deltas anywhere in the harness; the SDK wire streams the main thread
 only), tool calls and results, turn boundaries, subagent lifecycle, usage,
@@ -304,9 +308,9 @@ turns transcript rows, `turn.step` chunks, and presence into the shape it
 expects. Copied, not shared as a package, so that neither app's pace binds
 the other.
 
-**Without the bridge.** The daemon knows a session has a bridge by the
-bridge child's connection to its socket; a live session in the registry
-with no bridge connection after a short grace takes the fallback. A `--bg`
+**Without the bridge.** A session has a bridge when its endpoint socket
+answers; a live session in the registry with no answering endpoint after
+a short grace takes the fallback. A `--bg`
 seat keeps a great deal through the engine's supervisor (`control.sock`,
 same-uid plus `~/.claude/daemon/control.key`): `reply` sends as the human,
 queued for the next step, and answers a pending AskUserQuestion; presence,
@@ -577,8 +581,8 @@ fork.
     ruling); end-to-end encryption of the log (Happy Coder's shape), because
     the hub must read `to` and `kind` to route and the org phase would need
     group key distribution.
-- **The bridge's channel** is the daemon's socket in an owner-only
-  directory; commands never travel as inbox frames.
+- **The bridge's channel** is the session's endpoint socket in an
+  owner-only directory; commands never travel as inbox frames.
 - **No redaction layer**, as `.smns` ruled (smns §3). Transcripts pass
   through the hub and are not stored there.
 
@@ -709,7 +713,7 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
   second per streaming subagent, a post to the daemon p50 1–3 ms, p95 at
   most 35 ms.
 - **Required:** required.
-- **Status:** not-dispatched (dispatchable: C1 landed).
+- **Status:** in-flight (2026-10-15).
 
 ### C3: The hub — plan
 
@@ -994,9 +998,10 @@ consumers start after that gate.
   everything else it relays.
   Binds C2 and C7 (produce), C3 (relays, implements the semantics in its
   fake machine), C5 and C6 (consume).
-- **X5 — Local bridge protocol (owner C2, at C2.G1).** The bridge's event
-  stream to the daemon socket, the command lines to the session-lifetime
-  child, the long-poll for answers and decisions, the bridge-presence
+- **X5 — Local bridge protocol (owner C2, at C2.G1).** The session
+  endpoint's API (`$SMINOS_HOME/bridge/<session-id>.sock`): the bridge's
+  event stream into it and the subscription out of it, the command lines
+  the child relays to the mod, the long-poll for answers and decisions, the bridge-presence
   signal, the redelivery key for `human`, and the pending request's current
   content for the daemon's digest check. Binds C7.
 - **X6 — RPCs (shapes owner C3, at C3.G1; policy owner C7).** The RPC set
@@ -1108,7 +1113,7 @@ a hub that connects into machines (§2).
 | child | artifact | status |
 | --- | --- | --- |
 | C1 bridge spike | findings: `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` | **landed 2026-10-15**: 11 items, every primitive promoted, six with a change folded into §2 and §5; probe kept at `/tmp/c1probe` |
-| C2 bridge | — | not-dispatched |
+| C2 bridge | plan: `docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md` | in-flight (dispatched 2026-10-15, parent pin 8acb3958) |
 | C3 hub | — | not-dispatched |
 | C4 uplink | — | not-dispatched |
 | C5 web: conversation | — | not-dispatched |
@@ -1302,6 +1307,13 @@ a hub that connects into machines (§2).
   Rationale: measured in real sessions (findings file); each change keeps
   the design's intent with the primitive that actually delivers it.
   Date/Author: 2026-10-15, design session.
+- Decision: C2 residue — the bridge child serves a per-session endpoint
+  (`$SMINOS_HOME/bridge/<session-id>.sock`) that the CLI and the daemon
+  connect to, rather than connecting to one daemon socket. §2, §6, and X5
+  revised. Rejected then: one daemon socket, which would make local control
+  depend on the daemon running. Flags C7 (it discovers bridges by listing
+  the directory).
+  Date/Author: 2026-10-15, design session (C2's plan).
 
 ## Outcomes & Retrospective
 
