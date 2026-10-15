@@ -16,9 +16,9 @@
 ## Progress
 
 - [ ] M1 — Presence and the session plane (DC7.G1, its first half)
-- [ ] M2 — Pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's outcomes)
-- [ ] M3 — The RPCs and the machine's policy (DC7.G2; DC7.G3's RPC clauses)
-- [ ] M4 — Read-only delivery and Resume; the walk against the local hub; docs and version (DC7.G3's rest, DC7.G4)
+- [ ] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses)
+- [ ] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses)
+- [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
 
 ## Constraints that bind every milestone
 
@@ -83,13 +83,21 @@ reason, including `discontinuity` when the bridge's own stream reports a
 gap.
 
 **Decisions:**
-- *The watermark* (DX4): the snapshot is built under the bridge's lock
-  through DX5's subscription, so a chunk or `block-row` arriving while it
-  is built is in the snapshot or after it, never both and never neither;
-  rows tailed from the transcript that the snapshot already holds are
-  dropped by uuid. How the daemon joins the transcript tail and the
-  bridge's stream into one ordered `n` is this milestone's central
-  decision, recorded.
+- *One order from two sources* (DX4's watermark) is this milestone's
+  central decision, recorded. The bridge's own snapshot covers only its
+  in-memory state, and the mod's `block-row` can trail the row on disk, so
+  the daemon cannot order transcript rows against the stream by itself.
+  It joins them through the DX5 extension DC2 builds for this: a
+  transcript cut in the bridge's snapshot, and an order for the rows after
+  it (the composite's DX5, as folded when DC2's M4 lands; until then, the
+  composite's Decision Log entry on DC7's plan review states the need).
+  The proof includes a row flushed to disk ahead of a delayed bridge post,
+  across subscription establishment and across a reconnect.
+- *A `resync`* on a DX5 subscription the daemon already holds ends the DX4
+  subscriptions it touches with `end {reason: "discontinuity"}`, as a
+  `gap` does (DX4). That includes a child that answered before the mod's
+  first `resync`. A test subscribes before the first `resync`.
+- *`diff`* answers DX2's `diff` down frame for a main-transcript sub.
 - *Without a bridge* a subscription serves rows from the transcript alone,
   with `streaming` empty and `usage` null (§5's table).
 - *Presence* reads the engine's records directly; the log's debounced
@@ -105,9 +113,20 @@ response, a Worker restart overlapping transcript flushes, and a chunk
 arriving while the snapshot is built, each ending with no gap and no
 duplicated text, in the main transcript and in a subagent's.
 
-### M2 — Pending requests, settlements, and delivery outcomes
+### M2 — The machine's policy, pending requests, settlements, and delivery outcomes
 
-**At its end:** every request the bridge raises reaches the hub as DX4
+**At its end:** the machine's policy exists and governs delivery before
+anything from outside can execute: a file under `$SMINOS_HOME/daemon/`
+the owner edits through a `sminos` verb, read at every use and published
+in DX4's `machine`; known checkouts are the working directories the
+project's members joined from on this machine; the default ceiling is the
+mode the user's own settings give; on a read-only machine no
+outside-origin `human` or `say` is delivered: it is recorded, settled
+undelivered, and reported `refused-read-only`, while events written on
+the machine itself deliver as before. The guard sits at the one delivery
+boundary both the uplink's immediate delivery and the daemon's later
+retries pass through, so a stopped seat is not resumed either. Every
+request the bridge raises reaches the hub as DX4
 `raised` with its code (DX1's `smns-hub-raised-v1`), with `terminal_only`
 facts and background deadlines carried as DX4 has them; every settlement
 as `settled` with its code; the machine's complete pending set is
@@ -121,8 +140,11 @@ never shipped without one; the daemon signs only what its own bridges
 reported, as they reported it.
 
 **Proves:** the rest of DC7.G1 (requests and settlements reach the hub
-with codes and are republished on reconnect) and DC7.G3's outcome clause
-for `delivered` and `recorded`.
+with codes and are republished on reconnect), and DC7.G3's delivery
+clauses: on a read-only machine a `human` or `say` from outside, to a live
+session and to a stopped seat, starts nothing and settles undelivered with
+its `delivery` outcome; every settled delivery of an outside-origin event
+produces its outcome (`delivered`, `recorded`, `refused-read-only`).
 
 ### M3 — The RPCs and the machine's policy
 
@@ -132,7 +154,10 @@ verified, executed through DC2's protocol or through `sminos` for spawn
 and retire, and answered as `rpc-result`, republished until `rpc-ack`.
 
 **Decisions:**
-- *Order of refusal:* code (DX1, `smns-hub-rpc-v1`), then the ledger
+- *Order of refusal:* code (DX1, `smns-hub-rpc-v1`), then the binding
+  (DX6: `machine` is this machine's enrolled name, `project` a hub project
+  of this machine in its org, the session one of that project here;
+  `wrong-machine`, `unknown-project`, `no-session`), then the ledger
   (a known nonce is answered from the ledger, before freshness), then
   freshness (older than 60 s), then policy, then the digest for an answer
   or a decision (DX6: `{session, request, tool, input_sha256}` against
@@ -146,12 +171,11 @@ and retire, and answered as `rpc-result`, republished until `rpc-ack`.
 - *Results* follow DX6 as aligned with DC2's M2 (composite `744eae81`):
   steer `{row}` or `idle`; interrupt `{turnId, stopped, running}`; model
   `{model, effort}`; compact `{at}`.
-- *The policy* is built here, since no RPC may execute without it: a
-  file under `$SMINOS_HOME/daemon/` the owner edits through a `sminos`
-  verb, read on every RPC and published in DX4's `machine`. Known
-  checkouts are the working directories the project's members joined from
-  on this machine; the default ceiling is the mode the user's own settings
-  give; read-only refuses every RPC (`read-only`).
+- *The policy* from M2 governs every RPC: known checkouts and the
+  ceiling for spawn; read-only refuses every RPC (`read-only`).
+- *Compact's outcome* reaches browsers as DX4 `compact`, carrying the
+  RPC's nonce, from the bridge's DX5 `compact` events for the command the
+  daemon issued.
 
 **Proves:** DC7.G2: each RPC executes through DC2's protocol; a bad code,
 a stale RPC, and a seen nonce are refused and reported; a digest that
@@ -160,36 +184,32 @@ restarting the daemon between execution and report, each show
 `uncertain` on the hub, then resolve, the RPC executed once; a spawn
 retried with its nonce after a cut yields one session; a spawn outside
 the known checkouts or above the ceiling is refused; on a read-only
-machine every RPC is refused.
+machine every RPC is refused; an otherwise valid signed RPC routed to the
+wrong machine, and one naming a session outside its signed project, are
+refused before the ledger.
 
-### M4 — Read-only delivery and Resume; the walk; docs and version
+### M4 — Resume; the walk; docs and version
 
-**At its end:** a read-only machine delivers no outside-origin event;
-Resume brings an ended session back under its own id; one walk against
-DC3's local hub covers DC7's acceptance; docs and the version are
-current.
+**At its end:** Resume brings an ended session back under its own id; one
+walk against DC3's local hub covers DC7's acceptance; docs and the
+version are current.
 
 **Decisions:**
-- *Read-only* delivers no outside-origin event:
-  a `human` or `say` written elsewhere is recorded, settled undelivered,
-  and reported `refused-read-only`; events written on the machine itself
-  deliver as before.
 - *Resume* as §5 has it: `claude --bg --resume <session>` in the session's
   working directory with no other flags, serialized per session, after
   checking the session is live nowhere; then the session the engine
   reports is checked to be the same id, and a copy the engine started
   (the owner reopened it meanwhile) is stopped and the RPC failed
-  `copy-started`.
+  `copy-started`. "Live anywhere" means any process of this machine
+  holding the session, terminal or `--bg`: a session's transcript lives on
+  the machine that ran it (DX6's `session-live`).
 
-**Touches:** delivery's read-only path, the RPC module (Resume), `CLAUDE.md`
+**Touches:** the RPC module (Resume), `CLAUDE.md`
 (the `skills/` row: the session plane and the RPCs), `skills/sminos/SKILL.md`
 only if an agent-facing behavior changes (it needs eval evidence), the
 version.
 
-**Proves:** the rest of DC7.G3 (on a read-only machine a `human` or
-`say` from outside, to a live session and to a stopped seat, starts
-nothing and settles undelivered, each with its `delivery` outcome) and
-DC7.G4 (Resume of an ended terminal session as a `--bg` job with the same
+**Proves:** DC7.G4 (Resume of an ended terminal session as a `--bg` job with the same
 id that rejoins; refused while live anywhere and on a read-only machine;
 two Resumes at once start one session; a Resume racing the owner's reopen
 ends with one session, any copy stopped, the RPC failed with the reason),
@@ -224,6 +244,16 @@ against the local hub; until it lands, the stand-in.
   owner's machine; every refusal path is the boundary §6 binds, in stdlib
   Python against a TypeScript reference.
   Date/Author: 2026-10-15, the composite's writer at dispatch.
+
+- Decision: The plan review (adversarial, 2026-10-15) found that the
+  bridge's snapshot cannot order transcript rows against its stream, that
+  an RPC's code does not bind it to the machine that runs it, that
+  read-only delivery came after outside-origin delivery was enabled, and
+  that `diff`, compact outcomes, a first `resync`, and Resume's scope had
+  no written contract. All adopted: the ordering waits on a DX5 extension
+  from DC2; the rest are in the composite (`71e32c68`), and the policy
+  moved to M2, ahead of every path it guards.
+  Date/Author: 2026-10-15, the composite's writer.
 
 ## Surprises & Discoveries
 
