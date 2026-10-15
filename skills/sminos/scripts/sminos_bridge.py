@@ -21,6 +21,12 @@ older one, finding the path no longer its own, exits without removing it.
 
 `sminos watch <member>` subscribes and prints the stream: the conversation as
 it streams, subagents labelled; `--json`, the lines as they come.
+
+What must outlive a module reload, which kills the child — the model chosen
+for the session and the delivery keys already submitted — the child keeps in
+$SMINOS_HOME/bridge/<id>.json from the mod's events, and hands back in its
+hello. The file outlives the process too, so a session resumed under its id
+(a seat's `--resume`) goes on with both.
 """
 
 import http.client
@@ -54,6 +60,31 @@ def bridge_dir():
 
 def endpoint(session):
     return os.path.join(bridge_dir(), session + ".sock")
+
+
+def kept_path(session):
+    return os.path.join(bridge_dir(), session + ".json")
+
+
+def _no_kept():
+    return {"override": None, "delivered": {}}
+
+
+def load_kept(session):
+    """What a child kept for the session: {"override": {model, effort} | None,
+    "delivered": {writer: seq}}; nothing kept reads as none."""
+    try:
+        with open(kept_path(session)) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return _no_kept()
+    if not isinstance(d, dict):
+        return _no_kept()
+    o = d.get("override")
+    delivered = d.get("delivered")
+    return {"override": o if isinstance(o, dict) else None,
+            "delivered": {str(w): s for w, s in delivered.items() if type(s) is int}
+            if isinstance(delivered, dict) else {}}
 
 
 # ------------------------------------------------------------------ the client
@@ -171,6 +202,7 @@ class Bridge:
         self.mod_last = None
         self.waiters = {}        # command id → [threading.Event, result event]
         self.closing = threading.Event()
+        self.kept = load_kept(session)
 
     # -- the mod's events
 
@@ -212,11 +244,26 @@ class Bridge:
                 m["thinking"] += str(chunk.get("text") or "")
             m["upTo"] = index
         elif kind == "resync":
-            # The mod's own copy of the live state, whole: it replaces this one.
+            # The mod's own copy of the live state, whole: it replaces this one,
+            # and what is kept for the session with it.
             self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
             self.streaming = {_key(m): dict(m) for m in e.get("streaming") or []}
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
             self.broken = set()
+            kept = dict(self.kept)
+            if "override" in e:
+                kept["override"] = e["override"] if isinstance(e["override"], dict) else None
+            if isinstance(e.get("delivered"), dict):
+                kept["delivered"] = {str(w): s for w, s in e["delivered"].items() if type(s) is int}
+            self._keep(kept)
+        elif kind == "model":
+            o = {"model": e.get("model"), "effort": e.get("effort")}
+            self._keep({**self.kept, "override": o if o["model"] is not None or o["effort"] is not None else None})
+        elif kind == "delivered" and e.get("outcome") == "submitted":
+            key = e.get("key") or {}
+            writer, seq = key.get("writer"), key.get("seq")
+            if isinstance(writer, str) and type(seq) is int and seq > self.kept["delivered"].get(writer, 0):
+                self._keep({**self.kept, "delivered": {**self.kept["delivered"], writer: seq}})
         elif kind == "step" and phase == "start":
             self.broken.discard(_key(e))
             self.streaming[_key(e)] = {"turnId": e.get("turnId"), "agentId": e.get("agentId"), "step": e.get("step"),
@@ -251,11 +298,28 @@ class Bridge:
                 w[1] = e
                 w[0].set()
 
+    def _keep(self, kept):
+        """What is kept for the session, written whole when it changed (under
+        the lock, by the event that changed it)."""
+        if kept == self.kept:
+            return
+        self.kept = kept
+        path = kept_path(self.session)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(kept, f)
+            os.replace(tmp, path)
+        except OSError as err:
+            sys.stderr.write("sminos bridge: %s not kept: %s\n" % (path, err))
+
     def snapshot(self):
         return {"type": "snapshot", "session": self.session, "protocol": PROTOCOL, "pid": os.getpid(),
                 "sessionInfo": self.session_info, "turns": list(self.turns.values()),
                 "streaming": [dict(m) for m in self.streaming.values()],
                 "agents": list(self.agents.values()), "usage": self.usage,
+                "override": self.kept["override"],
                 # Reserved for M3: the requests pending in the session, and the
                 # ones settled recently, so a late subscriber sees a request
                 # settled rather than still raised.
@@ -467,7 +531,8 @@ def serve(session):
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
     try:
-        bridge.emit({"op": "hello", "session": session, "pid": os.getpid(), "socket": path, "protocol": PROTOCOL})
+        bridge.emit({"op": "hello", "session": session, "pid": os.getpid(), "socket": path, "protocol": PROTOCOL,
+                     "kept": bridge.kept})
         threading.Thread(target=watchdog, daemon=True).start()
         server.serve_forever(poll_interval=0.25)
     except (OSError, KeyboardInterrupt):
@@ -605,12 +670,30 @@ class Renderer:
                 self.line("· context %s of %s tokens" % (format(c["tokens"], ","), format(c["window"], ",")))
         elif kind == "result":
             self.line("· %s → %s" % (e.get("op"), "ok" if e.get("ok") else "refused: %s" % e.get("error")))
+        elif kind == "model":
+            self.line("· model %s, effort %s (this session)" % (e.get("model") or "the session's own",
+                                                                e.get("effort") or "the session's own"))
+        elif kind == "compact":
+            self.line("· compaction %s" % ("started" if phase == "start" else _compact_outcome(e)))
+        elif kind == "delivered" and e.get("outcome") != "duplicate":
+            k = e.get("key") or {}
+            self.line("· delivered %s:%s %s" % (k.get("writer"), k.get("seq"), e.get("outcome")))
         elif kind == "gap":
             self.line("· %s events were lost on the way from the session" % e.get("dropped"))
 
     def _name(self, a):
         if a.get("agentId"):
             self.labels[a["agentId"]] = "%s %s" % (a.get("subagentType") or "agent", str(a["agentId"])[:12])
+
+
+def _compact_outcome(e):
+    if e.get("error"):
+        return "failed: %s" % e["error"]
+    if e.get("skip"):
+        return "skipped: %s" % e["skip"]
+    if e.get("tokensBefore") is not None and e.get("tokensAfter") is not None:
+        return "done: %s → %s tokens" % (format(e["tokensBefore"], ","), format(e["tokensAfter"], ","))
+    return "done"
 
 
 def _reconnect_window():

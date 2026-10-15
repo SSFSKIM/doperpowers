@@ -17,6 +17,13 @@ import type { EngineInterface, HookStream, HttpResponse, On, ProcessSpawnChunk, 
  * still streaming with its text and last chunk index, the subagents), so
  * whenever the child's copy may be wrong (a post was lost, a new child said
  * hello) the next post opens with a `resync` that replaces it.
+ *
+ * Control (DC2 M2): `steer` appends a user row the loop reads at its next
+ * request; `interrupt` aborts the main turn and stops each Bash call the abort
+ * moved to the background; `model` rewrites the main loop's requests;
+ * `compact` runs between turns; `deliver` submits a log event as the human's
+ * words, once per key. What must outlive a module reload (the model chosen,
+ * the keys delivered) the child keeps on disk: its hello hands it back.
  */
 
 export const HEARTBEAT_MS = 5_000
@@ -35,9 +42,41 @@ const CLEAR_POLL_TRIES = 50
 const DRAIN_TRIES = 10
 /** After a post that failed, the next waits this long. */
 const RETRY_MS = 500
+/** After an abort, how long the Bash calls it ended have to report where they went. */
+export const INTERRUPT_WAIT_MS = 3_000
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+type Effort = (typeof EFFORTS)[number]
+/**
+ * A family alias's model as the engine resolves it first, before its own
+ * table: ANTHROPIC_DEFAULT_<FAMILY>_MODEL. Each name is spelled out, as the
+ * module validator lists the variables a module reads. Undefined for a model
+ * that is no family alias.
+ */
+function familyModel($: EngineInterface, family: string): Promise<string | undefined> | undefined {
+  switch (family) {
+    case 'haiku':
+      return $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL')
+    case 'sonnet':
+      return $.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL')
+    case 'opus':
+      return $.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL')
+    case 'fable':
+      return $.env.get('ANTHROPIC_DEFAULT_FABLE_MODEL')
+    default:
+      return undefined
+  }
+}
+/** What an aborted Bash call's result says when the abort moved it to the background (DC1 item 4). */
+const BACKGROUNDED = /running in background with ID: ([A-Za-z0-9_-]+)/
 
 type BridgeEvent = Record<string, unknown> & { type: string }
 type Command = Record<string, unknown> & { id: string; op: string }
+/** A command's answer: the `result` event's fields. */
+type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string }
+/** The model and effort chosen for this session through the bridge; null keeps the session's own. */
+type Override = { model: string | null; effort: Effort | null }
+/** A tool call running now; `done` resolves with its result's text once it settles. */
+type Call = { tool: string; done: Promise<string | undefined>; settle: (text: string | undefined) => void }
 /** A message still streaming, as the child's snapshot carries it (DX4). */
 type Streaming = { turnId: string; agentId: string | null; step: number; model: string; text: string; thinking: string; upTo: number }
 
@@ -80,8 +119,18 @@ type BridgeState = {
   /** Main-loop model requests streaming now. */
   steps: number
   /** Tool calls running now, by call. */
-  tools: Map<string, string>
+  calls: Map<string, Call>
   toolCalls: number
+  /** The model and effort chosen through the bridge, if any. */
+  override?: Override
+  /** Per writer, the highest seq of a log event submitted: delivery goes in seq order, so any key at or below it was. */
+  delivered: Map<string, number>
+  /** Whether what the child keeps (override, delivered) was taken from its hello: once per module. */
+  isKeptLoaded: boolean
+  /** Steers appended in the running main turn, and whether a model request began after each. */
+  steers: { text: string; isRead: boolean }[]
+  /** A compaction asked for during the main turn, run when it ends. */
+  compact?: { id: string; instructions?: string }
 }
 
 const fresh = (): BridgeState => ({
@@ -95,8 +144,11 @@ const fresh = (): BridgeState => ({
   messages: new Map(),
   agents: new Map(),
   steps: 0,
-  tools: new Map(),
+  calls: new Map(),
   toolCalls: 0,
+  delivered: new Map(),
+  isKeptLoaded: false,
+  steers: [],
 })
 
 let state = fresh()
@@ -117,7 +169,7 @@ export function splitLines(pending: string, text: string): { lines: string[]; re
 
 /** Where the session stands, for a command's answer and the heartbeat. */
 function turnState() {
-  return { mainTurn: state.mainTurn ?? null, isStreaming: state.steps > 0, tools: [...state.tools.values()] }
+  return { mainTurn: state.mainTurn ?? null, isStreaming: state.steps > 0, tools: [...state.calls.values()].map((c) => c.tool) }
 }
 
 /**
@@ -174,22 +226,51 @@ function track(e: BridgeEvent) {
   }
 }
 
-/** The live state whole: what the child replaces its own with. */
+/** The live state whole, and what the child keeps for this session: what it replaces its own with. */
 function resyncEvent(): BridgeEvent {
   return {
     type: 'resync',
     turns: [...state.turns.values()],
     streaming: [...state.messages.values()].map((m) => ({ ...m })),
     agents: [...state.agents.values()],
+    override: state.override ?? null,
+    delivered: Object.fromEntries(state.delivered),
     t: Date.now(),
   }
 }
 
-/** Forgets the live state: the session after a /clear starts with none. */
+/**
+ * Forgets the live state: the session after a /clear starts with none, and
+ * no delivery to the old id is the new one's. The model chosen stays, as the
+ * terminal's own choice of model does across a /clear.
+ */
 function forgetLive() {
   state.turns.clear()
   state.messages.clear()
   state.agents.clear()
+  state.delivered.clear()
+}
+
+const isEffort = (value: unknown): value is Effort => EFFORTS.includes(value as Effort)
+
+/** What the child kept for the session (its hello's `kept`), taken by a module that holds none yet. */
+function adoptKept(kept: unknown) {
+  if (typeof kept !== 'object' || kept === null) {
+    return
+  }
+  const { override, delivered } = kept as { override?: unknown; delivered?: unknown }
+  if (typeof override === 'object' && override !== null) {
+    const { model, effort } = override as Record<string, unknown>
+    const next: Override = { model: typeof model === 'string' ? model : null, effort: isEffort(effort) ? effort : null }
+    state.override = next.model === null && next.effort === null ? undefined : next
+  }
+  if (typeof delivered === 'object' && delivered !== null) {
+    for (const [writer, seq] of Object.entries(delivered)) {
+      if (Number.isInteger(seq) && (seq as number) > (state.delivered.get(writer) ?? 0)) {
+        state.delivered.set(writer, seq as number)
+      }
+    }
+  }
 }
 
 /**
@@ -261,15 +342,205 @@ function pump() {
     })
 }
 
-/** Answers one command line. M2 and M3 add their ops here. */
-function runCommand(command: Command) {
-  const answer = (fields: Record<string, unknown>) => emit({ type: 'result', id: command.id, op: command.op, ...fields })
+/** Answers one command line with a `result` event. M3 adds its ops here. */
+async function runCommand($: EngineInterface, command: Command) {
+  let answer: Answer
+  try {
+    answer = await commandAnswer($, command)
+  } catch (error) {
+    answer = { ok: false, error: message(error) }
+  }
+  emit({ type: 'result', id: command.id, op: command.op, ...answer })
+}
+
+function commandAnswer($: EngineInterface, command: Command): Answer | Promise<Answer> {
   switch (command.op) {
     case 'ping':
-      answer({ ok: true, result: { pong: true, state: turnState() } })
-      return
+      return { ok: true, result: { pong: true, state: turnState() } }
+    case 'steer':
+      return steer($, command.text)
+    case 'interrupt':
+      return interrupt($)
+    case 'model':
+      return chooseModel($, command.model, command.effort)
+    case 'compact':
+      return compact($, command)
+    case 'deliver':
+      return deliver($, command.key, command.text)
     default:
-      answer({ ok: false, error: `unknown op: ${command.op}` })
+      return { ok: false, error: `unknown op: ${command.op}` }
+  }
+}
+
+/**
+ * A user row in the running turn, read at the loop's next model request; the
+ * running tool goes on. The terminal does not draw an appended row, so a
+ * transcript line mirrors it. Idle, there is no next request to read it: a
+ * send is how an idle session is reached.
+ */
+async function steer($: EngineInterface, text: unknown): Promise<Answer> {
+  if (typeof text !== 'string' || text.trim() === '') {
+    return { ok: false, error: 'steer needs text' }
+  }
+  if (state.mainTurn === undefined) {
+    return { ok: false, error: 'no turn is running to steer: send it instead' }
+  }
+  const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+  if (stored.deny !== undefined) {
+    return { ok: false, error: `the row was refused: ${stored.deny}` }
+  }
+  state.steers.push({ text, isRead: false })
+  $.ui.log(`steer: ${text}`)
+  return { ok: true, result: { row: stored.uuid } }
+}
+
+/**
+ * Esc's effect: the main turn aborted, then each Bash call it moved to the
+ * background (the abort backgrounds a running Bash rather than killing it)
+ * stopped with TaskStop. The calls running at the abort are the ones it can
+ * have moved; each says where it went in its result.
+ */
+async function interrupt($: EngineInterface): Promise<Answer> {
+  const turnId = state.mainTurn
+  if (turnId === undefined) {
+    return { ok: true, result: { turnId: null, stopped: [] } }
+  }
+  const running = [...state.calls.values()].filter((c) => c.tool === 'Bash')
+  await $.turn.abort({ turnId })
+  const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
+  const texts = await Promise.all(running.map((c) => Promise.race([c.done, bound])))
+  const stopped: string[] = []
+  for (const text of texts) {
+    const task = BACKGROUNDED.exec(text ?? '')?.[1]
+    if (task === undefined) {
+      continue
+    }
+    const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
+    if (r.isError === true) {
+      $.ui.log(`bridge: TaskStop ${task} failed: ${r.text ?? ''}`, { to: 'debug' })
+    } else {
+      stopped.push(task)
+    }
+  }
+  return { ok: true, result: { turnId, stopped } }
+}
+
+/**
+ * The model and effort of the main loop's requests from now on, this session
+ * only: rewritten in turn.step. `$.config.set` is not used: it also saves the
+ * model as the user's default. A model of null (or `default`) keeps the
+ * session's own; so does an effort of null.
+ *
+ * A rewrite names the model sent on the wire, so an alias is resolved here:
+ * a family alias as the engine resolves it first, through the session's
+ * ANTHROPIC_DEFAULT_<FAMILY>_MODEL. The engine's own alias table is not open
+ * to a plugin, so an alias with no such variable is refused, asking for the id.
+ */
+async function chooseModel($: EngineInterface, model: unknown, effort: unknown): Promise<Answer> {
+  const asked = model === undefined || model === null || model === 'default' ? null : model
+  if (asked !== null && (typeof asked !== 'string' || asked.trim() === '')) {
+    return { ok: false, error: 'a model is a name (an alias such as sonnet, or a full id)' }
+  }
+  let chosenModel = asked as string | null
+  const chosenEffort = effort === undefined || effort === null ? null : effort
+  if (chosenEffort !== null && !isEffort(chosenEffort)) {
+    return { ok: false, error: `an effort is one of ${EFFORTS.join(', ')}` }
+  }
+  const family = chosenModel === null ? undefined : familyModel($, chosenModel.toLowerCase())
+  if (chosenModel !== null && family !== undefined) {
+    const mapped = await family
+    if (mapped === undefined || mapped.trim() === '') {
+      const variable = `ANTHROPIC_DEFAULT_${chosenModel.toUpperCase()}_MODEL`
+      return { ok: false, error: `${chosenModel} is an alias this session's ${variable} does not map: name the model by its id (as claude-${chosenModel.toLowerCase()}-…)` }
+    }
+    chosenModel = mapped.trim()
+  }
+  const next: Override = { model: chosenModel, effort: chosenEffort }
+  state.override = next.model === null && next.effort === null ? undefined : next
+  emit({ type: 'model', ...next })
+  return { ok: true, result: next }
+}
+
+/** The engine compacts between turns only: asked during the main turn, it is held for its end. */
+function compact($: EngineInterface, command: Command): Answer {
+  const instructions = typeof command.instructions === 'string' && command.instructions !== '' ? command.instructions : undefined
+  const request = { id: command.id, ...(instructions !== undefined && { instructions }) }
+  if (state.mainTurn !== undefined) {
+    state.compact ??= request
+    return { ok: true, result: { queued: true, turnId: state.mainTurn } }
+  }
+  void runCompaction($, request)
+  return { ok: true, result: { started: true } }
+}
+
+/** One compaction, said on the stream as it starts and as it ends: its counts, its skip, or its error. */
+async function runCompaction($: EngineInterface, request: { id: string; instructions?: string }) {
+  emit({ type: 'compact', phase: 'start', id: request.id })
+  try {
+    const outcome = await $.session.compact(request.instructions === undefined ? {} : { instructions: request.instructions })
+    emit({
+      type: 'compact',
+      phase: 'end',
+      id: request.id,
+      ...(outcome.skip !== undefined ? { skip: outcome.skip } : { tokensBefore: outcome.tokensBefore ?? null, tokensAfter: outcome.tokensAfter ?? null }),
+    })
+  } catch (error) {
+    emit({ type: 'compact', phase: 'end', id: request.id, error: message(error) })
+  }
+}
+
+/**
+ * A log event for this session, submitted as the human's words: queued until
+ * the session is idle. Delivery is at least once and goes in seq order per
+ * writer, so a key at or below the writer's last submitted is a repeat, and
+ * dropped.
+ */
+function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
+  const { writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { writer?: unknown; seq?: unknown }
+  if (typeof writer !== 'string' || writer === '' || !Number.isInteger(seq) || typeof text !== 'string') {
+    return { ok: false, error: 'deliver needs key {writer, seq} and text' }
+  }
+  const delivery = { writer, seq: seq as number }
+  if (delivery.seq <= (state.delivered.get(writer) ?? 0)) {
+    emit({ type: 'delivered', key: delivery, outcome: 'duplicate' })
+    return { ok: true, result: { duplicate: true } }
+  }
+  state.delivered.set(writer, delivery.seq)
+  emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
+  const refused = (reason: string) => {
+    $.ui.log(`bridge: the delivery ${writer}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
+    emit({ type: 'delivered', key: delivery, outcome: 'refused', reason })
+  }
+  // Not awaited: it resolves when the prompt's turn starts, after any running turn.
+  void $.prompt.submit({ text, asUser: true }).then(
+    (entered) => {
+      if (entered.drop !== undefined) {
+        refused(entered.drop)
+      }
+    },
+    (error: unknown) => refused(message(error)),
+  )
+  return { ok: true, result: { submitted: true } }
+}
+
+/**
+ * The end of the main turn: a compaction held for it, then the steers no
+ * model request read (the turn answered first), submitted as the human's
+ * prompt, as a prompt typed mid-turn would be. An interrupted or failed
+ * turn's steers are dropped.
+ */
+async function mainTurnEnded($: EngineInterface, reason: string) {
+  const unread = state.steers.filter((s) => !s.isRead).map((s) => s.text)
+  state.steers = []
+  const request = state.compact
+  state.compact = undefined
+  if (request !== undefined) {
+    await runCompaction($, request)
+  }
+  if (reason === 'answer' && unread.length > 0) {
+    void $.prompt
+      .submit({ text: unread.join('\n\n'), asUser: true })
+      .catch((error: unknown) => $.ui.log(`bridge: an unread steer was not submitted: ${message(error)}`, { to: 'debug' }))
   }
 }
 
@@ -287,6 +558,12 @@ function onLine($: EngineInterface, generation: number, line: string) {
   const msg = parsed as Record<string, unknown>
   if (msg.op === 'hello' && typeof msg.socket === 'string') {
     state.socket = msg.socket
+    // What the child kept on disk is this module's only after a reload; a
+    // module that holds its own hands it to the child in the resync.
+    if (!state.isKeptLoaded) {
+      adoptKept(msg.kept)
+      state.isKeptLoaded = true
+    }
     // A new child knows nothing of the session: what it started as, then
     // where it stands. What was queued for no child is in that state.
     state.queue = [{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, resyncEvent()]
@@ -294,7 +571,7 @@ function onLine($: EngineInterface, generation: number, line: string) {
     return
   }
   if (typeof msg.id === 'string' && typeof msg.op === 'string') {
-    runCommand(msg as Command)
+    void runCommand($, msg as Command)
   }
 }
 
@@ -506,6 +783,7 @@ export function registerBridge(on: On) {
       } catch (error) {
         $.ui.log(`bridge: usage not read: ${message(error)}`, { to: 'debug' })
       }
+      await mainTurnEnded($, e.reason)
     }
     return result
   })
@@ -516,15 +794,23 @@ export function registerBridge(on: On) {
   on('turn.step', { turnId: /^/ }, async function* (_, e, next) {
     const tag = { turnId: e.turnId, agentId: e.agentId ?? null, step: e.index }
     const isMain = e.agentId === undefined
-    emit({ type: 'step', phase: 'start', ...tag, model: e.model, effort: e.effort ?? null, messageCount: e.messageCount })
+    // The model chosen through the bridge is the main loop's: a subagent runs
+    // on what its definition or its caller chose.
+    const o = isMain ? state.override : undefined
+    const input = o === undefined ? e : { ...e, ...(o.model !== null && { model: o.model }), ...(o.effort !== null && { effort: o.effort }) }
+    emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
     if (isMain) {
       state.steps++
+      // This request carries every row appended before it.
+      for (const s of state.steers) {
+        s.isRead = true
+      }
     }
     let chunkIndex = 0
     let stopReason: unknown = null
     let usage: unknown = null
     try {
-      const stream = next(e)
+      const stream = next(input)
       for await (const chunk of stream) {
         if (chunk.kind !== 'engine') {
           emit({ type: 'chunk', ...tag, chunkIndex: chunkIndex++, chunk })
@@ -548,9 +834,13 @@ export function registerBridge(on: On) {
     const base = { toolUseId: e.tool_use_id || null, tool: e.tool, agentId: e.agentId ?? null }
     const input = toolInput(e as Record<string, unknown>)
     emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
-    state.tools.set(call, String(e.tool))
+    let settle: (text: string | undefined) => void = () => undefined
+    const done = new Promise<string | undefined>((resolve) => (settle = resolve))
+    state.calls.set(call, { tool: String(e.tool), done, settle })
+    let resultText: string | undefined
     try {
       const result = await next(e)
+      resultText = typeof result.text === 'string' ? result.text : undefined
       const text = capped(result.text)
       const denied = capped(result.deny)
       emit({
@@ -564,7 +854,8 @@ export function registerBridge(on: On) {
       })
       return result
     } finally {
-      state.tools.delete(call)
+      state.calls.get(call)?.settle(resultText)
+      state.calls.delete(call)
     }
   }).catch((_, e, next) => next(e))
 

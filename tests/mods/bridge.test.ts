@@ -7,7 +7,8 @@ tier('user')
 
 const SID = '5b000001-0000-4000-8000-00000000005b'
 const SOCK = `/tmp/s/bridge/${SID}.sock`
-const hello = (session = SID, socket = SOCK) => `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1 })}\n`
+const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>) =>
+  `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, ...(kept !== undefined && { kept }) })}\n`
 const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
 
 describe('splitLines', () => {
@@ -86,6 +87,9 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
   const posts: { url: string; socketPath?: string; events: Record<string, unknown>[]; release: () => void; fail: () => void }[] = []
   const timers: { kind: 'after' | 'every'; ms: number; fn: () => void; cancelled: boolean }[] = []
   const logs: string[] = []
+  /** What the control ops asked of the engine, in order. */
+  const calls: { op: string; args: unknown }[] = []
+  const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
   let session = SID
   const $ = {
     plugin: { name: 'doperpowers', root: '/plug' },
@@ -95,6 +99,31 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       model: async () => 'claude-haiku',
       version: async () => ({ version: '2.1.300' }),
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
+      append: async (args: unknown) => {
+        calls.push({ op: 'append', args })
+        return { uuid: `row-${calls.length}`, message: {} }
+      },
+      compact: (args: unknown) => {
+        calls.push({ op: 'compact', args })
+        return new Promise((resolve, reject) => compactions.push({ args, finish: resolve, fail: reject }))
+      },
+    },
+    turn: {
+      abort: async (args: unknown) => {
+        calls.push({ op: 'abort', args })
+      },
+    },
+    tool: {
+      call: async (args: Record<string, unknown>) => {
+        calls.push({ op: 'tool', args })
+        return { text: `Successfully stopped task: ${String(args.task_id)}` }
+      },
+    },
+    prompt: {
+      submit: async (args: unknown) => {
+        calls.push({ op: 'submit', args })
+        return { text: '' }
+      },
     },
     process: {
       spawn: (request: { argv: readonly string[] }) => {
@@ -180,10 +209,34 @@ function harness(options: { env?: Record<string, string>; hold?: boolean; failAt
       yielded.push(r.value)
     }
   }
+  /** The child sends a command line; the mod's answer, once it is posted. */
+  const command = async (body: Record<string, unknown>, child = 0) => {
+    const id = `c${Math.random().toString(16).slice(2)}`
+    children[child]!.write(line({ id, ...body }))
+    for (let i = 0; i < 20; i++) {
+      await settle()
+      const found = events().find((e) => e.type === 'result' && e.id === id)
+      if (found !== undefined) {
+        return found
+      }
+    }
+    throw new Error(`no answer to ${JSON.stringify(body)}`)
+  }
+  const turn = async (turnId: string, agentId?: string) =>
+    hook('turn.start', { turnId })(engine, { turnId, text: 'go', ...(agentId !== undefined && { agentId }) }, async () => ({ turnId }))
+  const complete = async (turnId: string, reason = 'answer', agentId?: string) => {
+    await hook('turn.complete', { turnId })(engine, { turnId, answer: '', durationMs: 1, reason, ...(agentId !== undefined && { agentId }) }, async () => ({ text: '' }))
+    await settle()
+  }
   return {
     engine,
     hook,
     children,
+    calls,
+    compactions,
+    command,
+    turn,
+    complete,
     posts,
     timers,
     logs,
@@ -515,5 +568,221 @@ describe('the stream', () => {
     await h.settle()
     expect(h.ofType('session').map((e) => e.phase)).toEqual(['start', 'end'])
     expect(h.ofType('session')[1]).toMatchObject({ reason: 'prompt_input_exit' })
+  })
+})
+
+describe('steer', () => {
+  test('mid-turn: a user row appended to the conversation, mirrored in the transcript, its uuid answered', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const r = await h.command({ op: 'steer', text: 'also print the date' })
+    expect(r).toMatchObject({ op: 'steer', ok: true, result: { row: 'row-1' } })
+    expect(h.calls[0]).toEqual({ op: 'append', args: { message: { type: 'user', content: [{ type: 'text', text: 'also print the date' }] } } })
+    expect(h.logs).toContain('steer: also print the date')
+  })
+
+  test('idle: refused, nothing appended (a send is how an idle session is reached)', async () => {
+    const h = harness()
+    await h.ready()
+    const r = await h.command({ op: 'steer', text: 'hello' })
+    expect(r).toMatchObject({ ok: false })
+    expect(String(r.error)).toContain('no turn is running')
+    expect(h.calls.length).toBe(0)
+  })
+
+  test("a steer no model request read before the turn answered is submitted as the human's prompt when it ends", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'steer', text: 'use tabs' })
+    await h.complete('t1')
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([{ op: 'submit', args: { text: 'use tabs', asUser: true } }])
+  })
+
+  test('a steer a later request read is not submitted again; nor one whose turn was interrupted', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'steer', text: 'read me' })
+    await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [])
+    await h.complete('t1')
+    await h.turn('t2')
+    await h.command({ op: 'steer', text: 'too late' })
+    await h.complete('t2', 'aborted')
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+})
+
+describe('interrupt', () => {
+  test('aborts the main turn, then stops each Bash call the abort moved to the background, as Esc would', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // An earlier Bash the model itself ran in the background: done before the interrupt.
+    await h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu0', command: 'srv &' }, async () => ({ text: 'Command running in background with ID: early01. Output is being written to: /x' }))
+    let finish: (text: string) => void = () => undefined
+    const running = h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'python3 -c sleep' }, () => new Promise((resolve) => (finish = (text) => resolve({ text }))))
+    await h.settle()
+    const answered = h.command({ op: 'interrupt' })
+    await h.settle()
+    expect(h.calls[0]).toEqual({ op: 'abort', args: { turnId: 't1' } })
+    finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /tmp/o')
+    await running
+    const r = await answered
+    expect(r).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'] } })
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: 'b5y6zo7fe' } }])
+  })
+
+  test('idle: nothing to interrupt, said so', async () => {
+    const h = harness()
+    await h.ready()
+    const r = await h.command({ op: 'interrupt' })
+    expect(r).toMatchObject({ ok: true, result: { turnId: null, stopped: [] } })
+    expect(h.calls.length).toBe(0)
+  })
+})
+
+/** Runs one turn.step hook with an empty response, recording the input the hook passed down. */
+async function stepThrough(h: ReturnType<typeof harness>, e: Record<string, unknown>, seen: Record<string, unknown>[]) {
+  const gen = h.hook('turn.step', e)(h.engine, e, (input: Record<string, unknown>) => {
+    seen.push(input)
+    const g = (async function* () {
+      return { turnId: e.turnId, index: e.index, stopReason: 'end_turn', usage: null }
+    })() as AsyncGenerator<unknown, unknown> & { result: Promise<unknown> }
+    g.result = Promise.resolve({ turnId: e.turnId, index: e.index, stopReason: 'end_turn', usage: null })
+    return g
+  }) as AsyncGenerator<unknown, unknown>
+  while (!(await gen.next()).done) {
+    // drained
+  }
+  await h.settle()
+}
+
+describe('model and effort', () => {
+  test("rewritten on each of the main loop's requests, not a subagent's; reported in the step and as an event", async () => {
+    const h = harness()
+    await h.ready()
+    const r = await h.command({ op: 'model', model: 'claude-sonnet-5-5', effort: 'high' })
+    expect(r).toMatchObject({ ok: true, result: { model: 'claude-sonnet-5-5', effort: 'high' } })
+    expect(h.ofType('model')[0]).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' })
+    const seen: Record<string, unknown>[] = []
+    await stepThrough(h, { turnId: 't1', index: 0, model: 'claude-haiku', effort: 'low', messageCount: 1 }, seen)
+    await stepThrough(h, { turnId: 't2', index: 0, model: 'claude-haiku', messageCount: 1, agentId: 'a1' }, seen)
+    expect(seen[0]).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' })
+    expect(seen[1]).toMatchObject({ model: 'claude-haiku', agentId: 'a1' })
+    expect(seen[1]!.effort).toBeUndefined()
+    expect(h.ofType('step').filter((e) => e.phase === 'start')[0]).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' })
+  })
+
+  test("a family alias is resolved as the engine resolves it first, through the session's ANTHROPIC_DEFAULT_<FAMILY>_MODEL; one it does not map is refused", async () => {
+    // A rewrite names the model sent on the wire: the engine resolves no alias there.
+    const h = harness({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5[1m]' } })
+    await h.ready()
+    expect(await h.command({ op: 'model', model: 'sonnet' })).toMatchObject({ ok: true, result: { model: 'claude-sonnet-5-5[1m]', effort: null } })
+    const refused = await h.command({ op: 'model', model: 'opus' })
+    expect(refused).toMatchObject({ ok: false })
+    expect(String(refused.error)).toContain('ANTHROPIC_DEFAULT_OPUS_MODEL')
+    expect(h.ofType('model').map((e) => e.model)).toEqual(['claude-sonnet-5-5[1m]'])
+  })
+
+  test('effort alone keeps the model; default clears both; an effort that is none is refused', async () => {
+    const h = harness()
+    await h.ready()
+    expect(await h.command({ op: 'model', model: null, effort: 'max' })).toMatchObject({ ok: true, result: { model: null, effort: 'max' } })
+    expect(await h.command({ op: 'model', model: 'default' })).toMatchObject({ ok: true, result: { model: null, effort: null } })
+    const bad = await h.command({ op: 'model', model: 'claude-sonnet-5-5', effort: 'turbo' })
+    expect(bad).toMatchObject({ ok: false })
+    expect(String(bad.error)).toContain('effort')
+  })
+
+  test("a fresh module takes the choice and the delivered keys from the child's hello; every resync carries them", async () => {
+    const h = harness()
+    await h.start()
+    h.children[0]!.write(hello(SID, SOCK, { override: { model: 'sonnet', effort: null }, delivered: { 'm/a': 4 } }))
+    await h.settle()
+    expect(h.ofType('resync')[0]).toMatchObject({ override: { model: 'sonnet', effort: null }, delivered: { 'm/a': 4 } })
+    expect(await h.command({ op: 'deliver', key: { writer: 'm/a', seq: 4 }, text: 'x' })).toMatchObject({ ok: true, result: { duplicate: true } })
+    const seen: Record<string, unknown>[] = []
+    await stepThrough(h, { turnId: 't1', index: 0, model: 'claude-haiku', messageCount: 1 }, seen)
+    expect(seen[0]).toMatchObject({ model: 'sonnet' })
+  })
+
+  test("a module that already holds its choice keeps it over a new child's hello, and hands it to that child", async () => {
+    const h = harness()
+    await h.ready()
+    await h.command({ op: 'model', model: 'claude-opus-5-5' })
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, { override: null, delivered: {} }))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ override: { model: 'claude-opus-5-5', effort: null } })
+  })
+})
+
+describe('compact', () => {
+  test('asked mid-turn: queued, and run once the main turn has ended', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const r = await h.command({ op: 'compact', instructions: 'keep the plan' })
+    expect(r).toMatchObject({ ok: true, result: { queued: true, turnId: 't1' } })
+    expect(h.calls.length).toBe(0)
+    await h.complete('ts', 'answer', 'a1') // a subagent's turn ending is not the main turn's
+    expect(h.calls.length).toBe(0)
+    const ending = h.complete('t1')
+    await h.settle()
+    expect(h.calls).toEqual([{ op: 'compact', args: { instructions: 'keep the plan' } }])
+    h.compactions[0]!.finish({ messages: [], tokensBefore: 900, tokensAfter: 100 })
+    await ending
+    expect(h.ofType('compact')).toMatchObject([
+      { phase: 'start', id: r.id },
+      { phase: 'end', id: r.id, tokensBefore: 900, tokensAfter: 100 },
+    ])
+  })
+
+  test('asked idle: started at once; a refusal ends it with the error', async () => {
+    const h = harness()
+    await h.ready()
+    const r = await h.command({ op: 'compact' })
+    expect(r).toMatchObject({ ok: true, result: { started: true } })
+    expect(h.calls).toEqual([{ op: 'compact', args: {} }])
+    h.compactions[0]!.fail(new Error('a turn is running'))
+    await h.settle()
+    expect(h.ofType('compact').at(-1)).toMatchObject({ phase: 'end', id: r.id, error: 'a turn is running' })
+  })
+})
+
+describe('deliver', () => {
+  test("submits the text as the human's words, once per key: a key redelivered, or one at or below the writer's last, is a duplicate", async () => {
+    const h = harness()
+    await h.ready()
+    const key = { writer: 'mac/human', seq: 7 }
+    expect(await h.command({ op: 'deliver', key, text: '[sminos chat p e1 from human → @you]\nhi' })).toMatchObject({ ok: true, result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key, text: 'again' })).toMatchObject({ ok: true, result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key, text: 'again' })).toMatchObject({ ok: true, result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { writer: 'mac/human', seq: 5 }, text: 'older' })).toMatchObject({ result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { writer: 'mac/other', seq: 5 }, text: 'other' })).toMatchObject({ result: { submitted: true } })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => c.args)).toEqual([
+      { text: '[sminos chat p e1 from human → @you]\nhi', asUser: true },
+      { text: 'other', asUser: true },
+    ])
+    expect(h.ofType('delivered').map((e) => [e.key, e.outcome])).toEqual([
+      [key, 'submitted'],
+      [key, 'duplicate'],
+      [key, 'duplicate'],
+      [{ writer: 'mac/human', seq: 5 }, 'duplicate'],
+      [{ writer: 'mac/other', seq: 5 }, 'submitted'],
+    ])
+  })
+
+  test('a deliver with no key or no text is refused', async () => {
+    const h = harness()
+    await h.ready()
+    expect(await h.command({ op: 'deliver', text: 'x' })).toMatchObject({ ok: false })
+    expect(await h.command({ op: 'deliver', key: { writer: 'w', seq: 1 } })).toMatchObject({ ok: false })
+    expect(h.calls.length).toBe(0)
   })
 })
