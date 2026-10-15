@@ -17,7 +17,7 @@
 
 - [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); proved against DC2's real M4 child (`sminos bridge`, seeded cut) and DC3's reviewed hub at `a190a6d8` with `step-end` in the real-child wave (`a7b38ace`, `4bf53309`), reviewed clean 2026-10-15
 - [x] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses) — reviewed clean 2026-10-15 (`c71b751f`, fixes `f357a00a`, `526b9eb8`); proved against DC3's local hub at `b7fc7ebd`+ (M2 uplink 3/3, M1 walk 7/7)
-- [ ] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses)
+- [x] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses) — reviewed clean 2026-10-15 (`99d8fd62`, `73c821fc`, `298254af`; fixes `4dc19fa7`, `74f078ea`, `3cd17348`); `test_rpcs.py` against DC3's local hub at `01ba7519` (contains `dabd37e8`) 30/30
 - [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
 
 ## Constraints that bind every milestone
@@ -617,6 +617,13 @@ against the local hub; until it lands, the stand-in.
   is refused `idle` when the engine's record says `status: "idle"`.
   Compactions are relayed from the requests stream; an unnamed one waits
   only while a compact RPC of that session awaits its command id.
+  A change naming only model or only effort reads the bridge's live
+  override (the `override` of its `GET /events` snapshot) under the
+  session lock just before sending, so another writer's newer choice (the
+  owner's `sminos model`) is kept; an unreadable override refuses the
+  partial change, and no daemon cache or kept file stands in for it. A
+  change landing between that read and the send is a race the whole-pair
+  `model` verb cannot close; accepted.
   Date/Author: 2026-10-15, M3 executor.
 
 - Decision: The suite gate under this machine's load. The three
