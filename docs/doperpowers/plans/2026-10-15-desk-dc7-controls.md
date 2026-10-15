@@ -418,6 +418,14 @@ against the local hub; until it lands, the stand-in.
   older than the module.
   Date/Author: 2026-10-15, the composite's writer, from DC2's M4 walk.
 
+- Decision: The local hub to prove against from M2 on is MAWS `d75f2924`
+  or later (DC3's M3 gate green, run 38763030113): it accepts `step-end`
+  (earlier hubs refuse it `bad-shape`), carries DX7's wrapped keys, holds
+  at most 32 subs per browser socket (the 33rd, or a reused `sub`, gets
+  `end {reason: "error"}`), and keeps a 45 s lease. M1's local-hub walk
+  is rerun there, `step-end` included, in its real-child wave.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
