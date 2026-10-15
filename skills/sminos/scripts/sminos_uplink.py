@@ -219,11 +219,12 @@ def refusal(key, project, e):
         return "its writer is not one a log holds"
     if not (codes.is_log_seq(e.get("seq")) and isinstance(e.get("ts"), str) and isinstance(e.get("kind"), str)):
         return "it is not a log event (seq, ts, kind)"
-    if codes.is_hub_writer(writer) and not codes.is_hub_position(e):
-        return "a hub/ event whose writer, seq, or ts fails its shape"
-    if not codes.verifies(key, "log", project.id, e):
-        return "its code does not verify for project %s" % project.id
-    return ""
+    return {
+        None: "",
+        "encoding": "its code or nonce is not the canonical base64url of 32 and 16 bytes",
+        "position": "a hub/ event whose writer, seq, or ts fails its shape",
+        "code": "its code does not verify for project %s" % project.id,
+    }[codes.failure(key, "log", project.id, e)]
 
 
 def payload(e):
@@ -314,11 +315,13 @@ def serve(stream, cred, ended):
     the hub welcomed it."""
     welcomed = False
     while True:
+        # Before every frame, not only when the stream is quiet: a hub that
+        # never pauses must not keep an orphan or a stopped uplink alive.
+        if ended():
+            return welcomed
         try:
             item = stream.items.get(timeout=POLL)
         except queue.Empty:
-            if ended():
-                return welcomed
             continue
         if item[0] == "closed":
             log("the stream closed: %s" % item[1])

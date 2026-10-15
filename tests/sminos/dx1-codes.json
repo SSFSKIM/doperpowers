@@ -614,6 +614,115 @@
           "value": "NE9MrZ6PlMIlulrJzoHRH8gj4cZnaFF2erR0QaVpEP8"
         }
       }
+    },
+    {
+      "name": "say-value-spare-bits",
+      "of": "say-ascii",
+      "why": "the code's value with its last character's unused bits set: the same 32 bytes, not the canonical spelling",
+      "fails_by": "encoding",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:01:02.123Z",
+        "writer": "SK.local/e0ad139c-18bc-45bd-9489-be8653145f80",
+        "seq": 42,
+        "kind": "say",
+        "from": "doperpowers-1e",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "your change renames a column I read",
+        "mac": {
+          "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+          "value": "qqDqpjy4rH_1vmjD-dlpiPrQIfbyLKb1IIsbbyuJ9ql"
+        }
+      }
+    },
+    {
+      "name": "say-value-padded",
+      "of": "say-ascii",
+      "why": "the code's value with a padding character",
+      "fails_by": "encoding",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:01:02.123Z",
+        "writer": "SK.local/e0ad139c-18bc-45bd-9489-be8653145f80",
+        "seq": 42,
+        "kind": "say",
+        "from": "doperpowers-1e",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "your change renames a column I read",
+        "mac": {
+          "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+          "value": "qqDqpjy4rH_1vmjD-dlpiPrQIfbyLKb1IIsbbyuJ9qk="
+        }
+      }
+    },
+    {
+      "name": "say-nonce-spare-bits",
+      "of": "say-ascii",
+      "why": "the nonce with its last character's unused bits set: the same 16 bytes, not the canonical spelling",
+      "fails_by": "encoding",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:01:02.123Z",
+        "writer": "SK.local/e0ad139c-18bc-45bd-9489-be8653145f80",
+        "seq": 42,
+        "kind": "say",
+        "from": "doperpowers-1e",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "your change renames a column I read",
+        "mac": {
+          "nonce": "AQEBAQEBAQEBAQEBAQEBAR",
+          "value": "qqDqpjy4rH_1vmjD-dlpiPrQIfbyLKb1IIsbbyuJ9qk"
+        }
+      }
+    },
+    {
+      "name": "rpc-mac-spare-bits",
+      "of": "rpc-decide",
+      "why": "an RPC's code with its last character's unused bits set",
+      "fails_by": "encoding",
+      "domain": "smns-hub-rpc-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "rpc": "decide",
+        "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+        "machine": "mini",
+        "member": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "created": "2026-10-15T08:07:00.000Z",
+        "nonce": "BQUFBQUFBQUFBQUFBQUFBQ",
+        "args": {
+          "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+          "decision": "allow",
+          "digest": {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "request": "toolu_01QmZ7wq3V8nEXAMPLE",
+            "tool": "Bash",
+            "input_sha256": "8294a36b488d0be1f3033e6f1c6d7c22eccefd6717f1d6552f6604feef65024e"
+          }
+        },
+        "mac": "gbTIjG4zE2Zd6Gxpc1FxarxfVDufsjEwKg-K_L1pepR"
+      }
     }
   ]
 }

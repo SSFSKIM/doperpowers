@@ -154,6 +154,13 @@ elif cmd == "burst":
     frame = {"t": "hb", "at": "2026-10-15T00:00:00.000Z", "pad": "x" * int(sys.argv[4])}
     status, body = call("POST", "/control/send", {"frames": [frame], "repeat": int(sys.argv[3])})
     print("%d %.2f" % (status, body.get("took", -1)))
+elif cmd == "flow":  # an hb every 50 ms until the file named goes away, to whichever stream is open
+    while __import__("os").path.exists(sys.argv[3]):
+        try:
+            call("POST", "/control/send", {"frames": [{"t": "hb", "at": "2026-10-15T00:00:00.000Z"}]})
+        except OSError:
+            pass
+        time.sleep(0.05)
 elif cmd == "deliver":
     inbox, text = sys.argv[4], sys.argv[5].encode()
     t0 = time.time()
@@ -186,6 +193,8 @@ elif variant == "moved":
     e["writer"] = "hub/0123456789abcdef0123456789abcdef"
 elif variant == "via":
     e["via"] = "doperpowers-1e"
+elif variant == "padded":
+    e["mac"]["value"] += "="
 print(json.dumps({"t": "events", "project": other if variant == "unknown-project" else project, "events": [e]}))
 PY
 export SCRIPTS
@@ -292,7 +301,7 @@ TOOK="$(deliver_time 2 "said from the web during the hung fetch")"
 assert_within "$TOOK" 1.0 "an event from the hub reaches m within a second while the fetch hangs"
 assert_contains "$(cat "$DLOG")" "uplink: delivered 1 in hubproj to m" "delivered by the uplink itself"
 assert_contains "$(cat "$HPLOG/hub.$MEMBER.jsonl")" '"mac": {"nonce": "' "stored with the code it arrived with"
-for variant in bad-code moved via other-project unknown-project; do
+for variant in bad-code moved via padded other-project unknown-project; do
   ctl send "$(seal "$variant" 3 "forged: $variant")" >/dev/null
 done
 until_true 100 grep -q "events for project '$OTHER_PROJECT'" "$DLOG" || true
@@ -301,6 +310,7 @@ assert_not_contains "$(cat "$INBOX")" "forged:" "or reaches m"
 assert_contains "$(cat "$DLOG")" "in hubproj: its code does not verify" "a changed field fails the code, and is logged"
 assert_contains "$(cat "$DLOG")" "uplink: refused 'hub/0123456789abcdef0123456789abcdef':3" "a hub/ event moved to another member's feed is refused"
 assert_contains "$(cat "$DLOG")" "fails its shape" "by its shape, though its code verifies"
+assert_contains "$(cat "$DLOG")" "its code or nonce is not the canonical base64url of 32 and 16 bytes" "a code in another spelling of its bytes is refused before any HMAC"
 assert_equals "$(grep -c "its code does not verify" "$DLOG")" 3 "a changed field, an uncovered field (via), and an event of another project all fail the code"
 assert_contains "$(cat "$DLOG")" "events for project '$OTHER_PROJECT', which is no hub project of org org-1 known here: ignored" "a frame for a project not known here is ignored"
 assert_equals "$(cat "$SMINOS_HOME/projects/$HP/daemon.json")" "$TICKED" "the tick loop is still in the fetch all along"
@@ -407,6 +417,48 @@ for changed in sminos_uplink.py sminos_codes.py; do
   assert_contains "$(cat "$T/run-code.out")" "its code changed" "saying why"
   if [[ -n "$UP" ]] && dead "$UP"; then pass "its uplink ($UP) is stopped with it"; else fail "its uplink is stopped with it"; fi
 done
+
+# ---- an uplink ends promptly under a stream that never pauses
+echo "ending under steady traffic:"
+start_run() { # → RUN, UP: a daemon run whose uplink holds a new stream
+  local gen; gen=$(( $(ctl generation) + 1 ))
+  "$SMINOS" daemon run --interval 1 >> "$T/run3.out" 2>&1 & RUN=$!
+  PIDS+=("$RUN")
+  until_true 200 gen_is "$gen" || true
+  UP="$(uplink_pid)"
+}
+uplink_free() { "$SMINOS" daemon status | grep -q "uplink: not running"; }
+start_run
+touch "$T/flowing"
+ctl flow "$T/flowing" & FLOW=$!
+PIDS+=("$FLOW")
+sleep 0.5
+kill -9 "$RUN"
+set +e; wait "$RUN" 2>/dev/null; set -e
+until_true 40 dead "$UP" || true
+if [[ -n "$UP" ]] && dead "$UP"; then pass "with an hb every 50 ms, the orphan of a killed daemon run ends within 2 s"; else
+  fail "with an hb every 50 ms, the orphan of a killed daemon run ends within 2 s"; echo "    uplink pid '$UP'"; fi
+until_true 40 uplink_free || true
+if uplink_free; then pass "and releases uplink.lock"; else fail "and releases uplink.lock"; fi
+OLD_UP="$UP"
+start_run
+if [[ -n "$UP" && "$UP" != "$OLD_UP" ]] && alive "$UP"; then pass "a new daemon run's uplink takes the stream ($UP)"; else
+  fail "a new daemon run's uplink takes the stream"; echo "    uplink pid '$UP', was $OLD_UP"; fi
+kill "$UP"
+until_true 20 dead "$UP" || true
+if dead "$UP"; then pass "SIGTERM ends the uplink within a second under the same flow"; else
+  fail "SIGTERM ends the uplink within a second under the same flow"; fi
+assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "on its own, not by the supervisor's kill"
+assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited with 0" "the supervisor saw it exit cleanly"
+restarted_after() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$1" ]] && alive "$p"; }
+until_true 100 restarted_after "$UP" || true
+UP="$(uplink_pid)"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
+if dead "$UP"; then pass "SIGTERM to daemon run under the flow ends its uplink"; else fail "SIGTERM to daemon run under the flow ends its uplink"; fi
+assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "which stopped on the supervisor's SIGTERM, before any kill"
+rm -f "$T/flowing"
+set +e; wait "$FLOW"; set -e
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

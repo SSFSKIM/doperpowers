@@ -19,9 +19,12 @@ UTF-16 code units, strings as ECMAScript's JSON.stringify writes them, every
 number as the IEEE-754 double nearest it written as ECMAScript's
 Number::toString writes that double. What I-JSON forbids is refused: a lone
 surrogate (a str here holds no surrogate pairs, so any surrogate code point is
-one), NaN, and the infinities. A verifier never raises: whatever is refused, a
-missing or non-string nonce, or a value that is not base64url of 32 bytes
-fails, and the code is compared in constant time.
+one), NaN, and the infinities. Base64url is canonical (RFC 4648 §3.5): no
+padding, the unused low bits of the last character zero, one spelling per
+byte string; every other spelling is refused, never normalized. A verifier
+never raises: whatever the canonical form refuses, a code value that is not
+the canonical spelling of 32 bytes, or a nonce not that of 16, fails; the code
+is compared in constant time.
 
 Stdlib only: the daemon runs on the system's Python.
 """
@@ -226,20 +229,35 @@ def seal(key, kind, project, draft, nonce):
     return {**draft, "mac": {"nonce": nonce, "value": code(key, kind, project, shape)}}
 
 
-def verifies(key, kind, project, shape):
-    """What an importer checks before anything enters the log or is acted on:
-    the code, and for a `hub/` log event its position. Never raises."""
+def failure(key, kind, project, shape):
+    """What an importer checks before anything enters the log or is acted on,
+    in DX1's order, and the first that refuses: "encoding" (the code's value
+    and its nonce are not the canonical base64url of 32 and 16 bytes),
+    "position" (a `hub/` log event's writer, seq, or ts fails its shape), or
+    "code" (the code does not match, or the shape has no canonical form). None
+    when the shape verifies. Never raises."""
+    if not isinstance(shape, dict):
+        return "encoding"
+    mac = shape.get("mac")
+    if kind == "rpc":
+        value, nonce = mac, shape.get("nonce")
+    else:
+        value, nonce = (mac.get("value"), mac.get("nonce")) if isinstance(mac, dict) else (None, None)
+    want = b64url_bytes(value, CODE_BYTES)
+    if want is None or b64url_bytes(nonce, NONCE_BYTES) is None:
+        return "encoding"
+    if kind == "log" and is_hub_writer(shape.get("writer")) and not is_hub_position(shape):
+        return "position"
     try:
-        if kind == "log" and is_hub_writer(shape.get("writer")) and not is_hub_position(shape):
-            return False
-        mac = shape.get("mac")
-        stored = mac if kind == "rpc" else (mac.get("value") if isinstance(mac, dict) else None)
-        want = b64url_bytes(stored, CODE_BYTES)
-        if want is None:
-            return False
-        return hmac.compare_digest(_digest(key, kind, project, shape), want)
-    except (NotCanonical, RecursionError, AttributeError):
-        return False
+        got = _digest(key, kind, project, shape)
+    except (NotCanonical, RecursionError):
+        return "code"
+    return None if hmac.compare_digest(got, want) else "code"
+
+
+def verifies(key, kind, project, shape):
+    """Whether a shape verifies (`failure` finds nothing)."""
+    return failure(key, kind, project, shape) is None
 
 
 def input_sha256(tool_input):

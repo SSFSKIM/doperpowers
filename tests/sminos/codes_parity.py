@@ -1,12 +1,13 @@
 """Parity of sminos_codes with DX1 (the desk composite's authentication code):
 every number, digest, vector, and negative of dx1-codes.json, copied
-verbatim from MAWS commit 29294260
+verbatim from MAWS commit e6bb0160
 (apps/desk-hub/src/protocol/vectors/codes.json, written by generate.py beside
-it), reproduced byte for byte or refused, each negative by the check its
-`fails_by` names (its code, or a `hub/` event's position); then what DX1
-refuses that the file does not hold — lone surrogates, NaN and the
-infinities, a missing or non-string nonce, a value that is not base64url of
-32 bytes — and the position cases generate.py asserts but does not write out.
+it), reproduced byte for byte or refused, each negative by the first check
+that refuses it, as its `fails_by` names (DX1's order: the encoding of its
+code and nonce, a `hub/` event's position, the code); then what DX1 refuses
+that the file does not hold — lone surrogates, NaN and the infinities, a code
+or nonce that is not the canonical base64url of 32 or 16 bytes — and the
+position cases generate.py asserts but does not write out.
 Prints one `ok <name>` or `FAIL <name>` line per case, for
 run-sminos-tests.sh to count.
 
@@ -64,12 +65,19 @@ for neg in VECTORS["negatives"]:
     kind, key = KIND_OF[neg["domain"]], codes.b64url_bytes(neg["org_key"], 32)
     shape = codes.loads(json.dumps(neg["input"], ensure_ascii=False))
     check("negative %s (%s): refused" % (neg["name"], neg["why"]), not codes.verifies(key, kind, neg["project"], shape))
-    # "position": the code itself verifies and only the hub/ position check refuses.
-    stored = shape["mac"] if kind == "rpc" else shape["mac"]["value"]
-    by = "position" if codes.code(key, kind, neg["project"], shape) == stored else "code"
+    by = codes.failure(key, kind, neg["project"], shape)
     check("negative %s: fails by %s" % (neg["name"], neg.get("fails_by")), by == neg.get("fails_by"), by)
-    if by == "position":
+    # Each label checked by its own means too: an encoding refused by the strict decoder, a position by the shape
+    # check, a code by a computed code that differs from the stored one.
+    value = shape.get("mac") if kind == "rpc" else (shape.get("mac") or {}).get("value")
+    nonce = shape.get("nonce") if kind == "rpc" else (shape.get("mac") or {}).get("nonce")
+    if neg.get("fails_by") == "encoding":
+        check("negative %s: its code or nonce is not canonical base64url" % neg["name"],
+              codes.b64url_bytes(value, 32) is None or codes.b64url_bytes(nonce, 16) is None)
+    elif neg.get("fails_by") == "position":
         check("negative %s: its position fails its shape" % neg["name"], not codes.is_hub_position(shape))
+    else:
+        check("negative %s: its code differs" % neg["name"], codes.code(key, kind, neg["project"], shape) != value)
 
 # ---- what the canonical form refuses
 KEY = bytes(range(32))
@@ -105,40 +113,67 @@ for text in ("NaN", "Infinity", "-Infinity", '{"n": NaN}', "[Infinity]", "1e400"
 check("loads reads a lone surrogate escape (canonical refuses it)", raises(codes.canonical, codes.loads('"\\ud800"')))
 check("loads reads an escaped surrogate pair as one character", codes.loads('"\\ud83d\\ude00"') == "\U0001f600")
 
-for name, fn in (
-    ("a lone surrogate in a covered field", lambda e: e.update(text="x \udc00")),
-    ("a lone surrogate in an unknown field's key", lambda e: e.update({"m\ud83d": "x"})),
-    ("NaN in an unknown field", lambda e: e.update(n=float("nan"))),
-    ("an infinity in an unknown field", lambda e: e.update(n=float("inf"))),
-    ("no mac", lambda e: e.pop("mac")),
-    ("a mac that is not an object", lambda e: e.update(mac="x")),
-    ("a mac without a nonce", lambda e: e["mac"].pop("nonce")),
-    ("a null nonce", lambda e: e["mac"].update(nonce=None)),
-    ("a numeric nonce", lambda e: e["mac"].update(nonce=1)),
-    ("no value", lambda e: e["mac"].pop("value")),
-    ("a numeric value", lambda e: e["mac"].update(value=7)),
-    ("a value outside base64url", lambda e: e["mac"].update(value="!" * 43)),
-    ("a value in standard base64", lambda e: e["mac"].update(value=e["mac"]["value"].replace("_", "/").replace("-", "+"))),
-    ("a padded value", lambda e: e["mac"].update(value=e["mac"]["value"] + "=")),
-    ("a value one byte short", lambda e: e["mac"].update(value=codes.b64url(bytes(31)))),
-    ("a value one byte long", lambda e: e["mac"].update(value=codes.b64url(bytes(33)))),
-    ("an empty value", lambda e: e["mac"].update(value="")),
-    # The last character carries 2 bits past the 256: the same bytes, written another way.
-    ("a value with its spare bits set", lambda e: e["mac"].update(
-        value=e["mac"]["value"][:-1] + codes.B64URL_ALPHABET[codes.B64URL_ALPHABET.index(e["mac"]["value"][-1]) | 1])),
-):
-    check("verifies refuses an event with %s" % name, not codes.verifies(KEY, "log", PROJECT, altered(SAY, fn)))
+def respelled(text):
+    """The canonical spelling's last character with a spare bit set: the same bytes, written another way."""
+    i = codes.B64URL_ALPHABET.index(text[-1])
+    assert i & 3 == 0, text  # a 43-character code has 2 spare bits, a 22-character nonce 4: clear in the original
+    return text[:-1] + codes.B64URL_ALPHABET[i | 1]
 
-check("the spare-bits case is a real one (the say vector's last character has them clear)",
-      codes.B64URL_ALPHABET.index(SAY["mac"]["value"][-1]) & 3 == 0)
-for name, fn in (
-    ("no nonce", lambda r: r.pop("nonce")),
-    ("a numeric nonce", lambda r: r.update(nonce=5)),
-    ("a code that is not a string", lambda r: r.update(mac={"value": r["mac"]})),
-    ("no code", lambda r: r.pop("mac")),
+
+# What the file does not carry (it carries a padded value, and spare bits in an event's value and nonce and in an
+# RPC's code), each with the first check that refuses it.
+for name, fails_by, fn in (
+    ("a lone surrogate in a covered field", "code", lambda e: e.update(text="x \udc00")),
+    ("a lone surrogate in an unknown field's key", "code", lambda e: e.update({"m\ud83d": "x"})),
+    ("NaN in an unknown field", "code", lambda e: e.update(n=float("nan"))),
+    ("an infinity in an unknown field", "code", lambda e: e.update(n=float("inf"))),
+    ("no mac", "encoding", lambda e: e.pop("mac")),
+    ("a mac that is not an object", "encoding", lambda e: e.update(mac="x")),
+    ("a mac without a nonce", "encoding", lambda e: e["mac"].pop("nonce")),
+    ("a null nonce", "encoding", lambda e: e["mac"].update(nonce=None)),
+    ("a numeric nonce", "encoding", lambda e: e["mac"].update(nonce=1)),
+    ("an empty nonce", "encoding", lambda e: e["mac"].update(nonce="")),
+    ("a nonce one byte short", "encoding", lambda e: e["mac"].update(nonce=codes.b64url(bytes(15)))),
+    ("a nonce one byte long", "encoding", lambda e: e["mac"].update(nonce=codes.b64url(bytes(17)))),
+    ("a padded nonce", "encoding", lambda e: e["mac"].update(nonce=e["mac"]["nonce"] + "==")),
+    ("a nonce outside base64url", "encoding", lambda e: e["mac"].update(nonce="!" * 22)),
+    ("no value", "encoding", lambda e: e["mac"].pop("value")),
+    ("a numeric value", "encoding", lambda e: e["mac"].update(value=7)),
+    ("a value outside base64url", "encoding", lambda e: e["mac"].update(value="!" * 43)),
+    ("a value in standard base64", "encoding",
+     lambda e: e["mac"].update(value=e["mac"]["value"].replace("_", "/").replace("-", "+"))),
+    ("a value one byte short", "encoding", lambda e: e["mac"].update(value=codes.b64url(bytes(31)))),
+    ("a value one byte long", "encoding", lambda e: e["mac"].update(value=codes.b64url(bytes(33)))),
+    ("an empty value", "encoding", lambda e: e["mac"].update(value="")),
 ):
-    check("verifies refuses an RPC with %s" % name, not codes.verifies(KEY, "rpc", PROJECT, altered(RPC, fn)))
-check("verifies refuses what is not an object", not codes.verifies(KEY, "log", PROJECT, ["not", "an", "event"]))
+    e = altered(SAY, fn)
+    by = codes.failure(KEY, "log", PROJECT, e)
+    check("an event with %s fails by %s" % (name, fails_by), by == fails_by and not codes.verifies(KEY, "log", PROJECT, e), by)
+
+for name, fails_by, fn in (
+    ("no nonce", "encoding", lambda r: r.pop("nonce")),
+    ("a numeric nonce", "encoding", lambda r: r.update(nonce=5)),
+    ("a nonce one byte short", "encoding", lambda r: r.update(nonce=codes.b64url(bytes(15)))),
+    ("its nonce's spare bits set", "encoding", lambda r: r.update(nonce=respelled(r["nonce"]))),
+    ("a code that is not a string", "encoding", lambda r: r.update(mac={"value": r["mac"]})),
+    ("no code", "encoding", lambda r: r.pop("mac")),
+):
+    r = altered(RPC, fn)
+    by = codes.failure(KEY, "rpc", PROJECT, r)
+    check("an RPC with %s fails by %s" % (name, fails_by), by == fails_by and not codes.verifies(KEY, "rpc", PROJECT, r), by)
+DRAFT = {k: v for k, v in SAY.items() if k != "mac"}
+for name, nonce in (("15 bytes", codes.b64url(bytes(15))), ("any string", "any-string-at-all"), ("empty", "")):
+    sealed = codes.seal(KEY, "log", PROJECT, DRAFT, nonce)
+    check("an event sealed under a nonce that is not 16 canonical bytes (%s) fails by encoding, its code good though" % name,
+          codes.failure(KEY, "log", PROJECT, sealed) == "encoding" and not codes.verifies(KEY, "log", PROJECT, sealed))
+check("what is not an object is refused", codes.failure(KEY, "log", PROJECT, ["not", "an", "event"]) == "encoding")
+check("encoding is checked before position: a moved hub/ event with a padded value fails by encoding",
+      codes.failure(KEY, "log", PROJECT, altered(HUB, lambda e: (e.update(writer="hub/" + "0" * 32),
+                                                                e["mac"].update(value=e["mac"]["value"] + "=")))) == "encoding")
+check("the strict decoder never normalizes: a respelled value decodes to nothing, not to the original bytes",
+      codes.b64url_bytes(respelled(SAY["mac"]["value"]), 32) is None)
+check("an org key that is not canonical base64url is refused (hub.json's key)",
+      codes.b64url_bytes(respelled(codes.b64url(KEY)), 32) is None and codes.b64url_bytes(codes.b64url(KEY), 32) == KEY)
 check("a sealed event verifies, and its code is the vector's",
       codes.seal(KEY, "log", PROJECT, {k: v for k, v in SAY.items() if k != "mac"}, SAY["mac"]["nonce"]) == SAY)
 
@@ -152,7 +187,7 @@ check("the code is compared in constant time (hmac.compare_digest, on the 32 byt
       len(calls) == 2 and all(len(a) == len(b) == 32 for a, b in calls))
 
 # ---- a hub/ event's position (writer, seq, ts — what its code leaves out), checked by shape. The file's position
-# negatives are pinned above; these are the cases generate.py at MAWS 29294260 (committed) asserts of
+# negatives are pinned above; these are the cases generate.py at MAWS e6bb0160 (committed) asserts of
 # is_hub_position without writing them to codes.json, plus one this test adds from DX1's text (the member's own form).
 OTHER_MEMBER = "0123456789abcdef0123456789abcdef"
 check("the hub/ vector's position holds", codes.is_hub_position(HUB))
