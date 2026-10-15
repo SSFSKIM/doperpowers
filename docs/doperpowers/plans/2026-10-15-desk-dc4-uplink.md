@@ -319,6 +319,51 @@ produces nothing new for other children beyond the stream DC7 builds on.
   TypeScript requires, no stricter; an RPC without a string `nonce` is
   refused.
   Date/Author: 2026-10-15, M1's executor, folded by the controller.
+- Decision: Canonical base64url (composite MAWS `91f839ee`; hub
+  `e6bb0160`): no padding, the last character's unused bits zero, refused
+  otherwise and never normalized; a code value is exactly 32 bytes and a
+  nonce exactly 16, an event's `mac.nonce` and an RPC's `nonce` alike. The
+  vectors are re-copied from `e6bb0160` (four `fails_by: "encoding"`
+  negatives; checks in the order encoding, position, code). Reverses M1's
+  call (10), "a nonce only has to be a string".
+  Date/Author: 2026-10-15, the composite's writer; built as M1's first fix.
+- Decision: **M2's shape** (against DX7's endpoints marked *M2,
+  provisional* in the composite at `91f839ee`). (1) `sminos hub enroll
+  <code> [--name <name>]` decodes the code as DX7's decoder does (prefix,
+  canonical base64url body, JSON object, every field a non-empty string,
+  `hub` https or http on a loopback host, `key` 32 bytes, `machine` an
+  admitted name, which `--name` replaces), redeems at `POST
+  <hub>/machine/enroll {token, machine}`, checks the answer's `org` and
+  `machine` against what it asked, and writes `daemon/hub.json` (mode
+  0600, written whole by rename) with the key; the key and the secret are
+  never printed or logged. Each DX7 error is said in a sentence that tells
+  what to do: `name-taken` names `--name` with the same code; `busy`,
+  `mint-failed`, and a lost answer say to run the same command again
+  (DX7: the same token and name rotate the credential), and the CLI
+  retries a lost answer itself a few times before saying so. (2) An
+  installation already enrolled refuses a new enrollment unless
+  `--replace` is given, so a stray code never swaps the machine's
+  identity. (3) **The enrolled name is the writer host**: `host_name()`
+  returns `hub.json`'s `machine` when this `SMINOS_HOME` is enrolled,
+  before `DAEMON_HOST` and the system name, so every writer this machine
+  creates afterwards — hub project or not — is under the enrolled name,
+  and nothing is written under the old one to a hub project. Enrolling
+  under a name other than the current `host_name()` says so, and says
+  that events already written under the old name stay local (the hub
+  admits only `<machine>/…` writers). The read is cached per process
+  (sminos's per-invocation rule). (4) `sminos project init --hub` writes
+  `"hub": {"url", "org"}` from this machine's enrollment (refused when
+  not enrolled); on a directory whose `.smns` exists, `--hub` adds the
+  field to it, keeping every other field, and changes nothing else. (5) A
+  project whose `.smns` names a hub is never synced through git from here
+  on: the tick skips its git phases and `project attach` refuses it; its
+  `remote` stays for M4's archive. (6) The Python stand-in gains DX7's
+  redemption (states `open`/`pending`/`confirmed`, rotation on a second
+  redemption while pending, `name-taken` compared without case,
+  `token-used`, `expired`) and a test-only way to mint a token; M2
+  proves G1 against it, and again against DC3's local hub when its M2
+  lands and its run instructions exist.
+  Date/Author: 2026-10-15, controller (before M2's dispatch).
 
 ## Surprises & Discoveries
 
@@ -327,6 +372,8 @@ produces nothing new for other children beyond the stream DC7 builds on.
   accepts; `sminos_codes` accepts only the canonical one. Harmless for
   verification (same bytes); anything keyed on the value string should
   know. Reported to the composite's writer for DC3. (M1, 2026-10-15)
+  Resolved the same day: base64url is canonical in every contract and
+  the hub's decoder strict (MAWS `91f839ee`, `e6bb0160`).
 - `part` frames are not reassembled in M1, so an `events` frame over
   1 MiB is not imported until M3 builds parts. (M1)
 - `peer_live`'s probe (connect, send nothing, close) reaches an inbox
