@@ -226,6 +226,13 @@ the spec's Decision Log entry "the branch review round"
   2026-10-15) and passed on every run since; one machine, no remote, no
   hub. Trigger: a second failure, or a CI gate on the shell suites
   (item 4); then make its wait condition event-driven rather than timed.
+  The same class under heavy load (load average 150–330, desk DC4/DC7,
+  2026-10-15): `send --wait`'s ack-window assertions (~1061, "no
+  evidence … within the ack window"), the two-machine git-mirror
+  delivery's 2 s bound, and, on the untouched base commit at the same
+  load, "reading chat is the first sminos instruction" and "the
+  watcher's finalize does not overwrite a retire". All pass at normal
+  load. Same trigger, same fix.
 - **T3 — an uplink POST past its 60 s deadline can leave its worker
   alive.** `sminos_uplink.py` `post()`/`exchange()` (desk DC4 M3): on the
   whole-exchange deadline the main thread shuts `HTTPConnection.sock`,
