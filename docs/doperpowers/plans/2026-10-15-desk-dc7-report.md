@@ -1,43 +1,78 @@
-# DC7 (the machine's controls): execution report, interim (2026-10-15)
+# DC7 (the machine's controls): execution report (2026-10-15)
 
-Status: in progress. The harness forced this hand-back while M4's executor was still running its own background work (a live Resume check).
+Status: DONE. The plan is `docs/doperpowers/plans/2026-10-15-desk-dc7-controls.md`, and the composite is MAWS `docs/doperpowers/specs/2026-10-15-desk-design.md` (branch `smns-erb`). Branch `worktree-agent-ab2de4f299f415dbf`, at version 7.157.0 over main's 7.156.1.
 
-## Where it stands
+## What was built
 
-- **M1, presence and the session plane.** Reviewed clean and ticked. It is proven against DC2's real `sminos bridge` child with a seeded cut, and against DC3's reviewed hub at `a190a6d8` with `step-end`. One Minor from review (scripted endpoint fidelity on a resync) was carried into M4.
-- **M2, policy, requests, settlements and delivery outcomes.** Reviewed clean and ticked: `c71b751f`, fixes `f357a00a` and `526b9eb8`.
-- **M3, the RPCs.** Reviewed clean and ticked: `99d8fd62`, `73c821fc`, `298254af`, fixes `4dc19fa7`, `74f078ea` and `3cd17348`. `test_rpcs.py` passed 30/30 against DC3's local hub.
-- **M4.** Two commits have landed:
-  - `f263bbd5`: Resume, the bridge-file sweep, and the fixture fix.
-  - `69a9ad75`: CLAUDE.md and the 7.157.0 bump.
+The daemon side of the desk:
 
-  The executor has not reported yet, and `tests/mods/live-resume-check.py` is untracked in the worktree. M4's task review, the final `high` branch review, Outcomes & Retrospective, and the PR all remain.
-- **Merges:**
-  - DC4 at `7252a5d7` (`9e857943`).
-  - DC2 at `89c9f8da` (`0563b977`) and `5003ca2e` (`712f6af3`).
-  - origin/main (`93d01f3f`, `1c2fe0be`).
-- **Every contract ruling is in the plan's Decision Log.**
+- **Session plane** (`skills/sminos/scripts/sminos_plane.py`).
+  - Presence comes from the engine's records, within 1 s.
+  - DX4 subscriptions join transcript rows with the bridge's stream in disk order, using DX5's seeded cut and its row notices.
+  - Snapshots, `rows`, `diff`, `step-end`, and discontinuity are all served.
+  - After a disconnect, a new stream publishes null presence for sessions that ended meanwhile, cut off by a watermark the hub has accepted.
+- **Policy** (`sminos_policy.py`, `sminos daemon policy`).
+  - Read-only and the permission ceiling are configurable; an unreadable policy file makes the machine read-only.
+  - The read-only guard sits at the one delivery boundary, `deliver_next`.
+- **Requests, settlements, and delivery outcomes** (`sminos_requests.py`, `sminos_outcomes.py`).
+  - DX4 `raised` and `settled` carry codes.
+  - The complete pending set waits for the bridges' first snapshots.
+  - A closed terminal session gets `recorded`, an unanswered push gets `uncertain`, and a read-only machine gets `refused-read-only`.
+- **RPCs** (`sminos_rpc.py`).
+  - Refusals run in this order: code, binding, ledger, freshness, policy, fit and digest, then the session's kind.
+  - An at-most-once ledger guards execution and fails closed when unreadable.
+  - Reconciliation works from each action's own trace.
+  - Each RPC executes through the bridge or through `sminos`.
+  - Resume is attributed to its own launch.
+- **Bridge, additive changes** (`hooks/mods/bridge.tsx`, `sminos_bridge.py`, after DC2 closed).
+  - `raised.toolUseId` names the ask mod's outer call.
+  - The 409s carry who-won fields.
 
-## Open with the composite's writer
+## Milestones and review
 
-How M3 handles a misfit decision. Today these are refused `bad-shape` after the claim, from the bridge's 400:
-- a deny on an async question;
-- an answer to a permission;
-- an allow on a question;
-- answer keys the request does not ask.
+| Milestone | Commits | Review |
+| --- | --- | --- |
+| M1 | `19b50561`; fixes `3aa64d21`..`d51c6956`; real-child wave `a7b38ace`, `4bf53309` | clean |
+| M2 | `c71b751f`; fixes `f357a00a`, `526b9eb8` | clean |
+| M3 | `99d8fd62`, `73c821fc`, `298254af`; fixes `4dc19fa7`, `74f078ea`, `3cd17348` | clean |
+| M4 | `f263bbd5`, `69a9ad75`, `4bba978a`, `c317d37c`, `762f780a`; fixes `bd84f1c9`, `b870a9c0` | clean |
+| Final `high` review | 4 P2 fixed in `3e89aa1e`, `8304923c`, `5dfa5150`, `da98a3ff` | re-review: correct |
 
-I proposed catching them at check 7, before the claim, still as `bad-shape`. That needs DX6 to list `bad-shape` among the daemon's codes. The ruling is pending.
+Merges:
+- DC4 at `7252a5d7`.
+- DC2 at `89c9f8da` and `5003ca2e`.
+- `origin/main` three times, the last at 7.156.1 (`6ee5293c`).
 
-## Tech debt
+Every contract ruling the composite's writer made during execution is in the plan's Decision Log.
 
-The suite's load flakes are covered by DC4's entry in `docs/doperpowers/TECH-DEBT.md`.
+## Evidence on the final head
 
-## Next
+Load was 85–160 throughout.
 
-1. Take M4's report and review it.
-2. Apply the misfit ruling.
-3. Run the final `high` review over `git merge-base origin/main HEAD`..HEAD.
-4. Write Outcomes & Retrospective.
-5. Open the PR.
+- **Full sminos suite** (`tests/sminos/run-sminos-tests.sh`, on `da98a3ff`): 1740/1742. The two failures:
+  - "the say lands within two seconds" is the git-mirror push bound. It also fails on main and is listed in TECH-DEBT.md.
+  - "the terminal won, as a field" was a race in DC7's own assertion. Under load the watcher settles the request first, so the refusal is "already settled". Fixed in `d7bac20e`; `test-bridge-requests.sh` then passed 75/75.
+- **Mods suite** (`tests/mods/run-mods-tests.sh`): 298 pass, 0 fail, plus the ask search checks.
+- **Against DC3's local hub:** M4's walk passed 17/17 (MAWS `349f2512`, G1–G4), and `test_rpcs.py` passed 30/30.
+- **Live Resume check** against claude 2.1.301 under a temporary HOME: 5/5.
 
-The ledger is `.doperpowers/sde/2026-10-15-desk-dc7-controls/progress.md`.
+## Rests on a stand-in
+
+These Resume behaviours were proven only against a stand-in for `claude`, not the live engine:
+- two Resumes at once;
+- delivery after Resume;
+- claim reconciliation;
+- the seat cases.
+
+## Friction routed around
+
+- The `with-slot.sh` load wrapper was unavailable in worktree sessions. The composite's writer waived it, and heavy runs went one at a time.
+- My guard refuses any command that overrides HOME. With the composite's writer's agreement, the mods suite ran as the script stands: it touches neither sminos nor the hook, and stages its own copy under mktemp.
+
+## Tech debt logged
+
+All in `docs/doperpowers/TECH-DEBT.md`:
+- the suite's load flakes;
+- the uplink tick-loop candidate flake;
+- a compact's nonce lost after the ledger is repaired at runtime;
+- a non-`OSError` from the claim write.
