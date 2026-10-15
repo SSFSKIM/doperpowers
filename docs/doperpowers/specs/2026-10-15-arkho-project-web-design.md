@@ -24,7 +24,9 @@ everything that crosses sessions, a family with no join step, a daemon per
 machine. What is still missing is the place where the human works with
 that project. Today it is a terminal tab per session per machine, and SSH.
 
-After this unit, a browser tab per project is that place. The owner opens
+After this unit, a browser tab per project is that place at the desk, and
+the same app on the phone's home screen carries what needs the owner when
+they are away from it. The owner opens
 Arkho, sees every project with its machines and how many sessions are
 working and waiting on them, opens one, and works there: a group chat of
 everything the project's sessions said to the human, each session in depth
@@ -59,7 +61,9 @@ correction while it works and it reads it at its next step, without losing
 the command it is running. "+ Session" asks for a machine, a checkout, a
 worktree, a brief; seconds later the new session is in the sidebar, an
 ordinary `claude --bg` job you could also attach to from that machine's
-terminal.
+terminal. Later, laptop closed, the phone buzzes: `maws-45` asks something.
+The notification only says so; tapping it opens the question's card in the
+app, and the answer from the phone moves the session on the mini.
 
 ### What it must not be
 
@@ -84,7 +88,7 @@ terminal.
 
 ## Parent-Level Acceptance
 
-Phase 1 closes when all of the following hold on the owner's two Macs with
+Phase 1 closes when all of the following hold on the owner's two Macs and phone, with
 the hub deployed, checked by hand and recorded with evidence in Outcomes.
 
 1. **Projects.** Signed in through Access, the grid lists every project
@@ -141,6 +145,11 @@ the hub deployed, checked by hand and recorded with evidence in Outcomes.
 11. **The desk.** The owner works a day across the two Macs without
     opening a terminal for anything the sessions needed from them, and says
     so (a verdict, recorded in Outcomes with what still sent them to one).
+12. **The phone.** With the laptop closed and the app installed to the
+    phone's home screen, a question and a permission prompt raised by a
+    session on the mini each push a notification to the phone; tapping one
+    opens its card; answering from the phone continues the session, and
+    the mini's terminal dialog closes.
 
 ## Design
 
@@ -204,6 +213,24 @@ presence and pending requests in memory, routes RPCs and session-plane
 subscriptions to the right machine, fans events out to browsers, and keeps
 the audit record of decisions. A registry (one Durable Object, or D1) holds
 the org, its members and roles, its machines, and its projects.
+
+Cloudflare's limits shape the hub (Durable Objects documentation, read
+2026-10-15): 1,000 requests per second per object (soft), 30 seconds of CPU
+per request by default, 10 GB of storage per object, 2 MB per stored row
+or string, 32 MiB per received WebSocket message; hibernation only when the
+object is a WebSocket server, and on eviction "in-memory state is reset";
+every deploy restarts every object and disconnects every connection. So:
+
+- **Presence, the pending set, and delivery outcomes are kept in the
+  object's storage**, not only in memory. A hibernating object can be
+  evicted while its sockets stay connected; no reconnect follows, so no
+  daemon republishes, and state held only in memory would be gone. The
+  daemon's republish on reconnect still reconciles what storage holds.
+- **Every frame is bounded at 1 MiB**; a larger payload (a big tool result
+  in a transcript row, a snapshot) is split into numbered parts.
+- **After a deploy** browsers and daemons reconnect with backoff, and the
+  daemon republishes presence, pending requests, and unacknowledged RPC
+  results (X2, X6).
 
 **Daemon uplink.** **[binding — the hub never connects into a machine,
 which is what makes the machine's own policy the execution boundary]** Each
@@ -388,8 +415,24 @@ unavailable; everything they sent the human is still in the log.
   typing mid-turn does in the terminal. **Interrupt** stops the turn. Beside
   them: model and compact. The strongest alternative, "steer = interrupt
   then send", lost: it kills the running tool, which the terminal does not.
-- **Notifications.** A browser notification when a question, a permission
-  prompt, or a message arrives while the tab is hidden.
+- **The phone.** **[binding — owner, 2026-10-15]** The web app is also a
+  PWA (a web app installed to the home screen, with a manifest and a
+  service worker). On a phone it draws the loop of seeing what needs the
+  owner and answering it: the grid with its waiting counts, the group chat,
+  a direct channel, and request cards answerable in place. Session depth
+  (the transcript stream, the subagent tree, the diff) stays desktop-only.
+- **Notifications are Web Push.** A push fires when a question or a
+  permission prompt is raised, or a `<message>` arrives, and no browser of
+  that member has the project open and visible. Each member device's push
+  subscription is stored in the registry (X7). The Worker sends with VAPID
+  (ES256) and RFC 8291 payload encryption on WebCrypto; the npm `web-push`
+  package depends on Node's crypto and does not run there. **A push only
+  points to a card**: the service worker draws its text without the org
+  key, so a notification carries no Allow or Deny; tapping opens the app,
+  which checks the code and the digest as everywhere else. Actions on the
+  notification would put the org key in the service worker, a §6 decision
+  not taken. iOS delivers web push only to an app installed to the home
+  screen (16.4 and later).
 
 Visual design follows MAWS's tokens and density (Codex-density chrome,
 Claude-style transcript typography, light first); the Slack-like layout is
@@ -424,6 +467,27 @@ primary beside the mod API.
 Every RPC that answers or decides a pending request carries the digest of
 the request as the browser drew it, and the daemon executes it only if the
 digest matches the request still pending in the session (§6).
+
+**What each kind of session can do.** **[binding — the web reads this
+table to show what a session cannot do and why, instead of failing when a
+button is pressed; the acceptance timings cite it]**
+
+| | bridged (terminal or `--bg`) | `--bg` seat, no bridge | terminal, no bridge | machine offline |
+| --- | --- | --- | --- | --- |
+| Send | log → `deliver_next` → `$.prompt.submit`, queued until idle | `control.sock` `reply`, at the next step | cross-session frame, at the next tool round | in the log; delivered when the daemon reconnects |
+| Steer | `$.session.append`, at the next model request | `reply`, at the next step | as send | fails at once |
+| Interrupt | `$.turn.abort`, within 2 s | no | no | fails at once |
+| Question | native: `tool.call` hook racing the dialog; async: the ask mod's external path | native: `reply` answers it; async: none (the ask mod is itself a mod) | terminal only | shown, not answerable |
+| Allow / deny | `classic.PermissionRequest` racing the dialog; a background subagent's prompt as C1 finds; a person-only prompt at the terminal only | terminal only | terminal only | shown, not answerable |
+| Model / compact | yes / between turns | no | no | fails at once |
+| Messages to the human | as each span completes | at Stop (the record hook) | at Stop | already in the log |
+| Presence | the session record, within 1 s | same | same | the last `state` event, with its age |
+| Depth | rows (100 ms flush) and `turn.step` chunks, subagents included | rows | rows | unavailable |
+| Retire | `--bg`: `claude stop`; terminal: `retired` recorded, the process stays the human's | `claude stop` | `retired` recorded, the process stays the human's | fails at once |
+| Resume (ended) | Resume RPC | Resume RPC | Resume RPC | fails at once |
+
+Spawn is a machine RPC, not a session's; it fails at once for a machine
+that is offline.
 
 Not in phase 1, because the mod API cannot do them reliably: switching a
 live session's permission mode, interrupting one subagent, rewind, and
@@ -508,7 +572,9 @@ fork.
    sessions means under Anthropic's terms.
 4. **Beyond** — convergence with MAWS's artifacts (documents, design
    systems) and the product for teachers, which the owner can picture
-   merging with this (2026-10-15); the chief-of-staff agent; mobile.
+   merging with this (2026-10-15); the chief-of-staff agent; a native
+   mobile app, wherever A7 sits (the web app is on the phone from phase
+   1).
 
 Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 
@@ -523,12 +589,22 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
    same conversation), and the hook order that lets a web answer settle
    above the ask mod's.
 2. **The uplink's transport and concurrency** (C4): the HTTP pair against a
-   WebSocket, and thread against process.
+   WebSocket, and thread against process. Against SSE: an object holding a
+   machine's open stream never hibernates and is billed for the whole time
+   the stream is open; acceptable for a few machines, and the trade is
+   recorded with the choice.
 3. **Durable Object throughput** (C3): streaming chunks from several active
-   sessions through one project's object; one object per session for the
-   session plane is the fallback.
-4. **WebAuthn PRF** (C5): support in the owner's browsers with an iCloud
-   Keychain passkey; the passphrase path covers its absence.
+   sessions through one project's object, measured (C3.G6); one object per
+   session for the session plane is the fallback, taken when the
+   measurement crosses the threshold C3 records.
+4. **WebAuthn PRF and Access on the phone** (C5): PRF support in the
+   owner's browsers with an iCloud Keychain passkey, and inside an iOS
+   home-screen app, whose storage is separate from Safari's, so the key is
+   derived again there; Cloudflare Access sign-in inside the standalone app
+   (the identity provider's redirect leaves the app's scope, so the Access
+   cookie must land in the standalone context); Access session lifetime
+   against a push tapped hours later. The passphrase path covers missing
+   PRF.
 5. **The path to watch.** The engine's channel servers (an MCP server
    declaring `claude/channel` that pushes messages into a session, which
    replies through a tool) are the engine's own shape for "an outside
@@ -552,7 +628,12 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
   the terminal draws it; `$.turn.abort` stopping a running turn; a
   `classic.PermissionRequest` hook long-polling a local socket and
   answering while the dialog is open, and what happens when the terminal
-  answers first; a `tool.call` hook answering a native AskUserQuestion with
+  answers first; the same for a background subagent's prompt, whose hooks
+  the engine awaits before it opens the dialog
+  (`awaitAutomatedChecksBeforeDialog`, SPEC 2.1.287 ch. 18), so a long poll
+  there hides the terminal's dialog, and what bound keeps it visible; that
+  a prompt marked person-only never reaches the hooks (SPEC ch. 24); a
+  `tool.call` hook answering a native AskUserQuestion with
   the dialog open; `$.config.set` switching the model; `$.session.compact()`
   between turns and during one; `turn.step` chunk rate with two subagents
   running; all of it in a terminal session and in a `--bg` job. Verdict per
@@ -606,8 +687,8 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Purpose:** The cloud side: the Worker, the project Durable Objects, the
   registry, Access for humans and service tokens for machines, enrollment
   and machine names, log storage with sync, the session-plane relay, RPC
-  routing, the pending set, the audit record, and a fake machine for the
-  web children.
+  routing, the pending set, the audit record, Web Push sending and push
+  subscriptions, and a fake machine for the web children.
 - **Acceptance:**
   - **G1 (protocols):** X2, X3, the X4 envelope, the X6 shapes, and X7
     written into Interfaces and reviewed; C4 and C5 may start on them.
@@ -624,7 +705,17 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
     request the daemon no longer republishes after a reconnect is dropped;
     the audit record holds the side that actually won, from the settlement,
     not the web's attempt; the latest delivery outcome per event and
-    recipient is kept and returned to a browser that reconnects.
+    recipient is kept and returned to a browser that reconnects; an RPC
+    whose machine dropped after forwarding is `uncertain` until the daemon's
+    republished result resolves it; presence and the pending set survive
+    the object's eviction while sockets stay open; a raised question or
+    permission prompt, or a `<message>`, sends one Web Push to each of the
+    member's subscribed devices when no browser of theirs has the project
+    visible, and none when one has.
+  - **G6 (measured):** three fake machines streaming chunks every 100 ms
+    into one project, with several browsers subscribed; the report gives
+    chunks per second per object, the fan-out cost, and the threshold at
+    which the session plane moves to one object per session.
   - **G4 (deployed):** deployed to the owner's Cloudflare account behind
     Access; enrollment issues a service token and claims a machine name,
     refusing a name already enrolled; the designated archive machine is
@@ -690,7 +781,9 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
     the project view against C3's fake machine.
   - **G2 (conversation):** group chat and direct channels draw a replayed
     project's log as §4 says (folding, the addressing grammar, system
-    lines, an ended session's channel with Resume); composer verbs and
+    lines, an ended session's channel with Resume, controls a session
+    cannot use shown disabled with the §5 table's reason, an `uncertain`
+    RPC drawn as such and retried with its nonce); composer verbs and
     request cards issue authenticated X1 events and X6 RPCs, request cards
     carry the digest of what they drew, and results render; an event or a
     request whose code fails is not drawn; a send shows its X4 delivery
@@ -700,6 +793,11 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
   - **G3 (the key):** the org key derives from a passkey through PRF in the
     owner's browsers, or from a passphrase; the enrollment code it produces
     enrolls a machine through C4.
+  - **G4 (the phone):** installed to an iPhone's home screen, the app signs
+    in through Access, derives the org key, and draws the grid, the group
+    chat, a direct channel, and request cards in mobile layouts; a question
+    raised by the fake machine pushes a notification that opens its card,
+    and the answer from the phone reaches the fake machine authenticated.
 - **Edges:** blocked-by: C3.G1 to start, C3.G5 for G2; blocks: C6 (at G1).
 - **Contracts:** X8 (owner); X3, X4, X7 (consumer); X1, X6 (author, with
   codes).
@@ -746,7 +844,10 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
   - **G2 (RPCs):** each RPC of §5 executes through C2's protocol; an RPC
     without a valid code, older than 60 seconds, or with a seen nonce is
     refused and the refusal reported; an answer or decision whose digest
-    differs from the pending request is refused.
+    differs from the pending request is refused; cutting the connection
+    after execution, or restarting the daemon between execution and report,
+    shows `uncertain` on the hub and then resolves, the RPC executed once; a
+    spawn retried with its nonce after a cut yields one session.
   - **G3 (policy):** a spawn outside the known checkouts or above the
     ceiling is refused; on a read-only machine every RPC is refused, and a
     `human` or `say` from outside the machine, addressed to a live session
@@ -806,7 +907,8 @@ consumers start after that gate.
   bound to its enrolled name; per project the version-vector handshake of
   §3, then live tail both ways; RPC requests down and results up; session
   subscriptions down and X4 messages up; machine and session presence and
-  the pending set republished on every reconnect. Binds C4, C7.
+  the pending set republished on every reconnect, with every RPC result
+  the hub has not acknowledged. Binds C4, C7.
 - **X3 — Browser ↔ hub protocol (owner C3, at C3.G1).** Resume by project
   offset for the log; subscriptions for the session plane; log events,
   presence, the pending set, and X4 messages down; authenticated `human`
@@ -825,8 +927,10 @@ consumers start after that gate.
     (read-only, ceiling), and the known checkouts per project (path,
     branch), which the spawn sheet offers;
   - **a subscription** (`sub`) delivers a snapshot, then live messages
-    numbered `n` from 1. The snapshot is the transcript rows on disk up to
-    the last flushed row, the subagent tree, presence, and, for every
+    numbered `n` from 1. The snapshot is the latest transcript rows up to
+    the last flushed row, newest first, as many as fit the frame budget
+    (older rows come on request, as the reader scrolls, read from disk), the
+    subagent tree, presence, and, for every
     message still streaming, its identity (`turnId`, `agentId`, and the
     ordinal of the model request within the turn), its partial text, and
     `upTo`, the index of the last chunk that text includes. The daemon
@@ -872,11 +976,27 @@ consumers start after that gate.
   "rpc"}`; an answer or decision carries in `args` the digest
   `{session, request, tool, input_sha256}` of the request as drawn. The
   policy C7 enforces: known checkouts, permission ceiling, read-only (RPCs
-  and outside-origin delivery), 60-second freshness, nonce memory, digest
-  match. Binds C5 (issues), C3 (routes), C7 (verifies and executes).
+  and outside-origin delivery), 60-second freshness, digest match.
+  **An RPC runs at most once.** Its nonce is its id. The daemon keeps a
+  durable ledger under `$SMINOS_HOME/daemon/` mapping each nonce to its
+  outcome — `done` with what the RPC produced (the spawned session's id,
+  the steer's row uuid) or `failed` with the reason — written before the
+  result is sent and kept for a day, well past the freshness window and a
+  reconnect. A nonce the ledger knows is answered from the ledger and never
+  executed again, a check made before the freshness check; an unknown nonce
+  older than 60 seconds is refused. The hub marks an RPC `uncertain` when
+  the machine's connection drops after the RPC was forwarded and before its
+  result arrived, and resolves it from the results the daemon republishes
+  on reconnect (X2); a browser retry reuses the nonce. This matters for
+  spawn (two sessions) and steer (the text twice); it queues nothing for an
+  offline machine, because `uncertain` applies only to an RPC the machine
+  already received. RPC states: `done | failed | uncertain`. Binds C5
+  (issues, draws `uncertain`), C3 (routes, marks and resolves `uncertain`),
+  C7 (verifies, executes, keeps the ledger).
 - **X7 — Identity (owner C3, at C3.G1).** The registry's org, member,
   machine, and project records; machine names unique in the org; the
-  project's designated archive machine; Access for members, service tokens
+  project's designated archive machine; each member device's push
+  subscription; Access for members, service tokens
   for machines; the enrollment code (hub URL, one-time token, machine name,
   org key), generated in the browser so the hub never sees the key. Binds
   C4, C5, C7. Written to outlive this unit: the org phase extends it.
@@ -899,7 +1019,7 @@ C1 spike ──► C2 bridge ──G1──────────────�
                                                     ▼
 C3 hub ──G1──► C4 uplink ─────────────────────► C7 machine's controls ──┐
         │                                                               ├──► recomposition
-        ├──G1──► C5 web: conversation ──G1──► C6 web: depth ────────────┤    (acceptance 1–11)
+        ├──G1──► C5 web: conversation ──G1──► C6 web: depth ────────────┤    (acceptance 1–12)
         └──G5 (fake machine) ──► C5.G2 and C6 acceptance ───────────────┘
 ```
 
@@ -939,7 +1059,10 @@ human-origin delivery (a `.smns` improvement independent of this unit);
 per-member asymmetric keys, an admin-signed member list, and a passkey
 step-up for spawn and approvals (the org phase, §6); authentication codes on
 session depth (§6); a message reviving a closed terminal session by itself
-(§3: Resume is the explicit act instead).
+(§3: Resume is the explicit act instead); a cross-project inbox as the
+phone's landing view, listing every pending request across projects (the
+grid's waiting counts and pushes that open the card carry phase 1; an inbox
+needs a registry index the project objects update on raise and settle).
 
 **Explicitly out of scope (standing exclusions):** the hub storing
 transcripts (§3); hosting sessions on the SDK wire (§2); depending on
@@ -992,7 +1115,7 @@ a hub that connects into machines (§2).
   buildability. Each plan child names its own branch-review rung in its
   execution document, xhigh for C3, C4, C5, and C7 by their size. Recomposition
   is a scale review: the two-Mac acceptance walk (Parent-Level Acceptance
-  1–11) plus an xhigh panel per repository over the children's merged
+  1–12) plus an xhigh panel per repository over the children's merged
   range.
   Rationale: a coupled design across two repositories and a security
   boundary; the critique debate on the design already ran (two rounds,
@@ -1082,6 +1205,36 @@ a hub that connects into machines (§2).
   C2.G1, which are reviewed before any consumer starts.
   Rationale: a third round on these edits would review the reviewers'
   own wording; the gate reviews see the shapes in their final form.
+  Date/Author: 2026-10-15, design session.
+- Decision: Four imports from **sminos hub**
+  (`MAWS/docs/doperpowers/plans/2026-10-15-sminos-hub.md`), a design for the
+  same product written in parallel, whose per-machine host owned sessions
+  over the SDK wire. The owner compared the two and ruled that this
+  design's bridge is the base, relayed by the comparison session; the one
+  scope change was confirmed with the owner directly the same day.
+  (1) **The phone in phase 1** [owner]: the PWA, Web Push sent from the
+  Worker, mobile layouts for the needs-you loop, a push that only points to
+  a card; acceptance 12, C5.G4, C3.G3, X7, unknown 4. Rejected then: the
+  phone in phase 4 as approved first; notification actions, which would
+  need the org key in the service worker. (2) **One binding table of what
+  each kind of session can do** (§5), filled from this spec and checked;
+  the cells the comparison left open are settled there (an async question
+  needs the ask mod, itself a mod; retiring a terminal session records it
+  and leaves the process the human's). (3) **RPCs run at most once**: the
+  nonce as id, the daemon's durable ledger answered before the freshness
+  check, `uncertain` on a drop after forwarding, results republished on
+  reconnect (X6, X2, C7.G2, C3.G3, C5.G2); spawn and steer were the cases
+  that could double. (4) **Cloudflare's limits** stated where they bind
+  (§2): presence, pending requests, and delivery outcomes persisted, since
+  a hibernating object can be evicted while its sockets stay open and no
+  republish follows; frames bounded at 1 MiB; reconnect with backoff after
+  a deploy; SSE's cost in unknown 2; a measured throughput run (C3.G6).
+  Also from the comparison: the SPEC's background-subagent exception to the
+  permission race and the person-only prompt, added to C1 and to the §5
+  table. Snapshots became newest-first under the frame bound (X4).
+  Rationale: each import closes a gap this design had (a double spawn, a
+  pending set lost to eviction) or follows the owner's scope call; none
+  collides with a binding clause.
   Date/Author: 2026-10-15, design session.
 
 ## Outcomes & Retrospective
