@@ -443,11 +443,22 @@ class Engine(unittest.TestCase):
         again, b2 = self.subscribe()
         self.assertTrue(self.pump(again, b2, lambda: b2.snapshot is not None), "a fresh one is served")
 
-    def test_bridge_not_ready_is_a_discontinuity(self):
+    def test_bridge_not_ready_past_the_window_is_a_discontinuity(self):
         self.fake.start_bridge(ready=False)
         sub, b = self.subscribe()
-        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+        t0 = time.time()
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None, wait=12))
         self.assertEqual((b.end["reason"], b.n), ("discontinuity", 0))
+        self.assertGreaterEqual(time.time() - t0, plane.NOT_READY_WINDOW, "the 503 was asked again for the window")
+
+    def test_bridge_ready_within_the_window_is_served(self):
+        self.fake.start_bridge(ready=False)
+        sub, b = self.subscribe()
+        self.settle(sub, b, 1.5)  # past the first 503 (the hold is 0.5 s here)
+        self.assertIsNone(b.end)
+        self.fake.resync()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None, wait=6), "a 503 is retried, as watch does")
+        self.assertIsNone(b.end)
 
     def test_session_ending_ends_the_subscription(self):
         self.fake.start_bridge()
@@ -462,31 +473,35 @@ class Engine(unittest.TestCase):
         self.assertEqual(b.end["reason"], "session-ended")
         self.assertEqual(len(b.rows), 1, "what flushed before the end is drawn")
 
-    def test_null_cut_takes_history_to_eof(self):
-        self.fake.start_bridge()
-        u = self.fake.user_row("before any notice", post=False)
+    def test_a_null_cut_has_empty_history(self):
+        self.fake.start_bridge()  # no rows on disk: the seed names no loop
+        u = self.fake.user_row("flushed before its notice", post=False)
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual(b.uuids(), [u])
-        self.fake.post([{"type": "row-seen", "uuid": u, "agentId": None, "door": "append", "t": 0}])
+        self.assertEqual(b.snapshot["rows"], [], "the loop had no rows at load: its history is empty")
+        self.settle(sub, b)
+        self.assertEqual(b.rows, [], "the row is live, held for its notice")
+        self.fake.seen(u)
         self.fake.user_row("after")
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2))
-        self.settle(sub, b)
-        self.assertIsNone(b.end, "a late notice for history is dropped")
         self.assertClean(b)
 
-    def test_block_row_for_history_whose_block_the_subscriber_holds(self):
+    def test_a_null_cut_row_flushed_beside_its_streaming_block(self):
+        """The overlap the seeded cut closes: a row on disk whose block still
+        streams in the snapshot is live, not history, and comes on its
+        block-row."""
         self.fake.start_bridge()
         m = self.fake.message()
         m.text(0, "raced")
         u = str(uuidlib.uuid4())
-        m.write(0, u)  # on disk, cut still null: history to EOF holds it
+        m.write(0, u)
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual(b.uuids(), [u])
+        self.assertEqual((b.snapshot["rows"], b.blocks), ([], {(m.turn, None, 0, 0): "raced"}))
         m.notice(0, u)
-        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual(b.end["reason"], "discontinuity", "else its streamed text stays beside its row")
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 1))
+        self.assertIsNone(b.end)
+        self.assertClean(b)
 
     # ---------------------------------------------------- scopes
 
@@ -583,6 +598,54 @@ class Engine(unittest.TestCase):
         self.settle(sub, b)
         self.assertEqual(b.rows, [], "its rows stay in its own transcript")
         self.assertEqual(b.errors, [])
+
+
+class RealChild(Engine):
+    """Every engine case again, the bridge being the real child (`sminos
+    bridge --session`, DC2's M4) with this process as its mod: the seeded
+    cut from its hello, its readiness, its notices and its stream. Its wait
+    for the first resync is the script's, 0.5 s."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake.real = True
+        self.fake.child_env = {"SMINOS_BRIDGE_READY_WAIT": str(fake_session.READY_HOLD)}
+
+    def test_a_module_reload_with_the_seeded_cut(self):
+        """The module reloads mid-session (a new child, its hello's seed the
+        transcript's tail): the old stream ends, the new snapshot's history
+        is the seed, a request begun under the old module never streams and
+        its row comes by row-seen, and a new request streams."""
+        for agent in (None, "a1"):
+            with self.subTest(agent=agent):
+                self.fake.start_bridge()
+                self.fake.user_row("before the reload", agent=agent)
+                old = self.fake.message(agent=agent, turn="t-old-%s" % agent)
+                old.text(0, "half ")
+                sub, b = self.subscribe(agent=agent)
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+                self.fake.stop_bridge(unlink=False)
+                self.fake.start_bridge()
+                self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+                self.assertEqual(b.end["reason"], "discontinuity")
+                self.assertEqual(self.fake.child.seed.get(agent or "main"), self.fake.rows(agent)[-1]["uuid"],
+                                 "the hello's seed is the loop's tail")
+                again, b2 = self.subscribe(agent=agent)
+                self.assertTrue(self.pump(again, b2, lambda: b2.snapshot is not None))
+                self.assertEqual(b2.snapshot["streaming"], [], "a request begun before the reload never streams")
+                self.assertEqual(b2.uuids(), [r["uuid"] for r in self.fake.rows(agent)], "history to the seed")
+                old.text(0, "done")
+                u = old.row(0)  # named by row-seen: nothing of it streamed here
+                new = self.fake.message(agent=agent, turn="t-new-%s" % agent)
+                new.text(0, "fresh")
+                self.assertTrue(self.pump(again, b2, lambda: b2.blocks.get((new.turn, agent, 0, 0)) == "fresh"))
+                new.row(0)
+                self.assertTrue(self.pump(again, b2, lambda: len(b2.rows) == len(self.fake.rows(agent))))
+                self.assertIn(u, b2.uuids())
+                self.assertClean(b2, agent)
+                self.fake.stop_bridge()
+                sub.close()
+                again.close()
 
 
 class Lifecycle(unittest.TestCase):

@@ -484,7 +484,7 @@ class Bridge:
     process its parent; events posted as the mod posts them, and a delivery
     (`deliver`) answered as the mod answers one it submitted."""
 
-    def __init__(self, sid):
+    def __init__(self, sid, ready=True):
         self.sid = sid
         self.delivered = []
         self.proc = subprocess.Popen([CLI, "bridge", "--session", sid], stdout=subprocess.PIPE,
@@ -492,7 +492,15 @@ class Bridge:
         hello = json.loads(self.proc.stdout.readline())
         assert hello.get("op") == "hello", hello
         self.sock = hello["socket"]
+        self.nonce = hello["nonce"]  # DX5 M4: a post without the hello's nonce is another module's (409)
         threading.Thread(target=self.drain, daemon=True).start()
+        if ready:
+            # The mod's first posts to a child: the session's start, then its
+            # state with the hello's seed as the cut; the child serves no
+            # snapshot before that resync (DX5 M4).
+            self.post({"type": "session", "phase": "start", "session": sid, "cwd": "/", "t": 0},
+                      {"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": hello.get("seed") or {},
+                       "t": 0})
 
     def drain(self):
         with self.proc.stdout:
@@ -509,7 +517,13 @@ class Bridge:
 
     def post(self, *events):
         import sminos_bridge as bridge
-        status, _ = bridge.request(self.sock, "POST", "/events", body=list(events))
+        c = bridge._UnixConnection(self.sock, 10)
+        try:
+            c.request("POST", "/events", body=json.dumps(list(events)).encode(),
+                      headers={"content-type": "application/json", bridge.NONCE_HEADER: self.nonce})
+            status = c.getresponse().status
+        finally:
+            c.close()
         assert status == 204, status
 
     def raise_(self, rid, tool="Bash", input_=None, **extra):
@@ -606,7 +620,7 @@ class Requests(unittest.TestCase):
         self.bridge.raise_("toolu_a")
         self.bridge.raise_("toolu_b")
         self.r.sent(self.due(lambda fs: len(messages(fs, "raised")) == 2))
-        old, self.bridge = self.bridge, Bridge(self.sid)
+        old, self.bridge = self.bridge, Bridge(self.sid, ready=False)
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
                           "delivered": {},
                           "pending": [{"request": "toolu_b", "tool": "Bash", "input": {"command": "ls"},

@@ -5,40 +5,56 @@ its row, a chunk arrive while a snapshot is built, and a module reload end a
 subscription — the orders the real engine and mod produce, and the ones
 they produce only rarely.
 
-The endpoint follows DX5 as DC2's M4 agreed it with the composite's writer
-(DC2's plan, Decision Log "M4 scope, agreed with the composite's writer for
-DC7", rules 1–4, with the row order made disk order by composite cd2667d8),
-not DC2's code:
+The scripted endpoint follows the real child as DC2's M4 built it (DX5's M4
+extension in DC2's plan, reviewed clean at f0242560):
 
 - every row the mod observes gets one notice on the ordered stream once the
-  engine has taken it — so a row's notice follows its flush by default, and
-  may come before it when the test says: `block-row` for a response row,
-  `row-seen` for any other;
+  append resolves — a row's notice follows its flush by default, and may
+  come before it when the test says: `block-row` for a response row whose
+  block streamed, `row-seen` for any other;
+- the mod's first resync carries each loop's cut seeded with its last row on
+  disk when the module loaded (the hello's `seed`); `null`, or a loop it does
+  not name, means the loop had no rows then; a request begun before the
+  module loaded never streams, and its rows are named by `row-seen`;
+- a step's end follows its block-rows; once it is out the step's pairing is
+  closed (a later row of it is named by `row-seen`), and its whole message
+  leaves `streaming`, as a turn's end takes the turn's messages;
 - the snapshot carries `cut`, the last notice applied per loop (`"main"` or
   the agent id), under the lock that applies chunks and block-rows;
 - `GET /status` says `ready` once the mod's first `resync` is applied, and
   `GET /events` holds until then (at most 5 s, else 503);
-- a later `resync` ends every open subscription.
+- a later `resync`, or a subscriber BACKLOG events behind, ends a
+  subscription.
+
+The same FakeSession drives the real child (`sminos bridge --session`) in
+place of the script with `start_bridge(real=True)`: this process is then its
+mod, posting under the hello's nonce, its first resync carrying the hello's
+seed.
 
     session = FakeSession(home, sminos_home, session_id)
-    session.start_bridge(ready=True)       # the endpoint, $SMINOS_HOME/bridge/<id>.sock
+    session.start_bridge()                 # the endpoint, $SMINOS_HOME/bridge/<id>.sock
     m = session.message(agent=None)        # a model request of the main loop
     m.text(0, "Hello, ")                   # a chunk of block 0
-    u = m.row(0, post=True, disk=True)     # its notice, then its row
-    session.user_row("ok")                 # a row-seen, then the row
+    u = m.row(0, post=True, disk=True)     # its row, then its notice
+    session.user_row("ok")                 # the row, then its row-seen
 """
 
+import http.client
 import json
 import os
 import queue
 import socket
 import socketserver
+import subprocess
 import threading
 import time
 import uuid as uuidlib
 from http.server import BaseHTTPRequestHandler
 
 READY_HOLD = 5.0
+BACKLOG = 10000       # a subscriber this far behind is cut off, as the child cuts it off
+SMINOS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+                      "skills", "sminos", "scripts", "sminos")
 
 
 class Endpoint:
@@ -78,6 +94,7 @@ class Endpoint:
         if kind == "resync":
             self.resyncs += 1
             self.ready = True
+            self.cut = {k: v for k, v in (e.get("cut") or {}).items() if v}
             if self.resyncs > 1:
                 for q in self.subscribers:
                     q.put(None)
@@ -91,6 +108,9 @@ class Endpoint:
                                        "upTo": -1, "blocks": {}}
             else:
                 self.streaming.pop(key, None)
+        elif kind == "turn" and e.get("phase") == "complete":
+            for k in [k for k in self.streaming if k[0] == e.get("turnId")]:
+                del self.streaming[k]
         elif kind == "chunk":
             m = self.streaming[key]
             c = e["chunk"]
@@ -110,8 +130,12 @@ class Endpoint:
         elif kind == "agent":
             self.agents[e["agentId"]] = {"agentId": e["agentId"], "running": e["phase"] != "stop"}
         self.sent += 1
-        for q in self.subscribers:
-            q.put({"n": self.sent, **e})
+        for q in list(self.subscribers):
+            if q.qsize() >= BACKLOG:
+                self.subscribers.remove(q)
+                q.put(None)
+            else:
+                q.put({"n": self.sent, **e})
 
     def subscribe(self):
         with self.lock:
@@ -186,16 +210,62 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     closing = False
 
 
+class RealChild:
+    """The real child, `sminos bridge --session <id>`, spawned as the mod
+    spawns it; this process is its mod. Its hello's `seed` is each loop's
+    last row on disk as it read them."""
+
+    def __init__(self, session, env=None):
+        self.proc = subprocess.Popen([SMINOS, "bridge", "--session", session], stdout=subprocess.PIPE, text=True,
+                                     env={**os.environ, **(env or {})})
+        hello = json.loads(self.proc.stdout.readline())
+        self.sock, self.nonce, self.seed = hello["socket"], hello["nonce"], hello.get("seed") or {}
+
+    def post(self, events):
+        class Conn(http.client.HTTPConnection):
+            def connect(conn):
+                conn.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                conn.sock.settimeout(10)
+                conn.sock.connect(self.sock)
+
+        c = Conn("bridge")
+        try:
+            c.request("POST", "/events", json.dumps(events), {"X-Bridge-Nonce": self.nonce,
+                                                              "Content-Type": "application/json"})
+            status = c.getresponse().status
+        finally:
+            c.close()
+        assert status == 204, "the child answered a post %d" % status
+
+    def stop(self):
+        self.proc.kill()
+        self.proc.wait()
+        self.proc.stdout.close()
+
+
 class Message:
     """One model request of a loop, streamed chunk by chunk; `row` ends a
-    block: its notice and its row, each when the test says."""
+    block: its row and its notice, each when the test says. A request begun
+    while no module was loaded, or under an earlier one, never streams (the
+    seed rule): its chunks reach no child and its rows are named by
+    `row-seen`. Once its step's end is out, its pairing is closed: a later
+    row of it is named by `row-seen` too."""
 
     def __init__(self, fake, agent, turn, step):
         self.fake, self.agent, self.turn, self.step = fake, agent, turn, step
+        self.module = fake.module
+        self.ended = False
         self.next_chunk = 0
         self.texts = {}
-        fake.post([{"type": "step", "phase": "start", "turnId": turn, "agentId": agent, "step": step,
+        self.post([{"type": "step", "phase": "start", "turnId": turn, "agentId": agent, "step": step,
                     "model": "m", "t": 0}])
+
+    def streams(self):
+        return self.module is not None and self.module is self.fake.module
+
+    def post(self, events):
+        if self.streams():
+            self.fake.post(events)
 
     def ids(self):
         return {"turnId": self.turn, "agentId": self.agent, "step": self.step}
@@ -205,10 +275,13 @@ class Message:
         e = {"type": "chunk", **self.ids(), "chunkIndex": self.next_chunk,
              "chunk": {"kind": "text", "index": index, "text": text}, "t": 0}
         self.next_chunk += 1
-        self.fake.post([e])
+        self.post([e])
 
     def notice(self, index, uuid):
-        self.fake.post([{"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": 0}])
+        if self.streams() and not self.ended:
+            self.fake.post([{"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": 0}])
+        else:
+            self.fake.seen(uuid, self.agent)
 
     def row(self, index, post=True, disk=True, uuid=None):
         """The block's row: its uuid; `disk` writes it, then `post` sends its
@@ -227,12 +300,14 @@ class Message:
                                                      "content": [{"type": "text", "text": self.texts.get(index, "")}]}})
 
     def end(self):
-        self.fake.post([{"type": "step", "phase": "end", **self.ids(), "t": 0}])
+        self.post([{"type": "step", "phase": "end", **self.ids(), "stopReason": None, "usage": None, "t": 0}])
+        self.ended = True
 
     def turn_complete(self, reason="aborted"):
         """The turn ends; a step whose end never came is cut off with it."""
-        self.fake.post([{"type": "turn", "phase": "complete", "turnId": self.turn, "agentId": self.agent,
-                         "reason": reason, "usage": None, "t": 0}])
+        self.post([{"type": "turn", "phase": "complete", "turnId": self.turn, "agentId": self.agent,
+                    "reason": reason, "usage": None, "t": 0}])
+        self.ended = True
 
 
 class FakeSession:
@@ -243,8 +318,11 @@ class FakeSession:
         self.home, self.sminos_home, self.session = home, sminos_home, session
         self.dir = os.path.join(home, ".claude", "projects", project_dir)
         os.makedirs(self.dir, exist_ok=True)
-        self.endpoint = None
+        self.endpoint = None  # the scripted endpoint, while it serves
         self.server = None
+        self.child = None     # or the real child
+        self.module = None    # the module instance now loaded: what a Message streams under
+        self.cut = {}         # the mod's own copy of each loop's cut, which its resyncs carry
         self.turns = 0
 
     # -------------------------------------------------- the transcript
@@ -291,25 +369,65 @@ class FakeSession:
         """A row-seen notice for a row the engine took."""
         self.post([{"type": "row-seen", "uuid": uuid, "agentId": agent, "door": "append", "t": 0}])
 
+    def seed(self):
+        """Each loop's last whole row on disk (the child's hello `seed`)."""
+        loops = {"main": self.path(None)}
+        sub = os.path.join(self.dir, self.session, "subagents")
+        for name in (os.listdir(sub) if os.path.isdir(sub) else []):
+            if name.startswith("agent-") and name.endswith(".jsonl"):
+                loops[name[len("agent-"):-len(".jsonl")]] = os.path.join(sub, name)
+        out = {}
+        for loop, p in loops.items():
+            try:
+                with open(p) as f:
+                    rows = [json.loads(line) for line in f if line.endswith("\n") and line.strip()]
+            except OSError:
+                continue
+            uuids = [r["uuid"] for r in rows if isinstance(r, dict) and r.get("uuid")]
+            if uuids:
+                out[loop] = uuids[-1]
+        return out
+
     # -------------------------------------------------- the endpoint
 
-    def start_bridge(self, ready=True):
+    real = False          # start_bridge spawns the real child, not the script
+    child_env = None
+
+    def start_bridge(self, ready=True, real=None, env=None):
+        """A module loads: the scripted endpoint (or the real child) at the
+        session's path; its first resync, unless `ready` is false, carries
+        each loop's cut seeded with the last row on disk."""
+        real = self.real if real is None else real
+        env = env if env is not None else self.child_env
         d = os.path.join(self.sminos_home, "bridge")
         os.makedirs(d, mode=0o700, exist_ok=True)
         path = os.path.join(d, self.session + ".sock")
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-        self.endpoint = Endpoint(self.session)
-        self.server = _Server(path, _Handler)
-        self.server.endpoint = self.endpoint
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        if real:
+            self.child = self.module = RealChild(self.session, env)
+            seed = self.child.seed
+        else:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self.endpoint = self.module = Endpoint(self.session)
+            self.server = _Server(path, _Handler)
+            self.server.endpoint = self.endpoint
+            threading.Thread(target=self.server.serve_forever, daemon=True).start()
+            seed = self.seed()
+        self.cut = dict(seed)
+        if real:
+            self.post([{"type": "session", "phase": "start", "session": self.session, "cwd": self.dir, "t": 0}])
         if ready:
-            self.endpoint.post([{"type": "resync", "t": 0}])
+            self.resync()
         return path
 
     def stop_bridge(self, unlink=True):
+        """The module unloads (the child goes with it)."""
+        self.module = None
+        if self.child is not None:
+            self.child.stop()
+            self.child = None
         if self.server is None:
             return
         self.server.closing = True
@@ -322,13 +440,21 @@ class FakeSession:
             except OSError:
                 pass
         self.server = None
+        self.endpoint = None
 
     def post(self, events):
-        if self.endpoint is not None:
+        for e in events:
+            if e.get("type") in ("block-row", "row-seen"):
+                self.cut[e.get("agentId") or "main"] = e["uuid"]
+        if self.child is not None:
+            self.child.post(events)
+        elif self.endpoint is not None:
             self.endpoint.post(events)
 
     def resync(self):
-        self.post([{"type": "resync", "t": 0}])
+        """The mod's whole state again (a gap's sequel, or a child's first
+        post): its cut included."""
+        self.post([{"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": dict(self.cut), "t": 0}])
 
     def gap(self):
         self.post([{"type": "gap", "dropped": 3, "t": 0}])

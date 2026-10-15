@@ -29,18 +29,23 @@ row order, composite cd2667d8):
   engine has taken it, so within a loop notice order is write order and a
   notice may trail the flush: `block-row` for a response row, `row-seen` for
   any other;
-- the bridge's snapshot carries `cut`, per loop the last notice it applied:
-  history is the loop's rows up to and including it, once that row is on
-  disk (NOTICE_WAIT, else the subscription ends; to the end of the file when
-  the cut is null), so no block still streaming has its row in history;
+- the bridge's snapshot carries `cut`, per loop the last notice it applied,
+  seeded at the module's load with the loop's last row then: history is the
+  loop's rows up to and including it, once that row is on disk (NOTICE_WAIT,
+  else the subscription ends), so no block still streaming has its row in
+  history; a null cut (or a loop it does not name) means the loop had no
+  rows at load, so its history is empty and every row of it is live;
 - live, each loop's rows go out strictly in disk order: a row past the cut
   is released by its own notice, by a notice for any later row of the loop,
-  or after UNNAMED_WAIT with neither, and every later row waits behind it; a
-  notice whose row is not on disk within NOTICE_WAIT ends the subscription;
+  or UNNAMED_WAIT after it was first seen on disk with neither (rows written
+  together go out together), and every later row waits behind it; a notice
+  whose row is not on disk within NOTICE_WAIT ends the subscription;
 - a `row-seen` for a row already emitted is passed over; a `block-row` for a
-  row already emitted as unnamed, or for one the snapshot held while the
-  subscriber still holds its block's streamed text, ends the subscription,
-  whose fresh snapshot heals what would otherwise be drawn twice.
+  row already emitted as unnamed ends the subscription, whose fresh snapshot
+  heals what would otherwise be drawn twice (the real child closes a step's
+  pairing at its end, so this comes only from a notice later than the 2 s);
+  so does one for a history row whose block the subscriber still holds,
+  which the seeded cut rules out and is kept as a guard.
 
 A gap in the bridge's stream, and its end while the session runs (the child
 ends every subscription on a module reload), end the subscription with
@@ -69,7 +74,7 @@ import sminos_bridge as bridge  # noqa: E402
 
 UNNAMED_WAIT = 2.0        # s: a row past the cut that no notice named is drawn after this
 NOTICE_WAIT = 5.0         # s: a row a notice named that is not on disk by then ends the subscription
-OPEN_WAIT = 10.0          # s: a bridge that sends no snapshot by then ends the subscription
+OPEN_WAIT = 20.0          # s: a bridge that sends no snapshot by then ends the subscription (the reader's 503 retries take up to 15)
 END_GRACE = 1.0           # s: once the session is not running, what it still flushes is drawn this long
 ROWS_BUDGET = 512 * 1024  # bytes of row JSON in a snapshot or a page: "as many as fit"
 PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
@@ -82,6 +87,7 @@ DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
 CONNECT_WAIT = 10.0       # s: the bridge holds GET /events until ready, at most 5 s
+NOT_READY_WINDOW = 5.0    # s: a 503 (not ready) is asked again this long, as `sminos watch` does
 RECORD_FIELDS = ("status", "waitingFor", "needs")
 AGENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -228,13 +234,33 @@ class BridgeReader(threading.Thread):
         self.wake()
 
     def run(self):
-        conn = bridge._UnixConnection(self.path, CONNECT_WAIT)
+        """A 503 (the child has not had the mod's first resync) is asked
+        again until NOT_READY_WINDOW has passed since the first, as `sminos
+        watch` retries it; then it is ("refused", 503)."""
+        not_ready_until = None
+        while True:
+            conn = bridge._UnixConnection(self.path, CONNECT_WAIT)
+            try:
+                if not self.stream(conn):
+                    return
+            finally:
+                conn.close()
+            now = time.monotonic()
+            not_ready_until = not_ready_until or now + NOT_READY_WINDOW
+            if now >= not_ready_until or self.closing.is_set():
+                self.put(("refused", 503))
+                return
+            time.sleep(0.1)
+
+    def stream(self, conn):
+        """One GET /events: True when it was answered 503 (try again), False
+        once its fate is put."""
         try:
             try:
                 conn.connect()
             except OSError as e:
                 self.put(("unavailable", str(e)))
-                return
+                return False
             # Held here: the response to a `Connection: close` request takes
             # the socket from `conn`, which forgets it.
             self.sock = conn.sock
@@ -242,21 +268,22 @@ class BridgeReader(threading.Thread):
                 self.sock.shutdown(socket.SHUT_RDWR)
             conn.request("GET", "/events")
             resp = conn.getresponse()
+            if resp.status == 503:
+                return True
             if resp.status != 200:
                 self.put(("refused", resp.status))
-                return
+                return False
             self.sock.settimeout(None)
             while True:
                 line = resp.readline()
                 if not line:
                     self.put(("closed", "the bridge ended the stream"))
-                    return
+                    return False
                 if line.strip():
                     self.put(("line", json.loads(line)))
         except (OSError, ValueError, http.client.HTTPException) as e:
             self.put(("closed", "closed here" if self.closing.is_set() else str(e) or repr(e)))
-        finally:
-            conn.close()
+            return False
 
     def close(self):
         self.closing.set()
@@ -396,6 +423,11 @@ class Subscription:
                     out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
                 return False
             history, past = self.rows[:at + 1], self.rows[at + 1:]
+        elif self.bridged:
+            # A null cut (or one that does not name this loop): the loop had
+            # no rows when the module loaded, and none was noticed since —
+            # the seed covers every older row. Empty history; all rows live.
+            history, past = [], self.rows
         else:
             history, past = self.rows, []
         self.rows = []
