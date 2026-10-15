@@ -513,7 +513,7 @@ Phases 2–4 are roadmap children of the Arkho parent, cut at their dispatch.
 - **Contracts:** —
 - **Design inheritance:** §2 Bridge, §5, §8 unknown 1.
 - **Required:** required.
-- **Status:** not-dispatched (dispatchable now).
+- **Status:** in-flight (2026-10-15).
 
 ### C2: The bridge — plan
 
@@ -772,7 +772,7 @@ a hub that connects into machines (§2).
 
 | child | artifact | status |
 | --- | --- | --- |
-| C1 bridge spike | — | not-dispatched |
+| C1 bridge spike | findings: `docs/doperpowers/specs/2026-10-15-arkho-desk-c1-findings.md` | in-flight (dispatched 2026-10-15 at 8257d780) |
 | C2 bridge | — | not-dispatched |
 | C3 hub | — | not-dispatched |
 | C4 uplink | — | not-dispatched |
