@@ -642,16 +642,25 @@ def cmd_watch(a):
     ended = False
     try:
         while True:
+            lost = False
             try:
                 for e in subscribe(path):
                     show(e)
                     if e.get("type") == "session" and e.get("phase") == "end" and e.get("reason") != "clear":
                         ended = True
+                    # What was printed misses the lost events: a fresh snapshot
+                    # (DX4's rule on a gap) prints each message whole again.
+                    # --json passes the gap and its resync on to its reader.
+                    if e.get("type") == "gap" and render is not None:
+                        lost = True
+                        break
             except (OSError, http.client.HTTPException, ValueError):
                 pass
             if ended:
                 say("· the session ended")
                 return
+            if lost and probe(path) is not None:
+                continue
             deadline = time.time() + _reconnect_window()
             while time.time() < deadline and probe(path) is None:
                 time.sleep(0.1)

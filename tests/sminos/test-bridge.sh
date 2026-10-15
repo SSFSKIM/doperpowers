@@ -285,6 +285,27 @@ assert_contains "$HV" "[general-purpose a7]  more" "a subagent's text under its 
 assert_contains "$HV" "ls: docs: No such file" "a failed tool's error"
 assert_not_contains "$HV" '"type"' "and no raw JSON"
 
+# A gap in the human view: what was printed misses the lost chunk, so the
+# watcher reads a fresh snapshot and prints the message whole, then follows on.
+"$SMINOS" watch "$SID" > "$T/h2" 2>&1 &
+PIDS+=("$!")
+until_true 100 grep -q "watching" "$T/h2" || true
+T5=55555555-aaaa-4aaa-8aaa-555555555555
+ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T5'","agentId":null,"text":"count"},
+ {"type":"step","phase":"start","turnId":"'$T5'","agentId":null,"step":0,"model":"m"},
+ {"type":"chunk","turnId":"'$T5'","agentId":null,"step":0,"chunkIndex":0,"chunk":{"kind":"text","index":0,"text":"one "}}]' >/dev/null
+until_true 100 grep -q "\[main\] one" "$T/h2" || true
+ctl post "$SOCK" '[{"type":"gap","dropped":1},
+ {"type":"resync","turns":[{"turnId":"'$T5'","agentId":null}],
+  "agents":[{"agentId":"a7","subagentType":"general-purpose","running":true}],
+  "streaming":[{"turnId":"'$T5'","agentId":null,"step":0,"model":"m","text":"one two ","thinking":"","upTo":1}]},
+ {"type":"chunk","turnId":"'$T5'","agentId":null,"step":0,"chunkIndex":2,"chunk":{"kind":"text","index":0,"text":"three"}}]' >/dev/null
+until_true 100 grep -q "three" "$T/h2" || true
+HV2="$(cat "$T/h2")"
+assert_contains "$HV2" "events were lost" "a gap is said in the human view"
+assert_contains "$HV2" "[main] one two three" "and the message is printed whole again from a fresh snapshot, the next chunk on it"
+ctl post "$SOCK" '[{"type":"turn","phase":"complete","turnId":"'$T5'","agentId":null,"reason":"answer"}]' >/dev/null
+
 # What the session started as stays in the snapshot past its end.
 ctl post "$SOCK" '[{"type":"session","phase":"start","session":"'$SID'","cwd":"/w","model":"m"},
  {"type":"session","phase":"end","reason":"clear"}]' >/dev/null
