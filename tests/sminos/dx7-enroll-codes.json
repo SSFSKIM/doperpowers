@@ -1,0 +1,482 @@
+[
+ {
+  "note": "a code as the browser builds it",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "the local runtime on 127.0.0.1",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vMTI3LjAuMC4xOjg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "http://127.0.0.1:8747",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "the local runtime on localhost",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vbG9jYWxob3N0Ojg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "http://localhost:8747",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "the local runtime on [::1]",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vWzo6MV06ODc0NyIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": true,
+  "decoded": {
+   "hub": "http://[::1]:8747",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a one-character name",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiYSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "a",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a 63-character name",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a name with dots, dashes, underscores",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiTWFjX21pbmktMi5sYW4iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "Mac_mini-2.lan",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a token and an org outside ASCII",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiLDtnJnLeKCrCIsInRva2VuIjoidMO2a-KCrG4t8J-YgCIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "örg-€",
+   "token": "tök€n-😀",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a hub with a path",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20vYmFzZSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com/base",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "an uppercase scheme",
+  "text": "smns-enroll-v1.eyJodWIiOiJIVFRQUzovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "HTTPS://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "fields in another order",
+  "text": "smns-enroll-v1.eyJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwibWFjaGluZSI6Im0xIiwidG9rZW4iOiJ0Iiwib3JnIjoibyIsImh1YiI6Imh0dHBzOi8vaC5leGFtcGxlIn0",
+  "ok": true,
+  "decoded": {
+   "hub": "https://h.example",
+   "org": "o",
+   "token": "t",
+   "machine": "m1",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "an extra field",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJleHRyYSI6WzEseyJ4IjpudWxsfV19",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a byte-order mark before the JSON",
+  "text": "smns-enroll-v1.77u_eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "whitespace around the JSON",
+  "text": "smns-enroll-v1.IAp7Imh1YiI6Imh0dHBzOi8vZGVzay5leGFtcGxlLmNvbSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9CSA",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "SK-2.local",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "a duplicated field, the last kept",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJtYWNoaW5lIjoibGF0ZXIifQ",
+  "ok": true,
+  "decoded": {
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "machine": "later",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "another prefix",
+  "text": "smns-enroll-v2.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: not smns-enroll-v1"
+ },
+ {
+  "note": "no prefix",
+  "text": "eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: not smns-enroll-v1"
+ },
+ {
+  "note": "an empty body",
+  "text": "smns-enroll-v1.",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "padding on the body",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifXg=",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "standard base64 characters in the body",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifX5+fg==",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "spare bits set in the last character",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifSB",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "an impossible length",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQAAA",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "a body that is not UTF-8",
+  "text": "smns-enroll-v1.e_99",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "a body that is not JSON",
+  "text": "smns-enroll-v1.aHViPWh0dHBzOi8veA",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "NaN in the JSON",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJuIjpOYU59",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "a JSON array",
+  "text": "smns-enroll-v1.W3siaHViIjoiaHR0cHM6Ly9kZXNrLmV4YW1wbGUuY29tIiwib3JnIjoib3JnLTEiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwibWFjaGluZSI6IlNLLTIubG9jYWwiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In1d",
+  "ok": false,
+  "error": "enrollment code: no hub"
+ },
+ {
+  "note": "a JSON string",
+  "text": "smns-enroll-v1.InNtbnMi",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "JSON null",
+  "text": "smns-enroll-v1.bnVsbA",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "a JSON number",
+  "text": "smns-enroll-v1.Nw",
+  "ok": false,
+  "error": "enrollment code: damaged"
+ },
+ {
+  "note": "no hub",
+  "text": "smns-enroll-v1.eyJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: no hub"
+ },
+ {
+  "note": "an empty hub",
+  "text": "smns-enroll-v1.eyJodWIiOiIiLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: no hub"
+ },
+ {
+  "note": "a hub that is not a string",
+  "text": "smns-enroll-v1.eyJodWIiOjcsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: no hub"
+ },
+ {
+  "note": "no org",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwibWFjaGluZSI6IlNLLTIubG9jYWwiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: no org"
+ },
+ {
+  "note": "an empty org",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiIiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwibWFjaGluZSI6IlNLLTIubG9jYWwiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: no org"
+ },
+ {
+  "note": "a org that is not a string",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOjcsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: no org"
+ },
+ {
+  "note": "no token",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: no token"
+ },
+ {
+  "note": "an empty token",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoiIiwibWFjaGluZSI6IlNLLTIubG9jYWwiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: no token"
+ },
+ {
+  "note": "a token that is not a string",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjo3LCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: no token"
+ },
+ {
+  "note": "no machine",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: no machine"
+ },
+ {
+  "note": "an empty machine",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: no machine"
+ },
+ {
+  "note": "a machine that is not a string",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjo3LCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: no machine"
+ },
+ {
+  "note": "no key",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCJ9",
+  "ok": false,
+  "error": "enrollment code: no key"
+ },
+ {
+  "note": "an empty key",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IiJ9",
+  "ok": false,
+  "error": "enrollment code: no key"
+ },
+ {
+  "note": "a key that is not a string",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6N30",
+  "ok": false,
+  "error": "enrollment code: no key"
+ },
+ {
+  "note": "a hub that is not a URL",
+  "text": "smns-enroll-v1.eyJodWIiOiJkZXNrLmV4YW1wbGUuY29tIiwib3JnIjoib3JnLTEiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwibWFjaGluZSI6IlNLLTIubG9jYWwiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: the hub is not a URL"
+ },
+ {
+  "note": "a hub of another scheme",
+  "text": "smns-enroll-v1.eyJodWIiOiJmdHA6Ly9kZXNrLmV4YW1wbGUuY29tIiwib3JnIjoib3JnLTEiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwibWFjaGluZSI6IlNLLTIubG9jYWwiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: the hub is not https"
+ },
+ {
+  "note": "a hub over http off this machine",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vZGVzay5leGFtcGxlLmNvbSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the hub is not https"
+ },
+ {
+  "note": "a hub over http on another loopback address",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vMTI3LjAuMC4yOjg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: the hub is not https"
+ },
+ {
+  "note": "a hub with no host",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovLyIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the hub is not a URL"
+ },
+ {
+  "note": "the machine name \"hub\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiaHViIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"HUB\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiSFVCIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"Legacy\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiTGVnYWN5Iiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"-x\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiLXgiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \".x\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiLngiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"a b\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiYSBiIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"x/y\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoieC95Iiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"x\\n\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoieFxuIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"é\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiw6kiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "the machine name \"x:y\"",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoieDp5Iiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "enrollment code: the machine name is not admitted"
+ },
+ {
+  "note": "a key of 31 bytes",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUSJ9",
+  "ok": false,
+  "error": "enrollment code: the key is not 256 bits"
+ },
+ {
+  "note": "a key of 33 bytes",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCIn0",
+  "ok": false,
+  "error": "enrollment code: the key is not 256 bits"
+ },
+ {
+  "note": "a padded key",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDg9In0",
+  "ok": false,
+  "error": "enrollment code: the key is not base64url"
+ },
+ {
+  "note": "a key in standard base64",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IisvdjcrL3Y3Ky92NysvdjcrL3Y3Ky92NysvdjcrL3Y3Ky92NysvdjcrL3MifQ",
+  "ok": false,
+  "error": "enrollment code: the key is not base64url"
+ },
+ {
+  "note": "a key with spare bits set",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaHgifQ",
+  "ok": false,
+  "error": "enrollment code: the key is not base64url"
+ }
+]

@@ -3832,6 +3832,10 @@ while IFS= read -r line; do
     *) fail "mark parity: ${line#FAIL }" ;;
   esac
 done < <(python3 "$SCRIPT_DIR/marks_parity.py" "$REPO_ROOT/skills/sminos/scripts" 2>&1)
+# The desk's codes are the hub's: DX1's shared vectors pin them (codes_parity.py).
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "codes parity: ${line#ok }" ;; *) fail "codes parity: ${line#FAIL }" ;; esac
+done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx1-codes.json" 2>&1)
 
 # Transcript records as the harness stores them (the shapes the ask design and
 # a live 2.1.296 transcript record).
@@ -5013,6 +5017,11 @@ if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to t
 echo
 if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
   fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
+echo
+if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
+if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
+if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
+if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
