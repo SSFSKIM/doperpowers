@@ -445,6 +445,23 @@ against the local hub; until it lands, the stand-in.
   `sminos_outcomes.py`, `sminos_requests.py`.
   Date/Author: 2026-10-15, M2 executor.
 
+- Decision: M2's contract questions ruled (composite `6fa2252d`), built
+  in M2's fix wave. (1) A send to a closed terminal session is reported
+  `recorded` without settling, once per event and recipient, when it
+  first becomes owed to that session; it stays owed (smns §4), and when
+  Resume brings the session back and the event is delivered, `delivered`
+  follows for the same key (the hub keeps the latest). (2) DX4
+  `delivery.outcome` gains `uncertain`, for a push whose frame was taken
+  and never answered (`sent?`, `woken?`): settled, never pushed again,
+  drawn as possibly delivered. (3) `raised` gains optional `agentId`
+  (absent for the main thread) and `truncated: true`; the code covers
+  every field. DC3's hub at `d75f2924` may refuse the new value and fields
+  `bad-shape` until its fix wave; those cases are proved against the
+  stand-in until then. Also: the complete `pending` set is held until the
+  request readers' first snapshots, within a bound, since an unread empty
+  set is not complete.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
