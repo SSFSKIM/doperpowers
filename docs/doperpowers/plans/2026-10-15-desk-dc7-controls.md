@@ -556,6 +556,15 @@ against the local hub; until it lands, the stand-in.
   residue: nothing sweeps `$SMINOS_HOME/bridge/<id>.json`.
   Date/Author: 2026-10-15, controller, from the composite's writer.
 
+- Decision: DC4 closed (PR #194, main `9e7d3d30`, 7.156.0); this branch
+  merges `origin/main` and the PR bumps to 7.157.0 unless something lands
+  first. DC3's M3 is final (ticked at MAWS `b3542038`; session plane at
+  `dabd37e8`, gate green on `54a9c171`): M3's RPC proofs run there. An
+  RPC retry that finds a lapsed lease answers `uncertain`; a resent
+  `settled` is accepted silently; an unread request body is drained up to
+  1 MiB and 1 s, then reset.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
