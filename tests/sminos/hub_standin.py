@@ -59,9 +59,11 @@ The test's own hands (the stand-in plays a hub that may lie):
 - `POST /control/post-fault` `{"faults": [{"fault", "machine"?, "has"?}]}`
   replaces the faults the next frame POSTs meet, one each, in order: `503`
   (answered 503, nothing applied), `apply-502` (applied, its replies written,
-  then answered 502: a hub whose answer was lost); with `machine`, only that
-  machine's POSTs meet it, with `has`, only a POST carrying a frame of that
-  `t`. `posted` records each POST's machine, generation, status, and body.
+  then answered 502: a hub whose answer was lost), `hold` (recorded as
+  `held`, its answer held back until `POST /control/release`, then 503,
+  nothing applied); with `machine`, only that machine's POSTs meet it, with
+  `has`, only a POST carrying a frame of that `t`. `posted` records each
+  POST's machine, generation, status, and body.
 - `POST /control/archive` `{"project", "machine"}` designates the project's
   archive machine (DX2's `have.archive`).
 - `POST /control/enrollment` `{"ttl_s"?}`: a one-time token, as an admin's
@@ -102,6 +104,7 @@ BATCH = 200  # events per `events` frame of a backlog
 
 lock = threading.Condition()
 state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults": [], "post_faults": [],
+         "release": threading.Event(),
          "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [],
          # name_key → {name, client_id, client_secret, state, enrollment}
          "machines": {"testhost": {"name": "testhost", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
@@ -111,7 +114,14 @@ state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults":
 
 
 def sse(frame):
-    return ("event: %s\ndata: %s\n\n" % (frame.get("t", ""), json.dumps(frame, ensure_ascii=False))).encode()
+    """One SSE event. A string no UTF-8 carries (a lone surrogate a lying hub
+    sends) goes as its JSON escape."""
+    text = json.dumps(frame, ensure_ascii=False)
+    try:
+        text.encode()
+    except UnicodeEncodeError:
+        text = json.dumps(frame)
+    return ("event: %s\ndata: %s\n\n" % (frame.get("t", ""), text)).encode()
 
 
 def is_machine_name(name):
@@ -372,6 +382,11 @@ class Handler(BaseHTTPRequestHandler):
                 for m in dropped:
                     state["streams"][m].end()
             self.reply(200, {"dropped": dropped})
+        elif self.path == "/control/release":
+            with lock:
+                held, state["release"] = state["release"], threading.Event()
+            held.set()
+            self.reply(200, {})
         elif self.path == "/control/mute":
             req = json.loads(self.body())
             with lock:
@@ -422,6 +437,16 @@ class Handler(BaseHTTPRequestHandler):
             if fault == "503":
                 state["posted"].append({**record, "status": 503})
                 return self.reply(503, {"error": "unavailable"})
+            if fault == "hold":
+                state["posted"].append({**record, "status": "held"})
+                release = state["release"]
+        if fault == "hold":
+            release.wait(60)
+            try:
+                return self.reply(503, {"error": "held, then released unapplied"})
+            except OSError:
+                return None  # the poster gave up on it
+        with lock:
             frames = []
             for i, line in enumerate(text.split("\n")):
                 if not line.strip():

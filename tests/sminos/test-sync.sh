@@ -310,6 +310,23 @@ once, again = hublog.seal(key, pid, e), hublog.seal(key, pid, dict(e))
 print(once == again and codes.verifies(key, "log", pid, once) and "mac" not in e)
 PY
 )" True "an event this machine wrote is stored without a code, and seals to the same code at every upload"
+assert_equals "$(python3 - "$ALOG" <<'PY'
+import glob, hashlib, hmac, json, os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos_codes as codes, sminos_hublog as hublog
+key, pid = bytes(range(32)), os.environ["PID"]
+e = json.loads(open(glob.glob(sys.argv[1] + "/alpha.human.jsonl")[0]).readline())
+# The derived form of DX1, written out here:smns-hub-nonce-v1 LF <project id> LF <JCS of the event without mac>.
+want = codes.b64url(hmac.new(key, ("smns-hub-nonce-v1\n%s\n%s" % (pid, codes.canonical(e))).encode(), hashlib.sha256).digest()[:16])
+n = hublog.nonce_for(key, pid, e)
+print(json.dumps([n == want, hublog.seal(key, pid, e)["mac"]["nonce"] == n,
+       hublog.nonce_for(key, pid, {**e, "mac": {"nonce": "x"}}) == n,
+       hublog.nonce_for(key, pid, {**e, "seq": e["seq"] + 1}) != n,
+       hublog.nonce_for(key, pid, {**e, "writer": "alpha/other"}) != n,
+       hublog.nonce_for(key, os.environ["OTHER_PROJECT"], e) != n]))
+PY
+)" "[true, true, true, true, true, true]" \
+  "the nonce is DX1's derived form: the same event gives the same nonce (a mac it carries aside), another position or another project another"
 
 # ---- beta: a machine that held its sessions under another name, then enrolls as beta
 echo "beta, fresh, renamed:"
@@ -438,6 +455,43 @@ if restarted; then pass "the supervisor restarts the uplink within 3 s of hub.js
 until_true 100 gen_above beta "$B_GEN" || true
 assert_contains "$(cat "$T/b/s/daemon.log")" "hub.json changed; restarting it" "saying why"
 
+# ---- projects that stop being hub projects of this org
+echo "projects that leave the hub:"
+as a alpha
+for q in q1 q2 q3; do
+  mkdir -p "$T/a/$q"
+  gitq init -q "$T/a/$q"
+  (cd "$T/a/$q" && "$SMINOS" project init --name "$q" --hub >/dev/null && "$SMINOS" say "first in $q" >/dev/null)
+done
+qid() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$T/a/$1/.smns"; }
+q_on_hub() { [ "$(ctl state "d['projects'].get('$(qid "$1")', {}).get('vector', {}).get('alpha/human', 0)")" = "$2" ]; }
+qs_on_hub() { q_on_hub q1 1 && q_on_hub q2 1 && q_on_hub q3 1; }
+until_true 200 qs_on_hub || true
+if qs_on_hub; then pass "three more hub projects open and upload"; else fail "three more hub projects open and upload"; fi
+A_GEN="$(ctl gen alpha)"
+python3 - "$T/a" <<'PY'
+import json, sys
+for q, change in (("q1", lambda d: d.update(hub={"org": "org-1"})), ("q2", lambda d: d["hub"].update(org="org-2")),
+                  ("q3", lambda d: d.pop("hub"))):
+    path = "%s/%s/.smns" % (sys.argv[1], q)
+    d = json.load(open(path)); change(d); json.dump(d, open(path, "w"))
+PY
+until_true 200 gen_above alpha "$A_GEN" || true
+for q in q1 q2 q3; do
+  (cd "$T/a/$q" && "$SMINOS" say "after $q left the hub" >/dev/null 2>&1)
+done
+# What alpha appends from here is uploaded; a say in syncproj after them marks the time.
+(cd "$RA" && says 1 "alpha after the projects left")
+settle "after three projects left the hub"
+for q in q1 q2 q3; do
+  if q_on_hub "$q" 1; then pass "$q's later say never reaches the hub"; else fail "$q's later say never reaches the hub"; fi
+done
+assert_contains "$(grep "no longer a hub project of org org-1" "$T/a/s/daemon.log")" "q1" "a malformed hub ends the project's sync, saying so"
+assert_contains "$(grep "no longer a hub project of org org-1" "$T/a/s/daemon.log")" "q2" "so does a hub of another org"
+assert_contains "$(grep "no longer a hub project of org org-1" "$T/a/s/daemon.log")" "q3" "and a .smns that names no hub"
+assert_equals "$(ctl state "sorted(p for p, v in d['projects'].items() if v['open'].get('alpha') == d['generations']['alpha'] and p != '$PID')")" "[]" \
+  "alpha's new stream opens none of them at the hub"
+
 # ---- frames past a frame's bound travel as parts, both ways
 echo "frames as parts:"
 PARTS="$(python3 - "$MB" <<'PY'
@@ -563,6 +617,45 @@ for m in alpha beta; do
 done
 assert_contains "$(cat "$T/b/s/daemon.log")" "its code does not verify for project $PID" "beta's daemon.log says why"
 assert_equals "$(ctl state "d['projects']['$PID']['vector']['hub/$MEMBER']")" 7 "the hub holds hub/$MEMBER to 7"
+# Every reader takes the hole of the spent positions in its stride: delivery, the chat, the record of what is settled.
+ctl inject "$PID" "$(seal ok "hub/$MEMBER" 8 "from the web, later still" "$MB" mb)"
+until_true 200 grep -q "later still" "$T/mb.received" || true
+assert_contains "$(cat "$T/mb.received")" "from the web, later still" "a later web human is delivered past the spent positions"
+as b beta
+run "$SMINOS" chat syncproj -n 400
+assert_contains "$OUT" "from the web, after the forgeries" "beta's chat shows the human after the hole"
+assert_contains "$OUT" "from the web, later still" "and the one after it"
+assert_not_contains "$OUT" "forged:" "and nothing forged"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$BLOG/../delivered/$MB.json" "hub/$MEMBER")" \
+  "{'settled': 8, 'pending': None, 'attempts': 0}" "mb's delivery record settles hub/$MEMBER at 8, past the hole, nothing pending"
+assert_not_contains "$(cat "$T/b/s/daemon.log")" "out of order" "no deliverer finds the hole out of order"
+# A spent position is a tombstone: an event that verifies, arriving there later, is refused too.
+ctl send beta "{\"t\": \"events\", \"project\": \"$PID\", \"events\": $(seal wrong-key "hub/$MEMBER" 9 "forged: at 9" "$MB" mb)}" >/dev/null
+ctl send beta "{\"t\": \"events\", \"project\": \"$PID\", \"events\": $(seal ok "hub/$MEMBER" 9 "valid, at a spent position" "$MB" mb)}" >/dev/null
+# A lying hub's lone surrogates, escaped in its JSON: one in a writer, one in a nonce.
+SURROGATES="$(python3 - "$(seal ok "hub/$MEMBER" 10 "forged: a surrogate in the writer" "$MB" mb)" \
+  "$(seal ok "hub/$MEMBER" 11 "forged: a surrogate in the nonce" "$MB" mb)" <<'PY'
+import json, sys
+a, b = json.loads(sys.argv[1])[0], json.loads(sys.argv[2])[0]
+a["writer"] += "\ud800"
+b["mac"]["nonce"] = "\udfff" + b["mac"]["nonce"][1:]
+print(json.dumps([a, b]))
+PY
+)"
+ctl send beta "{\"t\": \"events\", \"project\": \"$PID\", \"events\": $SURROGATES}" >/dev/null
+rejected_beta() { [ "$(rejections)" -ge 18 ]; }
+until_true 200 rejected_beta || true
+ctl save "$T/state.json"
+assert_equals "$(reported beta "hub/$MEMBER" 9 bad-code)" 2 "beta refuses both events at 9: the forgery, then the valid one at its tombstone"
+assert_not_contains "$(cat "$BLOG/hub.$MEMBER.jsonl")" "valid, at a spent position" "nothing is appended at a spent position"
+assert_contains "$(ctl state "[a['message'] for a in d['projects']['$PID']['audit'] if a['kind'] == 'rejected' and a['event'] == {'writer': 'hub/$MEMBER', 'seq': 9}]")" \
+  "was refused here before" "saying it was refused there before"
+assert_equals "$(ctl state "sorted((a['reason'], a['event']['seq'] if a['event'] else None, (a['event'] or {}).get('writer', '').endswith(chr(0xd800)), a.get('nonce', '').startswith(chr(0xdfff))) for a in d['projects']['$PID']['audit'] if a['kind'] == 'rejected' and a['machine'] == 'beta' and a['event'] and a['event']['seq'] in (10, 11))")" \
+  '[["bad-code", 11, false, true], ["bad-shape", 10, true, false]]' \
+  "a writer and a nonce carrying a lone surrogate are reported up as they came"
+assert_equals "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(sorted((w.endswith(chr(0xd800)), ss) for w, ss in d["spent"].items() if w.startswith(sys.argv[2])))' "$BLOG/../uplink.json" "hub/$MEMBER")" \
+  "[(False, [2, 3, 4, 5, 6, 9, 11]), (True, [10])]" "and their positions spent, kept in beta's uplink.json as they came"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("unreported"))' "$BLOG/../uplink.json")" "[]" "every report delivered"
 # The positions refused are spent: a new stream does not ask for them again, nor report them twice.
 A_GEN="$(ctl gen alpha)"
 B_GEN="$(ctl gen beta)"
@@ -573,11 +666,11 @@ as a alpha
 (cd "$RA" && says 1 "alpha after the forgeries")
 SKIP="betaold/,hub/,alpha/$F"
 settle "after the forgeries, every machine writer"
-assert_equals "$(rejections)" 14 "reconnected, neither machine reports a refused event again"
+assert_equals "$(rejections)" 18 "reconnected, neither machine reports a refused event again"
 last_of() { python3 -c 'import json, sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["seq"])' "$1"; }
-assert_equals "$(last_of "$ALOG/hub.$MEMBER.jsonl") $(last_of "$BLOG/hub.$MEMBER.jsonl")" "7 7" \
-  "hub/$MEMBER's last seq is 7 on both machines, as on the hub"
-assert_equals "$(wc -l < "$BLOG/hub.$MEMBER.jsonl" | tr -d ' ')" 2 "holding the two authentic events of its seven"
+assert_equals "$(last_of "$ALOG/hub.$MEMBER.jsonl") $(last_of "$BLOG/hub.$MEMBER.jsonl")" "8 8" \
+  "hub/$MEMBER's last seq is 8 on both machines, as on the hub"
+assert_equals "$(wc -l < "$BLOG/hub.$MEMBER.jsonl" | tr -d ' ')" 3 "holding the three authentic events of its eight"
 
 # ---- stopping
 kill "$A_DAEMON" "$B_DAEMON"

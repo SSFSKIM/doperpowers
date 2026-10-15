@@ -23,9 +23,11 @@ code fails — a hub/ event whose position fails its shape and an event moved
 from another project's feed included — `bad-code`; one carrying a nonce this
 project's log already holds at another position `seen-nonce`. A refused event
 never enters the log; it is reported up as DX2's `rejected`, named only by
-what it carried, and its position is spent: the writer's later events are not
-held back behind it, and the vector no longer asks the hub for it, so it is
-reported once. What passes is appended verbatim, with its code, through the
+what it carried, and its position is spent — a tombstone: nothing is ever
+appended there, the writer's later events are not held back behind it (every
+reader of a writer's file takes seqs by order, not by count, so the hole is
+read past), and the vector no longer asks the hub for it, so it is reported
+once. What passes is appended verbatim, with its code, through the
 log's own locks: present already (the same content at its (writer, seq)) it
 is skipped; a different content there is refused; past a gap it waits for
 the hub to send what is missing. Then whatever was appended is delivered at
@@ -55,17 +57,24 @@ LEGACY = "legacy/"
 # event travels alone (and as parts, past a frame's bound).
 BATCH_BYTES = 256 * 1024
 MESSAGE_MAX = 2000  # a rejection's message, as the hub admits it
+# The reason an event that verifies is refused for its position (another event
+# holds it here, or it is spent): DX2's `conflict`, which DC3's module admits
+# only from its M3 — a reason it does not know yet would be refused, so until
+# then such an event is reported as `bad-code`, its position read as false.
+CONFLICT_REASON = "bad-code"
 
 
 def log(line):
     sminos.daemon_log("uplink: " + line)
 
 
-def nonce_for(key, project, draft):
-    """The nonce an event of this machine is sealed under: 16 bytes of
-    HMAC-SHA256 with the org key over the event's canonical form (its own
-    domain, its project). Unique to the event — its writer and seq are in it —
-    unpredictable without the key, and the same at every upload."""
+def nonce_for(key, project, event):
+    """The nonce an event of this machine is sealed under (DX1's derived
+    form): the first 16 bytes of HMAC-SHA256 with the org key over
+    `smns-hub-nonce-v1` LF <project id> LF <JCS of the event without mac>.
+    Unique to the event — its writer and seq are in it — unpredictable
+    without the key, and the same at every upload."""
+    draft = {k: v for k, v in event.items() if k != "mac"}
     data = (NONCE_DOMAIN + "\n" + project + "\n" + codes.canonical(draft)).encode("utf-8")
     return codes.b64url(hmac.new(key, data, hashlib.sha256).digest()[:codes.NONCE_BYTES])
 
@@ -75,7 +84,8 @@ def seal(key, project, event):
     arrived with a code keeps it."""
     if isinstance(event.get("mac"), dict):
         return event
-    return codes.seal(key, "log", project, event, nonce_for(key, project, event))
+    draft = {k: v for k, v in event.items() if k != "mac"}
+    return codes.seal(key, "log", project, draft, nonce_for(key, project, draft))
 
 
 def rejected(project, e, reason, message):
@@ -143,9 +153,12 @@ def append_verbatim(project, e, spent=()):
     """Append an imported event to its writer's file as it came, under the
     locks every appender takes (`.sync.lock` shared, the file's own lock):
     "appended"; "present" when that (writer, seq) holds the same content;
-    "conflict" when it holds another, or held an event refused here (its
-    position is spent); "gap" when seq is not one past the last (carried past
-    the writer's `spent` positions)."""
+    "conflict" when it holds another; "spent" when an event was refused there
+    (a tombstone: nothing is ever appended at it, whatever arrives); "gap"
+    when seq is not one past the last (carried past the writer's `spent`
+    positions)."""
+    if e["seq"] in spent:
+        return "spent"
     if e["kind"] in sminos.LIFECYCLE:
         sminos._VIEWS.pop(project.id, None)
     path = sminos.writer_path(project, e["writer"])
@@ -264,7 +277,16 @@ class HubLog:
             return {}
 
     def save(self, d):
-        sminos.write_json(sminos.project_path(self.project, STATE_FILE), d)
+        """Written whole, by rename, and ASCII only: a writer or a nonce the
+        hub sent is kept as it arrived, and a lone surrogate in it (a lying
+        hub's JSON can carry one) round-trips only as an escape."""
+        path = sminos.project_path(self.project, STATE_FILE)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="ascii") as f:
+            json.dump(d, f, ensure_ascii=True)
+            f.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
 
     def spent(self):
         """{writer: {seq}}: the positions of events refused here."""
@@ -483,10 +505,9 @@ class HubLog:
                     log("held back %s in %s: its seq is not one past the writer's last (the hub sends what is "
                         "missing at the next hello)" % (position(e), self.project.name))
                 elif outcome == "conflict":
-                    # DX2 has no reason of its own for this: an event whose code
-                    # verifies, at a position that holds another here — its
-                    # position is false, as a hub/ event's that fails its shape.
-                    reason, why = "bad-code", "%s:%d holds another event here, or one refused here" % (
+                    reason, why = CONFLICT_REASON, "%s:%d holds another event here" % (e["writer"], e["seq"])
+                elif outcome == "spent":
+                    reason, why = CONFLICT_REASON, "%s:%d was refused here before: nothing is appended there" % (
                         e["writer"], e["seq"])
             if reason is None:
                 continue

@@ -161,6 +161,16 @@ elif cmd == "flow":  # an hb every 50 ms until the file named goes away, to whic
         except OSError:
             pass
         time.sleep(0.05)
+elif cmd == "fault":  # has fault — the next POST carrying a frame of `has` meets it
+    call("POST", "/control/post-fault", {"faults": [{"has": sys.argv[3], "fault": sys.argv[4]}]})
+elif cmd == "release":
+    call("POST", "/control/release", {})
+elif cmd == "held":  # the generation of each POST held, in order
+    print(" ".join(p["generation"] for p in call("GET", "/control/state")[1]["posted"] if p["status"] == "held"))
+elif cmd == "after-held":  # POSTs of events on the generation of the last held one, after it
+    posted = call("GET", "/control/state")[1]["posted"]
+    i = max(i for i, p in enumerate(posted) if p["status"] == "held")
+    print(len([p for p in posted[i + 1:] if p["generation"] == posted[i]["generation"] and '"t":"events"' in p["body"]]))
 elif cmd == "deliver":
     inbox, text = sys.argv[4], sys.argv[5].encode()
     t0 = time.time()
@@ -333,7 +343,8 @@ rm -f "$INBOX.held"
 touch "$INBOX.hold" "$SMINOS_HOME/daemon/nudge"
 until_true 200 test -f "$INBOX.held" || true
 assert_contains "$(cat "$INBOX")" "a say the tick delivers" "a tick is pushing an owed say to m, its ack held"
-ctl send "$(seal ok 3 "said from the web mid-delivery")" >/dev/null
+# Seq 4: the forgeries above spent hub/$MEMBER's position 3, a tombstone nothing is appended at.
+ctl send "$(seal ok 4 "said from the web mid-delivery")" >/dev/null
 until_true 100 grep -q "said from the web mid-delivery" "$HPLOG/hub.$MEMBER.jsonl" || true
 assert_contains "$(cat "$HPLOG/hub.$MEMBER.jsonl")" "said from the web mid-delivery" "the uplink imports a human for m meanwhile"
 sleep 0.5
@@ -350,7 +361,7 @@ assert_equals "$(grep -o "said from the web mid-delivery" "$INBOX" | wc -l | tr 
 assert_equals "$(grep -o "a say the tick delivers" "$INBOX" | wc -l | tr -d ' ')" 1 "and the say once"
 assert_equals "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d[sys.argv[2]], d[sys.argv[3]]["settled"])' \
   "$SMINOS_HOME/projects/$HP/delivered/$M.json" "hub/$MEMBER" "testhost/0f000000-0000-4000-8000-0000000000f0")" \
-  "{'settled': 3, 'pending': None, 'attempts': 0} 1" "each writer's delivery settled at its event, nothing pending"
+  "{'settled': 4, 'pending': None, 'attempts': 0} 1" "each writer's delivery settled at its event, nothing pending"
 assert_not_contains "$(cat "$DLOG")" "out of order" "no deliverer settled out of order"
 
 # ---- a tick that fails does not stop the uplink
@@ -359,7 +370,7 @@ rm -f "$SMINOS_HOME/daemon/derive.lock"
 mkdir "$SMINOS_HOME/daemon/derive.lock"
 until_true 200 grep -q "tick failed" "$DLOG" || true
 assert_contains "$(cat "$DLOG")" "tick failed: IsADirectoryError" "a tick fails (its derivation lock is a directory)"
-TOOK="$(deliver_time 4 "said from the web while ticks fail")"
+TOOK="$(deliver_time 5 "said from the web while ticks fail")"
 assert_within "$TOOK" 1.0 "the uplink still delivers within a second"
 assert_equals "$(uplink_pid)" "$UP" "the same uplink"
 rmdir "$SMINOS_HOME/daemon/derive.lock"
@@ -374,7 +385,7 @@ assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited on signal 9; restartin
 TICKED="$(cat "$SMINOS_HOME/projects/$HP/daemon.json")"
 until_true 200 ticked_since "$TICKED" || true
 if ticked_since "$TICKED" && alive "$RUN"; then pass "the tick loop goes on"; else fail "the tick loop goes on"; fi
-TOOK="$(deliver_time 5 "said from the web to the new uplink")"
+TOOK="$(deliver_time 6 "said from the web to the new uplink")"
 assert_within "$TOOK" 1.0 "the new uplink delivers"
 
 # ---- stopping
@@ -459,6 +470,47 @@ if dead "$UP"; then pass "SIGTERM to daemon run under the flow ends its uplink";
 assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "which stopped on the supervisor's SIGTERM, before any kill"
 rm -f "$T/flowing"
 set +e; wait "$FLOW"; set -e
+
+# ---- ending while the hub holds a POST's answer, a backlog still to go
+echo "ending during a held POST:"
+backlog() { # label — three events of 300 KB under testhost/human, each its own upload
+  python3 - "$SCRIPTS/sminos.py" "$HP" "$1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+for i in range(3):
+    mod.log_append(p, mod.writer_id(), "human", **{"from": "human", "to": "*", "text": "%s %d " % (sys.argv[3], i) + "x" * 300000})
+PY
+}
+held_count() { local h; h="$(ctl held)"; [ "$(wc -w <<<"$h" | tr -d ' ')" -ge "$1" ]; }
+start_run
+ctl fault events hold
+backlog "first backlog"
+until_true 200 held_count 1 || true
+if held_count 1; then pass "the hub holds the answer to the first upload of a backlog of three"; else fail "the hub holds an upload's answer"; fi
+kill "$UP"
+until_true 20 dead "$UP" || true
+if dead "$UP"; then pass "SIGTERM ends the uplink within a second while the hub holds its POST"; else
+  fail "SIGTERM ends the uplink within a second while the hub holds its POST"; fi
+assert_contains "$(cat "$DLOG")" "the uplink is ending while the hub holds a POST's answer" "saying so"
+assert_equals "$(ctl after-held)" 0 "no later batch of the backlog is posted on that stream"
+until_true 60 restarted_after "$UP" || true
+if restarted_after "$UP"; then pass "its lock is free at once: the supervisor's next uplink holds it"; else
+  fail "its lock is free at once"; fi
+UP="$(uplink_pid)"
+ctl fault events hold
+backlog "second backlog"
+until_true 200 held_count 2 || true
+UP="$(uplink_pid)"
+kill -9 "$RUN"
+set +e; wait "$RUN" 2>/dev/null; set -e
+until_true 40 dead "$UP" || true
+if [[ -n "$UP" ]] && dead "$UP"; then pass "the orphan of a killed daemon run ends within 2 s while the hub holds its POST"; else
+  fail "the orphan of a killed daemon run ends within 2 s while the hub holds its POST"; echo "    uplink pid '$UP'"; fi
+assert_equals "$(ctl after-held)" 0 "and posts no later batch"
+until_true 40 uplink_free || true
+if uplink_free; then pass "and releases uplink.lock"; else fail "and releases uplink.lock"; fi
+ctl release
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

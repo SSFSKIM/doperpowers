@@ -34,6 +34,7 @@ import http.client
 import json
 import os
 import queue
+import select
 import signal
 import socket
 import ssl
@@ -276,15 +277,25 @@ class Parts:
         return codes.loads("".join(held["slices"][i] for i in range(count)))
 
 
-class NotDelivered(Exception):
+class EndStream(Exception):
+    """This stream is done with: the next one starts over with `hello`."""
+
+
+class NotDelivered(EndStream):
     """A POST the hub did not answer 200: nothing in it may be taken as landed."""
 
 
-def post(cred, generation, frames):
+class Stopping(EndStream):
+    """The uplink is ending (SIGTERM, or its daemon is gone) while it posts."""
+
+
+def post(cred, generation, frames, ended=lambda: False):
     """Frames up (DX2's POST): NDJSON, each body at most POST_LIMIT bytes,
     under the stream's generation. NotDelivered unless the hub answers 200 —
     a POST of an older stream is refused stale-generation, and a hub whose
-    replies failed to reach the stream answers something else."""
+    replies failed to reach the stream answers something else. The hub holds
+    its answer until its replies are on the stream, so the wait for it is
+    watched: Stopping, within POLL, once `ended()` (and before each body)."""
     bodies, body, size = [], [], 0
     for line in (line.encode("utf-8") for frame in frames for line in to_wire(frame)):
         if body and size + len(line) + 1 > POST_LIMIT:
@@ -296,10 +307,18 @@ def post(cred, generation, frames):
         bodies.append(body)
     path = urllib.parse.urlsplit(cred["hub"]).path.rstrip("/") + FRAMES_PATH
     for lines in bodies:
+        if ended():
+            raise Stopping("the uplink is ending")
         conn = connection(cred, POST_TIMEOUT)
         try:
             conn.request("POST", path, body=b"\n".join(lines) + b"\n", headers={
                 "Content-Type": "application/x-ndjson", "X-Desk-Generation": str(generation), **admission(cred)})
+            deadline = time.time() + POST_TIMEOUT
+            while not select.select([conn.sock], [], [], POLL)[0]:
+                if ended():
+                    raise Stopping("the uplink is ending while the hub holds a POST's answer")
+                if time.time() > deadline:
+                    raise NotDelivered("no answer within %ds" % POST_TIMEOUT)
             resp = conn.getresponse()
             answer = resp.read(ANSWER_MAX)
         except (OSError, http.client.HTTPException) as e:
@@ -358,8 +377,9 @@ class Link:
     a POST not answered 200 ends the stream: the next one redoes the
     handshake, which is idempotent, rather than assume anything landed."""
 
-    def __init__(self, cred, logs):
+    def __init__(self, cred, logs, ended=lambda: False):
         self.cred = cred
+        self.ended = ended
         self.logs = logs          # project id → HubLog, kept across streams
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
@@ -375,7 +395,7 @@ class Link:
                          "part": self.on_part}
 
     def post(self, frames):
-        post(self.cred, self.generation, frames)
+        post(self.cred, self.generation, frames, self.ended)
 
     def dispatch(self, frame, stream):
         t = frame.get("t") if isinstance(frame, dict) else None
@@ -387,7 +407,7 @@ class Link:
             return
         try:
             handler(frame, stream)
-        except NotDelivered:
+        except EndStream:
             raise
         except (Exception, SystemExit) as e:  # noqa: BLE001 — one frame's failure is not the stream's
             log("handling a %r frame failed: %r" % (t, e))
@@ -496,6 +516,14 @@ class Link:
                 self.next_scan = now + SCAN_EVERY
                 sminos.forget_caches()
                 known = hub_projects(self.cred)
+                gone = sorted(self.opened - set(known))
+                if gone:
+                    # Its .smns no longer names a hub of this org (or names
+                    # another id): nothing more goes up, and a new stream,
+                    # which opens only what is eligible, takes it out of the
+                    # hub's fan-out to this machine.
+                    raise EndStream("no longer a hub project of org %s here: %s" % (
+                        self.cred["org"], ", ".join(self.logs[pid].project.name for pid in gone)))
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
             if now >= self.next_upload or nudged:
@@ -503,7 +531,7 @@ class Link:
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid])
             self.failing = ""
-        except NotDelivered:
+        except EndStream:
             raise
         except (Exception, SystemExit) as e:  # noqa: BLE001 — said once while it keeps failing
             if repr(e) != self.failing:
@@ -514,7 +542,7 @@ class Link:
 def serve(stream, cred, ended, logs):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it."""
-    link, welcomed = Link(cred, logs), False
+    link, welcomed = Link(cred, logs, ended), False
     while True:
         # Before every frame, not only when the stream is quiet: a hub that
         # never pauses must not keep an orphan or a stopped uplink alive.
@@ -541,6 +569,12 @@ def serve(stream, cred, ended, logs):
             link.tick()
         except NotDelivered as e:
             log("a POST was not delivered (%s): reconnecting, to redo the handshake" % e)
+            return welcomed
+        except Stopping as e:
+            log("%s: the stream is closed" % e)
+            return welcomed
+        except EndStream as e:
+            log("%s: reconnecting" % e)
             return welcomed
 
 
