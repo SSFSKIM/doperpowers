@@ -16,7 +16,7 @@
 ## Progress
 
 - [x] M1 — Presence and the session plane (DC7.G1, its first half) — reviewed clean 2026-10-15 (`19b50561`, fixes `3aa64d21`..`d51c6956`); proved against DC3's local hub at `f22e0839` (uplink walks 7/7); the proof against DC2's real M4 child, with a seeded cut, waits on DC2's M4
-- [ ] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses)
+- [x] M2 — The machine's policy, pending requests, settlements, and delivery outcomes (DC7.G1's second half; DC7.G3's delivery clauses) — reviewed clean 2026-10-15 (`c71b751f`, fixes `f357a00a`, `526b9eb8`); proved against DC3's local hub at `b7fc7ebd`+ (M2 uplink 3/3, M1 walk 7/7)
 - [ ] M3 — The RPCs (DC7.G2; DC7.G3's RPC clauses)
 - [ ] M4 — Resume; the walk against the local hub; docs and version (DC7.G4)
 
@@ -478,7 +478,11 @@ against the local hub; until it lands, the stand-in.
   reader that cannot snapshot counting as read and retrying with backoff
   (1 s doubling to 30 s). Over the outbox cap only raises are dropped. An
   outcome that cannot be written leaves its event unsettled, so it is
-  delivered and recorded again on the next pass.
+  delivered and recorded again on the next pass. A closed session's
+  `recorded` is written under the session's delivery lock (delivery's
+  lock order), so it never lands after a `delivered` and two reporters
+  take turns; a raise the outbox cap drops marks its project stale, so the
+  open stream owes the complete set.
   Date/Author: 2026-10-15, M2 executor.
 
 - Decision: DC2's M4 is reviewed clean (code `f0242560`, plan
