@@ -554,6 +554,31 @@ With `--json`, the `gap` and its `resync` are passed through for the reader to a
   answer settles it with winner `terminal` and its real outcome — exactly
   one `settled` per `raised`.
   Date/Author: 2026-10-15, controller with the composite's writer.
+- Decision (M3 scope, approved by the composite's writer): Pairing a
+  streaming block with its transcript row. The mod never sees the API
+  message id or request id (not on `turn.step`'s input, chunks, result or
+  usage; not on `session.append`'s input), and the engine writes one
+  transcript row per content block, the rows of one response sharing
+  `message.id` (DC1's transcripts). What it does see is the row's `uuid` at
+  `session.append` (door `response`, with the loop's `agentId`), the same
+  uuid the transcript keeps. So:
+  1. DX5 gains `{type: "block-row", uuid, turnId, agentId, step, index}`,
+     posted from the `session.append` hook for each response row; `index`
+     is the content block's, the same `index` its chunks carry. The row is
+     matched to its block by the row's block type plus the order of the
+     step's block starts, not by assuming the nth row is block n; M3's first
+     live run checks that assumption anyway and records what it finds. The
+     daemon relays the event as DX4 kind `block-row`, same body (DX4's `row`
+     is the transcript row verbatim; one name per thing at both layers).
+  2. The snapshot's `streaming` entries become per block: `{turnId,
+     agentId, step, blocks: [{index, kind, text, upTo}]}`, replacing M1's
+     aggregated `text`/`thinking` per message; the mod's `resync` state
+     follows the same shape. Applying a `block-row` removes its block from
+     `streaming` under the same lock, so a snapshot holds only unsettled
+     blocks, and chunks for a settled block are ignored.
+  3. DX4 (the composite's): a transcript row whose `uuid` a `block-row`
+     named settles that block.
+  Date/Author: 2026-10-15, controller with the composite's writer.
 
 ## Surprises & Discoveries
 
