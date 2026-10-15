@@ -527,6 +527,24 @@ against the local hub; until it lands, the stand-in.
   for them.
   Date/Author: 2026-10-15, M1 executor.
 
+- Decision: DC3's M3 is reviewed; its hub at MAWS `a190a6d8` (gate run
+  38775224532 green) is the one to prove against, and DX2, DX3, DX4, DX6
+  and DX7 in the composite are its reviewed text (`d1966938`). What the
+  machine side meets there: `raised.deadline` is ISO 8601 UTC with
+  milliseconds (converted from DX5's epoch ms), else `bad-shape`;
+  `rpc-result`, `pending`, and every `session` message need the project
+  opened on the current stream (`not-open`); every well-formed
+  `rpc-result` is answered `rpc-ack`; a subscription message for a `sub`
+  no browser holds is answered `unsubscribe` (an `end` excepted); the
+  lease is 45 s, an `hb-ack` of another generation renews nothing, and a
+  renewal after a lapse brings the machine back online without restoring
+  its subscriptions; `machines` lists a machine once it has sent DX4
+  `machine`, which goes after every reconnect; `settled` is taken once per
+  request (ids kept 30 days); `unsubscribe` is final at the hub at once.
+  M1's walk passed there 7/7 (real-child wave); M2's uplink tests rerun
+  there at M3's start.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
