@@ -592,6 +592,16 @@ against the local hub; until it lands, the stand-in.
   `unsupported` until M4.
   Date/Author: 2026-10-15, M3 executor.
 
+- Decision: M3's contract questions ruled (composite `21c32db7`). DX6's
+  steer result is `{row: string | null}`, null when the session has no
+  bridge (a seat's `reply`, or a send), still refused `idle` where the
+  machine can tell no turn runs. `by` on spawn and retire is the RPC's
+  `member` id, never the operator `""`. Who-won fields come only from the
+  bridge's own record: its 409s, or the `settled` record its pending
+  snapshot reports when the digest check finds the request settled.
+  M3's other decisions stand.
+  Date/Author: 2026-10-15, the composite's writer.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
