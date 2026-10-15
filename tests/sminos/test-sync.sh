@@ -349,6 +349,15 @@ printf '[{"id": "mbshort", "sessionId": "%s", "state": "idle"}]\n' "$MB" > "$STU
 run "$SMINOS" list --json
 assert_contains "$OUT" '"machine": "betaold"' "the seat mb and the session nb join as betaold"
 assert_equals "$(find "$BLOG" -name 'betaold.*.jsonl' | wc -l | tr -d ' ')" 2 "beta's log holds its own two writers, and nothing of alpha's"
+# nb is renamed while the machine is still betaold: the tick publishes the
+# rename and nb's state under betaold, where they stay.
+printf '{"pid":%s,"sessionId":"%s","name":"nb-renamed","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$NB_PID" "$NB" "$RB" > "$HOME/.claude/sessions/nb.json"
+run "$SMINOS" daemon tick
+assert_equals "$(python3 -c 'import json, sys
+print([(e["kind"], e.get("alias") or e.get("state")) for e in map(json.loads, open(sys.argv[1])) if e["kind"] != "joined"])' \
+  "$BLOG/betaold.$NB.jsonl")" "[('state', 'idle'), ('renamed', 'nb-renamed')]" \
+  "nb's state and its rename to nb-renamed are published under betaold"
 run "$SMINOS" hub enroll --name beta <<<"$(ctl code "$HUB" "$(ctl token)" beta "$KEY")"
 assert_contains "$OUT" "enrolled this machine as beta" "beta enrolls under a new name"
 start_daemon
@@ -357,18 +366,23 @@ settle "a fresh machine bootstraps the project from the hub"
 assert_equals "$(ctl state "sorted(w for w in d['projects']['$PID']['vector'] if w.startswith('beta'))")" \
   "[\"beta/$MB\", \"beta/$NB\"]" "the seat and the session that joined as betaold join again as beta, and only as beta"
 assert_contains "$(cat "$T/b/s/daemon.log")" "mb in syncproj joined again as beta (it had joined as betaold)" "saying so"
+assert_equals "$(ctl state "[(e['kind'], e.get('alias'), e.get('name_source'), e.get('state')) for e in d['projects']['$PID']['writers']['beta/$NB'][:2]]")" \
+  '[["joined", "nb-renamed", "user", null], ["state", null, null, "idle"]]' \
+  "nb joins again under its name now, nb-renamed, and with its state: what betaold published stays local"
 as a alpha
 cd "$RA"
 run "$SMINOS" list --json
 members_of() { printf '%s\n' "$OUT" | python3 -c 'import json, sys
 print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))'; }
-assert_equals "$(members_of)" "[('ma', 'alpha', True), ('mb', 'beta', False), ('nb', 'beta', False)]" \
-  "alpha sees mb and nb as beta's members"
+assert_equals "$(members_of)" "[('ma', 'alpha', True), ('mb', 'beta', False), ('nb-renamed', 'beta', False)]" \
+  "alpha sees mb and nb-renamed as beta's members"
+assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print([r["state"] for r in json.load(sys.stdin) if r["alias"] == "nb-renamed"])')" "['idle']" "and nb-renamed's state"
 as b beta
 cd "$RB"
 run "$SMINOS" list --json
-assert_equals "$(members_of)" "[('ma', 'alpha', False), ('mb', 'beta', True), ('nb', 'beta', True)]" \
-  "beta keeps mb and nb its own, and sees ma as alpha's"
+assert_equals "$(members_of)" "[('ma', 'alpha', False), ('mb', 'beta', True), ('nb-renamed', 'beta', True)]" \
+  "beta keeps mb and nb-renamed its own, and sees ma as alpha's"
 SKIP="betaold/,hub/"
 export SKIP
 
@@ -648,7 +662,7 @@ until_true 200 rejected_beta || true
 ctl save "$T/state.json"
 assert_equals "$(reported beta "hub/$MEMBER" 9 bad-code)" 2 "beta refuses both events at 9: the forgery, then the valid one at its tombstone"
 assert_not_contains "$(cat "$BLOG/hub.$MEMBER.jsonl")" "valid, at a spent position" "nothing is appended at a spent position"
-assert_contains "$(ctl state "[a['message'] for a in d['projects']['$PID']['audit'] if a['kind'] == 'rejected' and a['event'] == {'writer': 'hub/$MEMBER', 'seq': 9}]")" \
+assert_contains "$(ctl state "[a['message'] for a in d['projects']['$PID']['audit'] if a['kind'] == 'rejected' and a['event'] == dict(writer='hub/$MEMBER', seq=9)]")" \
   "was refused here before" "saying it was refused there before"
 assert_equals "$(ctl state "sorted((a['reason'], a['event']['seq'] if a['event'] else None, (a['event'] or {}).get('writer', '').endswith(chr(0xd800)), a.get('nonce', '').startswith(chr(0xdfff))) for a in d['projects']['$PID']['audit'] if a['kind'] == 'rejected' and a['machine'] == 'beta' and a['event'] and a['event']['seq'] in (10, 11))")" \
   '[["bad-code", 11, false, true], ["bad-shape", 10, true, false]]' \
@@ -671,6 +685,37 @@ last_of() { python3 -c 'import json, sys; print(json.loads(open(sys.argv[1]).rea
 assert_equals "$(last_of "$ALOG/hub.$MEMBER.jsonl") $(last_of "$BLOG/hub.$MEMBER.jsonl")" "8 8" \
   "hub/$MEMBER's last seq is 8 on both machines, as on the hub"
 assert_equals "$(wc -l < "$BLOG/hub.$MEMBER.jsonl" | tr -d ' ')" 3 "holding the three authentic events of its eight"
+
+# ---- an event the hub refuses for good, and one after it
+# The large event travels alone and is refused too-large; the next one, in
+# the POST after it, draws a resend from the refused position. Both replies
+# are queued before either is read: the refusal must win, or the writer
+# uploads the two again and again.
+echo "an event too large for the hub:"
+BIG=5a0000bb-0000-4000-8000-0000000000bb
+python3 - "$ALOG" "$BIG" <<'PY'
+import json, os, sys, time
+log, s = sys.argv[1], sys.argv[2]
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+nobody = [{"session": "5a0000bc-0000-4000-8000-0000000000bc", "alias": "nobody"}]
+evs = [{"ts": ts, "writer": "alpha/" + s, "seq": 1, "kind": "say", "from": "big", "to": nobody, "text": "x" * (1 << 20)},
+       {"ts": ts, "writer": "alpha/" + s, "seq": 2, "kind": "say", "from": "big", "to": nobody, "text": "after the large one"}]
+# Written whole, by rename: the uplink sees both events at once.
+tmp = os.path.join(log, ".big.tmp")
+with open(tmp, "w") as f:
+    f.write("".join(json.dumps(e) + "\n" for e in evs))
+os.replace(tmp, os.path.join(log, "alpha.%s.jsonl" % s))
+PY
+big_refusals() { ctl state "len([a for a in d['projects']['$PID']['audit'] if a['kind'] == 'refused' and a.get('writer') == 'alpha/$BIG'])"; }
+big_refused() { [ "$(big_refusals)" -ge 1 ]; }
+until_true 400 big_refused || true
+assert_equals "$(ctl state "[(a['reason'], a['seq']) for a in d['projects']['$PID']['audit'] if a['kind'] == 'refused' and a.get('writer') == 'alpha/$BIG'][:1]")" \
+  '[["too-large", 1]]' "the hub refuses the event past 1 MiB as too-large"
+sleep 3
+assert_equals "$(big_refusals)" 1 "alpha does not upload it again on this stream: the resend its next event drew does not reopen the writer"
+assert_contains "$(cat "$T/a/s/daemon.log")" "the hub refused in syncproj: too-large alpha/$BIG:1" "daemon.log says the hub refused it"
+assert_contains "$(cat "$T/a/s/daemon.log")" "the hub asks alpha/$BIG of syncproj again from 1, where it refused it" \
+  "and that the resend after it is not followed"
 
 # ---- stopping
 kill "$A_DAEMON" "$B_DAEMON"

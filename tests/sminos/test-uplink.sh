@@ -429,6 +429,30 @@ for changed in sminos_uplink.py sminos_codes.py; do
   if [[ -n "$UP" ]] && dead "$UP"; then pass "its uplink ($UP) is stopped with it"; else fail "its uplink is stopped with it"; fi
 done
 
+# ---- an uplink whose supervisor died while it started
+# The supervisor names itself at spawn: a parent that is gone before the
+# uplink could look (orphaned in its startup, imports, or credential read) is
+# never mistaken for the supervisor, so the orphan neither serves nor holds
+# uplink.lock.
+echo "orphaned while it starts:"
+cat > "$T/launch.py" <<'PY'
+import os, subprocess, sys
+# daemon run's spawn of its uplink, then gone at once.
+p = subprocess.Popen([sys.argv[1], "daemon", "uplink"], env={**os.environ, "SMINOS_UPLINK_PARENT": str(os.getpid())},
+                     stdin=subprocess.DEVNULL, stdout=open(sys.argv[2], "a"), stderr=subprocess.STDOUT)
+print(p.pid)
+PY
+GEN_BEFORE="$(ctl generation)"
+ORPHAN="$(python3 "$T/launch.py" "$SMINOS" "$T/orphan.out")"
+until_true 100 dead "$ORPHAN" || true
+if [[ -n "$ORPHAN" ]] && dead "$ORPHAN"; then pass "an uplink whose supervisor is gone before it looked ends at once"; else
+  fail "an uplink whose supervisor is gone before it looked ends at once"; echo "    uplink pid '$ORPHAN'"
+  kill "$ORPHAN" 2>/dev/null || true; fi
+assert_equals "$(ctl generation)" "$GEN_BEFORE" "without opening a stream"
+assert_contains "$(cat "$DLOG")" "uplink: not started (pid $ORPHAN): its daemon (pid" "saying its daemon is gone"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: not running" "and uplink.lock is free"
+
 # ---- an uplink ends promptly under a stream that never pauses
 echo "ending under steady traffic:"
 start_run() { # → RUN, UP: a daemon run whose uplink holds a new stream

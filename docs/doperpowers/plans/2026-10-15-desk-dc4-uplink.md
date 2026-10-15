@@ -27,7 +27,12 @@
   (5f890398..fa5fe015; two fix waves: rejection state that round-trips,
   cancellable uploads, projects leaving the uplink, spent as a
   tombstone); the real-hub walk 32/32 at MAWS 71083dd4
-- [ ] M4 — The archive, the two-machine walk, docs, version (DC4.G3)
+- [x] M4 — The archive, the two-machine walk, docs, version (DC4.G3) —
+  2026-10-15, reviewed clean (dd6730d3..043d1449; one fix wave: no
+  write through a remote symlink, writer files staged and stored byte
+  for byte whatever the remote's git policy, a refresh `have` that only
+  moves forward; 7.155.0); the walk 73/73 against MAWS 0e7da91e, a
+  repeated `hello` included
 
 ## Constraints that bind every milestone
 
@@ -573,6 +578,53 @@ produces nothing new for other children beyond the stream DC7 builds on.
   malformed, another org) ends the stream, and the next one opens only
   what is eligible.
   Date/Author: 2026-10-15, M3's executor, folded by the controller.
+- Decision: **M4's shape.** (1) *Who knows, who runs.* The uplink learns
+  the designation from `have.archive` and records it per project
+  (`archive: true|false` with the time, in the project's uplink state);
+  the daemon's tick loop, which already owns bounded git phases, runs the
+  archive for a hub project whose recorded designation is true — git
+  never runs in the uplink, so a slow push cannot hold the stream, and
+  a machine whose `have` says false stops at its next schedule. (2)
+  *The clone* lives at `$SMINOS_HOME/projects/<id>/archive/`, outside
+  `log/`; each run fetches the remote (bounded as the mirror's are),
+  starts from `origin/main` when it exists, copies every top-level
+  `*.jsonl` of `log/` over its namesake whole (never re-sequenced,
+  holes and `mac` kept), leaves files the log lacks as the remote has
+  them, commits, and pushes; a push rejected because the remote moved is
+  retried from a fresh fetch, as the mirror's are. Nothing is ever read
+  from the clone into `log/`. (3) *The schedule* is every 15 minutes,
+  `SMINOS_ARCHIVE_EVERY` overriding it in seconds (0 or less: off), and
+  a project with no `remote` has no archive. (4) Docs: `CLAUDE.md`'s
+  `skills/` row gains the hub verbs (`hub enroll` by prompt, `hub show`),
+  `project init --hub`, the uplink process and the archive;
+  `skills/sminos/SKILL.md` changes only if an agent-facing behavior did
+  (the hub verbs are the human's). (5) The version moves by a minor
+  (`scripts/bump-version.sh`), in M4's commit.
+  Date/Author: 2026-10-15, controller (before M4's dispatch).
+- Decision: M4's executor's calls (`dd6730d3`). (1) The uplink sends
+  `hello` again for each open project once per archive period: DX2 tells
+  a machine its designation only in `have`, so a stream that never drops
+  would never learn it moved (DC3's `project.ts` accepts the repeat with
+  no side effect; raised with the composite's writer for DX2's text).
+  (2) The tick archives once per fresh `have` naming this machine, at
+  most once per half period, so a machine that lost the designation, or
+  is cut off from the hub, runs nothing; a run started on an older
+  confirmation may push once. (3) The designation is `archive` and
+  `archive_at` in `uplink.json` (the uplink's alone); the run's record is
+  under `archive` in `daemon.json`. (4) Each writer file is read under
+  its own lock, never `.sync.lock`, and copied whole; the clone is reset
+  hard to `origin/main` and cleaned first; commits by `sminos@<enrolled
+  name>`. (5) No run for a `.smns` whose hub is malformed. (6) The
+  retry after the remote moved is tested white-box.
+  Date/Author: 2026-10-15, M4's executor, folded by the controller.
+  Ruled (composite `b6cb686b`): DX2 now says a `hello` for a project
+  already open on the stream is allowed and idempotent, answered with a
+  fresh `have` and the backlog past its vector; a hub push on a
+  designation change was rejected (a new frame and hub work, for an
+  archive whose latency does not matter). SKILL.md stays out of this
+  branch: one sminos-skill update for the whole desk (hub projects, the
+  bridge, the web's controls) after the children merge. Version 7.155.0.
+  Date/Author: 2026-10-15, the composite's writer.
 
 ## Surprises & Discoveries
 
@@ -594,5 +646,89 @@ produces nothing new for other children beyond the stream DC7 builds on.
   passed against it (51/51) as well as against the Python stand-in. (M2)
 - sminos.py already needs Python 3.10+ (`float | None` in `Member`);
   macOS's `/usr/bin/python3` is 3.9. New code stays 3.9-safe. (M2)
+- `skills/sminos/SKILL.md` has been stale for hub projects since M2: its
+  mirror and daemon sections say a `remote` makes `log/` a git mirror.
+  Left unedited (a skill change needs eval evidence); carried as residue.
+  (M4)
+- DC2's branch also took 7.154.0; this branch moves to the next number
+  above, per the composite's writer. (M4)
+- The suite's "say lands within two seconds" (two git-mirror daemon
+  loops) failed on this branch at 2.1 s in three runs under load. Timed
+  against the base, interleaved: the same CPU and the same git processes
+  per tick, and the base misses the bound as often under the same load;
+  the hub-less mirror is not slowed. Recorded in TECH-DEBT with a
+  proposed load-scaled bound. (final check)
+
+- Decision: The whole-branch review (`high`, 4dddfb4b..043d1449) found
+  one P1 and four P2 at the seams between milestones, all fixed in
+  `4d0dd34b`. (P1) `project init --hub` converts under the mirror's
+  `.sync-op.lock`, waiting for a sync in flight, and every git phase
+  re-reads `.smns` under that lock (before the sync, inside integrate,
+  before each push), so a tick that began before the switch neither
+  integrates nor pushes. (P2) A machine name that differs from the
+  current or a former one only in case is refused before redeeming (a
+  case-insensitive disk would give both one writer file; DX7 compares
+  names without case). (P2) A refusal is remembered at the writer's
+  lowest refused seq, and a `resend` at or past it does not reopen the
+  writer on that stream (a too-large event otherwise looped forever).
+  (P2) The supervisor passes its pid at spawn (`SMINOS_UPLINK_PARENT`)
+  and the uplink ends at once when its parent is another, startup
+  included. (P2) The former-name re-join's `joined` carries the
+  member's current alias and name source, then its `state`.
+  Date/Author: 2026-10-15, controller (from the branch review).
 
 ## Outcomes & Retrospective
+
+**Outcome (2026-10-15).** All four milestones landed and were reviewed
+clean, and the branch review's findings are fixed. DC4's acceptance,
+against the composite's DC4 section:
+
+- **G1 (enroll):** `sminos hub enroll` reads the code from a prompt or
+  stdin (the positional form refused, composite `2bce24bb`), redeems it at
+  DX7's endpoint, and stores `daemon/hub.json` at 0600 with no secret in
+  output, logs, or argv; a second installation claiming an enrolled name
+  is told to pick another; `project init --hub` writes the field. Proved
+  against the Python stand-in and DC3's local hub (55/55 at MAWS
+  `4d2c492f`).
+- **G2 (sync):** two machines simulated on one Mac converge — per-writer
+  counts, last seq, and payloads equal on both and the hub — after a burst,
+  a restart, and a dropped stream; a fresh machine bootstraps; no git for
+  a hub project; every refused case stays out of the log and is reported
+  up as `rejected`, the browser-path forgeries shown on the hub's
+  browser socket (real-hub walk 32/32 at MAWS `71083dd4`).
+- **G3 (archive):** the designated machine writes the log byte for byte
+  (`mac` and holes kept) from a clone outside `log/`; no other machine
+  pushes; a machine that loses the designation stops at its next run.
+- **G4 (concurrency):** the uplink is its own supervised process; a hung
+  git phase or a derivation does not delay it, and an event from the hub
+  is delivered within a second, exactly once against a concurrent tick.
+- The final walk against DC3's hub proved G1–G4 together, 73/73 (MAWS
+  `0e7da91e`, and again at `fa7f8e8d` after the branch review's fixes);
+  the full sminos suite is 1724/1724 at normal load.
+
+**What went well.** Pinning DX1 to the hub's own vectors, negatives
+included (`fails_by`), made four contract amendments — the position
+check, canonical base64url, the derived nonce, conflict — a file swap
+and a re-run each. Splitting the forgery cases by how a forgery can
+really reach a daemon (the real browser path against DC3's hub; a lying
+hub only against the stand-in) proved acceptance 8's path end to end
+without a backdoor in the hub.
+
+**What it cost.** Every review found real defects, most at a boundary
+the milestone did not own alone: the identity rule ("a former name is
+self") first claimed another machine's sessions; the code in argv; a
+busy stream outliving its daemon; refusal state that could not hold a
+lone surrogate; the archive writing through a remote symlink; and, only
+visible across the whole branch, the mirror-to-hub switch racing a tick.
+The lesson for DC7, which builds on this stream: the boundaries worth a
+test first are the transitions (enrollment, rename, conversion,
+reconnect, designation), not the steady states.
+
+**Known rough edges.** `project init --hub` waits silently, up to the
+git bound, behind a sync in flight. Two review Minors are deferred: an
+uplink POST past its 60 s deadline can leave its worker thread alive
+(TECH-DEBT), and a CRLF warning in a `test-archive.sh` fixture. The
+suite's timing assertions flake under heavy machine load, the base
+commit's too (TECH-DEBT). `skills/sminos/SKILL.md` still describes a
+`remote` as a git mirror; it is updated once for the whole desk after
+the children merge.

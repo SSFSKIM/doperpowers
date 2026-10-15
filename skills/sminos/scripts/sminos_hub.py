@@ -23,7 +23,9 @@ are kept in hub.json as `former`, each with the sessions it held under it
 then, and `is_self` counts those sessions under that name as this machine's —
 so its seats and members stay its own across a rename, while another machine
 that enrolls under the former name stays another machine. What it wrote under
-a former name stays local.
+a former name stays local. A name that differs from the current one or a
+former one only in case is refused: DX7 compares names without case, and a
+file system that ignores case would make the two names' writers one file.
 
 `sminos project init --hub` writes the enrolled hub into .smns (`{url, org}`);
 a project whose .smns names a hub is never synced through git.
@@ -43,6 +45,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
+import sminos_daemon as daemon  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
 CODE_PREFIX = "smns-enroll-v1."
@@ -261,6 +264,26 @@ def sessions_under(name):
     return sorted(held_)
 
 
+def refuse_case_twin(machine, old, former):
+    """Exit when `machine` differs from this machine's name now, or a name it
+    wrote under before, only in case. DX7 compares machine names without
+    case, and on a file system that ignores case `<Name>.human.jsonl` and
+    `<name>.human.jsonl` are one file: the new writer would go on from the
+    old one's seq, in a file labelled by its first event."""
+    def twin(name):
+        return name != machine and name.lower() == machine.lower()
+    if twin(old):
+        said_as, keep = "%s, the name this machine writes under," % old, old
+    else:
+        name = next((n for n in former if twin(n)), None)
+        if name is None:
+            return
+        said_as, keep = "%s, a name this machine wrote under before," % name, name
+    sminos.die("the machine name %s differs from %s only in case: machine names are compared without case, and on a "
+               "file system that ignores case the two would share their writer files. Keep %s (--name %s), or claim "
+               "a name that differs in more than case" % (machine, said_as, keep, keep))
+
+
 def enroll(a):
     if a.code:
         # Refused unread and never echoed: the code is already exposed in argv.
@@ -278,12 +301,15 @@ def enroll(a):
         sminos.die("this machine is already enrolled at %s as %s (org %s): a new code would replace that identity — "
                    "pass --replace to do so" % (before.get("hub") or "?", before.get("machine") or "?",
                                                 before.get("org") or "?"), 1)
+    old, old_former = sminos.machine_identity()
+    if a.name:
+        refuse_case_twin(a.name, old, old_former)  # before the code is asked for
     try:
         code = decode_code(read_code())
     except CodeRefused as e:
         sminos.die("enrollment code: %s" % e)
-    old, old_former = sminos.machine_identity()
     machine = a.name or (old if is_machine_name(old) else code["machine"])
+    refuse_case_twin(machine, old, old_former)
     status, answer = redeem(code, machine)
     if status != 200 or answer is None:
         sminos.die(refusal(status, answer, machine), 1)
@@ -338,22 +364,28 @@ def add_hub(path, smns, hub, a):
     other field kept as it is."""
     if a.name or a.remote:
         sminos.die("%s exists: --hub adds the hub to it and changes nothing else — drop --name and --remote" % path)
-    with open(path) as f:
-        d = json.load(f)
     if smns[3] == hub:
         print("project %s is already a hub project of %s (org %s)" % (smns[1], hub["url"], hub["org"]))
         return
-    if "hub" in d:
+    if smns[3] is not None:
         sminos.die("project %s already names %s: its hub is not changed here" % (
             smns[1], "the hub %s (org %s)" % (smns[3]["url"], smns[3]["org"]) if sminos.hub_wellformed(smns[3])
             else "a hub that is not {url, org}, so it syncs through neither git nor a hub — fix its .smns by hand"), 1)
-    d["hub"] = hub
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(d, f, indent=2)
-        f.write("\n")
-    os.chmod(tmp, 0o644)  # committed: every clone reads it
-    os.replace(tmp, path)
+    # Under the mirror's sync lock: a sync of the project in flight ends
+    # first, and every git phase after it reads the hub (ensure_mirrored), so
+    # git and the uplink never feed this log at once.
+    log = os.path.join(sminos.projects_root(), smns[0], "log")
+    os.makedirs(log, mode=0o700, exist_ok=True)
+    with daemon.sync_op(log):
+        with open(path) as f:
+            d = json.load(f)
+        d["hub"] = hub
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f, indent=2)
+            f.write("\n")
+        os.chmod(tmp, 0o644)  # committed: every clone reads it
+        os.replace(tmp, path)
     print("project %s is now a hub project of %s (org %s) — commit .smns, so every clone syncs through the hub%s" % (
         smns[1], hub["url"], hub["org"],
         "; its remote %s is no longer synced live (it stays the log's archive)" % smns[2] if smns[2] else ""))

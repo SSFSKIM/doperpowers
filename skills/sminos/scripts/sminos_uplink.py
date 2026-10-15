@@ -3,7 +3,8 @@
 
 `sminos daemon uplink` is its own process, which `daemon run` starts as a
 child and restarts when it exits; at most one runs per $SMINOS_HOME
-(`daemon/uplink.lock`), and it ends when its parent does. It reads the
+(`daemon/uplink.lock`), and it ends when its parent does (the parent names
+itself at spawn, so one already gone at startup counts). It reads the
 machine's credential (`daemon/hub.json`, written by enrollment; without it
 nothing connects) and holds DX2's connection, opened outbound: the stream
 down — `GET /machine/stream`, Server-Sent Events — and frames up by `POST
@@ -23,7 +24,10 @@ uplink sends `hello` with its vector and its machine's presence (DX4
 from then on what they append; it answers each heartbeat with `hb-ack`,
 follows `resend`, says each `refused` in daemon.log, and imports what the hub
 sends (sminos_hublog.py: each event's code verified before it enters the
-log, a refused one reported up as `rejected`). The session plane
+log, a refused one reported up as `rejected`). Every archive period it says
+`hello` again for each project it opened, so the hub's answer — whether this
+machine writes the project's git archive (sminos_archive.py) — is never
+older than a period, even on a stream that never drops. The session plane
 (sminos_plane.py) rides the same stream: each session's presence after the
 `hello` and whenever it changes, and the hub's subscriptions served as DX4
 messages; a bridge's reader wakes the main thread, so what it read goes up
@@ -34,10 +38,9 @@ complete pending set after every connect (sminos_requests); what
 delivery made of each event from outside, as DX4 `delivery`
 (sminos_outcomes); and the RPCs the hub forwards, verified, executed at most
 once, and answered as `rpc-result` until `rpc-ack` (sminos_rpc). A POST the
-hub does not answer
-200 ends the stream, and the next one redoes the handshake: nothing posted is
-taken as landed without its answer. Frames larger than a frame's bound travel
-as parts, both ways.
+hub does not answer 200 ends the stream, and the next one redoes the
+handshake: nothing posted is taken as landed without its answer. Frames
+larger than a frame's bound travel as parts, both ways.
 """
 
 import fcntl
@@ -55,6 +58,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
+import sminos_archive as archive  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
@@ -460,6 +464,7 @@ class Link:
         self.ack_due = None       # the newest heartbeat's `at`, while unanswered
         self.acked_at = 0.0
         self.next_scan = self.next_upload = 0.0
+        self.next_confirm = 0.0   # when the opened projects are `hello`ed again (sminos_archive)
         self.nudge = daemon.nudged_at()
         self.passed = set()
         self.failing = self.plane_failing = ""
@@ -525,6 +530,7 @@ class Link:
         self.plane.close()
         self.rpcs.reset()
         self.next_scan = 0.0
+        self.next_confirm = time.time() + archive.archive_every()
         log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
 
     def on_hb(self, frame, _stream):
@@ -716,6 +722,13 @@ class Link:
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
                 self.machine_presence(time.monotonic())
+            every = archive.archive_every()
+            if every > 0 and now >= self.next_confirm:
+                # The hub reads the archive designation at each hello: asked
+                # again, it answers with the designation as it is now.
+                self.next_confirm = now + every
+                if self.opened:
+                    self.post([self.logs[pid].hello() for pid in sorted(self.opened)])
             if now >= self.next_upload or nudged:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
@@ -814,10 +827,22 @@ def take_lock():
     return lf
 
 
+def supervisor():
+    """The pid of the `daemon run` that spawned this uplink, as it said at
+    spawn; for an uplink started by hand, this process's parent now."""
+    said_ = os.environ.pop(daemon.UPLINK_PARENT_ENV, "")
+    return int(said_) if said_.isdigit() else os.getppid()
+
+
 def cmd_uplink(_a):
     """The uplink's process: one stream at a time, reconnecting with backoff
     (from 1 s, doubling to a minute, reset by a welcome), until SIGTERM or
-    until its parent is gone — an uplink outlives no `daemon run`."""
+    until its parent is not the `daemon run` that spawned it — an uplink
+    outlives no `daemon run`, even one gone before this process could look."""
+    parent = supervisor()
+    if os.getppid() != parent:
+        log("not started (pid %d): its daemon (pid %d) is gone" % (os.getpid(), parent))
+        return
     lf = take_lock()  # noqa: F841 — held for the process's life
     try:
         cred = load_credential()
@@ -827,7 +852,7 @@ def cmd_uplink(_a):
     if cred is None:
         log("no credential (%s): nothing to connect" % credential_path())
         return
-    parent, halt = os.getppid(), threading.Event()
+    halt = threading.Event()
     # SIGTERM from its supervisor; SIGINT from a terminal's ^C, which reaches a
     # foreground `daemon run`'s whole process group.
     for sig in (signal.SIGTERM, signal.SIGINT):
