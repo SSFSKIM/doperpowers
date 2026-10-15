@@ -165,6 +165,36 @@ def closed_sessions(view):
     return out
 
 
+def report_one(project, box, sid, events):
+    """report_closed for one session; its caller holds the session's
+    delivery lock."""
+    n = 0
+    settled = sminos.delivered_load(project, sid)
+    path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
+    try:
+        with open(path) as f:
+            reported = json.load(f)
+    except (OSError, ValueError):
+        reported = {}
+    reported = reported if isinstance(reported, dict) else {}
+    before = dict(reported)
+    for e in sorted(events, key=lambda e: (e["writer"], e["seq"])):
+        w = e["writer"]
+        if e["seq"] <= max(int(reported.get(w) or 0), sminos._delivery(settled, w)["settled"]):
+            continue
+        try:
+            box.record(e, sid, "recorded", CLOSED)
+        except OSError as err:
+            sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): reported later"
+                              % (sminos.event_ref(e), sid, err))
+            break
+        reported[w] = e["seq"]
+        n += 1
+    if reported != before:
+        sminos.write_json(path, reported)
+    return n
+
+
 def report_closed(project, view):
     """`recorded` for each outside-origin event newly owed to a closed
     terminal session of a hub project, once per event and session; the
@@ -185,29 +215,11 @@ def report_closed(project, view):
     n = 0
     box = Outbox(project)
     for sid, events in owed.items():
-        settled = sminos.delivered_load(project, sid)
-        path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
-        try:
-            with open(path) as f:
-                reported = json.load(f)
-        except (OSError, ValueError):
-            reported = {}
-        reported = reported if isinstance(reported, dict) else {}
-        before = dict(reported)
-        for e in sorted(events, key=lambda e: (e["writer"], e["seq"])):
-            w = e["writer"]
-            if e["seq"] <= max(int(reported.get(w) or 0), sminos._delivery(settled, w)["settled"]):
-                continue
-            try:
-                box.record(e, sid, "recorded", CLOSED)
-            except OSError as err:
-                sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): reported later"
-                                  % (sminos.event_ref(e), sid, err))
-                break
-            reported[w] = e["seq"]
-            n += 1
-        if reported != before:
-            sminos.write_json(path, reported)
+        # Under the session's delivery lock, as deliver_next holds it: a
+        # session back meanwhile is either delivered first (its settled
+        # prefix then covers the event) or after this record, never between.
+        with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
+            n += report_one(project, box, sid, events)
     return n
 
 

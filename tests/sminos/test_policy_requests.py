@@ -411,6 +411,59 @@ class Delivery(unittest.TestCase):
             if gone.holder.poll() is None:
                 gone.end()
 
+    def test_a_closed_report_and_the_delivery_after_it_are_serialized(self):
+        """The reporter reads the settled prefix; the session comes back and
+        delivery runs meanwhile. Delivery waits for the reporter's lock, so
+        `recorded` is never written after `delivered` (the hub keeps the
+        latest)."""
+        import sminos_daemon as daemon
+        gone = Session(self.root)
+        sid = gone.sid
+        back = None
+        try:
+            project = project_of(self.root)
+            sminos.reconcile(project)
+            alias = member_of(project, sid).alias
+            gone.end()
+            sminos.forget_caches()
+            view = sminos.view_of(project, titles=False)
+            e = sminos.log_append(project, self.far, "say",
+                                  **{"from": "far", "to": [{"session": sid, "alias": alias}], "text": "raced"})
+            view = sminos.view_of(project, titles=False)
+            read, go = threading.Event(), threading.Event()
+            real = sminos.delivered_load
+
+            def paused(project_, session):
+                got = real(project_, session)
+                if threading.current_thread().name == "reporter" and session == sid:
+                    read.set()
+                    go.wait(10)
+                return got
+
+            with mock.patch.object(sminos, "delivered_load", side_effect=paused):
+                reporter = threading.Thread(target=outcomes.report_closed, args=(project, view), name="reporter")
+                reporter.start()
+                self.assertTrue(read.wait(10), "the reporter read the settled prefix")
+                back = Session(self.root, sid=sid)
+                sminos.forget_caches()
+                member = member_of(project, sid)  # it is back: a member again
+                deliverer = threading.Thread(target=sminos.deliver_next, args=(project, member))
+                deliverer.start()
+                deliverer.join(0.5)
+                self.assertTrue(deliverer.is_alive(), "delivery waits for the reporter's lock")
+                go.set()
+                reporter.join(10)
+                deliverer.join(10)
+            mine = [o["outcome"] for o in self.outbox() if o["event"] == {"writer": e["writer"], "seq": e["seq"]}
+                    and o["session"] == sid]
+            self.assertEqual(mine, ["recorded", "delivered"], "the latest is the delivery")
+            self.assertIn("raced", back.inbox.texts())
+        finally:
+            if back is not None:
+                back.end()
+            if gone.holder.poll() is None:
+                gone.end()
+
     def test_a_delivery_given_up_is_failed(self):
         e = self.say_from_far("never lands")
         with mock.patch.object(sminos, "push_event", return_value="failed:the socket refused"), \
@@ -618,6 +671,19 @@ class Requests(unittest.TestCase):
         self.assertLess(len(messages(frames, "raised")), 6, "only raises, which the set rebuilds")
         self.assertEqual(sorted(x["request"] for x in self.r.pending_frame(self.PID)["raised"]),
                          ["toolu_r3", "toolu_r4", "toolu_r5"], "the set still holds every pending one")
+
+    def test_a_raise_dropped_by_the_cap_is_repaired_on_the_open_stream(self):
+        with mock.patch.object(requests, "OUTBOX_MAX", 4):
+            for i in range(5):
+                self.bridge.raise_("toolu_o%d" % i)
+            frames = self.due(lambda fs: "toolu_o4" in [m["body"]["request"] for m in messages(fs, "raised")])
+        self.assertEqual(len(messages(frames, "raised")), 4, "one raise dropped")
+        sets = [f for f in frames if f.get("t") == "pending"]
+        self.assertEqual(len(sets), 1, "and the complete set follows, with no reconnect")
+        self.assertEqual(sorted(x["request"] for x in sets[0]["raised"]), ["toolu_o%d" % i for i in range(5)])
+        self.assertIs(frames[-1], sets[0], "after the raises")
+        self.r.sent(frames)
+        self.assertEqual(self.r.due({self.PID}), [])
 
     def test_the_set_waits_for_the_bridges_snapshots(self):
         """An uplink starting with a request already pending: the complete

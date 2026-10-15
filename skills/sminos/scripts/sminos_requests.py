@@ -299,9 +299,12 @@ class Requests:
             # a settlement is not, so settlements are never dropped.
             i = next((i for i, (_, f) in enumerate(self.outbox) if f["message"]["kind"] == "raised"), None)
             if i is not None:
+                # The set held here still has it: the complete set goes, so
+                # the hub is told of it on this stream too.
+                self.stale.add(self.outbox[i][0])
                 del self.outbox[i]
                 self.say_once("full", "more than %d messages wait for the hub: the oldest raises go (the "
-                                      "complete set after the next connect carries what is pending)" % OUTBOX_MAX)
+                                      "complete set, sent next, carries what is pending)" % OUTBOX_MAX)
 
     def raised(self, sid, pid, e):
         draft = raised_draft(sid, e)
