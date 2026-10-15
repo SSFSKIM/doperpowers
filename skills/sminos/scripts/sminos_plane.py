@@ -83,6 +83,7 @@ METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is 
 LOCATE_EVERY = 1.0        # s: how often a transcript not found yet is looked for
 MEMBERS_EVERY = 10.0      # s: how often the members are read again when no session came or went
 IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (a `ps` per running session this often)
+ENDED_PRESENCE_WINDOW = 7 * 86400  # s: a session that left longer ago is not said again on a new stream
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
@@ -793,6 +794,8 @@ class Plane:
         self.next_scan = 0.0
         self.here = {}            # project id → {session: cwd}: the sessions that joined it from this machine
         self.members = {}         # project id → {session}: its local members, whose presence is published
+        self.left = {}            # project id → {session: when it left}: those of `here` no member now
+        self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
@@ -817,7 +820,9 @@ class Plane:
             if j and (not machine or sminos.is_self(machine, sid)):
                 here[sid] = str(j.get("cwd") or "")
         self.here[project.id] = here
-        self.members[project.id] = {m.session for m in view.members if m.local and m.session}
+        self.members[project.id] = members = {m.session for m in view.members if m.local and m.session}
+        self.left[project.id] = {sid: sminos._ts_epoch((view.info[sid].get("latest") or {}).get("ts"))
+                                 for sid in here if sid not in members}
 
     # ---------------------------------------------------- presence
 
@@ -827,11 +832,24 @@ class Plane:
     def presence(self, pid, force=False, now=None):
         """DX4 presence for the project's sessions whose presence changed
         (every one when forced, after a connect); a member gone from the
-        project is said once more as not running, then forgotten."""
+        project is said once more as not running, then forgotten.
+
+        The hub keeps a session's presence across connections, and this
+        plane is new with its stream: when forced, each session that joined
+        from here and is no member now is said as not running too, so one
+        that ended while no stream was open is not left present at the hub.
+        Only those that left within ENDED_PRESENCE_WINDOW, by their latest
+        membership event (this machine writes it when it sees the process
+        gone), not every session that ever ended here."""
         now = time.monotonic() if now is None else now
+        out = []
         if force:
             self.live = self.records.scan()
-        out = []
+            since = self.wall() - ENDED_PRESENCE_WINDOW
+            for sid, at in sorted(self.left.get(pid, {}).items()):
+                if at is not None and at >= since:
+                    out.append(envelope(pid, self.machine, sid, "presence", None, None,
+                                        {"record": None, "bridge": False}))
         for sid in sorted(self.members.get(pid, ())):
             body = self.presence_of(sid, now)
             if force or self.sent.get((pid, sid)) != body:

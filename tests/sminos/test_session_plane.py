@@ -741,6 +741,55 @@ class Lifecycle(unittest.TestCase):
             if os.path.exists(settings):
                 os.unlink(settings)
 
+    def test_a_new_stream_says_a_session_that_ended_meanwhile_is_not_running(self):
+        """The hub keeps each session's presence across connections, and a
+        new stream's plane has sent nothing: on connect, every session that
+        joined from this machine and is no member now (it ended, maybe while
+        the stream was down) is said as not running, within the window."""
+        import sminos
+        root = os.path.join(T, "ended-presence")
+        subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", root], check=True)
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", "endedp"], cwd=root,
+                       check=True, capture_output=True)
+        holders = {}
+        try:
+            for k in ("runs", "ended"):
+                holders[k] = (subprocess.Popen(["sleep", "3600"]), new_session())
+                p, sid = holders[k]
+                with open(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid), "w") as f:
+                    json.dump({"pid": p.pid, "sessionId": sid, "cwd": root, "kind": "interactive",
+                               "status": "idle"}, f)
+            sminos.forget_caches()
+            project = sminos.resolve_project(root)
+            sminos.view_of(project, titles=False)            # both join
+            p, ended = holders["ended"]
+            p.terminate()
+            p.wait(5)
+            os.unlink(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid))
+            sminos.forget_caches()
+            sminos.view_of(project, titles=False)            # it retires, ended, while no stream is open
+            runs = holders["runs"][1]
+
+            def said(pl):
+                pl.refresh(project)
+                return {m["session"]: m["body"] for m in pl.presence(project.id, force=True)}
+
+            got = said(plane.Plane("testhost", lambda: None))
+            self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said as not running: %s" % got)
+            self.assertEqual(got.get(runs), {"record": {"status": "idle"}, "bridge": False})
+            later = plane.Plane("testhost", lambda: None)
+            later.wall = lambda: time.time() + plane.ENDED_PRESENCE_WINDOW + 60
+            self.assertNotIn(ended, said(later), "a session that ended longer ago than the window is not said")
+        finally:
+            for p, _ in holders.values():
+                if p.poll() is None:
+                    p.terminate()
+                    p.wait(5)
+                try:
+                    os.unlink(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid))
+                except OSError:
+                    pass
+
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been
         quiet a day (neither its transcript nor the file touched), so a Resume soon after
