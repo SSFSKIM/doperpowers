@@ -24,7 +24,8 @@ the first that fails is its answer, as DX6's error code:
    be read as a flag;
 7. for an answer or a decision, the digest (DX1's `{session, request, tool,
    input_sha256}`) against the request still pending in the session, as its
-   bridge reports it (`digest-mismatch`, `not-pending`);
+   bridge reports it (`digest-mismatch`, `not-pending`), and the decision
+   fitting that request by the bridge's own rule (`bad-shape`);
 8. the session's kind against §5's table (`unsupported`).
 
 A refusal from 1 or 2 precedes the ledger and is not kept in it: it goes up
@@ -446,8 +447,14 @@ class Rpcs:
         path = bridge.endpoint(sid)
         status = bridge.probe(path)
         bridged = status is not None and status.get("session") == sid
+        if name == "answer":
+            decision = {"behavior": "allow", "updatedInput": {"answers": args["answers"]}, "by": rpc["member"]}
+        elif name == "decide":
+            decision = {"behavior": args["decision"], "by": rpc["member"]}
+            if "message" in args:
+                decision["message"] = args["message"]
         if name in ("answer", "decide") and bridged:
-            check_digest(path, sid, args["digest"])
+            check_digest(path, sid, args["digest"], decision)
         if name == "retire":
             return lambda: retire(sid, facts["root"], rpc["member"])
         if not facts["running"]:
@@ -461,13 +468,8 @@ class Rpcs:
                 return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid))
             if name == "compact":
                 return lambda: self.compact(path, rpc, sid)
-            if name == "answer":
-                body = {"behavior": "allow", "updatedInput": {"answers": args["answers"]}, "by": rpc["member"]}
-                return lambda: decide(path, args["digest"]["request"], body)
-            body = {"behavior": args["decision"], "by": rpc["member"]}
-            if "message" in args:
-                body["message"] = args["message"]
-            return lambda: decide(path, args["digest"]["request"], body)
+            if name in ("answer", "decide"):
+                return lambda: decide(path, args["digest"]["request"], decision)
         if name == "steer":
             if facts["status"] == "idle":
                 # The engine's own record says no turn runs (composite 21c32db7).
@@ -660,9 +662,13 @@ def shape(name, args, member):
         need(e is None or e in control.EFFORTS, "effort is one of %s" % ", ".join(control.EFFORTS))
 
 
-def check_digest(path, sid, digest):
+def check_digest(path, sid, digest, decision):
     """Check 7: the request as the browser drew it is the one still
-    pending in the session, as its bridge reports it."""
+    pending in the session, as its bridge reports it, and the decision fits
+    it by the bridge's own rule (composite dd908dfa): an async question is
+    answered, never denied; a permission is allowed or denied, never
+    answered; a question's allow carries answers keyed by its questions. The
+    bridge's 400 stays behind it, after the claim."""
     rid = digest["request"]
     try:
         status, body = bridge.request(path, "GET", "/requests/" + urllib.parse.quote(rid, safe=""))
@@ -682,6 +688,9 @@ def check_digest(path, sid, digest):
     if (body.get("session"), body.get("request"), body.get("tool"), drawn) != \
             (sid, rid, digest["tool"], digest["input_sha256"]):
         raise Refused("digest-mismatch", "the request pending is not the one shown")
+    why = bridge._check_decision(body, decision)
+    if why:
+        raise Refused("bad-shape", why)
 
 
 # ------------------------------------------------------------- execution

@@ -443,6 +443,43 @@ class Checks(unittest.TestCase):
                                     "digest": digest_of(self.bridged.sid, "toolu_dg1", "Bash", tool_input)})
         self.refused(late, "not-pending")
 
+    def test_e_a_decision_that_does_not_fit_its_request_is_bad_shape_before_the_claim(self):
+        """The bridge's own rule (composite dd908dfa), applied to the request
+        the digest check fetched: nothing is claimed and nothing reaches the
+        bridge; the nonce's one answer is the refusal."""
+        questions = {"questions": [{"question": "Which branch?", "options": [{"label": "main"}]}]}
+        self.mod.raise_("toolu_aq", tool="AskUserQuestion", input_=questions, **{"async": True})
+        self.mod.raise_("toolu_sq", tool="AskUserQuestion", input_=questions)
+        self.mod.raise_("toolu_pp", input_={"command": "make"})
+        for rid in ("toolu_aq", "toolu_sq", "toolu_pp"):
+            self.assertTrue(wait_for(lambda rid=rid: self.request_info(rid)[0] == 200), rid)
+        sid = self.bridged.sid
+        aq = digest_of(sid, "toolu_aq", "AskUserQuestion", questions)
+        sq = digest_of(sid, "toolu_sq", "AskUserQuestion", questions)
+        pp = digest_of(sid, "toolu_pp", "Bash", {"command": "make"})
+        cases = {
+            "a deny on an async question": ("decide", {"session": sid, "decision": "deny", "digest": aq}),
+            "an answer to a permission prompt": ("answer", {"session": sid, "digest": pp,
+                                                            "answers": {"Which branch?": "main"}}),
+            "an allow on a question": ("decide", {"session": sid, "decision": "allow", "digest": sq}),
+            "answers to a question it does not ask": ("answer", {"session": sid, "digest": sq,
+                                                                 "answers": {"Which tag?": "v1"}}),
+        }
+        claims = []
+        real_put = self.r.ledger.put
+        self.r.ledger.put = lambda nonce, e: (claims.append(e) if "outcome" not in e else None,
+                                              real_put(nonce, e))[1]
+        for what, (name, args) in cases.items():
+            with self.subTest(what):
+                rpc = self.send(name, args)
+                self.assertIn(self.refused(rpc, "bad-shape")["error"]["message"], self.ledger()[rpc["nonce"]]
+                              ["outcome"]["error"]["message"], "kept as its one answer")
+        self.assertEqual(claims, [], "nothing claimed, so nothing ran: a decision reaches the bridge only once claimed")
+        deny = self.send("decide", {"session": sid, "decision": "deny", "digest": sq})
+        self.assertEqual(self.outcome(deny), {"state": "done", "result": {}}, "a deny on a synchronous question")
+        for rid in ("toolu_aq", "toolu_sq", "toolu_pp"):
+            self.mod.settle(rid)
+
     def test_e_a_decision_refused_by_the_bridge_says_who_won_as_fields(self):
         """DX6 (composite bb8b8773): a 409 from the bridge is `not-pending`
         carrying `winner`, `by`, `terminalOnly` as the bridge gave them as
