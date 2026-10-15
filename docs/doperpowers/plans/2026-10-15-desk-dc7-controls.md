@@ -716,3 +716,68 @@ against the local hub; until it lands, the stand-in.
   row no notice names waits 2 s and can arrive after a later named row.
 
 ## Outcomes & Retrospective
+
+**Delivered (2026-10-15).** The daemon side of the desk's session plane
+and RPCs, at 7.157.0 over main's 7.156.1:
+- **Presence and subscriptions** (`sminos_plane.py`). It joins transcript
+  rows with the bridge's stream in disk order, using DX5's seeded cut and
+  notices. It is proven against DC2's real `sminos bridge` child and
+  DC3's reviewed hub, `step-end` included.
+- **The policy** (`sminos_policy.py`, `sminos daemon policy`). It fails
+  closed, and its guard sits at the one delivery boundary.
+- **Requests, settlements, and delivery outcomes** (`sminos_requests.py`,
+  `sminos_outcomes.py`). They carry codes, the complete pending set is
+  sent after the bridges' first snapshots, `recorded` goes to a closed
+  terminal session, and `uncertain` goes to an unanswered push.
+- **The RPCs** (`sminos_rpc.py`). They follow the plan's refusal order:
+  code, binding, ledger, freshness, policy, fit and digest, then kind. An
+  at-most-once ledger fails closed, and restart reconciliation works from
+  each action's own trace.
+- **Resume.** It is attributed to its own launch, proven live against
+  claude 2.1.301.
+- **Two additive bridge changes**, made after DC2 closed: `raised.toolUseId`,
+  and who-won fields on the bridge's 409s.
+
+**Review history.**
+- Each milestone took one to three fix waves before its task review came
+  back clean.
+- The final `high` review found four P2 defects that the per-milestone
+  reviews could not see, because each crossed modules or restarts:
+  - a read-only machine still owed to a closed session;
+  - presence not cleared after a disconnect;
+  - a compact's nonce lost across a restart;
+  - an RPC left unanswered on a truncated bridge read.
+
+  Its re-review confirmed all four fixed. One follow-up came out of it:
+  presence tombstones now go by a watermark the hub has accepted, instead
+  of a week's window.
+- Residue went to `docs/doperpowers/TECH-DEBT.md`: the suite's load flakes,
+  a compact nonce after a repaired ledger, and a non-`OSError` from the
+  claim write.
+
+**What the plan got right.** Putting the policy ahead of every path it
+guards (M2 before M3) meant no remote execution ever ran without it.
+Building against agreed contract text ahead of DC2's code, with a
+scripted endpoint later matched to the real child, kept M1 moving while
+the producer was still being built.
+
+**What it missed.**
+- The plan assumed DX5's ordering as first agreed. DC2's live walk
+  changed it twice:
+  - row order became disk order;
+  - the cut became seeded by the producer.
+
+  The consumer was rebuilt both times. The scripted endpoint carried that
+  churn cheaply, but only the real-child wave proved it.
+- The plan named no source of truth for a partial model change. Three
+  review rounds went to it, a daemon cache among them, before it settled
+  on reading the bridge's live override.
+- Restart recovery was specified per action (DX6) but not per relay. Two
+  of the final review's findings were state that lived only in memory: a
+  compact's nonce, and the last presence sent. A later plan of this kind
+  should list every in-memory association that crosses a restart.
+
+**Not proven live.** Two Resumes at once, delivery after Resume, claim
+reconciliation, and the seat cases rest on a stand-in for `claude`.
+Everything else that touches the engine ran against the real bridge child
+or a live engine.
