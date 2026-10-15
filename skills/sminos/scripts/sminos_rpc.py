@@ -62,7 +62,9 @@ was closed is delivered then.
 
 A compaction's outcome reaches browsers as DX4 `compact`, carrying the RPC's
 nonce, from the bridge's `compact` events for the command this daemon issued
-(read by the requests' readers, sminos_requests).
+(read by the requests' readers, sminos_requests). The command's id is kept on
+the RPC's ledger entry until its compaction ends, so one held for its turn's
+end that runs after a restart still carries the nonce.
 
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
@@ -182,9 +184,10 @@ def alias_for(nonce):
 
 class Ledger:
     """`daemon/rpcs.json`: nonce → {project, rpc, session, at, text_sha256?,
-    outcome?, acked?}. An entry without `outcome` is a claim. Written whole
-    at every change, under a lock (the main thread and the workers write);
-    entries older than KEPT_S go at every write.
+    launched_at?, job?, compact_id?, outcome?, acked?}. An entry without
+    `outcome` is a claim. Written whole at every change, under a lock (the
+    main thread and the workers write); entries older than KEPT_S go at
+    every write.
 
     A ledger that exists and cannot be read could hold claims and answered
     nonces: it is never replaced (`broken` says why), and `readable` tries it
@@ -298,6 +301,7 @@ class Rpcs:
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
         self.next_reconcile = 0.0
+        self.restore_compacts()
         self.reconcile()
 
     # ---------------------------------------------------- frames down
@@ -410,6 +414,9 @@ class Rpcs:
             except Refused as r:
                 self.keep(rpc, r.outcome)
                 return
+            except Exception as e:  # noqa: BLE001 — a check that broke is a refusal, said: nothing ran
+                self.keep(rpc, failed("failed", "%s: %s (nothing ran)" % (type(e).__name__, e)))
+                return
             claim = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"),
                      "at": self.clock()}
             if rpc["rpc"] == "steer":
@@ -508,6 +515,13 @@ class Rpcs:
         if not result["ok"]:
             raise Refused("failed", refusal(result))
         if cid:
+            # Kept on the claim as well: a compaction held for its turn's end
+            # may run after a restart, and still carries this nonce.
+            try:
+                self.note(rpc["nonce"], {"compact_id": cid})
+            except OSError as e:
+                log("compact %s: its command %s could not be kept in the ledger (%s): a restart before it "
+                    "ends relays it unnamed" % (rpc["nonce"], cid, e))
             self.finished.put(("compact", (cid, rpc["project"], sid, rpc["nonce"])))
         r = result.get("result") or {}
         return done({"at": "turn-end" if r.get("queued") else "now"})
@@ -556,9 +570,30 @@ class Rpcs:
             self.compact_out.append({"t": "session", "message": {
                 "project": named[0] if named else pid, "machine": self.machine, "session": named[1] if named else sid,
                 "kind": "compact", "sub": None, "n": None, "body": body}})
-            if e.get("phase") == "end":
-                self.compact_ids.pop(cid, None)
+            if e.get("phase") == "end" and self.compact_ids.pop(cid, None) is not None:
+                self.forget_compact(named[2])
         self.compact_ids = {c: v for c, v in self.compact_ids.items() if now - v[3] < KEPT_S}
+
+    def restore_compacts(self):
+        """The compact commands this daemon issued whose compaction has not
+        ended, as their claims keep them (`compact_id`): what a restart
+        relays under their nonce."""
+        for nonce, e in self.ledger.items():
+            cid = e.get("compact_id")
+            if isinstance(cid, str) and cid and isinstance(e.get("at"), (int, float)):
+                self.compact_ids[cid] = (e.get("project"), e.get("session"), nonce, e["at"])
+
+    def forget_compact(self, nonce):
+        """A compaction ended: its command is no longer kept on the claim."""
+        with self.ledger.lock:
+            e = self.ledger.entries.get(nonce)
+            if e is None or e.pop("compact_id", None) is None:
+                return
+            try:
+                self.ledger.save()
+            except OSError as err:
+                log("the ledger could not be written (%s): compact %s's command is kept until the entry goes"
+                    % (err, nonce))
 
     def reconcile(self):
         """Claims no worker holds: answered from their trace, or
@@ -692,8 +727,9 @@ def check_digest(path, sid, digest, decision):
     rid = digest["request"]
     try:
         status, body = bridge.request(path, "GET", "/requests/" + urllib.parse.quote(rid, safe=""))
-    except OSError as e:
-        raise Refused("not-pending", "the session's bridge did not answer for %s: %s" % (rid, e))
+    except (OSError, http.client.HTTPException) as e:
+        # An HTTPException: the bridge went away mid-answer (IncompleteRead).
+        raise Refused("not-pending", "the session's bridge did not answer for %s: %s" % (rid, unanswered(e)))
     if status == 410:
         s = (body or {}).get("settled") or {}
         raise Refused("not-pending", "already settled: %s by %s" % (s.get("outcome"), s.get("by")),
@@ -714,6 +750,12 @@ def check_digest(path, sid, digest, decision):
 
 
 # ------------------------------------------------------------- execution
+
+
+def unanswered(e):
+    """A failed bridge call, said with its kind: an IncompleteRead's text
+    alone reads as a byte count."""
+    return "%s: %s" % (type(e).__name__, e)
 
 
 def command(path, body):
@@ -813,8 +855,8 @@ def decide(path, rid, body):
     try:
         status, out = bridge.request(path, "POST", "/requests/%s/decision" % urllib.parse.quote(rid, safe=""), body,
                                      timeout=DECISION_TIMEOUT)
-    except OSError as e:
-        raise Refused("failed", "the session's bridge gave no answer: %s" % e)
+    except (OSError, http.client.HTTPException) as e:
+        raise Refused("failed", "the session's bridge gave no answer: %s" % unanswered(e))
     out = out if isinstance(out, dict) else {}
     if status == 200:
         return done({})

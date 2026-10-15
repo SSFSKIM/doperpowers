@@ -870,6 +870,70 @@ class Checks(unittest.TestCase):
         finally:
             reqs.close()
 
+    def test_i_a_compaction_held_for_its_turn_keeps_its_nonce_across_a_restart(self):
+        """A compact answered `at: "turn-end"` runs after the daemon restarted:
+        its outcome still carries the RPC's nonce, and the association is
+        forgotten at its end."""
+        reqs = requests.Requests(KEY, "testhost")
+        reqs.follow({self.bridged.sid: self.pid})
+        try:
+            self.assertTrue(wait_for(lambda: reqs.take() or self.bridged.sid in reqs.synced))
+            self.mod.turn = "turn-r"
+            asked = self.send("compact", {"session": self.bridged.sid})
+            self.assertEqual(self.outcome(asked), {"state": "done", "result": {"at": "turn-end"}})
+            cid = self.mod.ops("compact")[-1]["id"]
+            self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the daemon restarted
+            self.frames = []
+            self.mod.post({"type": "compact", "phase": "start", "id": cid},
+                          {"type": "compact", "phase": "end", "id": cid, "tokensBefore": 7000, "tokensAfter": 800})
+
+            def compacts():
+                reqs.take()
+                self.r.compacted(reqs.take_compacts())
+                return [f["message"]["body"] for f in self.collect() if f.get("t") == "session"
+                        and f["message"]["kind"] == "compact"]
+            got = wait_for(lambda: len(compacts()) >= 2 and compacts())
+            self.assertTrue(got, "the compaction's start and end: %s" % compacts())
+            self.assertEqual([(b["rpc"], b["phase"]) for b in got], [(asked["nonce"], "start"),
+                                                                     (asked["nonce"], "end")])
+            self.assertNotIn(cid, rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0]).compact_ids,
+                             "forgotten once its compaction ended")
+        finally:
+            reqs.close()
+
+    def test_e_a_bridge_that_breaks_off_its_answer_leaves_no_rpc_unanswered(self):
+        """A bridge that exits mid-response raises an HTTP protocol error, not
+        an OSError: the digest check refuses, the decision fails, and any
+        other breakage while planning is a reported `failed`, never an RPC
+        left without an answer."""
+        import http.client
+        from unittest import mock
+        tool_input = {"command": "make cut"}
+        self.mod.raise_("toolu_cut", input_=tool_input)
+        wait_for(lambda: self.request_info("toolu_cut")[0] == 200)
+        args = {"session": self.bridged.sid, "decision": "allow",
+                "digest": digest_of(self.bridged.sid, "toolu_cut", "Bash", tool_input)}
+        real = rpcs.bridge.request
+
+        def cut(path, method, url, *a, **kw):
+            if url.startswith("/requests/"):
+                raise http.client.IncompleteRead(b'{"requ', 40)
+            return real(path, method, url, *a, **kw)
+
+        with mock.patch.object(rpcs.bridge, "request", side_effect=cut):
+            o = self.refused(self.send("decide", args), "not-pending")
+            self.assertIn("IncompleteRead", o["error"]["message"])
+            with self.assertRaises(rpcs.Refused) as r:
+                rpcs.decide(rpcs.bridge.endpoint(self.bridged.sid), "toolu_cut", {"behavior": "allow", "by": MEMBER})
+            self.assertEqual(r.exception.outcome["error"]["code"], "failed")
+        with mock.patch.object(rpcs, "check_digest", side_effect=RuntimeError("the digest check broke")):
+            rpc = self.send("decide", args)
+            o = self.refused(rpc, "failed")
+            self.assertIn("the digest check broke", o["error"]["message"])
+        self.assertEqual(self.ledger()[rpc["nonce"]]["outcome"], o, "kept: the nonce's one answer")
+        self.assertTrue(wait_for(lambda: self.collect() is not None and not self.r.flight), "nothing left in flight")
+        self.mod.settle("toolu_cut", outcome="deny", winner="terminal", by="terminal")
+
     # ------------------------------------------------ resume
 
     def test_j_resume_brings_an_ended_terminal_session_back_under_its_id(self):
