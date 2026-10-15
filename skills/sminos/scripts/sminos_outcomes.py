@@ -23,7 +23,10 @@ One outcome comes without a settlement: an event owed to a closed terminal
 session (a seat-less session of this machine whose membership ended with its
 process) is reported `recorded` once, when it first becomes owed to it
 (report_closed), and stays owed; if the session comes back (Resume) and the
-event is delivered, `delivered` follows for the same key. What was reported
+event is delivered, `delivered` follows for the same key. A closed session is
+no member, so delivery never reaches it: on a read-only machine the report
+applies the policy itself, settling what is owed to it from outside
+undelivered as `refused-read-only`, as deliver_next would. What was reported
 is kept per session in the project's `recorded/<session>.json` ({writer: the
 last seq reported}).
 
@@ -170,6 +173,10 @@ def report_one(project, box, sid, events):
     delivery lock."""
     n = 0
     settled = sminos.delivered_load(project, sid)
+    if sminos.sibling_module("sminos_policy").read_only():
+        return refuse_owed(project, sid, events, settled)
+    if not project.hub:
+        return 0
     path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
     try:
         with open(path) as f:
@@ -195,16 +202,37 @@ def report_one(project, box, sid, events):
     return n
 
 
+def refuse_owed(project, sid, events, settled):
+    """On a read-only machine, what is owed to a closed session from outside
+    is settled undelivered as deliver_next settles it (a closed session is
+    no member, so deliver_next never sees it): `refused-read-only` recorded,
+    then settled, each writer in seq order from its settled prefix; one whose
+    outcome cannot be kept stops its writer, owed for the next pass. The
+    caller holds the session's delivery lock."""
+    n, stopped = 0, set()
+    for e in sminos._owed(sorted(events, key=lambda e: (e["writer"], e["seq"])), sid, settled):
+        if e["writer"] in stopped:
+            continue
+        if not record(project, e, sid, READ_ONLY, None):
+            stopped.add(e["writer"])
+            continue
+        sminos.delivered_settle(project, sid, e["writer"], e["seq"])
+        n += 1
+    return n
+
+
 def report_closed(project, view):
     """`recorded` for each outside-origin event newly owed to a closed
     terminal session of a hub project, once per event and session; the
-    event is not settled. How many were reported."""
-    if not project.hub:
+    event is not settled. On a read-only machine, of any project (the policy
+    is machine-wide, as deliver_next applies it), each is settled
+    `refused-read-only` instead (refuse_owed). How many were reported."""
+    policy = sminos.sibling_module("sminos_policy")
+    if not (project.hub or policy.read_only()):
         return 0
     closed = closed_sessions(view)
     if not closed:
         return 0
-    policy = sminos.sibling_module("sminos_policy")
     owed = {}
     for e in view.events:
         to = e.get("to")

@@ -411,6 +411,53 @@ class Delivery(unittest.TestCase):
             if gone.holder.poll() is None:
                 gone.end()
 
+    def test_a_closed_terminal_session_on_a_read_only_machine_is_refused_and_settled(self):
+        """A closed session is no member, so deliver_next never sees what is
+        owed to it: the closed report applies the policy itself. On a
+        read-only machine an event from outside owed to it is settled
+        undelivered, `refused-read-only`, and is not delivered when the
+        machine is writable again and the session comes back; the machine's
+        own events stay owed and are."""
+        import sminos_daemon as daemon
+        gone = Session(self.root)
+        sid = gone.sid
+        try:
+            project = project_of(self.root)
+            sminos.reconcile(project)
+            alias = member_of(project, sid).alias
+            gone.end()
+            sminos.forget_caches()
+            sminos.view_of(project, titles=False)
+            set_policy({"read_only": True})
+            e = sminos.log_append(project, self.far, "say",
+                                  **{"from": "far", "to": [{"session": sid, "alias": alias}],
+                                     "text": "from outside, while read-only"})
+            mine = sminos.log_append(project, sminos.writer_id(), "human",
+                                     **{"from": "human", "to": [{"session": sid, "alias": alias}],
+                                        "text": "written here, while read-only"})
+            sminos.forget_caches()
+            daemon.deliver_owed(project, sminos.view_of(project, titles=False))
+            self.assertEqual(self.outcome_of(e, sid)["outcome"], "refused-read-only")
+            owed = [(x["writer"], x["seq"]) for x in sminos._owed(sminos.log_read(project), sid,
+                                                                  sminos.delivered_load(project, sid))]
+            self.assertNotIn((e["writer"], e["seq"]), owed, "settled undelivered")
+            self.assertIn((mine["writer"], mine["seq"]), owed, "the machine's own stays owed")
+            clear_policy()
+            back = Session(self.root, sid=sid)
+            try:
+                sminos.forget_caches()
+                daemon.deliver_owed(project, sminos.view_of(project, titles=False))
+                self.assertIn("written here, while read-only", back.inbox.texts())
+                self.assertNotIn("from outside, while read-only", back.inbox.texts(),
+                                 "never delivered once read-only is lifted")
+                self.assertEqual(self.outcome_of(e, sid)["outcome"], "refused-read-only", "and its outcome stands")
+            finally:
+                back.end()
+        finally:
+            clear_policy()
+            if gone.holder.poll() is None:
+                gone.end()
+
     def test_a_closed_report_and_the_delivery_after_it_are_serialized(self):
         """The reporter reads the settled prefix; the session comes back and
         delivery runs meanwhile. Delivery waits for the reporter's lock, so
