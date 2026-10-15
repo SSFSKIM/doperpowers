@@ -17,7 +17,10 @@ Status: in progress. Handed back while M1's fix wave was still running.
   3. PID identity: invalidate the cache on observed death, and revalidate.
   4. Confirm the ceiling is the settings' `defaultMode`.
   5. After the fix, rerun the uplink walks against DC3's real local hub (MAWS `f22e0839`) from a temporary copy, run directly and serially (the composite's writer waived the load wrapper).
-- The fix is uncommitted in the shared worktree at handback: `sminos_plane.py`, `sminos_uplink.py`, `fake_session.py`, `test_session_plane.py` modified; `ws_client.py` new.
+- The fix wave has landed in three commits. The executor's own report on them, with the local-hub results, has not arrived yet:
+  - `3aa64d21`: disk order, presence probes off the uplink thread, and PID identity.
+  - `3ade2b72`: the uplink tests run against DC3's local hub through `DESK_HUB`.
+  - `80fa84a0`: DX4 `step-end` (composite `34ee27ca`).
 - Decisions folded into the plan's Decision Log: `26155809`, `f4b699bc`, `12b0387a`.
 
 ## Next
