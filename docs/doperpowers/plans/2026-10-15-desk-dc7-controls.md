@@ -626,6 +626,28 @@ against the local hub; until it lands, the stand-in.
   `model` verb cannot close; accepted.
   Date/Author: 2026-10-15, M3 executor.
 
+- Decision: A decision that does not fit its request is refused
+  `bad-shape` before the claim (composite `dd908dfa`): check 7 applies the
+  bridge's own rule to the pending request it fetches (a deny on an async
+  question, an `answer` to a permission prompt, an allow on a question
+  without its answers, answers keyed by anything but the request's
+  questions; a synchronous question's deny stays accepted); the bridge's
+  400 stays a backstop, `bad-shape` after the claim. DX6 lists
+  `bad-shape` among the daemon's codes. Built in M4's tail.
+  Date/Author: 2026-10-15, the composite's writer.
+
+- Decision: DX5 and DX4 `raised` gain `toolUseId?` (composite
+  `43a27604`): the outer `mcp__doperpowers__AskUserQuestion` call's
+  tool-use id, present only when `request` is the ask mod's engine dialog
+  (`toolu_plugin_…`), so the web can tie the card to its transcript row;
+  `request` stays the id a decision answers. The bridge stops posting the
+  dialog's own `tool/call` and `tool/result` (no transcript row holds
+  them), and the daemon relays `toolUseId` unchanged under the code.
+  Built in M4's tail (this branch carries DC2's bridge now that DC2 has
+  closed).
+  Date/Author: 2026-10-15, the composite's writer, from DC6's M3 and
+  DC3's recording.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
