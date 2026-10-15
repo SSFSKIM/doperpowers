@@ -371,8 +371,39 @@ against the local hub; until it lands, the stand-in.
   Date/Author: 2026-10-15, the composite's writer (option a); DC2 builds
   the seed in its M4.
 
+- Decision (M1 fix wave): Bridge presence is probed off the uplink's
+  thread by `Bridges` (kept across streams; one probe at a time per
+  session, rerun when the socket's inode changes or the answer is 2 s
+  old; it wakes the uplink on a change), so a stalled endpoint cannot
+  hold another session's presence. A pid seen dead loses its cached
+  identity and is checked anew. The ceiling is `permissions.defaultMode`
+  as the settings write it, else `"default"` (missing or malformed file
+  included, as the engine reads it). `step-end` (composite `34ee27ca`) is
+  relayed in DX5's order, so after its step's `block-row`s; rows waiting
+  for release do not hold it. The uplink tests run against DC3's local
+  hub when `DESK_HUB` names its stand-in for Access, enrolling through
+  `/standin/enrollment-code` and reading as a DX3 browser
+  (`tests/sminos/ws_client.py`); without it, against `hub_standin.py`.
+  Date/Author: 2026-10-15, M1 executor.
+
+- Decision: Unsubscribe differs between hubs and both stand. The real hub
+  drops a sub's route before forwarding `unsubscribe`, so the machine's
+  `end {reason: "unsubscribed"}` reaches no browser; the stand-in still
+  delivers it. The test asserts each hub's own behaviour. `step-end` is
+  not sent on local-hub runs until DC3's hub accepts it (DC3's plan
+  `73a33de2`). The local hub runs as `pnpm --filter desk-hub local --port
+  <n>` (no `--`).
+  Date/Author: 2026-10-15, the composite's writer (`0e7da91e`).
+
 ## Surprises & Discoveries
 
+- (M1) Under load above 200, three suite assertions outside the session
+  plane fail and pass again at normal load: "at most once more: two
+  frames in all" (in DC4's tech debt), "the watcher's finalize does not
+  overwrite a retire" (a `sleep 0.8` race), and "the say lands within two
+  seconds" (the mirror daemon's push). Recorded as load flakes.
+- (M1) DC3's local hub at `f22e0839` passed the uplink walks 7/7 on two
+  runs; it does not yet list `step-end` among its subscription kinds.
 - (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
   `view_of` runs `ps` for every live session, so membership is re-read
   when the set of running sessions changes, with a 10 s backstop, not on
