@@ -87,16 +87,25 @@ gap.
   central decision, recorded. The bridge's own snapshot covers only its
   in-memory state, and the mod's `block-row` can trail the row on disk, so
   the daemon cannot order transcript rows against the stream by itself.
-  It joins them through the DX5 extension DC2 builds for this: a
-  transcript cut in the bridge's snapshot, and an order for the rows after
-  it (the composite's DX5, as folded when DC2's M4 lands; until then, the
-  composite's Decision Log entry on DC7's plan review states the need).
+  It joins them through the DX5 extension DC2 builds in its M4 (agreed;
+  the composite's Decision Log entry on DC7's plan review, and DX5 as
+  folded when it lands): every row the mod observes gets one notice
+  before it is written (`block-row` for a response row, `row-seen` for any
+  other), the snapshot carries a per-loop `cut` of notices applied,
+  history is read from disk up to the cut, live rows follow their notices
+  (read from disk once flushed; not there within 5 s ends the
+  subscription as a discontinuity), a disk row past the cut that no
+  notice named within 2 s is emitted in disk order, and a `block-row` for
+  a row already emitted unnamed ends the subscription as a
+  discontinuity.
   The proof includes a row flushed to disk ahead of a delayed bridge post,
   across subscription establishment and across a reconnect.
-- *A `resync`* on a DX5 subscription the daemon already holds ends the DX4
-  subscriptions it touches with `end {reason: "discontinuity"}`, as a
-  `gap` does (DX4). That includes a child that answered before the mod's
-  first `resync`. A test subscribes before the first `resync`.
+- *A DX5 subscription the child ends* ends the DX4 subscriptions it
+  touches with `end {reason: "discontinuity"}`, as a `gap` does (DX4).
+  The child holds `GET /events` until the mod's first `resync` is applied
+  and ends every open subscription on any later one, so the daemon's rule
+  is only "stream ended: resubscribe". A test subscribes across a module
+  reload.
 - *`diff`* answers DX2's `diff` down frame for a main-transcript sub.
 - *Without a bridge* a subscription serves rows from the transcript alone,
   with `streaming` empty and `usage` null (§5's table).
