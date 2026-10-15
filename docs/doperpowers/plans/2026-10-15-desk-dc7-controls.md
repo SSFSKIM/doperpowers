@@ -302,6 +302,50 @@ against the local hub; until it lands, the stand-in.
   The default ceiling is read from the user's own settings, never written.
   Date/Author: 2026-10-15, controller, confirmed by the composite's writer.
 
+- Decision (M1): The session plane is `sminos_plane.py`, served on the
+  uplink's stream through small seams (dispatch entries for `subscribe`,
+  `unsubscribe`, `rows`, `diff`; presence in `open()`'s POST; the plane's
+  tick in `Link.tick`; a wake item in `serve`). One plane per stream: a new
+  stream drops the old subscriptions silently, since the hub fences routes
+  by generation and ends them itself. `machine_policy()` in
+  `sminos_hublog.py` is the function M2 makes real; its default ceiling is
+  the string `"default"` (the engine's mode when settings name none), not
+  null as the pre-flight allowed, because DC3's hub refuses a non-string
+  ceiling.
+  Date/Author: 2026-10-15, M1 executor.
+
+- Decision (M1): Subscription edges. An `end` before any snapshot (unknown
+  session, a bridge answering 503 when not ready, a cut row never on disk)
+  is sent at `n` 0, as DC3's in-progress hub does. A bridge that answers
+  503 ends the subscription `discontinuity` rather than serving the
+  transcript alone, and a transcript-only subscription of a running
+  session is ended `discontinuity` once its bridge answers, so streaming
+  returns after a module reload. A session no longer running gets 1 s for
+  its last flushes, then `session-ended`; an ended session can still be
+  subscribed (snapshot, then `session-ended`). With a null cut, a
+  `block-row` for a row history already holds is dropped, unless the
+  subscriber holds that block's streamed text, in which case it ends
+  `discontinuity`. Presence goes to the project's local members; a
+  subscription may name any session that joined from this machine, ended
+  ones included. Rows are complete JSONL objects with a string `uuid`;
+  snapshots and pages carry up to 512 KiB of rows, at least one. The diff
+  base is `origin/HEAD`, else `main`, else `master`, with read-only git on
+  a worker thread, capped at 4 MiB.
+  Date/Author: 2026-10-15, M1 executor.
+
 ## Surprises & Discoveries
+
+- (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
+  `view_of` runs `ps` for every live session, so membership is re-read
+  when the set of running sessions changes, with a 10 s backstop, not on
+  every 2 s scan.
+- (M1) Presence within 1 s holds while the uplink's main thread is free;
+  an immediate delivery or a stalled POST holds it (the uplink is serial
+  by DC4's design).
+- (M1) Contract notes sent to the composite's writer: DX4's main scope
+  carries other agents' `block-row`s but not their rows, so the web needs
+  a rule to settle those blocks; DX5 rule 3 with a null cut can leave
+  streamed text beside its row (handled on the consumer side, above); a
+  row no notice names waits 2 s and can arrive after a later named row.
 
 ## Outcomes & Retrospective
