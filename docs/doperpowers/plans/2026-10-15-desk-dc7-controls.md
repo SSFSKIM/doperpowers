@@ -463,6 +463,24 @@ against the local hub; until it lands, the stand-in.
   set is not complete.
   Date/Author: 2026-10-15, the composite's writer.
 
+- Decision (M2 fix wave): A closed terminal session is a seat-less
+  session that joined from this machine whose latest membership is
+  `retired` with reason `ended`; its `recorded` is written in
+  `deliver_owed` (the pass the uplink's import and the daemon tick both
+  run), "once" kept in `recorded/<session>.json` per writer. The hub's
+  `settled()` is not idempotent (each settlement is broadcast and
+  audited), so the machine filters duplicates: a settlement is seen once
+  queued or taken, the taken ones kept in `daemon/requests.json` across
+  restarts; every unseen settlement in a bridge's snapshot is relayed.
+  Bridges are followed by their endpoint file's existence, so `Link.open`
+  follows them before building the set; the complete pending set goes
+  once every followed session has its first snapshot, or after 8 s, a
+  reader that cannot snapshot counting as read and retrying with backoff
+  (1 s doubling to 30 s). Over the outbox cap only raises are dropped. An
+  outcome that cannot be written leaves its event unsettled, so it is
+  delivered and recorded again on the next pass.
+  Date/Author: 2026-10-15, M2 executor.
+
 - Decision: The suite gate under this machine's load. The three
   assertions outside the session plane that fail only at load above 200
   (Surprises, M1) are accepted as load flakes by the composite's writer
