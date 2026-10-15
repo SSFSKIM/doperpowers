@@ -333,6 +333,27 @@ against the local hub; until it lands, the stand-in.
   a worker thread, capped at 4 MiB.
   Date/Author: 2026-10-15, M1 executor.
 
+- Decision: DX5's row order is disk order (composite `cd2667d8`, from
+  DC2's M4 review: a notice posted at hook entry could precede a row the
+  engine wrote earlier, and a compaction's unnamed rows were emitted after
+  the next prompt). The producer now posts a row's notice after `next()`
+  resolves, so within a loop notice order is write order and a notice may
+  trail the flush. The consumer: history is each loop's disk rows up to
+  and including its cut, once the cut's row is on disk (5 s, else
+  discontinuity); live, each loop's rows go out strictly in disk order, a
+  row past the cut released by the first of its own notice, a notice for
+  any later row of the same loop, or 2 s with neither, and every later row
+  waits behind it; a notice whose row is not on disk within 5 s is a
+  discontinuity; a `block-row` for a row already released unnamed is a
+  discontinuity; a `row-seen` for a released row is ignored. M1's
+  out-of-order note is void. Also decided there: an `end` may be a sub's
+  first message at `n` 0; a main-scope sub settles another agent's block
+  on its `block-row`; the ceiling reports the settings' `defaultMode`
+  (read only), `"default"` only when they name none, never as a
+  placeholder.
+  Date/Author: 2026-10-15, the composite's writer; M1's consumer adopts it
+  in its fix wave.
+
 ## Surprises & Discoveries
 
 - (M1) `sminos.peer_records()` is cached until `forget_caches()`, and
