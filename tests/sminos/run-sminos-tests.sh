@@ -3832,6 +3832,10 @@ while IFS= read -r line; do
     *) fail "mark parity: ${line#FAIL }" ;;
   esac
 done < <(python3 "$SCRIPT_DIR/marks_parity.py" "$REPO_ROOT/skills/sminos/scripts" 2>&1)
+# The desk's codes are the hub's: DX1's shared vectors pin them (codes_parity.py).
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "codes parity: ${line#ok }" ;; *) fail "codes parity: ${line#FAIL }" ;; esac
+done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx1-codes.json" 2>&1)
 
 # Transcript records as the harness stores them (the shapes the ask design and
 # a live 2.1.296 transcript record).
@@ -5001,6 +5005,7 @@ unset STUB_COUNTER
 # stand-in for the mod); its assertions count here as one.
 echo
 if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
+if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

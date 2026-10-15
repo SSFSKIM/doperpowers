@@ -5614,7 +5614,7 @@ def build_parser():
     dsub = dm.add_subparsers(dest="op")
     dr = dsub.add_parser("run", add_help=False)
     dr.add_argument("--interval", type=float, default=5.0)
-    for op in ("tick", "install", "status"):
+    for op in ("tick", "install", "status", "uplink"):
         dsub.add_parser(op, add_help=False)
     dm.set_defaults(fn=cmd_daemon)
 

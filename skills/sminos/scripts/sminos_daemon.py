@@ -28,8 +28,12 @@ every project known here, each in the order of §8:
   5. push        (mirrored projects) commit what the tick appended, push
   6. derive      once an hour, `derive --all` as a child it does not wait on
 
-`daemon run` loops the tick; `install` writes the launchd agent (it loads
-nothing); `status` prints the last tick per project.
+`daemon run` loops the tick, and beside it supervises the uplink to the desk
+hub (`daemon uplink`, sminos_uplink.py) as a child process it restarts with
+backoff — a process, not a thread, because sminos's caches are module globals
+the tick clears, and so a hang or a crash of either side never stops the
+other; `install` writes the launchd agent (it loads nothing); `status` prints
+the last tick per project.
 """
 
 import contextlib
@@ -40,6 +44,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid as uuidlib
 from xml.sax.saxutils import escape
@@ -56,6 +61,14 @@ PUSH_RETRIES = 3
 # `derive --all` runs at most this often; SMINOS_DERIVE_EVERY overrides it in
 # seconds, and a value of 0 or less turns derivation off.
 DERIVE_EVERY = 3600
+# The uplink is restarted after this many seconds, doubling from 1 while it
+# keeps exiting within the bound; one that ran longer starts the count again.
+UPLINK_BACKOFF_MAX = 60
+# A stopped uplink has this long to end after SIGTERM before it is killed.
+UPLINK_STOP_GRACE = 3
+# The scripts `daemon run` runs, itself and its uplink child: a change to one
+# ends the loop for a restart on the new code.
+OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_codes.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
@@ -592,11 +605,13 @@ def run_lock_path():
 
 
 def own_code():
-    """The scripts this loop runs, with their mtimes: when one changes (a plugin
-    update), the loop ends and launchd's KeepAlive starts it on the new code."""
+    """The scripts this loop and its uplink run, with their mtimes: when one
+    changes (a plugin update), the loop ends and launchd's KeepAlive starts it
+    on the new code."""
     out = {}
-    for mod in (sminos, sminos.sminos_marks, sys.modules[__name__]):
-        path = os.path.realpath(mod.__file__)
+    here = os.path.dirname(os.path.realpath(__file__))
+    for name in OWN_CODE:
+        path = os.path.realpath(os.path.join(here, name))
         try:
             out[path] = os.stat(path).st_mtime_ns
         except OSError:
@@ -612,11 +627,64 @@ def nudged_at():
         return 0
 
 
+class UplinkSupervisor(threading.Thread):
+    """`daemon run`'s keeper of the uplink: while the machine holds a hub
+    credential (daemon/hub.json), one `daemon uplink` child runs, restarted
+    with backoff whenever it exits; `stop` ends it (SIGTERM, then a kill). The
+    child's output goes to daemon.log."""
+
+    def __init__(self):
+        super().__init__(name="uplink-supervisor", daemon=True)
+        self.halt = threading.Event()
+        self.proc = None
+
+    def run(self):
+        backoff = 1
+        while not self.halt.is_set():
+            if not os.path.exists(daemon_path("hub.json")):
+                self.halt.wait(5)
+                continue
+            started = time.time()
+            with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
+                self.proc = subprocess.Popen(
+                    [sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon", "uplink"],
+                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+            while self.proc.poll() is None and not self.halt.wait(0.2):
+                pass
+            if self.halt.is_set():
+                break
+            rc = self.proc.returncode
+            if time.time() - started > UPLINK_BACKOFF_MAX:
+                backoff = 1
+            sminos.daemon_log("uplink (pid %d) exited %s; restarting in %ds" % (
+                self.proc.pid, "on signal %d" % -rc if rc < 0 else "with %d" % rc, backoff))
+            if self.halt.wait(backoff):
+                break
+            backoff = min(backoff * 2, UPLINK_BACKOFF_MAX)
+        self.stop_child()
+
+    def stop_child(self):
+        p = self.proc
+        if p is None or p.poll() is not None:
+            return
+        p.terminate()
+        try:
+            p.wait(UPLINK_STOP_GRACE)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+    def stop(self):
+        self.halt.set()
+        self.join(UPLINK_STOP_GRACE + 2)
+
+
 def cmd_run(a):
     """The loop: a tick every `--interval` seconds (from one tick's start to
     the next), or at once when a sender touched daemon/nudge since the last
-    one began. SIGTERM ends it after the tick in hand; so does a change to its
-    own scripts, exiting 0 for launchd to restart it on the new code."""
+    one began; the uplink beside it (UplinkSupervisor). SIGTERM ends it after
+    the tick in hand; so does a change to its own scripts, exiting 0 for
+    launchd to restart it on the new code; the uplink is stopped either way."""
     interval = a.interval
     if interval <= 0:
         sminos.die("--interval is a number of seconds above 0")
@@ -636,23 +704,28 @@ def cmd_run(a):
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sminos.daemon_log("daemon run started (pid %d, every %gs)" % (os.getpid(), interval))
     code = own_code()
-    while not stop:
-        started, nudge = time.time(), nudged_at()
-        try:
-            tick_all(quiet=True)
-        except MachineClaimed as e:
-            sminos.daemon_log("refused: %s" % e)
-            sminos.die(str(e), 1)
-        except Exception as e:  # noqa: BLE001 — the loop outlives one bad tick
-            sminos.daemon_log("tick failed: %r" % e)
-        sys.stdout.flush()
-        if own_code() != code:
-            sminos.daemon_log("daemon run (pid %d): its code changed; exiting for a restart on the new code"
-                              % os.getpid())
-            print("%s its code changed: exiting, to be restarted on the new code" % sminos.now())
-            return
-        while not stop and time.time() - started < interval and nudged_at() == nudge:
-            time.sleep(0.05)
+    uplink = UplinkSupervisor()
+    uplink.start()
+    try:
+        while not stop:
+            started, nudge = time.time(), nudged_at()
+            try:
+                tick_all(quiet=True)
+            except MachineClaimed as e:
+                sminos.daemon_log("refused: %s" % e)
+                sminos.die(str(e), 1)
+            except Exception as e:  # noqa: BLE001 — the loop outlives one bad tick
+                sminos.daemon_log("tick failed: %r" % e)
+            sys.stdout.flush()
+            if own_code() != code:
+                sminos.daemon_log("daemon run (pid %d): its code changed; exiting for a restart on the new code"
+                                  % os.getpid())
+                print("%s its code changed: exiting, to be restarted on the new code" % sminos.now())
+                return
+            while not stop and time.time() - started < interval and nudged_at() == nudge:
+                time.sleep(0.05)
+    finally:
+        uplink.stop()
     sminos.daemon_log("daemon run stopped (pid %d)" % os.getpid())
 
 
@@ -736,15 +809,25 @@ def age(ts):
     return sminos.short_age(seconds) if seconds is not None else "?"
 
 
+def held_by(path):
+    """What a lock file's holder wrote in it ("pid N since T"), or "" when no
+    process holds it."""
+    with open(path, "a+") as lf:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(lf, fcntl.LOCK_UN)
+            return ""
+        except OSError:
+            lf.seek(0)
+            return lf.read().strip() or "pid unknown"
+
+
 def cmd_status(_a):
-    lf = open(run_lock_path(), "a+")
-    try:
-        fcntl.flock(lf, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        fcntl.flock(lf, fcntl.LOCK_UN)
-        print("daemon: not running here")
-    except OSError:
-        lf.seek(0)
-        print("daemon: running (%s)" % (lf.read().strip() or "pid unknown"))
+    run = held_by(run_lock_path())
+    print("daemon: running (%s)" % run if run else "daemon: not running here")
+    if os.path.exists(daemon_path("hub.json")):
+        up = held_by(daemon_path("uplink.lock"))
+        print("uplink: running (%s)" % up if up else "uplink: not running")
     for p in sorted(sminos.known_projects(), key=lambda p: (p.name, p.id)):
         rec = daemon_record(p)
         if not rec.get("tick"):
@@ -762,4 +845,7 @@ def cmd_daemon(a):
     # The daemon acts for the machine, never as a session: a `by`, a sender,
     # or a derivation fork must not take the identity of whoever started it.
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    if a.op == "uplink":
+        sminos.sibling_module("sminos_uplink").cmd_uplink(a)
+        return
     {"run": cmd_run, "tick": cmd_tick, "install": cmd_install, "status": cmd_status}[a.op](a)

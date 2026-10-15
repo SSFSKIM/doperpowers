@@ -1,0 +1,498 @@
+{
+  "about": "DX1's authentication-code vectors, written by generate.py beside this file; see its docstring for the rule.",
+  "numbers": [
+    {
+      "json": "0.5",
+      "canonical": "0.5",
+      "why": "a fraction"
+    },
+    {
+      "json": "-0",
+      "canonical": "0",
+      "why": "negative zero, as an integer literal"
+    },
+    {
+      "json": "-0.0",
+      "canonical": "0",
+      "why": "negative zero, as a fraction literal"
+    },
+    {
+      "json": "100",
+      "canonical": "100",
+      "why": "an integer"
+    },
+    {
+      "json": "1e20",
+      "canonical": "100000000000000000000",
+      "why": "the largest power of ten written plainly"
+    },
+    {
+      "json": "1e21",
+      "canonical": "1e+21",
+      "why": "the smallest power of ten written with an exponent"
+    },
+    {
+      "json": "123456789012345680000",
+      "canonical": "123456789012345680000",
+      "why": "a large integral value, plainly"
+    },
+    {
+      "json": "1.2345678901234568e21",
+      "canonical": "1.2345678901234568e+21",
+      "why": "a large integral value, past the plain range"
+    },
+    {
+      "json": "1e-6",
+      "canonical": "0.000001",
+      "why": "the smallest power of ten written plainly"
+    },
+    {
+      "json": "1e-7",
+      "canonical": "1e-7",
+      "why": "the largest power of ten below 1 written with an exponent"
+    },
+    {
+      "json": "-1.5e-7",
+      "canonical": "-1.5e-7",
+      "why": "a negative fraction with an exponent"
+    },
+    {
+      "json": "9007199254740992",
+      "canonical": "9007199254740992",
+      "why": "2^53, the last integer every double holds"
+    },
+    {
+      "json": "9007199254740993",
+      "canonical": "9007199254740992",
+      "why": "2^53 + 1, which no double holds: it becomes 2^53"
+    },
+    {
+      "json": "333333333.33333329",
+      "canonical": "333333333.3333333",
+      "why": "RFC 8785's sample: the shortest digits that round-trip"
+    },
+    {
+      "json": "4.50",
+      "canonical": "4.5",
+      "why": "RFC 8785's sample: trailing zeros go"
+    },
+    {
+      "json": "2e-3",
+      "canonical": "0.002",
+      "why": "RFC 8785's sample"
+    },
+    {
+      "json": "1E30",
+      "canonical": "1e+30",
+      "why": "RFC 8785's sample"
+    },
+    {
+      "json": "0.000000000000000000000000001",
+      "canonical": "1e-27",
+      "why": "RFC 8785's sample"
+    },
+    {
+      "json": "5e-324",
+      "canonical": "5e-324",
+      "why": "the smallest subnormal"
+    },
+    {
+      "json": "1.7976931348623157e308",
+      "canonical": "1.7976931348623157e+308",
+      "why": "the largest double"
+    }
+  ],
+  "digests": [
+    {
+      "name": "bash-input",
+      "input": {
+        "command": "pnpm e2e",
+        "description": "Run the e2e suite"
+      },
+      "canonical": "{\"command\":\"pnpm e2e\",\"description\":\"Run the e2e suite\"}",
+      "input_sha256": "8294a36b488d0be1f3033e6f1c6d7c22eccefd6717f1d6552f6604feef65024e"
+    },
+    {
+      "name": "input-with-fraction",
+      "input": {
+        "command": "python3 -c 'import time; time.sleep(0.5)'",
+        "timeout": 0.5,
+        "budget": 1e+21,
+        "id": 9007199254740993
+      },
+      "canonical": "{\"budget\":1e+21,\"command\":\"python3 -c 'import time; time.sleep(0.5)'\",\"id\":9007199254740992,\"timeout\":0.5}",
+      "input_sha256": "5866483371fad05cc4e773dbcb9e2c6e11506ce7c80c5d680942b1e92daee06b"
+    }
+  ],
+  "vectors": [
+    {
+      "name": "say-ascii",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:01:02.123Z",
+        "writer": "SK.local/e0ad139c-18bc-45bd-9489-be8653145f80",
+        "seq": 42,
+        "kind": "say",
+        "from": "doperpowers-1e",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "your change renames a column I read",
+        "mac": {
+          "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+          "value": "qqDqpjy4rH_1vmjD-dlpiPrQIfbyLKb1IIsbbyuJ9qk"
+        }
+      },
+      "covered": "smns-hub-log-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"from\":\"doperpowers-1e\",\"kind\":\"say\",\"mac\":{\"nonce\":\"AQEBAQEBAQEBAQEBAQEBAQ\"},\"seq\":42,\"text\":\"your change renames a column I read\",\"to\":[{\"alias\":\"maws-45\",\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\"}],\"ts\":\"2026-10-15T08:01:02.123Z\",\"writer\":\"SK.local/e0ad139c-18bc-45bd-9489-be8653145f80\"}",
+      "covered_hex": "736d6e732d6875622d6c6f672d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b2266726f6d223a22646f706572706f776572732d3165222c226b696e64223a22736179222c226d6163223a7b226e6f6e6365223a2241514542415145424151454241514542415145424151227d2c22736571223a34322c2274657874223a22796f7572206368616e67652072656e616d6573206120636f6c756d6e20492072656164222c22746f223a5b7b22616c696173223a226d6177732d3435222c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462227d5d2c227473223a22323032362d31302d31355430383a30313a30322e3132335a222c22777269746572223a22534b2e6c6f63616c2f65306164313339632d313862632d343562642d393438392d626538363533313435663830227d",
+      "code": "qqDqpjy4rH_1vmjD-dlpiPrQIfbyLKb1IIsbbyuJ9qk"
+    },
+    {
+      "name": "message-unicode",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:02:03.456Z",
+        "writer": "mini/9b2e4c6d-1a3f-4e5b-8c7d-0f1e2d3c4b5a",
+        "seq": 7,
+        "kind": "message",
+        "from": "maws-45",
+        "to": "host",
+        "text": "컬럼 이름은 `user_id`로 유지할게요 🙂\n\tquote \" backslash \\ nul \u0000 unit-sep \u001f bs \b ff \f del  ls   끝",
+        "src": "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a:0",
+        "mac": {
+          "nonce": "AgICAgICAgICAgICAgICAg",
+          "value": "kY1lxWBlgUQhtE7M5FYsanYsu4eZ5bBxeX3qGlanu18"
+        }
+      },
+      "covered": "smns-hub-log-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"from\":\"maws-45\",\"kind\":\"message\",\"mac\":{\"nonce\":\"AgICAgICAgICAgICAgICAg\"},\"seq\":7,\"src\":\"5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a:0\",\"text\":\"컬럼 이름은 `user_id`로 유지할게요 🙂\\n\\tquote \\\" backslash \\\\ nul \\u0000 unit-sep \\u001f bs \\b ff \\f del  ls   끝\",\"to\":\"host\",\"ts\":\"2026-10-15T08:02:03.456Z\",\"writer\":\"mini/9b2e4c6d-1a3f-4e5b-8c7d-0f1e2d3c4b5a\"}",
+      "covered_hex": "736d6e732d6875622d6c6f672d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b2266726f6d223a226d6177732d3435222c226b696e64223a226d657373616765222c226d6163223a7b226e6f6e6365223a2241674943416749434167494341674943416749434167227d2c22736571223a372c22737263223a2235643463336232612d316630652d346439632d386237612d3666356534643363326231613a30222c2274657874223a22ecbbaceb9fbc20ec9db4eba684ec9d802060757365725f696460eba19c20ec9ca0eca780ed95a0eab28cec9a9420f09f99825c6e5c7471756f7465205c22206261636b736c617368205c5c206e756c205c753030303020756e69742d736570205c7530303166206273205c62206666205c662064656c207f206c7320e280a820eb819d222c22746f223a22686f7374222c227473223a22323032362d31302d31355430383a30323a30332e3435365a222c22777269746572223a226d696e692f39623265346336642d316133662d346535622d386337642d306631653264336334623561227d",
+      "code": "kY1lxWBlgUQhtE7M5FYsanYsu4eZ5bBxeX3qGlanu18"
+    },
+    {
+      "name": "hub-human",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:05:00.000Z",
+        "writer": "hub/4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "seq": 3,
+        "kind": "human",
+        "from": "human",
+        "member": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "keep user_id",
+        "created": "2026-10-15T08:04:59.870Z",
+        "mac": {
+          "nonce": "AwMDAwMDAwMDAwMDAwMDAw",
+          "value": "NE9MrZ6PlMIlulrJzoHRH8gj4cZnaFF2erR0QaVpEP8"
+        }
+      },
+      "covered": "smns-hub-log-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"created\":\"2026-10-15T08:04:59.870Z\",\"from\":\"human\",\"kind\":\"human\",\"mac\":{\"nonce\":\"AwMDAwMDAwMDAwMDAwMDAw\"},\"member\":\"4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c\",\"text\":\"keep user_id\",\"to\":[{\"alias\":\"maws-45\",\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\"}]}",
+      "covered_hex": "736d6e732d6875622d6c6f672d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b2263726561746564223a22323032362d31302d31355430383a30343a35392e3837305a222c2266726f6d223a2268756d616e222c226b696e64223a2268756d616e222c226d6163223a7b226e6f6e6365223a2241774d4441774d4441774d4441774d4441774d444177227d2c226d656d626572223a223466336132623163306439653866376136623563346433653266316130623963222c2274657874223a226b65657020757365725f6964222c22746f223a5b7b22616c696173223a226d6177732d3435222c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462227d5d7d",
+      "code": "NE9MrZ6PlMIlulrJzoHRH8gj4cZnaFF2erR0QaVpEP8"
+    },
+    {
+      "name": "nested-object",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:06:00.001Z",
+        "writer": "SK.local/e0ad139c-18bc-45bd-9489-be8653145f80",
+        "seq": 43,
+        "kind": "say",
+        "from": "doperpowers-1e",
+        "to": "*",
+        "text": "every field is covered, unknown ones too",
+        "meta": {
+          "z": [
+            1,
+            -2,
+            0,
+            9007199254740991,
+            true,
+            false,
+            null,
+            {
+              "b": "",
+              "a": []
+            }
+          ],
+          "é": "e-acute (U+00E9)",
+          "😀": "an astral key: UTF-16 orders it before U+E000, code points after",
+          "": "a private-use key (U+E000)",
+          "A": "upper",
+          "a": "lower",
+          "": "the empty key"
+        },
+        "mac": {
+          "nonce": "BAQEBAQEBAQEBAQEBAQEBA",
+          "value": "gvC-Es0bMfkLUM5mNlu750OrDozy_8wNYnVn-onWII0"
+        }
+      },
+      "covered": "smns-hub-log-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"from\":\"doperpowers-1e\",\"kind\":\"say\",\"mac\":{\"nonce\":\"BAQEBAQEBAQEBAQEBAQEBA\"},\"meta\":{\"\":\"the empty key\",\"A\":\"upper\",\"a\":\"lower\",\"z\":[1,-2,0,9007199254740991,true,false,null,{\"a\":[],\"b\":\"\"}],\"é\":\"e-acute (U+00E9)\",\"😀\":\"an astral key: UTF-16 orders it before U+E000, code points after\",\"\":\"a private-use key (U+E000)\"},\"seq\":43,\"text\":\"every field is covered, unknown ones too\",\"to\":\"*\",\"ts\":\"2026-10-15T08:06:00.001Z\",\"writer\":\"SK.local/e0ad139c-18bc-45bd-9489-be8653145f80\"}",
+      "covered_hex": "736d6e732d6875622d6c6f672d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b2266726f6d223a22646f706572706f776572732d3165222c226b696e64223a22736179222c226d6163223a7b226e6f6e6365223a2242415145424151454241514542415145424151454241227d2c226d657461223a7b22223a2274686520656d707479206b6579222c2241223a227570706572222c2261223a226c6f776572222c227a223a5b312c2d322c302c393030373139393235343734303939312c747275652c66616c73652c6e756c6c2c7b2261223a5b5d2c2262223a22227d5d2c22c3a9223a22652d61637574652028552b3030453929222c22f09f9880223a22616e2061737472616c206b65793a205554462d3136206f7264657273206974206265666f726520552b453030302c20636f646520706f696e7473206166746572222c22ee8080223a226120707269766174652d757365206b65792028552b4530303029227d2c22736571223a34332c2274657874223a226576657279206669656c6420697320636f76657265642c20756e6b6e6f776e206f6e657320746f6f222c22746f223a222a222c227473223a22323032362d31302d31355430383a30363a30302e3030315a222c22777269746572223a22534b2e6c6f63616c2f65306164313339632d313862632d343562642d393438392d626538363533313435663830227d",
+      "code": "gvC-Es0bMfkLUM5mNlu750OrDozy_8wNYnVn-onWII0"
+    },
+    {
+      "name": "rpc-decide",
+      "domain": "smns-hub-rpc-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "rpc": "decide",
+        "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+        "machine": "mini",
+        "member": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "created": "2026-10-15T08:07:00.000Z",
+        "nonce": "BQUFBQUFBQUFBQUFBQUFBQ",
+        "args": {
+          "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+          "decision": "allow",
+          "digest": {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "request": "toolu_01QmZ7wq3V8nEXAMPLE",
+            "tool": "Bash",
+            "input_sha256": "8294a36b488d0be1f3033e6f1c6d7c22eccefd6717f1d6552f6604feef65024e"
+          }
+        },
+        "mac": "gbTIjG4zE2Zd6Gxpc1FxarxfVDufsjEwKg-K_L1pepQ"
+      },
+      "covered": "smns-hub-rpc-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"args\":{\"decision\":\"allow\",\"digest\":{\"input_sha256\":\"8294a36b488d0be1f3033e6f1c6d7c22eccefd6717f1d6552f6604feef65024e\",\"request\":\"toolu_01QmZ7wq3V8nEXAMPLE\",\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\",\"tool\":\"Bash\"},\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\"},\"created\":\"2026-10-15T08:07:00.000Z\",\"machine\":\"mini\",\"member\":\"4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c\",\"nonce\":\"BQUFBQUFBQUFBQUFBQUFBQ\",\"project\":\"6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\",\"rpc\":\"decide\"}",
+      "covered_hex": "736d6e732d6875622d7270632d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b2261726773223a7b226465636973696f6e223a22616c6c6f77222c22646967657374223a7b22696e7075745f736861323536223a2238323934613336623438386430626531663330333365366631633664376332326563636566643637313766316436353532663636303466656566363530323465222c2272657175657374223a22746f6f6c755f3031516d5a3777713356386e4558414d504c45222c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462222c22746f6f6c223a2242617368227d2c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462227d2c2263726561746564223a22323032362d31302d31355430383a30373a30302e3030305a222c226d616368696e65223a226d696e69222c226d656d626572223a223466336132623163306439653866376136623563346433653266316130623963222c226e6f6e6365223a2242515546425155464251554642515546425155464251222c2270726f6a656374223a2236663163306138652d336232642d346335652d396637302d386131623263336434653566222c22727063223a22646563696465227d",
+      "code": "gbTIjG4zE2Zd6Gxpc1FxarxfVDufsjEwKg-K_L1pepQ"
+    },
+    {
+      "name": "raised",
+      "domain": "smns-hub-raised-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "request": "toolu_01QmZ7wq3V8nEXAMPLE",
+        "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+        "tool": "Bash",
+        "input": {
+          "command": "pnpm e2e",
+          "description": "Run the e2e suite"
+        },
+        "mac": {
+          "nonce": "BgYGBgYGBgYGBgYGBgYGBg",
+          "value": "EOZ2HgjEWZHiuKlv6wZ5CYduHZtbNIMEmqdXDrEo48M"
+        }
+      },
+      "covered": "smns-hub-raised-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"input\":{\"command\":\"pnpm e2e\",\"description\":\"Run the e2e suite\"},\"mac\":{\"nonce\":\"BgYGBgYGBgYGBgYGBgYGBg\"},\"request\":\"toolu_01QmZ7wq3V8nEXAMPLE\",\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\",\"tool\":\"Bash\"}",
+      "covered_hex": "736d6e732d6875622d7261697365642d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b22696e707574223a7b22636f6d6d616e64223a22706e706d20653265222c226465736372697074696f6e223a2252756e2074686520653265207375697465227d2c226d6163223a7b226e6f6e6365223a2242675947426759474267594742675947426759474267227d2c2272657175657374223a22746f6f6c755f3031516d5a3777713356386e4558414d504c45222c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462222c22746f6f6c223a2242617368227d",
+      "code": "EOZ2HgjEWZHiuKlv6wZ5CYduHZtbNIMEmqdXDrEo48M"
+    },
+    {
+      "name": "raised-fraction",
+      "domain": "smns-hub-raised-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "request": "toolu_01FracTi0nEXAMPLE",
+        "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+        "tool": "Bash",
+        "input": {
+          "command": "python3 -c 'import time; time.sleep(0.5)'",
+          "timeout": 0.5,
+          "budget": 1e+21,
+          "id": 9007199254740993
+        },
+        "mac": {
+          "nonce": "CwsLCwsLCwsLCwsLCwsLCw",
+          "value": "pVCnkJvM-Mtsc_48DN0yt1oG_XxdU_iLe4bVg6Rij2c"
+        }
+      },
+      "covered": "smns-hub-raised-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"input\":{\"budget\":1e+21,\"command\":\"python3 -c 'import time; time.sleep(0.5)'\",\"id\":9007199254740992,\"timeout\":0.5},\"mac\":{\"nonce\":\"CwsLCwsLCwsLCwsLCwsLCw\"},\"request\":\"toolu_01FracTi0nEXAMPLE\",\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\",\"tool\":\"Bash\"}",
+      "covered_hex": "736d6e732d6875622d7261697365642d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b22696e707574223a7b22627564676574223a31652b32312c22636f6d6d616e64223a22707974686f6e33202d632027696d706f72742074696d653b2074696d652e736c65657028302e352927222c226964223a393030373139393235343734303939322c2274696d656f7574223a302e357d2c226d6163223a7b226e6f6e6365223a224377734c4377734c4377734c4377734c4377734c4377227d2c2272657175657374223a22746f6f6c755f3031467261635469306e4558414d504c45222c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462222c22746f6f6c223a2242617368227d",
+      "code": "pVCnkJvM-Mtsc_48DN0yt1oG_XxdU_iLe4bVg6Rij2c"
+    },
+    {
+      "name": "settled",
+      "domain": "smns-hub-settled-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "request": "toolu_01QmZ7wq3V8nEXAMPLE",
+        "winner": "web",
+        "outcome": "allow",
+        "by": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "mac": {
+          "nonce": "BwcHBwcHBwcHBwcHBwcHBw",
+          "value": "8Wd8vAKTYnP3JIM_7yRz8iMKOFW-Xu1R0m06MAxQ-J0"
+        }
+      },
+      "covered": "smns-hub-settled-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"by\":\"4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c\",\"mac\":{\"nonce\":\"BwcHBwcHBwcHBwcHBwcHBw\"},\"outcome\":\"allow\",\"request\":\"toolu_01QmZ7wq3V8nEXAMPLE\",\"winner\":\"web\"}",
+      "covered_hex": "736d6e732d6875622d736574746c65642d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b226279223a223466336132623163306439653866376136623563346433653266316130623963222c226d6163223a7b226e6f6e6365223a2242776348427763484277634842776348427763484277227d2c226f7574636f6d65223a22616c6c6f77222c2272657175657374223a22746f6f6c755f3031516d5a3777713356386e4558414d504c45222c2277696e6e6572223a22776562227d",
+      "code": "8Wd8vAKTYnP3JIM_7yRz8iMKOFW-Xu1R0m06MAxQ-J0"
+    },
+    {
+      "name": "delivery",
+      "domain": "smns-hub-delivery-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "event": {
+          "writer": "hub/4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+          "seq": 3
+        },
+        "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+        "outcome": "recorded",
+        "reason": "a terminal session the human closed",
+        "mac": {
+          "nonce": "CAgICAgICAgICAgICAgICA",
+          "value": "emPX__7S4fcpC5kDiBl02XYIHeSlyer3ht4ZdBIqw8Q"
+        }
+      },
+      "covered": "smns-hub-delivery-v1\n6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f\n{\"event\":{\"seq\":3,\"writer\":\"hub/4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c\"},\"mac\":{\"nonce\":\"CAgICAgICAgICAgICAgICA\"},\"outcome\":\"recorded\",\"reason\":\"a terminal session the human closed\",\"session\":\"67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b\"}",
+      "covered_hex": "736d6e732d6875622d64656c69766572792d76310a36663163306138652d336232642d346335652d396637302d3861316232633364346535660a7b226576656e74223a7b22736571223a332c22777269746572223a226875622f3466336132623163306439653866376136623563346433653266316130623963227d2c226d6163223a7b226e6f6e6365223a2243416749434167494341674943416749434167494341227d2c226f7574636f6d65223a227265636f72646564222c22726561736f6e223a2261207465726d696e616c2073657373696f6e207468652068756d616e20636c6f736564222c2273657373696f6e223a2236373634366131622d326635652d346331642d386133622d396330643165326633613462227d",
+      "code": "emPX__7S4fcpC5kDiBl02XYIHeSlyer3ht4ZdBIqw8Q"
+    }
+  ],
+  "negatives": [
+    {
+      "name": "hub-human-fresh-nonce",
+      "of": "hub-human",
+      "why": "the hub re-sequenced a web human under a fresh nonce",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:05:00.000Z",
+        "writer": "hub/4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "seq": 3,
+        "kind": "human",
+        "from": "human",
+        "member": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "keep user_id",
+        "created": "2026-10-15T08:04:59.870Z",
+        "mac": {
+          "nonce": "CQkJCQkJCQkJCQkJCQkJCQ",
+          "value": "NE9MrZ6PlMIlulrJzoHRH8gj4cZnaFF2erR0QaVpEP8"
+        }
+      }
+    },
+    {
+      "name": "say-text-changed",
+      "of": "say-ascii",
+      "why": "a covered field changed",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "ts": "2026-10-15T08:01:02.123Z",
+        "writer": "SK.local/e0ad139c-18bc-45bd-9489-be8653145f80",
+        "seq": 42,
+        "kind": "say",
+        "from": "doperpowers-1e",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "your change renames a column I write",
+        "mac": {
+          "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+          "value": "qqDqpjy4rH_1vmjD-dlpiPrQIfbyLKb1IIsbbyuJ9qk"
+        }
+      }
+    },
+    {
+      "name": "hub-human-other-project",
+      "of": "hub-human",
+      "why": "a hub/ event moved to another project",
+      "domain": "smns-hub-log-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+      "input": {
+        "ts": "2026-10-15T08:05:00.000Z",
+        "writer": "hub/4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "seq": 3,
+        "kind": "human",
+        "from": "human",
+        "member": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "to": [
+          {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "alias": "maws-45"
+          }
+        ],
+        "text": "keep user_id",
+        "created": "2026-10-15T08:04:59.870Z",
+        "mac": {
+          "nonce": "AwMDAwMDAwMDAwMDAwMDAw",
+          "value": "NE9MrZ6PlMIlulrJzoHRH8gj4cZnaFF2erR0QaVpEP8"
+        }
+      }
+    },
+    {
+      "name": "rpc-nonce-changed",
+      "of": "rpc-decide",
+      "why": "an RPC replayed under another nonce",
+      "domain": "smns-hub-rpc-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "rpc": "decide",
+        "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+        "machine": "mini",
+        "member": "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c",
+        "created": "2026-10-15T08:07:00.000Z",
+        "nonce": "CgoKCgoKCgoKCgoKCgoKCg",
+        "args": {
+          "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+          "decision": "allow",
+          "digest": {
+            "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+            "request": "toolu_01QmZ7wq3V8nEXAMPLE",
+            "tool": "Bash",
+            "input_sha256": "8294a36b488d0be1f3033e6f1c6d7c22eccefd6717f1d6552f6604feef65024e"
+          }
+        },
+        "mac": "gbTIjG4zE2Zd6Gxpc1FxarxfVDufsjEwKg-K_L1pepQ"
+      }
+    },
+    {
+      "name": "raised-as-settled",
+      "of": "raised",
+      "why": "a code for one shape offered as another's",
+      "domain": "smns-hub-settled-v1",
+      "org_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "project": "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f",
+      "input": {
+        "request": "toolu_01QmZ7wq3V8nEXAMPLE",
+        "session": "67646a1b-2f5e-4c1d-8a3b-9c0d1e2f3a4b",
+        "tool": "Bash",
+        "input": {
+          "command": "pnpm e2e",
+          "description": "Run the e2e suite"
+        },
+        "mac": {
+          "nonce": "BgYGBgYGBgYGBgYGBgYGBg",
+          "value": "EOZ2HgjEWZHiuKlv6wZ5CYduHZtbNIMEmqdXDrEo48M"
+        }
+      }
+    }
+  ]
+}
