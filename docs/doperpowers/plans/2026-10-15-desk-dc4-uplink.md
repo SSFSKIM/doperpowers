@@ -505,6 +505,37 @@ produces nothing new for other children beyond the stream DC7 builds on.
   cover (`via`, `msg_id`), and a malformed `hub/` position. G2 thus
   proves the real path and the daemon's defense against a hub that lies.
   Date/Author: 2026-10-15, the composite's writer.
+- Decision: M3's executor's calls (three pending the composite's writer,
+  marked). (1) `sminos_hublog.py` holds one project's log plane; the
+  uplink keeps the process, stream, POSTs and parts. (2) *Pending:* the
+  uploader seals its own events under a nonce derived from the event
+  (HMAC with the org key, domain `smns-hub-nonce-v1`, 128 bits), so a
+  re-upload after a lost POST is the same payload; local events stay
+  stored without a code. (3) "Present" (M1's call 2, revisited): an
+  event held here is present when every field both copies carry agrees,
+  the code included when the local copy has one. (4) *Pending:* a
+  refused event's `(writer, seq)` is spent (recorded in the project's
+  `uplink.json`): later events of that writer are not held behind it,
+  `hello`'s vector moves past it, each is reported once — needed because
+  the real hub stores a bad-code web `human`, which would otherwise block
+  that member's later messages on every daemon. (5) A `rejected` report
+  stays queued until a POST carrying it is answered 200. (6) *Pending:*
+  an event whose code verifies but whose position here holds another is
+  reported `bad-code` (DX2's `rejected` has no `conflict`); a gap is held
+  and logged, not reported. (7) Any non-200 POST ends the stream; the
+  next one redoes the handshake. (8) `hb-ack` answers the newest
+  heartbeat, at most once a second. (9) Upload every 0.5 s or at once on
+  `daemon/nudge`; new hub projects looked for every 2 s, whose first
+  `hello` is a fresh machine's bootstrap. (10) `machine` presence:
+  online, not read-only, ceiling from the user's settings' `defaultMode`
+  (else `default`), checkouts the project root and local members'
+  directories with the branch read from `.git/HEAD`. (11) `legacy/`
+  feeds uploaded when `have.archive` (untested: no legacy feed in the
+  tests). (12) The former-name re-join runs before `hello`. (13) The
+  supervisor restarts the uplink when `hub.json`'s bytes change. (14)
+  The reader holds its socket itself: over HTTP/1.0 `http.client` drops
+  `conn.sock`, so M1's three-heartbeat bound was never applied.
+  Date/Author: 2026-10-15, M3's executor, folded by the controller.
 
 ## Surprises & Discoveries
 
