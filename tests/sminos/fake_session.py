@@ -229,6 +229,11 @@ class Message:
     def end(self):
         self.fake.post([{"type": "step", "phase": "end", **self.ids(), "t": 0}])
 
+    def turn_complete(self, reason="aborted"):
+        """The turn ends; a step whose end never came is cut off with it."""
+        self.fake.post([{"type": "turn", "phase": "complete", "turnId": self.turn, "agentId": self.agent,
+                         "reason": reason, "usage": None, "t": 0}])
+
 
 class FakeSession:
     """The transcript files of one session under $HOME/.claude/projects, and

@@ -83,6 +83,8 @@ class Browser:
         self.usage = []
         self.pages = []
         self.diff = None
+        self.step_ends = []   # (turnId, agentId, step), in order
+        self.dropped = {}     # a block a step-end dropped (no block-row came): its partial text
         self.kinds = []
 
     def take(self, env):
@@ -119,6 +121,12 @@ class Browser:
                 self.other[body["uuid"]] = self.blocks.pop(bk, None)
         elif kind == "row":
             self.add_row(body["row"])
+        elif kind == "step-end":
+            key = (body["turnId"], body["agentId"], body["step"])
+            self.step_ends.append(key)
+            # A block its block-row named waits for its row; one with none was cut off.
+            for bk in [bk for bk in self.blocks if bk[:3] == key and bk not in self.named.values()]:
+                self.dropped[bk] = self.blocks.pop(bk)  # no block-row came: an aborted block's text goes
         elif kind == "end":
             self.end = body
         elif kind == "subagents":
@@ -506,6 +514,57 @@ class Engine(unittest.TestCase):
         self.assertTrue(all(r.get("agentId") == "a1" for r in b.rows))
         self.assertEqual(b.usage, [])
         self.assertNotIn(("turn-1", None, 0, 0), b.blocks)
+
+    def test_step_end_follows_the_steps_block_rows(self):
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "a whole ")
+        m.text(0, "answer")
+        m.row(0)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: b.step_ends and b.rows))
+        self.assertEqual(b.step_ends, [(m.turn, None, 0)])
+        self.assertLess(b.kinds.index("block-row"), b.kinds.index("step-end"), "after every block-row of the step")
+        self.assertEqual(b.dropped, {})
+        self.assertClean(b)
+        m.turn_complete("answer")
+        self.settle(sub, b)
+        self.assertEqual(b.step_ends, [(m.turn, None, 0)], "its turn's end says nothing more")
+
+    def test_an_aborted_step_is_cut_off_by_its_turns_end(self):
+        self.fake.start_bridge()
+        m = self.fake.message()
+        m.text(0, "begun before the subscription, ")
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        m.text(0, "then Esc")
+        m.turn_complete("aborted")  # no step end: the turn's end cuts the step off
+        self.assertTrue(self.pump(sub, b, lambda: b.step_ends))
+        self.assertEqual(b.step_ends, [(m.turn, None, 0)])
+        self.assertEqual(b.dropped, {(m.turn, None, 0, 0): "begun before the subscription, then Esc"},
+                         "the partial text of a block no row will settle goes")
+        self.assertEqual(b.blocks, {})
+        self.assertEqual(b.errors, [])
+
+    def test_step_end_by_scope(self):
+        self.fake.start_bridge()
+        main_sub, main_b = self.subscribe()
+        agent_sub, agent_b = self.subscribe(agent="a1")
+        for sub, b in ((main_sub, main_b), (agent_sub, agent_b)):
+            self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+        main = self.fake.message()
+        sa = self.fake.message(agent="a1", turn="t-a1")
+        main.text(0, "m")
+        sa.text(0, "s")
+        main.end()
+        sa.end()
+        self.assertTrue(self.pump(main_sub, main_b, lambda: len(main_b.step_ends) == 2))
+        self.assertEqual(sorted(main_b.step_ends, key=str), sorted([(main.turn, None, 0), ("t-a1", "a1", 0)], key=str),
+                         "a main sub carries every agent's")
+        self.settle(agent_sub, agent_b)
+        self.assertEqual(agent_b.step_ends, [("t-a1", "a1", 0)], "an agent sub its own")
 
     def test_main_scope_carries_every_chunk_and_the_tree(self):
         self.fake.start_bridge()

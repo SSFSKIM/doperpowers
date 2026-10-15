@@ -19,8 +19,9 @@ Subscriptions. The hub's `subscribe` names a session and a transcript — the
 main one (`agentId` null) or one subagent's. The answer is DX4's: a snapshot
 (rows newest first, as many as fit the budget, up to the last row flushed;
 the subagent tree; presence; the bridge's streaming entries; usage on a main
-one), then `row`, `chunk`, `block-row`, `subagents`, `usage`, each numbered,
-and `end`. Rows come from the transcript on disk and everything live from the
+one), then `row`, `chunk`, `block-row`, `step-end` (a model request ended:
+DX5's step end, or the turn's end cutting it off, after its block-rows),
+`subagents`, `usage`, each numbered, and `end`. Rows come from the transcript on disk and everything live from the
 bridge's DX5 stream, so the two are joined in one order — the disk's (DX5's
 row order, composite cd2667d8):
 
@@ -297,6 +298,7 @@ class Subscription:
         self.noticed = {}             # uuid → when: notices whose row is not emitted yet
         self.upto = {}                # (turnId, agentId, step) → the snapshot's watermark
         self.held = set()             # (turnId, agentId, step, index): blocks whose text the subscriber holds
+        self.steps = set()            # (turnId, agentId, step): model requests open, whose step-end is still due
         self.stream_over = False      # the bridge's stream ended with the session
         self.ending_at = None
         self.tree = None
@@ -408,6 +410,7 @@ class Subscription:
                     continue
                 key = (e.get("turnId"), e.get("agentId"), e.get("step"))
                 self.upto[key] = e.get("upTo") if isinstance(e.get("upTo"), int) else -1
+                self.steps.add(key)
                 for b in e.get("blocks") or []:
                     if isinstance(b, dict):
                         self.held.add(key + (b.get("index"),))
@@ -456,6 +459,7 @@ class Subscription:
             chunk = e.get("chunk")
             if isinstance(chunk, dict):
                 self.held.add(key + (chunk.get("index"),))
+            self.steps.add(key)
             out.append(self.message("chunk", {"turnId": e.get("turnId"), "agentId": agent, "step": e.get("step"),
                                               "chunkIndex": index, "chunk": chunk}))
         elif kind in ("block-row", "row-seen"):
@@ -465,6 +469,21 @@ class Subscription:
                 self.notice(e, now, out)
             elif kind == "block-row":
                 out.append(self.message("block-row", block_row(e)))
+        elif kind == "step" and self.carried(agent):
+            # DX4 step-end: the model request ended. DX5 delivers a step's
+            # block-rows before its end, so in DX5's order it follows them.
+            key = (e.get("turnId"), agent, e.get("step"))
+            if e.get("phase") == "start":
+                self.steps.add(key)
+            elif e.get("phase") == "end":
+                self.steps.discard(key)
+                out.append(self.message("step-end", {"turnId": key[0], "agentId": agent, "step": key[2]}))
+        elif kind == "turn" and e.get("phase") == "complete":
+            # A turn that ends cuts off its steps whose end never came (an abort).
+            cut_off = [k for k in self.steps if k[0] == e.get("turnId")]
+            for key in sorted(cut_off, key=lambda k: (str(k[1]), k[2] if isinstance(k[2], int) else -1)):
+                self.steps.discard(key)
+                out.append(self.message("step-end", {"turnId": key[0], "agentId": key[1], "step": key[2]}))
         elif kind == "usage":
             if self.agent is None:
                 out.append(self.message("usage", usage_of(e)))
