@@ -50,13 +50,14 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('250k–450k: at any reasonable checkpoint')
     expect(describeCompact(967_000)).toContain('Prefer not to pass 600k')
     expect(describeCompact(967_000)).toContain('a backstop, not the plan')
+    expect(describeCompact(967_000)).toContain('never as a percentage of the window')
   })
 
   test('the usage text carries the figures and the threshold', async () => {
     expect(usageText({ tokens: 312_400, window: 1_000_000 }, 967_000)).toBe(
-      'Context: 312,400 of 1,000,000 tokens (31%). The harness compacts on its own at about 967,000 tokens.',
+      'Context: 312,400 tokens; window 1,000,000. The harness compacts on its own at about 967,000 tokens.',
     )
-    expect(usageText({ tokens: 50_000, window: 200_000 }, 167_000)).toContain('(25%)')
+    expect(usageText({ tokens: 50_000, window: 200_000 }, 167_000)).not.toContain('%')
     expect(usageText({ window: 1_000_000 }, 967_000)).toContain('no model response yet')
   })
 
@@ -145,7 +146,7 @@ describe('registerCompact', () => {
     const h = harness({ window: 200_000 })
     await h.mod.start(h.engine, start(true))
     const answer = (await h.call({ tool: CONTEXT_USAGE, tool_use_id: 't1' })) as { result: string }
-    expect(answer.result).toContain('312,400 of 200,000')
+    expect(answer.result).toContain('312,400 tokens; window 200,000')
     expect(answer.result).toContain('about 167,000')
   })
 
@@ -155,7 +156,7 @@ describe('registerCompact', () => {
     const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
     expect(spec.description).toContain('at about 867,000')
     const answer = (await h.call({ tool: CONTEXT_USAGE, tool_use_id: 't1' })) as { result: string }
-    expect(answer.result).toContain('312,400 of 900,000 tokens (35%)')
+    expect(answer.result).toContain('312,400 tokens; window 900,000')
     expect(answer.result).toContain('about 867,000')
   })
 
