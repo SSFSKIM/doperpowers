@@ -23,6 +23,10 @@ older one, finding the path no longer its own, exits without removing it.
 `sminos watch <member>` subscribes and prints the stream: the conversation as
 it streams, subagents labelled; `--json`, the lines as they come.
 
+Row order (DC2 M4): the hello's `seed` is each loop's last row in the
+session's transcripts as the child read them, which the mod's first resync
+carries as each loop's cut; the mod's row notices move it from there.
+
 What must outlive a module reload, which kills the child — the model chosen
 for the session and the delivery keys already submitted — the child keeps in
 $SMINOS_HOME/bridge/<id>.json from the mod's events, and hands back in its
@@ -45,6 +49,7 @@ an `answer` command.
 """
 
 import collections
+import glob
 import http.client
 import json
 import os
@@ -75,6 +80,7 @@ WINDOW_MARGIN_MS = 200         # a background window's decision must reach the m
 ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
 EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
 STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
+TAIL_BLOCK = 65536             # a transcript's tail is read backward this many bytes at a time
 NOTICES = ("block-row", "row-seen")  # each row the session keeps is named by one, in write order (the cut)
 NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post without it is another module's
 QUESTION_TOOLS = ("AskUserQuestion",)
@@ -235,11 +241,75 @@ def _now_ms():
     return int(time.time() * 1000)
 
 
+def config_dir():
+    """The session's config dir, which the child inherits."""
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(S.home_dir(), ".claude")
+
+
 def presence_path(session_pid):
-    """The session record the engine writes for the session process: under
-    the session's config dir, which the child inherits."""
-    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(S.home_dir(), ".claude")
-    return os.path.join(cfg, "sessions", "%d.json" % session_pid)
+    """The session record the engine writes for the session process."""
+    return os.path.join(config_dir(), "sessions", "%d.json" % session_pid)
+
+
+def transcripts(session):
+    """The session's transcripts by loop: its own (`main`), and each
+    subagent's beside it (<id>/subagents/agent-<agentId>.jsonl). None yet for
+    a session that has written no row."""
+    hits = glob.glob(os.path.join(glob.escape(config_dir()), "projects", "*", session + ".jsonl"))
+    if not hits:
+        return {}
+    main = max(hits, key=S._mtime)
+    found = {"main": main}
+    for path in glob.glob(os.path.join(glob.escape(main[:-len(".jsonl")]), "subagents", "agent-*.jsonl")):
+        found[os.path.basename(path)[len("agent-"):-len(".jsonl")]] = path
+    return found
+
+
+def last_row(path):
+    """The uuid of a transcript's last whole row (its last complete line that
+    carries one), read backward from its end; None when it has none."""
+    try:
+        with open(path, "rb") as f:
+            at = f.seek(0, os.SEEK_END)
+            buf = b""
+            while at > 0:
+                start = max(0, at - TAIL_BLOCK)
+                f.seek(start)
+                buf = f.read(at - start) + buf
+                at = start
+                newline = buf.rfind(b"\n")
+                if newline < 0:
+                    continue
+                # Whole lines only: what follows the last newline is a line
+                # still being written, and the first piece, unless the file
+                # starts there, a line the block's start cut.
+                lines = buf[:newline].split(b"\n")
+                cut = lines.pop(0) if at > 0 else None
+                for line in reversed(lines):
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and isinstance(row.get("uuid"), str):
+                        return row["uuid"]
+                if cut is None:
+                    return None
+                buf = cut + b"\n"
+            return None
+    except OSError:
+        return None
+
+
+def read_seed(session):
+    """Each loop's last row now, by loop (`main`, or the subagent's id): the
+    mod's first resync carries it as the cut, every row up to it accounted
+    for. A loop with no row is left out (its cut is null: it had none)."""
+    seed = {}
+    for loop, path in transcripts(session).items():
+        uuid = last_row(path)
+        if uuid is not None:
+            seed[loop] = uuid
+    return seed
 
 
 def presence_status(path, session):
@@ -1011,8 +1081,10 @@ def serve(session):
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
     try:
+        # The seed is read last, so the mod reads the hello after the read
+        # returned: a model request it saw begin before then never streams.
         bridge.emit({"op": "hello", "session": session, "pid": os.getpid(), "socket": path, "protocol": PROTOCOL,
-                     "nonce": bridge.nonce, "kept": bridge.kept})
+                     "nonce": bridge.nonce, "kept": bridge.kept, "seed": read_seed(session)})
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
         threading.Thread(target=bridge.run_exports, daemon=True).start()

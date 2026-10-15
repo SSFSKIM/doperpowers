@@ -43,11 +43,19 @@ import type { AskNote } from './ask'
  * Streaming is per content block: each response row the engine writes is
  * paired with its block (`block-row`), which settles the block.
  *
- * Row order (DC2 M4, for DC7): every row the session keeps is named once, in
- * the order it is written, before it is written: a response row by its
+ * Row order (DC2 M4, for DC7): every row the session keeps is named once, as
+ * its append resolves, so in the order it is written: a response row by its
  * `block-row`, any other by `row-seen`. Each loop's last notice is its cut,
  * which the resync carries, so a reader of the transcript knows which rows
- * the stream has accounted for and which are still to come.
+ * the stream has accounted for and which are still to come. A loop that had
+ * rows before the module loaded (a reload, a resume, a subagent running at
+ * load) holds rows no notice of this module named: the module's first hello
+ * seeds its cut with the last row the child read in its transcript, and a
+ * model request of it begun before that hello never streams (its rows come
+ * through the transcript), so no block streams whose row is at or before its
+ * loop's cut. A loop the module saw from its first row (the main loop of a
+ * session it started with, a subagent it saw spawned) is cut by its notices
+ * alone, and streams from the start.
  *
  * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
  * text row with a mark and an async ask with its result, go to the child as
@@ -72,6 +80,8 @@ const CLEAR_POLL_TRIES = 50
 const DRAIN_TRIES = 10
 /** After a post that failed, the next waits this long. */
 const RETRY_MS = 500
+/** A step's end waits this long at most for the rows of its blocks the engine appends after the request's result. */
+export const STEP_END_WAIT_MS = 1_000
 /**
  * The prompt that wakes a session whose turn answered before any model request
  * read a steer: the steer's row is already in the conversation, so this names
@@ -176,7 +186,15 @@ type Block = { index: number; kind: string; text: string; upTo: number; id?: str
  */
 type Streaming = { turnId: string; agentId: string | null; step: number; model: string; upTo: number; blocks: Map<number, Block>; settled: Set<number> }
 /** A loop's latest model request: where its blocks started, in order, and which a row has named. */
-type StepBlocks = { turnId: string; agentId: string | null; step: number; starts: { index: number; kind: string; id?: string }[]; named: Set<number> }
+type StepBlocks = {
+  turnId: string
+  agentId: string | null
+  step: number
+  starts: { index: number; kind: string; id?: string }[]
+  named: Set<number>
+  /** The step's end, held until every block that streamed has its row named (STEP_END_WAIT_MS at most). */
+  heldEnd?: BridgeEvent
+}
 /** What a client decided, as the child hands it over. */
 type Decision = { behavior: 'allow' | 'deny'; message?: string; updatedInput?: { answers?: Record<string, string> } }
 type Outcome = 'allow' | 'deny' | 'answered' | 'withdrawn'
@@ -263,8 +281,12 @@ type BridgeState = {
   override?: Override
   /** Per writer, the highest seq of a log event submitted: delivery goes in seq order, so any key at or below it was. */
   delivered: Map<string, number>
-  /** Whether what the child keeps (override, delivered) was taken from its hello: once per module. */
-  isKeptLoaded: boolean
+  /**
+   * Whether the module's first hello was read: what the child keeps
+   * (override, delivered) and its seed of each loop's cut are taken from it
+   * once per module, and a model request begun before it never streams.
+   */
+  isSeeded: boolean
   /** Steers given in the main turn, and those whose turn ended before their row was in. */
   steers: Steer[]
   /** For each running foreground subagent, the main turn it belongs to (its tool calls are that turn's). */
@@ -289,6 +311,8 @@ type BridgeState = {
   askDialogs: Map<string, string>
   /** Each loop's last row notice (`main`, or the subagent's id): the cut a resync carries. */
   cut: Map<string, string>
+  /** The loops this module saw from their first row (as `cut` keys them): no seed, nothing held back. */
+  freshLoops: Set<string>
   /** The ask tool's calls and results on the main loop, by call, until both rows of an async ask are kept (`export`). */
   asks: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
@@ -306,6 +330,7 @@ const fresh = (): BridgeState => ({
   records: new Map(),
   askDialogs: new Map(),
   cut: new Map(),
+  freshLoops: new Set(),
   asks: new Map(),
   requests: new Map(),
   settled: [],
@@ -324,7 +349,7 @@ const fresh = (): BridgeState => ({
   calls: new Map(),
   toolCalls: 0,
   delivered: new Map(),
-  isKeptLoaded: false,
+  isSeeded: false,
   steers: [],
   foreground: new Map(),
 })
@@ -436,6 +461,7 @@ function track(e: BridgeEvent) {
     const { type: _type, phase, t: _t, ...fields } = e
     state.agents.set(String(e.agentId), { ...state.agents.get(String(e.agentId)), ...fields, running: phase !== 'stop' })
     if (phase === 'stop') {
+      releaseStepEnd(loopKey(e.agentId))
       state.stepBlocks.delete(loopKey(e.agentId))
     }
   }
@@ -504,6 +530,24 @@ function forgetLive() {
 }
 
 const isEffort = (value: unknown): value is Effort => EFFORTS.includes(value as Effort)
+
+/**
+ * The first hello's seed: each loop's last row when the child read its
+ * transcript, the cut of every loop that pre-dates the module and has had no
+ * notice from it yet (a loop noticed already is cut at its notice, and its
+ * rows past the seed are each noticed in turn). A loop the module saw from
+ * its first row needs none: every row of it is noticed.
+ */
+function adoptSeed(seed: unknown) {
+  if (!isRecord(seed)) {
+    return
+  }
+  for (const [loop, uuid] of Object.entries(seed)) {
+    if (typeof uuid === 'string' && !state.cut.has(loop) && !state.freshLoops.has(loop)) {
+      state.cut.set(loop, uuid)
+    }
+  }
+}
 
 /** What the child kept for the session (its hello's `kept`), taken by a module that holds none yet. */
 function adoptKept(kept: unknown) {
@@ -1122,10 +1166,10 @@ function noticeRow(e: BridgeEvent & { uuid: string; agentId: string | null }) {
 }
 
 /**
- * A row about to be kept, named on the stream before it is written: a
- * response row by the block it holds (`block-row`), any other, a response
- * row whose block never streamed included, by `row-seen`. A queue record is
- * no row of the conversation, and is named by none.
+ * A row the session kept, named on the stream as it is written: a response
+ * row by the block it holds (`block-row`), any other, a response row whose
+ * block never streamed included, by `row-seen`. A queue record is no row of
+ * the conversation, and is named by none.
  */
 function announceRow(door: string, message: { name?: string; content?: unknown }, uuid: string, agentId: string | null) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
@@ -1220,7 +1264,43 @@ function nameBlock(agentId: string | null, uuid: string, block: Record<string, u
   }
   s.named.add(start.index)
   noticeRow({ type: 'block-row', uuid, turnId: s.turnId, agentId: s.agentId, step: s.step, index: start.index })
+  if (s.heldEnd !== undefined && s.starts.every((b) => s.named.has(b.index))) {
+    releaseStepEnd(loopKey(agentId))
+  }
   return true
+}
+
+/**
+ * A step's end, posted after every block-row of its step (DX4's step-end
+ * relies on it): the engine appends a row it withheld (a refusal, a
+ * truncated answer) after the request's result, so an end whose blocks are
+ * not all named yet is held until they are, STEP_END_WAIT_MS at most, and
+ * goes out before anything later of its loop (its next request, its turn's
+ * end, the subagent's stop).
+ */
+function endStep(key: string, end: BridgeEvent) {
+  const s = state.stepBlocks.get(key)
+  const isOpen = s !== undefined && s.turnId === end.turnId && s.step === end.step && s.starts.some((b) => !s.named.has(b.index))
+  if (!isOpen || state.after === undefined) {
+    emit(end)
+    return
+  }
+  s.heldEnd = end
+  state.after(STEP_END_WAIT_MS, () => {
+    if (s.heldEnd === end) {
+      releaseStepEnd(key)
+    }
+  })
+}
+
+/** Posts the loop's held step end, if one is held. */
+function releaseStepEnd(key: string) {
+  const s = state.stepBlocks.get(key)
+  const end = s?.heldEnd
+  if (s !== undefined && end !== undefined) {
+    s.heldEnd = undefined
+    emit(end)
+  }
 }
 
 /**
@@ -1342,10 +1422,13 @@ function onLine($: EngineInterface, generation: number, line: string) {
     state.socket = msg.socket
     state.nonce = typeof msg.nonce === 'string' ? msg.nonce : undefined
     // What the child kept on disk is this module's only after a reload; a
-    // module that holds its own hands it to the child in the resync.
-    if (!state.isKeptLoaded) {
+    // module that holds its own hands it to the child in the resync. So is
+    // the seed: a later child's tail may hold rows whose notices are still
+    // to come, beside blocks this module streams.
+    if (!state.isSeeded) {
       adoptKept(msg.kept)
-      state.isKeptLoaded = true
+      adoptSeed(msg.seed)
+      state.isSeeded = true
     }
     // A new child knows nothing of the session: what it started as, then
     // where it stands. What was queued for no child is in that state.
@@ -1503,6 +1586,11 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
     stopChild()
     startChild($, session)
   }
+  // A session with no message yet when the module loads (a start, not a
+  // reload or a resume): its main loop is seen from its first row.
+  if (!state.isSeeded && (await $.session.messages().then((m) => Array.isArray(m) && m.length === 0, () => false))) {
+    state.freshLoops.add('main')
+  }
   state.info = {
     cwd: e.cwd,
     surface: e.surface,
@@ -1584,6 +1672,7 @@ export function registerBridge(on: On) {
         settle(r, 'withdrawn', 'bridge')
       }
     }
+    releaseStepEnd(loopKey(e.agentId))
     emit({ type: 'turn', phase: 'complete', turnId: e.turnId, agentId: e.agentId ?? null, reason: e.reason, usage: e.usage ?? null })
     if (e.agentId === undefined) {
       try {
@@ -1602,12 +1691,19 @@ export function registerBridge(on: On) {
   // its index there; the engine's own opaque items are left out.
   on('turn.step', { turnId: /^/ }, async function* (_, e, next) {
     const tag = { turnId: e.turnId, agentId: e.agentId ?? null, step: e.index }
+    // A request of a loop older than the module, begun before the seed, may
+    // have rows at or before it: it streams to nobody, and its rows reach a
+    // reader through the transcript.
+    const isShown = state.isSeeded || state.freshLoops.has(e.agentId ?? 'main')
     const isMain = e.agentId === undefined
+    releaseStepEnd(loopKey(e.agentId))
     // The model chosen through the bridge is the main loop's: a subagent runs
     // on what its definition or its caller chose.
     const o = isMain ? state.override : undefined
     const input = o === undefined ? e : { ...e, ...(o.model !== null && { model: o.model }), ...(o.effort !== null && { effort: o.effort }) }
-    emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
+    if (isShown) {
+      emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
+    }
     if (isMain) {
       state.steps++
       // This request carries every row of its turn appended before it.
@@ -1623,7 +1719,7 @@ export function registerBridge(on: On) {
     try {
       const stream = next(input)
       for await (const chunk of stream) {
-        if (chunk.kind !== 'engine') {
+        if (isShown && chunk.kind !== 'engine') {
           emit({ type: 'chunk', ...tag, chunkIndex: chunkIndex++, chunk })
         }
         yield chunk
@@ -1636,7 +1732,9 @@ export function registerBridge(on: On) {
       if (isMain) {
         state.steps--
       }
-      emit({ type: 'step', phase: 'end', ...tag, stopReason, usage })
+      if (isShown) {
+        endStep(loopKey(e.agentId), { type: 'step', phase: 'end', ...tag, stopReason, usage })
+      }
     }
   })
 
@@ -1739,21 +1837,17 @@ export function registerBridge(on: On) {
     return next(e)
   }).catch((_, e, next) => next(e))
 
-  // Every row the session keeps: named before it is written (row order), then
-  // a call's result, a main-loop row that may hold a message to the host. A
-  // plugin's own append (door note) may yet be refused beneath: it is named
-  // once it is kept.
+  // Every row the session keeps, once it is written: named (row order: the
+  // engine's appends may resolve in another order than they began, and the
+  // file holds them in the order they resolve), then a call's result, a
+  // main-loop row that may hold a message to the host. A row refused beneath
+  // is never written, and never named.
   on('session.append', { door: /^/ }, async (_, e, next) => {
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null
-    if (isLive && e.door !== 'note') {
-      announceRow(e.door, e.message, e.uuid, agentId)
-    }
     const stored = await next(e)
     if (isLive && stored.deny === undefined) {
-      if (e.door === 'note') {
-        announceRow(e.door, stored.message, stored.uuid, agentId)
-      }
+      announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)
       observeRow(e.door, e.message, stored.uuid)
       if (agentId === null) {
         exportRow(e.door, stored.message, stored.uuid, e.origin)
@@ -1765,6 +1859,7 @@ export function registerBridge(on: On) {
   on('agent.spawn', { tool_use_id: /^/ }, async (_, e, next) => {
     const result = await next(e)
     if (result.agentId !== undefined) {
+      state.freshLoops.add(result.agentId)
       // A foreground subagent's calls belong to the main turn it runs in (an
       // interrupt of that turn ends it); a nested one's, to its parent's.
       const owner = e.parentAgentId === undefined ? state.mainTurn : state.foreground.get(e.parentAgentId)

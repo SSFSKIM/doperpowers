@@ -14,8 +14,13 @@ interrupt, an async question's `[ answer ]` pressed in the terminal (an SGR
 mouse press written to the pane), and on the `--bg` job the settlement cases
 a job can show (the CLI first; the terminal first through `claude attach`;
 a late answer refused; a client reconnecting after the settlement). Last,
-the row notices (DX5's row order) are compared with the transcripts, and
-every row kind that got no notice is reported.
+the row notices (DX5's row order) are compared with the transcripts: none
+twice, none for a row never written, no block-row after a notice for a row
+later on disk (a row-seen out of disk order is the engine's write-order quirk,
+reported);
+every row kind that got no notice is reported, and so is the largest lag
+from a row's flush (the transcripts polled every DISK_POLL) to its notice,
+overall and while chunks stream, against the consumer's 2 s window.
 
 It spends model calls (haiku, short prompts, two compactions), so no suite
 runs it: run it by hand with the model gateway's keys in the environment.
@@ -59,6 +64,54 @@ wait_for = LB.wait_for
 is_main = LC.is_main
 DIALOG = LR.DIALOG
 NOTICES = ("block-row", "row-seen")
+# Long enough to still be streaming when the walk subscribes to the job's endpoint.
+FIRST_PROMPT = "Count from one to eighty in words, one number per line, then write READY on its own line. Use no tools."
+DISK_POLL = 0.01        # s: how often the transcripts are read for rows newly flushed
+UNNAMED_AFTER = 2.0     # s: the consumer's window for a row with no notice (DX5)
+
+
+class DiskWatch:
+    """When each row of a session's transcripts (main and subagents) was
+    first on disk, the files polled every DISK_POLL."""
+
+    def __init__(self, cfg, session):
+        self.cfg, self.session = cfg, session
+        self.first_seen = {}
+        self.offsets = {}
+        self.stop = threading.Event()
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def files(self):
+        mains = glob.glob(os.path.join(self.cfg, "projects", "*", self.session + ".jsonl"))
+        subs = glob.glob(os.path.join(self.cfg, "projects", "*", self.session, "subagents", "agent-*.jsonl"))
+        return mains + subs
+
+    def run(self):
+        files, n = [], 0
+        while not self.stop.is_set():
+            if n % 20 == 0:
+                files = self.files()
+            n += 1
+            for path in files:
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(self.offsets.get(path, 0))
+                        data = f.read()
+                except OSError:
+                    continue
+                end = data.rfind(b"\n")
+                if end < 0:
+                    continue
+                self.offsets[path] = self.offsets.get(path, 0) + end + 1
+                now = time.time()
+                for line in data[:end].split(b"\n"):
+                    try:
+                        uuid = json.loads(line).get("uuid")
+                    except (ValueError, AttributeError):
+                        continue
+                    if isinstance(uuid, str):
+                        self.first_seen.setdefault(uuid, now)
+            time.sleep(DISK_POLL)
 
 
 class Walk(LR.Requests):
@@ -71,6 +124,7 @@ class Walk(LR.Requests):
 
     def setup(self):
         LB.Live.setup(self)
+        self.disks = {}
         # Python calls (the sleeps) run unasked; the calls the requests are
         # walked with are node's, which ask (2.1.300 runs a plain `echo`
         # unasked in the default mode, as read-only).
@@ -484,32 +538,85 @@ class Walk(LR.Requests):
             if e["uuid"] in unwritten:
                 key = "%s/%s" % (e["type"], e.get("door") or "")
                 unwritten_doors[key] = unwritten_doors.get(key, 0) + 1
-        order_breaks, breaks = 0, []
+        # Notice order against disk order. A notice that comes after one for a
+        # row later on disk is a break. A row-seen break is the engine's disk
+        # writer putting a row ahead of its own parentUuid chain within one
+        # batch (2.1.300, a first prompt's attachments): the consumer releases
+        # the passed-over row unnamed and ignores its late row-seen, so it is
+        # reported by kind. A block-row break the rule cannot absorb (it ends
+        # the subscription): it fails.
+        kind_of = {r["uuid"]: "%s/%s" % (r.get("type"), (r.get("attachment") or {}).get("type") or r.get("subtype") or "")
+                   for _, r in rows}
+        breaks, quirks = [], {}
         for loop in {lp for lp, _ in rows}:
-            disk = [r["uuid"] for lp, r in rows if lp == loop and r["uuid"] in named]
-            seen_order = [e["uuid"] for e in notices if (e.get("agentId") or "main") == loop and e["uuid"] in set(disk)]
-            for a, b in zip(seen_order, seen_order[1:]):
-                if disk.index(a) > disk.index(b):
-                    order_breaks += 1
-                    kind_of = {r["uuid"]: (r.get("type"), (r.get("attachment") or {}).get("type") or r.get("subtype"))
-                               for _, r in rows}
-                    breaks.append((loop, a[:8], kind_of.get(a), b[:8], kind_of.get(b)))
+            at = {r["uuid"]: i for i, (lp, r) in enumerate((lp, r) for lp, r in rows if lp == loop)}
+            furthest = None
+            for e in notices:
+                if (e.get("agentId") or "main") != loop or e["uuid"] not in at:
+                    continue
+                i = at[e["uuid"]]
+                if furthest is not None and i < at[furthest]:
+                    if e["type"] == "block-row":
+                        breaks.append((loop, e["uuid"][:8], kind_of.get(e["uuid"]), "after", furthest[:8], kind_of.get(furthest)))
+                    else:
+                        key = "%s before %s" % (kind_of.get(furthest), kind_of.get(e["uuid"]))
+                        quirks[key] = quirks.get(key, 0) + 1
+                if furthest is None or i > at[furthest]:
+                    furthest = e["uuid"]
+        # From a row's flush to its notice: the consumer releases a row with
+        # no notice after UNNAMED_AFTER, so a lag near it would break a
+        # response row from its streaming block. While chunks stream, posts
+        # carry them beside the notices: measured there too.
+        disk = self.disks.get(session)
+        steps = {}
+        for t_e, e in stream.seen_at(lambda e: e.get("type") == "step"):
+            key = (e.get("turnId"), e.get("agentId"), e.get("step"))
+            steps.setdefault(key, [None, None])[0 if e.get("phase") == "start" else 1] = t_e
+        windows = [(a, b if b is not None else float("inf")) for a, b in steps.values() if a is not None]
+        lags = []
+        for t_n, e in stream.seen_at(lambda e: e.get("type") in NOTICES):
+            flushed = disk.first_seen.get(e["uuid"]) if disk else None
+            if flushed is not None:
+                lags.append((t_n - flushed, any(a <= flushed <= b for a, b in windows), e["uuid"][:8], e["type"]))
+        top = max(lags, default=None)
+        top_streaming = max((x for x in lags if x[1]), default=None)
+        lag = {"measured": len(lags), "max_s": top and round(top[0], 3), "max_row": top and top[2:],
+               "max_while_streaming_s": top_streaming and round(top_streaming[0], 3),
+               "while_streaming": sum(1 for x in lags if x[1]), "poll_s": DISK_POLL}
+        # A step's end follows every block-row of that step on the stream
+        # (DX4's step-end, which DC7 relays, relies on it).
+        late_rows, ended = [], {}
+        for e in stream.seen(lambda e: e.get("type") in ("step", "block-row")):
+            key = (e.get("turnId"), e.get("agentId"), e.get("step"))
+            if e["type"] == "step" and e.get("phase") == "end":
+                ended[key] = True
+            elif e["type"] == "block-row" and ended.get(key):
+                late_rows.append((e["uuid"][:8],) + key)
+        # Live thinking: what a thinking chunk carries (2.1.300's transcript keeps it omitted).
+        thinking = stream.seen(lambda e: e.get("type") == "chunk" and (e.get("chunk") or {}).get("kind") == "thinking")
+        think = {"chunks": len(thinking), "text_chars": sum(len((e["chunk"].get("text") or "")) for e in thinking),
+                 "keys": sorted({k for e in thinking for k in e["chunk"]}),
+                 "sample": [str(e["chunk"])[:160] for e in thinking[:2]]}
         with open(os.path.join(self.root, "notices-%s.json" % label), "w") as f:
-            json.dump({"notices": notices, "rows": rows}, f)
+            json.dump({"notices": notices, "rows": rows, "lags": lags}, f)
         self.notice_report = getattr(self, "notice_report", {})
         self.notice_report[label] = {"rows": len(rows), "kinds": kinds, "missing": {k: len(v) for k, v in missing.items()},
                                      "missing_examples": {k: v[:3] for k, v in missing.items()},
                                      "twice": len(twice), "unwritten": len(unwritten), "unwritten_doors": unwritten_doors,
-                                     "order_breaks": breaks, "covered_by_a_snapshot": len(covered),
-                                     "subscriptions": stream.subscriptions}
-        # Order breaks are reported, not failed: the engine writes a session's
-        # first prompt after the attachments it announced after it (2.1.300),
-        # and a reader takes notice order, which loses and repeats nothing.
-        self.check("%s: row notices against the transcripts (main and subagents): none twice, none for a row never written; order breaks and the kinds with none reported" % label,
-                   not twice and not unwritten,
-                   "%d rows, %d notices; without one, by kind: %s; noticed twice %d; noticed, never written %d %s; order breaks %s; subscriptions %d"
+                                     "order_breaks": breaks, "write_order_quirks": quirks, "covered_by_a_snapshot": len(covered),
+                                     "subscriptions": stream.subscriptions, "flush_to_notice": lag,
+                                     "block_rows_after_step_end": late_rows, "thinking": think}
+        self.check("%s: row notices against the transcripts (main and subagents): none twice, none for a row never written, no block-row after a notice for a row later on disk, each within the 2 s window of its flush; the kinds with none, and the engine's write-order quirks, reported" % label,
+                   not twice and not unwritten and not breaks and (top is None or top[0] < UNNAMED_AFTER),
+                   "%d rows, %d notices; without one, by kind: %s; noticed twice %d; noticed, never written %d %s; block-row breaks %s; "
+                   "write-order quirks (row-seen) %s; "
+                   "flush to notice: max %s s (%s), while chunks stream %s s over %d rows; subscriptions %d"
                    % (len(rows), len(notices), {k: len(v) for k, v in missing.items()} or "none", len(twice), len(unwritten),
-                      unwritten_doors, breaks or 0, stream.subscriptions))
+                      unwritten_doors, breaks or 0, quirks or "none", lag["max_s"], lag["max_row"], lag["max_while_streaming_s"],
+                      lag["while_streaming"], stream.subscriptions))
+        self.check("%s: every block-row reaches the stream before its step's end" % label, not late_rows,
+                   "%d block-rows, %d after their step's end %s" % (
+                       len(stream.seen(lambda e: e.get("type") == "block-row")), len(late_rows), late_rows[:5]))
 
     def endpoint_of(self, session):
         return os.path.join(self.smh, "bridge", session + ".sock")
@@ -571,6 +678,7 @@ class Walk(LR.Requests):
                          if os.path.isdir(sock_dir) else None)
         self.session = found[0][:-5]
         wait_for("the endpoint to answer, ready", 20, lambda: (self.status() or {}).get("ready"))
+        self.disks[self.session] = DiskWatch(self.cfg, self.session)
         term = self.streams[self.session] = LC.Stream(self.endpoint())
         wait_for("the subscription", 10, lambda: term.subscriptions > 0)
         self.watch(NAME)
@@ -592,7 +700,7 @@ class Walk(LR.Requests):
 
     def bg(self):
         r = self.claude(["--bg", "--plugin-dir", self.plugin, "--model", "haiku", "--permission-mode", "default",
-                         "-n", BG, "Reply with exactly the word READY."])
+                         "-n", BG, FIRST_PROMPT])
         rec = wait_for("the bg job's record", 60, lambda: self.record(BG))
         short = rec.get("jobId")
         self.jobs.append(short)
@@ -600,10 +708,17 @@ class Walk(LR.Requests):
         sock = self.endpoint_of(session)
         wait_for("the bg job's endpoint", 60, lambda: os.path.exists(sock)
                  and (LB.request(sock, "GET", "/status", timeout=3)[1] or {}).get("ready"))
+        self.disks[session] = DiskWatch(self.cfg, session)
         bg = self.streams[session] = LC.Stream(sock)
         wait_for("the bg subscription", 10, lambda: bg.subscriptions > 0)
         self.idle(sock)
         self.check("bg: the job has a bridge, ready", rec.get("kind") == "bg", "job %s, session %s" % (short, session[:8]))
+        # A job started with a prompt: the module loads before the prompt's
+        # row (no message at load), so its main loop is fresh and its first
+        # reply streams, though its request may begin before the child's hello.
+        first = "".join(e["chunk"].get("text") or "" for e in bg.seen(lambda e: is_main(e, "chunk") and e["chunk"].get("kind") == "text"))
+        self.check("bg: a fresh job's first reply streams (its main loop seen from its first row, no seed held it back)",
+                   "READY" in first, "%d characters streamed, ending %r" % (len(first), first[-40:]))
         self.watch(BG)
 
         def say_bg(text):
@@ -668,6 +783,8 @@ class Walk(LR.Requests):
                 p.terminate()
         for st in self.streams.values():
             st.stop.set()
+        for d in getattr(self, "disks", {}).values():
+            d.stop.set()
         super().cleanup()
 
 

@@ -418,16 +418,25 @@ with `SMNS_INTERNAL` set (derive's headless fork).
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and
   results, turns, subagents, usage, a heartbeat, and the requests below.
-  Every row the session keeps is named once, in write order, before it is
-  written: a response row by its `block-row` (which settles its block), any
-  other by `row-seen`; each loop's last is the snapshot's `cut`, so a reader
+  Every row the session keeps is named once, as it is written (so in write
+  order): a response row by its `block-row` (which settles its block), any
+  other by `row-seen`, and a step's end follows every `block-row` of its step
+  (held, a second at most, for a row the engine appends after the request's
+  result); each loop's last notice is the snapshot's `cut`, so a reader
   joining the transcript on disk with the stream knows which rows are
-  accounted for. The mod keeps its own copy of the live state and opens
+  accounted for. A loop older than the module (a reload, a resume, a
+  subagent running at load) is cut first at its transcript's tail, which the
+  module's first child reads (its hello's `seed`), and a model request of it
+  begun before that hello streams to nobody: its rows reach a reader through
+  the transcript. A loop the module saw from its first row is cut by its
+  notices alone. The mod keeps its own copy of the live state and opens
   every new child, and every post after a lost one, with a `resync`; the
   child ends every subscription when a later one comes, and a subscriber
   starts over from a fresh snapshot. Posts run from one loop started at
   `session.start`: a fetch begun inside a hook dies with that hook's
-  dispatch (an Esc, an interrupt).
+  dispatch (an Esc, an interrupt). Each carries the nonce the child's hello
+  named: a reload's old module, still posting to the session's path, is
+  turned away (409) and stops.
 - **Control.** `steer` appends a user row the loop reads at its next request
   (the running tool goes on; a turn that answers before reading it is woken
   once); `interrupt` aborts the turn and stops each Bash call the abort moved
@@ -455,15 +464,16 @@ From another terminal: `sminos watch|steer|interrupt|model|compact|decide|answer
 (they spend model calls; run by hand).
 
 Known limits: a module reload kills the child and starts the module's state
-empty, so the new child's first snapshot holds nothing of the response
-streaming at that moment (its chunks follow on, and its row is named as it is
-written); a text row past 65,536 characters is left to the Stop hook's export;
+empty, so no response streaming at that moment, nor one begun before the new
+child's hello, is streamed (its rows are named as they are written, and a
+reader takes them from the transcript); a text row past 65,536 characters is left to the Stop hook's export;
 a `--bg` job starts in permission mode `auto`, where most calls raise no
 request; rows the plugin's own calls write pass no hook of the plugin's: the
 steer's row is named from the append's answer, after it is written, and the
 rows of a compaction the bridge runs (the boundary, the summary, the
-attachments that follow) are named by none, so a reader emits them by its
-2-second rule; a hook's success with nothing to say is raised to the hook
+attachments that follow) and the engine's line for a module reload are named
+by none, so a reader emits them unnamed, on the next notice of their loop or
+after 2 seconds; a hook's success with nothing to say is raised to the hook
 but never written, so it is named by none.
 
 ## secrets
