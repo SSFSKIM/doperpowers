@@ -573,6 +573,29 @@ produces nothing new for other children beyond the stream DC7 builds on.
   malformed, another org) ends the stream, and the next one opens only
   what is eligible.
   Date/Author: 2026-10-15, M3's executor, folded by the controller.
+- Decision: **M4's shape.** (1) *Who knows, who runs.* The uplink learns
+  the designation from `have.archive` and records it per project
+  (`archive: true|false` with the time, in the project's uplink state);
+  the daemon's tick loop, which already owns bounded git phases, runs the
+  archive for a hub project whose recorded designation is true — git
+  never runs in the uplink, so a slow push cannot hold the stream, and
+  a machine whose `have` says false stops at its next schedule. (2)
+  *The clone* lives at `$SMINOS_HOME/projects/<id>/archive/`, outside
+  `log/`; each run fetches the remote (bounded as the mirror's are),
+  starts from `origin/main` when it exists, copies every top-level
+  `*.jsonl` of `log/` over its namesake whole (never re-sequenced,
+  holes and `mac` kept), leaves files the log lacks as the remote has
+  them, commits, and pushes; a push rejected because the remote moved is
+  retried from a fresh fetch, as the mirror's are. Nothing is ever read
+  from the clone into `log/`. (3) *The schedule* is every 15 minutes,
+  `SMINOS_ARCHIVE_EVERY` overriding it in seconds (0 or less: off), and
+  a project with no `remote` has no archive. (4) Docs: `CLAUDE.md`'s
+  `skills/` row gains the hub verbs (`hub enroll` by prompt, `hub show`),
+  `project init --hub`, the uplink process and the archive;
+  `skills/sminos/SKILL.md` changes only if an agent-facing behavior did
+  (the hub verbs are the human's). (5) The version moves by a minor
+  (`scripts/bump-version.sh`), in M4's commit.
+  Date/Author: 2026-10-15, controller (before M4's dispatch).
 
 ## Surprises & Discoveries
 
