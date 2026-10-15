@@ -45,12 +45,17 @@ def hold(sid, kind, short=""):
     p = subprocess.Popen([sys.executable, HOLDER, inbox, os.path.join(state, "inbox-%s.log" % sid)],
                          start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
+    started = int(time.time() * 1000)
     for _ in range(500):
         if os.path.exists(inbox):
             break
         time.sleep(0.02)
+    # startedAt (ms), as the engine writes it. Without it sminos falls back to
+    # `ps -o lstart`, which Linux derives from a boot time truncated to the
+    # second: a process can read as started up to a second before it was, and
+    # a Resume's "started no earlier than the launch" then refuses its own job.
     rec = {"pid": p.pid, "sessionId": sid, "cwd": os.getcwd(), "kind": kind, "status": "idle",
-           "name": "held-" + sid[:4], "messagingSocketPath": inbox}
+           "name": "held-" + sid[:4], "messagingSocketPath": inbox, "startedAt": started}
     if short:
         rec["jobId"] = short
     with open(os.path.join(sessions, "%d.json" % p.pid), "w") as f:
