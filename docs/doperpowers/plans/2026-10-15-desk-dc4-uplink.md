@@ -291,7 +291,46 @@ produces nothing new for other children beyond the stream DC7 builds on.
   `run-sminos-tests.sh` as `test-bridge.sh` is, so DC2's edits to the
   suite and these meet in a line or two.
   Date/Author: 2026-10-15, controller (M1's decisions, before dispatch).
+- Decision: Exactly-once delivery across the two processes is pinned by a
+  test (the composite's writer asked for it): a tick's push held at the
+  inbox while the uplink imports a `human` for the same member; the
+  uplink waits on `deliver_next`'s `delivered/<session>.lock`, and each
+  event arrives once with each writer settled once. The lock is the
+  mechanism; the test keeps it true.
+  Date/Author: 2026-10-15, the composite's writer, built in M1.
+- Decision: M1's executor's calls, kept. (1) "Nor the reverse" under the
+  process model: a tick that fails or hangs never stops the uplink; the
+  death of the `daemon run` process ends its uplink by design (launchd
+  restarts both). (2) An import at an existing `(writer, seq)` is
+  "present" when the canonical forms *without `mac`* agree, because this
+  machine's own events are stored without a code and the uploader adds it
+  on upload; M3 revisits this with the upload side. (3) A seq written
+  `3.0` is stored as `3` (sminos's readers skip a non-int seq; the code is
+  the same). (4) Beyond DX1, an imported event must be one sminos's log
+  can hold — a printable writer with one inner `/`, an integer seq, string
+  `ts` and `kind` — or it is refused. (5) A frame is imported only into a
+  project whose `.smns` `hub.org` is `hub.json`'s `org`; the URL is not
+  compared. (6) `hub.json`'s hub is `https`, or `http` on a loopback host
+  only, since the service token rides on every request. (7) The stream's
+  read bound is three heartbeat periods (DX2's liveness, simplest form;
+  M3 owns `hb-ack`). (8) No `hub.json`, no uplink; restarts back off from
+  1 s to 60 s. (9) The uplink stays in the daemon's process group, so
+  launchd's bootout reaps it. (10) A nonce must be a string, as the hub's
+  TypeScript requires, no stricter; an RPC without a string `nonce` is
+  refused.
+  Date/Author: 2026-10-15, M1's executor, folded by the controller.
 
 ## Surprises & Discoveries
+
+- The hub's `base64urlDecode` (MAWS `base64url.ts`) ignores the two spare
+  bits of a 43-character value, so one code has four spellings the hub
+  accepts; `sminos_codes` accepts only the canonical one. Harmless for
+  verification (same bytes); anything keyed on the value string should
+  know. Reported to the composite's writer for DC3. (M1, 2026-10-15)
+- `part` frames are not reassembled in M1, so an `events` frame over
+  1 MiB is not imported until M3 builds parts. (M1)
+- `peer_live`'s probe (connect, send nothing, close) reaches an inbox
+  stand-in as an empty connection; a stand-in that holds should hold only
+  on a real frame. (M1's tests)
 
 ## Outcomes & Retrospective
