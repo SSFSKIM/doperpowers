@@ -49,6 +49,8 @@ member too, seat-less, from the first call that reads its project.
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
                    # --hub: the project syncs through this machine's desk hub, never git
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
+    sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # what this machine admits
+                   from outside: read-only delivers nothing written elsewhere; the ceiling bounds a spawn
     sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
                    there is its name everywhere (the writer host of what it writes). The code is
                    pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
@@ -1474,11 +1476,20 @@ def deliver_next(project, member):
     the settlement: per writer, push the owed events in seq order, settling
     each, and stop that writer at the first failure (it stays pending, retried
     by the next call, and is settled with a daemon.log line after
-    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}."""
+    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}.
+
+    The machine's policy is the boundary here, for every caller: on a
+    read-only machine an event written outside it (another machine's, or the
+    hub's) is pushed nothing — no frame, no resume — and settled undelivered
+    as `refused-read-only` (sminos_policy, read at each such event). Every
+    settlement of an outside-origin event of a hub project leaves its outcome
+    for the uplink (sminos_outcomes), recorded before the settlement."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
         return result
+    policy = sibling_module("sminos_policy")
+    outcomes = sibling_module("sminos_outcomes")
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
         events = log_read(project)
         streams = {}
@@ -1486,8 +1497,12 @@ def deliver_next(project, member):
             streams.setdefault(e["writer"], []).append(e)
         cursor = cursor_load(project, session)
         for writer, queue in streams.items():
+            outside = policy.outside_origin({"writer": writer})
             for i, e in enumerate(queue):
-                outcome = push_event(project, member, session, e, events, cursor)
+                if outside and policy.read_only():
+                    outcome = outcomes.READ_ONLY
+                else:
+                    outcome = push_event(project, member, session, e, events, cursor)
                 result["outcomes"].append((e, outcome))
                 if outcome.startswith("failed"):
                     if delivered_fail(project, session, writer, e["seq"]) < DELIVERY_ATTEMPTS:
@@ -1497,6 +1512,8 @@ def deliver_next(project, member):
                         event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
                 elif outcome in PUSHED:
                     result["delivered"] += 1
+                if outside:
+                    outcomes.record(project, e, session, outcome, member)
                 delivered_settle(project, session, writer, e["seq"])
     return result
 
@@ -5591,7 +5608,8 @@ def tick(project):
 
 def cmd_daemon(a):
     if not a.op:
-        die("usage: sminos daemon run [--interval N] | tick | install | status")
+        die("usage: sminos daemon run [--interval N] | tick | install | status | policy [--read-only on|off] "
+            "[--ceiling MODE|settings]")
     daemon_module().cmd_daemon(a)
 
 
@@ -5778,6 +5796,9 @@ def build_parser():
     dr.add_argument("--interval", type=float, default=5.0)
     for op in ("tick", "install", "status", "uplink"):
         dsub.add_parser(op, add_help=False)
+    dp = dsub.add_parser("policy", add_help=False)
+    dp.add_argument("--read-only", dest="read_only", choices=("on", "off"), default=None)
+    dp.add_argument("--ceiling", default=None)
     dm.set_defaults(fn=cmd_daemon)
 
     # `hub` takes its words as `wake` does (no word is an option to argparse,

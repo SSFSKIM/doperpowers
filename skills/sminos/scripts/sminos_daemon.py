@@ -72,7 +72,8 @@ UPLINK_STOP_GRACE = 3
 # The scripts `daemon run` runs, itself and its uplink child: a change to one
 # ends the loop for a restart on the new code.
 OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
-            "sminos_codes.py")
+            "sminos_codes.py", "sminos_plane.py", "sminos_bridge.py", "sminos_policy.py", "sminos_outcomes.py",
+            "sminos_requests.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
@@ -880,5 +881,8 @@ def cmd_daemon(a):
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
     if a.op == "uplink":
         sminos.sibling_module("sminos_uplink").cmd_uplink(a)
+        return
+    if a.op == "policy":
+        sminos.sibling_module("sminos_policy").cmd_policy(a)
         return
     {"run": cmd_run, "tick": cmd_tick, "install": cmd_install, "status": cmd_status}[a.op](a)

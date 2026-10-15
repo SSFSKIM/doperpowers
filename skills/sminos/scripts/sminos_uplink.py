@@ -27,7 +27,12 @@ log, a refused one reported up as `rejected`). The session plane
 (sminos_plane.py) rides the same stream: each session's presence after the
 `hello` and whenever it changes, and the hub's subscriptions served as DX4
 messages; a bridge's reader wakes the main thread, so what it read goes up
-at once. A POST the hub does not answer
+at once. The machine's policy (sminos_policy) goes up in `machine` on every
+connect and again whenever it changes; the requests the bridges raise and
+settle go up as DX4 `raised` and `settled` with their codes, and the
+complete pending set after every connect (sminos_requests); and what
+delivery made of each event from outside, as DX4 `delivery`
+(sminos_outcomes). A POST the hub does not answer
 200 ends the stream, and the next one redoes the handshake: nothing posted is
 taken as landed without its answer. Frames larger than a frame's bound travel
 as parts, both ways.
@@ -51,7 +56,10 @@ import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
+import sminos_outcomes as outcomes  # noqa: E402
 import sminos_plane as plane  # noqa: E402
+import sminos_policy as policy  # noqa: E402
+import sminos_requests as requests  # noqa: E402
 
 STREAM_PATH = "/machine/stream"
 FRAMES_PATH = "/machine/frames"
@@ -68,6 +76,7 @@ ANSWER_MAX = 1 << 16
 ACK_GAP = 1.0             # heartbeats are answered at most once a second, the newest: a burst is answered once
 SCAN_EVERY = 2.0          # how often the projects known here are looked over for a hub project to open
 UPLOAD_EVERY = 0.5        # how often this machine's writers are looked at for events to upload
+CHECKOUTS_EVERY = 10.0    # how often the machine presence's checkouts are read again (the policy: every scan)
 
 
 class CredentialBad(Exception):
@@ -412,7 +421,7 @@ class Link:
     next one redoes the handshake, which is idempotent, rather than assume
     anything landed. `wake` asks the main thread for a tick now."""
 
-    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None):
+    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None):
         self.cred = cred
         self.ended = ended
         self.logs = logs          # project id → HubLog, kept across streams
@@ -426,6 +435,10 @@ class Link:
         self.passed = set()
         self.failing = self.plane_failing = ""
         self.plane = plane.Plane(cred["machine"], wake, bridges)
+        self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
+        self.requests.wake = wake
+        self.machine_sent = {}    # project id → the `machine` body last posted on this stream
+        self.next_checkouts = 0.0
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -475,6 +488,7 @@ class Link:
         stream.silent_after(SILENT_PERIODS * beat / 1000)
         self.generation = generation if type(generation) is int else None
         self.opened.clear()
+        self.machine_sent.clear()
         for hl in self.logs.values():
             hl.reset()
         self.plane.close()
@@ -563,14 +577,61 @@ class Link:
         unreported = hl.unreported()
         self.plane.refresh(hl.project)
         sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
-        self.post([hl.hello(), hl.presence()] + sessions + unreported)
+        machine = hl.presence()
+        self.requests.take()  # what the bridges said while no stream was open is in the set
+        owed = self.requests.opening(hl.project.id)
+        self.post([hl.hello(), machine] + sessions + unreported + owed)
         self.opened.add(hl.project.id)
+        self.machine_sent[hl.project.id] = machine["message"]["body"]
         hl.reported(unreported)
+        self.requests.sent(owed)
+        self.deliveries(hl)
 
     def upload(self, hl):
         for frame, reach in hl.uploads():
             self.post([frame])
             hl.took(reach)
+
+    def deliveries(self, hl):
+        """What delivery made of the events from outside, as DX4 `delivery`
+        messages sealed as they go; dropped from the outbox once the hub
+        answered the POST that carried them."""
+        box = outcomes.Outbox(hl.project)
+        if not box.waiting():
+            return
+        records, lines = box.take()
+        frames = [f for f in (outcomes.message(self.cred["key"], self.cred["machine"], hl.project.id, r)
+                              for r in records) if f is not None]
+        if frames:
+            self.post(frames)
+        box.drop(lines)
+
+    def machine_presence(self, now):
+        """`machine` again for each open project whose body changed: the
+        policy is read at every scan (a `daemon policy` nudges one), the
+        checkouts every CHECKOUTS_EVERY."""
+        current = policy.machine_policy()
+        if now < self.next_checkouts and all(self.machine_sent.get(pid, {}).get("policy") == current
+                                             for pid in self.opened):
+            return
+        self.next_checkouts = now + CHECKOUTS_EVERY
+        for pid in sorted(self.opened):
+            m = self.logs[pid].presence()
+            if m["message"]["body"] != self.machine_sent.get(pid):
+                self.post([m])
+                self.machine_sent[pid] = m["message"]["body"]
+
+    def relay_requests(self):
+        """The requests of the open projects' bridged sessions: readers for
+        the sessions whose bridge answers, and what they read, up."""
+        followed = {sid: pid for pid in self.opened for sid in self.plane.members.get(pid, ())
+                    if self.plane.bridges.known(sid)}
+        self.requests.follow(followed)
+        self.requests.take()
+        frames = self.requests.due(self.opened)
+        if frames:
+            self.post(frames)
+            self.requests.sent(frames)
 
     def tick(self):
         """Between frames: the heartbeat answered, new hub projects opened,
@@ -599,10 +660,12 @@ class Link:
                         self.cred["org"], ", ".join(self.logs[pid].project.name for pid in gone)))
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
+                self.machine_presence(time.monotonic())
             if now >= self.next_upload or nudged:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid])
+                    self.deliveries(self.logs[pid])
             self.failing = ""
         except EndStream:
             raise
@@ -612,6 +675,7 @@ class Link:
                 log("syncing failed: %r" % e)
         try:
             self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
+            self.relay_requests()
             self.plane_failing = ""
         except EndStream:
             raise
@@ -621,7 +685,7 @@ class Link:
                 log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs, bridges=None):
+def serve(stream, cred, ended, logs, bridges=None, reqs=None):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it. A wake (the session
     plane's readers) is a tick now, between frames; at most one waits."""
@@ -632,7 +696,7 @@ def serve(stream, cred, ended, logs, bridges=None):
             woken.set()
             stream.items.put(("wake",))
 
-    link = Link(cred, logs, ended, wake, bridges)
+    link = Link(cred, logs, ended, wake, bridges, reqs)
     try:
         return serve_link(link, stream, ended, woken)
     finally:
@@ -718,13 +782,15 @@ def cmd_uplink(_a):
 
     log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
     backoff, logs, bridges = 1, {}, plane.Bridges()
+    reqs = requests.Requests(cred["key"], cred["machine"])
     while not ended():
         stream = Stream(cred)
         stream.start()
-        welcomed = serve(stream, cred, ended, logs, bridges)
+        welcomed = serve(stream, cred, ended, logs, bridges, reqs)
         stream.close()
         backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
         deadline = time.time() + backoff
         while not ended() and time.time() < deadline:
             halt.wait(POLL)
+    reqs.close()
     log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() else ": its daemon is gone"))

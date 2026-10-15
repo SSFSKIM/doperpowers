@@ -4797,6 +4797,34 @@ assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "index.lock, a git lock 120s
 unset GIT_SSH_COMMAND GIT_SSH_VARIANT
 cd "$RR"
 
+# A read-only machine (the desk's DC7, §6): nothing written on another machine
+# is delivered on it — not to a live session, and no stopped seat is resumed
+# for it — and the event is settled undelivered, never delivered later; what
+# is written on the machine itself is delivered as before.
+run env "${H1[@]}" "$SMINOS" spawn c "wait for instructions"
+C="$(banner_uuid "$OUT")"
+run env "${H1[@]}" "$SMINOS" daemon tick
+run env "${H2[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" daemon policy --read-only on
+assert_rc 0 "$RC" "the owner sets h1 read-only"
+assert_contains "$OUT" "read-only: yes" "and the policy says so"
+RESUMES_C="$(grep -c -- "--resume $C" "$MD/h1/stub/log/calls.log" || true)"
+CLAUDE_CODE_SESSION_ID="$B" run env "${H2[@]}" "$SMINOS" say "@a @c from h2 while h1 is read-only"
+assert_contains "$OUT" "c: recorded (on h1)" "b's say to a and to the stopped seat c is for h1 to deliver"
+run env "${H2[@]}" "$SMINOS" daemon tick
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "delivered 0" "h1 delivers none of it"
+assert_not_contains "$(md_inbox a)" "while h1 is read-only" "the live session is sent nothing"
+assert_equals "$(grep -c -- "--resume $C" "$MD/h1/stub/log/calls.log" || true)" "$RESUMES_C" "and the stopped seat is not resumed"
+run env "${H1[@]}" "$SMINOS" say "@a written on h1 itself"
+assert_contains "$OUT" "a: sent" "a message written on h1 is delivered as before"
+assert_contains "$(md_inbox a)" "written on h1 itself" "a receives it"
+run env "${H1[@]}" "$SMINOS" daemon policy --read-only off
+assert_contains "$OUT" "read-only: no" "the owner lifts it"
+run env "${H1[@]}" "$SMINOS" daemon tick
+assert_not_contains "$(md_inbox a)" "while h1 is read-only" "what was refused was settled: it is never delivered later"
+assert_equals "$(grep -c -- "--resume $C" "$MD/h1/stub/log/calls.log" || true)" "$RESUMES_C" "nor resumes c"
+
 # One machine, a project with no remote: the daemon delivers what the fast
 # path left owed. x and y are seats; a seat whose session is down is resumed
 # by a tag, and a resume that does not launch is a failed push.
@@ -5017,6 +5045,9 @@ if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.s
 if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
 if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
   fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
+if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
+  pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
+  fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
