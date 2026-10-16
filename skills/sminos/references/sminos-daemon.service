@@ -1,0 +1,33 @@
+# The sminos daemon, one per machine: syncs each project's mirror, delivers
+# what is owed to this machine's members, publishes their state, and keeps
+# the uplink to a desk hub. Rendered by `sminos daemon install` into
+# ~/.config/systemd/user/sminos-daemon.service, the systemd user unit that
+# is Linux's counterpart of the launchd agent (sminos-daemon.plist); the
+# placeholders are filled from the installing environment. Load it with
+# `systemctl --user daemon-reload` and `systemctl --user enable --now
+# sminos-daemon.service`; with nobody logged in, the user's service manager
+# runs only once `loginctl enable-linger` is on for the user.
+# The program is the marketplace clone's CLI when the installing one ran
+# from the versioned plugin cache, so a plugin update does not strand it;
+# the daemon exits when its scripts change and Restart=always starts it on
+# the new code. KillMode=process does what launchd does with the job's
+# process group: a stop or a restart signals the daemon alone, which stops
+# its uplink itself, and what it started in a session of its own (a
+# derivation, a `claude --bg` and the engine supervisor that may come up
+# with it) runs on. The gateway route's values (a token among them) sit
+# here in plain text, in a file only its owner can read (0600): accepted.
+
+[Unit]
+Description=sminos daemon (doperpowers): mirror, delivery, and the uplink to a desk hub
+
+[Service]
+ExecStart={{SMINOS_CLI}} daemon run
+Restart=always
+RestartSec=10
+KillMode=process
+{{ENV}}
+StandardOutput=append:{{LOG}}
+StandardError=append:{{LOG}}
+
+[Install]
+WantedBy=default.target

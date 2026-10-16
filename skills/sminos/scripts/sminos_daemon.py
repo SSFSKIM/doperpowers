@@ -41,12 +41,14 @@ every project known here, each in the order of §8:
 hub (`daemon uplink`, sminos_uplink.py) as a child process it restarts with
 backoff — a process, not a thread, because sminos's caches are module globals
 the tick clears, and so a hang or a crash of either side never stops the
-other; `install` writes the launchd agent (it loads nothing); `status` prints
-the last tick per project.
+other; `install` writes the machine's service, a launchd agent on macOS or a
+systemd user unit on Linux (it loads nothing); `status` prints the last tick
+per project.
 """
 
 import contextlib
 import fcntl
+import getpass
 import json
 import os
 import re
@@ -85,6 +87,8 @@ OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.p
             "sminos_outcomes.py", "sminos_requests.py", "sminos_rpc.py", "sminos_control.py")
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
+UNIT = "sminos-daemon.service"
+UNIT_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", UNIT)
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
 _DERIVE = None  # the derivation child this process started, while it may run
 # A bridge's kept file outlives its session's end this long (Resume soon after
@@ -748,8 +752,8 @@ def run_lock_path():
 
 def own_code():
     """The scripts this loop and its uplink run, with their mtimes: when one
-    changes (a plugin update), the loop ends and launchd's KeepAlive starts it
-    on the new code."""
+    changes (a plugin update), the loop ends and the service manager starts it
+    on the new code (launchd's KeepAlive, systemd's Restart=always)."""
     out = {}
     here = os.path.dirname(os.path.realpath(__file__))
     for name in OWN_CODE:
@@ -800,7 +804,8 @@ class UplinkSupervisor(threading.Thread):
             started = time.time()
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
                 # The child is told who spawned it: an uplink whose parent is
-                # gone before it could look must not take launchd for it.
+                # gone before it could look must not take the service
+                # manager (its new parent) for it.
                 self.proc = subprocess.Popen(
                     [sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon", "uplink"],
                     stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
@@ -845,8 +850,9 @@ def cmd_run(a):
     """The loop: a tick every `--interval` seconds (from one tick's start to
     the next), or at once when a sender touched daemon/nudge since the last
     one began; the uplink beside it (UplinkSupervisor). SIGTERM ends it after
-    the tick in hand; so does a change to its own scripts, exiting 0 for
-    launchd to restart it on the new code; the uplink is stopped either way."""
+    the tick in hand; so does a change to its own scripts, exiting 0 for the
+    service manager to restart it on the new code; the uplink is stopped
+    either way."""
     interval = a.interval
     if interval <= 0:
         sminos.die("--interval is a number of seconds above 0")
@@ -861,8 +867,8 @@ def cmd_run(a):
     lf.write("pid %d since %s" % (os.getpid(), sminos.now()))
     lf.flush()
     stop = []
-    # launchd's bootout and a plain kill send SIGTERM: the tick in hand ends,
-    # then the loop.
+    # launchd's bootout, systemctl's stop and a plain kill send SIGTERM: the
+    # tick in hand ends, then the loop.
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sminos.daemon_log("daemon run started (pid %d, every %gs)" % (os.getpid(), interval))
     code = own_code()
@@ -899,15 +905,40 @@ def cmd_tick(_a):
         sminos.die(str(e), 1)
 
 
+def service():
+    """The service manager `install` writes for: launchd on macOS, a systemd
+    user unit on Linux. SMINOS_SERVICE (launchd or systemd) overrides it
+    (tests)."""
+    forced = os.environ.get("SMINOS_SERVICE")
+    if forced:
+        if forced not in ("launchd", "systemd"):
+            sminos.die("SMINOS_SERVICE is launchd or systemd, not %r" % forced)
+        return forced
+    if sys.platform == "darwin":
+        return "launchd"
+    if sys.platform.startswith("linux"):
+        return "systemd"
+    sminos.die("daemon install writes a launchd agent (macOS) or a systemd user unit (Linux); this is %s"
+               % sys.platform, 1)
+
+
 def plist_path():
     return os.path.join(sminos.home_dir(), "Library", "LaunchAgents", LABEL + ".plist")
 
 
-def launchd_env():
-    """What a launchd-run sminos needs: its registry root, the PATH that finds
-    `claude` and `git`, the machine name when it is set, and the gateway
-    route (the transport keys the gateway settings name, as this environment
-    sets them), since `derive` runs `claude`."""
+def unit_path():
+    """Where the systemd user manager looks for the user's own units."""
+    config = os.environ.get("XDG_CONFIG_HOME") or ""
+    if not os.path.isabs(config):
+        config = os.path.join(sminos.home_dir(), ".config")
+    return os.path.join(config, "systemd", "user", UNIT)
+
+
+def service_env():
+    """What a service-run sminos needs (launchd's or systemd's): its registry
+    root, the PATH that finds `claude` and `git`, the machine name when it is
+    set, and the gateway route (the transport keys the gateway settings name,
+    as this environment sets them), since `derive` runs `claude`."""
     env = {"SMINOS_HOME": sminos.root(), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     if os.environ.get("DAEMON_HOST"):
         env["DAEMON_HOST"] = os.environ["DAEMON_HOST"]
@@ -918,9 +949,9 @@ def launchd_env():
 
 
 def installed_cli():
-    """The CLI the launchd agent runs: a path that outlives plugin updates. A
-    CLI running from the plugin cache lives under a versioned directory an
-    update prunes, so the agent runs the marketplace clone instead (its
+    """The CLI the service runs: a path that outlives plugin updates. A CLI
+    running from the plugin cache lives under a versioned directory an update
+    prunes, so the service runs the marketplace clone instead (its
     `installLocation` in ~/.claude/plugins/known_marketplaces.json, kept up to
     date by the harness), and with no usable clone the install is refused
     rather than pointed at a path the next update deletes. Anything else — a
@@ -945,12 +976,29 @@ def installed_cli():
 
 
 def cmd_install(_a):
-    """Write the launchd agent. Loading it is the operator's step: nothing
-    here calls launchctl."""
+    """Write the machine's service: the launchd agent, or the systemd user
+    unit. Loading it is the operator's step: nothing here calls launchctl or
+    systemctl."""
+    if service() == "systemd":
+        install_systemd()
+    else:
+        install_launchd()
+
+
+def write_private(path, text):
+    """The service's file, readable only by its owner from its first byte:
+    it may carry the gateway route's token."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(text)
+
+
+def install_launchd():
     with open(PLIST_TEMPLATE) as f:
         text = f.read()
     entries = "\n".join("    <key>%s</key><string>%s</string>" % (escape(k), escape(v))
-                        for k, v in sorted(launchd_env().items()))
+                        for k, v in sorted(service_env().items()))
     for key, value in (("LABEL", escape(LABEL)), ("SMINOS_CLI", escape(installed_cli())),
                        ("ENV", entries), ("LOG", escape(os.path.join(sminos.root(), "daemon.out")))):
         text = text.replace("{{%s}}" % key, value)
@@ -958,12 +1006,40 @@ def cmd_install(_a):
     # first install nothing has made the registry yet.
     os.makedirs(sminos.root(), mode=0o700, exist_ok=True)
     path = plist_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(text)
-    os.chmod(path, 0o600)  # it may carry the gateway route's token
+    write_private(path, text)
     print("wrote %s\nload it:   launchctl bootstrap gui/$(id -u) %s\nunload it: launchctl bootout gui/$(id -u)/%s"
           % (path, path, LABEL))
+
+
+def unit_word(value, execstart=False):
+    """`value` as one double-quoted word of a unit file. Quoted words are
+    C-unescaped (the backslash, the quote, a line break escaped), `%` starts
+    a specifier wherever the unit file is read (`%%`), and ExecStart expands
+    `$` variables (`$$`)."""
+    v = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("%", "%%")
+    return '"%s"' % (v.replace("$", "$$") if execstart else v)
+
+
+def install_systemd():
+    """The systemd user unit, under the launchd agent's contract: the stable
+    CLI, the same environment, a 0600 file, the output in daemon.out."""
+    with open(UNIT_TEMPLATE) as f:
+        text = f.read()
+    log = os.path.abspath(os.path.join(sminos.root(), "daemon.out"))
+    entries = "\n".join("Environment=%s" % unit_word("%s=%s" % (k, v)) for k, v in sorted(service_env().items()))
+    for key, value in (("SMINOS_CLI", unit_word(installed_cli(), execstart=True)), ("ENV", entries),
+                       ("LOG", log.replace("%", "%%"))):
+        text = text.replace("{{%s}}" % key, value)
+    # systemd opens daemon.out before the daemon runs: on a first install
+    # nothing has made the registry yet.
+    os.makedirs(sminos.root(), mode=0o700, exist_ok=True)
+    path = unit_path()
+    write_private(path, text)
+    print("wrote %s\n"
+          "load it:   systemctl --user daemon-reload && systemctl --user enable --now %s\n"
+          "unload it: systemctl --user disable --now %s\n"
+          "to keep it running with nobody logged in (and from boot), lingering, once per user:\n"
+          "           loginctl enable-linger %s" % (path, UNIT, UNIT, getpass.getuser()))
 
 
 def age(ts):
