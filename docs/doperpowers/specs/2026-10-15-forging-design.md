@@ -471,8 +471,9 @@ behavior, never a failure, so the preflight fails the run on that warning.
 Tiers are the role's settings, and a tier-B file must carry all of
 `sandbox.enabled: true`, `sandbox.failIfUnavailable: true`,
 `sandbox.allowUnsandboxedCommands: false`, `sandbox.filesystem.denyRead`
-and `permissions.deny` `Read(...)` rules for the reference and
-`forge/oracle/` — the sandbox is off by default and falls back to
+and `permissions.deny` `Read(...)` rules for the reference and the recorded
+expectations (`forge/oracle/expected/`; the oracle's code stays readable) —
+the sandbox is off by default and falls back to
 unsandboxed execution unless told not to, so denial keys alone deny nothing
 to a shell; the runner refuses to start a role whose file lacks any of them,
 and a live check proves a reference read is refused through the file tools
@@ -1048,7 +1049,8 @@ Defined once here; milestones point at them.
   role's report is its final message, its first line one of `DONE`,
   `MORE_WORK`, `BLOCKED`, `INFEASIBLE`, `ERROR`.
 - **Oracle runner contract** (M1 for the toy, M3 for the scenario; M5's
-  driver): `forge/oracle/run.py <axis> run <binary> <slice> <outdir>`,
+  driver; recorded expectations under `forge/oracle/expected/`, code beside
+  them): `forge/oracle/run.py <axis> run <binary> <slice> <outdir>`,
   `… normalize <outdir>`, `… compare <expected> <actual>` → one summary line
   on stdout (`<axis> <slice>: <n> divergences, skipped: <k>`) and a detail
   file, and `… stub <unit> <outdir>` builds the candidate with the unit's
