@@ -324,14 +324,23 @@ landed; `full` green on k consecutive runs; held-out green; the ledger done
 per §2.3); the **escalation classes** that may reach the human (an oracle
 defect, a ledger change request, a unit `INFEASIBLE` twice after re-planning,
 a budget threshold crossed, a held-out failure the root cannot attribute) and
-the **checkpoints** (every wave end, with the report); the **budget** per
-unit and per run, with the cost ledger the runner keeps from each session's
-usage; the **compute topology** (worktrees per unit, where the verifier's
-clean checkouts run, how many units at once; the scenario's is a 128 GB VM
-with a 64 GB CI runner, §6); **state** on disk (`forge/runs/<id>/state.json`
-with every unit's state and rounds, `events.jsonl` for escalations and
-oracle failures at the tip, task claims as files so a restarted runner
-resumes rather than restarts); the **restart procedure** (a smoke test of the
+the **checkpoints** (every wave end, with the report); the **budget** per unit and per run in
+tokens (with an optional price table for a dollar estimate), the `full`
+interval, and each role's turn limit — all fields of the manifest that the
+runner reads, enforces and reports against from each session's usage; the **compute topology** — worktrees per unit on the runner's host, how
+many units at once, and the **sandbox provider** the verifier's and the
+oracle's runs go to: `local` (a fresh worktree or container on the host),
+`vm` (a pool on a host the manifest names), or `ephemeral` (a sandbox per
+run from a provider with a prebaked image — microVMs with snapshot restore
+where cold start matters, a container job service otherwise — with `full`
+sharded across many); the oracle runner contract does not change with the
+provider, so a provider is a thin wrapper, and this spec implements `local`
+and defines the interface (the scenario's choice is in §6); **state** on disk with one writer — the runner's main process owns
+`forge/runs/<id>/state.json`, a view rebuilt from per-unit append-only
+journals that each unit's worker alone appends to, so a restarted runner
+resumes from the journals rather than restarts (the transition table and the
+linearization points are in Interfaces); `events.jsonl` for escalations,
+budget thresholds and oracle failures at the tip; the **restart procedure** (a smoke test of the
 integration branch before any dispatch, as every long-run harness on record
 learned to do); and the rule that the root **fixes the process, not the
 output**: a failure class that recurs becomes a change to the rubric, a
@@ -389,17 +398,30 @@ claude -p --agent <role> --settings forge/roles/<role>.json \
        --output-format stream-json --verbose
 ```
 
-— the prompt rendered from the manifest and the unit (the brief, the paths,
-the report file), the status read from the report's first line, the usage
-from the stream (`--verbose` is mandatory for stream-json in print mode;
-`dontAsk` denies anything the role's allow rules do not cover, so no prompt
-blocks a headless role). `--agent <name>` resolves a plugin agent by its unqualified
-name (the harness matches any active agent whose type ends with `:<name>`).
-Tiers are the role's settings: `sandbox.filesystem.denyRead` and
-`permissions.deny` rules for the reference and `forge/oracle/` in the
-implementer's file, read-only tool sets for the reviewer; in containers, the
-same by mounts. State is written after every transition; `--resume` reads it
-and continues from the claims on disk.
+— the prompt rendered from the manifest and the unit (the brief, the
+paths), the role's **report** being its final message, which the runner
+persists from the stream's `result` event as `report-<role>.md` and whose
+first line is the status (so a read-only role returns the same way as a
+writing one), the usage from the stream (`--verbose` is mandatory for
+stream-json in print mode; `dontAsk` denies anything the role's allow rules
+do not cover, so no prompt blocks a headless role). The runner loads its own
+checkout as a plugin with `--plugin-dir`, so the role definitions are those
+of the code that dispatches them, and preflights each role once per run:
+the harness answers an unknown `--agent` with a warning and default
+behavior, never a failure, so the preflight fails the run on that warning.
+Tiers are the role's settings, and a tier-B file must carry all of
+`sandbox.enabled: true`, `sandbox.failIfUnavailable: true`,
+`sandbox.allowUnsandboxedCommands: false`, `sandbox.filesystem.denyRead`
+and `permissions.deny` `Read(...)` rules for the reference and
+`forge/oracle/` — the sandbox is off by default and falls back to
+unsandboxed execution unless told not to, so denial keys alone deny nothing
+to a shell; the runner refuses to start a role whose file lacks any of them,
+and a live check proves a reference read is refused through the file tools
+and through the shell. In containers, the same by mounts. The specification
+the implementer reads is a **staged copy** (`forge/.spec/`, the chapters the
+manifest's `spec_paths` name, hash recorded), so the whole reference tree
+can be denied. State is written as §2.7 says; `--resume` rebuilds it from
+the journals and continues.
 
 **Landing** is a queue with one lock: rebase the unit's branch onto the
 integration branch; if the rebase changed the diff the review is void and the
@@ -454,7 +476,7 @@ New:
   auditor's and readers' briefs), `references/root-protocol.md` (§3's
   operator manual).
 - `skills/forging/scripts/forge-run.py` — the runner; `forge-env.sh` — builds
-  a role's worktree, settings and environment; `forge-readers.py` — dispatches
+  a role's worktree, settings and environment, and stages the spec; `forge-readers.py` — dispatches
   the gate's readers and lays their lists side by side.
 - `agents/forge-oracle-author.md`, `forge-implementer.md`, `forge-reviewer.md`,
   `forge-delegator.md` — the role contracts, with the repository's conventions
@@ -510,10 +532,13 @@ follow the chunk graph (first-pass rule); parity on the harness, not the
 model.
 
 **Access tiers.** The oracle author reads SPEC, `modules/`, `cli.pretty.js`
-and runs the binary; the implementer reads SPEC and its worktree only —
+and runs the binary; the implementer reads a staged copy of the chapters
+(`forge/.spec/`, `SPEC/*.md` only — `_inventory` carries code signatures and
+`_notes` carries reprint lines, both excluded) and its worktree, and
 `roles/implementer.json` denies `~/claude-code-bundle/**` and
-`~/.local/share/claude/**` to reads and the sandbox; the verifier runs both.
-This is the spec's own success criterion made operational.
+`~/.local/share/claude/**` to reads and the sandbox, fail-closed; the
+verifier runs both binaries. This is the spec's own success criterion made
+operational.
 
 **Parity axes**, in the order they are built: (1) provider-request parity —
 a scripted model server at `ANTHROPIC_BASE_URL` records every request body
@@ -537,10 +562,14 @@ turns and tool results fed through both binaries with the scripted server
 answering from the recorded assistant turns — under held-out, the root's
 alone.
 
-**Ledger.** Rows from `section-index.tsv`'s distinct (chapter, section) pairs,
-`reference_locus` from the anchors, axes and slices assigned per row; the
-spec's own `tools/verbatim.py` and `checkcites.py` become the rubric's
-byte-match check.
+**Ledger.** One row per section of the chapters, from a heading walk over
+`SPEC/*.md` (every section, not only the cited ones), with `reference_locus`
+from `citation-anchors.tsv` **rebuilt against the pinned reprint first** —
+the inventories on disk were built for an earlier bundle and name chunks
+that do not exist in this one (1,449 of 1,450) — and every locus validated
+against `modules/`; a section with no citation keeps an empty locus and
+`uncited` in its note. The spec's own `tools/verbatim.py` and
+`checkcites.py` become the rubric's byte-match check.
 
 **Unit graph.** Chunk groups aligned to chapters through the anchors'
 `chapters` column, ordered leaves-first over the ESM import graph. Chunks
@@ -553,10 +582,12 @@ names, so a reforged module needs a generated **export shim** mapping its
 readable exports to the names the unreplaced chunks import
 (`_inventory/exports-real-names.txt` is the mapping's seed); the oracle
 author generates it, nobody hand-writes it. Before any unit can be proven,
-the **zero-replacement hybrid** — the extracted module graph run under plain
-`bun` with the virtual `/$bunfs/root/` paths rewritten and the embedded
-assets and native addons reachable — must itself pass self-parity against the
-binary. That is a spike with a verdict: promote (the strangler holds; units
+the **zero-replacement hybrid** — the extracted module graph under
+`modules/` run by plain `bun`, each `/$bunfs/root/<name>` import rewritten to
+the on-disk `modules/<name>` (the extracted names keep the virtual-path
+suffixes, so the tree is the mapping; `extract.py` is not run again) and the
+embedded assets and native addons reachable — must itself pass self-parity
+against the binary. That is a spike with a verdict: promote (the strangler holds; units
 proceed) or discard (the shape falls back to the feature-reduction ladder,
 L0 argument parsing → L1 headless with the scripted server → L2 file and
 Bash tools → L3 permissions and hooks → L4 persistence and resume → L5 MCP,
@@ -568,9 +599,18 @@ comma expressions, folded conditionals), getter and `valueOf` side effects,
 property-order dependence, `==` coercions preserved or not, async ordering of
 microtasks the reprint obscured.
 
-**Run conditions.** Compute: a 128 GB VM for the roles in containers (the
-reference mounted only in tier A), a 64 GB CI runner for `full`; parallelism
-set by the VM's cores at M2. Budget: rough calibration from the survey only —
+**Run conditions.** Compute: the roles on a 128 GB VM, each in a container
+(the reference mounted only in tier A); the verifier's runs and `full` on an
+**ephemeral** sandbox provider rather than a fixed runner — a verify is a
+stateless job of minutes (checkout at the head, build the hybrid, run the
+slices against the scripted server, diff), the work is embarrassingly
+parallel, and a fixed host serializes it once saturated, which is where a
+swarm's wall-clock goes; with a prebaked image (bun, the toolchain, the
+Linux 2.1.300 reference, the recorded corpus) a cold start is seconds
+against a run of minutes, and `full` shards across as many sandboxes as the
+slices warrant. The reference in those sandboxes is the Linux build of
+2.1.300 with its expectations re-recorded on Linux, since the macOS binary
+does not run there; parallelism of the roles is set by the VM's cores at M2. Budget: rough calibration from the survey only —
 Bun's 535k lines of Zig cost about $165k at frontier prices, Carlini's
 100k-line compiler $20k; the product share of this bundle is unmeasured
 (vendored React, Ink, mermaid, highlight.js and the SDK are a large fraction),
@@ -618,17 +658,26 @@ Observable at the end, each with the milestone that proves it:
    Log carries the zero-replacement hybrid's self-parity result and
    `promote` or `discard` with the shape that follows. (M3)
 5. **The FSM runs and resumes.** With a stub `claude` that returns scripted
-   statuses, `forge-run.py run` on the toy writes `state.json` transitions
-   for every unit through the FSM, respects `max_rounds`, returns a unit to
-   the root with its history, and `--resume` after a kill continues from the
-   claims without re-dispatching a finished role. (M4)
-6. **Gaming is caught.** A stub implementer that hard-codes an expected
-   output fails the fast sample; one that edits a file under `forge/oracle/`
-   is refused at landing with the path named; one that flips a ledger
-   `status` without passing slices is refused. (M5)
+   statuses, `forge-run.py run` on the toy journals every unit's transitions
+   through the FSM with two units concurrent, respects `max_rounds`, returns
+   a unit to the root with its history, and `--resume` after a kill at each
+   of the three boundaries (after the report is persisted, after the journal
+   line, after `state.json`) continues without re-dispatching a role whose
+   journal line exists and re-runs one whose line is missing under the next
+   attempt number. A unit crossing its token cap raises a `budget` event and
+   no new role dispatches past the run cap. (M4)
+6. **Gaming is caught, and the tier holds.** A stub implementer that
+   hard-codes an expected output fails the fast sample; one that edits a file
+   under `forge/oracle/` is refused at landing with the path named; one that
+   flips a ledger `status` without passing slices is refused (M5). A live
+   check with a real implementer session under its settings shows a `Read`
+   of the reference and a shell `cat` of it both refused, and a run with the
+   sandbox unavailable refused to start (M4).
 7. **Landing holds the tip green.** Two toy units landed in one wave; a
    rebase that changed a diff voided its review and the unit re-entered step
-   3; `oracle full` at the wave end prints zero divergences. (M5)
+   3; `oracle full` at the wave end prints zero divergences, and a `full`
+   fired by the interval during an unfinished wave is recorded in
+   `events.jsonl` with its result. (M5)
 8. **The root protocol and delegator work on seeded events.** Events for
    each escalation class are fed; the delegator resolves the class-1–3 ones
    with the manifest line it used and drafts a question for the class-4 one;
@@ -697,10 +746,16 @@ What exists at its end: `scenario-2.1.300/forge/manifest.md`, `ledger.tsv`,
 the bundle, with the spike question and the compute and budget sections
 stated. Touches: `docs/doperpowers/research/2026-10-15-compile-class-work/scenario-2.1.300/`.
 Consumes: the manifest shape. Produces: the scenario's ledger and unit graph,
-consumed by M3. Decisions: the ledger's rows come from the distinct (chapter,
-section) pairs of `section-index.tsv`, with `reference_locus` from the
-anchors — a script under `scenario-2.1.300/tools/` derives them so the ledger
-is regenerable; the unit graph is chapter-aligned chunk groups over the ESM
+consumed by M3. Decisions: first, the inventories are rebuilt against the pinned
+reprint — `tools/sections.py build` and `tools/anchors.py build` in the
+bundle, run under the Python those tools declare — and every locus is
+validated against `modules/`, with the count that fail recorded in the
+manifest's Surprises; the ledger's rows come from a heading walk over
+`SPEC/*.md`, with `reference_locus` from the rebuilt anchors and uncited
+sections kept and marked — a script under `scenario-2.1.300/tools/` derives
+them so the ledger is regenerable; `spec_paths` in the manifest's Target
+section names `SPEC/*.md` as the implementer's staged input and excludes
+`_inventory` and `_notes`; the unit graph is chapter-aligned chunk groups over the ESM
 import graph (`modules/` imports), leaves first, with the many-chapter chunks
 handled by a rule the milestone picks from the data and records (split by
 section, or first-needing unit); the product share of the bundle is measured
@@ -725,8 +780,10 @@ answering from a recorded corpus captured once from the real provider with
 the user's own account (the recording run is the one model-spending step; it
 is sized to the slices, not the corpus); normalization is defined by the
 self-parity runs as §2.2 says; the spike runs before any slice is written for
-a unit — the zero-replacement hybrid under plain `bun` with paths rewritten
-by a script that reads `MAP.md`'s record table — and its verdict decides
+a unit — the zero-replacement hybrid under plain `bun`, `forge/oracle/hybrid.py`
+rewriting each `/$bunfs/root/<name>` import to the on-disk `modules/<name>`
+(the extracted tree is the mapping; `extract.py` needs Python 3.14 and is
+not run) — and its verdict decides
 whether `units.json` keeps the strangler shape or the ladder (M2's graph is
 revised in place, with the Decision Log line); the mutation run is 2.1.299
 against 2.1.300 with the changelog's items as the expected catches; held-out
@@ -737,27 +794,41 @@ scenario's verdict), 3 (self-parity and mutation for 2.1.300), 4 (the spike).
 
 ### M4 — The runner: role agents, access tiers, the unit FSM, state, resume
 
-What exists at its end: `forge-run.py` with `plan`, `run`, `unit`, `status`,
-`--resume`, `--parallel`; `forge-env.sh`; the four agent definitions; the
-FSM tests with a stub `claude`. Touches: `skills/forging/scripts/`,
-`agents/forge-*.md`, `tests/forging/`. Consumes: the manifest shape.
-Produces: the runner's command surface and `state.json` schema (Interfaces).
-Decisions: one headless session per role invocation, as §3 says, with the
-prompt rendered from `manifest.md`, `units.json` and the role's brief file,
-the report path passed in the prompt and its first line parsed as the
-status; every role runs with `--permission-mode dontAsk` and the allow
-rules its settings file carries, so a headless role is never blocked on a
-prompt and never acts outside its tier; the stub `claude` for tests is a
-shell script on `PATH` that writes a
-scripted report per role and unit from a fixture, so transitions are tested
-without a model; concurrency is a process pool over units with a per-unit
-lock file as the claim; `state.json` is rewritten whole after each transition
-(a scratchpad rewritten, not appended — Cursor's finding), `events.jsonl`
-appended; the implementer's settings file denies the reference paths the
-manifest names and `forge/oracle/` to reads and the sandbox, and the runner
-refuses to start a role whose settings lack the tier's denials. Does not
-touch: landing and oracle integration (M5), the root protocol (M6). Proves:
-acceptance 5.
+What exists at its end: `forge-run.py` with `preflight`, `plan`, `run`,
+`unit`, `status`, `--resume`, `--parallel`; `forge-env.sh` (a role's
+worktree, settings and environment, and `stage-spec`); the four agent
+definitions; the FSM tests with a stub `claude`; the live isolation check.
+Touches: `skills/forging/scripts/`, `agents/forge-*.md`, `tests/forging/`.
+Consumes: the manifest shape. Produces: the runner's command surface, the
+journal and state schemas and the transition table (Interfaces). Decisions:
+one headless session per role invocation, as §3 says, with the prompt
+rendered from `manifest.md`, `units.json` and the unit's brief, the role's
+final message persisted from the stream's `result` event as its report and
+the first line parsed as the status; `--plugin-dir` pointing at the checkout
+the runner lives in, and `preflight` dispatching each role on a one-line
+prompt and failing the run on the harness's unknown-agent warning — if a
+live check at this milestone shows `--plugin-dir` does not register agents
+for `--agent` in print mode, the runner renders `--agents` JSON from the
+agent files instead, with a Decision Log line; every role runs with
+`--permission-mode dontAsk` and the allow rules its settings file carries;
+the stub `claude` for tests is a shell script on `PATH` that emits a
+stream-json `result` whose text is a scripted report per role, unit and
+attempt from a fixture, so transitions are tested without a model;
+concurrency is one worker process per unit, each appending only to its
+unit's journal, and the main process the one writer of `state.json`, rebuilt
+from the journals (a scratchpad rewritten, not appended — Cursor's finding);
+a role is finished at its journal line, so a kill between the persisted
+report and the line re-runs the role under the next attempt number; usage is
+accumulated per unit and per run from the streams, `budget` events fire at
+the manifest's thresholds, and no new role dispatches past the run cap;
+before dispatch the implementer's settings file is checked for the
+fail-closed sandbox keys and the denials of §3, and `forge-env.sh stage-spec`
+copies the manifest's `spec_paths` into `forge/.spec/` with a hash;
+`tests/forging/live-isolation-check.sh` runs a real implementer session
+against the toy's settings and expects the refusals of acceptance 6, run by
+hand as the repository's other live checks are. Does not touch: landing and
+oracle integration (M5), the root protocol (M6). Proves: acceptance 5 and
+the tier half of 6.
 
 ### M5 — Landing, oracle integration, ledger updates, gaming tests
 
@@ -774,10 +845,12 @@ the manifest's reference paths; `oracle` subcommands call
 <slice>` → a directory of observations, `normalize`, `compare` → a summary
 line and a detail file) so the harness is per target and the driver is not;
 the held-out path comes only from `FORGE_HELDOUT`; `run` executes `full` at
-every wave end and writes a `tip-failure` event per divergence, while held-out
-stays the root's to run. Does not touch: the root
-protocol. Proves: acceptance 6 and 7 on the toy with the stub `claude` and
-the toy's oracle.
+every wave end and, from a timer in the main process, every
+`full_interval_minutes` during a wave, serialized with landing under the same
+lock, writing a `full` event with the result and a `tip-failure` event per
+divergence, while held-out stays the root's to run. Does not touch: the root
+protocol. Proves: acceptance 6's gaming half and 7, on the toy with the stub
+`claude` and the toy's oracle.
 
 ### M6 — The root protocol and the delegator
 
@@ -834,6 +907,11 @@ Working directory is the repository root unless stated.
 - M4, M5, M6: `tests/forging/run-forging-tests.sh` → every test's name and
   `ok`; `python3 -I skills/forging/scripts/forge-run.py plan tests/forging/toy/forge` →
   `wave 1: U1 U2` / `wave 2: U3`.
+- M4 live check (spends two cheap sessions, by hand):
+  `tests/forging/live-isolation-check.sh tests/forging/toy/forge` →
+  `read: refused`, `bash: refused`, `no-sandbox: refused to start`;
+  `python3 -I skills/forging/scripts/forge-run.py preflight tests/forging/toy/forge` →
+  one `ok` line per role.
 - M7 (in `tests/forging/toy/`): `python3 -I ../../../skills/forging/scripts/forge-run.py run forge --parallel 2` →
   per-unit transitions and `landed U1 U2 U3`; `… oracle full forge` →
   `full: 0 divergences (N slices, skipped: 0)`; `FORGE_HELDOUT=… oracle heldout forge` →
@@ -847,27 +925,50 @@ Defined once here; milestones point at them.
   `ledger.tsv` columns as §2.3; `units.json` as an object `{ "units": [ {
   "id", "title", "ledger": [], "touches": [], "reference_locus": [],
   "consumes": [], "produces": [], "slices": [], "max_rounds", "models": {}
-  } ], "parallel": n }`; `roles/<role>.json` is a harness `--settings`
-  document; a role's report file's first line is one of `DONE`, `MORE_WORK`,
-  `BLOCKED`, `INFEASIBLE`, `ERROR`, followed by the report.
+  } ], "run": { "parallel", "budget": { "unit_tokens", "run_tokens",
+  "prices": {} }, "full_interval_minutes", "roles": { "<role>": {
+  "max_turns" } }, "sandbox_provider": "local" } }`; the manifest's Target
+  section carries `spec_paths` (what `stage-spec` copies) and the reference
+  paths the tiers deny; `roles/<role>.json` is a harness `--settings`
+  document, and a tier-B file carries the fail-closed sandbox keys of §3; a
+  role's report is its final message, its first line one of `DONE`,
+  `MORE_WORK`, `BLOCKED`, `INFEASIBLE`, `ERROR`.
 - **Oracle runner contract** (M1 for the toy, M3 for the scenario; M5's
   driver): `forge/oracle/run.py <axis> run <binary> <slice> <outdir>`,
   `… normalize <outdir>`, `… compare <expected> <actual>` → one summary line
   on stdout (`<axis> <slice>: <n> divergences, skipped: <k>`) and a detail
   file; `self-parity`, `mutation --against <ref>`, `fast --worker <id>`,
   `full`, `heldout` compose these.
-- **Runner surface** (M4, M5, `report` in M6): `forge-run.py plan|run|unit
-  <id>|land <id>|oracle <sub>|status|report [--resume] [--parallel n]
-  <forge-dir>`; `state.json`
-  `{ "run", "units": { "<id>": { "state", "rounds": [ { "role", "status",
-  "report", "usage" } ], "head", "review_head" } }, "waves": [] }`;
-  `events.jsonl` lines `{ "ts", "unit", "kind", "detail" }` with `kind` in
-  `escalation | infeasible | tip-failure | heldout-failure | budget`.
+- **Runner surface** (M4, M5, `report` in M6): `forge-run.py
+  preflight|plan|run|unit <id>|land <id>|oracle <sub>|status|report
+  [--resume] [--parallel n] <forge-dir>`. **Journals and state**: each
+  unit's worker appends to `runs/<id>/units/<unit>/journal.jsonl` lines
+  `{ "ts", "attempt", "role", "status", "head", "usage" }` and keeps that
+  attempt's persisted report beside it; the main process alone writes
+  `state.json` `{ "run", "units": { "<id>": { "state", "attempt", "head",
+  "review_head", "usage" } }, "usage", "waves": [] }` as a view over the
+  journals; landing appends to `runs/<id>/landing.jsonl` lines `rebase-start
+  | review-void | tip-check | fast-forward` per unit. **Transition table**
+  (unit states): `planned → authored` (oracle author `DONE`); `authored →
+  implemented` (implementer `DONE`); `implemented → judged` (reviewer and
+  verifier both `DONE`); `implemented → implemented` (either `MORE_WORK`,
+  `attempt + 1`, while `attempt ≤ max_rounds`); `judged → landed`
+  (`fast-forward` line); `judged → implemented` (`review-void` or a failed
+  `tip-check`); any role `BLOCKED` or `INFEASIBLE`, or `max_rounds`
+  exceeded, → `escalated` with an event, the unit idle until the root
+  resumes or closes it. **Linearization points**: a role is finished at its
+  journal line; a unit is landed at its `fast-forward` line, and the
+  integration branch moves only there. `events.jsonl` lines `{ "ts",
+  "unit", "kind", "detail" }` with `kind` in `escalation | infeasible |
+  tip-failure | heldout-failure | budget | full`.
 - **Role agents** (M4): `doperpowers:forge-oracle-author`, `forge-implementer`,
   `forge-reviewer`, `forge-delegator`, addressed by `--agent <name>`.
-- **Dependencies**: `claude` ≥ 2.1.300 for `--agent`, `--settings`,
-  `sandbox.filesystem.denyRead` and stream-json both ways; `bun` for the toy
-  and the scenario; Python 3.12+.
+- **Dependencies**: `claude` ≥ 2.1.300 for `--agent`, `--plugin-dir`,
+  `--settings`, the `sandbox` settings (`enabled`, `failIfUnavailable`,
+  `allowUnsandboxedCommands`, `filesystem.denyRead`) and stream-json both
+  ways; `bun` for the toy and the scenario; Python 3.12+ for this
+  repository's scripts (the bundle's own tools declare theirs; `extract.py`
+  needs 3.14 and is never invoked by this work).
 
 ## Surprises & Discoveries
 
@@ -875,6 +976,11 @@ Defined once here; milestones point at them.
   the ~14,000 the brainstorm assumed, and was itself produced by an
   orchestrated pool of about fourteen chapter authors with review rounds.
   Evidence: `wc -l SPEC/*.md` → 404213; `SPEC/_notes/00-orchestration.md`.
+- Observation: the bundle's `SPEC/_inventory/section-index.tsv` and
+  `citation-anchors.tsv` were built for an earlier bundle: of the 1,450
+  chunk names they cite, one exists under `modules/`. Evidence: the
+  adversarial review of this spec, 2026-10-15, confirmed by
+  `comm -12 <(cut -f4 section-index.tsv | cut -d: -f1 | sort -u) <(ls modules | sort) | wc -l` → 1.
 - Observation: the strangler shape depends on the extracted module graph
   running under plain `bun` with parity, which nothing has tested.
   Evidence: `cli` imports `/$bunfs/root/chunk-*.js` virtual paths (the
@@ -907,6 +1013,43 @@ Defined once here; milestones point at them.
   in-session); plan-executor over subagent-driven-execution (one shared
   worktree, sequential, the loop in a model's context).
   Date/Author: 2026-10-15
+- Decision: After the first adversarial review (2026-10-15), eight changes:
+  the scenario rebuilds the bundle's inventories before deriving the ledger,
+  and the ledger comes from a heading walk, not the citation index; the
+  runner has one state writer and per-unit journals, with the transition
+  table and linearization points in Interfaces and kills at every boundary
+  in the tests; a tier-B role's settings must enable a fail-closed sandbox
+  (the sandbox is off by default and falls back to unsandboxed execution),
+  proven by a live check; the runner loads its own checkout with
+  `--plugin-dir` and preflights every role, since the harness only warns on
+  an unknown agent; a role's report is its final message, persisted by the
+  runner, so the read-only reviewer needs no write; the implementer reads a
+  staged copy of the spec so the whole reference tree can be denied; the
+  strangler spike reads the extracted tree, not a record table `MAP.md` does
+  not hold; the run controls (budget, `full` interval, turn limits) are
+  manifest fields the runner enforces, with tests.
+  Rationale: each was a gap an executor would have had to guess across, and
+  two (the stale inventories, the sandbox defaults) would have made a
+  milestone's proof false.
+  Date/Author: 2026-10-15
+- Decision: The verifier's and the oracle's runs go to a sandbox provider
+  the manifest names (`local` | `vm` | `ephemeral`), with the oracle runner
+  contract unchanged across providers; this spec implements `local` and
+  defines the interface, and the scenario names `ephemeral` for verify and
+  `full`.
+  Rationale: the human partner's question (2026-10-15) whether a per-run
+  serverless sandbox beats one self-hosted runner for verification. It does
+  for this workload: a verify is stateless and minutes long, the work is
+  embarrassingly parallel, and a fixed host serializes it once saturated;
+  Prime Intellect ran over 10,000 microVM sandboxes for exactly this. Cold
+  start is the cost, and a prebaked image with the toolchain, the reference
+  and the corpus makes it seconds; for a compiled target a snapshot-restoring
+  microVM provider keeps the warmed build directory, which a container job
+  service cannot. The roles stay on the VM: they are long-lived sessions
+  with worktrees, not jobs.
+  Rejected: implementing a provider now — no run is planned, and the toy
+  needs only `local`.
+  Date/Author: 2026-10-15 (the human partner's question; the root's design)
 - Decision: Milestone order puts the scenario (M2, M3) before the runner
   (M4–M7).
   Rationale: the human partner's priority is the simulation; M2 and M3
