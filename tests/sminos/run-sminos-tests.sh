@@ -345,7 +345,6 @@ run() { # capture stdout+stderr and rc without aborting the suite
   set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e
 }
 
-if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 # ---- the suite's two parts ---------------------------------------------------
 # SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
 # `suites` the files it runs beside them (run_suites); unset runs both.
@@ -393,6 +392,8 @@ summary() {
   exit 0
 }
 if [ "$SMINOS_PART" = suites ]; then run_suites; summary; fi
+
+if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 
 # ---- 1) usage ----------------------------------------------------------------
 echo "usage:"
