@@ -6,10 +6,13 @@ import {
   BACKGROUND_WINDOW_MS,
   HEARTBEAT_MS,
   RECORD_WAIT_MS,
+  ROWS_POLLS,
+  ROWS_POLL_MS,
   STEER_WAKE,
   STEP_END_WAIT_MS,
   TRANSCRIPT_RETRY_MS,
   TEXT_CAP,
+  compacted,
   onAskNote,
   registerBridge,
   resetBridge,
@@ -134,6 +137,9 @@ function harness(
   const appends: (() => void)[] = []
   /** Files `$.fs.read` reads (the session's transcripts). */
   const files: Record<string, string> = {}
+  /** Each loop's rows on disk, as the child's GET /rows reads them; and the reads made. */
+  const disk: Record<string, string[]> = {}
+  const rowReads: { loop: string | null; after: string | null; socketPath?: string }[] = []
   let session = SID
   const $ = {
     plugin: { name: 'doperpowers', root: '/plug' },
@@ -192,6 +198,14 @@ function harness(
             const respond = (status: number, body?: unknown) =>
               resolve({ status, ok: status < 300, headers: {}, text: body === undefined ? '' : JSON.stringify(body) })
             polls.push({ url, socketPath: init.socketPath, respond, fail: () => reject(new Error('refused')) })
+            return
+          }
+          if (url.startsWith('http://bridge/rows?')) {
+            const q: Record<string, string> = Object.fromEntries(url.slice(url.indexOf('?') + 1).split('&').map((kv) => kv.split('=').map(decodeURIComponent)))
+            rowReads.push({ loop: q.loop ?? null, after: q.after ?? null, socketPath: init.socketPath })
+            const rows = disk[q.loop ?? ''] ?? []
+            const at = rows.indexOf(q.after ?? '')
+            resolve(at === -1 ? { status: 404, ok: false, headers: {}, text: '{"error":"not on disk"}' } : { status: 200, ok: true, headers: {}, text: JSON.stringify({ rows: rows.slice(at + 1) }) })
             return
           }
           const release = () => resolve({ status: 204, ok: true, headers: {}, text: '' })
@@ -375,6 +389,8 @@ function harness(
     resultRow,
     recorded,
     files,
+    disk,
+    rowReads,
     polls,
     nextPoll,
     fire,
@@ -2075,6 +2091,259 @@ describe('row notices and the cut', () => {
     await h.settle()
     expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: null } })
     expect(Object.keys(h.ofType('resync').at(-1)!.cut as object)).toEqual(['main'])
+  })
+})
+
+describe("a compaction's rows, which no session.append raises", () => {
+  const notices = (h: ReturnType<typeof harness>) =>
+    h.events().filter((e) => e.type === 'block-row' || e.type === 'row-seen').map((e) => `${String(e.type)}:${String(e.uuid)}`)
+  const prompt = (h: ReturnType<typeof harness>, uuid: string) =>
+    h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'go' }] }, { uuid })
+  /** A compaction's result as the engine hands it (2.1.301): its summary first, carrying the summary row's uuid as its handle. */
+  const result = (summary: string) => ({ messages: [{ role: 'user' as const, text: 'This session is being continued…', toolUses: [], handle: summary }], tokensBefore: 900, tokensAfter: 100 })
+  /** The poster's reads of the transcript, each a poll apart. */
+  const poll = (h: ReturnType<typeof harness>) => h.fire(ROWS_POLL_MS)
+
+  test("the bridge's compaction: the rows past the cut that no notice named are each named by row-seen (door compaction), in disk order, once its summary row is on disk and a poll later; ahead of its end and of anything later, which waits", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    h.disk.main = ['p0']
+    const r = await h.command({ op: 'compact' })
+    h.compactions[0]!.finish(result('sum'))
+    await h.settle()
+    // The next turn's prompt, named meanwhile: behind the compaction's rows.
+    await prompt(h, 'p1')
+    expect(h.rowReads[0]).toEqual({ loop: 'main', after: 'p0', socketPath: SOCK })
+    expect(notices(h)).toEqual(['row-seen:p0'])
+    expect(h.ofType('compact').map((e) => e.phase)).toEqual(['start'])
+    h.disk.main = ['p0', 'bound', 'sum']
+    await poll(h)
+    expect(notices(h)).toEqual(['row-seen:p0'])
+    // A poll later the batch is whole; p1, named already, is no compaction row.
+    h.disk.main = ['p0', 'bound', 'sum', 'env', 'model', 'p1']
+    await poll(h)
+    const order = h.events().filter((e) => e.type === 'row-seen' || e.type === 'compact').map((e) => (e.type === 'compact' ? `compact:${String(e.phase)}` : String(e.uuid)))
+    expect(order).toEqual(['p0', 'compact:start', 'bound', 'sum', 'env', 'model', 'compact:end', 'p1'])
+    expect(h.ofType('row-seen').slice(1, 5)).toEqual(['bound', 'sum', 'env', 'model'].map((uuid) => expect.objectContaining({ uuid, agentId: null, door: 'compaction' })))
+    expect(h.ofType('compact').at(-1)).toMatchObject({ phase: 'end', id: r.id, tokensAfter: 100 })
+    // The cut is the last notice in the stream's order: p1's.
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 'p1' } })
+  })
+
+  test("with nothing after it, the cut moves to the compaction's last row; a row named again later is not named twice", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    h.disk.main = ['p0', 'bound', 'sum', 'env']
+    await h.command({ op: 'compact' })
+    h.compactions[0]!.finish(result('sum'))
+    await h.settle()
+    await poll(h)
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:bound', 'row-seen:sum', 'row-seen:env'])
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 'env' } })
+    // A second compaction reads past the first's last row.
+    h.disk.main.push('bound2', 'sum2')
+    await h.command({ op: 'compact' })
+    h.compactions[1]!.finish(result('sum2'))
+    await h.settle()
+    await poll(h)
+    expect(h.rowReads.at(-1)).toMatchObject({ after: 'env' })
+    expect(notices(h).slice(4)).toEqual(['row-seen:bound2', 'row-seen:sum2'])
+  })
+
+  test("a compaction this plugin did not start (the person's /compact, through session.compact) is named the same way, a subagent's in its own loop; a precompute, a skipped one, and one whose rows the engine raised (an auto compaction's) read nothing or name nothing more", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    const compact = (e: Record<string, unknown>, answer: Record<string, unknown>) =>
+      h.hook('session.compact', { trigger: e.trigger })(h.engine, { messages: [], ...e }, async () => answer) as Promise<Record<string, unknown>>
+    h.disk.main = ['p0', 'bound', 'sum', 'caveat', 'cmd', 'stdout', 'env']
+    expect(await compact({ trigger: 'manual' }, result('sum'))).toEqual(result('sum'))
+    await h.settle()
+    await poll(h)
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:bound', 'row-seen:sum', 'row-seen:caveat', 'row-seen:cmd', 'row-seen:stdout', 'row-seen:env'])
+    const reads = h.rowReads.length
+    await compact({ trigger: 'precompute' }, result('pre'))
+    await compact({ trigger: 'manual' }, { skip: 'a hook said no' })
+    await h.settle()
+    await poll(h)
+    expect(h.rowReads.length).toBe(reads)
+    // An auto compaction: the engine raises its rows, each named by its append.
+    await compact({ trigger: 'auto' }, result('sum3'))
+    await h.append('compaction', { type: 'system', name: 'compact_boundary', content: [] }, { uuid: 'bound3' })
+    await h.append('compaction', { type: 'user', role: 'user', content: [{ type: 'text', text: 'summary' }] }, { uuid: 'sum3' })
+    h.disk.main.push('bound3', 'sum3')
+    await poll(h)
+    await poll(h)
+    expect(notices(h).slice(7)).toEqual(['row-seen:bound3', 'row-seen:sum3'])
+    expect(h.ofType('row-seen').slice(7).map((e) => e.door)).toEqual(['compaction', 'compaction'])
+    // A subagent's loop: its own cut, its own transcript, its id.
+    await h.append('attachment', { type: 'attachment', name: 'x', role: 'user', content: [] }, { uuid: 's0', agentId: 'a7' })
+    h.disk.a7 = ['s0', 's-bound', 's-sum']
+    await compact({ trigger: 'auto', agentId: 'a7' }, result('s-sum'))
+    await h.settle()
+    await poll(h)
+    expect(h.rowReads.at(-1)).toMatchObject({ loop: 'a7', after: 's0' })
+    expect(h.ofType('row-seen').slice(-2)).toEqual(['s-bound', 's-sum'].map((uuid) => expect.objectContaining({ uuid, agentId: 'a7', door: 'compaction' })))
+  })
+
+  test("another mod's compaction (the compact tool's) is named ahead of the resume prompt the mod submits after it", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    h.disk.main = ['p0']
+    compacted(null, result('sum').messages)
+    await prompt(h, 'resume')
+    h.disk.main = ['p0', 'bound', 'sum', 'env', 'resume']
+    await poll(h)
+    await poll(h)
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:bound', 'row-seen:sum', 'row-seen:env', 'row-seen:resume'])
+  })
+
+  test('rows not on disk within ROWS_POLLS reads are left unnamed, and what the hold kept goes out; with no cut yet nothing is held', async () => {
+    const h = harness()
+    await h.start()
+    // Before the first hello, the main loop of a reloaded session has no cut: nothing to read past.
+    compacted(null, result('early').messages)
+    h.children[0]!.write(hello())
+    await h.settle()
+    await prompt(h, 'p0')
+    // A result whose summary has no handle (a hook answered with messages of its own): nothing says when its rows are in.
+    const built = [{ role: 'user' as const, text: 'a summary of its own', toolUses: [] }]
+    compacted(null, built)
+    await h.settle()
+    expect(h.rowReads.length).toBe(0)
+    h.disk.main = ['p0']
+    compacted(null, result('sum').messages)
+    await prompt(h, 'p1')
+    for (let i = 0; i < ROWS_POLLS; i++) {
+      await poll(h)
+    }
+    expect(h.rowReads.length).toBe(ROWS_POLLS)
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:p1'])
+  })
+
+  test("a hello during the hold: the new child's resync comes first, then the compaction's rows while the cut is still where they begin; a later notice that moved the cut drops them (the resync's cut covers them)", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    h.disk.main = ['p0']
+    compacted(null, result('sum').messages)
+    await h.settle()
+    h.children[0]!.write(hello())
+    await h.settle()
+    h.disk.main = ['p0', 'bound', 'sum']
+    await poll(h)
+    await poll(h)
+    const tail = h.events().slice(-4).map((e) => `${e.type}${e.uuid === undefined ? '' : `:${String(e.uuid)}`}`)
+    expect(tail).toEqual(['session', 'resync', 'row-seen:bound', 'row-seen:sum'])
+    // Again, with a later row named before the hello: its cut covers the compaction's rows.
+    h.disk.main.push('bound2', 'sum2', 'p2')
+    compacted(null, result('sum2').messages)
+    await prompt(h, 'p2')
+    h.children[0]!.write(hello())
+    await h.settle()
+    await poll(h)
+    await poll(h)
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 'p2' } })
+    expect(notices(h).slice(-1)).toEqual(['row-seen:sum'])
+    expect(h.events().at(-1)).toMatchObject({ type: 'resync' })
+  })
+
+  test('with the poster behind, two compactions and a response row between them all on disk before the first hold runs: each hold names only the rows before the first a notice queued behind it names', async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    // The hello's post is held: everything after it queues.
+    await prompt(h, 'p0')
+    compacted(null, result('s1').messages)
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'Hi' }], async () => {
+      await h.responseRow({ type: 'text', text: 'Hi' }, { uuid: 'r' })
+    })
+    compacted(null, result('s2').messages)
+    h.disk.main = ['p0', 'b1', 's1', 'r', 'b2', 's2']
+    for (let i = 0; i < 10; i++) {
+      h.posts.forEach((p) => p.release())
+      await poll(h)
+    }
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:b1', 'row-seen:s1', 'block-row:r', 'row-seen:b2', 'row-seen:s2'])
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 's2' } })
+  })
+
+  test("a row named before the hold stays named whatever traffic comes before or after it (another loop's, or the loop's own queued behind the hold): the compaction's rows are named once, and no row twice", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    // Named before the hold, though the engine wrote it past the cut (its write order).
+    await prompt(h, 'a')
+    // A subagent's notices, more than any bound keeps, before the hold.
+    for (let i = 0; i < 1_001; i++) {
+      await h.append('attachment', { type: 'attachment', name: 'x', role: 'user', content: [] }, { uuid: `s${i}`, agentId: 'a7' })
+    }
+    await prompt(h, 'z')
+    h.disk.main = ['p0', 'z', 'a', 'bound', 'sum', 'm0', 'm1']
+    compacted(null, result('sum').messages)
+    // The loop's own notices queued behind the hold, more than its bound keeps; the first two are on disk.
+    const later = Array.from({ length: 202 }, (_, i) => `m${i}`)
+    for (const uuid of later) {
+      await prompt(h, uuid)
+    }
+    await poll(h)
+    await poll(h)
+    const main = h.ofType('row-seen').filter((e) => e.agentId === null).map((e) => String(e.uuid))
+    expect(main).toEqual(['p0', 'a', 'z', 'bound', 'sum', ...later])
+    expect(h.ofType('row-seen').filter((e) => e.door === 'compaction').map((e) => e.uuid)).toEqual(['bound', 'sum'])
+  })
+
+  test("two compactions with nothing of their loop named between them share an anchor: the second reads past the first's rows, and the cut moves to its own last row", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'p0')
+    h.disk.main = ['p0']
+    compacted(null, result('s1').messages)
+    compacted(null, result('s2').messages)
+    h.disk.main.push('b1', 's1')
+    await poll(h)
+    await poll(h)
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:b1', 'row-seen:s1'])
+    h.disk.main.push('b2', 's2')
+    await poll(h)
+    await poll(h)
+    expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:b1', 'row-seen:s1', 'row-seen:b2', 'row-seen:s2'])
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 's2' } })
+    expect(h.rowReads.at(-1)).toMatchObject({ after: 's1' })
+  })
+
+  test("two holds at a subagent's cut with a notice of it queued behind them: the rows the first names count as named for the second, though the cut is that notice's and the subagent stopped in between", async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    const attachment = (uuid: string) => h.append('attachment', { type: 'attachment', name: 'x', role: 'user', content: [] }, { uuid, agentId: 'a7' })
+    await attachment('q0')
+    compacted('a7', result('s1').messages)
+    compacted('a7', result('s2').messages)
+    await attachment('r')
+    h.disk.a7 = ['q0', 'b1', 's1', 'b2', 's2', 'r']
+    // The hello's post, then q0's; the first hold runs, and the post of what it named is held.
+    h.posts[0]!.release()
+    await h.settle()
+    h.posts[1]!.release()
+    await poll(h)
+    await poll(h)
+    expect(h.posts).toHaveLength(3)
+    await h.hook('classic.SubagentStop', { hook_event_name: 'SubagentStop' })(h.engine, { hook_event_name: 'SubagentStop', agent_id: 'a7', agent_type: 'Explore' }, async () => ({}))
+    for (let i = 0; i < 6; i++) {
+      h.posts.forEach((p) => p.release())
+      await poll(h)
+    }
+    expect(notices(h)).toEqual(['row-seen:q0', 'row-seen:b1', 'row-seen:s1', 'row-seen:b2', 'row-seen:s2', 'row-seen:r'])
   })
 })
 

@@ -102,6 +102,11 @@ export type BridgeState = {
   log?: (text: string) => void
   after?: (ms: number, fn: () => void) => void
   readId?: () => Promise<string>
+  /**
+   * A loop's rows on disk past one of them, in disk order, as the child reads
+   * its transcript (GET /rows); undefined while that row is not on disk.
+   */
+  rowsAfter?: (loop: string, after: string) => Promise<string[] | undefined>
   /** Stops the child and starts one for this session. */
   restart?: (session: string) => void
   /** What the session start said, sent to each child once it says hello. */
@@ -175,6 +180,8 @@ export type BridgeState = {
   dialogCalls: Map<string, string | undefined>
   /** Each loop's last row notice (`main`, or the subagent's id): the cut a resync carries. */
   cut: Map<string, string>
+  /** Each loop's rows its latest notices named (as `cut` keys them), oldest first: a row past a cut that none named is one no hook saw. */
+  named: Map<string, Set<string>>
   /** The loops this module saw from their first row (as `cut` keys them): no seed, nothing held back. */
   freshLoops: Set<string>
   /**
@@ -204,6 +211,7 @@ const fresh = (): BridgeState => ({
   askDialogs: new Map(),
   dialogCalls: new Map(),
   cut: new Map(),
+  named: new Map(),
   freshLoops: new Set(),
   isTurnUnknown: false,
   asks: new Map(),

@@ -3,7 +3,7 @@ import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, Sess
 import { ASK_TOOL, PLUGIN, observeAsks } from './ask'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, Override, Request, Steer } from './bridge-state'
-import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, resyncEvent, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -18,11 +18,12 @@ import {
   settle,
   withdrawAll,
 } from './bridge-requests'
-import { announceRow, exportRow, noticeRow, observeRow } from './bridge-rows'
+import { announceRow, compacted, exportRow, noticeRow, observeRow } from './bridge-rows'
 
 export { TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
+export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
 
 /**
  * The bridge (DC2): this session's live events go out, and commands come in,
@@ -56,8 +57,8 @@ export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-request
  * - bridge-stream.tsx: the mod's copy of the session's live state, which
  *   every resync carries, and the poster;
  * - bridge-requests.tsx: requests from outside, and their settlement;
- * - bridge-rows.tsx: row order (each kept row's notice), and the rows
- *   exported as messages to the host.
+ * - bridge-rows.tsx: row order (each kept row's notice, a compaction's rows
+ *   read from the transcript), and the rows exported as messages to the host.
  */
 
 export const HEARTBEAT_MS = 5_000
@@ -363,6 +364,10 @@ async function runCompaction($: EngineInterface, request: { id: string; instruct
   emit({ type: 'compact', phase: 'start', id: request.id })
   try {
     const outcome = await $.session.compact(request.instructions === undefined ? {} : { instructions: request.instructions })
+    // Its rows pass no hook: named from the transcript, before its end.
+    if (outcome.skip === undefined) {
+      compacted(null, outcome.messages)
+    }
     emit({
       type: 'compact',
       phase: 'end',
@@ -499,7 +504,7 @@ function onLine($: EngineInterface, generation: number, line: string) {
     }
     // A new child knows nothing of the session: what it started as, then
     // where it stands. What was queued for no child is in that state.
-    state.queue = [{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, resyncEvent()]
+    requeue([{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, resyncEvent()])
     pump()
     return
   }
@@ -637,6 +642,15 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
       body,
     })
   state.read = (path) => $.fs.read(path)
+  state.rowsAfter = async (loop, after) => {
+    const socketPath = state.socket
+    if (socketPath === undefined) {
+      return undefined
+    }
+    const res = await $.http.fetch(`http://bridge/rows?loop=${encodeURIComponent(loop)}&after=${encodeURIComponent(after)}`, { socketPath })
+    const rows = res.status === 200 ? parsed(res.text)?.rows : undefined
+    return Array.isArray(rows) ? rows.filter((u): u is string => typeof u === 'string') : undefined
+  }
   state.log = (text) => $.ui.log(text, { to: 'debug' })
   state.after = (ms, fn) => void $.clock.after(ms, fn)
   state.readId = () => $.session.id()
@@ -952,6 +966,21 @@ export function registerBridge(on: On) {
       }
     }
     return stored
+  }).catch((_, e, next) => next(e))
+
+  // Every compaction this plugin did not start (the person's /compact, a
+  // command run, the engine's own); this plugin's own pass no hook of its
+  // (runCompaction and the compact tool name theirs). One that stood writes
+  // its rows once the hooks are through: named from the transcript. A
+  // precompute installs nothing.
+  // A failure here leaves the compaction as it settled: `next` in the catch
+  // replays it, nothing beneath running again.
+  on('session.compact', { trigger: /^/ }, async (_, e, next) => {
+    const result = await next(e)
+    if (state.post !== undefined && e.trigger !== 'precompute' && result.skip === undefined) {
+      compacted(e.agentId ?? null, result.messages)
+    }
+    return result
   }).catch((_, e, next) => next(e))
 
   on('agent.spawn', { tool_use_id: /^/ }, async (_, e, next) => {
