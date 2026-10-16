@@ -211,12 +211,14 @@ evidence for, because each has a failure on record:
   harness counts what it skipped and the count is zero or explained; a
   differential fuzzer on record reported "0 divergences" because 28 of 37
   cases threw at construction and were silently skipped.
-- **Fast and full.** `fast --seed <n>` is a 1–10% sample drawn fresh for
-  each verification — Carlini's compiler fixed a sample per agent because
-  the agents ran the oracle themselves; here the runner draws, so a worker
-  never sees an input twice and memorizing a sample buys nothing; `full` is
-  everything; output is a few lines with the detail in files. Every oracle
-  run gets a fresh `HOME` and config directory.
+- **Fast and full.** `fast --seed <n>` is a 1–10% sample drawn for each
+  verification without replacement from the unit's unseen pool — Carlini's
+  compiler fixed a sample per agent because the agents ran the oracle
+  themselves; here the runner draws and keeps the exposure set, so a
+  memorizer fails the first draw past what it memorized, and an exhausted
+  pool hands the unit to `full`; `full` is everything; output is a few lines
+  with the detail in files. Every oracle run gets a fresh `HOME` and config
+  directory.
 - **Held-out.** A slice the swarm never sees, run by the root at wave ends
   and at closure. Reboot's translators passed 100% of the visible tests and
   62–92% of the hidden ones; this is the only measurement of that gap.
