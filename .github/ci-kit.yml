@@ -20,9 +20,12 @@ gates:
     setup: false
     run: |
       if [ -z "$CI_KIT_BASE" ]; then echo "a dispatch has no change basis: nothing to lint"; exit 0; fi
+      # Into a file, not a process substitution, so a diff that fails (say, the
+      # base never fetched) fails the gate instead of reading as no change.
+      changed="$(mktemp)"
+      git diff --name-only --diff-filter=d -z "$CI_KIT_BASE" "$CI_KIT_HEAD" > "$changed"
       files=()
-      while IFS= read -r -d '' f; do files+=("$f"); done \
-        < <(git diff --name-only --diff-filter=d -z "$CI_KIT_BASE" "$CI_KIT_HEAD")
+      while IFS= read -r -d '' f; do files+=("$f"); done < "$changed"
       if [ "${#files[@]}" -eq 0 ]; then echo "no changed files"; exit 0; fi
       scripts/lint-shell.sh "${files[@]}"
     timeout: 10
