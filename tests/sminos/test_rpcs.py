@@ -1226,6 +1226,68 @@ class Checks(unittest.TestCase):
         self.assertEqual(len(results(self.frames, nonce)), 1, "sent once")
 
 
+class LaunchStart(unittest.TestCase):
+    """When the engine's record carries no start, `launched_by` reads the
+    process's own. On Linux `ps -o lstart` adds the start's offset to
+    /proc/stat's boot time, truncated to the second: a process begun 0.2 s
+    after the launch reads as begun the second before it, and a Resume
+    refused its own job. A /proc stand-in reproduces such a boot (its true
+    instant 0.7 s past the second btime names), with `ps` answering as it
+    would."""
+
+    PID = 4242
+    JOB = "abcd1234"
+
+    def setUp(self):
+        self.proc = os.path.join(T, "proc-" + uuidlib.uuid4().hex[:8])
+        os.makedirs(os.path.join(self.proc, str(self.PID)))
+        self.hz = os.sysconf("SC_CLK_TCK")
+        now = time.time()
+        self.boot = int(now) - 3600 + 0.7
+        self.launched = int(now) - 60 + 0.1
+        with open(os.path.join(self.proc, "stat"), "w") as f:
+            f.write("cpu  0 0 0 0\nbtime %d\n" % int(self.boot))
+        with open(os.path.join(self.proc, "uptime"), "w") as f:
+            f.write("%.2f 0.00\n" % (now - self.boot))
+        self.ps = ""
+        for patch in (mock.patch.object(sminos, "PROC", self.proc),
+                      mock.patch.object(sminos, "read_proc_start", lambda pid: self.ps)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def began(self, at):
+        """The process began at `at`: its /proc/<pid>/stat (a command name
+        with spaces and parentheses in it), and what ps prints for it."""
+        ticks = int((at - self.boot) * self.hz)
+        with open(os.path.join(self.proc, str(self.PID), "stat"), "w") as f:
+            f.write("%d (claude (bg) x) S 1 %d %d 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n"
+                    % (self.PID, self.PID, self.PID, ticks))
+        ps_second = int(self.boot) + ticks // self.hz
+        self.ps = time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(ps_second))
+        return ps_second
+
+    def holder(self, job=JOB):
+        return {"pid": self.PID, "sessionId": str(uuidlib.uuid4()), "kind": "bg", "jobId": job}
+
+    def test_its_own_job_begun_just_after_the_launch_holds(self):
+        ps_second = self.began(self.launched + 0.2)
+        self.assertLess(ps_second, int(self.launched), "the reproduction: ps reads the second before the launch")
+        self.assertTrue(rpcs.launched_by(self.holder(), self.launched, self.JOB))
+
+    def test_no_other_job_and_no_earlier_process_is_taken(self):
+        self.began(self.launched + 0.2)
+        self.assertFalse(rpcs.launched_by(self.holder("ffff0000"), self.launched, self.JOB), "another job")
+        self.began(self.launched - 1.5)
+        self.assertFalse(rpcs.launched_by(self.holder(), self.launched, self.JOB), "begun before the launch")
+
+    def test_without_proc_ps_decides(self):
+        os.unlink(os.path.join(self.proc, "uptime"))
+        self.began(self.launched + 2)
+        self.assertTrue(rpcs.launched_by(self.holder(), self.launched, self.JOB))
+        self.began(self.launched - 2)
+        self.assertFalse(rpcs.launched_by(self.holder(), self.launched, self.JOB))
+
+
 # ---------------------------------------------------------------- the uplink
 
 

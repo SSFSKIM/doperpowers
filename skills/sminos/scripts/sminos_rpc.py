@@ -1073,9 +1073,13 @@ def job_session(short):
 
 
 def started_at(rec):
-    """When a holder's process started, in epoch seconds (whole seconds when
-    only `ps` can tell), or None."""
+    """When a holder's process started, in epoch seconds, or None: the
+    engine's record, else /proc (Linux, to the clock tick), else `ps` (whole
+    seconds, the start's own second on macOS — never one before it)."""
     at = sminos.process_started(rec)
+    if at is not None:
+        return at
+    at = sminos.proc_started_at(rec.get("pid"))
     if at is not None:
         return at
     parsed = sminos._parse_lstart(sminos.read_proc_start(rec.get("pid")))
@@ -1084,8 +1088,8 @@ def started_at(rec):
 
 def launched_by(rec, launched, job):
     """Whether a holder of the session is the --bg process of the launch made
-    at `launched`, whose job is `job`: started no earlier than it (to the
-    second ps reads it at), its job the one that launch started."""
+    at `launched`, whose job is `job`: started no earlier than the launch's
+    second, its job the one that launch started."""
     started = started_at(rec)
     return (rec.get("kind") == "bg" and started is not None and started >= int(launched)
             and rec.get("jobId") == job)

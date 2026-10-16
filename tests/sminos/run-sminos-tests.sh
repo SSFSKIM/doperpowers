@@ -4958,6 +4958,8 @@ assert_contains "$OUT" "solo-repo: reconciled 0 · delivered 0" "once"
 cd "$RR"
 
 # daemon install writes the launchd agent under the HOME it is given and loads nothing.
+# (SMINOS_SERVICE pins the platform's choice to launchd, so these run on Linux too.)
+export SMINOS_SERVICE=launchd
 mkdir -p "$MD/inst/.claude" "$MD/lc"
 printf '{"env": {"ANTHROPIC_BASE_URL": "x", "ANTHROPIC_AUTH_TOKEN": "y"}}\n' > "$MD/inst/.claude/clodex-settings.json"
 printf '#!/bin/sh\necho "$*" >> "%s/launchctl.calls"\n' "$MD" > "$MD/lc/launchctl"
@@ -5013,6 +5015,109 @@ assert_rc 1 "$RC" "with no marketplace entry at all, refused too"
 assert_contains "$OUT" "no doperpowers entry in" "naming what is missing"
 assert_equals "$(cat "$PLIST")" "$PLIST_BEFORE" "a refused install writes no plist"
 assert_file_absent "$MD/launchctl.calls" "still loading nothing"
+unset SMINOS_SERVICE
+# On Linux, daemon install writes a systemd user unit under the launchd
+# agent's contract: the stable CLI, the same environment, 0600, daemon.out,
+# and nothing loaded. A value the unit file must escape (a quote, a
+# backslash, a specifier's %, a variable's $) comes back as the environment
+# set it.
+printf '#!/bin/sh\necho "$0 $*" >> "%s/service.calls"\n' "$MD" > "$MD/lc/systemctl"
+cp "$MD/lc/systemctl" "$MD/lc/loginctl"
+chmod +x "$MD/lc/systemctl" "$MD/lc/loginctl"
+SD_URL='http://gw.test/p%41th?a="b"&c=\d$HOME'
+mkdir -p "$MD/sd/.claude"
+printf '{"env": {"ANTHROPIC_BASE_URL": "x", "ANTHROPIC_AUTH_TOKEN": "y"}}\n' > "$MD/sd/.claude/clodex-settings.json"
+run env HOME="$MD/sd" SMINOS_HOME="$MD/sd/sminos" SMINOS_SERVICE=systemd XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" \
+  LOGNAME='x; printf injected' ANTHROPIC_BASE_URL="$SD_URL" DAEMON_HOST=sd-box "$SMINOS" daemon install
+assert_rc 0 "$RC" "daemon install writes a systemd unit"
+UNIT="$MD/sd/.config/systemd/user/sminos-daemon.service"
+assert_file_exists "$UNIT" "under the HOME it is given, where the user's manager looks"
+assert_contains "$OUT" "systemctl --user daemon-reload && systemctl --user enable --now sminos-daemon.service" "and says how to load it"
+assert_contains "$OUT" "systemctl --user disable --now sminos-daemon.service" "and unload it"
+assert_contains "$OUT" "loginctl enable-linger" "and that lingering keeps it with nobody logged in"
+assert_not_contains "$OUT" "injected" "naming no user after it: LOGNAME is the caller's to set"
+assert_file_absent "$MD/service.calls" "running neither systemctl nor loginctl"
+assert_equals "$(mode_of "$UNIT")" "0600" "readable only by its owner: it may carry the gateway's token"
+assert_equals "$(mode_of "$MD/sd/sminos" 2>/dev/null || echo absent)" "0700" "the registry, made for daemon.out"
+unit_fields() { # unit-file → the fields a reader of it gets, one per line
+  python3 - "$1" <<'PY_UNIT'
+import os, re, sys
+def word(w):
+    # One double-quoted word: C escapes undone, then a specifier's %%.
+    m = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', w)
+    assert m, w
+    return re.sub(r'\\(.)', lambda e: {"n": "\n"}.get(e.group(1), e.group(1)), m.group(1)).replace("%%", "%")
+section, out = "", []
+for line in open(sys.argv[1]):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("["):
+        section = line
+        continue
+    key, value = line.split("=", 1)
+    if key == "ExecStart":
+        cmd, args = re.fullmatch(r'("(?:[^"\\]|\\.)*") (.*)', value).groups()
+        value = "%s | %s" % (os.path.realpath(word(cmd)), args)
+    elif key == "Environment":
+        value = word(value)
+    out.append("%s %s=%s" % (section, key, value))
+print("\n".join(out))
+PY_UNIT
+}
+FIELDS="$(unit_fields "$UNIT")"
+assert_contains "$FIELDS" "[Service] ExecStart=$(real "$SMINOS") | daemon run" "it runs daemon run through this CLI"
+assert_contains "$FIELDS" "[Service] Environment=SMINOS_HOME=$MD/sd/sminos" "with the registry"
+assert_contains "$FIELDS" "[Service] Environment=PATH=$MD/lc:" "the PATH it was installed with"
+assert_contains "$FIELDS" "[Service] Environment=DAEMON_HOST=sd-box" "the machine's name"
+assert_contains "$FIELDS" "[Service] Environment=ANTHROPIC_BASE_URL=$SD_URL" "and the gateway route, escaped so systemd reads it back as set"
+assert_not_contains "$FIELDS" "ANTHROPIC_AUTH_TOKEN" "only what the environment sets"
+assert_contains "$FIELDS" "[Service] Restart=always" "restarted whenever it exits: on new code, after a crash"
+assert_contains "$FIELDS" "[Service] KillMode=process" "a stop signals the daemon alone, as launchd does its process group"
+assert_contains "$FIELDS" "[Service] StandardOutput=append:$MD/sd/sminos/daemon.out" "its output to daemon.out"
+assert_contains "$FIELDS" "[Service] StandardError=append:$MD/sd/sminos/daemon.out" "both streams"
+assert_contains "$FIELDS" "[Install] WantedBy=default.target" "started with the user's manager, so at boot under lingering"
+# A registry path holding a line break would put directives of its own in the
+# unit's output lines: the install refuses, writing nothing.
+run env HOME="$MD/nl" SMINOS_HOME="$MD/nl/reg"$'\n'"ExecStartPre=/bin/true" SMINOS_SERVICE=systemd XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" "$SMINOS" daemon install
+assert_rc 1 "$RC" "a registry path with a line break refuses the systemd install"
+assert_contains "$OUT" "line break" "saying so"
+assert_file_absent "$MD/nl/.config/systemd" "and writes no unit"
+# The user's manager reads XDG_CONFIG_HOME when it is set; so does install.
+run env HOME="$MD/sd" SMINOS_HOME="$MD/sd/sminos" SMINOS_SERVICE=systemd XDG_CONFIG_HOME="$MD/sd/xdg" PATH="$MD/lc:$PATH" "$SMINOS" daemon install
+assert_file_exists "$MD/sd/xdg/systemd/user/sminos-daemon.service" "under XDG_CONFIG_HOME when it is set"
+# From the versioned plugin cache, the unit runs the marketplace clone's CLI.
+printf '{"doperpowers": {"installLocation": "%s", "autoUpdate": true}}\n' "$MKT" > "$MD/inst/.claude/plugins/known_marketplaces.json"
+run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" SMINOS_SERVICE=systemd XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" \
+  "$CACHE/skills/sminos/scripts/sminos" daemon install
+assert_rc 0 "$RC" "a systemd install from the plugin cache succeeds"
+assert_contains "$(unit_fields "$MD/inst/.config/systemd/user/sminos-daemon.service")" \
+  "[Service] ExecStart=$(real "$MKT/skills/sminos/scripts/sminos") | daemon run" "and runs the marketplace clone's CLI, not the versioned cache's"
+assert_file_absent "$MD/service.calls" "still loading nothing"
+# The platform chooses: launchd on macOS, systemd on Linux, a refusal elsewhere.
+run env HOME="$MD/pc" SMINOS_HOME="$MD/pc/sminos" XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" "$SMINOS" daemon install
+assert_rc 0 "$RC" "with nothing forcing it, install follows the platform"
+case "$(uname -s)" in
+  Darwin) assert_file_exists "$MD/pc/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist" "on macOS, the launchd agent"
+          assert_file_absent "$MD/pc/.config/systemd" "and no unit" ;;
+  Linux)  assert_file_exists "$MD/pc/.config/systemd/user/sminos-daemon.service" "on Linux, the systemd unit"
+          assert_file_absent "$MD/pc/Library" "and no plist" ;;
+esac
+assert_equals "$(python3 - "$REPO_ROOT/skills/sminos/scripts" <<'PY_PLATFORM' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos_daemon as d
+picked = []
+for platform in ("darwin", "linux", "freebsd14"):
+    sys.platform = platform
+    try:
+        picked.append(d.service())
+    except SystemExit as e:
+        picked.append("refused %s" % e.code)
+print(" ".join(picked))
+PY_PLATFORM
+)" "launchd systemd refused 1" "launchd on darwin, systemd on linux, and a refusal on any other platform"
+assert_file_absent "$MD/service.calls" "and no install ran a service manager"
 # run notices new code: a change to its own scripts ends the loop with exit 0,
 # for launchd's KeepAlive to restart it on the new code.
 env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" "$CACHE/skills/sminos/scripts/sminos" daemon run --interval 1 > "$MD/run-code.out" 2>&1 & RUNC=$!
