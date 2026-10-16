@@ -511,10 +511,79 @@ def seed():
     fresh.stop()
 
 
+def rows_past():
+    """GET /rows: a loop's whole rows on disk past one of them, which the mod
+    reads for the rows no hook of its saw (a manual compaction's)."""
+    cfg = os.path.join(WORK, "cfg-rows")
+    sid = "5b000001-0000-4000-8000-%012d" % 0xfed
+    proj = os.path.join(cfg, "projects", "-w")
+    os.makedirs(os.path.join(proj, sid, "subagents"))
+    main = os.path.join(proj, sid + ".jsonl")
+    with open(main, "w") as f:
+        f.write(json.dumps({"uuid": "far", "type": "user"}) + "\n")
+        f.write(json.dumps({"type": "summary", "leafUuid": "far"}) + "\n")
+        f.write(json.dumps({"uuid": "pad", "type": "user", "message": {"content": "x" * (5 << 20)}}) + "\n")
+        f.write(json.dumps({"uuid": "p0", "type": "user"}) + "\n")
+        f.write(json.dumps({"uuid": "bound", "type": "system", "parentUuid": "p0"}) + "\n")
+        f.write(json.dumps({"type": "last-prompt", "leafUuid": "bound"}) + "\n")
+        f.write(json.dumps({"uuid": "sum", "type": "user", "message": {"content": "y" * 100000}}) + "\n")
+        f.write('{"uuid": "env", "type": "attach')   # a row still being flushed
+    with open(os.path.join(proj, sid, "subagents", "agent-a7.jsonl"), "w") as f:
+        f.write(json.dumps({"uuid": "s0", "type": "user"}) + "\n")
+        f.write(json.dumps({"uuid": "s1", "type": "user"}) + "\n")
+    child = Child(env={"CLAUDE_CONFIG_DIR": cfg}, session=sid)
+
+    def get(query):
+        c = Conn(child.sock)
+        c.request("GET", "/rows?" + query)
+        r = c.getresponse()
+        return r.status, json.loads(r.read() or b"null")
+
+    check("past a row: each whole row after it in disk order (lines with no uuid, a row's parentUuid naming it, and a row half-flushed passed over)",
+          get("loop=main&after=p0") == (200, {"rows": ["bound", "sum"]}), get("loop=main&after=p0"))
+    check("past the last whole row: none", get("loop=main&after=sum") == (200, {"rows": []}), get("loop=main&after=sum"))
+    check("a row not on disk yet (half-flushed, or never written) is 404", get("loop=main&after=env")[0] == 404 and get("loop=main&after=nope")[0] == 404,
+          (get("loop=main&after=env"), get("loop=main&after=nope")))
+    check("a row further back than the scan's bound (4 MiB) is 404", get("loop=main&after=far")[0] == 404, get("loop=main&after=far"))
+    check("a subagent's loop is its own transcript; a loop with none is 404; no row named is 400",
+          get("loop=a7&after=s0") == (200, {"rows": ["s1"]}) and get("loop=a8&after=s0")[0] == 404 and get("loop=main")[0] == 400,
+          (get("loop=a7&after=s0"), get("loop=a8&after=s0"), get("loop=main")))
+    with open(main, "a") as f:
+        f.write('ach"}\n')
+    check("once the half-flushed row is whole, it is read", get("loop=main&after=sum") == (200, {"rows": ["env"]}), get("loop=main&after=sum"))
+    child.stop()
+
+
+def compaction_named():
+    """A manual compaction's rows, which no hook saw, named by the mod from
+    the transcript once they are on disk, in disk order and ahead of anything
+    later: the consumer releases none unnamed, and none waits."""
+    child, disk = Child(), Disk("compaction")
+    disk.write("main", "p0")
+    child.resync(cut={"main": "p0"})
+    c = Consumer(child, disk)
+    c.wait("the snapshot", 3, lambda: c.snapshot)
+    t0 = time.time()
+    rows = ("bound", "sum", "caveat", "cmd", "stdout", "env", "model")
+    for u in rows:
+        disk.write("main", u, "system")
+    time.sleep(0.2)   # the mod reads them once they are on disk, a poll after the summary
+    child.post(*[dict(seen(u), door="compaction") for u in rows])
+    disk.write("main", "p1")
+    child.post(seen("p1"))
+    c.wait("p1", 3, lambda: len(c.out) >= 9)
+    took = c.at.get("p1", t0 + 99) - t0
+    check("a compaction's rows named from the transcript come out named, in disk order, at once; none unnamed",
+          c.out == [("p0", "history")] + [(u, "notice") for u in rows] + [("p1", "notice")] and took < 1,
+          "%s after %.2f s" % (c.out, took))
+    child.stop()
+
+
 def passed_over():
-    """Rows no notice names (the bridge's own compaction rows, the engine's
-    reload line) are released by the next notice of their loop, in disk order;
-    the 2 s wait is only for such a row last on disk."""
+    """Rows no notice names (a compaction's whose summary row did not reach
+    disk in time, DX5's "A compaction's rows") are released by the next
+    notice of their loop, in disk order; the 2 s wait is only for such a row
+    last on disk."""
     child, disk = Child(), Disk("passed")
     child.resync()
     c = Consumer(child, disk)
@@ -651,8 +720,8 @@ def subagent_loop():
     child.stop()
 
 
-for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, flush_ahead, between_chunk_and_row, notice_past_bound, passed_over, cut_wait, seeded,
-             fence, subagent_loop):
+for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, rows_past, flush_ahead, between_chunk_and_row, notice_past_bound, passed_over,
+             compaction_named, cut_wait, seeded, fence, subagent_loop):
     try:
         case()
     except Exception as e:  # noqa: BLE001 — a case that cannot go on is a failed case

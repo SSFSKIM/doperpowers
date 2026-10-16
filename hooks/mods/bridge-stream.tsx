@@ -13,7 +13,21 @@ import type { BridgeEvent, Override, Request, Streaming } from './bridge-state'
  * Every event goes through `emit`, which folds it into that state (`track`)
  * and queues it for the poster. A step's end is held here until every row of
  * its blocks is named (bridge-rows.tsx names them).
+ *
+ * A hold is a place in the queue the poster does not post past until its
+ * `run` resolves; the events it resolves take its place. Rows no hook saw (a
+ * compaction's, bridge-rows.tsx) are named through one, so their notices go
+ * out ahead of anything later, though their uuids are read from the disk.
  */
+
+export type Hold = BridgeEvent & {
+  type: '@hold'
+  /** The loop whose rows past `after` it names: its cut when the hold was placed. */
+  loop: string
+  after: string
+  run: () => Promise<BridgeEvent[]>
+}
+const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@hold'
 
 const BATCH_MAX = 500
 const QUEUE_MAX = 10_000
@@ -156,6 +170,7 @@ export function forgetLive() {
   state.askDialogs.clear()
   state.dialogCalls.clear()
   state.cut.clear()
+  state.named.clear()
   // A /clear comes between turns: the new session's main loop is idle.
   state.isTurnUnknown = false
   state.asks.clear()
@@ -207,8 +222,27 @@ export function adoptKept(kept: unknown) {
  * event lost and every one queued behind them.
  */
 function lose(events: BridgeEvent[]) {
-  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' ? 0 : 1), 0)
-  state.queue = [{ type: 'gap', dropped, t: Date.now() }, resyncEvent()]
+  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' || isHold(e) ? 0 : 1), 0)
+  requeue([{ type: 'gap', dropped, t: Date.now() }, resyncEvent()])
+}
+
+/**
+ * The queue replaced by `events` (a resync, which covers what was queued):
+ * a hold stays, behind them, while its loop's cut is still the row it names
+ * past, so its rows are past the cut they carry. Once a later notice moved
+ * the cut, the resync's cut covers its rows: it goes.
+ */
+export function requeue(events: BridgeEvent[]) {
+  state.queue = [...events, ...state.queue.filter((e) => isHold(e) && state.cut.get(e.loop) === e.after)]
+}
+
+/** Places a hold (Hold) at the queue's end. */
+export function hold(h: Hold) {
+  if (state.post === undefined || state.isEnding) {
+    return
+  }
+  state.queue.push(h)
+  pump()
 }
 
 export function emit(event: BridgeEvent) {
@@ -249,7 +283,17 @@ export async function poster() {
       state.wake = undefined
       continue
     }
-    const batch = state.queue.splice(0, BATCH_MAX)
+    const head = state.queue[0]
+    if (isHold(head)) {
+      const events = await head.run().catch(() => [])
+      const at = state.queue.indexOf(head)
+      if (at !== -1) {
+        state.queue.splice(at, 1, ...events)
+      }
+      continue
+    }
+    const held = state.queue.findIndex(isHold)
+    const batch = state.queue.splice(0, held === -1 ? BATCH_MAX : Math.min(held, BATCH_MAX))
     const generation = state.generation
     let failed = false
     state.isPosting = true

@@ -25,7 +25,10 @@ it streams, subagents labelled; `--json`, the lines as they come.
 
 Row order (DC2 M4): the hello's `seed` is each loop's last row in the
 session's transcripts as the child read them, which the mod's first resync
-carries as each loop's cut; the mod's row notices move it from there.
+carries as each loop's cut; the mod's row notices move it from there. The
+rows no hook of the mod's sees (a manual compaction's) it reads here too:
+
+    GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
 
 What must outlive a module reload, which kills the child — the model chosen
 for the session and the delivery keys already submitted — the child keeps in
@@ -85,6 +88,7 @@ ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
 EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
 STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
 TAIL_BLOCK = 65536             # a transcript's tail is read backward this many bytes at a time
+ROWS_SCAN_MAX = 4 << 20        # bytes: how far back from its end GET /rows looks for the row it reads past
 NOTICES = ("block-row", "row-seen")  # each row the session keeps is named by one, in write order (the cut)
 NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post without it is another module's
 QUESTION_TOOLS = ("AskUserQuestion",)
@@ -305,6 +309,42 @@ def last_row(path):
                 if cut is None:
                     return None
                 buf = cut + b"\n"
+            return None
+    except OSError:
+        return None
+
+
+def _uuid_of(line):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    return row["uuid"] if isinstance(row, dict) and isinstance(row.get("uuid"), str) else None
+
+
+def rows_after(path, uuid):
+    """The uuids of a transcript's whole rows after the row `uuid`, in disk
+    order, read backward from its end; None while that row is not among its
+    whole lines (not flushed yet), or lies further back than ROWS_SCAN_MAX."""
+    key = uuid.encode()
+    try:
+        with open(path, "rb") as f:
+            end = at = f.seek(0, os.SEEK_END)
+            buf = b""
+            while at > 0 and end - at < ROWS_SCAN_MAX:
+                start = max(0, at - TAIL_BLOCK)
+                f.seek(start)
+                buf = f.read(at - start) + buf
+                at = start
+                if key not in buf:
+                    continue
+                # Whole lines only, as last_row reads them.
+                lines = buf[:buf.rfind(b"\n") + 1].split(b"\n")[:-1]
+                if at > 0 and lines:
+                    lines.pop(0)
+                for i in range(len(lines) - 1, -1, -1):
+                    if key in lines[i] and _uuid_of(lines[i]) == uuid:
+                        return [u for u in map(_uuid_of, lines[i + 1:]) if u is not None]
             return None
     except OSError:
         return None
@@ -970,6 +1010,16 @@ class _Handler(BaseHTTPRequestHandler):
             return self._stream(bridge)
         if route == "/requests":
             return self._send(200, bridge.requests())
+        if route == "/rows":
+            q = parse_qs(url.query)
+            loop, after = (q.get("loop") or ["main"])[0], (q.get("after") or [""])[0]
+            if not after:
+                return self._send(400, {"error": "after names a row"})
+            path = transcripts(bridge.session).get(loop)
+            rows = rows_after(path, after) if path else None
+            if rows is None:
+                return self._send(404, {"error": "row %s is not on %s's transcript yet" % (after, loop)})
+            return self._send(200, {"rows": rows})
         parts = route.split("/")
         if len(parts) == 3 and parts[1] == "requests" and parts[2]:
             return self._send(*bridge.request_info(unquote(parts[2])))

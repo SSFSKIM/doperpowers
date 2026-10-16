@@ -13,7 +13,11 @@ model and compact on the `--bg` job, a foreground subagent's Bash under
 interrupt, an async question's `[ answer ]` pressed in the terminal (an SGR
 mouse press written to the pane), and on the `--bg` job the settlement cases
 a job can show (the CLI first; the terminal first through `claude attach`;
-a late answer refused; a client reconnecting after the settlement). Last,
+a late answer refused; a client reconnecting after the settlement). The
+rows a manual compaction writes, which no session.append raises (the
+bridge's own compaction on both sessions, the person's /compact in the
+terminal), are each named, door compaction, ahead of any later row's notice;
+the engine's line for the module reload is named too. Last,
 the row notices (DX5's row order) are compared with the transcripts: none
 twice, none for a row never written, no block-row after a notice for a row
 later on disk (a row-seen out of disk order is the engine's write-order quirk,
@@ -22,7 +26,7 @@ every row kind that got no notice is reported, and so is the largest lag
 from a row's flush (the transcripts polled every DISK_POLL) to its notice,
 overall and while chunks stream, against the consumer's 2 s window.
 
-It spends model calls (haiku, short prompts, two compactions), so no suite
+It spends model calls (haiku, short prompts, three compactions), so no suite
 runs it: run it by hand with the model gateway's keys in the environment.
 Isolation is live-control-check.py's (whose classes it extends): a temporary
 HOME whose .claude is the config dir, a temporary SMINOS_HOME, a copy of the
@@ -453,7 +457,7 @@ class Walk(LR.Requests):
                                                                     self.outcome(s), text[-100:]))
         self.idle(endpoint)
 
-    def compact_check(self, who, stream, endpoint, prompt, label):
+    def compact_check(self, who, stream, endpoint, prompt, label, session):
         m = self.marker + "c" + label
         t = time.time()
         prompt("Run exactly this Bash command, then reply with one word: "
@@ -469,7 +473,57 @@ class Walk(LR.Requests):
                    r.returncode == 0 and "queued" in r.stdout and start and start[0][0] >= turn_t
                    and end[0].get("tokensAfter") is not None and done,
                    "%s; then %s" % (r.stdout.strip(), {k: end[0].get(k) for k in ("tokensBefore", "tokensAfter", "error", "skip")}))
+        self.compaction_rows_check(session, stream, start[0][0] if start else t, label, "the bridge's compaction", end_event=end[0])
         self.idle(endpoint, 180)
+
+    def person_compact_check(self, stream, session):
+        """The person's /compact, typed in the terminal: a compaction the
+        bridge did not start, which its session.compact hook sees."""
+        t = time.time()
+        self.prompt("/compact")
+        self.compaction_rows_check(session, stream, t, "terminal", "the person's /compact")
+        self.idle(self.endpoint(), 180)
+
+    def compaction_rows_check(self, session, stream, t, label, what, end_event=None):
+        """A manual compaction's rows, which the engine writes through no
+        session.append (2.1.301): the flush its boundary row came in, each row
+        of it named by a row-seen (door compaction) within the consumer's 2 s,
+        and no notice of a main-loop row later on disk before theirs (with the
+        bridge's own, its `compact` end after them too)."""
+        disk = self.disks[session]
+
+        def batch():
+            rows = [r for lp, r in self.all_rows(session) if lp == "main" and r.get("uuid")]
+            bounds = [i for i, r in enumerate(rows) if r.get("type") == "system" and r.get("subtype") == "compact_boundary"
+                      and disk.first_seen.get(r["uuid"], 0) >= t]
+            if not bounds:
+                return None
+            i = bounds[-1]
+            flushed = disk.first_seen.get(rows[i]["uuid"])
+            return rows, i, [r["uuid"] for r in rows[i:] if disk.first_seen.get(r["uuid"]) == flushed]
+        _, _, mine = wait_for("%s's rows on disk" % what, 240, batch)
+        time.sleep(2.5)   # past the consumer's window: any notice of them is in by now
+        rows = [r for lp, r in self.all_rows(session) if lp == "main" and r.get("uuid")]
+        kinds = {r["uuid"]: "%s/%s" % (r.get("type"), (r.get("attachment") or {}).get("type") or r.get("subtype")
+                                       or ("summary" if r.get("isCompactSummary") else "")) for r in rows}
+        at = {r["uuid"]: k for k, r in enumerate(rows)}
+        seq = stream.seen_at(lambda e: (e.get("type") in NOTICES and e.get("agentId") is None) or e.get("type") == "compact", t)
+        ours = [k for k, (_, e) in enumerate(seq) if e.get("type") in NOTICES and e["uuid"] in mine]
+        named = {seq[k][1]["uuid"]: seq[k][0] for k in ours}
+        unnamed = [kinds[u] for u in mine if u not in named]
+        doors = sorted({str(seq[k][1].get("door")) for k in ours})
+        last = max(ours, default=-1)
+        before = [kinds.get(e["uuid"], e["uuid"][:8]) for _, e in seq[:last]
+                  if e.get("type") in NOTICES and e["uuid"] not in mine and at.get(e["uuid"], -1) > at[mine[-1]]]
+        lags = [round(t_n - disk.first_seen[u], 3) for u, t_n in named.items() if u in disk.first_seen]
+        ends = [k for k, (_, e) in enumerate(seq) if e.get("type") == "compact" and e.get("phase") == "end"]
+        end_ok = end_event is None or bool(ends and ends[0] > last)
+        self.check("%s: %s — each row it wrote named by a row-seen (door compaction) within 2 s of its flush, before any later row's notice"
+                   % (label, what),
+                   len(mine) >= 2 and not unnamed and doors == ["compaction"] and not before and lags and max(lags) < UNNAMED_AFTER and end_ok,
+                   "%d rows (%s); unnamed %s; doors %s; notices of later rows ahead of them %s; flush to notice max %s s; end after them %s"
+                   % (len(mine), [kinds[u] for u in mine], unnamed or "none", doors, before or "none", max(lags, default=None),
+                      "n/a" if end_event is None else end_ok))
 
     def model_check(self, who, stream, endpoint, prompt, label):
         settings = os.path.join(self.cfg, "settings.json")
@@ -540,6 +594,23 @@ class Walk(LR.Requests):
                       len(chunks_after), "seen" if completed else "not seen", len(next_turn)))
         self.check("terminal: the message the reloaded response carried reaches the log once",
                    len(logged) == 1, "%d event(s), src %s" % (len(logged), logged and logged[0].get("src")))
+        # The engine's line for the reload: written through session.append
+        # after the new module's session.start (2.1.301), so its own hook
+        # names it — before the new child's hello, whose resync then carries
+        # it as the cut, or after, by its row-seen. Either way no consumer
+        # waits on it.
+        disk = self.disks[session]
+        rows = [r for lp, r in self.all_rows(session) if lp == "main" and r.get("uuid")]
+        lines = [r for r in rows if r.get("type") == "system" and "reloaded" in str(r.get("content"))
+                 and disk.first_seen.get(r["uuid"], 0) >= t_reload]
+        uuids = [r["uuid"] for r in rows]
+        noticed = lines and stream.seen(lambda e: e.get("type") == "row-seen" and e.get("uuid") == lines[0]["uuid"], t_reload)
+        cuts = [s.get("cut", {}).get("main") for s in [snap] + stream.seen(lambda e: e.get("type") == "snapshot", t_reload)]
+        covered = lines and any(c in uuids and uuids.index(c) >= uuids.index(lines[0]["uuid"]) for c in cuts)
+        self.check("terminal: the engine's reload line is named — by its row-seen, or as the new child's cut (at or past it)",
+                   len(lines) == 1 and (noticed or covered),
+                   "%d line(s) %s; row-seen %s; at or before a later snapshot's cut %s" % (
+                       len(lines), lines and (lines[0].get("subtype"), str(lines[0].get("content"))[:60]), bool(noticed), bool(covered)))
         self.reload_note = {"chunks_after": len(chunks_after), "completed": bool(completed), "snap_streaming": snap.get("streaming"),
                             "snap_turns": snap.get("turns"), "cut": snap.get("cut")}
         self.idle(self.endpoint())
@@ -726,7 +797,8 @@ class Walk(LR.Requests):
         self.deny_check(NAME, term, self.endpoint(), self.prompt, "terminal", self.session)
         self.answer_check(NAME, term, self.endpoint(), self.prompt, "terminal")
         self.async_question_check(term, self.session)
-        self.compact_check(NAME, term, self.endpoint(), self.prompt, "terminal")
+        self.compact_check(NAME, term, self.endpoint(), self.prompt, "terminal", self.session)
+        self.person_compact_check(term, self.session)
         self.model_check(NAME, term, self.endpoint(), self.prompt, "terminal")
         self.reload_check(term, self.session)
         watched = self.watched(NAME)
@@ -769,7 +841,7 @@ class Walk(LR.Requests):
         rid = self.deny_check(BG, bg, sock, say_bg, "bg", session)
         self.bg_settlement(short, bg, sock, say_bg, rid)
         self.answer_check(BG, bg, sock, say_bg, "bg")
-        self.compact_check(BG, bg, sock, say_bg, "bg")
+        self.compact_check(BG, bg, sock, say_bg, "bg", session)
         self.model_check(BG, bg, sock, say_bg, "bg")
         watched = self.watched(BG)
         self.check("bg: watch printed the walk — the conversation, requests raised and settled",

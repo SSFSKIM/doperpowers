@@ -1,7 +1,9 @@
+import type { SessionMessage } from 'claude-code'
+
 import { ASK_TOOL } from './ask'
 import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
 import type { BridgeEvent, TranscriptRecord } from './bridge-state'
-import { emit, releaseStepEnd } from './bridge-stream'
+import { emit, hold, releaseStepEnd } from './bridge-stream'
 import { callEnded } from './bridge-requests'
 
 /**
@@ -22,6 +24,14 @@ import { callEnded } from './bridge-requests'
  * session it started with, a subagent it saw spawned) is cut by its notices
  * alone, and streams from the start.
  *
+ * A compaction's rows: the engine writes those of a manual compaction (the
+ * person's /compact, a command run, a plugin's `$.session.compact`) through
+ * no `session.append` (live, 2.1.301; an auto compaction's it raises), so no
+ * hook names them. Once a compaction stands, a hold (bridge-stream.tsx) keeps
+ * everything later in the queue while the rows past the loop's cut that no
+ * notice named are read from the transcript, and their `row-seen`s (door
+ * `compaction`) take its place.
+ *
  * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
  * text row with a mark and an async ask with its result, go to the child as
  * they are kept (`export`), and the child appends them to the project's log
@@ -39,6 +49,15 @@ const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', r
 const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
 /** Async asks whose other row (the call, or its result) has not been kept yet. */
 const ASKS_KEPT = 50
+/** How many of the latest notices' rows are remembered, to tell the rows past a cut no notice named. */
+const NAMED_KEPT = 1_000
+/**
+ * After a compaction, its rows are looked for on disk this often, so many
+ * times at most (the engine flushed them about 130 ms after the compaction
+ * resolved, live, 2.1.301; the consumer releases an unnamed row after 2 s).
+ */
+export const ROWS_POLL_MS = 50
+export const ROWS_POLLS = 30
 
 /** A result's text: a string, or its text blocks joined. */
 function resultText(content: unknown): string {
@@ -51,7 +70,74 @@ function resultText(content: unknown): string {
 /** A row's notice: its loop's cut moves to it. */
 export function noticeRow(e: BridgeEvent & { uuid: string; agentId: string | null }) {
   state.cut.set(e.agentId ?? 'main', e.uuid)
+  remember(e.uuid)
   emit(e)
+}
+
+function remember(uuid: string) {
+  state.named.add(uuid)
+  if (state.named.size > NAMED_KEPT) {
+    state.named.delete(state.named.values().next().value as string)
+  }
+}
+
+/**
+ * A compaction that stood in a loop (the main one, or a subagent's): its
+ * rows past the loop's cut that no notice named, each named by `row-seen`
+ * once they are on disk, ahead of anything the session did after it. `messages`
+ * is the compaction's result: the first, its summary, carries the summary
+ * row's uuid as its `handle` (live, 2.1.301), which says when its rows are on
+ * disk, or that the engine raised them and each is named already.
+ */
+export function compacted(agentId: string | null, messages: readonly SessionMessage[] | undefined) {
+  const loop = agentId ?? 'main'
+  const after = state.cut.get(loop)
+  const summary = messages?.[0]?.handle
+  // With no cut yet (a module that has not read its first hello) there is
+  // nothing to read past, and with no summary row (a hook answered with
+  // messages of its own) nothing says when the rows are in: they are
+  // released unnamed, as any row no notice names.
+  if (after === undefined || typeof summary !== 'string') {
+    return
+  }
+  hold({ type: '@hold', loop, after, run: () => nameCompaction(loop, agentId, after, summary) })
+}
+
+/**
+ * The compaction's rows, read until its summary row is past the cut on disk,
+ * and once more a poll later, so the rest of the batch it was flushed in is
+ * whole: the unnamed ones of that read, in disk order. None when the summary
+ * was named (the engine raised its rows), or when it did not come within
+ * ROWS_POLLS reads.
+ */
+async function nameCompaction(loop: string, agentId: string | null, after: string, summary: string): Promise<BridgeEvent[]> {
+  let wasOnDisk = false
+  for (let poll = 1; ; poll++) {
+    if (state.named.has(summary)) {
+      return []
+    }
+    const rows = await state.rowsAfter?.(loop, after).catch(() => undefined)
+    const unnamed = rows?.filter((u) => !state.named.has(u)) ?? []
+    const isOnDisk = rows?.includes(summary) === true
+    if (isOnDisk && (wasOnDisk || poll >= ROWS_POLLS)) {
+      for (const u of unnamed) {
+        remember(u)
+      }
+      // The cut moves to them unless a later notice, queued behind the hold, moved it first.
+      if (unnamed.length > 0 && state.cut.get(loop) === after) {
+        state.cut.set(loop, unnamed[unnamed.length - 1]!)
+      }
+      const t = Date.now()
+      return unnamed.map((uuid) => ({ type: 'row-seen', uuid, agentId, door: 'compaction', t }))
+    }
+    if (poll >= ROWS_POLLS || state.after === undefined) {
+      state.log?.(`bridge: a compaction's rows past ${after} were not on disk after ${ROWS_POLLS} reads; they go unnamed`)
+      return []
+    }
+    wasOnDisk = isOnDisk
+    const wait = state.after
+    await new Promise<void>((resolve) => wait(ROWS_POLL_MS, resolve))
+  }
 }
 
 /**
