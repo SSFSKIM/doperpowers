@@ -1,4 +1,4 @@
-"""Hand-run micro-test for the to-human style's ⚠ paragraph (7.158.0): it spends
+"""Hand-run micro-test for the to-human style's `⚠ Critical` block: it spends
 model calls, so nothing runs it automatically.
 
 Each scenario is a prefilled tool history under the full style, and the model
@@ -20,8 +20,11 @@ Results, 2026-10-15, claude-opus-5-5 at high effort (reports counted):
   7.157.4 control      impact stated in every report; in 4 of 14 lost-work
                        reports it came after the success
   delimited block      ⚠ at the top of 29 of 30 triggered reports, 0 of 13 clean
-  this paragraph       ⚠ at the top of 26 of 26 triggered reports, 0 of 10 clean
+  ⚠ paragraph          ⚠ at the top of 26 of 26 triggered reports, 0 of 10 clean
   every arm            4 of 124 reports had no <message> wrapper at all
+  `⚠ Critical` block   (template shown inside <message>) the header
+                       opened 12 of 12 triggered reports, 0 of 12 clean, none
+                       unwrapped
 """
 import argparse, json, os, re, concurrent.futures as cf
 from pathlib import Path
