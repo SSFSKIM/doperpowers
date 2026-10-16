@@ -571,6 +571,18 @@ if mode == "held":
     gate.set()
     t.join(120)
     report["tick"] = out
+elif mode == "elsewhere":
+    # The switch landed in another checkout of the project (sys.argv[4]),
+    # which shares its log, between the tick's read of this one and its sync;
+    # then a session in this checkout, whose .smns names no hub, wrote.
+    import sminos_uplink
+    subprocess.run(convert, cwd=sys.argv[4], stdout=subprocess.DEVNULL, check=True)
+    subprocess.run([os.path.join(scripts, "sminos"), "say", "said where no hub is named"], cwd=root,
+                   stdout=subprocess.DEVNULL, check=True)
+    sminos.forget_caches()
+    report["uplink feeds it"] = project.id in sminos_uplink.hub_projects({"org": "org-1"})
+    sminos.forget_caches()
+    report["tick"] = daemon.tick(project)
 else:  # "stale": the switch landed between the tick's read and its sync of the project
     subprocess.run(convert, cwd=root, stdout=subprocess.DEVNULL, check=True)
     subprocess.run([os.path.join(scripts, "sminos"), "say", "said after the switch"], cwd=root,
@@ -622,6 +634,30 @@ assert_equals "$(test -e "$(log_of staleproj)/other.human.jsonl" && echo there |
   "no git event enters the hub project's log"
 assert_equals "$(git -C "$T/staleproj.git" rev-parse main)" "$OTHER_HEAD" "nothing of this machine is pushed"
 [[ "$OTHER_HEAD" != "$STALE_HEAD" ]] || fail "the other machine's push moved the remote"
+# Two checkouts of one project share its log: the switch made in one bars git
+# for a tick that read the other, whose .smns names no hub, and a session
+# writing from that other checkout does not take the project back to git.
+mirrored_project twoproj
+TWO_B="$T/a/twoproj-b"
+mkdir -p "$TWO_B"
+gitq init -q "$TWO_B"
+cp "$T/a/twoproj/.smns" "$TWO_B/.smns"
+other_pushes "$T/twoproj.git" "a git event after the switch in the other checkout"
+TWO_HEAD="$(git -C "$T/twoproj.git" rev-parse main)"
+run python3 "$T/race.py" "$SCRIPTS" "$T/a/twoproj" elsewhere "$TWO_B"
+assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys
+out = sys.stdin.read()
+try:
+    r = json.loads(out.strip().splitlines()[-1])
+    print([r["uplink feeds it"], r["tick"]["integrated"], r["tick"]["pushed"]])
+except (ValueError, IndexError, KeyError):
+    print(out)')" \
+  "[True, False, False]" "a switch in another checkout: the uplink feeds the project, and a tick that read this one neither integrates nor pushes it"
+assert_equals "$(test -e "$(log_of twoproj)/other.human.jsonl" && echo there || echo none)" none \
+  "no git event enters the log both checkouts share"
+assert_equals "$(git -C "$T/twoproj.git" rev-parse main)" "$TWO_HEAD" "nothing of this machine is pushed"
+assert_equals "$(python3 -c 'import json, os, sys; print(os.path.realpath(json.load(open(sys.argv[1]))["root"]) == os.path.realpath(sys.argv[2]))' \
+  "$(log_of twoproj)/../project.json" "$TWO_B")" True "the project stays registered from the checkout that names the hub"
 cd "$T"
 as b2 beta2
 P0="$T/b2/p"

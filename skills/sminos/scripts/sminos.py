@@ -596,6 +596,24 @@ def read_smns(path):
     return pid, str(d.get("name") or pid), str(d.get("remote") or ""), hub
 
 
+def names_hub(root, pid):
+    """Whether the .smns at `root`, read as it is now, is project `pid`'s and
+    names a hub (well-formed or not: either bars git)."""
+    path = os.path.join(root, SMNS) if root else ""
+    smns = read_smns(path) if path and os.path.isfile(path) else None
+    return smns is not None and smns[0] == pid and smns[3] is not None
+
+
+def registration(pid):
+    """A project's project.json as it is now (project_path), or {}."""
+    try:
+        with open(os.path.join(projects_root(), pid, "project.json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
 def hub_wellformed(hub):
     """Whether a .smns `hub` is {url, org}, both non-empty strings: the only
     hub a project syncs through. Any other value still bars git."""
@@ -662,7 +680,12 @@ def write_json(path, data, mode=0o600):
 
 def project_path(project, *parts):
     """A path under the project's home; the first use creates the home and
-    records project.json (the .smns as last resolved, plus its root)."""
+    records project.json (the .smns as last resolved, plus its root) — the
+    registration both transports read, the tick's git phases and the uplink.
+    Every checkout of a project shares its log, so a hub named in one of them
+    holds the registration while that checkout's .smns still names it: a
+    checkout whose .smns names none (a worktree from before the conversion)
+    does not take it back to git."""
     if project.id not in _HOMES:
         os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
         info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
@@ -671,10 +694,12 @@ def project_path(project, *parts):
         path = os.path.join(project.home, "project.json")
         try:
             with open(path) as f:
-                same = json.load(f) == info
+                held = json.load(f)
         except (OSError, ValueError):
-            same = False
-        if not same:
+            held = None
+        hub_elsewhere = project.hub is None and isinstance(held, dict) and held.get("hub") is not None \
+            and str(held.get("root") or "") != project.root and names_hub(str(held.get("root") or ""), project.id)
+        if held != info and not hub_elsewhere:
             write_json(path, info)
         _HOMES.add(project.id)
     path = os.path.join(project.home, *parts)
@@ -796,10 +821,25 @@ def _last_seq(f):
         size *= 4
 
 
+UPLINK_STATE = "uplink.json"  # a hub project's uplink state, in its home (sminos_hublog)
+
+
+def spent_seqs(project, writer):
+    """The positions of `writer` the uplink spent — an event from the hub was
+    refused there (sminos_hublog): a tombstone, never allocated."""
+    try:
+        with open(os.path.join(project.home, UPLINK_STATE)) as f:
+            ss = json.load(f)["spent"][writer]
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+    return {s for s in ss if type(s) is int} if isinstance(ss, list) else set()
+
+
 def _append(project, writer, events, skip_src=False, guard=None):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
-    last line's plus one). With `guard`, the file's events are read under the
+    last line's plus one, past any position the uplink spent, which it spends
+    under the same lock). With `guard`, the file's events are read under the
     lock and nothing is appended unless guard(events) holds — a check and its
     append no other appender can come between. Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
@@ -829,9 +869,12 @@ def _append(project, writer, events, skip_src=False, guard=None):
             if not events:
                 return []
             seq = _last_seq(f)
+            spent = spent_seqs(project, writer)
             out = []
             for fields in events:
                 seq += 1
+                while seq in spent:
+                    seq += 1
                 rest = {k: v for k, v in fields.items() if k != "kind"}
                 out.append({"ts": now(ms=True), "writer": writer, "seq": seq, "kind": fields["kind"], **rest})
             end = f.seek(0, os.SEEK_END)
@@ -2410,9 +2453,11 @@ def export_live(project, session, records):
     what the file already holds, so whichever of the two comes second adds
     nothing. Membership on sight as the hook decides it; the export position
     is the hook's and is not moved. The child is long-lived, so the harness's
-    records are read afresh each time. Returns the events appended."""
-    global _PEERS
+    records and this machine's identity (an enrollment renames the writer)
+    are read afresh each time. Returns the events appended."""
+    global _PEERS, _SELF
     _PEERS = None
+    _SELF = None
     seen = _on_sight(project, session)
     if seen is None or not joinable(*seen):
         return []

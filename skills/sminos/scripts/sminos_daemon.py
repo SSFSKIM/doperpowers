@@ -315,16 +315,25 @@ def fetch(log):
 
 
 def ensure_mirrored(project):
-    """Raise BecameHub when the project's .smns, read as it is now, names a
-    hub. A tick syncs the Project it read when it began; `project init --hub`
-    rewrites .smns under .sync-op.lock, which every caller here holds, so a
-    git phase that looks again under it never integrates or pushes a project
-    that has become a hub project (an .smns changed by any other hand is
-    caught at the next phase)."""
-    path = os.path.join(project.root, sminos.SMNS) if project.root else ""
-    smns = sminos.read_smns(path) if path and os.path.isfile(path) else None
-    if smns is not None and smns[0] == project.id and smns[3] is not None:
-        raise BecameHub("%s names a hub now: git no longer syncs %s" % (path, project.name))
+    """Raise BecameHub when the project names a hub now: the .smns of the
+    checkout the tick read, or the project's registration (project.json) —
+    the checkout the uplink reads, whose .smns is read as it is now, or the
+    hub it recorded when that checkout is gone. Every checkout of a project
+    shares its log, so a hub any of them names bars git (project_path keeps
+    a hub checkout registered while it names one). A tick syncs the Project
+    it read when it began; `project init --hub` rewrites .smns and registers
+    it under .sync-op.lock, which every caller here holds, so a git phase
+    that looks again under it never integrates or pushes a project that has
+    become a hub project (an .smns changed by any other hand is caught at
+    the next phase)."""
+    reg = sminos.registration(project.id)
+    root = str(reg.get("root") or "")
+    for where in dict.fromkeys(r for r in (project.root, root) if r):
+        if sminos.names_hub(where, project.id):
+            raise BecameHub("%s names a hub now: git no longer syncs %s" % (
+                os.path.join(where, sminos.SMNS), project.name))
+    if reg.get("hub") is not None and not (root and os.path.isdir(root)):
+        raise BecameHub("%s is registered as a hub project: git no longer syncs it" % project.name)
 
 
 def integrate(project, log):

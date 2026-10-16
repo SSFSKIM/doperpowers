@@ -546,6 +546,33 @@ done
 if [ "$(grep -c "the uplink is ending during a POST" "$DLOG")" -ge 6 ]; then pass "each of the six says it ended during a POST"; else
   fail "each of the six says it ended during a POST"; grep "ending" "$DLOG" | tail -8; fi
 
+# ---- a position of this machine's own writer, refused, and what it writes next
+# A lying hub holds a forgery at testhost/<session>:1, which this machine
+# refuses, spending the position. Its own next event there takes 2, which it
+# uploads past the hub's 1, and whose echo it imports as present.
+echo "a refused position of this machine's own writer:"
+OWN="$(python3 - "$SCRIPTS" "$HP" <<'PY'
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_codes as codes, sminos_hublog as hublog
+p = sminos.find_project(sys.argv[2])
+key = bytes(range(32))
+hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+w = "testhost/5a000002-0000-4000-8000-0000000000b2"
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+forged = codes.seal(bytes(32), "log", p.id, {"ts": ts, "writer": w, "seq": 1, "kind": "say", "from": "x", "to": "*",
+                                             "text": "forged"}, codes.b64url(os.urandom(16)))
+_, refused = hl.take([forged])
+mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
+hl.have, hl.sent = {w: 1}, {w: 1}
+uploaded = [e["seq"] for frame, _ in hl.uploads() for e in frame["events"] if e["writer"] == w]
+appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+print(json.dumps([[f["reason"] for f in refused], mine["seq"], uploaded, appended, [f["reason"] for f in echoed]]))
+PY
+)"
+assert_equals "$OWN" '[["bad-code"], 2, [2], 0, []]' \
+  "the forgery is refused, the machine's next event takes the position after it, uploads past the hub's 1, and its echo imports as present"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES uplink assertions passed"
