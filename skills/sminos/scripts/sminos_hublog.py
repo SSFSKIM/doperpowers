@@ -524,7 +524,7 @@ class HubLog:
             log("refused %s in %s: %s" % (position(raw), self.project.name, why))
             out.append(rejected(self.project.id, raw, reason, why))
             if isinstance(raw, dict) and isinstance(raw.get("writer"), str) and codes.is_log_seq(raw.get("seq")):
-                if reason != "bad-shape" and raw["writer"].startswith(self.machine + "/"):
+                if reason != "bad-shape" and self.allocated_here(raw["writer"]):
                     if self.spend_own(raw["writer"], int(raw["seq"])):
                         newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
                 else:
@@ -539,9 +539,20 @@ class HubLog:
             self.save(d)
         return appended, out
 
+    def allocated_here(self, writer):
+        """Whether this machine's appenders allocate `writer`: its operator
+        writer or one of its sessions' (`sminos.writer_id`), exactly
+        `<machine>/human` or `<machine>/<session uuid>`. Any other name, even
+        one under this machine's prefix, is no file the allocator opens."""
+        prefix = self.machine + "/"
+        if not writer.startswith(prefix):
+            return False
+        rest = writer[len(prefix):]
+        return rest == "human" or bool(sminos.UUID_RE.match(rest))
+
     def spend_own(self, writer, seq):
-        """A refused position of one of this machine's own writers, which its
-        appenders allocate here (sminos._append skips spent positions): spent
+        """A refused position of one of this machine's own writers
+        (`allocated_here`), which its appenders allocate here (sminos._append skips spent positions): spent
         under the writer file's lock, as the allocator reads it, and only while
         no event of this machine's holds it — a position its own event took
         first is that event's. Whether it was spent."""

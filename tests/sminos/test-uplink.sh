@@ -573,6 +573,28 @@ PY
 assert_equals "$OWN" '[["bad-code"], 2, [2], 0, []]' \
   "the forgery is refused, the machine's next event takes the position after it, uploads past the hub's 1, and its echo imports as present"
 
+# A writer under this machine's prefix that it never allocates is no file the
+# allocator can open: the frame still yields its rejection and the valid event.
+echo "a refused position under this machine's prefix that it does not allocate:"
+LONG="$(python3 - "$SCRIPTS" "$HP" <<'PY'
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_codes as codes, sminos_hublog as hublog
+p = sminos.find_project(sys.argv[2])
+key = bytes(range(32))
+hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+junk = codes.seal(bytes(32), "log", p.id, {"ts": ts, "writer": "testhost/" + "x" * 300, "seq": 1, "kind": "say",
+                                           "from": "x", "to": "*", "text": "junk"}, codes.b64url(os.urandom(16)))
+good = hublog.seal(key, p.id, {"ts": ts, "writer": "other/5a000003-0000-4000-8000-0000000000c3", "seq": 1,
+                               "kind": "say", "from": "o", "to": "*", "text": "valid"})
+appended, refused = hl.take([junk, good])
+print(json.dumps([[f["reason"] for f in refused], appended]))
+PY
+)"
+assert_equals "$LONG" '[["bad-code"], 1]' \
+  "an unusable writer under the machine's prefix is refused as bad-code and the valid event after it in the frame is appended"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES uplink assertions passed"
