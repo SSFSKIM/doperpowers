@@ -48,7 +48,6 @@ per project.
 
 import contextlib
 import fcntl
-import getpass
 import json
 import os
 import re
@@ -1023,6 +1022,8 @@ def unit_word(value):
 def install_systemd():
     """The systemd user unit, under the launchd agent's contract: the stable
     CLI, the same environment, a 0600 file, the output in daemon.out."""
+    if "\n" in sminos.root() or "\r" in sminos.root():
+        sminos.die("the registry path holds a line break, which the unit's output line cannot carry: %r" % sminos.root(), 1)
     with open(UNIT_TEMPLATE) as f:
         text = f.read()
     log = os.path.abspath(os.path.join(sminos.root(), "daemon.out"))
@@ -1039,7 +1040,7 @@ def install_systemd():
           "load it:   systemctl --user daemon-reload && systemctl --user enable --now %s\n"
           "unload it: systemctl --user disable --now %s\n"
           "to keep it running with nobody logged in (and from boot), lingering, once per user:\n"
-          "           loginctl enable-linger %s" % (path, UNIT, UNIT, getpass.getuser()))
+          "           loginctl enable-linger" % (path, UNIT, UNIT))
 
 
 def age(ts):

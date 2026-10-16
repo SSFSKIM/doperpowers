@@ -5028,13 +5028,14 @@ SD_URL='http://gw.test/p%41th?a="b"&c=\d$HOME'
 mkdir -p "$MD/sd/.claude"
 printf '{"env": {"ANTHROPIC_BASE_URL": "x", "ANTHROPIC_AUTH_TOKEN": "y"}}\n' > "$MD/sd/.claude/clodex-settings.json"
 run env HOME="$MD/sd" SMINOS_HOME="$MD/sd/sminos" SMINOS_SERVICE=systemd XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" \
-  ANTHROPIC_BASE_URL="$SD_URL" DAEMON_HOST=sd-box "$SMINOS" daemon install
+  LOGNAME='x; printf injected' ANTHROPIC_BASE_URL="$SD_URL" DAEMON_HOST=sd-box "$SMINOS" daemon install
 assert_rc 0 "$RC" "daemon install writes a systemd unit"
 UNIT="$MD/sd/.config/systemd/user/sminos-daemon.service"
 assert_file_exists "$UNIT" "under the HOME it is given, where the user's manager looks"
 assert_contains "$OUT" "systemctl --user daemon-reload && systemctl --user enable --now sminos-daemon.service" "and says how to load it"
 assert_contains "$OUT" "systemctl --user disable --now sminos-daemon.service" "and unload it"
 assert_contains "$OUT" "loginctl enable-linger" "and that lingering keeps it with nobody logged in"
+assert_not_contains "$OUT" "injected" "naming no user after it: LOGNAME is the caller's to set"
 assert_file_absent "$MD/service.calls" "running neither systemctl nor loginctl"
 assert_equals "$(mode_of "$UNIT")" "0600" "readable only by its owner: it may carry the gateway's token"
 assert_equals "$(mode_of "$MD/sd/sminos" 2>/dev/null || echo absent)" "0700" "the registry, made for daemon.out"
@@ -5076,6 +5077,12 @@ assert_contains "$FIELDS" "[Service] KillMode=process" "a stop signals the daemo
 assert_contains "$FIELDS" "[Service] StandardOutput=append:$MD/sd/sminos/daemon.out" "its output to daemon.out"
 assert_contains "$FIELDS" "[Service] StandardError=append:$MD/sd/sminos/daemon.out" "both streams"
 assert_contains "$FIELDS" "[Install] WantedBy=default.target" "started with the user's manager, so at boot under lingering"
+# A registry path holding a line break would put directives of its own in the
+# unit's output lines: the install refuses, writing nothing.
+run env HOME="$MD/nl" SMINOS_HOME="$MD/nl/reg"$'\n'"ExecStartPre=/bin/true" SMINOS_SERVICE=systemd XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" "$SMINOS" daemon install
+assert_rc 1 "$RC" "a registry path with a line break refuses the systemd install"
+assert_contains "$OUT" "line break" "saying so"
+assert_file_absent "$MD/nl/.config/systemd" "and writes no unit"
 # The user's manager reads XDG_CONFIG_HOME when it is set; so does install.
 run env HOME="$MD/sd" SMINOS_HOME="$MD/sd/sminos" SMINOS_SERVICE=systemd XDG_CONFIG_HOME="$MD/sd/xdg" PATH="$MD/lc:$PATH" "$SMINOS" daemon install
 assert_file_exists "$MD/sd/xdg/systemd/user/sminos-daemon.service" "under XDG_CONFIG_HOME when it is set"
