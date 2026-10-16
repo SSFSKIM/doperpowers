@@ -441,6 +441,12 @@ M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
   event, and writing that works again as `kept {ok: true}` (below).
 - **Lifetime:** outlives the child (a module reload) and the session's process (a session
   resumed under its id goes on with both). Discovery (DC7) lists `*.sock` only.
+- **[desk panel fix] A desk RPC's answer.** A command carrying `rpc` (a desk RPC's nonce;
+  DC7's daemon sends it with `steer`) has the mod's answer kept under that nonce,
+  `"rpcs": {"<nonce>": {op, ok, result?, error?}}` (the last 100; absent until one is
+  kept), written with the batch that carried its `result`. It is the trace DC7 reconciles a
+  claimed steer from after a stop between sending the command and reading the answer. The
+  mod reads no `rpc` field; the hello's `kept` carries `rpcs` too, which the mod ignores.
 
 ##### The child's stdout: lines for the mod
 
@@ -621,13 +627,14 @@ listed stand as M1–M3 left them. Changed rows are marked **[M4]**.
 | `GET /status` | M1, **[M4]** | — | 200 `{session, pid, protocol: 1, socket, started, ready, subscribers, mod: {events, last}}`. **[M4]** `ready`: the mod's first `resync` to this child has been applied |
 | `POST /events` | M1, **[M4]** | the mod's events, with `X-Bridge-Nonce: <the hello's nonce>` | 204; **[M4]** 409 `{error}` without the nonce (the post is another module instance's) |
 | `GET /events` | M1, **[M4]** | — | **[M4]** Held until `ready`, at most 5 s (`SMINOS_BRIDGE_READY_WAIT`), else 503 `{error}`. Then 200 `application/x-ndjson`: the snapshot line, then every event with `n`. **[M4]** The stream ends (the connection closes) when the child applies any resync after its first, or when the subscriber falls 10,000 behind. That is the one discontinuity: a subscriber never sees a `resync` line, and subscribes again for a fresh snapshot |
+| `GET /rows?loop=&after=<uuid>` | **[#78]** (the mod's) | — | 200 `{rows: [<uuid>…]}`: the loop's (`main`, or a subagent's id) whole rows on disk past `<uuid>`, in disk order, rows with no uuid passed over and a half-written last line left out; read backward from the transcript's end, at most 4 MiB. 404 `{error}` while `<uuid>` is not among them (not flushed yet, or further back), or the loop has no transcript; 400 with no `after` |
 
 ##### Events (the mod's posts)
 
 | `type` | Built | Fields |
 | --- | --- | --- |
 | `block-row` | M3, **[M4]** | `uuid, turnId, agentId, step, index` — **[M4]** also the response row's **notice**: emitted in the `session.append` hook once the append resolves (the row is written), so notice order is write order within a loop. The child moves the loop's cut to `uuid` in the same step that settles the block |
-| `row-seen` | **[M4]** | `uuid, agentId, door` — the notice of every other row the session keeps, once its append resolves: <ul><li>any door but `response` and `queue`;</li><li>a response row whose block never streamed, the rows of an excluded request (the seed, below) included: nothing of theirs ever streamed;</li><li>door `note` (a plugin's own append) only once kept, never when refused;</li><li>the bridge's own steer row from the append's returned uuid (door `note`), after it is written.</li></ul> None for door `queue`, and none for a `hook_success` with no text (raised but never written by 2.1.300). Rows a plugin's own calls write that pass no hook of the plugin's get none: a compaction the bridge runs, the engine's reload notice |
+| `row-seen` | **[M4]** | `uuid, agentId, door` — the notice of every other row the session keeps, once its append resolves: <ul><li>any door but `response` and `queue`;</li><li>a response row whose block never streamed, the rows of an excluded request (the seed, below) included: nothing of theirs ever streamed;</li><li>door `note` (a plugin's own append) only once kept, never when refused;</li><li>the bridge's own steer row from the append's returned uuid (door `note`), after it is written.</li></ul> None for door `queue`, and none for a `hook_success` with no text (raised but never written by 2.1.300). **[#78]** `door: "compaction"`: a row of a manual compaction (the person's `/compact`, a `$.command.run` of it, a plugin's `$.session.compact`: the bridge's `compact`, the compact tool's), which the engine writes through no `session.append` (2.1.301), named from the transcript once the compaction stands, in disk order, ahead of anything the session did after it ("A compaction's rows", below). The engine's line for a module reload passes the new module's own `session.append` (door `notice`) and is named like any other row |
 | `step` (`phase: "end"`) | M1, **[M4, fix wave 1]** | unchanged fields. **Ordered after every `block-row` of its step**: the engine can append a response row after the request's result (it withholds a refusal or max-output row until the stream is done, and closes a block the stream left open), so the mod holds the end until each block that streamed has its row named, at most 1 s (`STEP_END_WAIT_MS`), and posts it before anything later of its loop (the next request, the turn's end, the subagent's stop). **[fix wave 2]** Once a step's end is out, whichever released it, the step's pairing is closed: a row of it that comes later is named by `row-seen`, never a `block-row` after its step's end. DX4's `step-end` relies on this order. **The child removes the step's whole message from `streaming` at its end, under the lock that applies events (as M1 said; M3's per-block settling did not change it), whether or not a `block-row` came for each block**, so a block aborted mid-response is in no later snapshot; a turn's `complete` removes its messages too |
 | `turn` (`phase: "start"`) | M1, **[final-review wave]** | may carry **`recovered: true`** with `text: null`: a main turn the module saw no `turn.start` of (it was reloaded while the turn ran), taken from the turn's next main-loop request (`turn.step`'s `turnId`, the id `turn.complete` and `$.turn.abort` use). The turn's own `complete` follows as usual |
 | `export` | **[M4]** | `records: [{type: "assistant"\|"user", uuid, message: {content}}]` — main-loop rows as the transcript keeps them: <ul><li>a text row that may hold a mark (its text blocks; not sent past 65,536 characters);</li><li>an async ask's call row with its result row.</li></ul> **Consumed by the child, never handed to subscribers.** The child appends their host events to the project's log with `sminos.export_live`: the Stop hook's writer, `host_events` and `(kind, src)` dedup (`message`: `<row uuid>#<span index>`; `question`: the call id). Membership on sight; one export at a time, in order, off the stream's lock |
@@ -726,12 +733,61 @@ history (it had no rows before the module loaded), and all its rows are live. A 
 transcript line carrying a `uuid`. The stream ending is the other discontinuity: the reader
 subscribes again and starts over from the fresh snapshot.
 
-Known rows with no notice, released unnamed (on the next notice of their loop, or 2 s when
-last on disk): the bridge's own compaction rows (boundary, summary, the attachments after),
-and the engine's line for a module reload.
-
 `tests/sminos/bridge_order.py` (`Consumer`) is the reference implementation, run against
 the real child.
+
+##### A compaction's rows [#78]
+
+The engine writes a **manual** compaction's rows through no `session.append`, so no hook of
+any plugin's names them (2.1.301, live): the boundary (`system/compact_boundary`), the summary
+(`user`, `isCompactSummary`), for a `/compact` the command's rows (caveat, `<command-name>`,
+stdout), and the attachments re-announced after it (`agent_listing_delta`,
+`mcp_instructions_delta`, `environment`, `model`). That holds for the person's `/compact`, a
+`$.command.run({command: "compact"})`, and a plugin's `$.session.compact` (the bridge's
+`compact` verb, the compact tool's). An **auto** compaction's rows the engine raises (doors
+`compaction` and `attachment`), and the hook names them. So the bridge names a compaction's
+rows itself, once it stands:
+
+- **Which compactions.** Its own (`runCompaction`, once `$.session.compact` resolves without
+  a skip), the compact tool's (compact.tsx calls the bridge's `compacted` the same way), and
+  every other through its `session.compact` hook (a plugin's hook never sees its own
+  `$.session.compact`, live), once `next` resolves without a skip; a `precompute` installs
+  nothing and is passed over.
+- **The hold.** It places a hold at the queue's end: the poster posts nothing past it until
+  the rows are named, so their `row-seen`s go out before anything the session did after the
+  compaction (the next turn's prompt, the compact tool's resume prompt, the verb's `compact`
+  end, which follows them).
+- **The read.** Past the loop's cut (as it stood when the compaction ended), through the
+  child's `GET /rows`, every 50 ms: its rows reached disk about 130 ms after the compaction
+  resolved (live). The compaction's result names its summary row: its first message's
+  `handle` is that row's uuid (live). Once the summary row is on disk, one more read (so the
+  rest of the batch it was flushed in is whole) gives the rows: those of the read ahead of
+  the first row a notice of the loop queued behind the hold names (that row and every later
+  one were written after a row named since, a later compaction's included), less any
+  already named (the loop's remembered notices as the hold was placed, its latest 200 since,
+  one queued behind the hold, or a row an earlier hold of the loop named), each `row-seen`
+  `door: "compaction"`, in disk order, in the hold's place. If the summary was named (an
+  auto compaction, whose rows the hook named), nothing is added.
+- **The cut** moves to the last of them unless a later notice (queued behind the hold) moved
+  it first: the cut stays the last notice in the stream's order. Either way, a later hold of
+  the loop placed at the same cut (nothing of the loop came between them) reads past them.
+- **A resync while held** (a new child's hello, a lost post): the hold stays behind it while
+  the loop's cut is still where its rows begin, so they are named after the resync; once a
+  later notice moved the cut, the resync's cut covers them and the hold goes.
+
+What stays unnamed (released by the next notice of its loop, or 2 s after it was first on
+disk): a compaction's rows when its summary row is not on disk within 30 reads (1.5 s,
+`ROWS_POLLS`), when its loop has no cut yet (a compaction before the module's first hello),
+when its cut row lies more than 4 MiB back, or when its result carries no handle (a hook
+answered it with messages of its own); and the person's `/compact` where an organization
+manages Claude Code and the plugin is the person's own (the engine runs no `session.compact`
+hook of such a plugin there).
+
+**The reload line** (`system/informational`, "<plugin>: reloaded (…)") is written through
+`session.append` (door `notice`, origin `engine`) after the new module's `session.start`, so
+the new module's own hook names it (2.1.301, live). That notice comes before the new child's
+hello as a rule (the child's tail read ran before the line's flush), and the hello's resync
+then carries it as the main loop's cut: a consumer reads it as history.
 
 ##### `sminos watch` and the verbs [M4]
 
@@ -1176,8 +1232,38 @@ a full backlog refuses too). The child's listen backlog is 128.
   `run-sminos-tests.sh` ≈ line 4838) is already in DC4's
   `docs/doperpowers/TECH-DEBT.md`; this branch adds no second entry.
   Date/Author: 2026-10-15, controller, from the composite's writer.
+- Decision (Arkho #78, after DC2): The rows DC2 left with no notice are
+  named. Probed live first (2.1.301, a probe plugin in an isolated
+  session): the unnamed rows are a manual compaction's, any plugin's or
+  the person's, not "a plugin's own calls"; the reload line was never one
+  (the new module's hook sees it). `$.session.messages()` carries no uuid,
+  but a compaction's result names its summary row by `handle`, and the
+  rest of its rows are read from the transcript through the child's new
+  `GET /rows`, since `$.fs.read` stops at 4 MiB. A hold in the post queue
+  keeps everything later behind the read, so the notices go out in write
+  order: without it, the next prompt (the compact tool's resume prompt
+  always) is named about 100 ms before the compaction's rows even reach
+  disk. "A compaction's rows" in DX5 above is the rule.
+  Date/Author: 2026-10-15, Arkho #78 builder.
 
 ## Surprises & Discoveries
+
+- (#78, 2.1.301, live) A manual compaction (the person's `/compact`,
+  `$.command.run({command: "compact"})`, a plugin's `$.session.compact`)
+  writes its rows through no `session.append`; an auto compaction's pass it
+  (doors `compaction`, `attachment`). A plugin's `session.compact` hook sees
+  every compaction but its own plugin's `$.session.compact` (the person's
+  and a command run as `manual`, the threshold's as `auto`). The rows reach
+  disk about 130 ms after the compaction resolves, in one flush.
+- (#78, 2.1.301, live) `$.session.messages()` gives `{role, text,
+  toolUses}` only: no uuid, no handle. A compaction's result (and a
+  `session.compact` hook's `e.messages`) carries `handle` on each engine
+  message, and the handle is the row's uuid: the summary's first.
+- (#78, 2.1.301, live) The reload line is a `system/informational` row
+  ("<plugin>: reloaded (N hooks: …)"), raised through `session.append` (door
+  `notice`, origin `engine`) about 12 ms after the new module's
+  `session.start` hook returned; a child the new module spawned there read
+  the transcript after the append and before the line's flush.
 
 - (M1) With a permission dialog open, the bridge's outermost `tool.call`
   hook for that call is still in flight: the `PermissionRequest` and the

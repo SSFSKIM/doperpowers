@@ -1,5 +1,7 @@
 import type { EngineInterface, On, SessionStartInput, ToolDescribeResult, TurnCompleteInput } from 'claude-code'
 
+import { compacted } from './bridge-rows'
+
 /**
  * The tools as the model names them, `mcp__<plugin>__<name>` with the
  * plugin's manifest name; written out so the engine's scan reads the
@@ -195,6 +197,10 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
     const outcome = await $.session.compact(request.instructions === undefined ? {} : { instructions: request.instructions })
     if (outcome.skip !== undefined) {
       $.ui.toast(`compact: not compacted · ${outcome.skip}`)
+    } else {
+      // Its rows pass no hook of this plugin's, the bridge's included: the
+      // bridge names them, ahead of the resume prompt's.
+      compacted(null, outcome.messages)
     }
   } catch (error) {
     $.ui.toast(`compact: ${message(error)}`)

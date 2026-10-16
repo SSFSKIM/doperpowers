@@ -187,6 +187,8 @@ function harness(
     files?: Record<string, string>
     /** What `$.process.run` prints. */
     run?: (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string; isStdoutTruncated: boolean }>
+    /** Runs while `$.fs.stat` is awaited, before it answers. */
+    whileStat?: (path: string) => void
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -215,7 +217,10 @@ function harness(
       },
       exists: async (path: string) => dirs.has(path),
       // /tmp is a link to /private/tmp, as on macOS.
-      stat: async (path: string, opts?: { resolve?: boolean }) => ({ kind: 'file', size: 1, mtimeMs: 0, isLink: false, ...(opts?.resolve === true && { realPath: `/private${path}` }) }),
+      stat: async (path: string, opts?: { resolve?: boolean }) => {
+        options.whileStat?.(path)
+        return { kind: 'file', size: 1, mtimeMs: 0, isLink: false, ...(opts?.resolve === true && { realPath: `/private${path}` }) }
+      },
       read: async (path: string, opts?: { as?: string }) => {
         calls.push({ op: 'fs.read', args: { path, ...opts } })
         if (opts?.as !== 'bytes') {
@@ -1493,6 +1498,30 @@ describe('answered from outside the terminal (the bridge)', () => {
     expect(answerAsync(id, { 'Which backend?': 'SQLite' }, 'cli')).toEqual({ ok: false, error: `the question ${id} is open in the terminal's dialog` })
     await h.raise(0, answered(ANSWER))
     await pressed
+  })
+
+  test("an answer from outside while a press's answer is still being taken in (its pictures' paths read) is refused: the ask has one answer", async () => {
+    const FOLDER = '/tmp/claude-501/-work-repo/sess-1/images'
+    const notes: AskNote[] = []
+    const meanwhile: unknown[] = []
+    let id = ''
+    const h = harness({ whileStat: () => void meanwhile.push(answerAsync(id, { 'Which backend?': 'Postgres' }, 'm-1')) })
+    observeAsks((note) => notes.push(note))
+    await h.start()
+    await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    id = asyncAsks()[0]?.id ?? ''
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    h.paste(FOLDER, '1.png')
+    const text = 'The user answered: "Which backend?"="like this (Image attached)". Read the answers carefully.'
+    await h.raise(0, answered(text, { 'Which backend?': 'like this (Image attached)' }))
+    await pressed
+    await h.settle()
+    expect(meanwhile).toEqual([{ ok: false, error: `the question ${id} is open in the terminal's dialog` }])
+    expect(h.submitted()).toEqual([deliveryText(id, `${text}\n[Image source: /private${FOLDER}/1.png]`)])
+    expect(notes.filter((n) => n.kind === 'answered')).toEqual([{ kind: 'answered', id, dialog: 'nested_0' }])
+    expect(asyncAsks()[0]).toMatchObject({ status: 'answered', answer: `${text}\n[Image source: /private${FOLDER}/1.png]` })
   })
 
   test("a press's answer is told to the observer with the dialog it went through, whose answer may have come from outside", async () => {

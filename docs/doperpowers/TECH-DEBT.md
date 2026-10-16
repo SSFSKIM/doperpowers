@@ -297,7 +297,33 @@ the spec's Decision Log entry "the branch review round"
   Fix: keep the response's socket for the deadline's cleanup. Trigger: a
   hub or proxy seen trickling answers, or an uplink's thread count
   growing.
+- **T3 — a forged position under one of this machine's session ids leaves
+  a lock file.** `sminos_hublog.py` `spend_own` (desk panel fixes): a
+  refused event at `<machine>/<uuid>` is spent under that writer file's
+  lock, so a lying hub naming session ids this machine never ran leaves
+  an empty `<machine>.<uuid>.jsonl.lock` in the log per id. Harmless (git
+  excludes `*.lock`, no reader opens them). Fix: spend without the lock
+  when no writer file exists and no local session holds the id. Trigger:
+  lock files accumulating in a hub project's log.
+- **Backlog, not debt — the other bridged RPCs could reconcile from the
+  child's kept answer.** Only `steer` sends its nonce (`rpc`) with its
+  bridge command (desk panel fixes, scalpel-2#2); an `interrupt`, `model`
+  or `compact` claimed before a stop is still answered `interrupted`,
+  though the child would keep its answer under the nonce if the daemon
+  sent it. Worth it once a stop mid-RPC is seen in practice.
 - **Backlog, not debt — MAWS async questions never reach the log** (§9 of
   the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
   whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are
   the ones most affected.
+
+## to-human style (2026-10-15, 7.158.0)
+
+- **About 1 report in 30 comes back with no `<message>` wrapper.** In the
+  ⚠-paragraph micro-test (`tests/output-styles/to-human-affected-eval.py`),
+  4 of 124 final reports from Opus 5.5 under the full style were written
+  unwrapped, so the view would fold them into the working record and the
+  human would not see them. The rate did not differ between the 7.157.4
+  style and the variants. The test sends no per-turn style reminder, which
+  real sessions get, so the live rate may be lower. Trigger: a transcript
+  audit of interactive to-human sessions, counting final turns with text
+  and no mark, that finds the same order of rate.

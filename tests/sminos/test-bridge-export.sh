@@ -285,6 +285,25 @@ sleep 0.5
 assert_equals "$(find "$SMINOS_HOME/projects" -name "*$SC*" | wc -l | tr -d ' ')" "0" "a session in no project exports nothing"
 assert_equals "$(ctl status "$SMINOS_HOME/bridge/$SC.sock")" "200 ready" "and a malformed export leaves the child serving"
 
+echo "an enrollment while the child runs:"
+# The hub admits only the writers of the name this machine enrolled under: an
+# export after the enrollment goes there, though the child began before it.
+SE=5b000001-0000-4000-8000-0000000000e5
+peer "$SE" exren interactive cli
+start_child "$SE"
+ctl post "$SMINOS_HOME/bridge/$SE.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SE\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SE.sock" "$(rows export before-enrolling)" >/dev/null
+until_true 100 has "$SE" "message:before-enrolling#0" || true
+assert_contains "$(events_of "$SE")" "message:before-enrolling#0" "before the enrollment, an export goes under the host's name"
+mkdir -p "$SMINOS_HOME/daemon"
+printf '{"machine": "enrolled", "former": {"testhost": ["%s"]}}\n' "$SE" > "$SMINOS_HOME/daemon/hub.json"
+ctl post "$SMINOS_HOME/bridge/$SE.sock" "$(rows export after-enrolling)" >/dev/null
+until_true 100 grep -q after-enrolling "$LOG/enrolled.$SE.jsonl" 2>/dev/null || true
+assert_contains "$(cat "$LOG/enrolled.$SE.jsonl" 2>/dev/null)" '"src": "after-enrolling#0"' \
+  "after it, under the enrolled name: the child reads the machine's identity afresh at each export"
+assert_not_contains "$(events_of "$SE")" "after-enrolling" "and not under the name it began with"
+rm -f "$SMINOS_HOME/daemon/hub.json"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES bridge export assertions passed"

@@ -25,13 +25,19 @@ it streams, subagents labelled; `--json`, the lines as they come.
 
 Row order (DC2 M4): the hello's `seed` is each loop's last row in the
 session's transcripts as the child read them, which the mod's first resync
-carries as each loop's cut; the mod's row notices move it from there.
+carries as each loop's cut; the mod's row notices move it from there. The
+rows no hook of the mod's sees (a manual compaction's) it reads here too:
+
+    GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
 
 What must outlive a module reload, which kills the child — the model chosen
 for the session and the delivery keys already submitted — the child keeps in
 $SMINOS_HOME/bridge/<id>.json from the mod's events, and hands back in its
 hello. The file outlives the process too, so a session resumed under its id
-(a seat's `--resume`) goes on with both.
+(a seat's `--resume`) goes on with both. A command that carries a desk RPC's
+nonce (`rpc`) has the mod's answer kept there under it (`rpcs`, the last
+RPCS_KEPT): what the daemon reads after a stop between sending the command
+and reading its answer (sminos_rpc's trace).
 
 Requests from outside (DC2 M3): the mod raises a permission prompt or a
 question as `raised` and settles it as `settled`; the child keeps the pending
@@ -72,6 +78,7 @@ BODY_MAX = 32 * 1024 * 1024
 SUBSCRIBER_BACKLOG = 10000     # a subscriber this far behind is cut off and resubscribes
 COMMAND_WAIT_MAX = 25000       # ms: under the 30 s an engine fetch waits
 AGENTS_KEPT = 200
+RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
 WATCHDOG_EVERY = 0.5
 POLL_HOLD_MAX = 20000          # ms: the mod's poll is held this long at most, under its 30 s fetch bound
 SETTLED_KEPT = 100             # recent settlements a late subscriber still sees
@@ -81,6 +88,7 @@ ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
 EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
 STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
 TAIL_BLOCK = 65536             # a transcript's tail is read backward this many bytes at a time
+ROWS_SCAN_MAX = 4 << 20        # bytes: how far back from its end GET /rows looks for the row it reads past
 NOTICES = ("block-row", "row-seen")  # each row the session keeps is named by one, in write order (the cut)
 NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post without it is another module's
 QUESTION_TOOLS = ("AskUserQuestion",)
@@ -119,7 +127,9 @@ def _no_kept():
 
 def load_kept(session):
     """What a child kept for the session: {"override": {model, effort} | None,
-    "delivered": {writer: seq}}; nothing kept reads as none."""
+    "delivered": {writer: seq}}, and, once a command sent for a desk RPC was
+    answered, "rpcs": {nonce: the answer's op, ok, result, error}; nothing
+    kept reads as none."""
     try:
         with open(kept_path(session)) as f:
             d = json.load(f)
@@ -129,9 +139,13 @@ def load_kept(session):
         return _no_kept()
     o = d.get("override")
     delivered = d.get("delivered")
-    return {"override": o if isinstance(o, dict) else None,
-            "delivered": {str(w): s for w, s in delivered.items() if type(s) is int}
-            if isinstance(delivered, dict) else {}}
+    out = {"override": o if isinstance(o, dict) else None,
+           "delivered": {str(w): s for w, s in delivered.items() if type(s) is int}
+           if isinstance(delivered, dict) else {}}
+    rpcs = d.get("rpcs")
+    if isinstance(rpcs, dict) and rpcs:
+        out["rpcs"] = {str(n): a for n, a in rpcs.items() if isinstance(a, dict)}
+    return out
 
 
 # ------------------------------------------------------------------ the client
@@ -300,6 +314,42 @@ def last_row(path):
         return None
 
 
+def _uuid_of(line):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    return row["uuid"] if isinstance(row, dict) and isinstance(row.get("uuid"), str) else None
+
+
+def rows_after(path, uuid):
+    """The uuids of a transcript's whole rows after the row `uuid`, in disk
+    order, read backward from its end; None while that row is not among its
+    whole lines (not flushed yet), or lies further back than ROWS_SCAN_MAX."""
+    key = uuid.encode()
+    try:
+        with open(path, "rb") as f:
+            end = at = f.seek(0, os.SEEK_END)
+            buf = b""
+            while at > 0 and end - at < ROWS_SCAN_MAX:
+                start = max(0, at - TAIL_BLOCK)
+                f.seek(start)
+                buf = f.read(at - start) + buf
+                at = start
+                if key not in buf:
+                    continue
+                # Whole lines only, as last_row reads them.
+                lines = buf[:buf.rfind(b"\n") + 1].split(b"\n")[:-1]
+                if at > 0 and lines:
+                    lines.pop(0)
+                for i in range(len(lines) - 1, -1, -1):
+                    if key in lines[i] and _uuid_of(lines[i]) == uuid:
+                        return [u for u in map(_uuid_of, lines[i + 1:]) if u is not None]
+            return None
+    except OSError:
+        return None
+
+
 def read_seed(session):
     """Each loop's last row now, by loop (`main`, or the subagent's id): the
     mod's first resync carries it as the cut, every row up to it accounted
@@ -434,6 +484,7 @@ class Bridge:
         self.mod_events = 0
         self.mod_last = None
         self.waiters = {}        # command id → [threading.Event, result event]
+        self.rpc_of = {}         # command id → the nonce of the desk RPC it carries (`rpc`), until answered
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
@@ -621,6 +672,13 @@ class Bridge:
         elif kind == "usage":
             self.usage = dict(e)
         elif kind == "result":
+            rpc = self.rpc_of.pop(e.get("id"), None)
+            if rpc is not None:
+                # Kept by the RPC's nonce, written with this batch: the trace
+                # a daemon that stopped before it read the answer finds.
+                answers = {n: a for n, a in (self.kept.get("rpcs") or {}).items() if n != rpc}
+                answers[rpc] = {k: e[k] for k in ("op", "ok", "result", "error") if k in e}
+                self._keep({**self.kept, "rpcs": dict(list(answers.items())[-RPCS_KEPT:])})
             w = self.waiters.get(e.get("id"))
             if w is not None:
                 w[1] = e
@@ -888,9 +946,16 @@ class Bridge:
         cid = uuidlib.uuid4().hex
         line = {"id": cid, **{k: v for k, v in body.items() if k != "id"}}
         w = [threading.Event(), None]
-        if wait_ms > 0:
-            with self.lock:
+        rpc = body.get("rpc")
+        with self.lock:
+            if wait_ms > 0:
                 self.waiters[cid] = w
+            if isinstance(rpc, str) and rpc:
+                # Kept past the wait, until the answer comes (_apply): an
+                # answer after a 504 is still kept under its nonce.
+                self.rpc_of[cid] = rpc
+                while len(self.rpc_of) > RPCS_KEPT:
+                    del self.rpc_of[next(iter(self.rpc_of))]
         try:
             self.emit(line)
             self.ingest([{"type": "command", "id": cid, "op": body["op"], "t": int(time.time() * 1000)}])
@@ -945,6 +1010,16 @@ class _Handler(BaseHTTPRequestHandler):
             return self._stream(bridge)
         if route == "/requests":
             return self._send(200, bridge.requests())
+        if route == "/rows":
+            q = parse_qs(url.query)
+            loop, after = (q.get("loop") or ["main"])[0], (q.get("after") or [""])[0]
+            if not after:
+                return self._send(400, {"error": "after names a row"})
+            path = transcripts(bridge.session).get(loop)
+            rows = rows_after(path, after) if path else None
+            if rows is None:
+                return self._send(404, {"error": "row %s is not on %s's transcript yet" % (after, loop)})
+            return self._send(200, {"rows": rows})
         parts = route.split("/")
         if len(parts) == 3 and parts[1] == "requests" and parts[2]:
             return self._send(*bridge.request_info(unquote(parts[2])))

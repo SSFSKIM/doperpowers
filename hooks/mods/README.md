@@ -418,6 +418,15 @@ first in `register.tsx`, so its hooks are the outermost: what it reports is
 what the session showed and kept, after every other mod. Never in a session
 with `SMNS_INTERNAL` set (derive's headless fork).
 
+`bridge.tsx` holds the hooks and the code that takes `$`: the session start,
+the child and the session it serves, control, and the wait for a decision.
+The rest sits beside it in modules that take no `$`, each importing only the
+ones listed before it: `bridge-state.tsx` (the one state object, its types,
+and `resetBridge`), `bridge-stream.tsx` (the mod's copy of the live state and
+the poster), `bridge-requests.tsx` (requests from outside and their
+settlement), and `bridge-rows.tsx` (each kept row's notice, a compaction's
+rows read from the transcript, and the export to the host).
+
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and
   results, turns, subagents, usage, a heartbeat, and the requests below.
@@ -427,7 +436,12 @@ with `SMNS_INTERNAL` set (derive's headless fork).
   (held, a second at most, for a row the engine appends after the request's
   result); each loop's last notice is the snapshot's `cut`, so a reader
   joining the transcript on disk with the stream knows which rows are
-  accounted for. A loop older than the module (a reload, a resume, a
+  accounted for. A manual compaction's rows (the person's `/compact`, the
+  bridge's `compact`, the compact tool's) pass no `session.append`: once the
+  compaction stands, a hold in the post queue keeps everything later back
+  while the child reads them from the transcript (`GET /rows`, past the
+  loop's cut, until the summary row the compaction's result names is on
+  disk), and their `row-seen`s take its place. A loop older than the module (a reload, a resume, a
   subagent running at load) is cut first at its transcript's tail, which the
   module's first child reads (its hello's `seed`), and a model request of it
   begun before that hello streams to nobody: its rows reach a reader through
@@ -479,13 +493,12 @@ request" (exit 1), never answered as idle; calls begun before the reload are
 not the new module's (an interrupt's abort stops them, but none the abort
 moved to the background is stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
 a `--bg` job starts in permission mode `auto`, where most calls raise no
-request; rows the plugin's own calls write pass no hook of the plugin's: the
-steer's row is named from the append's answer, after it is written, and the
-rows of a compaction the bridge runs (the boundary, the summary, the
-attachments that follow) and the engine's line for a module reload are named
-by none, so a reader emits them unnamed, on the next notice of their loop or
-after 2 seconds; a hook's success with nothing to say is raised to the hook
-but never written, so it is named by none.
+request; the plugin's own append passes no hook of the plugin's, so the
+steer's row is named from the append's answer, after it is written; a
+compaction's rows whose summary row is not on disk within 1.5 seconds are
+named by none, and a reader emits them unnamed, on the next notice of their
+loop or after 2 seconds; a hook's success with nothing to say is raised to
+the hook but never written, so it is named by none.
 
 ## secrets
 
