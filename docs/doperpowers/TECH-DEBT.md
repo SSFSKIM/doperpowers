@@ -256,8 +256,11 @@ the spec's Decision Log entry "the branch review round"
     the record every 0.25 s and exposes no sign of having read it, and the
     owner declined adding one. If it flakes in CI, the run is a bug for the
     owner.
-  - "reading chat is the first sminos instruction" never failed in 40
-    loaded runs (2× and 8×) and is unchanged. Trigger: a reproduction.
+  - "reading chat is the first sminos instruction" was never a timing
+    assertion: it failed deterministically from a checkout path through a
+    symlink (`/tmp` on macOS), where the test's unresolved `REPO_ROOT`
+    mismatched the CLI's resolved `{{SMINOS_CLI}}`. Fixed 2026-10-16
+    (Arkho #82): the suite resolves `REPO_ROOT` with `pwd -P`.
   - Speed claims that only 8× load breaks (`stress-ng --cpu 32` on 4
     vCPU; all pass 20/20 at 2×) are left as their owners wrote them:
     - `test-uplink.sh`'s "an event from the hub reaches m within a second

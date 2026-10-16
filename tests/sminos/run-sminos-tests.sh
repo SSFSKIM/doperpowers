@@ -13,7 +13,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Physical path: the CLI renders its own location resolved (spawn preamble
+# {{SMINOS_CLI}}), so a root kept through a symlink (/tmp on macOS) would
+# mismatch it.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 SMINOS="$REPO_ROOT/skills/sminos/scripts/sminos"
 
 FAILURES=0
