@@ -373,7 +373,9 @@ def add_hub(path, smns, hub, a):
             else "a hub that is not {url, org}, so it syncs through neither git nor a hub — fix its .smns by hand"), 1)
     # Under the mirror's sync lock: a sync of the project in flight ends
     # first, and every git phase after it reads the hub (ensure_mirrored), so
-    # git and the uplink never feed this log at once.
+    # git and the uplink never feed this log at once. The registration both
+    # read moves to this checkout under the same hold: a git phase run from
+    # another checkout of the project finds the hub there.
     log = os.path.join(sminos.projects_root(), smns[0], "log")
     os.makedirs(log, mode=0o700, exist_ok=True)
     with daemon.sync_op(log):
@@ -386,6 +388,8 @@ def add_hub(path, smns, hub, a):
             f.write("\n")
         os.chmod(tmp, 0o644)  # committed: every clone reads it
         os.replace(tmp, path)
+        sminos.forget_caches()
+        sminos.project_path(sminos.resolve_project(os.path.dirname(path)), "log")
     print("project %s is now a hub project of %s (org %s) — commit .smns, so every clone syncs through the hub%s" % (
         smns[1], hub["url"], hub["org"],
         "; its remote %s is no longer synced live (it stays the log's archive)" % smns[2] if smns[2] else ""))

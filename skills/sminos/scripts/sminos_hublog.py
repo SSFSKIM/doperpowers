@@ -27,10 +27,13 @@ what it carried, and its position is spent — a tombstone: nothing is ever
 appended there, the writer's later events are not held back behind it (every
 reader of a writer's file takes seqs by order, not by count, so the hole is
 read past), and the vector no longer asks the hub for it, so it is reported
-once. What passes is appended verbatim, with its code, through the
-log's own locks: present already (the same content at its (writer, seq)) it
-is skipped; a different content there is refused; past a gap it waits for
-the hub to send what is missing. Then whatever was appended is delivered at
+once. A position of this machine's own writers is spent under the writer
+file's lock, only while no event of this machine's holds it, and its
+appenders allocate past it (sminos._append): what this machine writes next
+never lands where nothing can upload or import it. What passes is appended
+verbatim, with its code, through the log's own locks: present already (the
+same content at its (writer, seq)) it is skipped; a different content there
+is refused; past a gap it waits for the hub to send what is missing. Then whatever was appended is delivered at
 once and the tick loop nudged.
 
 Its state between streams lives in the project's home, `uplink.json`: the
@@ -55,7 +58,7 @@ import sminos_daemon as daemon  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 
 NONCE_DOMAIN = "smns-hub-nonce-v1"
-STATE_FILE = "uplink.json"
+STATE_FILE = sminos.UPLINK_STATE
 LEGACY = "legacy/"
 # Event JSON per `events` frame up, as the hub batches its own; a larger
 # event travels alone (and as parts, past a frame's bound).
@@ -521,7 +524,11 @@ class HubLog:
             log("refused %s in %s: %s" % (position(raw), self.project.name, why))
             out.append(rejected(self.project.id, raw, reason, why))
             if isinstance(raw, dict) and isinstance(raw.get("writer"), str) and codes.is_log_seq(raw.get("seq")):
-                newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
+                if self.allocated_here(raw["writer"]):
+                    if self.spend_own(raw["writer"], int(raw["seq"])):
+                        newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
+                else:
+                    newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
         if out:
             d = self.state()
             held = d.get("spent") if isinstance(d.get("spent"), dict) else {}
@@ -531,6 +538,41 @@ class HubLog:
             d["unreported"] = self.unreported() + out
             self.save(d)
         return appended, out
+
+    def allocated_here(self, writer):
+        """Whether this machine's appenders allocate `writer`: its operator
+        writer or one of its sessions' (`sminos.writer_id`), exactly
+        `<machine>/human` or `<machine>/<session uuid>`. Any other name, even
+        one under this machine's prefix, is no file the allocator opens."""
+        prefix = self.machine + "/"
+        if not writer.startswith(prefix):
+            return False
+        rest = writer[len(prefix):]
+        return rest == "human" or bool(sminos.UUID_RE.match(rest))
+
+    def spend_own(self, writer, seq):
+        """A refused position of one of this machine's own writers
+        (`allocated_here`), which its appenders allocate (sminos._append
+        skips spent positions): spent under the writer file's lock, as the
+        allocator reads it, and only while no event of this machine's holds
+        it — a position its own event took first is that event's. Whether it
+        was spent."""
+        path = sminos.writer_path(self.project, writer)
+        with sminos.flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False), \
+                sminos.flocked(path + ".lock"):
+            try:
+                with open(path, "rb") as f:
+                    last = sminos._last_seq(f)
+            except FileNotFoundError:
+                last = 0
+            if seq <= last:
+                return False
+            d = self.state()
+            held = d.get("spent") if isinstance(d.get("spent"), dict) else {}
+            held[writer] = sorted(set(held.get(writer) or []) | {seq})
+            d["spent"] = held
+            self.save(d)
+        return True
 
     def deliver(self):
         """What an import made owed to this machine's members, delivered now."""

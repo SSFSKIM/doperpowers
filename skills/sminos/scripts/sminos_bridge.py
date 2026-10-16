@@ -31,7 +31,10 @@ What must outlive a module reload, which kills the child — the model chosen
 for the session and the delivery keys already submitted — the child keeps in
 $SMINOS_HOME/bridge/<id>.json from the mod's events, and hands back in its
 hello. The file outlives the process too, so a session resumed under its id
-(a seat's `--resume`) goes on with both.
+(a seat's `--resume`) goes on with both. A command that carries a desk RPC's
+nonce (`rpc`) has the mod's answer kept there under it (`rpcs`, the last
+RPCS_KEPT): what the daemon reads after a stop between sending the command
+and reading its answer (sminos_rpc's trace).
 
 Requests from outside (DC2 M3): the mod raises a permission prompt or a
 question as `raised` and settles it as `settled`; the child keeps the pending
@@ -72,6 +75,7 @@ BODY_MAX = 32 * 1024 * 1024
 SUBSCRIBER_BACKLOG = 10000     # a subscriber this far behind is cut off and resubscribes
 COMMAND_WAIT_MAX = 25000       # ms: under the 30 s an engine fetch waits
 AGENTS_KEPT = 200
+RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
 WATCHDOG_EVERY = 0.5
 POLL_HOLD_MAX = 20000          # ms: the mod's poll is held this long at most, under its 30 s fetch bound
 SETTLED_KEPT = 100             # recent settlements a late subscriber still sees
@@ -119,7 +123,9 @@ def _no_kept():
 
 def load_kept(session):
     """What a child kept for the session: {"override": {model, effort} | None,
-    "delivered": {writer: seq}}; nothing kept reads as none."""
+    "delivered": {writer: seq}}, and, once a command sent for a desk RPC was
+    answered, "rpcs": {nonce: the answer's op, ok, result, error}; nothing
+    kept reads as none."""
     try:
         with open(kept_path(session)) as f:
             d = json.load(f)
@@ -129,9 +135,13 @@ def load_kept(session):
         return _no_kept()
     o = d.get("override")
     delivered = d.get("delivered")
-    return {"override": o if isinstance(o, dict) else None,
-            "delivered": {str(w): s for w, s in delivered.items() if type(s) is int}
-            if isinstance(delivered, dict) else {}}
+    out = {"override": o if isinstance(o, dict) else None,
+           "delivered": {str(w): s for w, s in delivered.items() if type(s) is int}
+           if isinstance(delivered, dict) else {}}
+    rpcs = d.get("rpcs")
+    if isinstance(rpcs, dict) and rpcs:
+        out["rpcs"] = {str(n): a for n, a in rpcs.items() if isinstance(a, dict)}
+    return out
 
 
 # ------------------------------------------------------------------ the client
@@ -434,6 +444,7 @@ class Bridge:
         self.mod_events = 0
         self.mod_last = None
         self.waiters = {}        # command id → [threading.Event, result event]
+        self.rpc_of = {}         # command id → the nonce of the desk RPC it carries (`rpc`), until answered
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
@@ -621,6 +632,13 @@ class Bridge:
         elif kind == "usage":
             self.usage = dict(e)
         elif kind == "result":
+            rpc = self.rpc_of.pop(e.get("id"), None)
+            if rpc is not None:
+                # Kept by the RPC's nonce, written with this batch: the trace
+                # a daemon that stopped before it read the answer finds.
+                answers = {n: a for n, a in (self.kept.get("rpcs") or {}).items() if n != rpc}
+                answers[rpc] = {k: e[k] for k in ("op", "ok", "result", "error") if k in e}
+                self._keep({**self.kept, "rpcs": dict(list(answers.items())[-RPCS_KEPT:])})
             w = self.waiters.get(e.get("id"))
             if w is not None:
                 w[1] = e
@@ -888,9 +906,16 @@ class Bridge:
         cid = uuidlib.uuid4().hex
         line = {"id": cid, **{k: v for k, v in body.items() if k != "id"}}
         w = [threading.Event(), None]
-        if wait_ms > 0:
-            with self.lock:
+        rpc = body.get("rpc")
+        with self.lock:
+            if wait_ms > 0:
                 self.waiters[cid] = w
+            if isinstance(rpc, str) and rpc:
+                # Kept past the wait, until the answer comes (_apply): an
+                # answer after a 504 is still kept under its nonce.
+                self.rpc_of[cid] = rpc
+                while len(self.rpc_of) > RPCS_KEPT:
+                    del self.rpc_of[next(iter(self.rpc_of))]
         try:
             self.emit(line)
             self.ingest([{"type": "command", "id": cid, "op": body["op"], "t": int(time.time() * 1000)}])

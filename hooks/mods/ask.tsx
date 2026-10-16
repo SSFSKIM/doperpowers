@@ -899,7 +899,7 @@ let asks: OpenAsk[] = []
 let held: Delivery[] = []
 /** Asks answered whose answer has not reached the model yet: held, or on a route that may still fail. */
 let undelivered = new Set<string>()
-/** Asks whose dialog is raised (open, or queued behind another). */
+/** Asks whose dialog is raised (open, or queued behind another), until its answer is the ask's. */
 let raisedAsks = new Set<string>()
 /** A main-conversation turn is running: an answer now is held, not submitted. */
 let isTurnRunning = false
@@ -1041,29 +1041,33 @@ async function answerAsk($: EngineInterface, id: string) {
   if (ask === undefined || ask.status !== 'open' || raisedAsks.has(id)) {
     return
   }
+  // Held until the dialog's answer is the ask's, the waits after the dialog
+  // included: an answer from outside meanwhile is refused, not a second one.
   raisedAsks.add(id)
-  let outcome: DialogOutcome
   try {
-    outcome = await openDialog($, ask.questions)
-  } catch (error) {
-    $.ui.log(`ask: ${message(error)}`, { to: 'debug' })
-    $.ui.toast(`The question could not be asked: ${message(error)}`)
-    return
+    let outcome: DialogOutcome
+    try {
+      outcome = await openDialog($, ask.questions)
+    } catch (error) {
+      $.ui.log(`ask: ${message(error)}`, { to: 'debug' })
+      $.ui.toast(`The question could not be asked: ${message(error)}`)
+      return
+    }
+    if (outcome.kind === 'refused' && !outcome.hasFeedback) {
+      return
+    }
+    // No route carries picture bytes: each kept paste goes as its file, for the model to Read.
+    const answer = [outcome.text, ...(await imageLines($, outcome.images))].join('\n')
+    ask.status = 'answered'
+    ask.answer = answer
+    deliver(outOf($), { id, text: deliveryText(id, answer) })
+    $.ui.invalidate('ui.render')
+    // The dialog goes through the PermissionRequest hooks like any other, so
+    // its answer may have come from outside: the bridge names who gave it.
+    note({ kind: 'answered', id, dialog: outcome.toolUseId ?? '' })
   } finally {
     raisedAsks.delete(id)
   }
-  if (outcome.kind === 'refused' && !outcome.hasFeedback) {
-    return
-  }
-  // No route carries picture bytes: each kept paste goes as its file, for the model to Read.
-  const answer = [outcome.text, ...(await imageLines($, outcome.images))].join('\n')
-  ask.status = 'answered'
-  ask.answer = answer
-  deliver(outOf($), { id, text: deliveryText(id, answer) })
-  $.ui.invalidate('ui.render')
-  // The dialog goes through the PermissionRequest hooks like any other, so
-  // its answer may have come from outside: the bridge names who gave it.
-  note({ kind: 'answered', id, dialog: outcome.toolUseId ?? '' })
 }
 
 /**

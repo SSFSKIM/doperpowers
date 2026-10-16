@@ -677,6 +677,26 @@ produces nothing new for other children beyond the stream DC7 builds on.
   member's current alias and name source, then its `state`.
   Date/Author: 2026-10-15, controller (from the branch review).
 
+- Decision (the recomposition panel's fixes, after merge): (P1) Every
+  checkout of a project shares its log, so the git gate
+  (`ensure_mirrored`) reads the project's registration (`project.json`,
+  the checkout the uplink reads) as well as the tick's own checkout, and
+  `project init --hub` registers the converted checkout under the same
+  `.sync-op.lock` it converts under. A checkout whose `.smns` names no hub
+  (a worktree from before the conversion) no longer takes the registration
+  back while the registered checkout still names a hub: before, a `say`
+  from it re-registered the project as git-mirrored, and a tick that read
+  it merged and pushed the log the uplink fed. (P2) A position of this
+  machine's own writer, refused on import, is spent under the writer
+  file's lock and only while no event of this machine's holds it, and the
+  appender allocates past spent positions: the machine's next event no
+  longer lands where neither upload (the hub's vector already counts it)
+  nor its echo (spent) can carry it. (P2) The bridge child's live export
+  reads the machine's identity afresh, as it reads the harness's records:
+  an enrollment while a session runs moves its exports to the enrolled
+  name's writer, the only one the hub admits.
+  Date/Author: 2026-10-15, the panel's fixer.
+
 ## Outcomes & Retrospective
 
 **Outcome (2026-10-15).** All four milestones landed and were reviewed

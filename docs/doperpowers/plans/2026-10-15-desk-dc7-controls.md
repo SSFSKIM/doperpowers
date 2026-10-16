@@ -704,6 +704,29 @@ against the local hub; until it lands, the stand-in.
   load allows.
   Date/Author: 2026-10-15, controller, from the composite's writer.
 
+- Decision (the recomposition panel's fixes, after merge): (1) An
+  outcome whose ledger write fails is sent nowhere: the in-memory entry
+  goes back to the claim the file holds, and the uplink writes the
+  outcome again at each reconciliation, sending it once it is kept (DX6:
+  recorded before the result goes up; before, a failed write still went
+  up, and a restart then answered the same nonce `interrupted`). (2) A
+  claimed steer is reconciled from the bridge, not the transcript: the
+  daemon's steer command carries the RPC's nonce (`rpc`), and the child
+  keeps the mod's answer under it in the session's kept file (`rpcs`,
+  DX5's kept file, the last 100). A user row of the same words is no
+  evidence: the same text before the claim, or sent another way after
+  it, answered `done` with a row that was not the steer's. A steer whose
+  answer the child never kept (no bridge, a module reload, the session
+  gone) is `interrupted`. DX6's "a steer's row is in the transcript" now
+  reads "the steer's answer is kept by its nonce" (raised with the
+  composite's writer). (3) A claimed Resume whose job was never kept is
+  `interrupted` at once: a `--bg` process started after the launch is no
+  evidence of this launch. (4) A claimed Resume whose kept job does not
+  hold the session has the harness asked once, on a worker, which session
+  that job runs; a job under another session is a copy, stopped, and the
+  RPC fails `copy-started`, rather than left running.
+  Date/Author: 2026-10-15, the panel's fixer.
+
 ## Surprises & Discoveries
 
 - (M1) Under load above 200, three suite assertions outside the session
