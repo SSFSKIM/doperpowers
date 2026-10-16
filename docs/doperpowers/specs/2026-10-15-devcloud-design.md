@@ -26,8 +26,8 @@ any command that touches its store — too strict for daily use — yet knows on
 through it, so tokens in other files (a proxy config, a shell rc) reached model context twice in
 the session that produced this design. The guard moves into the new `devcloud` plugin and
 changes from deny to redact; `/secret` itself — the command, its masked entry pane, the store —
-stays in `cua`, which needs it to type secrets into GUIs and browsers, and `cua`'s own guard yields
-to devcloud's wherever both are installed.
+stays in `cua`, which needs it to type secrets into GUIs and browsers; `cua`'s own guard drops its
+refusals everywhere and yields to devcloud's wherever both are installed.
 The transcript half matters more than it did: the session store now copies every transcript to a
 central database and an archive bucket, so a value that reaches a transcript is copied twice more.
 
@@ -353,15 +353,16 @@ pane, the store and its library (`~/.config/claude-secrets/KEY` global,
 the slug rule and the reserved `CUA_DEVICE_*` keys in the global tier, as `cua`'s
 `src/secrets/store.mjs` documents), the system-prompt section listing the stored keys and how to
 use one (`"$(cat ~/.config/claude-secrets/KEY)"`), and its GUI and browser typing of
-`{{secret:KEY}}`. Installed alone, `cua` also keeps its own guard, unchanged.
+`{{secret:KEY}}`. Installed alone, `cua` keeps a guard of its own, reduced to scrubbing: it
+replaces stored values and their encodings with `[secret:KEY]` as it does today, and no longer
+refuses any command for touching the store.
 
 devcloud's `devcloud/hooks/mods/secrets.tsx` is the guard: it reads the same store (Interfaces
 I1), registers no `/secret` command, and adds one system-prompt line saying what its handles mean
 and that they restore on write. When it is loaded it marks the process (a process-wide flag set
 at module load, which `cua`'s mod checks at hook time, not at load, so load order does not
-matter), and `cua`'s guard — its refusals and its scrubbing — stands down, so one guard decides
-every handle: two scrubbers in sequence would lose the encoding a handle names, and `cua`'s
-refusals would contradict redaction.
+matter), and `cua`'s scrubbing stands down, so one guard decides every handle: two scrubbers in
+sequence would lose the encoding a handle names.
 
 The guard differs from `cua`'s in four ways:
 
@@ -475,7 +476,7 @@ dispatching session at the points the milestones name, and the milestone waits f
 ### M1 — The devcloud plugin and its secrets guard; cua's guard yields to it
 
 At its end, the devcloud plugin exists, every session on a Mac with it gets Design §9's behavior,
-and `cua` keeps `/secret` while its guard stands down beside devcloud's. Touches, in doperpowers:
+and `cua` keeps `/secret` with a guard that never refuses and stands down beside devcloud's. Touches, in doperpowers:
 the plugin
 skeleton — `devcloud/.claude-plugin/plugin.json`, its entry in `.claude-plugin/marketplace.json`,
 `devcloud/hooks/hooks.json` naming `./mods/register.tsx` under `modules`, `devcloud/README.md`
@@ -487,10 +488,11 @@ bump), and `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence: th
 `cua`, the guard is devcloud's). In
 the config repository: `sync/plugins.manifest.json` gains `devcloud@doperpowers`, and
 `tools/session-mirror` ships a `tool-results/` file only once it has been unchanged for a settle
-interval (Design §9.1), with a test. In `cua`: `hooks/mods/secrets.tsx` gains the stand-down (its
-`tool.call` guard and its row scrubbing pass through when devcloud's flag is set; `/secret`, the
-pane, and the prompt section are untouched), with tests for both states; its README, plugin
-description, and CLAUDE.md say so; version bumped. Interfaces: I1 (store), I2 (handles).
+interval (Design §9.1), with a test. In `cua`: `hooks/mods/secrets.tsx` loses its `guardReason`
+refusals and gains the stand-down (its scrubbing passes through when devcloud's flag is set;
+`/secret`, the pane, and the prompt section are untouched); its tests that pinned refusals now pin
+that the same commands run with their values scrubbed, plus a test of each state of the flag; its
+README, plugin description, and CLAUDE.md say so; version bumped. Interfaces: I1 (store), I2 (handles).
 
 Order of work. First the boundary probe (Design §9.1): a recording proxy on localhost forwarding
 to the person's gateway, a session with the new mod pointed at it, and synthetic values pushed
@@ -507,8 +509,10 @@ rule, case-insensitive `projects`) and the scrubbing of known values and their e
 Release: no window lacks a guard in either order, because `cua` stands down only when devcloud's
 guard is present. Release `cua` with the stand-down and devcloud together; install devcloud on
 both Macs (the plugins manifest entry, then `sync/apply.py` or `claude plugin install`) and update
-`cua`; until both are updated a session runs `cua`'s guard as today (strict) or both guards (still
-strict: `cua`'s refusals remain). Then run acceptance 1–2 in a fresh session.
+`cua`; until both are updated a session runs the old `cua` guard (strict, as today), the new
+`cua` guard alone (scrubbing, no refusals), or both new (devcloud's guard deciding). Then run
+acceptance 1–2 in a fresh session, and once with devcloud disabled to see `cua` alone scrub a
+stored value without refusing.
 
 Does not touch: `cua`'s `/secret` command and pane, its `src/secrets/` store library, or its
 device-credential flows. Proves
@@ -812,6 +816,11 @@ boot step 8 and every reconcile; secret-free).
   encoding a handle names). Supersedes the staged-cutover entry: nothing is removed from `cua`, so
   either release order is safe.
   Date/Author: 2026-10-16, the person's correction.
+- Decision: `cua` installed alone drops its refusals and keeps scrubbing stored values.
+  Rationale: the refusals were the strictness that prompted this work (they refuse even a command
+  that only writes the store's path as text), and scrubbing at the output already catches a
+  printed value. Rejected: keeping `cua` alone strict as today.
+  Date/Author: 2026-10-16, the person's choice.
 - Decision: M2 proves the boot core with no projects; acceptance 3 in full runs in M5. Boot steps
   run strictly in order. Rationale: the project runner is M4's; `apply.py` creates the link step
   12 calls.
