@@ -39,7 +39,8 @@ gates:
   - name: sminos-suites
     run: SMINOS_PART=suites bash tests/sminos/run-sminos-tests.sh
     timeout: 20
-    paths: ["skills/sminos/**", "hooks/**", "tests/sminos/**", ".github/**"]
+    # test_rpcs.py runs the live checks' call paths against its fake engine.
+    paths: ["skills/sminos/**", "hooks/**", "tests/sminos/**", "tests/mods/live-*-check.py", ".github/**"]
 
   - name: issue-tracker
     run: |
