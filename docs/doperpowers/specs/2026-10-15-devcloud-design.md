@@ -39,6 +39,7 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-15) Design approved in conversation; spec written.
 - [x] (2026-10-15) Review round 1 (design review and buildability review) folded.
 - [x] (2026-10-16) Review round 2 folded; home files and the login shell added from the person's question.
+- [x] (2026-10-16) Review round 3 (the round-2 diff) folded; review converged.
 - [ ] The person's read of the reviewed spec.
 - [ ] M1 — The devcloud plugin and its secrets mod; cua's copy retired by a staged cutover.
 - [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
@@ -276,9 +277,10 @@ shell rc reaches some of them and not others. Each setting goes where every read
   hcloud's `cli.toml`, `~/.pgpass`, MCP configs (from `secrets.toml`), and gcloud's credential store
   and application default credentials (from the seed, boot step 8 — writing a key file is not
   enough; `gcloud` reads its own store).
-- **Everything else** goes in one environment file, `/etc/devcloud/env`, sourced by
-  `/etc/profile.d/devcloud.sh` for shells and named as `EnvironmentFile` (or loaded by
-  `devcloud-services`) for services: the profile's `profile.env`, the identity variables from boot
+- **Everything else** goes in one environment file, `/etc/devcloud/env`, loaded by every shell —
+  `/etc/zsh/zshenv` for zsh (every zsh reads it: login, interactive, and the `zsh -c` Claude Code's
+  Bash tool runs; zsh does not read `/etc/profile.d/`), `/etc/profile.d/devcloud.sh` for bash — and
+  named as `EnvironmentFile` (or loaded by `devcloud-services`) for services: the profile's `profile.env`, the identity variables from boot
   step 1, and the `env` targets of `secrets.toml`.
 
 Project-specific environment belongs to the project's `devenv/` (Design §7).
@@ -401,8 +403,9 @@ Four changes:
    under `$HOME`.
 
 What it cannot catch, stated so no one relies on it: a value the model deliberately slices,
-reverses, or transforms; a secret inside an image; and the paths the boundary probe lists as not
-covered. The person judged prompt-injection risk negligible for their setup; the mod exists to
+reverses, or transforms; a secret inside an image; an oversized output whose process is killed in
+the moment between the engine persisting it and the mod rewriting it (the file then stays raw and
+ships after the settle interval); and the paths the boundary probe lists as not covered. The person judged prompt-injection risk negligible for their setup; the mod exists to
 stop accidents, which arrive as plain text or a common encoding.
 
 ## Out of scope
@@ -818,6 +821,13 @@ boot step 8 and every reconcile; secret-free).
   Rejected: listing them as not covered (the largest outputs are the likeliest to carry a
   credential file's contents); scrubbing in the session store (it would have to know the secrets).
   Date/Author: 2026-10-16, review round 2.
+- Decision: The kill window between the engine persisting an oversized output and the mod
+  rewriting it is a stated limit, not closed. Rationale: the window is the hook's own synchronous
+  continuation, so it needs a process kill at that instant; the copy it would leak goes to the
+  person's own private store. Rejected (round-3 finding): a scrub-complete marker the session
+  store checks before shipping, which couples the store to the mod for that instant. Tracked in
+  `docs/doperpowers/TECH-DEBT.md` with its trigger.
+  Date/Author: 2026-10-16, review round 3.
 - Decision: No secret in a command line from `apply.py`: shared MCP configs carry `${VAR}`
   references, verified to expand at user scope before relying on it.
   Date/Author: 2026-10-16, review round 2.
