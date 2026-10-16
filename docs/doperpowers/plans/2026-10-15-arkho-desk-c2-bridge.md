@@ -441,6 +441,12 @@ M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
   event, and writing that works again as `kept {ok: true}` (below).
 - **Lifetime:** outlives the child (a module reload) and the session's process (a session
   resumed under its id goes on with both). Discovery (DC7) lists `*.sock` only.
+- **[desk panel fix] A desk RPC's answer.** A command carrying `rpc` (a desk RPC's nonce;
+  DC7's daemon sends it with `steer`) has the mod's answer kept under that nonce,
+  `"rpcs": {"<nonce>": {op, ok, result?, error?}}` (the last 100; absent until one is
+  kept), written with the batch that carried its `result`. It is the trace DC7 reconciles a
+  claimed steer from after a stop between sending the command and reading the answer. The
+  mod reads no `rpc` field; the hello's `kept` carries `rpcs` too, which the mod ignores.
 
 ##### The child's stdout: lines for the mod
 

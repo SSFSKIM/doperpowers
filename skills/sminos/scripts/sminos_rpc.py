@@ -34,10 +34,14 @@ is only said in daemon.log). From 3 on, a nonce has one answer, kept.
 
 At most once (DX6): `daemon/rpcs.json` claims the nonce before the RPC has
 any effect and records the outcome before the result goes up; entries are
-kept a day. A nonce left claimed (the uplink stopped between the two writes)
-is reconciled from the action's own trace — a spawned seat carries its nonce
-on its record (`rpc_nonce`), a steer's row is in the transcript — for as long
-as that trace may still appear, then answered `failed` `interrupted`.
+kept a day. An outcome whose write fails is held here, never sent, and
+written again until it is kept. A nonce left claimed (the uplink stopped
+between the two writes) is reconciled from the action's own trace — a
+spawned seat carries its nonce on its record (`rpc_nonce`); a steer carries
+it to the bridge, whose child keeps the mod's answer under it (DX5's kept
+file, `rpcs`), since a row's text alone cannot tell this steer from the same
+words sent another way — for as long as that trace may still appear, then
+answered `failed` `interrupted`.
 
 Execution (§5) goes through the session's bridge (DC2's DX5): steer,
 interrupt, model, and compact as commands; an answer or a decision as the
@@ -52,10 +56,12 @@ copy), one per session at a time, once no process of this machine holds the
 session (`session-live`: its transcript is here, so here is everywhere it
 can run; checked before the claim, and again under the lock). The launch
 is kept in the claim before it runs, and its job once known: a claim left
-by a stop is `done` only when a --bg process of that launch holds the
-session. The engine continues it under its own id unless it finds the
-session open meanwhile, when it starts a copy and says so: the copy is
-stopped and the RPC fails `copy-started`. The session rejoins as any session
+by a stop is `done` only when a --bg process of that job holds the session;
+one whose job was never kept is `interrupted` (nothing can tell its launch
+from another), and a kept job the harness reports under another session is
+a copy, stopped, the RPC failed `copy-started`. The engine continues it
+under its own id unless it finds the session open meanwhile, when it starts
+a copy and says so: the copy is stopped and the RPC fails `copy-started`. The session rejoins as any session
 that runs again does (sminos's reconciliation, at the daemon's next tick,
 which the Resume asks for at once), and what was recorded for it while it
 was closed is delivered then.
@@ -98,7 +104,7 @@ LEDGER_FILE = "rpcs.json"
 FRESH_S = 60              # an RPC older (or younger) than this by the machine's clock is stale
 KEPT_S = 86400            # the ledger keeps an entry a day
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
-STEER_TRACE_S = 30        # a claimed steer's row is looked for this long after its claim
+STEER_TRACE_S = 30        # a claimed steer's answer is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
 RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
 RESUME_HELD_S = 30        # how long a Resume waits for its job's process to hold the session
@@ -183,11 +189,12 @@ def alias_for(nonce):
 
 
 class Ledger:
-    """`daemon/rpcs.json`: nonce → {project, rpc, session, at, text_sha256?,
-    launched_at?, job?, compact_id?, outcome?, acked?}. An entry without
-    `outcome` is a claim. Written whole at every change, under a lock (the
-    main thread and the workers write); entries older than KEPT_S go at
-    every write.
+    """`daemon/rpcs.json`: nonce → {project, rpc, session, at, launched_at?,
+    job?, compact_id?, outcome?, acked?}. An entry without `outcome` is a
+    claim. Written whole at every change, under a lock (the main thread and
+    the workers write); entries older than KEPT_S go at every write. A
+    change whose write fails is not kept in memory either: what is here is
+    what the file holds.
 
     A ledger that exists and cannot be read could hold claims and answered
     nonces: it is never replaced (`broken` says why), and `readable` tries it
@@ -243,22 +250,31 @@ class Ledger:
             return dict(e) if e is not None else None
 
     def put(self, nonce, entry):
+        """Raises OSError when the entry could not be written."""
         with self.lock:
-            self.entries[nonce] = entry
+            self.change(nonce, entry)
+
+    def change(self, nonce, entry):
+        """The nonce's entry replaced and written, or, when the write fails,
+        left as it was (OSError raised). The caller holds the lock."""
+        before = self.entries.get(nonce)
+        self.entries[nonce] = entry
+        try:
             self.save()
+        except OSError:
+            if before is None:
+                self.entries.pop(nonce, None)
+            else:
+                self.entries[nonce] = before
+            raise
 
     def answer(self, nonce, outcome):
-        """The outcome kept; False when it could not be written (the claim
-        stays on disk, and a restart reconciles it)."""
+        """The outcome kept. Raises OSError when it could not be written:
+        the claim stays as it was, so nothing can send the outcome, which the
+        caller holds to write again (a restart reconciles the claim)."""
         with self.lock:
-            e = self.entries.setdefault(nonce, {"at": self.clock()})
-            e["outcome"], e["acked"] = outcome, False
-            try:
-                self.save()
-                return True
-            except OSError as err:
-                log("the outcome of %s could not be kept in %s: %s" % (nonce, self.path, err))
-                return False
+            e = self.entries.get(nonce)
+            self.change(nonce, {**(e if e is not None else {"at": self.clock()}), "outcome": outcome, "acked": False})
 
     def acked(self, nonce, value=True):
         with self.lock:
@@ -300,6 +316,8 @@ class Rpcs:
         self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
+        self.unwritten = {}       # nonce → its outcome, whose ledger write failed: never sent until it is kept
+        self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
         self.restore_compacts()
         self.reconcile()
@@ -419,8 +437,6 @@ class Rpcs:
                 return
             claim = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"),
                      "at": self.clock()}
-            if rpc["rpc"] == "steer":
-                claim["text_sha256"] = sha256(rpc["args"]["text"])
             try:
                 self.ledger.put(nonce, claim)
             except OSError as e:
@@ -433,13 +449,23 @@ class Rpcs:
                 outcome = r.outcome
             except Exception as e:  # noqa: BLE001 — an execution that broke is a failure, said
                 outcome = failed("failed", "%s: %s" % (type(e).__name__, e))
-            if not self.ledger.answer(nonce, outcome):
-                self.finished.put(("loose", (nonce, rpc["project"], outcome)))
+            self.record(nonce, outcome)
             if outcome["state"] == "failed":
                 log("%s %s failed %s: %s" % (rpc["rpc"], nonce, outcome["error"]["code"], outcome["error"]["message"]))
         finally:
             self.finished.put(("done", nonce))
             self.wake()
+
+    def record(self, nonce, outcome):
+        """A worker's outcome, kept in the ledger before anything may send
+        it. One whose write fails is handed to the main thread, which writes
+        it again until it is kept (reconcile); until then it is sent nowhere."""
+        try:
+            self.ledger.answer(nonce, outcome)
+        except OSError as err:
+            log("the outcome of %s could not be kept in %s (%s): it is sent once it is kept"
+                % (nonce, self.ledger.path, err))
+            self.finished.put(("unwritten", (nonce, outcome)))
 
     def plan(self, rpc, facts):
         """The action an RPC runs once claimed, or Refused (checks 7-8)."""
@@ -476,7 +502,7 @@ class Rpcs:
             raise Refused("unsupported", "the session is not running: only Resume brings it back")
         if bridged:
             if name == "steer":
-                return lambda: steer(path, args["text"])
+                return lambda: steer(path, args["text"], nonce)
             if name == "interrupt":
                 return lambda: interrupt(path)
             if name == "model":
@@ -502,8 +528,7 @@ class Rpcs:
             e = self.ledger.entries.get(nonce)
             if e is None or "outcome" in e:
                 return
-            e.update(fields)
-            self.ledger.save()
+            self.ledger.change(nonce, {**e, **fields})
 
     def lock_of(self, locks, sid):
         """The session's lock in `locks` (one RPC kind's)."""
@@ -540,6 +565,9 @@ class Rpcs:
             elif kind == "loose":
                 nonce, pid, outcome = data
                 self.loose[nonce] = (pid, outcome, self.clock())
+            elif kind == "unwritten":
+                nonce, outcome = data
+                self.unwritten[nonce] = outcome
             elif kind == "compact":
                 cid, pid, sid, nonce = data
                 self.compact_ids[cid] = (pid, sid, nonce, self.clock())
@@ -596,21 +624,57 @@ class Rpcs:
                     % (err, nonce))
 
     def reconcile(self):
-        """Claims no worker holds: answered from their trace, or
-        `interrupted` once no trace can come any more (main thread: it reads
-        the seats and the transcripts)."""
+        """Outcomes whose ledger write failed, written again; then claims no
+        worker holds: answered from their trace, or `interrupted` once no
+        trace can come any more (main thread: it reads the seats and the
+        bridges' kept files). A claimed Resume whose job is kept, and does
+        not hold the session, has the harness asked once, on a worker,
+        whether that job is a copy (check_copy)."""
         now = self.clock()
         self.next_reconcile = now + RECONCILE_EVERY
+        for nonce, outcome in list(self.unwritten.items()):
+            try:
+                self.ledger.answer(nonce, outcome)
+            except OSError:
+                continue
+            del self.unwritten[nonce]
+            log("the outcome of %s is kept now: it is sent" % nonce)
         for nonce, e in self.ledger.items():
-            if "outcome" in e or nonce in self.flight:
+            if "outcome" in e or nonce in self.flight or nonce in self.unwritten:
                 continue
             outcome, window = trace(nonce, e)
+            if outcome is None and kept_job(e) and nonce not in self.copies_asked:
+                self.copies_asked.add(nonce)
+                self.flight.add(nonce)
+                threading.Thread(target=self.check_copy, args=(nonce, e), name="rpc-resume-copy",
+                                 daemon=True).start()
+                continue
             if outcome is None and window and now - e.get("at", 0) < window:
                 continue
             if outcome is None:
                 outcome = failed("interrupted", "the daemon stopped while it ran: it is not run again")
-            self.ledger.answer(nonce, outcome)
+            try:
+                self.ledger.answer(nonce, outcome)
+            except OSError as err:
+                log("%s %s, claimed before a stop, reconciled %s, could not be kept (%s): it is sent once it is"
+                    % (e.get("rpc"), nonce, outcome["state"], err))
+                self.unwritten[nonce] = outcome
+                continue
             log("%s %s, claimed before a stop, reconciled: %s" % (e.get("rpc"), nonce, outcome["state"]))
+
+    def check_copy(self, nonce, e):
+        """A claimed Resume's kept job, asked of the harness (a worker: it
+        polls `claude agents`): a job it reports under another session is a
+        copy the engine started, stopped now, the RPC failed `copy-started`.
+        Any other answer leaves the claim to its trace."""
+        try:
+            reported = job_session(e["job"])
+            if reported is not None and reported != e["session"]:
+                self.record(nonce, copy_started(e["job"], sminos.claude_stop(e["job"])))
+                log("resume %s, claimed before a stop: its job %s is a copy (%s)" % (nonce, e["job"], reported))
+        finally:
+            self.finished.put(("done", nonce))
+            self.wake()
 
     def results(self, pids, again):
         """`rpc-result` frames of these projects not yet acknowledged; with
@@ -785,14 +849,20 @@ def refusal(out):
     return str(out.get("error") or "the session refused it")
 
 
-def steer(path, text):
-    out, _ = command(path, {"op": "steer", "text": text})
-    if not out.get("ok"):
-        error = str(out.get("error") or "")
-        if IDLE in error:
-            raise Refused("idle", "no turn is running to steer: send it instead")
-        raise Refused("failed", refusal(out))
-    return done({"row": (out.get("result") or {}).get("row")})
+def steer(path, text, nonce):
+    """The steer as a bridge command carrying the RPC's nonce, under which the
+    bridge's child keeps the mod's answer: the trace a restart finds it by."""
+    out, _ = command(path, {"op": "steer", "text": text, "rpc": nonce})
+    return steered(out)
+
+
+def steered(out):
+    """A steer's outcome from the mod's answer to its command."""
+    if out.get("ok"):
+        return done({"row": (out.get("result") or {}).get("row")})
+    if IDLE in str(out.get("error") or ""):
+        return failed("idle", "no turn is running to steer: send it instead")
+    return failed("failed", refusal(out))
 
 
 def interrupt(path):
@@ -1014,11 +1084,11 @@ def started_at(rec):
 
 def launched_by(rec, launched, job):
     """Whether a holder of the session is the --bg process of the launch made
-    at `launched` (its job `job`, when known): started no earlier than it
-    (to the second ps reads it at), its job the one that launch started."""
+    at `launched`, whose job is `job`: started no earlier than it (to the
+    second ps reads it at), its job the one that launch started."""
     started = started_at(rec)
     return (rec.get("kind") == "bg" and started is not None and started >= int(launched)
-            and (job is None or rec.get("jobId") == job))
+            and rec.get("jobId") == job)
 
 
 def resume(sid, cwd, lock, note):
@@ -1051,11 +1121,7 @@ def resume(sid, cwd, lock, note):
         copy = COPY_RE.search(banner)
         reported = None if copy else job_session(short)
         if copy or (reported is not None and reported != sid):
-            stopped = sminos.claude_stop(short)
-            raise Refused("copy-started", "the session was opened elsewhere meanwhile, so the engine started a copy "
-                                          "(%s) instead of continuing it; the copy %s" % (
-                                              short, "was stopped" if stopped else
-                                              "could not be stopped: `claude stop %s` failed" % short))
+            return copy_started(short, sminos.claude_stop(short))
         if reported is None:
             raise Refused("failed", "the harness named no session for job %s: it may be running" % short)
         deadline = time.time() + RESUME_HELD_S
@@ -1068,6 +1134,15 @@ def resume(sid, cwd, lock, note):
         return done({"session": sid})
 
 
+def copy_started(short, stopped):
+    """A Resume whose job continued a copy of the session, not the session:
+    the RPC's failure, saying whether the copy was stopped."""
+    return failed("copy-started", "the session was opened elsewhere meanwhile, so the engine started a copy (%s) "
+                                  "instead of continuing it; the copy %s" % (
+                                      short, "was stopped" if stopped else
+                                      "could not be stopped: `claude stop %s` failed" % short))
+
+
 def retire(sid, root, member):
     rc, _, err = run_verb(["retire", "--", sid], root, VERB_TIMEOUT, member)
     if rc != 0:
@@ -1078,33 +1153,10 @@ def retire(sid, root, member):
 # ------------------------------------------------------------- traces
 
 
-def steer_row(sid, text_sha, since):
-    """The uuid of a user row in the session's transcript whose one text is
-    the steer's, written at or after its claim (a little slack for clocks),
-    or None."""
-    path = sminos.transcript_path(sid)
-    if not path:
-        return None
-    try:
-        with open(path) as f:
-            lines = f.readlines()
-    except OSError:
-        return None
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict) or row.get("type") != "user" or not isinstance(row.get("uuid"), str):
-            continue
-        at = created_at(row.get("timestamp"))
-        content = (row.get("message") or {}).get("content")
-        texts = [b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"] \
-            if isinstance(content, list) else []
-        if at is not None and at >= since - 5 and len(texts) == 1 and isinstance(texts[0], str) \
-                and sha256(texts[0]) == text_sha:
-            return row["uuid"]
-    return None
+def kept_job(e):
+    """A claimed Resume's job, as its launch kept it, or None."""
+    job = e.get("job") if e.get("rpc") == "resume" else None
+    return job if isinstance(job, str) and job and e.get("session") else None
 
 
 def trace(nonce, e):
@@ -1112,14 +1164,15 @@ def trace(nonce, e):
     a trace may still appear)."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
-    if e.get("rpc") == "steer" and e.get("session") and e.get("text_sha256"):
-        row = steer_row(e["session"], e["text_sha256"], e.get("at", 0))
-        return (done({"row": row}) if row else None), STEER_TRACE_S
+    if e.get("rpc") == "steer" and e.get("session"):
+        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
+        return (steered(answered) if isinstance(answered, dict) else None), STEER_TRACE_S
     if e.get("rpc") == "resume" and e.get("session"):
-        launched = e.get("launched_at")
-        if not isinstance(launched, (int, float)) or isinstance(launched, bool):
-            return None, 0          # stopped before its launch: nothing ran
-        job = e.get("job") if isinstance(e.get("job"), str) else None
+        launched, job = e.get("launched_at"), kept_job(e)
+        if not isinstance(launched, (int, float)) or isinstance(launched, bool) or job is None:
+            # Stopped before its launch, or before its job was known: no
+            # process can be told for this launch's, so none says it ran.
+            return None, 0
         ran = any(launched_by(r, launched, job) for r in holders(e["session"]))
         return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0

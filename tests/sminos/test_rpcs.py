@@ -36,6 +36,7 @@ import threading
 import time
 import unittest
 import uuid as uuidlib
+from unittest import mock
 
 import test_session_plane as tsp  # noqa: E402 — first: it makes this run's HOME and SMINOS_HOME
 import test_policy_requests as tpr  # noqa: E402
@@ -495,7 +496,6 @@ class Checks(unittest.TestCase):
              {"winner": "terminal", "by": "terminal"}),
             ({"error": "already answered by cli; its settlement follows"}, {}),  # no field: nothing read from text
         ]
-        from unittest import mock
         for body, fields in cases:
             with mock.patch.object(rpcs.bridge, "request", return_value=(409, body)):
                 with self.assertRaises(rpcs.Refused) as r:
@@ -699,31 +699,48 @@ class Checks(unittest.TestCase):
         with open(path, "w") as f:
             json.dump(d, f)
 
+    def reconciled(self, r, nonce, timeout=20.0):
+        """The results `r` gives for a nonce once a reconciliation answers it
+        (each try one more reconciliation, the clock where it is): a claim a
+        worker holds (a Resume's copy check) is answered after it."""
+        def got():
+            r.next_reconcile = 0.0
+            return results(r.due({self.pid}), nonce)
+        return wait_for(got, timeout) or []
+
     def test_h_a_claim_left_without_an_outcome_is_reconciled_from_its_trace(self):
+        """A claimed steer ran when the bridge's child kept the mod's answer
+        under its nonce. A user row of the same words is no trace of it, one
+        written before the claim or after: the same words may come another
+        way (D's claim is as the previous daemon kept it, with its text's
+        hash)."""
         now = time.time()
-        text = "the steer that landed"
-        row = str(uuidlib.uuid4())
-        append_row(self.bridged.sid, {"type": "user", "uuid": row, "timestamp": iso(now + 0.5),
-                                      "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
-        self.claim("AAAAAAAAAAAAAAAAAAAAAA", "steer", self.bridged.sid, now,
-                   text_sha256=hashlib.sha256(text.encode()).hexdigest())
-        self.claim("BBBBBBBBBBBBBBBBBBBBBA", "steer", self.bridged.sid, now - 3600,
-                   text_sha256=hashlib.sha256(b"never written").hexdigest())
+        self.mod.turn = "turn-h"
+        self.claim("AAAAAAAAAAAAAAAAAAAAAA", "steer", self.bridged.sid, now)
+        # The daemon stops here: the command reached the session, its answer was never read.
+        landed = rpcs.steer(rpcs.bridge.endpoint(self.bridged.sid), "the steer that landed", "AAAAAAAAAAAAAAAAAAAAAA")
+        self.assertEqual(landed, {"state": "done", "result": {"row": self.mod.rows[-1]}})
+        self.claim("BBBBBBBBBBBBBBBBBBBBBA", "steer", self.bridged.sid, now - 3600)
         self.claim("CCCCCCCCCCCCCCCCCCCCCA", "interrupt", self.bridged.sid, now)
+        same = "the same words, sent another way"
+        for at in (now - 1, now + 0.5):
+            append_row(self.bridged.sid, {"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": iso(at),
+                                          "message": {"role": "user", "content": [{"type": "text", "text": same}]}})
         self.claim("DDDDDDDDDDDDDDDDDDDDDA", "steer", self.bridged.sid, now,
-                   text_sha256=hashlib.sha256(b"not yet").hexdigest())
+                   text_sha256=hashlib.sha256(same.encode()).hexdigest())
         r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
         frames = r.due({self.pid})
-        self.assertEqual(results(frames, "AAAAAAAAAAAAAAAAAAAAAA"), [{"state": "done", "result": {"row": row}}],
-                         "a steer's row is in the transcript")
+        self.assertEqual(results(frames, "AAAAAAAAAAAAAAAAAAAAAA"), [landed],
+                         "the bridge's child kept the mod's answer under the steer's nonce")
         for nonce in ("BBBBBBBBBBBBBBBBBBBBBA", "CCCCCCCCCCCCCCCCCCCCCA"):
             o = results(frames, nonce)
             self.assertEqual([x["error"]["code"] for x in o], ["interrupted"], nonce)
-        self.assertEqual(results(frames, "DDDDDDDDDDDDDDDDDDDDDA"), [], "its row may still come: not answered yet")
+        self.assertEqual(results(frames, "DDDDDDDDDDDDDDDDDDDDDA"), [],
+                         "rows of its words are no trace: its answer may still come, so it waits")
         self.assertEqual(self.ledger()["DDDDDDDDDDDDDDDDDDDDDA"].get("outcome"), None)
         self.clock[0] = now + rpcs.STEER_TRACE_S + 1
         o = results(r.due({self.pid}), "DDDDDDDDDDDDDDDDDDDDDA")
-        self.assertEqual([x["error"]["code"] for x in o], ["interrupted"])
+        self.assertEqual([x["error"]["code"] for x in o], ["interrupted"], "and no answer came")
 
     def test_h_a_claimed_spawn_is_found_by_its_nonce(self):
         nonce = "EEEEEEEEEEEEEEEEEEEEEA"
@@ -746,7 +763,6 @@ class Checks(unittest.TestCase):
         not a stale kept file, and not this daemon's own last answer when
         another writer (the owner's `sminos model`) changed it since."""
         import sminos_bridge as bridge
-        from unittest import mock
         sid = self.bridged.sid
         self.mod.post({"type": "model", "model": "old-model", "effort": "low"})
         wait_for(lambda: bridge.load_kept(sid)["override"] == {"model": "old-model", "effort": "low"})
@@ -907,7 +923,6 @@ class Checks(unittest.TestCase):
         other breakage while planning is a reported `failed`, never an RPC
         left without an answer."""
         import http.client
-        from unittest import mock
         tool_input = {"command": "make cut"}
         self.mod.raise_("toolu_cut", input_=tool_input)
         wait_for(lambda: self.request_info("toolu_cut")[0] == 200)
@@ -1016,28 +1031,39 @@ class Checks(unittest.TestCase):
         self.assertEqual(resumes(self.claude, gone), [])
 
     def test_j_a_claimed_resume_is_reconciled_from_its_own_launch(self):
-        """A claimed Resume ran only if a --bg process of its own launch
-        holds the session: started at or after the launch the claim records,
-        its job the one the claim names. No launch recorded: nothing ran."""
-        sid, late, unlaunched = ended_session(self.root), ended_session(self.root), ended_session(self.root)
+        """A claimed Resume ran only if a --bg process of its own job holds
+        the session: started at or after the launch the claim records, its
+        job the one the claim keeps. No launch recorded, or no job kept
+        (stopped between the two): nothing can say this launch ran, said at
+        once — a --bg process another launch started after it is no
+        evidence."""
+        sid, late, unlaunched, jobless = (ended_session(self.root) for _ in range(4))
         launched = time.time()
-        self.claim("JJJJJJJJJJJJJJJJJJJJJA", "resume", sid, self.clock[0], launched_at=launched)
+        self.claim("JJJJJJJJJJJJJJJJJJJJJA", "resume", sid, self.clock[0], launched_at=launched, job=sid[:8])
         self.claim("KKKKKKKKKKKKKKKKKKKKKA", "resume", late, self.clock[0] - rpcs.RESUME_TRACE_S - 1,
-                   launched_at=launched - rpcs.RESUME_TRACE_S - 1)
+                   launched_at=launched - rpcs.RESUME_TRACE_S - 1, job=late[:8])
         self.claim("LLLLLLLLLLLLLLLLLLLLLA", "resume", unlaunched, self.clock[0])
-        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
-        first = r.due({self.pid})
-        self.assertEqual(results(first, "JJJJJJJJJJJJJJJJJJJJJA"), [], "its job may still come")
-        self.assertEqual([x["error"]["code"] for x in results(first, "KKKKKKKKKKKKKKKKKKKKKA")], ["interrupted"],
-                         "past the window with no job holding it")
-        self.assertEqual([x["error"]["code"] for x in results(first, "LLLLLLLLLLLLLLLLLLLLLA")], ["interrupted"],
-                         "stopped before its launch: nothing ran, said at once")
-        subprocess.run(["claude", "--bg", "--resume", sid], cwd=self.root, capture_output=True, check=True)
-        self.clock[0] += rpcs.RECONCILE_EVERY
-        self.assertEqual(results(r.due({self.pid}), "JJJJJJJJJJJJJJJJJJJJJA"),
-                         [{"state": "done", "result": {"session": sid}}], "its launch's job holds it: it ran")
-        for h in holders_of(sid):
-            os.kill(h["pid"], signal.SIGKILL)
+        self.claim("OOOOOOOOOOOOOOOOOOOOOA", "resume", jobless, self.clock[0], launched_at=launched)
+        time.sleep(1.1)  # whole seconds, as ps reads a start: the other launch is after this one's
+        subprocess.run(["claude", "--bg", "--resume", jobless], cwd=self.root, capture_output=True, check=True)
+        try:
+            with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
+                r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+                first = r.due({self.pid})
+                self.assertEqual(results(first, "JJJJJJJJJJJJJJJJJJJJJA"), [], "its job may still come")
+                self.assertEqual([x["error"]["code"] for x in results(first, "LLLLLLLLLLLLLLLLLLLLLA")],
+                                 ["interrupted"], "stopped before its launch: nothing ran, said at once")
+                self.assertEqual([x["error"]["code"] for x in results(first, "OOOOOOOOOOOOOOOOOOOOOA")],
+                                 ["interrupted"], "its job never kept: another launch's process is no evidence")
+                self.assertEqual([x["error"]["code"] for x in self.reconciled(r, "KKKKKKKKKKKKKKKKKKKKKA")],
+                                 ["interrupted"], "past the window with no job holding it")
+                subprocess.run(["claude", "--bg", "--resume", sid], cwd=self.root, capture_output=True, check=True)
+                self.assertEqual(self.reconciled(r, "JJJJJJJJJJJJJJJJJJJJJA"),
+                                 [{"state": "done", "result": {"session": sid}}], "its launch's job holds it: it ran")
+        finally:
+            for s in (sid, jobless):
+                for h in holders_of(s):
+                    os.kill(h["pid"], signal.SIGKILL)
 
     def test_j_a_holder_older_than_the_claimed_launch_is_no_evidence(self):
         sid = ended_session(self.root)
@@ -1048,15 +1074,48 @@ class Checks(unittest.TestCase):
             launched = time.time()
             self.claim("MMMMMMMMMMMMMMMMMMMMMA", "resume", sid, self.clock[0], launched_at=launched, job=sid[:8])
             self.claim("NNNNNNNNNNNNNNNNNNNNNA", "resume", sid, self.clock[0], launched_at=launched)
-            r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
-            self.assertEqual(results(r.due({self.pid}), "MMMMMMMMMMMMMMMMMMMMMA") +
-                             results(r.due({self.pid}), "NNNNNNNNNNNNNNNNNNNNNA"), [], "not taken as its launch")
-            self.clock[0] += rpcs.RESUME_TRACE_S + 1
-            frames = r.due({self.pid})
-            for nonce in ("MMMMMMMMMMMMMMMMMMMMMA", "NNNNNNNNNNNNNNNNNNNNNA"):
-                self.assertEqual([x["error"]["code"] for x in results(frames, nonce)], ["interrupted"], nonce)
+            with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
+                r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+                first = r.due({self.pid})
+                self.assertEqual(results(first, "MMMMMMMMMMMMMMMMMMMMMA"), [], "not taken as its launch")
+                self.assertEqual([x["error"]["code"] for x in results(first, "NNNNNNNNNNNNNNNNNNNNNA")],
+                                 ["interrupted"], "no job kept: not taken as its launch either, said at once")
+                self.assertTrue(wait_for(lambda: (r.take(), "MMMMMMMMMMMMMMMMMMMMMA" not in r.flight)[1]),
+                                "the harness was asked about its job")
+                r.next_reconcile = 0.0
+                self.assertEqual(results(r.due({self.pid}), "MMMMMMMMMMMMMMMMMMMMMA"), [],
+                                 "the job is the session's own, not a copy: its holder may still come")
+                self.clock[0] += rpcs.RESUME_TRACE_S + 1
+                self.assertEqual([x["error"]["code"] for x in self.reconciled(r, "MMMMMMMMMMMMMMMMMMMMMA")],
+                                 ["interrupted"])
         finally:
             for h in holders_of(sid):
+                os.kill(h["pid"], signal.SIGKILL)
+
+    def test_j_a_claimed_resume_whose_job_is_a_copy_has_the_copy_stopped(self):
+        """Stopped after its job was kept and before the copy check: the
+        harness reports that job under another session — a copy the engine
+        started, which the reconciliation stops, the RPC failed
+        copy-started, rather than left to run."""
+        sid = ended_session(self.root)
+        launched = time.time()
+        out = subprocess.run(["claude", "--bg", "--resume", sid, "--model", "sonnet"], cwd=self.root,
+                             capture_output=True, text=True, check=True).stdout
+        short = rpcs.BG_SHORT_RE.search(out).group(1)
+        rows = json.loads(subprocess.run(["claude", "agents"], capture_output=True, text=True, check=True).stdout)
+        copy = next(row["sessionId"] for row in rows if row["id"] == short)
+        self.assertNotEqual(copy, sid)
+        self.assertTrue(holders_of(copy), "the copy runs")
+        self.claim("PPPPPPPPPPPPPPPPPPPPPA", "resume", sid, self.clock[0], launched_at=launched, job=short)
+        try:
+            with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
+                r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+                o = self.reconciled(r, "PPPPPPPPPPPPPPPPPPPPPA")
+            self.assertEqual([x["error"]["code"] for x in o], ["copy-started"], o)
+            self.assertIn("was stopped", o[0]["error"]["message"])
+            self.assertEqual(holders_of(copy), [], "the copy no longer runs")
+        finally:
+            for h in holders_of(copy) + holders_of(sid):
                 os.kill(h["pid"], signal.SIGKILL)
 
     def test_j_the_launch_is_kept_before_it_runs(self):
@@ -1096,7 +1155,6 @@ class Checks(unittest.TestCase):
         self.here.sessions.add(sid)
         open(os.path.join(self.claude, "no-hold"), "w").close()
         try:
-            from unittest import mock
             with mock.patch.object(rpcs, "RESUME_HELD_S", 1.0):
                 o = self.refused(self.send("resume", {"session": sid}), "failed")
         finally:
@@ -1115,6 +1173,37 @@ class Checks(unittest.TestCase):
         self.r.reset()
         self.assertEqual(results(self.r.opening(self.pid), rpc["nonce"]), [], "acknowledged: kept, not sent")
         self.assertTrue(self.ledger()[rpc["nonce"]]["acked"])
+
+    def test_i_an_outcome_that_cannot_be_kept_is_sent_only_once_it_is(self):
+        """DX6 records the outcome before the result goes up. One whose
+        ledger write fails goes nowhere — the file holds the claim, which a
+        restart would reconcile, so nothing sent could contradict it — and
+        goes up once a later write keeps it."""
+        self.mod.turn = "turn-i2"
+        nonce = codes.b64url(os.urandom(16))
+        failing = [True]
+        real = rpcs.Ledger.save
+
+        def save(ledger):
+            if failing[0] and "outcome" in (ledger.entries.get(nonce) or {}):
+                raise OSError("No space left on device")
+            return real(ledger)
+
+        with mock.patch.object(rpcs.Ledger, "save", save):
+            rpc = self.send("interrupt", {"session": self.bridged.sid}, nonce=nonce)
+            self.assertTrue(wait_for(lambda: (self.r.take(), nonce not in self.r.flight)[1]), "it ran")
+            self.assertEqual(len(self.mod.ops("interrupt")), 1)
+            self.assertEqual(results(self.collect(), nonce), [], "its outcome is not kept: nothing goes up")
+            self.assertNotIn("outcome", self.ledger()[nonce], "the file holds its claim")
+            self.assertEqual(results(self.r.opening(self.pid), nonce), [], "nor after a hello")
+            self.clock[0] += rpcs.RECONCILE_EVERY
+            self.assertEqual(results(self.collect(), nonce), [], "written again, and failing again: still nothing")
+            failing[0] = False
+            self.clock[0] += rpcs.RECONCILE_EVERY
+            o = self.outcome(rpc)
+        self.assertEqual((o["state"], o["result"]["turnId"]), ("done", "turn-i2"), "the outcome it reached, kept now")
+        self.assertEqual(self.ledger()[nonce]["outcome"], o)
+        self.assertEqual(len(results(self.frames, nonce)), 1, "sent once")
 
 
 # ---------------------------------------------------------------- the uplink
@@ -1291,7 +1380,8 @@ class Uplink(unittest.TestCase):
 
     def test_c_a_restart_between_execution_and_report_resolves_executed_once(self):
         # Killed after the claim, while the session runs the steer: the new
-        # uplink finds the steer's row in the transcript.
+        # uplink finds the mod's answer, which the bridge's child kept under
+        # the steer's nonce.
         self.mod.turn = "turn-c"
         self.mod.hold = 2.0
         before = len(self.mod.ops("steer"))
