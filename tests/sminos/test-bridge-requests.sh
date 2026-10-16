@@ -222,6 +222,13 @@ presence() { # status → the session record the engine would write for the chil
 mode() { printf '%s\n' "$1" > "$T/mode"; }
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 past_ms() { [ "$(now_ms)" -gt "$1" ]; }
+# A dialog's close is read as the terminal's answer only once the bridge has
+# read the session record as `waiting` since the request was raised. Its
+# watcher reads the record every 0.25 s and exposes no sign of having done
+# so, so this wait alone is on the clock: eight reads long, where the product
+# gives no event to wait on. (A 0.5 s gap failed 2 of 20 runs on a loaded
+# macOS runner: the watcher never saw `waiting`, and the close went unseen.)
+seen_waiting() { sleep 2; }
 decision_of() { # request → the last decision line the stand-in got for it
   python3 -c 'import json, sys
 hits = [l for l in open(sys.argv[1]) if json.loads(l).get("request") == sys.argv[2]] if __import__("os").path.exists(sys.argv[1]) else []
@@ -308,6 +315,7 @@ echo "the terminal answering first:"
 # The stand-in's poll on toolu_perm02 is open; the session record leaving
 # `waiting` is the terminal's answer: the poll ends, and the request settles
 # as the terminal's.
+seen_waiting
 presence busy
 until_true grep -q '"request": "toolu_perm02", "closed": "terminal"' "$T/decisions" || true
 assert_contains "$(cat "$T/decisions")" '"request": "toolu_perm02", "closed": "terminal"' \
@@ -320,10 +328,7 @@ assert_equals "$(field_of "${OUT#409 }" settled.winner)" "terminal" "as settled 
 # record was read, is refused there too: the record is read at the decision.
 presence waiting
 raise_bash toolu_perm03
-# The bridge must have read the record as waiting since the raise (its watcher
-# reads it every 0.25 s) and exposes no sign that it has: this one wait is on
-# the clock, eight reads long, where the product gives no event to wait on.
-sleep 2
+seen_waiting
 presence idle
 run ctl postto "$SOCK" /requests/toolu_perm03/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "409 " "a decision for a dialog the terminal has closed is refused"
