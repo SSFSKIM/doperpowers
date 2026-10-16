@@ -583,6 +583,46 @@ elif mode == "elsewhere":
     report["uplink feeds it"] = project.id in sminos_uplink.hub_projects({"org": "org-1"})
     sminos.forget_caches()
     report["tick"] = daemon.tick(project)
+elif mode == "registering":
+    # This checkout, whose .smns names no hub, registers itself over the
+    # registration the other checkout (sys.argv[4]) left, and is held just
+    # before it writes; meanwhile the other checkout converts and registers.
+    import time, sminos_uplink
+    other = sys.argv[4]
+    sminos.project_path(sminos.resolve_project(other), "log")
+    sminos.forget_caches()
+    held, release, real_write = threading.Event(), threading.Event(), sminos.write_json
+    def held_write(path, data, mode=0o600):
+        if path.endswith("project.json") and not held.is_set():
+            held.set()
+            release.wait(60)
+        return real_write(path, data, mode)
+    sminos.write_json = held_write
+    t = threading.Thread(target=sminos.project_path, args=(project, "log"))
+    t.start()
+    held.wait(60)
+    proc = subprocess.Popen(convert, cwd=other, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 60
+    while time.time() < deadline and proc.poll() is None and not sminos.names_hub(other, project.id):
+        time.sleep(0.05)
+    try:
+        proc.wait(2.0)  # as far as it gets while this registration is held
+    except subprocess.TimeoutExpired:
+        pass
+    report["converted while held"] = proc.poll() is not None
+    release.set()
+    t.join(60)
+    report["converted"] = proc.wait(60) == 0
+    sminos.write_json = real_write
+    sminos.forget_caches()
+    report["registered from the hub checkout"] = \
+        os.path.realpath(str(sminos.registration(project.id).get("root") or "")) == os.path.realpath(other)
+    report["uplink feeds it"] = project.id in sminos_uplink.hub_projects({"org": "org-1"})
+    try:
+        daemon.ensure_mirrored(project)
+        report["git barred"] = False
+    except daemon.BecameHub:
+        report["git barred"] = True
 else:  # "stale": the switch landed between the tick's read and its sync of the project
     subprocess.run(convert, cwd=root, stdout=subprocess.DEVNULL, check=True)
     subprocess.run([os.path.join(scripts, "sminos"), "say", "said after the switch"], cwd=root,
@@ -658,6 +698,27 @@ assert_equals "$(test -e "$(log_of twoproj)/other.human.jsonl" && echo there || 
 assert_equals "$(git -C "$T/twoproj.git" rev-parse main)" "$TWO_HEAD" "nothing of this machine is pushed"
 assert_equals "$(python3 -c 'import json, os, sys; print(os.path.realpath(json.load(open(sys.argv[1]))["root"]) == os.path.realpath(sys.argv[2]))' \
   "$(log_of twoproj)/../project.json" "$TWO_B")" True "the project stays registered from the checkout that names the hub"
+# A checkout registering without a hub, held just before it writes, while
+# another checkout of the project converts: the conversion registers after it.
+mirrored_project regproj
+REG_B="$T/a/regproj-b"
+mkdir -p "$REG_B"
+gitq init -q "$REG_B"
+cp "$T/a/regproj/.smns" "$REG_B/.smns"
+run python3 "$T/race.py" "$SCRIPTS" "$T/a/regproj" registering "$REG_B"
+reg_report() { printf '%s' "$OUT" | python3 -c 'import json, sys
+out = sys.stdin.read()
+try:
+    print(json.loads(out.strip().splitlines()[-1])[sys.argv[1]])
+except (ValueError, IndexError, KeyError):
+    print(out)' "$1"; }
+assert_equals "$(reg_report "converted while held")" False \
+  "a conversion in another checkout waits for a registration in flight"
+assert_equals "$(reg_report converted)" True "then converts the project"
+assert_equals "$(reg_report "registered from the hub checkout")" True \
+  "the project ends registered from the checkout that names the hub"
+assert_equals "$(reg_report "uplink feeds it")" True "the uplink feeds the project"
+assert_equals "$(reg_report "git barred")" True "git no longer syncs it from the checkout that names no hub"
 cd "$T"
 as b2 beta2
 P0="$T/b2/p"

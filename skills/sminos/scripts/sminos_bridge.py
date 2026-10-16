@@ -911,7 +911,11 @@ class Bridge:
             if wait_ms > 0:
                 self.waiters[cid] = w
             if isinstance(rpc, str) and rpc:
+                # Kept past the wait, until the answer comes (_apply): an
+                # answer after a 504 is still kept under its nonce.
                 self.rpc_of[cid] = rpc
+                while len(self.rpc_of) > RPCS_KEPT:
+                    del self.rpc_of[next(iter(self.rpc_of))]
         try:
             self.emit(line)
             self.ingest([{"type": "command", "id": cid, "op": body["op"], "t": int(time.time() * 1000)}])
@@ -928,7 +932,6 @@ class Bridge:
         finally:
             with self.lock:
                 self.waiters.pop(cid, None)
-                self.rpc_of.pop(cid, None)
 
 
 class _Handler(BaseHTTPRequestHandler):

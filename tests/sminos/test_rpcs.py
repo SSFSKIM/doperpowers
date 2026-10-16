@@ -742,6 +742,24 @@ class Checks(unittest.TestCase):
         o = results(r.due({self.pid}), "DDDDDDDDDDDDDDDDDDDDDA")
         self.assertEqual([x["error"]["code"] for x in o], ["interrupted"], "and no answer came")
 
+    def test_h_a_steer_answered_after_its_wait_ran_out_is_kept_under_its_nonce(self):
+        """The command's wait ended (504) before the mod answered: the answer
+        that comes after is kept under the nonce all the same, so a daemon
+        that stopped meanwhile reconciles the steer as done, not interrupted."""
+        nonce = "QQQQQQQQQQQQQQQQQQQQQA"
+        self.mod.turn = "turn-late"
+        self.mod.hold = 1.0
+        self.claim(nonce, "steer", self.bridged.sid, time.time())
+        status, _ = rpcs.control.post_command(rpcs.bridge.endpoint(self.bridged.sid),
+                                              {"op": "steer", "text": "the steer answered late", "rpc": nonce},
+                                              wait_ms=300)
+        self.assertEqual(status, 504)
+        kept = wait_for(lambda: (rpcs.bridge.load_kept(self.bridged.sid).get("rpcs") or {}).get(nonce), 10.0)
+        self.assertEqual(kept, {"op": "steer", "ok": True, "result": {"row": self.mod.rows[-1]}},
+                         "the late answer is kept under the steer's nonce")
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual(results(r.due({self.pid}), nonce), [{"state": "done", "result": {"row": self.mod.rows[-1]}}])
+
     def test_h_a_claimed_spawn_is_found_by_its_nonce(self):
         nonce = "EEEEEEEEEEEEEEEEEEEEEA"
         sid = str(uuidlib.uuid4())
@@ -1117,6 +1135,8 @@ class Checks(unittest.TestCase):
         finally:
             for h in holders_of(copy) + holders_of(sid):
                 os.kill(h["pid"], signal.SIGKILL)
+            # Its stopped row would read as another test's stopped copy.
+            os.unlink(os.path.join(self.claude, "agents", short + ".json"))
 
     def test_j_the_launch_is_kept_before_it_runs(self):
         sid = ended_session(self.root)

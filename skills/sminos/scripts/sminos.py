@@ -685,22 +685,31 @@ def project_path(project, *parts):
     Every checkout of a project shares its log, so a hub named in one of them
     holds the registration while that checkout's .smns still names it: a
     checkout whose .smns names none (a worktree from before the conversion)
-    does not take it back to git."""
+    does not take it back to git. A registration to change is read, checked
+    and written under project.json.lock (a leaf: nothing is taken while it is
+    held), so a conversion registering meanwhile is never written over."""
     if project.id not in _HOMES:
         os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
         info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
         if project.hub is not None:
             info["hub"] = project.hub
         path = os.path.join(project.home, "project.json")
-        try:
-            with open(path) as f:
-                held = json.load(f)
-        except (OSError, ValueError):
-            held = None
-        hub_elsewhere = project.hub is None and isinstance(held, dict) and held.get("hub") is not None \
-            and str(held.get("root") or "") != project.root and names_hub(str(held.get("root") or ""), project.id)
-        if held != info and not hub_elsewhere:
-            write_json(path, info)
+
+        def held_now():
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                return None
+
+        if held_now() != info:
+            with flocked(path + ".lock"):
+                held = held_now()
+                hub_elsewhere = project.hub is None and isinstance(held, dict) and held.get("hub") is not None \
+                    and str(held.get("root") or "") != project.root \
+                    and names_hub(str(held.get("root") or ""), project.id)
+                if held != info and not hub_elsewhere:
+                    write_json(path, info)
         _HOMES.add(project.id)
     path = os.path.join(project.home, *parts)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
