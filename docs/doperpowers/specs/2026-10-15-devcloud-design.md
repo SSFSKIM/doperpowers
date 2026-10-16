@@ -24,7 +24,8 @@ Alongside it, one guardrail the same hosts need: a mod that keeps secrets out of
 reads and what the transcript keeps. The person's `/secret` mod (now in the `cua` plugin) refuses
 any command that touches its store — too strict for daily use — yet knows only the values stored
 through it, so tokens in other files (a proxy config, a shell rc) reached model context twice in
-the session that produced this design. It moves into doperpowers and changes from deny to redact.
+the session that produced this design. It moves into the new `devcloud` plugin and changes from
+deny to redact.
 The transcript half matters more than it did: the session store now copies every transcript to a
 central database and an archive bucket, so a value that reaches a transcript is copied twice more.
 
@@ -38,7 +39,7 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-15) Design approved in conversation; spec written.
 - [x] (2026-10-15) Review round 1 (design review and buildability review) folded.
 - [ ] The person's read of the reviewed spec.
-- [ ] M1 — Secrets guardrail mod; cua's copy retired by a staged cutover.
+- [ ] M1 — The devcloud plugin and its secrets mod; cua's copy retired by a staged cutover.
 - [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
 - [ ] M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository.
 - [ ] M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its commands, an authoring skill.
@@ -46,6 +47,9 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 
 ## Terms
 
+- **devcloud plugin**: `devcloud/` in the doperpowers repository, published as a second plugin in
+  the same marketplace: the secrets mod, the `devenv` skill, and the host image and boot program.
+  doperpowers stays the workflow plugin; a person opts into devcloud by installing it.
 - **Host**: a Linux userland devcloud has booted — VM, microVM, or container.
 - **Substrate**: what the host runs on (VM, microVM, container). Only three things differ by
   substrate; everything else is shared (see Design §1).
@@ -54,8 +58,8 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - **Boot descriptor**: `/etc/devcloud/boot.env`, the only per-host input a driver supplies
   (Interfaces I5).
 - **Profile**: the person's private settings for devcloud, kept in their config repository at
-  `~/.claude/devcloud/` (Design §3, Interfaces I8). doperpowers is public; nothing personal lives
-  in it.
+  `~/.claude/devcloud/` (Design §3, Interfaces I8). The doperpowers repository is public; nothing
+  personal lives in it.
 - **Seed credential**: the one credential a host needs before it can fetch anything else — the
   person's Google Cloud service-account key file, mounted by the driver, or on GCE the metadata
   server of a VM with that account attached. It also becomes the user's `gcloud` identity and
@@ -174,7 +178,7 @@ revoked per host. Check 6 enforces this.
 
 ### 3. Public mechanism, private profile
 
-doperpowers is a public repository, so `devcloud/` holds only mechanism. Everything personal lives
+The doperpowers repository is public, so the devcloud plugin holds only mechanism. Everything personal lives
 in the person's private config repository (cloned to `~/.claude` on every host), under
 `~/.claude/devcloud/` (Interfaces I8):
 
@@ -278,8 +282,8 @@ environment and the Secret Manager secrets it needs. Scripts replace the JSON ma
 (`.devbox/environment.json`) the person's `devenv` tool reads today, which no repository's default
 branch adopted (it lives only on unmerged `devbox-manifest` / `project-env-manifest` branches);
 scripts won because a repository's owner can express any install in a script, while the manifest
-needed a schema for every case. A doperpowers skill teaches an agent to write `devenv/` for a
-repository (M4).
+needed a schema for every case. The devcloud plugin's `devenv` skill teaches an agent to write
+`devenv/` for a repository (M4).
 
 The runner (`tools/devenv` in the config repository) changes where it reads a project's
 declaration, not what it does for the person. Kept: every command (`up`, `claude`, `shell`,
@@ -321,8 +325,8 @@ scope).
 
 ### 9. The secrets guardrail mod
 
-`hooks/mods/secrets.tsx` in doperpowers replaces `hooks/mods/secrets.tsx` in the `cua` plugin
-(repository `~/Developer/GitHub/cua`). It keeps everything a person relies on today: the `/secret
+`devcloud/hooks/mods/secrets.tsx` in the devcloud plugin replaces `hooks/mods/secrets.tsx` in the
+`cua` plugin (repository `~/Developer/GitHub/cua`). It keeps everything a person relies on today: the `/secret
 [-g] KEY` command and its masked entry pane, the store layout and tiers
 (`~/.config/claude-secrets/KEY` global, `~/.config/claude-secrets/projects/<slug>/KEY` per project,
 mode 0600 files in a 0700 directory, the slug rule and the reserved `CUA_DEVICE_*` keys in the
@@ -395,9 +399,9 @@ stop accidents, which arrive as plain text or a common encoding.
 
 ### Constraints that bind every milestone
 
-- doperpowers is public: no host name, IP, account or user name, project ID, secret name, or
-  tailnet name of the person's in any doperpowers file, test, or commit message written by this
-  work. Personal values live in the profile; examples use neutral placeholders.
+- The doperpowers repository is public: no host name, IP, account or user name, project ID,
+  secret name, or tailnet name of the person's in any file, test, or commit message written there
+  by this work. Personal values live in the profile; examples use neutral placeholders.
 - `devcloud/` scripts are POSIX shell (bash) or Python 3.11+ standard library only (`tomllib` for
   TOML), plus the command-line tools the image installs (`gcloud` signs the seed's token exchange;
   the standard library has no RSA signing). No third-party Python package in the boot path.
@@ -409,24 +413,36 @@ stop accidents, which arrive as plain text or a common encoding.
   host runs commits or pushes to the config repository.
 - Throwaway cloud resources created for testing are deleted the same day, and their deletion is
   recorded in Progress.
-- Version bumps through `scripts/bump-version.sh`, in the commit that changes the plugin.
+- Version bumps in the commit that changes the plugin: doperpowers through
+  `scripts/bump-version.sh` as today; the devcloud plugin carries its own version (starting 0.1.0,
+  in `devcloud/.claude-plugin/plugin.json` and its marketplace entry), bumped by the same script
+  once M1 teaches it to take the plugin to bump. A doperpowers bump never moves devcloud's
+  version, nor the reverse.
 
 ### Plan of Work
 
-Work spans three repositories: doperpowers (this worktree, branch `devcloud`), the person's config
+Work spans three repositories: doperpowers (this worktree, branch `devcloud`; the devcloud plugin
+lives in its `devcloud/` directory), the person's config
 repository at `~/.claude` (commit to its current branch; its own sync job pushes), and `cua` at
 `~/Developer/GitHub/cua` (branch and PR). Human steps — reviewing the secret inventory, rotating
 exposed keys, generating a Tailscale auth key, enrolling a host — are requested through the
 dispatching session at the points the milestones name, and the milestone waits for them there.
 
-### M1 — Secrets guardrail mod; cua's copy retired
+### M1 — The devcloud plugin and its secrets mod; cua's copy retired
 
-At its end, every session on a Mac gets Design §9's behavior from doperpowers, and the `cua`
-plugin no longer registers `/secret`. Touches `hooks/mods/secrets.tsx` (new),
-`hooks/mods/register.tsx`, `tests/mods/secrets.test.ts` (new), `CLAUDE.md`'s repo map (the
-`/secret` sentence), and in `cua`: `hooks/mods/secrets.tsx` and its registration removed, its tests
-that covered the mod removed or moved, its README and CLAUDE.md updated, version bumped.
-Interfaces: I1 (store), I2 (handles).
+At its end, the devcloud plugin exists and every session on a Mac gets Design §9's behavior from
+it, and the `cua` plugin no longer registers `/secret`. Touches, in doperpowers: the plugin
+skeleton — `devcloud/.claude-plugin/plugin.json`, its entry in `.claude-plugin/marketplace.json`,
+`devcloud/hooks/hooks.json` naming `./mods/register.tsx` under `modules`, `devcloud/README.md`
+(what the plugin is; M2 adds the host contract) — and `devcloud/hooks/mods/{register.tsx,
+secrets.tsx,tsconfig.json}`, `devcloud/tests/mods/secrets.test.ts` with its runner
+(`devcloud/tests/mods/run.sh`, staging like `tests/mods/run-mods-tests.sh` if `claude plugin test`
+cannot take the folder directly), `scripts/bump-version.sh` and `.version-bump.json` (a plugin to
+bump), and `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence now pointing there). In
+the config repository: `sync/plugins.manifest.json` gains `devcloud@doperpowers`. In `cua`:
+`hooks/mods/secrets.tsx` and its registration removed, its tests that covered the mod removed or
+moved, its README, plugin description, and CLAUDE.md updated, version bumped. Interfaces: I1
+(store), I2 (handles).
 
 Order of work. First the boundary probe (Design §9.1): a recording proxy on localhost forwarding
 to the person's gateway, a session with the new mod pointed at it, and synthetic values pushed
@@ -438,8 +454,8 @@ section from `cua`'s mod rather than rewriting them — that code carries hard-w
 under mosh, the slug rule, case-insensitive `projects`) — and remove its `guardReason` deny path.
 The detector is a pure function (`detect(text) → spans`) so tests pin it without a session.
 
-Cutover, staged so no window lacks a guard: (1) release doperpowers with the mod; update the
-plugin on both Macs; in a fresh session verify the mod loaded (its prompt section present, a
+Cutover, staged so no window lacks a guard: (1) release the devcloud plugin; install it on both
+Macs (the plugins manifest entry, then `sync/apply.py` or `claude plugin install`); in a fresh session verify the mod loaded (its prompt section present, a
 synthetic token redacted) while `cua`'s mod is still loaded beside it — in that overlap the old
 mod still refuses store commands, which is today's behavior, and the test records whether two
 `/secret` registrations coexist cleanly; (2) only then release `cua` without the mod, update it on
@@ -457,7 +473,8 @@ process does not restore a pre-resume pattern handle to a newly detected token.
 At its end, `devcloud/` builds a credential-free image and boots a container from it into a
 working host given a descriptor and seed, against a stand-in profile and with no projects (step
 12 `skipped`); the project half of acceptance 3 waits for M4 and is proven in M5. Touches
-`devcloud/` (new): `README.md` (the contract: descriptor, profile, secrets map, services, status),
+`devcloud/` (the plugin M1 created): `README.md` (adds the host contract: descriptor, profile,
+secrets map, services, status),
 `image/setup.sh`, `image/Dockerfile`, `boot/devcloud-boot`, `boot/devcloud-services`,
 `boot/devcloud` (`status`, `reconcile`, and the jobs' entry points), `boot/secrets.py` (the
 materializer), `tests/` (new, `devcloud/tests/run.sh`). Interfaces: produces I3, I5, I6, I7, and
@@ -523,8 +540,9 @@ list), `tools/devenv-rc.sh` (unchanged in contract; touched only if the generate
 `tools/tests/test_devenv_*.py` (tests of kept behaviors adapted to `devenv/`, tests of retired
 features removed, new tests for the descriptor bridge), the registry entries under `envs/` (refs
 that pin the retired manifest branches return to each repository's default branch); doperpowers:
-`skills/devenv/SKILL.md` (new, authored and tested with doperpowers:writing-skills), `devenv/` for
-doperpowers itself as the first instance, and `devcloud/boot` step 12 plus the mirror cache
+`devcloud/skills/devenv/SKILL.md` (new, authored and tested with doperpowers:writing-skills),
+`devenv/` at the doperpowers repository's root as the first instance, and `devcloud/boot` step 12
+plus the mirror cache
 (Design §7). Decisions: "changed since the last successful run" is the repository's HEAD plus the
 hash of `devenv/` and of the files `setup.sh`'s `# devenv-inputs:` lines name; `devenv up --ref
 <ref>` is accepted without `--url` as a one-run override of a registered project's root ref (the
@@ -557,7 +575,8 @@ Run from the devcloud worktree unless stated. `$DESC` and `$SEED` are paths outs
 (M5's preflight prepares the real ones; M2's tests generate their own).
 
     # M1
-    tests/mods/run-mods-tests.sh
+    devcloud/tests/mods/run.sh
+    tests/mods/run-mods-tests.sh               # doperpowers' own mods, unchanged
     # M2
     devcloud/tests/run.sh                      # expect: every case "ok"
     docker build -t devcloud-test -f devcloud/image/Dockerfile \
@@ -728,6 +747,14 @@ system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_
   retire. Descriptor entries map to registry names or `owner/repo`, with `@ref` overriding.
   Rationale: the person's everyday launch paths must survive the change of declaration format.
   Date/Author: 2026-10-15, review round 1.
+- Decision: Packaging. The secrets mod, the `devenv` skill, and the host image and boot program
+  ship as a second plugin, `devcloud`, in the doperpowers repository and marketplace, versioned on
+  its own; doperpowers stays the workflow plugin.
+  Rationale: the mod changes what the model sees in every session, which a person installing
+  doperpowers for its workflow should opt into; host and redaction changes then release without
+  moving doperpowers. Rejected: everything in doperpowers (one version, but redaction imposed on
+  every doperpowers user); a separate repository (another repository and marketplace for no gain).
+  Date/Author: 2026-10-15, the person's choice on the recommendation.
 - Decision: The image's user, uid, and home are build inputs from the profile. Rationale: public
   mechanism, private values; a person whose Mac account differs gets the same guarantee.
   Date/Author: 2026-10-15, review round 1.
