@@ -1011,13 +1011,13 @@ def install_launchd():
           % (path, path, LABEL))
 
 
-def unit_word(value, execstart=False):
-    """`value` as one double-quoted word of a unit file. Quoted words are
-    C-unescaped (the backslash, the quote, a line break escaped), `%` starts
-    a specifier wherever the unit file is read (`%%`), and ExecStart expands
-    `$` variables (`$$`)."""
-    v = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("%", "%%")
-    return '"%s"' % (v.replace("$", "$$") if execstart else v)
+def unit_word(value):
+    """`value` as one double-quoted word of a unit file: quoted words are
+    C-unescaped (the backslash, the quote, a line break escaped), and `%`
+    starts a specifier (`%%`). A `$` stays as it is: Environment= expands no
+    variables, nor does ExecStart in the program's path, the one word of it
+    install fills."""
+    return '"%s"' % value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("%", "%%")
 
 
 def install_systemd():
@@ -1027,7 +1027,7 @@ def install_systemd():
         text = f.read()
     log = os.path.abspath(os.path.join(sminos.root(), "daemon.out"))
     entries = "\n".join("Environment=%s" % unit_word("%s=%s" % (k, v)) for k, v in sorted(service_env().items()))
-    for key, value in (("SMINOS_CLI", unit_word(installed_cli(), execstart=True)), ("ENV", entries),
+    for key, value in (("SMINOS_CLI", unit_word(installed_cli())), ("ENV", entries),
                        ("LOG", log.replace("%", "%%"))):
         text = text.replace("{{%s}}" % key, value)
     # systemd opens daemon.out before the daemon runs: on a first install

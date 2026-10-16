@@ -5057,7 +5057,7 @@ for line in open(sys.argv[1]):
     key, value = line.split("=", 1)
     if key == "ExecStart":
         cmd, args = re.fullmatch(r'("(?:[^"\\]|\\.)*") (.*)', value).groups()
-        value = "%s | %s" % (os.path.realpath(word(cmd).replace("$$", "$")), args)
+        value = "%s | %s" % (os.path.realpath(word(cmd)), args)
     elif key == "Environment":
         value = word(value)
     out.append("%s %s=%s" % (section, key, value))
