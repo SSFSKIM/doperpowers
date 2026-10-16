@@ -110,8 +110,7 @@ export function compacted(agentId: string | null, messages: readonly SessionMess
   // The rows the loop's notices named so far, kept with the hold: one of them
   // may lie past the cut on disk (the engine's write order), however many
   // notices come after it.
-  const prior = new Set(state.named.get(loop))
-  const h: Hold = { type: '@hold', loop, after, run: () => nameCompaction(h, agentId, summary, prior) }
+  const h: Hold = { type: '@hold', loop, after, named: new Set(state.named.get(loop)), run: () => nameCompaction(h, agentId, summary) }
   hold(h)
 }
 
@@ -125,7 +124,7 @@ export function compacted(agentId: string | null, messages: readonly SessionMess
  * come within ROWS_POLLS reads, or when the hold left the queue (a resync's
  * cut covers its rows).
  */
-async function nameCompaction(h: Hold, agentId: string | null, summary: string, prior: Set<string>): Promise<BridgeEvent[]> {
+async function nameCompaction(h: Hold, agentId: string | null, summary: string): Promise<BridgeEvent[]> {
   const { loop, after } = h
   let wasOnDisk = false
   for (let poll = 1; ; poll++) {
@@ -139,7 +138,7 @@ async function nameCompaction(h: Hold, agentId: string | null, summary: string, 
     // of them took the hold too.
     const queued = new Set(state.queue.slice(at + 1).filter((e) => (e.type === 'block-row' || e.type === 'row-seen') && (e.agentId ?? 'main') === loop).map((e) => e.uuid))
     const live = state.named.get(loop)
-    const isNamed = (u: string) => prior.has(u) || live?.has(u) === true || queued.has(u)
+    const isNamed = (u: string) => h.named.has(u) || live?.has(u) === true || queued.has(u)
     if (isNamed(summary)) {
       return []
     }
@@ -150,16 +149,21 @@ async function nameCompaction(h: Hold, agentId: string | null, summary: string, 
       for (const u of unnamed) {
         remember(loop, u)
       }
-      // The cut moves to them unless a later notice, queued behind the hold,
-      // moved it first; a later hold of the loop placed at the same cut
-      // (nothing of the loop came between them) reads past them now.
       const last = unnamed[unnamed.length - 1]
-      if (last !== undefined && state.cut.get(loop) === after) {
-        state.cut.set(loop, last)
+      if (last !== undefined) {
+        // Every later hold of the loop counts them as named, and one placed at
+        // the same cut (nothing of the loop came between them) reads past them.
         for (const e of state.queue) {
-          if (isHold(e) && e !== h && e.loop === loop && e.after === after) {
-            e.after = last
+          if (isHold(e) && e !== h && e.loop === loop) {
+            unnamed.forEach((u) => e.named.add(u))
+            if (e.after === after) {
+              e.after = last
+            }
           }
+        }
+        // The cut moves to them unless a later notice, queued behind the hold, moved it first.
+        if (state.cut.get(loop) === after) {
+          state.cut.set(loop, last)
         }
       }
       const t = Date.now()

@@ -24,11 +24,12 @@ export type Hold = BridgeEvent & {
   type: '@hold'
   /**
    * The loop whose rows past `after` it names: its cut when the hold was
-   * placed, or the last row of an earlier hold placed at the same cut, once
-   * that one moved the cut there.
+   * placed, or the last row an earlier hold placed at the same cut named.
    */
   loop: string
   after: string
+  /** The loop's rows named when it was placed, and those every earlier hold of the loop named since. */
+  named: Set<string>
   run: () => Promise<BridgeEvent[]>
 }
 export const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@hold'

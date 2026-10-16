@@ -2321,6 +2321,30 @@ describe("a compaction's rows, which no session.append raises", () => {
     expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 's2' } })
     expect(h.rowReads.at(-1)).toMatchObject({ after: 's1' })
   })
+
+  test("two holds at a subagent's cut with a notice of it queued behind them: the rows the first names count as named for the second, though the cut is that notice's and the subagent stopped in between", async () => {
+    const h = harness({ hold: true })
+    await h.ready()
+    const attachment = (uuid: string) => h.append('attachment', { type: 'attachment', name: 'x', role: 'user', content: [] }, { uuid, agentId: 'a7' })
+    await attachment('q0')
+    compacted('a7', result('s1').messages)
+    compacted('a7', result('s2').messages)
+    await attachment('r')
+    h.disk.a7 = ['q0', 'b1', 's1', 'b2', 's2', 'r']
+    // The hello's post, then q0's; the first hold runs, and the post of what it named is held.
+    h.posts[0]!.release()
+    await h.settle()
+    h.posts[1]!.release()
+    await poll(h)
+    await poll(h)
+    expect(h.posts).toHaveLength(3)
+    await h.hook('classic.SubagentStop', { hook_event_name: 'SubagentStop' })(h.engine, { hook_event_name: 'SubagentStop', agent_id: 'a7', agent_type: 'Explore' }, async () => ({}))
+    for (let i = 0; i < 6; i++) {
+      h.posts.forEach((p) => p.release())
+      await poll(h)
+    }
+    expect(notices(h)).toEqual(['row-seen:q0', 'row-seen:b1', 'row-seen:s1', 'row-seen:b2', 'row-seen:s2', 'row-seen:r'])
+  })
 })
 
 describe('the seed: each loop cut at load', () => {
