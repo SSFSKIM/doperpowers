@@ -5098,9 +5098,10 @@ assert_file_absent "$MD/launchctl.calls" "still loading nothing"
 # run notices new code: a change to its own scripts ends the loop with exit 0,
 # for launchd's KeepAlive to restart it on the new code.
 env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" "$CACHE/skills/sminos/scripts/sminos" daemon run --interval 1 > "$MD/run-code.out" 2>&1 & RUNC=$!
-sleep 1.5
-touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"
-for _ in $(seq 1 100); do kill -0 "$RUNC" 2>/dev/null || break; sleep 0.05; done
+# The change has to come after the loop read its code, so it is made again
+# until the loop notices, rather than once after a guessed start-up time.
+run_noticed_code() { touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"; ! kill -0 "$RUNC" 2>/dev/null; }
+wait_until run_noticed_code || true
 if kill -0 "$RUNC" 2>/dev/null; then fail "run exits once its code changes"; kill "$RUNC"; wait "$RUNC" || true; else
   set +e; wait "$RUNC"; RUNC_RC=$?; set -e
   assert_rc 0 "$RUNC_RC" "run exits 0 once its code changes"
