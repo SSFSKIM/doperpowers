@@ -102,10 +102,15 @@ items the built axes cover and which wait on the TUI axis.
 - **Delegator** — `doperpowers:forge-delegator`, the agent the root puts in
   front of the human: it answers escalations the manifest answers and drafts
   the question for the rest.
-- **Fast sample** — a 1–10% sample of the full oracle drawn fresh for each
-  verification, so no worker sees an input twice; **full** is the whole
-  oracle; **held-out** is a slice the swarm never sees, kept outside the
-  repository.
+- **Fast sample** — a 1–10% sample of the full oracle drawn for each
+  verification **without replacement per unit** from the inputs that unit
+  has not yet seen (the runner keeps the exposure set), so a memorizer fails
+  the first draw after its memorized set; when a unit's pool is exhausted,
+  its remaining checks are `full`. **Full** is the whole oracle; **held-out**
+  is a slice the swarm never sees. The recorded **expectations**, the
+  held-out and the reference all live outside every worker's repository, at
+  paths the verifier's environment holds (`FORGE_EXPECTED`, `FORGE_HELDOUT`,
+  the manifest's reference paths).
 - **Verify request** — the implementer's inner loop: a command its settings
   allow that asks the runner to verify its worktree's head in the verifier's
   environment on a fresh sample and return the diffs; not a round.
@@ -219,10 +224,18 @@ evidence for, because each has a failure on record:
   corpus, production inputs replayed with recorded responses — because a
   scripted oracle proves only what it exercises (Prime Intellect, giflib's
   30M-file corpus).
-- **Isolation.** The implementer's environment cannot reach the reference:
-  not in its worktree, denied to its tools, absent from its container. The
-  agents on record that called the original binary instead of porting it did
-  so despite instructions; the isolation is a property of the sandbox.
+- **Isolation.** The implementer's environment cannot reach the reference
+  or the expectations: not in its worktree, denied to its tools, absent from
+  its container — and **never in its repository's history**, since a
+  worktree shares the object store and `git show <commit>:<path>` reads
+  what a path denial does not cover; protected artifacts live outside the
+  worker's repository, and the toy's own reference and expectations sit in a
+  sibling directory, not in the toy repository. The agents on record that
+  called the original binary instead of porting it did so despite
+  instructions; the isolation is a property of the sandbox. The same holds
+  during a verification: the candidate runs on its own side, confined to
+  what it links, while the reference side holds the binary and the
+  expectations and does the comparing (§2.6).
 
 #### 2.3 The parity ledger
 
@@ -284,8 +297,11 @@ finding.
 and what the verifier checks mechanically where it can:
 
 - the unit's oracle slices pass in a fresh checkout (verifier);
-- the diff touches nothing under `forge/oracle/`, `forge/ledger.tsv` beyond
-  `status`, or the reference (verifier, by path);
+- the implementer's diff, measured from the unit's **oracle revision** (the
+  commit the runner publishes when the author's work passes its checks),
+  touches nothing under `forge/oracle/`, `forge/ledger.tsv` or the reference
+  (verifier, by path) and carries no run of reference text (verifier, by
+  fingerprint against the reference);
 - no test skipped, deleted or weakened; a coverage drop is a deletion alarm
   (verifier where tooling exists, reviewer always);
 - no hard-coded expected values, no stubs or `unimplemented` paths standing
@@ -320,7 +336,11 @@ not pay orientation three times) — fresh only on a re-brief:
    fail with the unit's module stubbed — and, when anything under
    `forge/oracle/` changed, self-parity and the mutation run again. "Fails on
    the current tree" means nothing in a strangler, where the current tree is
-   the reference; the stub is the failure the slices must show.
+   the reference; the stub is the failure the slices must show. Work that
+   passes is **published**: the runner commits it onto the integration branch
+   as the unit's oracle revision, and the implementer branches from there, so
+   its diff is measured from a baseline that already holds the author's
+   changes and any `forge/oracle/` change in that diff is the implementer's.
 2. **Implementer** (tier B; `doperpowers:forge-implementer`, opus/high,
    downgradable per unit) — in its own worktree, from the staged spec, the
    brief and the oracle's code (readable; the recorded expectations are not),
@@ -328,8 +348,16 @@ not pay orientation three times) — fresh only on a re-brief:
    runner performs the verification in the verifier's environment — the
    reference, the hybrid build and the expectations live there, not in the
    implementer's sandbox, which in a strangler could not even build the
-   program — on a fresh sample each time, and returns the sample's diffs.
-   No request counts as a round. Returns `DONE` with a report, or
+   program — on a fresh draw from the unit's unseen pool, and returns the
+   sample's diffs. The candidate itself runs on the **candidate side**, a
+   confinement of its own that holds only what it links (in a strangler, the
+   hybrid's reference chunks are necessarily among them), never the binary,
+   the expectations or the spec inventories; the reference side holds those
+   and does the comparing; the response is observation diffs on the parity
+   axes only, size-capped, with any run of reference text redacted by
+   fingerprint. A candidate that tries to print the protected files gets a
+   denial on its side and a redaction on the other. No request counts as a
+   round, and the manifest bounds requests per round. Returns `DONE` with a report, or
    `MORE_WORK`, `BLOCKED`, `INFEASIBLE`.
 3. **Reviewer** (tier C; `doperpowers:forge-reviewer`, sol/xhigh, read-only:
    the diff, the staged spec, the rubric, the implementer's report) and
@@ -487,11 +515,16 @@ the journals and continues.
 integration branch; if the rebase changed the diff the review is void and the
 unit returns to step 3; run the unit's slices and the fast sample at the tip;
 fast-forward; on failure the unit goes back to the implementer with the
-tip's diff. A `full` or held-out failure **after** landing reopens the unit
-that owns the divergence — attribution is mechanical when the failing slices
-map through the ledger to one landed unit, and a bisect over the wave's
-landings otherwise (revert-test each landing's diff at the tip) — and no new
-unit dispatches while the tip is red (Carlini's compiler: new features kept
+tip's diff. The fast-forward is recorded as an **intent** line (old and new
+tip) before the ref moves and a **done** line after, and a resume reconciles
+the integration ref with the last intent — ref at the new tip: mark done; at
+the old tip: redo the fast-forward; elsewhere: escalate — since appending a
+line and moving a ref are two writes. A `full` or held-out failure
+**after** landing reopens the unit whose landing **caused** it, found by a
+bisect over the wave's landings from the last green tip (landings are
+linear, so this is mechanical); the ledger names the behavior that broke,
+not the blame — a newly landed caller can break a slice an earlier unit
+owns. No new unit dispatches while the tip is red (Carlini's compiler: new features kept
 breaking existing functionality until the gate existed). `full` runs at
 every wave end and on a timer the manifest sets; held-out runs at wave ends
 by the root. This is the middle path between
@@ -756,24 +789,33 @@ Observable at the end, each with the milestone that proves it:
    (after the report is persisted, after the journal line, after
    `state.json`) continues without re-dispatching a role whose journal line
    exists and re-runs one whose line is missing under the next attempt
-   number. A unit crossing its token cap raises a `budget` event and no new
-   role dispatches past the run cap. (M4)
+   number; a session ending in each of the harness's error result variants,
+   or with no result, is journaled `ERROR`, retried once per policy and then
+   escalated. A unit crossing its token cap raises a `budget` event and no
+   new role dispatches past the run cap. (M4)
 6. **Gaming is caught, and the tier holds.** A stub implementer that
-   hard-codes outputs fails the fresh sample; a memorizer that answers every
-   input it has seen is caught by the next fresh sample; one that edits a
-   file under `forge/oracle/` or `ledger.tsv` is refused at landing with the
-   path named; an oracle author whose slices pass under the stub is returned
-   `MORE_WORK` by the stub check (M5). A live check with a real implementer
-   session under its settings shows a `Read` of the reference and a shell
-   `cat` of it both refused, and a run with the sandbox unavailable refused
-   to start (M4).
+   hard-codes outputs fails its sample; a memorizer that answers every input
+   it has seen fails the first draw after its memorized set, and a unit
+   whose pool is exhausted is checked by `full`; an implementer whose diff
+   from the oracle revision touches `forge/oracle/` or `ledger.tsv` is
+   refused at landing with the path named, while the author's own
+   extension of a slice landed in that revision passes; a candidate that
+   prints a protected file gets a denial on the candidate side and a
+   redacted response; a diff carrying a run of reference text is flagged;
+   an oracle author whose slices pass under the stub is returned `MORE_WORK`
+   (M5). A live check with a real implementer session under its settings
+   shows a `Read` of the reference and a shell `cat` of it both refused, a
+   `git show` of any commit finding no reference or expectation content in
+   the worker repository's history, and a run with the sandbox unavailable
+   refused to start (M4).
 7. **Landing holds the tip green.** Two toy units landed in one wave; a
    rebase that changed a diff voided its review and the unit re-entered step
    3; `oracle full` at the wave end prints zero divergences; a `full` fired
    by the interval during an unfinished wave is recorded in `events.jsonl`
-   with its result; and a seeded divergence landed by a stub role reopens its
-   unit at the wave-end `full`, attributed to it, and holds the next wave
-   until it is fixed. (M5)
+   with its result; a seeded divergence landed by unit B that breaks a slice
+   unit A owns reopens B at the wave-end `full`, with A's ledger items
+   named, and holds the next wave until it is fixed; and a kill on either
+   side of a landing's ref move is reconciled on `--resume`. (M5)
 8. **The root protocol and delegator work on seeded events.** Events for
    each escalation class are fed; the delegator resolves the class-1–3 ones
    with the manifest line it used and drafts a question for the class-4 one;
@@ -804,14 +846,18 @@ goes and keeps `Progress` current.
 ### M1 — The skill: doctrine, manifest shape, oracle patterns, rubric, rigor gate
 
 What exists at its end: `skills/forging/` with `SKILL.md` and the five
-references of §5; the toy fixture under
-`tests/forging/toy/` (`src/`, `SPEC.md`, `dist/ref/` built with `bun build
---splitting`, `dist/mut/` the same build with one constant changed as the
-seeded divergence, `tools/hybrid.mjs` the hybrid builder); and, produced by a
-subagent reading nothing but the skill and the fixture, the toy's `forge/`
-with its oracle (`forge/oracle/run.py` per the contract in Interfaces), its
-self-parity and mutation evidence, and its gate record. Touches:
-`skills/forging/`, `tests/forging/toy/`. Produces: the manifest shape (`manifest.md`,
+references of §5; `agents/forge-reviewer.md`, since the gate's calibration
+dispatches the reviewer that will judge units and the toy's gate runs here;
+the toy fixture under `tests/forging/toy/` — a repository of its own,
+initialized by `tests/forging/toy/setup.sh` into a working directory, holding
+`src/`, `SPEC.md` and the oracle's code, beside a **sibling directory** that
+holds what no worker may reach: `ref/` built with `bun build --splitting`,
+`mut/` the same build with one constant changed as the seeded divergence,
+`tools/hybrid.mjs` the hybrid builder, and the recorded expectations; and,
+produced by a subagent reading nothing but the skill and the fixture, the
+toy's `forge/` with its oracle (`forge/oracle/run.py` per the contract in
+Interfaces), its self-parity and mutation evidence, and its gate record.
+Touches: `skills/forging/`, `agents/forge-reviewer.md`, `tests/forging/toy/`. Produces: the manifest shape (`manifest.md`,
 `ledger.tsv` columns, `units.json` schema, `roles/*.json` keys, the status
 vocabulary, the report-file convention) in `references/manifest.md` —
 consumed by every later milestone under those names. Decisions for this
@@ -829,7 +875,7 @@ copies them, and the root dispatches readers and the calibration's reviewer
 as subagents; the toy's oracle, strangler shim and hybrid use are the subagent's work from
 the skill, and where its output falls short of the contract the executor
 fixes the skill's text, not the output, and re-runs the read. Does not
-touch: the runner, the role agents. Proves: acceptance 1's shape (the dry
+touch: the runner, the other three role agents. Proves: acceptance 1's shape (the dry
 read), 2 and 3 for the toy (the readers and the calibration dispatched from
 `rigor-gate.md`'s briefs, the `doperpowers:adversarial-reviewer` audit,
 `forge/gate/verdict.md`); doperpowers:writing-skills' structure test on the
@@ -871,10 +917,14 @@ ledger, matrix, three readers on two units with one at opus, the judge
 calibration, the adversarial-reviewer audit) and `forge/gate/verdict.md`. Touches: `scenario-2.1.300/forge/oracle/`,
 `forge/gate/`, `manifest.md`. Consumes: the scenario's ledger and unit
 graph. Decisions: the scripted server is a small Python HTTP server speaking
-the Messages API's streaming shape, keyed by a hash of the normalized request,
-answering from a recorded corpus captured once from the real provider with
-the user's own account (the recording run is the one model-spending step; it
-is sized to the slices, not the corpus); normalization is defined by the
+the Messages API's streaming shape, started by the runner per slice run on a
+fresh port so that position is the count of requests that server has seen,
+answering the nth request with the nth recorded response and recording each
+request's normalized hash for the comparison (a changed request still gets
+its positional answer and its difference is still reported), the corpus
+captured once from the real provider with the user's own account (the
+recording run is the one model-spending step; it is sized to the slices, not
+the corpus); normalization is defined by the
 self-parity runs as §2.2 says; the spike runs before any slice is written for
 a unit and answers both of §6's questions — the zero-replacement hybrid
 under plain `bun`, `forge/oracle/hybrid.py`
@@ -894,8 +944,9 @@ scenario's verdict), 3 (self-parity and mutation for 2.1.300), 4 (the spike).
 
 What exists at its end: `forge-run.py` with `preflight`, `plan`, `run`,
 `unit`, `status`, `--resume`, `--parallel`; `forge-env.sh` (a role's
-worktree, settings and environment, and `stage-spec`); the four agent
-definitions; the FSM tests with a stub `claude`; the live isolation check.
+worktree, settings and environment, and `stage-spec`); the other three
+agent definitions (the reviewer is M1's); the FSM tests with a stub
+`claude`; the live isolation check.
 Touches: `skills/forging/scripts/`, `agents/forge-*.md`, `tests/forging/`.
 Consumes: the manifest shape. Produces: the runner's command surface, the
 journal and state schemas and the transition table (Interfaces). Decisions:
@@ -908,8 +959,15 @@ the journal), fresh only on a re-brief; the implementer's verify request is
 `forge-run.py verify` run from its worktree — it writes
 `runs/<id>/units/<unit>/verify/<n>.request` and waits for the `.response`,
 which the main process writes after performing the verification in the
-verifier's environment on a fresh sample (M5 supplies the oracle call; M4
-supplies the request loop and tests it with a stub oracle); `--plugin-dir` pointing at the checkout
+verifier's environment on a fresh draw (M5 supplies the oracle call and the
+exposure set; M4 supplies the request loop, the per-round request bound
+from the manifest, and tests it with a stub oracle); a session that ends
+without a result text — the harness's `error_max_turns`,
+`error_max_budget_usd` and `error_during_execution` result variants, or a
+process exit with no `result` — is journaled as `ERROR` with the variant and
+whatever usage arrived, retried once (`error_max_turns` by resuming the
+session with the instruction to report now; the others fresh), and
+escalated on the second, and the stub emits each variant in the tests; `--plugin-dir` pointing at the checkout
 the runner lives in, and `preflight` dispatching each role on a one-line
 prompt and failing the run on the harness's unknown-agent warning — if a
 live check at this milestone shows `--plugin-dir` does not register agents
@@ -943,18 +1001,35 @@ interface, ledger `status` updates on landing, and the gaming tests. Touches:
 `skills/forging/scripts/forge-run.py`, `tests/forging/`. Consumes: the
 runner's surface. Decisions: the landing lock is a file under `forge/runs/`;
 review validity is bound to the reviewed head's tree hash, so a rebase that
-changes the diff voids it; every sample is a fresh `fast --seed <n>` draw
-(verify requests, the verifier step, the tip check); the **stub check** runs
+changes the diff voids it; every sample is a `fast --seed <n>` draw without
+replacement from the unit's unseen pool, the exposure set kept under the
+unit's run directory and exhaustion answered with `full` (verify requests,
+the verifier step, the tip check); the **stub check** runs
 when the oracle author returns (`oracle stub <unit>` then `compare`; slices
-that pass under the stub return the author `MORE_WORK` with their names) and
+that pass under the stub return the author `MORE_WORK` with their names),
 self-parity and mutation re-run when the author's diff touched
-`forge/oracle/`; a `full` or held-out failure after landing attributes the
-divergence through the ledger to one landed unit, or by a bisect over the
-wave's landings, writes a `reopened` event, moves the unit to `reopened`,
-and holds dispatch while the tip is red; the runner moves ledger `status`
+`forge/oracle/`, and work that passes is committed onto the integration
+branch as the unit's oracle revision, recorded in the journal, from which the
+implementer's worktree branches and against which its diff is measured; the
+verification's two sides are two directories — the candidate side a
+confinement holding the worktree's head and what it links, the reference
+side the reference, the expectations and the comparer — and the response is
+the comparer's diffs, size-capped, with reference runs redacted by the
+fingerprint check that also flags them in the diff; a `full` or held-out failure after landing is attributed by a
+bisect over the wave's landings from the last green tip, writes a `reopened`
+event naming the landing that caused it and the ledger items that broke,
+moves that unit to `reopened`, and holds dispatch while the tip is red (a
+test has unit B's landing break a slice unit A owns, and B reopens); the
+fast-forward writes an `intent` line with the old and new tips before the
+ref moves and a `done` line after, and `--resume` reconciles the ref with
+the last intent as §3 says, with kills on both sides of the ref move in the
+tests; the runner moves ledger `status`
 from slice results at landing and at `full`, and any role diff touching
-`ledger.tsv` is refused; the verifier's path check compares the unit's diff
-against `forge/oracle/**`, `ledger.tsv` and the manifest's reference paths; `oracle` subcommands call
+`ledger.tsv` is refused; the verifier's path check compares the implementer's diff from the
+unit's oracle revision against `forge/oracle/**`, `ledger.tsv` and the
+manifest's reference paths, and its fingerprint check against runs of
+reference text (the toy's `ref/` chunks; the scenario's `CHUNK-INDEX.md`
+fingerprints and `modules/`); `oracle` subcommands call
 `forge/oracle/run.py` with a fixed argument contract (`<axis> <binary>
 <slice>` → a directory of observations, `normalize`, `compare` → a summary
 line and a detail file) so the harness is per target and the driver is not;
@@ -1049,8 +1124,8 @@ Defined once here; milestones point at them.
   role's report is its final message, its first line one of `DONE`,
   `MORE_WORK`, `BLOCKED`, `INFEASIBLE`, `ERROR`.
 - **Oracle runner contract** (M1 for the toy, M3 for the scenario; M5's
-  driver; recorded expectations under `forge/oracle/expected/`, code beside
-  them): `forge/oracle/run.py <axis> run <binary> <slice> <outdir>`,
+  driver; the oracle's code and slice inputs in the repository, the recorded
+  expectations outside it at `FORGE_EXPECTED`): `forge/oracle/run.py <axis> run <binary> <slice> <outdir>`,
   `… normalize <outdir>`, `… compare <expected> <actual>` → one summary line
   on stdout (`<axis> <slice>: <n> divergences, skipped: <k>`) and a detail
   file, and `… stub <unit> <outdir>` builds the candidate with the unit's
@@ -1065,20 +1140,24 @@ Defined once here; milestones point at them.
   `state.json` `{ "run", "units": { "<id>": { "state", "attempt", "head",
   "review_head", "usage" } }, "usage", "waves": [] }` as a view over the
   journals; landing appends to `runs/<id>/landing.jsonl` lines `rebase-start
-  | review-void | tip-check | fast-forward` per unit. **Transition table**
+  | review-void | tip-check | intent {old, new} | done {new}` per unit, and
+  `runs/<id>/units/<unit>/exposure.json` holds the inputs the unit has
+  seen. **Transition table**
   (unit states): `planned → authored` (oracle author `DONE`); `authored →
   implemented` (implementer `DONE`); `implemented → judged` (reviewer and
   verifier both `DONE`); `implemented → implemented` (either `MORE_WORK`,
   `attempt + 1`, while `attempt ≤ max_rounds`); `judged → landed`
   (`fast-forward` line); `judged → implemented` (`review-void` or a failed
   `tip-check`); `authored → authored` (stub check failed, author
-  `MORE_WORK`); `landed → reopened` (a `full` or held-out failure attributed
+  `MORE_WORK`); `planned → authored` also publishes the oracle revision
+  (journaled with its commit); a role journaled `ERROR` is retried once per
+  M4's policy and then `escalated`; `landed → reopened` (a `full` or held-out failure attributed
   to the unit) and `reopened → implemented` (the root resumes it with the
   tip's diff); any role `BLOCKED` or `INFEASIBLE`, or `max_rounds` exceeded,
   → `escalated` with an event, the unit idle until the root resumes or
   closes it. **Linearization points**: a role is finished at its journal
-  line; a unit is landed at its `fast-forward` line, and the integration
-  branch moves only there. **Verify requests**:
+  line; a unit is landed when the integration ref moves (`git update-ref`,
+  atomic), bracketed by the `intent` and `done` lines a resume reconciles. **Verify requests**:
   `runs/<id>/units/<unit>/verify/<n>.request` (the worktree head) answered by
   `<n>.response` (the sample's seed and diffs); journal lines carry the
   role's `session` id for resumption. `events.jsonl` lines `{ "ts", "unit",
@@ -1187,6 +1266,29 @@ Defined once here; milestones point at them.
   a unit the shim could not cut, a gate condition empty in a strangler, a
   landing a memorizer passes, a failure with no state; the rest were
   simplifications or measurements the design claimed without supplying.
+  Date/Author: 2026-10-15
+- Decision: After the third review round (2026-10-15, consistency after
+  the folds), nine changes: a verification has a candidate side and a
+  reference side, the response is capped and redacted by fingerprint, and
+  the fingerprint check flags reference text in a diff; protected artifacts
+  never enter a worker repository's history (the toy's reference and
+  expectations move to a sibling directory, expectations to
+  `FORGE_EXPECTED`), and the live check probes `git show`; the author's
+  passing work is published as the unit's oracle revision and the
+  implementer's diff is measured from it; samples are drawn without
+  replacement from a per-unit pool with an exposure set, exhaustion
+  answered by `full`, and the anti-memorization claim narrowed to what
+  that guarantees; the reviewer agent moves to M1 so the gate calibrates
+  the judge that will run; the scripted server answers by position, one
+  server per slice run; post-landing attribution is a bisect from the last
+  green tip, the ledger naming what broke, not who; landing writes intent
+  and done around the ref move and a resume reconciles them; a session
+  ending without a result is `ERROR` with the harness's variant, retried
+  once per policy.
+  Rationale: each was a hole the previous fold opened or left — the
+  verify request as an exfiltration route, the shared object store, the
+  author's changes failing the implementer's guard, a seed that does not
+  mean unseen, a judge calibrated before it existed.
   Date/Author: 2026-10-15
 - Decision: The verifier's and the oracle's runs go to a sandbox provider
   the manifest names (`local` | `vm` | `ephemeral`), with the oracle runner
