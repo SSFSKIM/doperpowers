@@ -108,10 +108,12 @@ class Inbox(threading.Thread):
                 if not chunk:
                     break
                 data += chunk
-            c.close()
+            # Kept before the close: the sender returns once the connection
+            # closes, and a test reads the frames as soon as it has.
             for line in data.decode().splitlines():
                 if line.strip():
                     self.frames.append(json.loads(line)["message"]["content"])
+            c.close()
 
     def texts(self):
         return "\n".join(self.frames)

@@ -18,8 +18,10 @@ while True:
         if not chunk:
             break
         data += chunk
-    c.close()
+    # Kept before the close: the sender returns once the connection closes, and
+    # what it sent must be in the log by then.
     with open(out, "a") as f:
         for line in data.decode().splitlines():
             if line.strip():
                 f.write(json.dumps(json.loads(line)["message"]["content"]) + "\n")
+    c.close()

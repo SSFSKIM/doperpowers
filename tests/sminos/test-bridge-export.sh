@@ -41,10 +41,15 @@ assert_not_contains() {
     fail "$3"; echo "    expected NOT to find: $2"; echo "    in: ${1:0:900}"
   else pass "$3"; fi
 }
-until_true() { # tries command... — poll every 50 ms
-  local tries="$1"; shift
-  for _ in $(seq 1 "$tries"); do "$@" && return 0; sleep 0.05; done
-  return 1
+# Polls every 50 ms until the command holds. The leading count is kept for the
+# call sites, but the ceiling is one liveness bound, 30 s, not a claim about the
+# machine's speed (ci-kit §6): a loaded host is slow, not wrong.
+until_true() { # tries command...
+  local end=$((SECONDS + 30)); shift
+  until "$@"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.05
+  done
 }
 
 unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME CLAUDE_CONFIG_DIR

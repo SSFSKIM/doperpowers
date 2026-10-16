@@ -1,0 +1,12 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+    inputs:
+      gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}
+jobs:
+  ci:
+    uses: SSFSKIM/ci-kit/.github/workflows/gates.yml@v1
+    secrets: inherit

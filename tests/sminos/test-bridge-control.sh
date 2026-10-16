@@ -46,10 +46,15 @@ assert_not_contains() {
 }
 assert_rc() { if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3"; echo "    expected rc $1, got $2"; fi; }
 run() { set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e; }
-until_true() { # tries command... — poll every 50 ms
-  local tries="$1"; shift
-  for _ in $(seq 1 "$tries"); do "$@" && return 0; sleep 0.05; done
-  return 1
+# Polls every 50 ms until the command holds. The leading count is kept for the
+# call sites, but the ceiling is one liveness bound, 30 s, not a claim about the
+# machine's speed (ci-kit §6): a loaded host is slow, not wrong.
+until_true() { # tries command...
+  local end=$((SECONDS + 30)); shift
+  until "$@"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.05
+  done
 }
 field_of() { # json-text dotted.path
   python3 -c 'import json, sys

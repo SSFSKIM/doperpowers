@@ -50,6 +50,17 @@ assert_file_absent() { if [[ ! -e "$1" ]]; then pass "$2"; else fail "$2"; echo 
 assert_rc() { # expected-rc actual-rc label
   if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3"; echo "    expected rc $1, got $2"; fi
 }
+# Waits for a condition (a command) to hold, polling. The ceiling is a liveness
+# bound, generous and uniform, not a claim about how fast the machine is: a
+# loaded host is slow, not wrong (ci-kit §6). Exit 1 if it never holds.
+LIVENESS_SECONDS=30
+wait_until() {
+  local end=$((SECONDS + LIVENESS_SECONDS))
+  until "$@"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.05
+  done
+}
 mode_of() { python3 -c 'import os, sys; print("%04o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$1"; }
 field() { # seat-id field  → value (via python, never jq)
   python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); v = d.get(sys.argv[2], ""); print(v if isinstance(v, str) else json.dumps(v))' "$SMINOS_HOME/$1.json" "$2"
@@ -291,7 +302,8 @@ export STUB_PLUGIN_ROOT="$REPO_ROOT" STUB_SMINOS="$SMINOS"
 # receives to inbox.received, one connection at a time, forever. While
 # <received>.hold exists, a frame is written and marked (<received>.held), but
 # its ack waits for the hold to lift: a deliverer killed in that window has
-# pushed without settling.
+# pushed without settling. A connection that carries no frame (a liveness
+# probe connects and closes) is never held: the mark means a frame arrived.
 cat > "$TEST_ROOT/sockserver.py" <<'PY'
 import os, socket, sys, time
 path, out = sys.argv[1], sys.argv[2]
@@ -312,7 +324,7 @@ while True:
         buf += chunk
     with open(out, "ab") as f:
         f.write(buf)
-    if os.path.exists(out + ".hold"):
+    if buf and os.path.exists(out + ".hold"):
         open(out + ".held", "w").close()
         while os.path.exists(out + ".hold"):
             time.sleep(0.02)
@@ -333,7 +345,56 @@ run() { # capture stdout+stderr and rc without aborting the suite
   set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e
 }
 
+# ---- the suite's two parts ---------------------------------------------------
+# SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
+# `suites` the files it runs beside them (run_suites); unset runs both.
+SMINOS_PART="${SMINOS_PART:-all}"
+case "$SMINOS_PART" in all | core | suites) ;; *) echo "SMINOS_PART is all, core or suites" >&2; exit 2 ;; esac
+run_suites() {
+  # The bridge's session endpoint has a file of its own (short socket paths, a
+  # stand-in for the mod); its assertions count here as one.
+  echo
+  if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and delivery (test-bridge-control.sh)"; else
+    fail "the bridge's control and delivery (test-bridge-control.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
+    fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
+    fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
+    fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
+  echo
+  if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
+  if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
+  if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
+  if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
+  echo
+  if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
+    fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
+  if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
+    pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
+    fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
+  if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
+    fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
+}
+summary() {
+  echo
+  if [ "$FAILURES" -eq 0 ]; then
+    echo "all $PASSES assertions passed"
+  else
+    echo "$FAILURES of $((PASSES + FAILURES)) assertions FAILED"
+    exit 1
+  fi
+  exit 0
+}
+if [ "$SMINOS_PART" = suites ]; then run_suites; summary; fi
+
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
+
 # ---- 1) usage ----------------------------------------------------------------
 echo "usage:"
 run "$SMINOS"; assert_rc 2 "$RC" "no arguments is a usage error (exit 2)"
@@ -1046,10 +1107,12 @@ SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" send orchestrator "ACK-0" --wait
 assert_rc 1 "$RC" "send --wait without evidence of receipt exits 1"
 assert_not_contains "$OUT" "--- reply ---" "no reply block is printed without evidence"
 "$SMINOS" meta set orchestrator status idle >/dev/null
-( SMINOS_ACK_TIMEOUT=5 "$SMINOS" send orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
+# The window is a liveness bound: the send waits as long as it needs for the
+# frame to land, and returns as soon as the marker is in the transcript.
+( SMINOS_ACK_TIMEOUT="$LIVENESS_SECONDS" "$SMINOS" send orchestrator "ACK-1" --wait > "$TEST_ROOT/ack.out" 2>&1; echo $? > "$TEST_ROOT/ack.rc" ) &
 ACKW=$!
-sleep 0.5
-ACK_ID="$(grep -o 'id=[0-9a-f]\{8\}' "$RECEIVED" | tail -1 | cut -d= -f2)"
+wait_until grep -qF 'ACK-1' "$RECEIVED" || echo "    (ACK-1 never reached the inbox)"
+ACK_ID="$(grep -F 'ACK-1' "$RECEIVED" | grep -o 'id=[0-9a-f]\{8\}' | tail -1 | cut -d= -f2)"
 mkdir -p "$HOME/.claude/projects/fake-proj"
 python3 - "$HOME/.claude/projects/fake-proj/$ORCH_UUID.jsonl" "$ACK_ID" <<'PY'
 import json, sys
@@ -1368,10 +1431,17 @@ assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "nothing 
 # neither status nor a reply over it.
 ( STUB_BG_STATE=working SMINOS_POLL_INTERVAL=0.1 DAEMON_TIMEOUT=20 "$SMINOS" spawn genseat "GEN" --wait > "$TEST_ROOT/gen.out" 2>&1; echo $? > "$TEST_ROOT/gen.rc" ) &
 GENW=$!
-sleep 0.8
-GEN="$(seat_id_of genseat)"
-run "$SMINOS" retire genseat
+# The retire must land once the spawn has written its record and let go of the
+# seat's lifecycle lock, when its watcher waits: until then a retire is refused
+# with the lock held (rc 4), and is simply tried again.
+genseat_recorded() { [ -n "$(seat_id_of genseat)" ]; }
+retire_genseat() { run "$SMINOS" retire genseat; [ "$RC" != 4 ]; }
+wait_until genseat_recorded || echo "    (genseat was never recorded)"
+wait_until retire_genseat || true
 assert_rc 0 "$RC" "retire while a watcher waits exits 0"
+# Read once the spawn has let go: until then its record may still be under its
+# provisional id, renamed to the session's once the harness names it.
+GEN="$(seat_id_of genseat)"
 wait "$GENW" || true
 assert_equals "$(field "$GEN" status)" "retired" "the watcher's finalize does not overwrite a retire"
 assert_file_absent "$SMINOS_HOME/$GEN.reply.txt" "no reply file is written over a retired seat"
@@ -4582,20 +4652,25 @@ r = next(d for d in json.load(sys.stdin) if d["session"] == sys.argv[1])
 print(r["status"], r["machine"], r["local"], r["state"])' "$A")"
 assert_equals "$A_ROW" "reading the schema h1 False idle" "h2's list --json shows a remote, on h1, with its status and published state"
 
-# Both daemons running: the same say lands within two seconds.
+# Both daemons running: the same say lands with no tick run by hand. How soon
+# is the machine's business; the wait is a liveness bound (ci-kit §6).
+md_ticks() { cat "$MD/$1"/sminos/projects/*/daemon.json 2>/dev/null || true; }
+H1_TICKS="$(md_ticks h1)"; H2_TICKS="$(md_ticks h2)"
+md_loops_ticked() { [ "$(md_ticks h1)" != "$H1_TICKS" ] && [ "$(md_ticks h2)" != "$H2_TICKS" ]; }
 env "${H1[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h1.out" 2>&1 & RUN1=$!
 env "${H2[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h2.out" 2>&1 & RUN2=$!
-sleep 1.5
+wait_until md_loops_ticked || echo "    (a loop never ticked)"
 T0="$(clock)"
 CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b while both daemons run"
-for _ in $(seq 1 120); do grep -q 'while both daemons run' "$TEST_ROOT/in-md-b.received" 2>/dev/null && break; sleep 0.05; done
+md_b_got() { grep -q "$1" "$TEST_ROOT/in-md-b.received" 2>/dev/null; }
+wait_until md_b_got 'while both daemons run' || true
 LANDED="$(since "$T0")"
 tscript "env \$H1 sminos daemon run --interval 1 & env \$H2 sminos daemon run --interval 1 &" ""
 tscript "env \$H1 CLAUDE_CODE_SESSION_ID=<a> sminos say \"@b while both daemons run\"" "$OUT
 (landed in b's socket after ${LANDED}s)"
-if grep -q 'while both daemons run' "$TEST_ROOT/in-md-b.received" && python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 2.0)' "$LANDED"; then
-  pass "with daemon run --interval 1 under both homes the say lands within two seconds (${LANDED}s)"
-else fail "with daemon run --interval 1 under both homes the say lands within two seconds"; echo "    took ${LANDED}s"; fi
+if md_b_got 'while both daemons run'; then
+  pass "with daemon run --interval 1 under both homes the say lands in b's socket (${LANDED}s)"
+else fail "with daemon run --interval 1 under both homes the say lands in b's socket"; echo "    not there after ${LANDED}s"; fi
 run env "${H1[@]}" "$SMINOS" daemon run --interval 1
 assert_rc 1 "$RC" "a second run in the same home is refused"
 assert_contains "$OUT" "a daemon already runs" "saying one runs"
@@ -4607,15 +4682,19 @@ run env "${H1[@]}" "$SMINOS" daemon status
 assert_contains "$OUT" "daemon: not running here" "once stopped, status says so"
 # The sender's machine does not wait out its interval: a say to a remote member
 # asks the local loop for a tick at once.
-env "${H1[@]}" "$SMINOS" daemon run --interval 60 > "$MD/run-h1-slow.out" 2>&1 & RUN1=$!
-sleep 1.5
+# The loop's interval is far beyond the liveness bound, and the say comes
+# after its first tick: only the nudge can deliver it in time.
+H1_TICKS="$(md_ticks h1)"
+md_h1_ticked() { [ "$(md_ticks h1)" != "$H1_TICKS" ]; }
+env "${H1[@]}" "$SMINOS" daemon run --interval 3600 > "$MD/run-h1-slow.out" 2>&1 & RUN1=$!
+wait_until md_h1_ticked || echo "    (the slow loop never ticked)"
 T0="$(clock)"
 CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b nudged"
-for _ in $(seq 1 120); do grep -q 'nudged' "$TEST_ROOT/in-md-b.received" 2>/dev/null && break; sleep 0.05; done
+wait_until md_b_got 'nudged' || true
 NUDGED="$(since "$T0")"
-if grep -q 'nudged' "$TEST_ROOT/in-md-b.received" && python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 3.0)' "$NUDGED"; then
+if md_b_got 'nudged'; then
   pass "a say to a remote member has the sender's daemon push at once, whatever its interval (${NUDGED}s)"
-else fail "a say to a remote member has the sender's daemon push at once, whatever its interval"; echo "    took ${NUDGED}s"; fi
+else fail "a say to a remote member has the sender's daemon push at once, whatever its interval"; echo "    not there after ${NUDGED}s"; fi
 kill "$RUN1" "$RUN2"; wait "$RUN1" "$RUN2" || true
 assert_contains "$(cat "$MD/run-h2.out")" "delivered 1 to b" "the loop says what it delivered"
 
@@ -4793,7 +4872,10 @@ assert_file_absent "$LOG1/.git/index.lock" "the stale index lock is gone"
 assert_file_absent "$LOG1/.git/refs/remotes/origin/main.lock" "and the stale ref lock a killed fetch would leave"
 assert_contains "$(cat "$LOG1/h2.human.jsonl")" "moves the remote past a stale lock" "the fetch brings the other home's append"
 assert_contains "$(gitq -C "$REMOTE" log -p main)" "said past a stale lock" "and this home's append is committed and pushed"
-assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "index.lock, a git lock 120s old" "daemon.log names each lock removed"
+# The age is the lock's when the tick read it: 120 s, or a little more.
+if grep -qE 'index\.lock, a git lock 1[2-9][0-9]s old' "$MD/h1/sminos/daemon.log"; then
+  pass "daemon.log names each lock removed, with its age"; else
+  fail "daemon.log names each lock removed, with its age"; tail -3 "$MD/h1/sminos/daemon.log"; fi
 unset GIT_SSH_COMMAND GIT_SSH_VARIANT
 cd "$RR"
 
@@ -4858,10 +4940,11 @@ touch "$TEST_ROOT/in-md-y.received.hold"
 rm -f "$TEST_ROOT/in-md-y.received.held"
 env "${SOLO[@]}" "$SMINOS" daemon tick > /dev/null 2>&1 & DOOMED=$!
 disown "$DOOMED"
-for _ in $(seq 1 100); do [ -f "$TEST_ROOT/in-md-y.received.held" ] && break; sleep 0.05; done
+wait_until test -f "$TEST_ROOT/in-md-y.received.held" || true
 assert_file_exists "$TEST_ROOT/in-md-y.received.held" "a tick pushes to y"
 kill -9 "$DOOMED"
-for _ in $(seq 1 100); do kill -0 "$DOOMED" 2>/dev/null || break; sleep 0.05; done
+doomed_gone() { ! kill -0 "$DOOMED" 2>/dev/null; }
+wait_until doomed_gone || true
 rm -f "$TEST_ROOT/in-md-y.received.hold"
 run env "${SOLO[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "delivered 1 to y" "killed before settling it, the restarted daemon pushes it again"
@@ -5121,9 +5204,10 @@ assert_file_absent "$MD/service.calls" "and no install ran a service manager"
 # run notices new code: a change to its own scripts ends the loop with exit 0,
 # for launchd's KeepAlive to restart it on the new code.
 env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" "$CACHE/skills/sminos/scripts/sminos" daemon run --interval 1 > "$MD/run-code.out" 2>&1 & RUNC=$!
-sleep 1.5
-touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"
-for _ in $(seq 1 100); do kill -0 "$RUNC" 2>/dev/null || break; sleep 0.05; done
+# The change has to come after the loop read its code, so it is made again
+# until the loop notices, rather than once after a guessed start-up time.
+run_noticed_code() { touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"; ! kill -0 "$RUNC" 2>/dev/null; }
+wait_until run_noticed_code || true
 if kill -0 "$RUNC" 2>/dev/null; then fail "run exits once its code changes"; kill "$RUNC"; wait "$RUNC" || true; else
   set +e; wait "$RUNC"; RUNC_RC=$?; set -e
   assert_rc 0 "$RUNC_RC" "run exits 0 once its code changes"
@@ -5134,40 +5218,5 @@ assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"
 unset STUB_COUNTER
 
-# The bridge's session endpoint has a file of its own (short socket paths, a
-# stand-in for the mod); its assertions count here as one.
-echo
-if "$SCRIPT_DIR/test-bridge.sh"; then pass "the bridge endpoint (test-bridge.sh)"; else fail "the bridge endpoint (test-bridge.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-control.sh"; then pass "the bridge's control and delivery (test-bridge-control.sh)"; else
-  fail "the bridge's control and delivery (test-bridge-control.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-requests.sh"; then pass "the bridge's requests and their settlement (test-bridge-requests.sh)"; else
-  fail "the bridge's requests and their settlement (test-bridge-requests.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-export.sh"; then pass "the bridge's live export to the host (test-bridge-export.sh)"; else
-  fail "the bridge's live export to the host (test-bridge-export.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
-  fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
-echo
-if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
-if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
-if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
-if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
-echo
-if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
-  fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
-if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
-  pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
-  fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
-if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
-  fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
-
-echo
-if [ "$FAILURES" -eq 0 ]; then
-  echo "all $PASSES assertions passed"
-else
-  echo "$FAILURES of $((PASSES + FAILURES)) assertions FAILED"
-  exit 1
-fi
+[ "$SMINOS_PART" = core ] || run_suites
+summary

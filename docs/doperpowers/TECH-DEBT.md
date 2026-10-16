@@ -16,7 +16,7 @@
 | 1 | T1 | ~~Recovery from transient worker deaths is manual~~ **SHIPPED 2026-07-18** (board-sweep RECOVER pass) | — |
 | 2 | T1 | ~~gh-token capture failure~~ **NA on the one-harness pipeline** (the capture lived in retired codex-spawn) | Reopens only if a codex-CLI worker is ever spawned again |
 | 3 | T2 | Claude engine branch untested by the shakedown (SD-2, SD-4 deferred) | First real claude-engine dispatch |
-| 4 | T2 | No CI/pre-push gate on the shell test suites | Next test-drift incident, or opportunistically |
+| 4 | T2 | ~~No CI/pre-push gate on the shell test suites~~ **SHIPPED 2026-10-15** (ci-kit: PR checks per suite family on GitHub-hosted runners; `ci-gate` from any worktree). The checks are not required, so a red one does not block a merge | — |
 | 5 | T2 | Automated review trigger blocked: self-hosted runner unregistered | Org admin grants (ida-solution#302) |
 | 6 | T3 | `needs-human → in-review` restore is a two-hop | Review-side transient parks becoming frequent |
 | 7 | T3 | Work-alone mandate is prompt-level, not mechanical | An observed post-clause violation |
@@ -81,13 +81,26 @@ human. The engine switch's claude branch, the cookbook non-nested
 history, not live verification. One dispatch of each closes it — natural to
 fold into the first real claude-engine work item that arises.
 
-### 4. No CI or pre-push gate on the test suites
+### 4. ~~No CI or pre-push gate on the test suites~~ — shipped 2026-10-15
 
 The protocol-content test carried two stale assertions for a full
 commit-cycle because suites are run by hand — found only when the shakedown
 happened to run it. A pre-push hook (or minimal CI) running the three
 skill-infrastructure suites (`tests/sminos/`,
 `tests/issue-tracker/`, `tests/qa-loops/`) closes the class.
+
+**Shipped** through SSFSKIM/ci-kit. `.github/ci-kit.yml` names one gate per
+suite family that runs without model calls: shell-lint (the shell files a
+change touched), sminos and sminos-suites, issue-tracker, board-api,
+claude-code (its hermetic tier), mods, triaging-feedback, and
+repo-checks. Every pull request gets the checks, which run in parallel on
+GitHub's free hosted runners in about 8 minutes. `ci-gate`
+from any worktree runs them for a commit without a PR. The checks are not
+required: a red one does not block a merge. Still local only: the
+suites that call a model, board-api/integration (Docker and
+`$ARKHO_DIR`), and anything that tests the installed plugin cache.
+codex-companion is not gated in CI because it is discarded (owner,
+2026-10-16).
 
 ### 5. Self-hosted runner registration (external dependency)
 
@@ -219,38 +232,39 @@ the spec's Decision Log entry "the branch review round"
   pair misroutes.
 - **T3 — a moved seat lists twice** from a directory in no project
   (deferred M2 review finding; addressing de-duplicates by seat id).
-- **T3 — the daemon kill-before-settle assertion is timing-sensitive.**
-  `tests/sminos/run-sminos-tests.sh` ~4842, "at most once more: two frames
-  in all" (smns M4's kill-before-settle case, `e4204b38`), failed once in
-  a full-suite run while a `wrangler dev` shared the CPU (desk DC4 M2,
-  2026-10-15) and passed on every run since; one machine, no remote, no
-  hub. Trigger: a second failure, or a CI gate on the shell suites
-  (item 4); then make its wait condition event-driven rather than timed.
-  The same class under heavy load (load average 150–330, desk DC4/DC7,
-  2026-10-15): `send --wait`'s ack-window assertions (~1061, "no
-  evidence … within the ack window"), the two-machine git-mirror
-  delivery's 2 s bound, and, on the untouched base commit at the same
-  load, "reading chat is the first sminos instruction" and "the
-  watcher's finalize does not overwrite a retire". All pass at normal
-  load. Same trigger, same fix. Measured for the git-mirror bound (DC4,
-  base `c1c97480` against its HEAD, interleaved): equal CPU and git
-  processes per tick on both, and the base itself misses 2 s in 11 of 48
-  runs at load ~130 and 55 of 64 at ~250 — a receiver picks a push up
-  only at its next tick, ~0.3–0.4 s of CPU over 14 git processes. Fix
-  proposed: a generous never-delivered limit (~15 s) plus a bound scaled
-  to one idle tick timed before the loops start (interval + 3 × tick +
-  the say's own time). Also in the class at times (desk DC7, 2026-10-15):
-  `tests/sminos/test-bridge-requests.sh`'s window cases, whose waits are
-  fixed 0.4–0.6 s sleeps around the session record's `waiting` status.
-  (Its "the terminal won, as a field" was a race in DC7's own assertion —
-  under load the watcher settles the request first and the refusal is
-  "already settled" — fixed by reading the winner from either refusal.)
-  A candidate in the class (desk DC7
-  final fix, 2026-10-15): `tests/sminos/test-uplink.sh`'s "the tick loop
-  is still in the fetch all along" failed once at load ~218 (the tick
-  moved 0.4 s inside the hung-fetch window) and passed alone at ~137;
-  the branch's only change in that file is a call after `open()`'s POST,
-  away from the tick loop. Trigger: a failure at normal load.
+- **T3 — the sminos suites' timing assertions: fixed 2026-10-15 (ci-kit
+  M3), what remains.** The class: a test that asserts how fast a loaded
+  machine produced an event (TECH-DEBT's earlier list: the git-mirror
+  delivery's 2 s bound, `send --wait`'s ack window, "at most once more", the
+  watcher's finalize-vs-retire, `test-bridge-requests.sh`'s window cases,
+  `test-uplink.sh`'s "still in the fetch"). Each is now event-driven, in its
+  own commit on the ci-kit adoption branch. The suite polls with `wait_until`
+  (`until_true` in the sub-suites) under one 30 s liveness ceiling
+  (`LIVENESS_SECONDS`). Proven on GitHub-hosted runners under `stress-ng
+  --cpu <2×nproc>`: failing before, 20 of 20 after (PR body). Under that
+  load, three more failures turned out not to be timing at all:
+  - kill-before-settle: the inbox stand-in held a liveness probe's empty
+    connection, so the tick was killed before it pushed;
+  - the watcher case read the seat id before the spawn renamed its
+    record;
+  - the Python suites' inbox stand-ins (`test_policy_requests.py`,
+    `fake_holder.py`) recorded a frame after closing the connection.
+
+  What remains:
+  - `test-bridge-requests.sh` waits 2 s on the clock (`seen_waiting`)
+    before a dialog's record leaves `waiting`. The bridge's watcher reads
+    the record every 0.25 s and exposes no sign of having read it, and the
+    owner declined adding one. If it flakes in CI, the run is a bug for the
+    owner.
+  - "reading chat is the first sminos instruction" never failed in 40
+    loaded runs (2× and 8×) and is unchanged. Trigger: a reproduction.
+  - Speed claims that only 8× load breaks (`stress-ng --cpu 32` on 4
+    vCPU; all pass 20/20 at 2×) are left as their owners wrote them:
+    - `test-uplink.sh`'s "an event from the hub reaches m within a second
+      while the fetch hangs", 17 of 20;
+    - `test_session_plane.py`'s `test_a_presence_within_a_second`, 8 of 20.
+    Under ci-kit §6 these belong in a pinned-core `perf` gate, not a
+    correctness gate. Trigger: a failure in the CI gates, or that gate.
 - **T3 — a compact's nonce is lost when the RPC ledger is unreadable at
   start and repaired later.** `sminos_rpc.py` (desk DC7 final fix):
   compact command ids are restored from the ledger only when it loads at

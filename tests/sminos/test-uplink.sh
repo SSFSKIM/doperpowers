@@ -54,10 +54,15 @@ assert_within() { # seconds bound label — seconds is a number, or "never"
     pass "$3 (${1}s)"; else fail "$3"; echo "    took ${1}s, bound ${2}s"; fi
 }
 run() { set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e; }
-until_true() { # tries command... — poll every 50 ms
-  local tries="$1"; shift
-  for _ in $(seq 1 "$tries"); do "$@" && return 0; sleep 0.05; done
-  return 1
+# Polls every 50 ms until the command holds. The leading count is kept for the
+# call sites, but the ceiling is one liveness bound, 30 s, not a claim about the
+# machine's speed (ci-kit §6): a loaded host is slow, not wrong.
+until_true() { # tries command...
+  local end=$((SECONDS + 30)); shift
+  until "$@"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.05
+  done
 }
 alive() { kill -0 "$1" 2>/dev/null; }
 dead() { ! kill -0 "$1" 2>/dev/null; }
@@ -237,8 +242,11 @@ done
 cat > "$T/fake-ssh" <<'SSH'
 #!/bin/sh
 # ssh, as GIT_SSH_VARIANT=simple calls it (host, command): run the command here, after the gate lifts.
-[ -z "${SSH_ENTERED:-}" ] || : > "$SSH_ENTERED"
-while [ -n "${SSH_GATE:-}" ] && [ -f "$SSH_GATE" ]; do sleep 0.05; done
+# SSH_ENTERED marks a call held at the gate, never one that passed before the gate was set.
+if [ -n "${SSH_GATE:-}" ] && [ -f "$SSH_GATE" ]; then
+  [ -z "${SSH_ENTERED:-}" ] || : > "$SSH_ENTERED"
+  while [ -f "$SSH_GATE" ]; do sleep 0.05; done
+fi
 exec sh -c "$2"
 SSH
 chmod +x "$T/fake-ssh"
@@ -366,8 +374,10 @@ assert_not_contains "$(cat "$DLOG")" "out of order" "no deliverer settled out of
 
 # ---- a tick that fails does not stop the uplink
 echo "the two fail apart:"
-rm -f "$SMINOS_HOME/daemon/derive.lock"
-mkdir "$SMINOS_HOME/daemon/derive.lock"
+# The running loop takes the derivation lock (a file) every tick, so it can come
+# back between the rm and the mkdir: retried until the directory is in place.
+derive_lock_is_a_dir() { rm -f "$SMINOS_HOME/daemon/derive.lock"; mkdir "$SMINOS_HOME/daemon/derive.lock" 2>/dev/null; }
+until_true 200 derive_lock_is_a_dir || true
 until_true 200 grep -q "tick failed" "$DLOG" || true
 assert_contains "$(cat "$DLOG")" "tick failed: IsADirectoryError" "a tick fails (its derivation lock is a directory)"
 TOOK="$(deliver_time 5 "said from the web while ticks fail")"

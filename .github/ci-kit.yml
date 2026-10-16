@@ -1,0 +1,93 @@
+# CI gates for doperpowers, run by SSFSKIM/ci-kit (schema: its docs/adopting.md).
+# One gate per suite family that runs without model calls. Left out: suites that
+# spend model calls (test-subagent-driven-execution*, tests/mods/live-*,
+# review-bench live runs, explicit-skill-requests), board-api/integration (Docker
+# plus $ARKHO_DIR), and anything that exercises the installed plugin cache.
+version: 1
+setup:
+  node: "24"
+  # A system identity, not GIT_* variables: those would override the
+  # `-c user.name=` that test-archive.sh relies on. Tests that set their own
+  # HOME (test-execute-dispatch.sh) still find it.
+  install: |
+    sudo git config --system user.name ci
+    sudo git config --system user.email ci@example.com
+gates:
+  - name: shell-lint
+    # The committed files this change touched, which lint-shell.sh narrows to
+    # shell scripts (by extension or shebang). --all would fail on old warnings
+    # no change introduced.
+    setup: false
+    run: |
+      if [ -z "$CI_KIT_BASE" ]; then echo "a dispatch has no change basis: nothing to lint"; exit 0; fi
+      # Into a file, not a process substitution, so a diff that fails (say, the
+      # base never fetched) fails the gate instead of reading as no change.
+      changed="$(mktemp)"
+      git diff --name-only --diff-filter=d -z "$CI_KIT_BASE" "$CI_KIT_HEAD" > "$changed"
+      files=()
+      while IFS= read -r -d '' f; do files+=("$f"); done < "$changed"
+      if [ "${#files[@]}" -eq 0 ]; then echo "no changed files"; exit 0; fi
+      scripts/lint-shell.sh "${files[@]}"
+    timeout: 10
+
+  # The sminos suite in its two parts, run side by side (about 9 min serial).
+  - name: sminos
+    run: SMINOS_PART=core bash tests/sminos/run-sminos-tests.sh
+    timeout: 20
+    paths: ["skills/sminos/**", "hooks/**", "tests/sminos/**", ".github/**"]
+
+  - name: sminos-suites
+    run: SMINOS_PART=suites bash tests/sminos/run-sminos-tests.sh
+    timeout: 20
+    # test_rpcs.py runs the live checks' call paths against its fake engine.
+    paths: ["skills/sminos/**", "hooks/**", "tests/sminos/**", "tests/mods/live-*-check.py", ".github/**"]
+
+  - name: issue-tracker
+    run: |
+      for f in tests/issue-tracker/test-*.sh; do echo "== $f"; bash "$f"; done
+      python3 tests/issue-tracker/meta-grammar-fuzz.py
+    timeout: 25
+    paths: ["skills/**", "agents/**", "application-agents/**", "tests/issue-tracker/**", ".github/**"]
+
+  - name: board-api
+    run: |
+      for f in tests/claude-code/board-api/test-*.sh; do echo "== $f"; bash "$f"; done
+    timeout: 25
+    paths: ["skills/issue-tracker/**", "skills/sminos/**", "tests/claude-code/board-api/**", ".github/**"]
+
+  - name: claude-code
+    # The hermetic tier of tests/claude-code; the rest of run-skill-tests.sh's
+    # list calls a live model or is the board-api gate.
+    run: |
+      for f in test-worktree-path-policy test-sde-workspace test-kairos-hook test-to-human-stream-hook; do
+        echo "== $f"; bash "tests/claude-code/$f.sh"
+      done
+    timeout: 10
+    paths: ["hooks/**", "skills/**", "scripts/**", "tests/claude-code/*", ".github/**"]
+
+  - name: mods
+    run: |
+      for i in 1 2 3; do
+        timeout 300 npm i -g @anthropic-ai/claude-code bun && break
+        [ "$i" = 3 ] && exit 1; sleep 10
+      done
+      bash tests/mods/run-mods-tests.sh
+    timeout: 15
+    paths: ["hooks/**", "tests/mods/**", ".github/**"]
+
+  - name: triaging-feedback
+    run: cd application-agents/triaging-feedback && npm ci && npm test
+    timeout: 10
+    paths: ["application-agents/triaging-feedback/**", ".github/**"]
+
+  - name: repo-checks
+    # Fast checks of the repo as a whole: the lint script's own test, doc
+    # cross-references, the version bump, the review engine, the Codex manifests.
+    run: |
+      bash tests/shell-lint/test-lint-shell.sh
+      bash tests/skill-links/test-cross-doc-refs.sh
+      bash tests/version-bump/test-bump-version.sh
+      bash tests/review-bench/test-review-engine.sh
+      bash tests/codex/test-marketplace-manifest.sh
+      python3 tests/codex/test-native-agents.py
+    timeout: 10

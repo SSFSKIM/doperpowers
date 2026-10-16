@@ -45,10 +45,15 @@ assert_not_contains() {
 }
 assert_rc() { if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3"; echo "    expected rc $1, got $2"; fi; }
 run() { set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e; }
-until_true() { # tries command... — poll every 50 ms
-  local tries="$1"; shift
-  for _ in $(seq 1 "$tries"); do "$@" && return 0; sleep 0.05; done
-  return 1
+# Polls every 50 ms until the command holds. The ceiling is a liveness bound,
+# generous and uniform, not a claim about the machine's speed (ci-kit §6).
+LIVENESS_SECONDS=30
+until_true() { # command...
+  local end=$((SECONDS + LIVENESS_SECONDS))
+  until "$@"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.05
+  done
 }
 field_of() { # json-text dotted.path
   python3 -c 'import json, sys
@@ -216,6 +221,14 @@ presence() { # status → the session record the engine would write for the chil
 }
 mode() { printf '%s\n' "$1" > "$T/mode"; }
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+past_ms() { [ "$(now_ms)" -gt "$1" ]; }
+# A dialog's close is read as the terminal's answer only once the bridge has
+# read the session record as `waiting` since the request was raised. Its
+# watcher reads the record every 0.25 s and exposes no sign of having done
+# so, so this wait alone is on the clock: eight reads long, where the product
+# gives no event to wait on. (A 0.5 s gap failed 2 of 20 runs on a loaded
+# macOS runner: the watcher never saw `waiting`, and the close went unseen.)
+seen_waiting() { sleep 2; }
 decision_of() { # request → the last decision line the stand-in got for it
   python3 -c 'import json, sys
 hits = [l for l in open(sys.argv[1]) if json.loads(l).get("request") == sys.argv[2]] if __import__("os").path.exists(sys.argv[1]) else []
@@ -230,7 +243,7 @@ mode engine
 python3 "$T/ctl.py" fakemod "$SMINOS" "$SID" "$T/lines" "$T/decisions" "$T/mode" &
 FAKEMOD=$!
 PIDS+=("$FAKEMOD")
-until_true 100 answers "$SOCK" || true
+until_true answers "$SOCK" || true
 presence waiting
 
 echo "the pending set:"
@@ -251,13 +264,13 @@ assert_contains "$OUT" "404 " "a request nobody raised is 404"
 echo "a decision from outside:"
 run ctl postto "$SOCK" /requests/toolu_perm01/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "200 " "a client's decision on a pending request is accepted"
-until_true 100 grep -q toolu_perm01 "$T/decisions" || true
+until_true grep -q toolu_perm01 "$T/decisions" || true
 D="$(decision_of toolu_perm01)"
 assert_equals "$(field_of "$D" decision.behavior)" "allow" "the mod's poll receives it"
 assert_equals "$(field_of "$D" by)" "cli" "with who decided"
 run ctl postto "$SOCK" /requests/toolu_perm01/decision '{"behavior":"deny","by":"cli"}'
 assert_contains "$OUT" "409 " "a second decision on the same request is refused"
-until_true 100 bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm01 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
+until_true bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm01 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
 run ctl get "$SOCK" /requests/toolu_perm01
 assert_contains "$OUT" "410 " "once the mod settled it, the request's route says settled (410)"
 assert_equals "$(field_of "${OUT#410 }" settled.winner)" "other" "naming the winner"
@@ -277,13 +290,13 @@ mode hold
 raise_bash toolu_perm09
 run ctl postto "$SOCK" /requests/toolu_perm09/decision '{"behavior":"allow","by":"m-first"}'
 assert_contains "$OUT" "200 " "the first decision is taken"
-until_true 100 grep -q toolu_perm09 "$T/decisions" || true
+until_true grep -q toolu_perm09 "$T/decisions" || true
 run ctl postto "$SOCK" /requests/toolu_perm09/decision '{"behavior":"deny","by":"cli"}'
 assert_contains "$OUT" "409 " "a second one is refused"
 assert_equals "$(field_of "${OUT#409 }" by)" "m-first" "naming who answered first, as a field"
 assert_equals "$(field_of "${OUT#409 }" winner)" "null" "and no winner: nothing is settled yet"
 mode engine
-until_true 100 bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm09 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
+until_true bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm09 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
 
 echo "decisions refused:"
 raise_bash toolu_perm02
@@ -302,11 +315,12 @@ echo "the terminal answering first:"
 # The stand-in's poll on toolu_perm02 is open; the session record leaving
 # `waiting` is the terminal's answer: the poll ends, and the request settles
 # as the terminal's.
+seen_waiting
 presence busy
-until_true 100 grep -q '"request": "toolu_perm02", "closed": "terminal"' "$T/decisions" || true
+until_true grep -q '"request": "toolu_perm02", "closed": "terminal"' "$T/decisions" || true
 assert_contains "$(cat "$T/decisions")" '"request": "toolu_perm02", "closed": "terminal"' \
   "the session record leaving waiting ends the mod's poll, saying the terminal answered"
-until_true 100 bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm02 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
+until_true bash -c '[ "$(python3 "$1/ctl.py" get "$2" /requests/toolu_perm02 | cut -c1-3)" = 410 ]' _ "$T" "$SOCK" || true
 run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"deny","by":"cli"}'
 assert_contains "$OUT" "409 " "the CLI answering after the terminal did is refused"
 assert_equals "$(field_of "${OUT#409 }" settled.winner)" "terminal" "as settled by the terminal"
@@ -314,7 +328,7 @@ assert_equals "$(field_of "${OUT#409 }" settled.winner)" "terminal" "as settled 
 # record was read, is refused there too: the record is read at the decision.
 presence waiting
 raise_bash toolu_perm03
-sleep 0.4
+seen_waiting
 presence idle
 run ctl postto "$SOCK" /requests/toolu_perm03/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "409 " "a decision for a dialog the terminal has closed is refused"
@@ -328,27 +342,31 @@ assert_equals "$BY" "terminal" "and decided, as a field"
 presence waiting
 
 echo "a background subagent's window:"
-DL=$(( $(now_ms) + 800 ))
-ctl post "$SOCK" '[{"type":"raised","request":"toolu_bg01","tool":"Bash","input":{"command":"make"},"agentId":"a9","deadline":'"$DL"'}]' >/dev/null
+# A window open for the whole case and one already past, rather than one
+# window whose closing the case races: the deadline is an event to wait for.
+OPEN_DL=$(( $(now_ms) + 600000 ))
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_bg01","tool":"Bash","input":{"command":"make"},"agentId":"a9","deadline":'"$OPEN_DL"'}]' >/dev/null
 presence busy   # no dialog is drawn while the window is open: busy says nothing
-sleep 0.4
+sleep 0.4       # a window to see the busy record misread; a slow machine only shortens it
 run ctl get "$SOCK" /requests/toolu_bg01
 assert_contains "$OUT" "200 " "a busy record does not close a window still open"
-assert_equals "$(field_of "${OUT#200 }" deadline)" "$DL" "the request carries its deadline"
-sleep 0.6
-run ctl postto "$SOCK" /requests/toolu_bg01/decision '{"behavior":"allow","by":"cli"}'
+assert_equals "$(field_of "${OUT#200 }" deadline)" "$OPEN_DL" "the request carries its deadline"
+DL=$(( $(now_ms) + 300 ))
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_bg03","tool":"Bash","input":{"command":"make"},"agentId":"a9","deadline":'"$DL"'}]' >/dev/null
+until_true past_ms "$DL" || true
+run ctl postto "$SOCK" /requests/toolu_bg03/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "409 " "after the deadline a decision is refused"
 assert_contains "$OUT" "terminal" "the prompt is the terminal's now"
 assert_equals "$(field_of "${OUT#409 }" terminalOnly)" "true" "terminal only, as a field"
-run ctl get "$SOCK" /requests/toolu_bg01
+run ctl get "$SOCK" /requests/toolu_bg03
 assert_contains "$OUT" "200 " "and the request stays pending until the terminal answers"
-DL=$(( $(now_ms) + 5000 ))
+DL="$OPEN_DL"
 ctl post "$SOCK" '[{"type":"raised","request":"toolu_bg02","tool":"Bash","input":{"command":"make"},"agentId":"a9","deadline":'"$DL"'}]' >/dev/null
 run ctl postto "$SOCK" /requests/toolu_bg02/decision '{"behavior":"deny","by":"m-123"}'
 assert_contains "$OUT" "200 " "inside the window a decision is accepted, whatever the record says"
-until_true 100 grep -q toolu_bg02 "$T/decisions" || true
+until_true grep -q toolu_bg02 "$T/decisions" || true
 assert_equals "$(field_of "$(decision_of toolu_bg02)" by)" "m-123" "and handed to the mod with its decider"
-ctl post "$SOCK" '[{"type":"settled","request":"toolu_bg01","winner":"terminal","outcome":"allow","by":"terminal"}]' >/dev/null
+ctl post "$SOCK" '[{"type":"settled","request":"toolu_bg01","winner":"terminal","outcome":"allow","by":"terminal"},{"type":"settled","request":"toolu_bg03","winner":"terminal","outcome":"allow","by":"terminal"}]' >/dev/null
 presence waiting
 
 echo "questions:"
@@ -412,10 +430,10 @@ assert_rc 4 "$RC" "decide on a session with no bridge exits 4"
 echo "the stream, in the human view:"
 "$SMINOS" watch "$SID" > "$T/h1" 2>&1 &
 PIDS+=("$!")
-until_true 100 grep -q "watching" "$T/h1" || true
+until_true grep -q "watching" "$T/h1" || true
 raise_bash toolu_perm08
 ctl post "$SOCK" '[{"type":"settled","request":"toolu_perm08","winner":"terminal","outcome":"deny","by":"terminal"}]' >/dev/null
-until_true 100 grep -q "settled" "$T/h1" || true
+until_true grep -q "settled" "$T/h1" || true
 HV="$(cat "$T/h1")"
 assert_contains "$HV" "toolu_perm08" "a raised request is printed with its id"
 assert_contains "$HV" "rm -rf /tmp/x" "and what it asks"
