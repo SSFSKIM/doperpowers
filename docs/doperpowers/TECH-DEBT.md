@@ -258,6 +258,13 @@ the spec's Decision Log entry "the branch review round"
     owner.
   - "reading chat is the first sminos instruction" never failed in 40
     loaded runs (2× and 8×) and is unchanged. Trigger: a reproduction.
+  - Speed claims that only 8× load breaks (`stress-ng --cpu 32` on 4
+    vCPU; all pass 20/20 at 2×) are left as their owners wrote them:
+    - `test-uplink.sh`'s "an event from the hub reaches m within a second
+      while the fetch hangs", 17 of 20;
+    - `test_session_plane.py`'s `test_a_presence_within_a_second`, 8 of 20.
+    Under ci-kit §6 these belong in a pinned-core `perf` gate, not a
+    correctness gate. Trigger: a failure in the CI gates, or that gate.
   - On Linux, sminos's `ps -o lstart` fallback reads a process's start up
     to a second early (a boot time truncated to the second), so
     `launched_by` refuses a Resume's own job when the engine's record has
