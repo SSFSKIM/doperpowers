@@ -552,10 +552,11 @@ class HubLog:
 
     def spend_own(self, writer, seq):
         """A refused position of one of this machine's own writers
-        (`allocated_here`), which its appenders allocate here (sminos._append skips spent positions): spent
-        under the writer file's lock, as the allocator reads it, and only while
-        no event of this machine's holds it — a position its own event took
-        first is that event's. Whether it was spent."""
+        (`allocated_here`), which its appenders allocate (sminos._append
+        skips spent positions): spent under the writer file's lock, as the
+        allocator reads it, and only while no event of this machine's holds
+        it — a position its own event took first is that event's. Whether it
+        was spent."""
         path = sminos.writer_path(self.project, writer)
         with sminos.flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False), \
                 sminos.flocked(path + ".lock"):
