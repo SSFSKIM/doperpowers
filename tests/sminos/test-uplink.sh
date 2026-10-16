@@ -369,8 +369,10 @@ assert_not_contains "$(cat "$DLOG")" "out of order" "no deliverer settled out of
 
 # ---- a tick that fails does not stop the uplink
 echo "the two fail apart:"
-rm -f "$SMINOS_HOME/daemon/derive.lock"
-mkdir "$SMINOS_HOME/daemon/derive.lock"
+# The running loop takes the derivation lock (a file) every tick, so it can come
+# back between the rm and the mkdir: retried until the directory is in place.
+derive_lock_is_a_dir() { rm -f "$SMINOS_HOME/daemon/derive.lock"; mkdir "$SMINOS_HOME/daemon/derive.lock" 2>/dev/null; }
+until_true 200 derive_lock_is_a_dir || true
 until_true 200 grep -q "tick failed" "$DLOG" || true
 assert_contains "$(cat "$DLOG")" "tick failed: IsADirectoryError" "a tick fails (its derivation lock is a directory)"
 TOOK="$(deliver_time 5 "said from the web while ticks fail")"
