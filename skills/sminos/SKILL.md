@@ -93,7 +93,7 @@ The CLI's identity is the caller's session. Inside a Claude Code session
 (`CLAUDE_CODE_SESSION_ID` set) every verb speaks as that member, and a
 `say` is recorded under its alias; it reaches another project by tagging
 `@<project>/<alias>`. Run with no session — the human at a terminal, a
-script, launchd — the caller is the operator, `human`, not a seat: its
+script, the daemon's service — the caller is the operator, `human`, not a seat: its
 messages are recorded as from `human`, and it may name any project known
 on this machine.
 
@@ -259,7 +259,7 @@ copy's CLI against the real `~/.claude/sminos` performs it — point
 
     sminos daemon run [--interval 5]   # the loop, one per machine
     sminos daemon tick                 # one iteration over every project known here
-    sminos daemon install              # write the launchd agent
+    sminos daemon install              # write the machine's service: a launchd agent (macOS), a systemd user unit (Linux)
     sminos daemon status               # whether a loop runs; each project's last tick
 
 Each tick, per project: sync the mirror (projects with a remote), join
@@ -268,13 +268,17 @@ owed deliveries (a failed push is retried each tick and given up after 60
 with a line in `$SMINOS_HOME/daemon.log`), push; hourly, `derive --all`. A
 `say` to a remote member nudges a running loop to tick at once.
 
-`daemon install` writes
-`~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist` (mode 0600,
-the gateway route in it in plain text) and prints the `launchctl
-bootstrap` and `bootout` lines without loading it. From an installed
-plugin it points the agent at the marketplace clone, a stable path, not
-the versioned cache, and refuses when no clone is known; `run` exits
-after a tick once its own code changes, so `KeepAlive` restarts it on
+`daemon install` writes, on macOS,
+`~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist` and prints
+the `launchctl bootstrap` and `bootout` lines; on Linux,
+`~/.config/systemd/user/sminos-daemon.service` and prints the
+`systemctl --user` lines that enable and disable it, and `loginctl
+enable-linger`, without which the user's services stop at logout and do
+not start at boot. Either file is mode 0600 (the gateway route in it in
+plain text), and nothing is loaded. From an installed plugin it points
+the service at the marketplace clone, a stable path, not the versioned
+cache, and refuses when no clone is known; `run` exits after a tick once
+its own code changes, so `KeepAlive` or `Restart=always` restarts it on
 the new code. Two machines with the same host name would write the same
 files: the second one's daemon refuses, naming the claim, until one sets
 `DAEMON_HOST` or the stale claim is removed.

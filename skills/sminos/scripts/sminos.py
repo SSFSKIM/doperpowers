@@ -3252,6 +3252,28 @@ def read_proc_start(pid):
     return " ".join(out.split())
 
 
+PROC = "/proc"  # Linux's process table (tests point it at a stand-in)
+
+
+def proc_started_at(pid):
+    """When a live process started, in epoch seconds to the clock tick, read
+    off /proc on Linux; None elsewhere, or when it cannot tell. `ps -o
+    lstart` on Linux adds the start's offset to /proc/stat's boot time,
+    which is truncated to the second, so it can read up to a second before
+    the process began; here the boot instant is now less the uptime, and the
+    reading is within a tick of the true start."""
+    try:
+        with open(os.path.join(PROC, str(int(pid)), "stat")) as f:
+            # The command name, in parentheses, may hold spaces and
+            # parentheses: the fields are counted after the last ")".
+            ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+        with open(os.path.join(PROC, "uptime")) as f:
+            uptime = float(f.read().split()[0])
+        return time.time() - uptime + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
 def proc_start(pid):
     """read_proc_start, cached for the invocation."""
     key = str(pid)

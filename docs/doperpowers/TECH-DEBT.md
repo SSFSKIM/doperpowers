@@ -265,11 +265,6 @@ the spec's Decision Log entry "the branch review round"
     - `test_session_plane.py`'s `test_a_presence_within_a_second`, 8 of 20.
     Under ci-kit §6 these belong in a pinned-core `perf` gate, not a
     correctness gate. Trigger: a failure in the CI gates, or that gate.
-  - On Linux, sminos's `ps -o lstart` fallback reads a process's start up
-    to a second early (a boot time truncated to the second), so
-    `launched_by` refuses a Resume's own job when the engine's record has
-    no `startedAt`. The real engine writes `startedAt`, and the test fake
-    now does too. Tracked by the owner as Arkho #84.
 - **T3 — a compact's nonce is lost when the RPC ledger is unreadable at
   start and repaired later.** `sminos_rpc.py` (desk DC7 final fix):
   compact command ids are restored from the ledger only when it loads at
