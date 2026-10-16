@@ -24,8 +24,10 @@ Alongside it, one guardrail the same hosts need: a mod that keeps secrets out of
 reads and what the transcript keeps. The person's `/secret` mod (now in the `cua` plugin) refuses
 any command that touches its store — too strict for daily use — yet knows only the values stored
 through it, so tokens in other files (a proxy config, a shell rc) reached model context twice in
-the session that produced this design. It moves into the new `devcloud` plugin and changes from
-deny to redact.
+the session that produced this design. The guard moves into the new `devcloud` plugin and
+changes from deny to redact; `/secret` itself — the command, its masked entry pane, the store —
+stays in `cua`, which needs it to type secrets into GUIs and browsers, and `cua`'s own guard yields
+to devcloud's wherever both are installed.
 The transcript half matters more than it did: the session store now copies every transcript to a
 central database and an archive bucket, so a value that reaches a transcript is copied twice more.
 
@@ -41,7 +43,7 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-16) Review round 2 folded; home files and the login shell added from the person's question.
 - [x] (2026-10-16) Review round 3 (the round-2 diff) folded; review converged.
 - [ ] The person's read of the reviewed spec.
-- [ ] M1 — The devcloud plugin and its secrets mod; cua's copy retired by a staged cutover.
+- [ ] M1 — The devcloud plugin and its secrets guard; cua's guard yields to it.
 - [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
 - [ ] M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository.
 - [ ] M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its commands, an authoring skill.
@@ -50,7 +52,8 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 ## Terms
 
 - **devcloud plugin**: `devcloud/` in the doperpowers repository, published as a second plugin in
-  the same marketplace: the secrets mod, the `devenv` skill, and the host image and boot program.
+  the same marketplace: the secrets guard mod, the `devenv` skill, and the host image and boot
+  program.
   doperpowers stays the workflow plugin; a person opts into devcloud by installing it.
 - **Host**: a Linux userland devcloud has booted — VM, microVM, or container.
 - **Substrate**: what the host runs on (VM, microVM, container). Only three things differ by
@@ -81,7 +84,8 @@ Each check names who runs it and what they observe. `<img>` is the image M2 buil
 descriptor and seed are prepared in M5's preflight. Every secret used by a check of the mod is a
 made-up value written for the test, never a real one.
 
-1. **Redaction, not refusal (Mac).** In a session with the mod: `cat ~/.config/claude-secrets/K`
+1. **Redaction, not refusal (Mac).** In a session with both `cua` and devcloud installed, `/secret
+   K` opens `cua`'s pane once and stores the value; then `cat ~/.config/claude-secrets/K`
    for a stored key runs (no refusal) and the model sees `[secret:K]`. Printing a scratch file that
    holds a made-up `ghp_…` token shows a `[redacted:github-pat#<ns>.1]` handle, in a subagent as in
    the main loop. With the session's model traffic recorded through a local proxy, no recorded
@@ -267,12 +271,17 @@ Claude Code's own daemon, services by systemd or `devcloud-services` — so a va
 shell rc reaches some of them and not others. Each setting goes where every reader sees it:
 
 - **Claude Code settings** go in `/etc/claude-code/managed-settings.json`, which every session
-  reads however it started, copied from the profile: `ANTHROPIC_BASE_URL` (the gateway) and its
-  non-secret marker token; the gateway's feature switches (`ENABLE_TOOL_SEARCH`,
+  reads however it started, copied from the profile. It holds only the keys a host must change;
+  everything else comes from the synced `settings.json`, because settings scopes merge `env` key by
+  key (verified 2026-10-16 with a higher-precedence `--settings` scope; M2 verifies the managed
+  scope on a host). The keys: `ANTHROPIC_BASE_URL`, which the synced file sets to the Mac's own
+  loopback relay, pointed at the gateway across the tailnet, and its non-secret marker token; the
+  gateway's feature switches (`ENABLE_TOOL_SEARCH`,
   `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`, `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`),
-  pinned because the gateway's desktop app removes them from the synced `settings.json` when it
-  quits; and empty values for Mac-only settings the synced file carries (a browser-extension
-  token, `CLAUDE_CODE_PLUGIN_DIRS` pointing at an untracked directory).
+  pinned because the gateway's desktop app writes them into the synced `settings.json` when it
+  turns routing on and removes them when it turns routing off, so a commit taken while routing was
+  off carries none; and empty values for Mac-only settings the synced file carries (a
+  browser-extension token, `CLAUDE_CODE_PLUGIN_DIRS` pointing at an untracked directory).
 - **Credentials** go in files every process reads whatever its environment: gh's `hosts.yml`,
   hcloud's `cli.toml`, `~/.pgpass`, MCP configs (from `secrets.toml`), and gcloud's credential store
   and application default credentials (from the seed, boot step 8 — writing a key file is not
@@ -335,18 +344,26 @@ store instead, and whoever launched the sandbox (a seat on its host, or the pers
 outcome. Giving sandboxes their own short-lived identities is a hub change, deferred (Out of
 scope).
 
-### 9. The secrets guardrail mod
+### 9. The secrets guard mod
 
-`devcloud/hooks/mods/secrets.tsx` in the devcloud plugin replaces `hooks/mods/secrets.tsx` in the
-`cua` plugin (repository `~/Developer/GitHub/cua`). It keeps everything a person relies on today: the `/secret
-[-g] KEY` command and its masked entry pane, the store layout and tiers
-(`~/.config/claude-secrets/KEY` global, `~/.config/claude-secrets/projects/<slug>/KEY` per project,
-mode 0600 files in a 0700 directory, the slug rule and the reserved `CUA_DEVICE_*` keys in the
-global tier, as `cua`'s `src/secrets/store.mjs` documents), and the system-prompt section listing
-the stored keys and how to use one (`"$(cat ~/.config/claude-secrets/KEY)"`). `cua` keeps its own
-store library for its device credentials; only the mod moves.
+The work divides between two plugins by what each is for. `cua` (repository
+`~/Developer/GitHub/cua`) keeps `/secret`: the `/secret [-g] KEY` command and its masked entry
+pane, the store and its library (`~/.config/claude-secrets/KEY` global,
+`~/.config/claude-secrets/projects/<slug>/KEY` per project, mode 0600 files in a 0700 directory,
+the slug rule and the reserved `CUA_DEVICE_*` keys in the global tier, as `cua`'s
+`src/secrets/store.mjs` documents), the system-prompt section listing the stored keys and how to
+use one (`"$(cat ~/.config/claude-secrets/KEY)"`), and its GUI and browser typing of
+`{{secret:KEY}}`. Installed alone, `cua` also keeps its own guard, unchanged.
 
-Four changes:
+devcloud's `devcloud/hooks/mods/secrets.tsx` is the guard: it reads the same store (Interfaces
+I1), registers no `/secret` command, and adds one system-prompt line saying what its handles mean
+and that they restore on write. When it is loaded it marks the process (a process-wide flag set
+at module load, which `cua`'s mod checks at hook time, not at load, so load order does not
+matter), and `cua`'s guard — its refusals and its scrubbing — stands down, so one guard decides
+every handle: two scrubbers in sequence would lose the encoding a handle names, and `cua`'s
+refusals would contradict redaction.
+
+The guard differs from `cua`'s in four ways:
 
 1. **Redact, never refuse.** No tool call is denied for touching the store. Values are replaced
    wherever the mod's hooks reach before the text leaves the process: the tool's result as the
@@ -455,23 +472,25 @@ repository at `~/.claude` (commit to its current branch; its own sync job pushes
 exposed keys, generating a Tailscale auth key, enrolling a host — are requested through the
 dispatching session at the points the milestones name, and the milestone waits for them there.
 
-### M1 — The devcloud plugin and its secrets mod; cua's copy retired
+### M1 — The devcloud plugin and its secrets guard; cua's guard yields to it
 
-At its end, the devcloud plugin exists and every session on a Mac gets Design §9's behavior from
-it, and the `cua` plugin no longer registers `/secret`. Touches, in doperpowers: the plugin
+At its end, the devcloud plugin exists, every session on a Mac with it gets Design §9's behavior,
+and `cua` keeps `/secret` while its guard stands down beside devcloud's. Touches, in doperpowers:
+the plugin
 skeleton — `devcloud/.claude-plugin/plugin.json`, its entry in `.claude-plugin/marketplace.json`,
 `devcloud/hooks/hooks.json` naming `./mods/register.tsx` under `modules`, `devcloud/README.md`
 (what the plugin is; M2 adds the host contract) — and `devcloud/hooks/mods/{register.tsx,
 secrets.tsx,tsconfig.json}`, `devcloud/tests/mods/secrets.test.ts` with its runner
 (`devcloud/tests/mods/run.sh`, staging like `tests/mods/run-mods-tests.sh` if `claude plugin test`
 cannot take the folder directly), `scripts/bump-version.sh` and `.version-bump.json` (a plugin to
-bump), and `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence now pointing there). In
+bump), and `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence: the command stays in
+`cua`, the guard is devcloud's). In
 the config repository: `sync/plugins.manifest.json` gains `devcloud@doperpowers`, and
 `tools/session-mirror` ships a `tool-results/` file only once it has been unchanged for a settle
-interval (Design §9.1), with a test. In `cua`:
-`hooks/mods/secrets.tsx` and its registration removed, its tests that covered the mod removed or
-moved, its README, plugin description, and CLAUDE.md updated, version bumped. Interfaces: I1
-(store), I2 (handles).
+interval (Design §9.1), with a test. In `cua`: `hooks/mods/secrets.tsx` gains the stand-down (its
+`tool.call` guard and its row scrubbing pass through when devcloud's flag is set; `/secret`, the
+pane, and the prompt section are untouched), with tests for both states; its README, plugin
+description, and CLAUDE.md say so; version bumped. Interfaces: I1 (store), I2 (handles).
 
 Order of work. First the boundary probe (Design §9.1): a recording proxy on localhost forwarding
 to the person's gateway, a session with the new mod pointed at it, and synthetic values pushed
@@ -479,20 +498,20 @@ through a tool result, an oversized command output (persisted to `tool-results/`
 command's output, a subagent's result, a file attachment (a file the model read, changed on disk),
 a manual compaction, and the system-prompt section; record which reach the recorded requests, the
 transcript, or the session store's copy (`session-mirror pull` of the probe session), add interception where a hook reaches the path, and write the rest
-into §9's not-covered list with the date. Then the mod: port the store, pane, tiers, and prompt
-section from `cua`'s mod rather than rewriting them — that code carries hard-won fixes (masking
-under mosh, the slug rule, case-insensitive `projects`) — and remove its `guardReason` deny path.
-The detector is a pure function (`detect(text) → spans`) so tests pin it without a session.
+into §9's not-covered list with the date. Then the guard: port the store reading (tiers, the slug
+rule, case-insensitive `projects`) and the scrubbing of known values and their encodings from
+`cua`'s mod rather than rewriting them — that code carries hard-won fixes — leaving its
+`guardReason` deny path, `/secret`, and the pane behind. The detector is a pure function
+(`detect(text) → spans`) so tests pin it without a session.
 
-Cutover, staged so no window lacks a guard: (1) release the devcloud plugin; install it on both
-Macs (the plugins manifest entry, then `sync/apply.py` or `claude plugin install`); in a fresh session verify the mod loaded (its prompt section present, a
-synthetic token redacted) while `cua`'s mod is still loaded beside it — in that overlap the old
-mod still refuses store commands, which is today's behavior, and the test records whether two
-`/secret` registrations coexist cleanly; (2) only then release `cua` without the mod, update it on
-both Macs, and run acceptance 1–2 in a fresh session. Never the reverse order: a `cua` update
-landing first would leave sessions with no guard at all.
+Release: no window lacks a guard in either order, because `cua` stands down only when devcloud's
+guard is present. Release `cua` with the stand-down and devcloud together; install devcloud on
+both Macs (the plugins manifest entry, then `sync/apply.py` or `claude plugin install`) and update
+`cua`; until both are updated a session runs `cua`'s guard as today (strict) or both guards (still
+strict: `cua`'s refusals remain). Then run acceptance 1–2 in a fresh session.
 
-Does not touch: `cua`'s `src/secrets/` store library or its device-credential flows. Proves
+Does not touch: `cua`'s `/secret` command and pane, its `src/secrets/` store library, or its
+device-credential flows. Proves
 acceptance 1–2; tests also pin: no redaction of a 40-hex commit hash or a sha256 checksum; a
 known value split across a tool result and the next row is still caught in each row it appears
 in whole; the transcript file written by the engine carries handles, not values; a resumed
@@ -781,10 +800,18 @@ boot step 8 and every reconcile; secret-free).
   not pass through the hooks the first draft relied on. Rejected: promising "neither the API nor
   the transcript ever sees a value".
   Date/Author: 2026-10-15, review round 1.
-- Decision: The cutover from `cua`'s mod is staged — the new mod released, installed, and verified
-  before `cua`'s removal ships. Rationale: the reverse order leaves a window with no guard; the
-  old mod's deny path makes the overlap strict, not unsafe.
+- Decision (superseded 2026-10-16, below): The cutover from `cua`'s mod is staged — the new mod
+  released, installed, and verified before `cua`'s removal ships. Rationale: the reverse order
+  leaves a window with no guard; the old mod's deny path makes the overlap strict, not unsafe.
   Date/Author: 2026-10-15, review round 1.
+- Decision: `/secret` stays in `cua`; devcloud carries only the guard, and `cua`'s guard stands
+  down when devcloud's is loaded. Rationale: the person uses `/secret` with `cua`'s GUI and browser
+  typing, so `cua` must keep it on its own; one guard must decide each handle. Rejected: moving
+  `/secret` into devcloud (breaks `cua` alone); both plugins registering `/secret` (two commands,
+  two panes); both guards running (refusals contradict redaction, and a second scrubber loses the
+  encoding a handle names). Supersedes the staged-cutover entry: nothing is removed from `cua`, so
+  either release order is safe.
+  Date/Author: 2026-10-16, the person's correction.
 - Decision: M2 proves the boot core with no projects; acceptance 3 in full runs in M5. Boot steps
   run strictly in order. Rationale: the project runner is M4's; `apply.py` creates the link step
   12 calls.
