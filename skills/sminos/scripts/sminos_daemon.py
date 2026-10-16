@@ -1023,7 +1023,8 @@ def install_systemd():
     """The systemd user unit, under the launchd agent's contract: the stable
     CLI, the same environment, a 0600 file, the output in daemon.out."""
     if "\n" in sminos.root() or "\r" in sminos.root():
-        sminos.die("the registry path holds a line break, which the unit's output line cannot carry: %r" % sminos.root(), 1)
+        sminos.die("the registry path holds a line break, which the unit's output line cannot carry: %r"
+                   % sminos.root(), 1)
     with open(UNIT_TEMPLATE) as f:
         text = f.read()
     log = os.path.abspath(os.path.join(sminos.root(), "daemon.out"))
