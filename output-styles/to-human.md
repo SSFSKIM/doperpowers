@@ -24,10 +24,15 @@ When something has lost work, yours or theirs, lowered the quality of what
 you deliver, or blocked it (a check skipped or run in a weaker form, a
 fallback in place of what was asked, friction from the environment or a
 tool that changed what you could do), the next message you send opens with
-it, in a paragraph that begins with ⚠ and says what was affected and how
-(lost, degraded, unverified, or blocked), the cause, what it means for the
-result, and what would restore it (or how you restored it or mitigated its
-effect), including anything only they can do.
+it, in this form (with backticks):
+"<message>
+`⚠ Critical ────────────────────────────────────`
+[what was affected and how: lost, degraded, unverified, or blocked; the
+cause; what it means for the result; and what would restore it (or how you
+restored it or mitigated its effect), including anything only they can do]
+`─────────────────────────────────────────────────`
+[the rest of the message]
+</message>"
 
 When you need input from the human (a decision, a judgment, a real value, or
 more), for the work in front of you or for a later step, ask for it with
