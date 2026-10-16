@@ -247,7 +247,12 @@ evidence for, because each has a failure on record:
   Against that route the design has deterrents, not a wall: the response is
   structured diffs with bounded excerpts, requests are bounded per round, the
   reviewer's rubric names reads of linked chunks, function-source access and
-  encoders as findings, and the fingerprint check flags verbatim text. The
+  encoders as findings, and the fingerprint check flags verbatim text. They
+  cover every tree that ran, not only the one submitted: a leak can live in
+  a head a verify request ran and be deleted before submission, so a
+  submission must descend from every head the unit's verify requests ran
+  since its last brief, and the reviewer reads the delta commit by commit.
+  The
   threat the survey records is drift toward the reference — calling it,
   stubbing, skipping — not a covert channel, and the tier is built for the
   recorded threat; the human partner accepts this residual at the gate or
@@ -322,7 +327,8 @@ and what the verifier checks mechanically where it can:
 - in a shared-realm shape, no read of a linked reference module's file or
   function source, no encoder feeding an observed channel, nothing in the
   candidate that exists to carry data out rather than to implement the spec
-  (reviewer; §2.2's residual);
+  (reviewer, commit by commit over a delta that descends from every verified
+  head; §2.2's residual);
 - no test skipped, deleted or weakened; a coverage drop is a deletion alarm
   (verifier where tooling exists, reviewer always);
 - no hard-coded expected values, no stubs or `unimplemented` paths standing
@@ -383,7 +389,8 @@ not pay orientation three times) — fresh only on a re-brief:
    bounds requests per round. Returns `DONE` with a report, or
    `MORE_WORK`, `BLOCKED`, `INFEASIBLE`.
 3. **Reviewer** (tier C; `doperpowers:forge-reviewer`, sol/xhigh, read-only:
-   the diff, the staged spec, the rubric, the implementer's report) and
+   the diff and its commits one by one, the staged spec, the rubric, the
+   implementer's report) and
    **verifier** (mechanical, a runner step: a fresh checkout at the unit's
    head with the reference reachable, the unit's slices and a fresh sample of
    the full oracle run, the path checks applied, a machine-written report)
@@ -841,7 +848,9 @@ Observable at the end, each with the milestone that proves it:
    redacted response; a diff carrying a run of reference text is flagged; a
    candidate that emits an encoded fragment of a linked chunk is bounded by
    the response cap and flagged by the calibrated reviewer (the residual
-   §2.2 states, measured, not closed);
+   §2.2 states, measured, not closed), and one that removes the leak from
+   history before submitting is refused because its head does not descend
+   from a head it verified;
    an oracle author whose slices pass under the stub is returned `MORE_WORK`
    (M5). A live check with a real implementer session under its settings
    shows a `Read` of the reference and a shell `cat` of it both refused, a
@@ -1067,7 +1076,11 @@ from the last green tip, writes a `reopened`
 event naming the landing that caused it and the ledger items that broke,
 moves that unit to `reopened`, and holds dispatch while the tip is red (a
 test has unit B's landing break a slice unit A owns, and B reopens; another
-interleaves two units' publications and landings and sees both land); the
+interleaves two units' publications and landings and sees both land); a submission whose head does not descend from every
+head the unit's `verify/<n>.request` files record since its last brief is
+refused with the missing head named (a test leaks in a verified head,
+rewrites history to drop it, and is refused; another removes it in a later
+commit and the leak stays in the commit-by-commit view the reviewer gets); the
 fast-forward writes an `intent` line with the old and new tips before the
 ref moves and a `done` line after, and `--resume` reconciles the ref with
 the last intent as §3 says, with kills on both sides of the ref move in the
@@ -1383,6 +1396,50 @@ Defined once here; milestones point at them.
   depend only on M1's shape; execution can stop after M3 without leaving
   half a runner.
   Date/Author: 2026-10-15
+- Decision: The leak deterrents read every tree a verify request ran: a
+  submission must descend from every head the unit's verify requests ran
+  since its last brief, and the reviewer reads the delta commit by commit.
+  Rationale: found while explaining the shared-realm residual to the human
+  partner (2026-10-16): the reviewer saw only the aggregate diff, so leak
+  code could run in an intermediate verified head and be rewritten out of
+  history, or deleted in a later commit, before the reviewer looked. The
+  request files already record each verified head, so the check is one
+  ancestry test per submission.
+  Rejected: scanning every verified tree with a separate reviewer pass —
+  the same coverage at a reviewer's cost per request, where ancestry plus
+  the commit-by-commit read costs nothing extra.
+  Date/Author: 2026-10-16
+- Decision: The decomposition above the unit is data in the manifest, not
+  a layer of sessions. The ledger (what must be proven, from the spec's
+  sections) and the unit graph (what changes, from the reference's
+  structure) are built once in Phase 1; the per-unit authoring that a
+  composite process gives to child documents and their reviews is the
+  oracle author's, run in parallel by the runner and checked by the stub
+  check; the root is the planner that recurses on demand — a unit too large
+  for one implementer (the scenario's core chunk) or stuck past
+  `max_rounds` is split inside the same graph. An orchestrator session over
+  architect seats belongs to a program of several designs, where a forge is
+  one seat's execution engine, not inside a forge.
+  Rationale: the human partner asked (2026-10-16) whether the MAWS process —
+  one architect's composite spec, adversarially reviewed children with
+  their own execution documents, plan-executor waves — holds at 2.1.300's
+  scale, or needs an orchestration layer over parallel architects. In
+  compile-class work the specification is an input (SPEC/, 404,213 lines),
+  so child documents would restate it; document reviews do not compose (the
+  2026-10-09 ruling: 79 defects after every child reviewed clean) while the
+  tip check and `full` do; and the cases at this scale ran flat under one
+  up-front design — Bun's Zig→Rust port (one PORTING.md and LIFETIMES.tsv,
+  then 1,448 files through one cycle) and Prime Intellect's (a root and a
+  per-task planner, 1,981 agents). Recursive planners appear in the case
+  without a reference (Cursor's browser), whose output is disputed.
+  Rejected: architect seats per chapter under an orchestrator session —
+  57 sessions re-specifying a replication-grade spec in prose, checked by
+  document review instead of by the oracle. Deferred: a root of roots,
+  should one root's escalation load prove too much — Reboot's manager grew
+  unreliable as its objective grew; no run measures it yet, and the core
+  chunk (imported by 594 chunks) means the graph does not partition into
+  independent regions.
+  Date/Author: 2026-10-16 (the human partner's question; the design session's answer)
 
 ## Outcomes & Retrospective
 
