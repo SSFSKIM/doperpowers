@@ -249,13 +249,7 @@ class Walk(LR.Requests):
             return
         # The `[ answer ]` button: a mouse press at its cell, as the terminal would send it.
         t1 = time.time()
-        pressed = self.press("[ answer ]")
-        dialog = False
-        try:
-            # The ask's row keeps its `[ answer ]` while the dialog it opened is up.
-            dialog = wait_for("the question's dialog", 10, lambda: "Enter to select" in self.pane() and "Pear" in self.pane())
-        except TimeoutError:
-            pass
+        dialog, _, why = self.press_open("[ answer ]", lambda: "Enter to select" in self.pane() and "Pear" in self.pane())
         s, presses = None, 0
         while dialog and s is None and presses < 4:
             self.keys("Enter")
@@ -273,9 +267,9 @@ class Walk(LR.Requests):
         answered = [e for e in self.log_events(session) if e.get("kind") == "answered" and e.get("src") == rid]
         questions = [e for e in self.log_events(session) if e.get("kind") == "question" and e.get("src") == rid]
         self.check("terminal: an async question's [ answer ] pressed in the terminal answers it, settled as the terminal's",
-                   pressed and dialog and s is not None and self.outcome(s) == "terminal/answered/terminal" and woke,
-                   "press at %s; dialog %s; settled %s after %d Enter(s); delivered %s"
-                   % (pressed, dialog, s and self.outcome(s), presses, bool(woke)))
+                   dialog and s is not None and self.outcome(s) == "terminal/answered/terminal" and woke,
+                   "%s; settled %s after %d Enter(s); delivered %s"
+                   % (why, s and self.outcome(s), presses, bool(woke)))
         self.check("terminal: the question is in the log once, and its answer joins it at the delivering turn's Stop",
                    len(questions) == 1 and len(answered) == 1, "%d question, %d answered" % (len(questions), len(answered)))
         self.idle(self.endpoint())
@@ -312,6 +306,49 @@ class Walk(LR.Requests):
                 self.keys("-l", "\x1b[<0;%d;%dm" % (col, row))
                 return "%d,%d" % (col, row)
         return None
+
+    def settle_pane(self, seconds=5):
+        """The pane once two captures half a second apart agree (the screen
+        redraws, so a cell found on a moving screen may be gone by the press)."""
+        deadline, last = time.time() + seconds, None
+        while time.time() < deadline:
+            now = self.pane()
+            if now == last:
+                break
+            last = now
+            time.sleep(0.5)
+        return last
+
+    def press_open(self, label, opened, attempts=3, wait=10, appear=15):
+        """Press `label` until `opened()` holds: each attempt finds the label
+        again on the settled screen, presses it, and waits `wait` s for the
+        dialog; no press goes out once it is open. Bounded (`attempts` presses
+        over about attempts * (wait + settle) s) so a button that never works
+        still fails. Returns (opened, presses, what happened)."""
+        presses, cells = 0, []
+        for _ in range(attempts):
+            try:
+                wait_for("%s on screen" % label, appear, lambda: opened() or (self.settle_pane() and label in self.pane()))
+            except TimeoutError:
+                break
+            if opened():
+                # A dialog already up before any press was not opened by the button.
+                if presses == 0:
+                    return False, 0, "the dialog was already open before %s was pressed" % label
+                return True, presses, "dialog open after %d press(es) at %s" % (presses, cells)
+            cell = self.press(label)
+            if cell is None:
+                continue
+            presses += 1
+            cells.append(cell)
+            try:
+                wait_for("the dialog", wait, opened)
+                return True, presses, "dialog open after %d press(es) at %s" % (presses, cells)
+            except TimeoutError:
+                pass
+        if presses == 0:
+            return False, 0, "%s never appeared on screen (waited %ds)" % (label, appear)
+        return False, presses, "%s pressed %d time(s) at %s and no dialog opened" % (label, presses, cells)
 
     def subagent_interrupt_check(self, stream):
         """A foreground subagent's Bash under interrupt: the abort ends the

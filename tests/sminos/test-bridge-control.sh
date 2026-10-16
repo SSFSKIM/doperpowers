@@ -289,6 +289,14 @@ chmod 700 "$SMINOS_HOME/bridge"
 assert_not_contains "$(cat "$KEPT")" "mac/human" "a delivery key whose write failed is not in the file"
 ctl post "$SOCK" '[{"type":"delivered","key":{"writer":"mac/human","seq":1},"outcome":"duplicate"}]' >/dev/null
 assert_contains "$(cat "$KEPT")" '"mac/human": 1' "the next event, a duplicate moving no key, writes it"
+# $WATCHK fills asynchronously: the baseline below is taken only once the
+# recovery just above has reached it. A recovery follows the failure it
+# recovers from, so both are in then; the stream holds two recoveries by now
+# (the model choice's and this key's).
+kept_oks() { grep -c '"type": "kept", "ok": true' "$WATCHK" || true; }
+kept_oks_reach() { [ "$(kept_oks)" -ge "$1" ]; }
+until_true 100 kept_oks_reach 2 || true
+assert_equals "$(kept_oks)" "2" "the stream has said the earlier recoveries before the failures are counted"
 chmod 500 "$SMINOS_HOME/bridge"
 FAILS="$(grep -c '"type": "kept", "ok": false' "$WATCHK" || true)"
 ctl post "$SOCK" '[{"type":"delivered","key":{"writer":"mac/human","seq":2},"outcome":"submitted"}]' >/dev/null
@@ -299,8 +307,8 @@ assert_equals "$(( $(grep -c '"type": "kept", "ok": false' "$WATCHK") - FAILS ))
   "a failure that persists over several events is said once"
 ctl post "$SOCK" '[{"type":"heartbeat","state":{}}]' >/dev/null
 assert_contains "$(cat "$KEPT")" '"mac/human": 2' "and a heartbeat writes it once the write can be made"
-until_true 100 grep -q '"type": "kept", "ok": true' "$WATCHK" || true
-assert_contains "$(cat "$WATCHK")" '"type": "kept", "ok": true' "the recovery is said on the stream too"
+until_true 100 kept_oks_reach 3 || true
+assert_equals "$(kept_oks)" "3" "the recovery is said on the stream too, once"
 ctl post "$SOCK" '[{"type":"model","model":"opus","effort":null},
  {"type":"resync","turns":[],"streaming":[],"agents":[],"override":{"model":"opus","effort":null},"delivered":{"testhost/human":3,"other/x":1}}]' >/dev/null
 
