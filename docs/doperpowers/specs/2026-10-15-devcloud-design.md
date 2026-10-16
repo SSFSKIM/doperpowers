@@ -38,6 +38,7 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 
 - [x] (2026-10-15) Design approved in conversation; spec written.
 - [x] (2026-10-15) Review round 1 (design review and buildability review) folded.
+- [x] (2026-10-16) Review round 2 folded; home files and the login shell added from the person's question.
 - [ ] The person's read of the reviewed spec.
 - [ ] M1 — The devcloud plugin and its secrets mod; cua's copy retired by a staged cutover.
 - [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
@@ -84,8 +85,9 @@ made-up value written for the test, never a real one.
    holds a made-up `ghp_…` token shows a `[redacted:github-pat#<ns>.1]` handle, in a subagent as in
    the main loop. With the session's model traffic recorded through a local proxy, no recorded
    request holds a raw value; the session's transcript file holds none in any surface Design §9
-   lists as covered (`grep -c <value> <transcript>` is 0), and every surface it lists as not
-   covered was observed in M1's boundary probe.
+   lists as covered (`grep -c <value> <transcript>` is 0), nor does the session store's copy of the
+   session (its rows and its tool-result files, an oversized command output among them); every
+   surface §9 lists as not covered was observed in M1's boundary probe.
 2. **Handles restore exact bytes on write.** The model edits a file that holds a token it saw as a
    handle (an Edit whose `old_string` and `new_string` carry the handle); the file on disk still
    holds the real token afterwards, byte for byte. The same holds for a file holding a stored
@@ -93,12 +95,14 @@ made-up value written for the test, never a real one.
    printed, gets its own handle and restores to the global bytes). After the session is resumed in
    a new process and a different token is detected, a handle from before the resume is not restored
    to it: a write carrying the old handle writes the handle text and the tool result names it as
-   not restored. `ls`, `mv`, `test -f`, and writing a new file in `~/.config/claude-secrets/` all run.
+   not restored. When a stored key's value changes mid-session, the old value, printed again, reads
+   `[superseded:K]` and is never restored. `ls`, `mv`, `test -f`, and writing a new file in `~/.config/claude-secrets/` all run.
 3. **One boot, a working host (container).** `docker run --hostname <name>` of `<img>` with a boot
    descriptor (`DEVCLOUD_KIND=container`, `DEVCLOUD_ROLE=sandbox`, one project) and the seed
    mounted: within 5 minutes `devcloud status` reports every step `ok`; inside it,
    `claude -p "reply ok"` prints `ok` through the gateway; `gh auth status` and `gcloud auth list`
    show the expected identities and `gcloud secrets list` and an ADC consumer both succeed;
+   `git config user.email` matches the Macs' and the user's login shell is zsh;
    `session-mirror ls` on a Mac lists the run's session under the container's host name; the
    project's `devenv/setup.sh` ran (its marker or output present).
 4. **Same on a VM, with systemd.** On a throwaway Ubuntu 24.04 VM given the same image recipe and
@@ -161,8 +165,8 @@ announced), which per-sandbox joins would exhaust in days.
 
 `devcloud/image/setup.sh` (run as root on Ubuntu 24.04) installs everything that is the same on
 every host: git, build tools, Python 3.12 with venv, uv, Node LTS, jq, tmux, mosh, gh, the Google
-Cloud CLI, hcloud, Tailscale, Docker client, and Claude Code (native installer, as the user). It
-creates the user from three required build inputs — `DEVCLOUD_USER`, `DEVCLOUD_UID`,
+Cloud CLI, hcloud, Tailscale, Docker client, zsh, and Claude Code (native installer, as the user).
+It creates the user, with zsh as the login shell as on the Macs, from three required build inputs — `DEVCLOUD_USER`, `DEVCLOUD_UID`,
 `DEVCLOUD_HOME` — which the person sets to their Macs' account (on macOS a home is
 `/Users/<user>`); the values live in the profile's `build.env` (Interfaces I8), never in
 doperpowers. The home path is not cosmetic: transcripts record working directories, the session
@@ -188,6 +192,10 @@ in the person's private config repository (cloned to `~/.claude` on every host),
 - `profile.env` — `KEY=value` lines for `/etc/devcloud/env`: time zone, locale, extra `PATH`
   entries, and any environment the person wants on every host.
 - `secrets.toml` — what to fetch from Secret Manager and where to put it (Interfaces I3).
+- `home/` — files copied into the user's home on every boot and reconcile, received like
+  `~/.claude`: the git identity and global git settings (`.gitconfig`, `.gitignore`), `.tmux.conf`,
+  and a host-safe `.zshrc` (the Macs' own rc files carry exported keys, so they are not copied;
+  secrets reach hosts only through `secrets.toml`).
 - `build.env` — the image's user inputs (Design §2), read on the machine that builds the image.
 
 The boot descriptor carries just enough to reach the profile: the config repository's URL, the
@@ -216,9 +224,11 @@ profile (step 5) names them.
    root-owned temporary file — never in a URL or in `.git/config`; then read the profile.
 6. **Tailnet check.** The gateway named in the profile's `managed-settings.json` answers.
 7. **Secrets.** Materialize every entry of `secrets.toml` (Interfaces I3).
-8. **Credentials.** As the user: with a file seed, `gcloud auth activate-service-account` with the
-   seed key, the same key written as application default credentials, and the Secret Manager
-   project set as the default; `gh auth setup-git`. On GCE the metadata server serves both.
+8. **Home and credentials.** As the user: copy the profile's `home/` files into the home; then,
+   with a file seed, `gcloud auth activate-service-account` with the seed key, the same key written
+   as application default credentials, and the Secret Manager project set as the default (on GCE
+   the metadata server serves both); then `gh auth setup-git`, which adds its credential helper to
+   the copied `.gitconfig`.
 9. **Apply.** Run the config repository's `sync/apply.py` (plugins, marketplaces, MCP servers,
    `~/.claude.json` seeding, the `devenv` link) as the user.
 10. **Managed settings and environment.** Write `/etc/claude-code/managed-settings.json` from the
@@ -240,7 +250,7 @@ untracked files.
 
 What the pull brings is applied, not just checked out: when the fetched commit differs from the
 last one applied, the job runs `devcloud reconcile` — boot steps 5 through 11 (profile, tailnet
-check, secrets, credentials, apply, managed settings and environment, services) — recording each
+check, secrets, home and credentials, apply, managed settings and environment, services) — recording each
 step in the status file as a boot does. Without it a gateway change made on a Mac would reach the
 clone but not the root-owned managed settings, whose precedence no synced setting overrides.
 Projects (step 12) are not reconciled; `devenv up` is run when the work needs it.
@@ -343,11 +353,17 @@ Four changes:
    caught at its output, and refusing reads also refused writes, moves, and existence checks.
    These hooks are not every path text takes. An attachment row keeps its original payload beside
    the rendered text a rewrite cleans; manual compaction rows bypass `session.append`
-   (`hooks/mods/README.md`); the system prompt is composed, not appended; images are not text.
-   M1 opens with a boundary probe — synthetic values sent through each path, the model traffic
-   recorded through a local proxy, the transcript searched — and for each path either intercepts
-   it with a hook that reaches it or lists it in this section as not covered. The guarantee the
-   mod states is exactly the covered list.
+   (`hooks/mods/README.md`); the system prompt is composed, not appended; images are not text; and
+   an oversized tool output is written by the engine to the session's `tool-results/` directory
+   before the hook sees the result, its path returned as `persistedOutputPath`. That last file is
+   one the session store ships, so the mod rewrites it in place, scrubbed, before the tool call
+   returns, and the session store ships a `tool-results/` file only once it has been unchanged for
+   a settle interval, so the rewrite lands before the first copy leaves the machine.
+   M1 opens with a boundary probe — synthetic values sent through each path (oversized and
+   background command output among them), the model traffic recorded through a local proxy, the
+   transcript and the session store's copy searched — and for each path either intercepts it with
+   a hook that reaches it or lists it in this section as not covered. The guarantee the mod states
+   is exactly the covered list.
 2. **Known values from three sources**: values stored through `/secret`; values in well-known
    credential files (gh `hosts.yml`, `~/.pgpass`, service-account JSON keys under
    `~/.config/gcloud/`, `~/.codex/auth.json`, `~/.claude/.credentials.json`, hcloud `cli.toml`,
@@ -361,17 +377,25 @@ Four changes:
    prefixes; bare hex or base64 without a prefix or a secret-named assignment is not redacted —
    commit hashes and checksums would drown the transcript. Encodings of known values (base64 with
    and without padding, hex, URL encoding) are redacted as today.
-3. **Handles restore exact bytes.** Each distinct redacted byte string gets its own handle
-   (Interfaces I2), so restoring a handle yields exactly what was redacted: a stored value's
-   encoded spelling gets the key's handle with the encoding named, a global value shadowed by a
-   project key gets a handle naming its tier, a credential-file value names its file and field, and
-   a pattern detection carries a namespace the mod draws at random when it starts, never reused.
-   Before a Write, Edit, MultiEdit, NotebookEdit, or Bash call runs, every handle in its input that
-   this process issued is replaced by its bytes, so a model editing a file it saw redacted leaves
+3. **Handles name what they stand for.** Each distinct redacted byte string gets its own handle
+   (Interfaces I2): a stored value's encoded spelling gets the key's handle with the encoding
+   named, a global value shadowed by a project key gets a handle naming its tier, a credential-file
+   value names its file and field, and a pattern detection carries a namespace the mod draws at
+   random when it starts, never reused. A known-value handle names a credential, not bytes frozen
+   in time: like `$(cat …)`, it restores to the credential's current value in the named spelling,
+   in this process or a resumed one — after a rotation, a command or a written file gets the
+   current credential, which is what it wants, and an Edit whose `old_string` carries the handle
+   against a file still holding the old value fails at the engine's own match, visibly. A value a
+   key or credential-file field held earlier in this process stays redacted, as
+   `[superseded:<label>]`, which restores nothing. A pattern handle stands for exactly the bytes it
+   replaced.
+   Before a Write, Edit, MultiEdit, NotebookEdit, or Bash call runs, every known-value handle and
+   every pattern handle this process issued is replaced by its bytes, so a model editing a file it saw redacted leaves
    the secret intact, and `Authorization: Bearer [secret:KEY]` in a command works like `$(cat …)`.
-   The tool call as the transcript records it keeps the handle. A handle this process did not
-   issue — another session's, or this session's from before a resume — is left as written and the
-   tool's result carries one line naming it as not restored, so the model sees a literal write
+   The tool call as the transcript records it keeps the handle. A handle that cannot be restored —
+   a pattern handle another process issued (another session's, or this session's from before a
+   resume), a `[superseded:…]` handle, a key no longer stored — is left as written and the tool's
+   result carries one line naming it as not restored, so the model sees a literal write
    rather than learning of it later.
 4. **Linux.** Nothing in the mod assumes macOS; the store and the credential-file list resolve
    under `$HOME`.
@@ -439,16 +463,19 @@ secrets.tsx,tsconfig.json}`, `devcloud/tests/mods/secrets.test.ts` with its runn
 (`devcloud/tests/mods/run.sh`, staging like `tests/mods/run-mods-tests.sh` if `claude plugin test`
 cannot take the folder directly), `scripts/bump-version.sh` and `.version-bump.json` (a plugin to
 bump), and `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence now pointing there). In
-the config repository: `sync/plugins.manifest.json` gains `devcloud@doperpowers`. In `cua`:
+the config repository: `sync/plugins.manifest.json` gains `devcloud@doperpowers`, and
+`tools/session-mirror` ships a `tool-results/` file only once it has been unchanged for a settle
+interval (Design §9.1), with a test. In `cua`:
 `hooks/mods/secrets.tsx` and its registration removed, its tests that covered the mod removed or
 moved, its README, plugin description, and CLAUDE.md updated, version bumped. Interfaces: I1
 (store), I2 (handles).
 
 Order of work. First the boundary probe (Design §9.1): a recording proxy on localhost forwarding
 to the person's gateway, a session with the new mod pointed at it, and synthetic values pushed
-through a tool result, a subagent's result, a file attachment (a file the model read, changed on
-disk), a manual compaction, and the system-prompt section; record which reach the recorded
-requests or the transcript, add interception where a hook reaches the path, and write the rest
+through a tool result, an oversized command output (persisted to `tool-results/`), a background
+command's output, a subagent's result, a file attachment (a file the model read, changed on disk),
+a manual compaction, and the system-prompt section; record which reach the recorded requests, the
+transcript, or the session store's copy (`session-mirror pull` of the probe session), add interception where a hook reaches the path, and write the rest
 into §9's not-covered list with the date. Then the mod: port the store, pane, tiers, and prompt
 section from `cua`'s mod rather than rewriting them — that code carries hard-won fixes (masking
 under mosh, the slug rule, case-insensitive `projects`) — and remove its `guardReason` deny path.
@@ -466,7 +493,9 @@ Does not touch: `cua`'s `src/secrets/` store library or its device-credential fl
 acceptance 1–2; tests also pin: no redaction of a 40-hex commit hash or a sha256 checksum; a
 known value split across a tool result and the next row is still caught in each row it appears
 in whole; the transcript file written by the engine carries handles, not values; a resumed
-process does not restore a pre-resume pattern handle to a newly detected token.
+process does not restore a pre-resume pattern handle to a newly detected token; a stored value
+changed mid-session reads `[superseded:KEY]` afterwards and `[secret:KEY]` restores the new value;
+an oversized output's persisted file holds handles before the call returns.
 
 ### M2 — devcloud core
 
@@ -514,8 +543,14 @@ gcloud line (true on the MacBook only, now stated per host); removal of
 failed required operation (marketplace add, plugin install, MCP add) makes it exit non-zero after
 the remaining operations are attempted, and its printed commands name the operation and the
 server or plugin, never the MCP configuration JSON or a failing command's raw output beyond a
-first line with known secrets removed. Tests: a failing fake `claude` makes it exit non-zero; a
-synthetic Authorization header in an MCP config appears in no output.
+first line with known secrets removed. No secret value travels in a command line: the shared
+MCP configuration (`sync/mcp.json`) carries none — it carries none today — and a server that needs
+one on hosts names it as a `${VAR}` reference the engine expands from the environment
+(`/etc/devcloud/env`, from `secrets.toml`); M3 verifies the engine expands references at user
+scope before relying on it, and a server it cannot carry that way is left off hosts and named in
+the inventory. Tests: a failing fake `claude` makes it exit non-zero; a synthetic Authorization
+header placed in an MCP config appears in no output and in no argument the fake `claude`
+receives.
 
 The secret inventory. Draft `secrets.toml` from what hosts need — the GitHub token (bootstrap,
 gh's `hosts.yml`), hcloud contexts, the session store's `~/.pgpass` line, the cua relay MCP
@@ -605,12 +640,15 @@ Run from the devcloud worktree unless stated. `$DESC` and `$SEED` are paths outs
     [secret:<file>:<field>]       a credential-file value (file basename, field)
     ...~<enc>]                    an encoded spelling of any of the above: ~b64, ~b64u, ~hex, ~url
                                   (e.g. [secret:KEY~b64]); padding variants get their own <enc>
+    [superseded:<label>]          a value <label> (any of the above) held earlier in this
+                                  process; never restored
     [redacted:<kind>#<ns>.<n>]    a pattern detection; kind is the rule id (github-pat,
                                   anthropic, pem, assignment, ...); ns is 4 random base32
                                   characters drawn when the mod starts; n counts within ns
 
-Restored in the inputs of Write, Edit, MultiEdit, NotebookEdit, and Bash when issued by this
-process; otherwise left as written and named in the result.
+Restored in the inputs of Write, Edit, MultiEdit, NotebookEdit, and Bash: a known-value handle to
+the credential's current value in the named spelling; a pattern handle only when this process
+issued it. Anything else is left as written and named in the result.
 
 **I3 — `secrets.toml`** (the materializer's input, in the profile):
 
@@ -656,7 +694,8 @@ otherwise `devcloud-services` runs the first three.
 `/etc/claude-code/managed-settings.json`; its `env.ANTHROPIC_BASE_URL` is the gateway step 6
 checks), `profile.env` (`KEY=value` lines appended to `/etc/devcloud/env`; `TZ` also sets the
 system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_UID`,
-`DEVCLOUD_HOME`, read where the image is built).
+`DEVCLOUD_HOME`, read where the image is built), `home/` (files copied into the user's home at
+boot step 8 and every reconcile; secret-free).
 
 ## Surprises & Discoveries
 
@@ -673,6 +712,11 @@ system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_
   engine bundle and `hooks/mods/README.md`).
 - (2026-10-15) The `devenv` tool's install script already carries a `# devenv-inputs:` header, and
   its registry pins every project to an unmerged manifest branch.
+- (2026-10-16) The engine writes an oversized tool output to the session's `tool-results/` before a
+  hook sees the result, and the session store ships that directory once per file, treating it as
+  immutable (round-2 review, from the 2.1.301 engine and `tools/session-mirror`).
+- (2026-10-16) The shared MCP configuration (`sync/mcp.json`) holds one server and no secret value;
+  the secret-bearing MCP servers are machine-local today.
 
 ## Decision Log
 
@@ -758,6 +802,30 @@ system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_
 - Decision: The image's user, uid, and home are build inputs from the profile. Rationale: public
   mechanism, private values; a person whose Mac account differs gets the same guarantee.
   Date/Author: 2026-10-15, review round 1.
+
+- Decision: A known-value handle (`[secret:KEY]`, a credential-file label) restores to the
+  credential's current value, in any process; a value superseded within the process reads
+  `[superseded:…]` and never restores; only pattern handles are bound to the process that issued
+  them. Rationale: the handle is the name the system prompt teaches (`Bearer [secret:KEY]`), so it
+  must mean the same thing across sessions; after a rotation the current value is what a command
+  or a written file needs, and an Edit against stale bytes fails visibly at its match. Rejected
+  (round-2 finding): a process-unique identity for every known value, which would make a key's
+  handle unusable in the next session.
+  Date/Author: 2026-10-16, review round 2.
+- Decision: Oversized outputs persisted to `tool-results/` are scrubbed in place by the mod before
+  the call returns, and the session store waits a settle interval before shipping such a file.
+  Rationale: the session store copies that directory to the central database and the archive.
+  Rejected: listing them as not covered (the largest outputs are the likeliest to carry a
+  credential file's contents); scrubbing in the session store (it would have to know the secrets).
+  Date/Author: 2026-10-16, review round 2.
+- Decision: No secret in a command line from `apply.py`: shared MCP configs carry `${VAR}`
+  references, verified to expand at user scope before relying on it.
+  Date/Author: 2026-10-16, review round 2.
+- Decision: Hosts get the person's git identity, global git settings, tmux configuration, and a
+  host-safe zsh rc from the profile's `home/`, and zsh as the login shell. Rationale: commits on a
+  host need the identity, and "works like the Mac" includes the shell; the Macs' own rc files carry
+  exported keys, so a separate host-safe rc is kept rather than copying them.
+  Date/Author: 2026-10-16, from the person's question about what the setup covers.
 
 ## Outcomes & Retrospective
 
