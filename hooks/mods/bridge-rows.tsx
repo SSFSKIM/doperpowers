@@ -3,7 +3,8 @@ import type { SessionMessage } from 'claude-code'
 import { ASK_TOOL } from './ask'
 import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
 import type { BridgeEvent, TranscriptRecord } from './bridge-state'
-import { emit, hold, releaseStepEnd } from './bridge-stream'
+import { emit, hold, isHold, releaseStepEnd } from './bridge-stream'
+import type { Hold } from './bridge-stream'
 import { callEnded } from './bridge-requests'
 
 /**
@@ -29,8 +30,8 @@ import { callEnded } from './bridge-requests'
  * no `session.append` (live, 2.1.301; an auto compaction's it raises), so no
  * hook names them. Once a compaction stands, a hold (bridge-stream.tsx) keeps
  * everything later in the queue while the rows past the loop's cut that no
- * notice named are read from the transcript, and their `row-seen`s (door
- * `compaction`) take its place.
+ * notice named, up to the first one a later notice names, are read from the
+ * transcript, and their `row-seen`s (door `compaction`) take its place.
  *
  * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
  * text row with a mark and an async ask with its result, go to the child as
@@ -49,8 +50,8 @@ const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', r
 const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
 /** Async asks whose other row (the call, or its result) has not been kept yet. */
 const ASKS_KEPT = 50
-/** How many of the latest notices' rows are remembered, to tell the rows past a cut no notice named. */
-const NAMED_KEPT = 1_000
+/** How many of each loop's latest notices' rows are remembered, to tell the rows past its cut no notice named. */
+const NAMED_KEPT = 200
 /**
  * After a compaction, its rows are looked for on disk this often, so many
  * times at most (the engine flushed them about 130 ms after the compaction
@@ -69,15 +70,21 @@ function resultText(content: unknown): string {
 
 /** A row's notice: its loop's cut moves to it. */
 export function noticeRow(e: BridgeEvent & { uuid: string; agentId: string | null }) {
-  state.cut.set(e.agentId ?? 'main', e.uuid)
-  remember(e.uuid)
+  const loop = e.agentId ?? 'main'
+  state.cut.set(loop, e.uuid)
+  remember(loop, e.uuid)
   emit(e)
 }
 
-function remember(uuid: string) {
-  state.named.add(uuid)
-  if (state.named.size > NAMED_KEPT) {
-    state.named.delete(state.named.values().next().value as string)
+function remember(loop: string, uuid: string) {
+  let named = state.named.get(loop)
+  if (named === undefined) {
+    named = new Set()
+    state.named.set(loop, named)
+  }
+  named.add(uuid)
+  if (named.size > NAMED_KEPT) {
+    named.delete(named.values().next().value as string)
   }
 }
 
@@ -100,32 +107,60 @@ export function compacted(agentId: string | null, messages: readonly SessionMess
   if (after === undefined || typeof summary !== 'string') {
     return
   }
-  hold({ type: '@hold', loop, after, run: () => nameCompaction(loop, agentId, after, summary) })
+  // The rows the loop's notices named so far, kept with the hold: one of them
+  // may lie past the cut on disk (the engine's write order), however many
+  // notices come after it.
+  const prior = new Set(state.named.get(loop))
+  const h: Hold = { type: '@hold', loop, after, run: () => nameCompaction(h, agentId, summary, prior) }
+  hold(h)
 }
 
 /**
  * The compaction's rows, read until its summary row is past the cut on disk,
  * and once more a poll later, so the rest of the batch it was flushed in is
- * whole: the unnamed ones of that read, in disk order. None when the summary
- * was named (the engine raised its rows), or when it did not come within
- * ROWS_POLLS reads.
+ * whole: the unnamed ones of that read, in disk order, up to the first row a
+ * notice queued behind the hold names (it and the rows after it were written
+ * after a row the session named since, a later compaction's included). None
+ * when the summary was named (the engine raised its rows), when it did not
+ * come within ROWS_POLLS reads, or when the hold left the queue (a resync's
+ * cut covers its rows).
  */
-async function nameCompaction(loop: string, agentId: string | null, after: string, summary: string): Promise<BridgeEvent[]> {
+async function nameCompaction(h: Hold, agentId: string | null, summary: string, prior: Set<string>): Promise<BridgeEvent[]> {
+  const { loop, after } = h
   let wasOnDisk = false
   for (let poll = 1; ; poll++) {
-    if (state.named.has(summary)) {
+    const rows = await state.rowsAfter?.(loop, after).catch(() => undefined)
+    const at = state.queue.indexOf(h)
+    if (at === -1) {
       return []
     }
-    const rows = await state.rowsAfter?.(loop, after).catch(() => undefined)
-    const unnamed = rows?.filter((u) => !state.named.has(u)) ?? []
+    // The loop's notices since the hold was placed: all still queued behind
+    // it, as the poster posts nothing past a hold and a resync that took any
+    // of them took the hold too.
+    const queued = new Set(state.queue.slice(at + 1).filter((e) => (e.type === 'block-row' || e.type === 'row-seen') && (e.agentId ?? 'main') === loop).map((e) => e.uuid))
+    const live = state.named.get(loop)
+    const isNamed = (u: string) => prior.has(u) || live?.has(u) === true || queued.has(u)
+    if (isNamed(summary)) {
+      return []
+    }
+    const end = rows?.findIndex((u) => queued.has(u)) ?? -1
+    const unnamed = rows?.slice(0, end === -1 ? undefined : end).filter((u) => !isNamed(u)) ?? []
     const isOnDisk = rows?.includes(summary) === true
     if (isOnDisk && (wasOnDisk || poll >= ROWS_POLLS)) {
       for (const u of unnamed) {
-        remember(u)
+        remember(loop, u)
       }
-      // The cut moves to them unless a later notice, queued behind the hold, moved it first.
-      if (unnamed.length > 0 && state.cut.get(loop) === after) {
-        state.cut.set(loop, unnamed[unnamed.length - 1]!)
+      // The cut moves to them unless a later notice, queued behind the hold,
+      // moved it first; a later hold of the loop placed at the same cut
+      // (nothing of the loop came between them) reads past them now.
+      const last = unnamed[unnamed.length - 1]
+      if (last !== undefined && state.cut.get(loop) === after) {
+        state.cut.set(loop, last)
+        for (const e of state.queue) {
+          if (isHold(e) && e !== h && e.loop === loop && e.after === after) {
+            e.after = last
+          }
+        }
       }
       const t = Date.now()
       return unnamed.map((uuid) => ({ type: 'row-seen', uuid, agentId, door: 'compaction', t }))

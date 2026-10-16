@@ -22,12 +22,16 @@ import type { BridgeEvent, Override, Request, Streaming } from './bridge-state'
 
 export type Hold = BridgeEvent & {
   type: '@hold'
-  /** The loop whose rows past `after` it names: its cut when the hold was placed. */
+  /**
+   * The loop whose rows past `after` it names: its cut when the hold was
+   * placed, or the last row of an earlier hold placed at the same cut, once
+   * that one moved the cut there.
+   */
   loop: string
   after: string
   run: () => Promise<BridgeEvent[]>
 }
-const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@hold'
+export const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@hold'
 
 const BATCH_MAX = 500
 const QUEUE_MAX = 10_000
@@ -104,6 +108,8 @@ function track(e: BridgeEvent) {
     if (phase === 'stop') {
       releaseStepEnd(loopKey(e.agentId))
       state.stepBlocks.delete(loopKey(e.agentId))
+      // A hold already placed for it keeps its own copy.
+      state.named.delete(String(e.agentId))
     }
   }
 }

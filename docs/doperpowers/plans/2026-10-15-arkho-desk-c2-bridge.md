@@ -761,12 +761,16 @@ rows itself, once it stands:
   child's `GET /rows`, every 50 ms: its rows reached disk about 130 ms after the compaction
   resolved (live). The compaction's result names its summary row: its first message's
   `handle` is that row's uuid (live). Once the summary row is on disk, one more read (so the
-  rest of the batch it was flushed in is whole) gives the rows: those of the read that no
-  notice named (the latest 1,000 notices are remembered), each `row-seen` `door:
-  "compaction"`, in disk order, in the hold's place. If the summary was named meanwhile (an
-  auto compaction, whose rows the hook named), nothing is added.
+  rest of the batch it was flushed in is whole) gives the rows: those of the read ahead of
+  the first row a notice of the loop queued behind the hold names (that row and every later
+  one were written after a row named since, a later compaction's included), less any a
+  notice named (the loop's remembered notices as the hold was placed, its latest 200 since,
+  or one queued behind the hold), each `row-seen` `door: "compaction"`, in disk order, in
+  the hold's place. If the summary was named (an auto compaction, whose rows the hook
+  named), nothing is added.
 - **The cut** moves to the last of them unless a later notice (queued behind the hold) moved
-  it first: the cut stays the last notice in the stream's order.
+  it first: the cut stays the last notice in the stream's order. A later hold of the loop
+  placed at the same cut (nothing of the loop came between them) then reads past them.
 - **A resync while held** (a new child's hello, a lost post): the hold stays behind it while
   the loop's cut is still where its rows begin, so they are named after the resync; once a
   later notice moved the cut, the resync's cut covers them and the hold goes.
