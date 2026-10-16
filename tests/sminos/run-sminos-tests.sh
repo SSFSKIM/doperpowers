@@ -4871,7 +4871,10 @@ assert_file_absent "$LOG1/.git/index.lock" "the stale index lock is gone"
 assert_file_absent "$LOG1/.git/refs/remotes/origin/main.lock" "and the stale ref lock a killed fetch would leave"
 assert_contains "$(cat "$LOG1/h2.human.jsonl")" "moves the remote past a stale lock" "the fetch brings the other home's append"
 assert_contains "$(gitq -C "$REMOTE" log -p main)" "said past a stale lock" "and this home's append is committed and pushed"
-assert_contains "$(cat "$MD/h1/sminos/daemon.log")" "index.lock, a git lock 120s old" "daemon.log names each lock removed"
+# The age is the lock's when the tick read it: 120 s, or a little more.
+if grep -qE 'index\.lock, a git lock 1[2-9][0-9]s old' "$MD/h1/sminos/daemon.log"; then
+  pass "daemon.log names each lock removed, with its age"; else
+  fail "daemon.log names each lock removed, with its age"; tail -3 "$MD/h1/sminos/daemon.log"; fi
 unset GIT_SSH_COMMAND GIT_SSH_VARIANT
 cd "$RR"
 
