@@ -237,7 +237,21 @@ evidence for, because each has a failure on record:
   instructions; the isolation is a property of the sandbox. The same holds
   during a verification: the candidate runs on its own side, confined to
   what it links, while the reference side holds the binary and the
-  expectations and does the comparing (§2.6).
+  expectations and does the comparing (§2.6). **What the tier claims, and
+  no more**: it denies the implementer every direct route to the reference,
+  the expectations and the spec inventories. In a strangler, code the
+  implementer writes runs in the same realm as the reference chunks it links
+  against, and a candidate built to leak could read a linked chunk's source
+  (or a function's text) and emit it encoded through an observed channel; no
+  sandbox separates code from what it links without ending the strangler.
+  Against that route the design has deterrents, not a wall: the response is
+  structured diffs with bounded excerpts, requests are bounded per round, the
+  reviewer's rubric names reads of linked chunks, function-source access and
+  encoders as findings, and the fingerprint check flags verbatim text. The
+  threat the survey records is drift toward the reference — calling it,
+  stubbing, skipping — not a covert channel, and the tier is built for the
+  recorded threat; the human partner accepts this residual at the gate or
+  chooses a shape without shared realms.
 
 #### 2.3 The parity ledger
 
@@ -299,11 +313,16 @@ finding.
 and what the verifier checks mechanically where it can:
 
 - the unit's oracle slices pass in a fresh checkout (verifier);
-- the implementer's diff, measured from the unit's **oracle revision** (the
-  commit the runner publishes when the author's work passes its checks),
-  touches nothing under `forge/oracle/`, `forge/ledger.tsv` or the reference
+- the implementer's own delta — its commits as replayed by the latest
+  rebase, `onto..head`, never the aggregate from the unit's oracle revision,
+  which other units' publications and landings legitimately enter — touches
+  nothing under `forge/oracle/`, `forge/ledger.tsv` or the reference
   (verifier, by path) and carries no run of reference text (verifier, by
   fingerprint against the reference);
+- in a shared-realm shape, no read of a linked reference module's file or
+  function source, no encoder feeding an observed channel, nothing in the
+  candidate that exists to carry data out rather than to implement the spec
+  (reviewer; §2.2's residual);
 - no test skipped, deleted or weakened; a coverage drop is a deletion alarm
   (verifier where tooling exists, reviewer always);
 - no hard-coded expected values, no stubs or `unimplemented` paths standing
@@ -356,10 +375,12 @@ not pay orientation three times) — fresh only on a re-brief:
    hybrid's reference chunks are necessarily among them), never the binary,
    the expectations or the spec inventories; the reference side holds those
    and does the comparing; the response is observation diffs on the parity
-   axes only, size-capped, with any run of reference text redacted by
-   fingerprint. A candidate that tries to print the protected files gets a
-   denial on its side and a redaction on the other. No request counts as a
-   round, and the manifest bounds requests per round. Returns `DONE` with a report, or
+   axes only — structured, with bounded excerpts — and any run of reference
+   text in it is redacted by fingerprint. A candidate that tries to print the
+   protected files gets a denial on its side; one built to leak what it
+   links is the residual §2.2 states, met by the reviewer's rubric and the
+   bounds, not by a wall. No request counts as a round, and the manifest
+   bounds requests per round. Returns `DONE` with a report, or
    `MORE_WORK`, `BLOCKED`, `INFEASIBLE`.
 3. **Reviewer** (tier C; `doperpowers:forge-reviewer`, sol/xhigh, read-only:
    the diff, the staged spec, the rubric, the implementer's report) and
@@ -514,8 +535,10 @@ can be denied. State is written as §2.7 says; `--resume` rebuilds it from
 the journals and continues.
 
 **Landing** is a queue with one lock: rebase the unit's branch onto the
-integration branch; if the rebase changed the diff the review is void and the
-unit returns to step 3; run the unit's slices and the fast sample at the tip;
+integration branch, recording the `onto` commit, so the implementer's own
+delta is `onto..head` whatever else has landed; if the rebase changed that
+delta the review is void and the unit returns to step 3; run the unit's
+slices and the fast sample at the tip;
 fast-forward; on failure the unit goes back to the implementer with the
 tip's diff. The fast-forward is recorded as an **intent** line (old and new
 tip) before the ref moves and a **done** line after, and a resume reconciles
@@ -526,7 +549,12 @@ line and moving a ref are two writes. A `full` or held-out failure
 bisect over the wave's landings from the last green tip (landings are
 linear, so this is mechanical); the ledger names the behavior that broke,
 not the blame — a newly landed caller can break a slice an earlier unit
-owns. No new unit dispatches while the tip is red (Carlini's compiler: new features kept
+owns. A slice belongs to the tip's regression suite only once its unit has
+landed: a published slice for a unit still being implemented runs in that
+unit's verifications and nowhere else, so a publication cannot redden the
+tip (in a ladder or dependency-order shape the slice rightly fails until
+its unit lands; in a strangler the tip still holds the reference module).
+No new unit dispatches while the tip is red (Carlini's compiler: new features kept
 breaking existing functionality until the gate existed). `full` runs at
 every wave end and on a timer the manifest sets; held-out runs at wave ends
 by the root. This is the middle path between
@@ -744,7 +772,13 @@ classes and checkpoints per §2.7.
 parsing, a config reader, a transform, output), bundled with `bun build
 --splitting` into a chunked reference, with a short replication-grade spec
 written the way the 2.1.300 SPEC is written (verbatim strings, schemas,
-exit codes, file formats). The oracle: scripted invocations compared on
+exit codes, file formats). Its layout mirrors the scenario's: `setup.sh`
+generates a working directory with two siblings — the **worker repository**
+(the spec, the oracle's code and slice inputs, and a candidate `src/` of
+empty modules in the reference's layout; never the original source, which
+would stay recoverable from history) and the **protected directory** (the
+original TypeScript, `ref/`, `mut/`, `tools/hybrid.mjs`, the expectations),
+which only tier A and the verifier's reference side can see. The oracle: scripted invocations compared on
 stdout, exit code and files written; a held-out set of invocations; a seeded
 divergence (a second build with one constant changed). The strangler: `tools/hybrid.mjs`, a
 short build that imports each module from the reference chunk or the reforged
@@ -801,9 +835,13 @@ Observable at the end, each with the milestone that proves it:
    whose pool is exhausted is checked by `full`; an implementer whose diff
    from the oracle revision touches `forge/oracle/` or `ledger.tsv` is
    refused at landing with the path named, while the author's own
-   extension of a slice landed in that revision passes; a candidate that
-   prints a protected file gets a denial on the candidate side and a
-   redacted response; a diff carrying a run of reference text is flagged;
+   extension of a slice landed in that revision passes, and so does a unit
+   whose rebase brought in another unit's oracle publication; a candidate
+   that prints a protected file gets a denial on the candidate side and a
+   redacted response; a diff carrying a run of reference text is flagged; a
+   candidate that emits an encoded fragment of a linked chunk is bounded by
+   the response cap and flagged by the calibrated reviewer (the residual
+   §2.2 states, measured, not closed);
    an oracle author whose slices pass under the stub is returned `MORE_WORK`
    (M5). A live check with a real implementer session under its settings
    shows a `Read` of the reference and a shell `cat` of it both refused, a
@@ -816,8 +854,10 @@ Observable at the end, each with the milestone that proves it:
    by the interval during an unfinished wave is recorded in `events.jsonl`
    with its result; a seeded divergence landed by unit B that breaks a slice
    unit A owns reopens B at the wave-end `full`, with A's ledger items
-   named, and holds the next wave until it is fixed; and a kill on either
-   side of a landing's ref move is reconciled on `--resume`. (M5)
+   named, and holds the next wave until it is fixed; a published slice of a
+   unit still in flight is skipped by the tip's `full` and reported as
+   pending; and a kill on either side of a landing's ref move is reconciled
+   on `--resume`. (M5)
 8. **The root protocol and delegator work on seeded events.** Events for
    each escalation class are fed; the delegator resolves the class-1–3 ones
    with the manifest line it used and drafts a question for the class-4 one;
@@ -850,12 +890,13 @@ goes and keeps `Progress` current.
 What exists at its end: `skills/forging/` with `SKILL.md` and the five
 references of §5; `agents/forge-reviewer.md`, since the gate's calibration
 dispatches the reviewer that will judge units and the toy's gate runs here;
-the toy fixture under `tests/forging/toy/` — a repository of its own,
-initialized by `tests/forging/toy/setup.sh` into a working directory, holding
-`src/`, `SPEC.md` and the oracle's code, beside a **sibling directory** that
-holds what no worker may reach: `ref/` built with `bun build --splitting`,
-`mut/` the same build with one constant changed as the seeded divergence,
-`tools/hybrid.mjs` the hybrid builder, and the recorded expectations; and,
+the toy fixture under `tests/forging/toy/`, whose `setup.sh` generates a
+working directory of two siblings as §7 says — the worker repository
+(`SPEC.md`, the oracle's code, a candidate `src/` of empty modules) and the
+protected directory (the original TypeScript, `ref/` built with `bun build
+--splitting`, `mut/` the same build with one constant changed as the seeded
+divergence, `tools/hybrid.mjs` the hybrid builder, the recorded
+expectations); and,
 produced by a subagent reading nothing but the skill and the fixture, the
 toy's `forge/` with its oracle (`forge/oracle/run.py` per the contract in
 Interfaces), its self-parity and mutation evidence, and its gate record.
@@ -1017,19 +1058,25 @@ verification's two sides are two directories — the candidate side a
 confinement holding the worktree's head and what it links, the reference
 side the reference, the expectations and the comparer — and the response is
 the comparer's diffs, size-capped, with reference runs redacted by the
-fingerprint check that also flags them in the diff; a `full` or held-out failure after landing is attributed by a
-bisect over the wave's landings from the last green tip, writes a `reopened`
+fingerprint check that also flags them in the diff; the tip's suite is the slices of landed units (a published slice for a
+unit still in flight runs in that unit's verifications only, and `full` at
+the tip reports `pending: k slices`; a test marks a unit pending with a
+slice that fails at the tip and sees it skipped); a `full` or held-out
+failure after landing is attributed by a bisect over the wave's landings
+from the last green tip, writes a `reopened`
 event naming the landing that caused it and the ledger items that broke,
 moves that unit to `reopened`, and holds dispatch while the tip is red (a
-test has unit B's landing break a slice unit A owns, and B reopens); the
+test has unit B's landing break a slice unit A owns, and B reopens; another
+interleaves two units' publications and landings and sees both land); the
 fast-forward writes an `intent` line with the old and new tips before the
 ref moves and a `done` line after, and `--resume` reconciles the ref with
 the last intent as §3 says, with kills on both sides of the ref move in the
 tests; the runner moves ledger `status`
 from slice results at landing and at `full`, and any role diff touching
-`ledger.tsv` is refused; the verifier's path check compares the implementer's diff from the
-unit's oracle revision against `forge/oracle/**`, `ledger.tsv` and the
-manifest's reference paths, and its fingerprint check against runs of
+`ledger.tsv` is refused; the verifier's path check compares the implementer's own delta
+(`onto..head` of the latest rebase, the `onto` recorded at `rebase-start`;
+the oracle revision kept for provenance only) against `forge/oracle/**`,
+`ledger.tsv` and the manifest's reference paths, and its fingerprint check against runs of
 reference text (the toy's `ref/` chunks; the scenario's `CHUNK-INDEX.md`
 fingerprints and `modules/`); `oracle` subcommands call
 `forge/oracle/run.py` with a fixed argument contract (`<axis> <binary>
@@ -1080,11 +1127,13 @@ written.
 Working directory is the repository root unless stated.
 
 - M1: `tests/claude-code/run-skill-tests.sh` (the structure test picks up
-  the new skill); a dry read: dispatch a general-purpose subagent with "Read
-  `skills/forging/SKILL.md` and its references; the target is
-  `tests/forging/toy/` (its `src/`, `dist/ref/`, `SPEC.md`); produce
-  `tests/forging/toy/forge/` per the manifest reference" and inspect
-  `ls tests/forging/toy/forge/` → `manifest.md ledger.tsv units.json rubric.md roles oracle gate`.
+  the new skill); `tests/forging/toy/setup.sh /tmp/toy` → `/tmp/toy/work`
+  (the worker repository) and `/tmp/toy/protected`; a dry read: dispatch a
+  general-purpose subagent with "Read `skills/forging/SKILL.md` and its
+  references; the target's spec is `/tmp/toy/work/SPEC.md`, its reference
+  `/tmp/toy/protected/ref/` with the original source beside it; produce
+  `/tmp/toy/work/forge/` per the manifest reference" and inspect
+  `ls /tmp/toy/work/forge/` → `manifest.md ledger.tsv units.json rubric.md roles oracle gate`.
 - M2, M3 (in `docs/doperpowers/research/2026-10-15-compile-class-work/scenario-2.1.300/`):
   `python3 -I tools/ledger.py` → `ledger.tsv` with its row count printed;
   `python3 -I forge/oracle/run.py self-parity --axis provider-request` →
@@ -1141,7 +1190,7 @@ Defined once here; milestones point at them.
   attempt's persisted report beside it; the main process alone writes
   `state.json` `{ "run", "units": { "<id>": { "state", "attempt", "head",
   "review_head", "usage" } }, "usage", "waves": [] }` as a view over the
-  journals; landing appends to `runs/<id>/landing.jsonl` lines `rebase-start
+  journals; landing appends to `runs/<id>/landing.jsonl` lines `rebase-start {onto}
   | review-void | tip-check | intent {old, new} | done {new}` per unit, and
   `runs/<id>/units/<unit>/exposure.json` holds the inputs the unit has
   seen. **Transition table**
@@ -1291,6 +1340,24 @@ Defined once here; milestones point at them.
   verify request as an exfiltration route, the shared object store, the
   author's changes failing the implementer's guard, a seed that does not
   mean unseen, a judge calibrated before it existed.
+  Date/Author: 2026-10-15
+- Decision: After the fourth review round (2026-10-15, scoped to the
+  third fold), four changes, and the review is closed: the implementer's
+  guarded delta is `onto..head` of its latest rebase, never the aggregate
+  from its oracle revision (another unit's publication or landing enters
+  that aggregate legitimately); a published slice joins the tip's suite
+  only when its unit lands; the toy's original source lives in the
+  protected directory and the worker repository gets empty candidate
+  modules; and the isolation claim is narrowed in §2.2 — in a shared-realm
+  shape a candidate built to leak what it links cannot be walled off
+  without ending the strangler, so the design deters the recorded threat
+  (drift toward the reference) with bounds, the reviewer's rubric and the
+  fingerprint check, and the human partner accepts that residual at the
+  gate or chooses another shape. The next review round would be adjudicating
+  that residual, which is the human partner's call, not a reviewer's.
+  Rejected: process- or realm-separating the candidate from the reference
+  chunks — it ends the strangler's whole-program oracle, the reason for the
+  shape.
   Date/Author: 2026-10-15
 - Decision: The verifier's and the oracle's runs go to a sandbox provider
   the manifest names (`local` | `vm` | `ephemeral`), with the oracle runner
