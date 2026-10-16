@@ -595,6 +595,27 @@ PY
 assert_equals "$LONG" '[["bad-code"], 1]' \
   "an unusable writer under the machine's prefix is refused as bad-code and the valid event after it in the frame is appended"
 
+# A malformed event at a position this machine's own event holds is refused
+# bad-shape, but its position is coordinated like any own-writer refusal: it is
+# not tombstoned over the genuine event, whose echo imports as present.
+echo "a malformed event at a position this machine's own event holds:"
+HELD="$(python3 - "$SCRIPTS" "$HP" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_hublog as hublog
+p = sminos.find_project(sys.argv[2])
+key = bytes(range(32))
+hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+w = "testhost/5a000004-0000-4000-8000-0000000000d4"
+mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
+_, refused = hl.take([{"writer": w, "seq": mine["seq"], "ts": None, "kind": "say"}])
+appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+print(json.dumps([mine["seq"], [f["reason"] for f in refused], appended, [f["reason"] for f in echoed]]))
+PY
+)"
+assert_equals "$HELD" '[1, ["bad-shape"], 0, []]' \
+  "the malformed event is refused bad-shape, and the genuine event's echo imports as present, not refused as spent"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES uplink assertions passed"

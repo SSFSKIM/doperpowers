@@ -524,7 +524,7 @@ class HubLog:
             log("refused %s in %s: %s" % (position(raw), self.project.name, why))
             out.append(rejected(self.project.id, raw, reason, why))
             if isinstance(raw, dict) and isinstance(raw.get("writer"), str) and codes.is_log_seq(raw.get("seq")):
-                if reason != "bad-shape" and self.allocated_here(raw["writer"]):
+                if self.allocated_here(raw["writer"]):
                     if self.spend_own(raw["writer"], int(raw["seq"])):
                         newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
                 else:
