@@ -237,8 +237,11 @@ done
 cat > "$T/fake-ssh" <<'SSH'
 #!/bin/sh
 # ssh, as GIT_SSH_VARIANT=simple calls it (host, command): run the command here, after the gate lifts.
-[ -z "${SSH_ENTERED:-}" ] || : > "$SSH_ENTERED"
-while [ -n "${SSH_GATE:-}" ] && [ -f "$SSH_GATE" ]; do sleep 0.05; done
+# SSH_ENTERED marks a call held at the gate, never one that passed before the gate was set.
+if [ -n "${SSH_GATE:-}" ] && [ -f "$SSH_GATE" ]; then
+  [ -z "${SSH_ENTERED:-}" ] || : > "$SSH_ENTERED"
+  while [ -f "$SSH_GATE" ]; do sleep 0.05; done
+fi
 exec sh -c "$2"
 SSH
 chmod +x "$T/fake-ssh"
