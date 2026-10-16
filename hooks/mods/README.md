@@ -418,6 +418,15 @@ first in `register.tsx`, so its hooks are the outermost: what it reports is
 what the session showed and kept, after every other mod. Never in a session
 with `SMNS_INTERNAL` set (derive's headless fork).
 
+`bridge.tsx` holds the hooks and the code that takes `$`: the session start,
+the child and the session it serves, control, and the wait for a decision.
+The rest sits beside it in modules that take no `$`, each importing only the
+ones listed before it: `bridge-state.tsx` (the one state object, its types,
+and `resetBridge`), `bridge-stream.tsx` (the mod's copy of the live state and
+the poster), `bridge-requests.tsx` (requests from outside and their
+settlement), and `bridge-rows.tsx` (each kept row's notice, and the export
+to the host).
+
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and
   results, turns, subagents, usage, a heartbeat, and the requests below.
