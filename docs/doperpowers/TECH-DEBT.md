@@ -296,3 +296,15 @@ the spec's Decision Log entry "the branch review round"
   the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
   whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are
   the ones most affected.
+
+## to-human style (2026-10-15, 7.158.0)
+
+- **About 1 report in 30 comes back with no `<message>` wrapper.** In the
+  ⚠-paragraph micro-test (`tests/output-styles/to-human-affected-eval.py`),
+  4 of 124 final reports from Opus 5.5 under the full style were written
+  unwrapped, so the view would fold them into the working record and the
+  human would not see them. The rate did not differ between the 7.157.4
+  style and the variants. The test sends no per-turn style reminder, which
+  real sessions get, so the live rate may be lower. Trigger: a transcript
+  audit of interactive to-human sessions, counting final turns with text
+  and no mark, that finds the same order of rate.
