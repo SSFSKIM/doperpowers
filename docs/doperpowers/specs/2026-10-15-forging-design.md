@@ -48,8 +48,8 @@ ends with zero divergences and a ledger with every component `matching`. At
 scale, without a run: the Claude Code 2.1.300 scenario under
 `docs/doperpowers/research/2026-10-15-compile-class-work/scenario-2.1.300/`
 carries a manifest built from the 404,213-line harness specification and the
-extracted bundle, an oracle harness for the headless and provider-request axes
-that scores 2.1.300 against itself at 100% and catches the 2.1.299 → 2.1.300
+extracted bundle, an oracle harness for the provider-request, headless and
+on-disk axes that scores 2.1.300 against itself at 100% and catches the 2.1.299 → 2.1.300
 changelog as divergences, and a gate record that says, honestly, which ledger
 items the built axes cover and which wait on the TUI axis.
 
@@ -297,8 +297,8 @@ session:
    returned to the root).
 2. **Implementer** (tier B; `doperpowers:forge-implementer`, opus/high,
    downgradable per unit) — in its own worktree, from the spec and the brief,
-   implements to the oracle; sees the diffs of its own failures from the fast
-   sample, never the expected corpus. Returns `DONE` with a report, or
+   implements to the oracle; sees the fast sample's diffs (expected side
+   included, as debugging needs), never the full corpus or the held-out. Returns `DONE` with a report, or
    `MORE_WORK`, `BLOCKED`, `INFEASIBLE`.
 3. **Reviewer** (tier C; `doperpowers:forge-reviewer`, sol/xhigh, read-only)
    and **verifier** (mechanical, a runner step: a fresh checkout at the unit's
@@ -385,12 +385,15 @@ session —
 
 ```
 claude -p --agent <role> --settings forge/roles/<role>.json \
-       --max-turns <n> --output-format stream-json
+       --permission-mode dontAsk --max-turns <n> \
+       --output-format stream-json --verbose
 ```
 
 — the prompt rendered from the manifest and the unit (the brief, the paths,
 the report file), the status read from the report's first line, the usage
-from the stream. `--agent <name>` resolves a plugin agent by its unqualified
+from the stream (`--verbose` is mandatory for stream-json in print mode;
+`dontAsk` denies anything the role's allow rules do not cover, so no prompt
+blocks a headless role). `--agent <name>` resolves a plugin agent by its unqualified
 name (the harness matches any active agent whose type ends with `:<name>`).
 Tiers are the role's settings: `sandbox.filesystem.denyRead` and
 `permissions.deny` rules for the reference and `forge/oracle/` in the
@@ -582,9 +585,10 @@ parsing, a config reader, a transform, output), bundled with `bun build
 written the way the 2.1.300 SPEC is written (verbatim strings, schemas,
 exit codes, file formats). The oracle: scripted invocations compared on
 stdout, exit code and files written; a held-out set of invocations; a seeded
-divergence (a second build with one constant changed). The strangler: a
-twenty-line hybrid build that imports each module from the reference chunk or
-the reforged source per `forge/strangler.json`. The whole system runs on it
+divergence (a second build with one constant changed). The strangler: `tools/hybrid.mjs`, a
+short build that imports each module from the reference chunk or the reforged
+source per `forge/strangler.json`, part of the fixture the way the bundle's
+`tools/` are part of the scenario's reference. The whole system runs on it
 end to end — Phase 0 and 1 by the skill, the gate, Phase 2 by the runner with
 two units in parallel, closure — at a cost of tens of agent sessions, most at
 sonnet. It is the proof that the machinery works and the fixture for the
@@ -598,15 +602,18 @@ Observable at the end, each with the milestone that proves it:
    context beyond `skills/forging/SKILL.md`, its references, and the toy
    target writes `tests/forging/toy/forge/` with `manifest.md` (sections
    2.1–2.8 present), `ledger.tsv`, `units.json`, `rubric.md`, `roles/`,
-   `oracle/`; `forge-run.py plan` prints its waves. (M1, M7)
+   `oracle/`; `forge-run.py plan` prints its waves. (M1 for the shape, M4 for
+   `plan`)
 2. **The gate decides.** `forge/gate/verdict.md` for the toy names the
    verdict and the four parts' artifacts exist; for the toy the verdict is
    pass. For 2.1.300 the verdict names which ledger items the built axes
-   cover and which wait on unbuilt axes, with a count of each. (M1, M3, M7)
+   cover and which wait on unbuilt axes, with a count of each. (M1 for the
+   toy, M3 for the scenario)
 3. **The oracle is verified.** For the toy and for 2.1.300: `forge-run.py
    oracle self-parity` prints `100%` on every built axis; `oracle mutation`
    against the seeded or adjacent reference prints the divergences it caught,
-   attributed, and `skipped: 0` or an explained count. (M3, M7)
+   attributed, and `skipped: 0` or an explained count. (M1 for the toy, M3
+   for the scenario)
 4. **The strangler spike has a verdict.** The scenario manifest's Decision
    Log carries the zero-replacement hybrid's self-parity result and
    `promote` or `discard` with the shape that follows. (M3)
@@ -650,10 +657,15 @@ goes and keeps `Progress` current.
 
 ### M1 — The skill: doctrine, manifest shape, oracle patterns, rubric, rigor gate
 
-What exists at its end: `skills/forging/` with `SKILL.md` and the five
-references of §5, and a subagent reading them can produce a manifest
-directory for a toy target (acceptance 1's shape, without the runner).
-Touches: `skills/forging/`. Produces: the manifest shape (`manifest.md`,
+What exists at its end: `skills/forging/` with `SKILL.md`, the five
+references of §5 and `scripts/forge-readers.py`; the toy fixture under
+`tests/forging/toy/` (`src/`, `SPEC.md`, `dist/ref/` built with `bun build
+--splitting`, `dist/mut/` the same build with one constant changed as the
+seeded divergence, `tools/hybrid.mjs` the hybrid builder); and, produced by a
+subagent reading nothing but the skill and the fixture, the toy's `forge/`
+with its oracle (`forge/oracle/run.py` per the contract in Interfaces), its
+self-parity and mutation evidence, and its gate record. Touches:
+`skills/forging/`, `tests/forging/toy/`. Produces: the manifest shape (`manifest.md`,
 `ledger.tsv` columns, `units.json` schema, `roles/*.json` keys, the status
 vocabulary, the report-file convention) in `references/manifest.md` —
 consumed by every later milestone under those names. Decisions for this
@@ -666,11 +678,17 @@ touch lives in the references, so the agent definitions (M4) point to it
 rather than restate it; the look-alike lists in `rubric.md` are seeded for
 JS→Rust and bundle→TS from the survey and §6, with the instruction to extend
 per target; `rigor-gate.md` carries the auditor's brief and the readers'
-prompt verbatim, since a dispatch copies them. Does not touch: scripts,
-agents, tests. Proves: acceptance 1's manifest shape (a dry read by a
-general-purpose subagent given the skill and `tests/forging/toy/` — the toy's
-source and spec are written here as the fixture, its `forge/` by that
-subagent); doperpowers:writing-skills' structure test on the skill.
+prompt verbatim, since a dispatch copies them; `forge-readers.py` dispatches
+the readers as headless sessions and lays their lists side by side, and is
+here rather than in M4 because the gate needs it before the runner exists;
+the toy's oracle, strangler shim and hybrid use are the subagent's work from
+the skill, and where its output falls short of the contract the executor
+fixes the skill's text, not the output, and re-runs the read. Does not
+touch: the runner, the role agents. Proves: acceptance 1's shape (the dry
+read), 2 and 3 for the toy (the readers through `forge-readers.py`, the
+`doperpowers:adversarial-reviewer` audit with `rigor-gate.md`'s brief,
+`forge/gate/verdict.md`); doperpowers:writing-skills' structure test on the
+skill.
 
 ### M2 — The 2.1.300 scenario manifest
 
@@ -727,7 +745,10 @@ Produces: the runner's command surface and `state.json` schema (Interfaces).
 Decisions: one headless session per role invocation, as §3 says, with the
 prompt rendered from `manifest.md`, `units.json` and the role's brief file,
 the report path passed in the prompt and its first line parsed as the
-status; the stub `claude` for tests is a shell script on `PATH` that writes a
+status; every role runs with `--permission-mode dontAsk` and the allow
+rules its settings file carries, so a headless role is never blocked on a
+prompt and never acts outside its tier; the stub `claude` for tests is a
+shell script on `PATH` that writes a
 scripted report per role and unit from a fixture, so transitions are tested
 without a model; concurrency is a process pool over units with a per-unit
 lock file as the claim; `state.json` is rewritten whole after each transition
@@ -752,15 +773,20 @@ the manifest's reference paths; `oracle` subcommands call
 `forge/oracle/run.py` with a fixed argument contract (`<axis> <binary>
 <slice>` → a directory of observations, `normalize`, `compare` → a summary
 line and a detail file) so the harness is per target and the driver is not;
-the held-out path comes only from `FORGE_HELDOUT`. Does not touch: the root
+the held-out path comes only from `FORGE_HELDOUT`; `run` executes `full` at
+every wave end and writes a `tip-failure` event per divergence, while held-out
+stays the root's to run. Does not touch: the root
 protocol. Proves: acceptance 6 and 7 on the toy with the stub `claude` and
 the toy's oracle.
 
 ### M6 — The root protocol and the delegator
 
 What exists at its end: `references/root-protocol.md`, `agents/forge-delegator.md`,
-and a seeded-events test of the delegator's resolutions and the wave report's
-format. Touches: `skills/forging/references/`, `agents/`, `tests/forging/`.
+`forge-run.py report` (the wave report rendered from `state.json`, the ledger
+and the last oracle results), and a seeded-events test of the delegator's
+resolutions and the report's format. Touches: `skills/forging/references/`,
+`agents/`, `skills/forging/scripts/forge-run.py` (the `report` subcommand
+only), `tests/forging/`.
 Consumes: the runner's surface and `events.jsonl`. Decisions: the protocol is
 an operator manual in the style of `issue-tracker/references/review-loop.md`
 — start, waves, folding events, re-planning, process fixes, reports,
@@ -802,7 +828,7 @@ Working directory is the repository root unless stated.
   `python3 -I forge/oracle/run.py mutation --against ~/.local/share/claude/versions/2.1.299` →
   `mutation: caught K/K changelog items on built axes; skipped: 0`;
   `python3 -I forge/oracle/hybrid.py --zero-replacement && python3 -I forge/oracle/run.py self-parity --candidate forge/.hybrid/cli` →
-  the spike's number; the gate: `python3 -I /path/to/forge-readers.py forge/ U1 U2`
+  the spike's number; the gate: `python3 -I ../../../../../skills/forging/scripts/forge-readers.py forge U1 U2`
   then the adversarial-reviewer dispatch with `references/rigor-gate.md`'s
   brief; `cat forge/gate/verdict.md`.
 - M4, M5, M6: `tests/forging/run-forging-tests.sh` → every test's name and
@@ -824,14 +850,15 @@ Defined once here; milestones point at them.
   } ], "parallel": n }`; `roles/<role>.json` is a harness `--settings`
   document; a role's report file's first line is one of `DONE`, `MORE_WORK`,
   `BLOCKED`, `INFEASIBLE`, `ERROR`, followed by the report.
-- **Oracle runner contract** (M3 for the scenario, M7 for the toy, M5's
+- **Oracle runner contract** (M1 for the toy, M3 for the scenario; M5's
   driver): `forge/oracle/run.py <axis> run <binary> <slice> <outdir>`,
   `… normalize <outdir>`, `… compare <expected> <actual>` → one summary line
   on stdout (`<axis> <slice>: <n> divergences, skipped: <k>`) and a detail
   file; `self-parity`, `mutation --against <ref>`, `fast --worker <id>`,
   `full`, `heldout` compose these.
-- **Runner surface** (M4, M5): `forge-run.py plan|run|unit <id>|land <id>|
-  oracle <sub>|status [--resume] [--parallel n] <forge-dir>`; `state.json`
+- **Runner surface** (M4, M5, `report` in M6): `forge-run.py plan|run|unit
+  <id>|land <id>|oracle <sub>|status|report [--resume] [--parallel n]
+  <forge-dir>`; `state.json`
   `{ "run", "units": { "<id>": { "state", "rounds": [ { "role", "status",
   "report", "usage" } ], "head", "review_head" } }, "waves": [] }`;
   `events.jsonl` lines `{ "ts", "unit", "kind", "detail" }` with `kind` in
