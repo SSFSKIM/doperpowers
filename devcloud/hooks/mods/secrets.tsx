@@ -34,13 +34,14 @@ import type { Format } from './secrets-sources'
  */
 
 /**
- * Interfaces I9: while this module is loaded the process carries the marker,
- * and `cua`'s scrubbing stands down so one guard decides every handle. A
- * process-wide value a child process does not inherit, set at load.
+ * Interfaces I9: from session start the session carries the guard marker in
+ * `$.state`, under this plugin's name, and `cua`'s scrubbing stands down so
+ * one guard decides every handle. Every plugin reads it; only devcloud writes
+ * it; a child process (a `claude` a tool call starts) has its own session and
+ * decides for itself. Its type is the plugin's contract (types/devcloud.d.ts).
+ * Not a `globalThis` symbol: the engine evaluates each
+ * plugin's module in a realm of its own (probed 2026-10-17, 2.1.302).
  */
-export const GUARD_MARKER = Symbol.for('claude-code.secrets-guard')
-;(globalThis as Record<symbol, unknown>)[GUARD_MARKER] = Object.freeze({ owner: 'devcloud', version: 1 })
-
 // The tools whose input a handle is restored in before they run.
 const RESTORED = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash'])
 // `tool.call`'s own keys beside the tool's arguments: never rewritten.
@@ -209,12 +210,16 @@ const persistedPath = (result: unknown): string | undefined => {
   return typeof record.persistedOutputPath === 'string' && record.persistedOutputPath && record.isImage !== true ? record.persistedOutputPath : undefined
 }
 
+// Withheld rather than passed on unread: the call ran, its result is not shown.
+const WITHHELD = 'secrets: the guard could not scrub this result, so it is withheld.'
+
 const notRestored = (unrestored: readonly string[]) =>
   `secrets: not restored, so written as is: ${unrestored.join(', ')} ` +
   "(a superseded value, a key no longer stored, or another session's redaction)."
 
 // Taken with both matchers: an event is registered without one once per module.
 const secretsStart: Hook<'session.start'> = async ($, e, next) => {
+  await $.state.set({ plugin: 'devcloud', key: 'secrets-guard' }, { owner: 'devcloud', version: 1 })
   project = undefined
   await projectOf($, e.cwd)
   await refresh($, true)
@@ -253,10 +258,9 @@ export function registerSecrets(on: On) {
       if (result === ran.result && context === ran.context) return ran
       return { result, context }
     } catch {
-      // Withheld rather than passed on unread: the call ran, its result is not shown.
-      return { deny: 'secrets: the guard could not scrub this result, so it is withheld.' }
+      return { deny: WITHHELD }
     }
-  })
+  }).catch((_, e, next) => (next.called ? { deny: WITHHELD } : { deny: 'secrets: the guard failed before the call ran, so it did not run.' }))
 
   // Every row the conversation keeps, whatever door it came in by.
   on('session.append', async ($, e, next) => {
@@ -278,7 +282,8 @@ export function registerSecrets(on: On) {
       return block
     })
     return isChanged ? next({ ...e, message: { ...e.message, content } }) : next(e)
-  })
+    // An engine row cannot be refused: one the guard failed on is kept as it came.
+  }).catch((_, e, next) => next(e))
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)

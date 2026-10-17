@@ -9,6 +9,7 @@
   "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/devcloud",
   "repository": "https://github.com/SSFSKIM/doperpowers",
   "license": "MIT",
+  "types": "./types/devcloud.d.ts",
   "keywords": [
     "secrets",
     "redaction",

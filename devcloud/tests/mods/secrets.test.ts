@@ -2,7 +2,6 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { GUARD_MARKER } from '../../hooks/mods/secrets'
 import { chars, githubPat } from './fake'
 
 tier('user')
@@ -25,11 +24,11 @@ const disk = (on: On, initial: Record<string, string>) => {
   const put = (path: string, text: string) => files.set(path, { text, mtimeMs: (clock += 1_000) })
   for (const [path, text] of Object.entries(initial)) put(path, text)
   const isDir = (path: string) => [...files.keys()].some((f) => f.startsWith(`${path}/`))
-  const missing = (path: string) => Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' })
+  const missing = (path: string) => ({ deny: `ENOENT: ${path}` })
   on('fs.exists', (_, e) => ({ value: files.has(e.path) || isDir(e.path) }))
   on('fs.read', (_, e) => {
     const file = files.get(e.path)
-    if (!file) throw missing(e.path)
+    if (!file) return missing(e.path)
     return { value: file.text }
   })
   on('fs.write', (_, e) => {
@@ -40,10 +39,10 @@ const disk = (on: On, initial: Record<string, string>) => {
     const file = files.get(e.path)
     if (file) return { value: { kind: 'file' as const, size: file.text.length, mtimeMs: file.mtimeMs, isLink: false } }
     if (isDir(e.path)) return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false } }
-    throw missing(e.path)
+    return missing(e.path)
   })
   on('fs.list', (_, e) => {
-    if (!isDir(e.path)) throw missing(e.path)
+    if (!isDir(e.path)) return missing(e.path)
     const names = new Map<string, 'file' | 'dir'>()
     for (const path of files.keys()) {
       if (!path.startsWith(`${e.path}/`)) continue
@@ -83,9 +82,14 @@ const tool = (on: On, answer: (e: Record<string, unknown>) => unknown) => {
 
 const bash = (stdout: string, extra: Record<string, unknown> = {}) => ({ stdout, stderr: '', interrupted: false, ...extra })
 
-test('loading the module marks the process as guarded (Interfaces I9)', () => {
-  expect((globalThis as Record<symbol, unknown>)[Symbol.for('claude-code.secrets-guard')]).toEqual({ owner: 'devcloud', version: 1 })
-  expect(GUARD_MARKER).toBe(Symbol.for('claude-code.secrets-guard'))
+test('a started session sets the guard marker every plugin can read (Interfaces I9)', async ($, on) => {
+  const set: unknown[] = []
+  on('state.set', (_, e) => {
+    set.push({ plugin: e.plugin, key: e.key, value: e.value })
+    return { value: { isSet: true, version: 1 } }
+  })
+  await start($, on, {})
+  expect(set).toEqual([{ plugin: 'devcloud', key: 'secrets-guard', value: { owner: 'devcloud', version: 1 } }])
 })
 
 describe('redact, never refuse', () => {
