@@ -243,6 +243,61 @@ working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
 plugin-submitted prompt does.
 
+## appeal (`appeal.tsx`, `appeal-judge.tsx`)
+
+In auto mode the classifier blocks calls, some wrongly — a scratch file
+under `/tmp` read as a shared resource, a subagent's force-push the human
+asked for in the main conversation, which a subagent's classifier never
+sees. This mod lets the agent contest one block to an independent judge.
+Design and the engine facts it stands on:
+`docs/doperpowers/specs/2026-10-17-auto-mode-appeal-design.md`.
+
+A `tool.call` hook on every tool reads the classifier's denial out of an
+error result (`Permission for this action was denied by the Claude Code
+auto mode classifier. Reason: …`), gives the block an id (`b1`, `b2`, …)
+and adds one `context` line telling the model it may appeal once. A block
+naming `[Data Exfiltration]` (the classifier's hard block) or `[User Deny
+Rules]` (a `permissions.deny` rule reached by another route) gets neither.
+`mcp__doperpowers__appeal` (`block`, `argument`), registered in every loop,
+subagents included, puts the appeal to the judge: one `$.model.complete`
+call, `opus` at high effort (`DOPERPOWERS_APPEAL_MODEL` overrides), whose
+system prompt is the judge's whole behavior (`JUDGE_SYSTEM` in
+`appeal-judge.tsx`). It reads the blocked call whole (an input over 100,000
+characters is refused before the judge), the argument named as the agent's
+claim, the instruction files (`~/.claude/CLAUDE.md` as the user's own, the
+project's as in the repository), the `autoMode` and `permissions.deny` of
+the settings sources the classifier itself trusts — `user`, `policy`,
+`flag`, read one at a time, never the merged ones a repository's
+`.claude/settings.json` feeds — the answered async asks (the ask mod's
+`asyncAsks()`: an answer delivered as a tool result's context is not the
+user's words to the classifier, which is how this very feature's spec was
+blocked as `[Auto-Mode Bypass]` after the human chose it in one), and the
+main conversation as lines — `[user]` rows with `<system-reminder>` spans
+cut, the agent's last text before each as the proposal the user may have
+affirmed, each call and its result — with a subagent's conversation after
+it for a block made there. A compaction summary and a plugin-submitted
+prompt, which `$.session.messages()` hands over as user rows, are named as
+not the user's. The judge grants only when the block misread facts the
+evidence shows, or the user's own words authorize the exact action; two
+bars no authorization clears (sending sensitive material out, reaching a
+deny rule's effect); when in doubt it upholds and says what the user would
+need to say. A grant leaves a pass: the identical call (for Bash, its
+`description` aside) in the same loop, within 10 minutes, once. The
+`tool.check` hook applies it only over core's plain `ask` — no `rule`,
+`hook`, `setting`, `decider`, no organization `ceiling` — so a pass never
+overrides a deny rule, a settings ask rule, a classic hook, or a host. Any
+`prompt.submit` ends every pass and makes a judge call in flight no ruling:
+the ruling was on the conversation as it was. One appeal per block; a judge
+call that fails leaves the appeal open once more. Every event is logged to
+`~/.claude/appeals/<session-id>.jsonl` (seeded from the file at start, the
+writes chained), and `/appeals` prints the last 30 days — counts, the grants,
+and the `autoMode` entries one more model call suggests from them, for the
+person to apply by hand; nothing here writes settings.
+
+Tests: `tests/mods/appeal.test.ts`; the live check
+`tests/mods/live-appeal-check.py` drives a headless auto-mode session
+through a real block, ruling and pass (it spends model calls; run by hand).
+
 ## ask (`ask.tsx`)
 
 The model asks the human through one tool, `mcp__doperpowers__AskUserQuestion`:
@@ -601,7 +656,10 @@ never an agent's notification.
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
 2026-10-07, so it is registered once, by the plugin that owns its store,
-`~/.config/claude-secrets/KEY` (unchanged).
+`~/.config/claude-secrets/KEY` (unchanged). The guard that keeps secrets out
+of what the model reads and what the transcript keeps is the devcloud
+plugin's (`devcloud/hooks/mods/secrets.tsx`, described in
+`devcloud/README.md`), a separate plugin a person opts into.
 
 ## Developing
 

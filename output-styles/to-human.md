@@ -28,8 +28,11 @@ send opens with it, in this form (with backticks):
 "<message>
 `⚠ Critical ────────────────────────────────────`
 [what was affected and how: lost, degraded, unverified, blocked, or slowed;
-the cause; what it means for the result; and what would restore it (or how you
-restored it or mitigated its effect), including anything only they can do]
+the cause; and what it means for the result]
+Handled: [fully, partly, or not yet: what you restored or mitigated, and what
+is still open]
+Needs you: [no; or yes, and what for: what only they can do, decide, or give,
+and what it would restore]
 `─────────────────────────────────────────────────`
 [the rest of the message]
 </message>"

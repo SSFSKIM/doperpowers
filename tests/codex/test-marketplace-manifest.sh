@@ -59,3 +59,42 @@ assert_equal(
 
 print("Codex marketplace manifest looks good")
 PY
+
+# The Claude Code marketplace: each plugin this repository ships (a relative
+# source) is found by its name, never its place in the list, and its entry
+# names the version its own plugin.json carries.
+python3 - "$REPO_ROOT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+marketplace = json.loads((repo_root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+plugins = marketplace.get("plugins")
+if not isinstance(plugins, list):
+    raise AssertionError("plugins must be a list")
+
+def entry(name):
+    found = [p for p in plugins if p.get("name") == name]
+    if len(found) != 1:
+        raise AssertionError(f"{name}: expected one marketplace entry, found {len(found)}")
+    return found[0]
+
+expected_sources = {"doperpowers": "./", "devcloud": "./devcloud"}
+for name, source in expected_sources.items():
+    if entry(name).get("source") != source:
+        raise AssertionError(f"{name}: source {entry(name).get('source')!r}, expected {source!r}")
+
+for plugin in plugins:
+    source = plugin.get("source")
+    if not isinstance(source, str):
+        continue  # another repository's plugin (a URL source) carries its own version
+    manifest = json.loads((repo_root / source / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    name = plugin.get("name")
+    if manifest.get("name") != name:
+        raise AssertionError(f"{name}: plugin.json at {source} is named {manifest.get('name')!r}")
+    if manifest.get("version") != plugin.get("version"):
+        raise AssertionError(f"{name}: marketplace version {plugin.get('version')!r}, plugin.json {manifest.get('version')!r}")
+
+print("Claude marketplace manifest looks good")
+PY

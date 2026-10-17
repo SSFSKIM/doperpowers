@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "Emerges by humans, Converges by Agent",
-      "version": "7.166.0",
+      "version": "7.167.0",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -30,6 +30,18 @@
         "email": "supremekim17@gmail.com"
       },
       "homepage": "https://github.com/SSFSKIM/ci-kit"
+    },
+    {
+      "name": "devcloud",
+      "description": "The secrets guard: stored values, credential files and token-shaped strings become handles in what the model reads and the transcript keeps, restored to their bytes on write",
+      "version": "0.1.0",
+      "source": "./devcloud",
+      "author": {
+        "name": "SSFSKIM",
+        "email": "supremekim17@gmail.com"
+      },
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/devcloud",
+      "license": "MIT"
     }
   ]
 }

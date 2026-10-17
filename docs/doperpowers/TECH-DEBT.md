@@ -43,6 +43,7 @@
 | 29 | T3 | `push_member`'s lifecycle lock (36feaacc) has no interleaving test: the stale-push probe retires the seat before the call, so it exercises the reloaded-record recheck and not the lock across reload → resume. A probe that retires the seat from a patched `live_state` between the liveness read and the lock would pin it (sminos family chat re-review, 2026-09-27) | Next change to `push_member` or `resume_session` locking |
 | 30 | T3 | The status mirror is stale beside `live`: `list` prints a seat's last self-reported `status`, so a host that never ran `sminos status` reads `working` while `live=idle`; `sync` refreshes it, `list` does not. Seen in the family-chat live proof (spec Surprises, 2026-09-27); pre-existing | Next `list`/`sync` touch, or an operator misled by it |
 | 31 | T2 | A usage-limit stop on a seat is handled as an ordinary errored turn: the harness job reads `failed`, `status_for_state` maps it to `error`, and `board-sweep.sh`'s `pass_recover` resumes it with a nudge at each tick until `SWEEP_RECOVERY_CAP` (3) is spent — against a limit that lifts in hours every attempt fails and the ticket parks `needs-human` with its recovery cap gone (T3 comparison §4.1, 2026-10-08). The sweep never reads the error text; a gateway limit's text carries its reset time (`… at its usage limit until Oct 9, 14:13 PDT`), Anthropic's own shape in a `--bg` transcript is unobserved. Fix, in order: CAPTURE the next limit stop on a seat (the transcript's last records and the harness row) before any code; then stamp `limited_until` on the seat and have the sweep skip recovery until it passes without spending the cap; `list`'s now column reads it as `waiting` reads `waitingFor` | The next usage-limit stop on a seat — capture first |
+| 32 | T3 | The appeal mod's pass is bound to the loop, the tool, the whole input, the epoch, the loop's directory and (Bash) the loop's Bash generation, but not to a shell's recovery from a deleted directory: when another process deletes the shell's current subdirectory after a grant, Bash may recover to the project root during execution, after `tool.check`, and run a relative command there with no Bash start between (review round four, 2026-10-17). Needs another process racing the agent's own directory. Separately, the live check's grant scenario found no classifier block to appeal in four candidates, so the pass path is proven by unit tests and engine facts, not live (`docs/doperpowers/specs/2026-10-17-auto-mode-appeal-design.md`) | The first real grant in `/appeals` (confirms the pass path live), or a deleted-directory recovery seen in a log |
 
 ## T1 — structural: the unattended-dispatch phase must answer these
 
@@ -403,3 +404,13 @@ the spec's Decision Log entry "the branch review round"
 - **`ask.tsx` type errors against the 2.1.302 typings** (lines 1462, 1504),
   seen by `tsc` during this work; the mods tests pass. Trigger: next
   `ask.tsx` change.
+
+## devcloud secrets mod (2026-10-16, spec 2026-10-15-devcloud-design.md)
+
+- **An oversized output can ship raw if the process dies mid-call.** The
+  engine persists a large tool output to `tool-results/` before the mod's
+  `tool.call` hook rewrites it scrubbed; a kill in that instant leaves the raw
+  file, which the person's session store ships after its settle interval.
+  Accepted at design (Decision Log, round 3). Trigger: a raw value found in
+  the session store's copy of a `tool-results/` file, or the store gaining a
+  reader other than the person.
