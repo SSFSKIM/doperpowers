@@ -164,7 +164,7 @@ the result with one `context` entry added (the model reads it after the
 denial):
 
 ```
-Auto mode block b3. If the classifier misread this call, or the user's own words authorize it, you may appeal once: mcp__doperpowers__appeal with block "b3".
+Auto mode block b3. The classifier judged from the transcript alone: it does not read your reasoning, and in a subagent it never sees the main conversation. If it misread this call, or the user's own words authorize it (in the main conversation too), appeal once before you stop or work around it: mcp__doperpowers__appeal with block "b3".
 ```
 
 Two kinds of block get no id and no note, because no appeal may lift them:
@@ -188,10 +188,10 @@ schema: `block` (string, required), `argument` (string, required). Its
 description, verbatim:
 
 ```
-Appeal a block by auto mode's classifier. Use it when the block misreads the call — what it does, what it touches, whose it is — or when the user's own words authorize this exact action, and the facts that show it are in this conversation. Not for arguing that you need the action: an action the user has not authorized is a question for the user.
+Appeal a block by auto mode's classifier. The classifier judges each call from the transcript alone and blocks when in doubt: it does not read your reasoning, and in a subagent it never sees the main conversation — the user's words there, and their answers to questions you asked, do not reach it. A block can therefore be wrong about a legitimate call. Appeal when it is: when the block misreads the call — what it does, what it touches, whose it is — or when the user's own words authorize this exact action, in this conversation or, for a subagent, in the main one. An independent judge rules with that evidence in view. Not for arguing that you need the action: an action the user has not authorized is a question for the user.
 - block: the id the block's notice gave (b1, b2, …).
-- argument: the facts and where they are (a user message, an answer to your question, an earlier call or its result, CLAUDE.md). An independent reviewer checks each against the conversation; a claim it cannot find counts against the appeal.
-One appeal per block. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; if the action is still needed, ask the user that.
+- argument: the facts and where they are (a user message, an answer to your question, an earlier call or its result, CLAUDE.md). The judge checks each against the conversations; a claim it cannot find counts against the appeal.
+One appeal per block; appeal before you stop or work around the block. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; if the action is still needed, ask the user that.
 ```
 
 The hook answering the tool refuses, with a one-line reason and no judge call:
@@ -714,6 +714,18 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   project root during execution, after `tool.check`, and run a relative
   command there — logged in `docs/doperpowers/TECH-DEBT.md`, not fixed: it
   needs another process racing the agent's own directory.
+  Date/Author: 2026-10-17, the authoring session.
+- Decision: the tool's description and the block's notice say why a block
+  can be wrong — the classifier judges from the transcript alone, reads no
+  reasoning, and in a subagent never sees the main conversation — and that
+  the user's words in the main conversation count for a subagent's appeal,
+  and that the appeal comes before stopping or working around the block.
+  Rationale: the human asked whether the model is told this (2026-10-17);
+  the first wording said "the facts … are in this conversation", which a
+  subagent would read as excluding the main conversation — the very case
+  the feature exists for — and the engine's denial text tells the model to
+  stop and explain, so the notice has to put the appeal first. About 110
+  tokens more in the prompt (the definition is now about 420–470).
   Date/Author: 2026-10-17, the authoring session.
 - Decision: both milestones are executed in the authoring session, not through
   `doperpowers:plan-executor`.

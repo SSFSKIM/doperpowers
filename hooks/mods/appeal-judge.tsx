@@ -136,7 +136,7 @@ export function recordBlock(ledger: Ledger, call: { agentId?: string; tool: stri
 
 /** The note the model reads after a denial it may appeal. */
 export function blockNotice(id: string): string {
-  return `Auto mode block ${id}. If the classifier misread this call, or the user's own words authorize it, you may appeal once: mcp__doperpowers__appeal with block "${id}".`
+  return `Auto mode block ${id}. The classifier judged from the transcript alone: it does not read your reasoning, and in a subagent it never sees the main conversation. If it misread this call, or the user's own words authorize it (in the main conversation too), appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}".`
 }
 
 /**
@@ -247,10 +247,10 @@ export function rulingText(block: Block, verdict: Verdict, response: string): st
 
 /** The tool as the model reads it. */
 export const APPEAL_DESCRIPTION = [
-  "Appeal a block by auto mode's classifier. Use it when the block misreads the call — what it does, what it touches, whose it is — or when the user's own words authorize this exact action, and the facts that show it are in this conversation. Not for arguing that you need the action: an action the user has not authorized is a question for the user.",
+  "Appeal a block by auto mode's classifier. The classifier judges each call from the transcript alone and blocks when in doubt: it does not read your reasoning, and in a subagent it never sees the main conversation — the user's words there, and their answers to questions you asked, do not reach it. A block can therefore be wrong about a legitimate call. Appeal when it is: when the block misreads the call — what it does, what it touches, whose it is — or when the user's own words authorize this exact action, in this conversation or, for a subagent, in the main one. An independent judge rules with that evidence in view. Not for arguing that you need the action: an action the user has not authorized is a question for the user.",
   "- block: the id the block's notice gave (b1, b2, …).",
-  '- argument: the facts and where they are (a user message, an answer to your question, an earlier call or its result, CLAUDE.md). An independent reviewer checks each against the conversation; a claim it cannot find counts against the appeal.',
-  'One appeal per block. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; if the action is still needed, ask the user that.',
+  '- argument: the facts and where they are (a user message, an answer to your question, an earlier call or its result, CLAUDE.md). The judge checks each against the conversations; a claim it cannot find counts against the appeal.',
+  'One appeal per block; appeal before you stop or work around the block. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; if the action is still needed, ask the user that.',
 ].join('\n')
 
 export const APPEAL_SCHEMA: Record<string, unknown> = {
