@@ -29,6 +29,6 @@ if not checkout.exists():
     borrow = ["--reference", str(mirror)] if mirror.is_dir() else []
     subprocess.run(["git", "clone", "--quiet", *borrow, url, str(checkout)], check=True)
     if "--ref" in opts:
-        subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet", opts["--ref"]], check=True)
+        subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet", opts["--ref"], "--"], check=True)
 known.write_text(json.dumps({"repos": [{"name": name, "url": url, "path": str(checkout)}]}))
 sys.exit(subprocess.run(["bash", "devenv/setup.sh"], cwd=checkout).returncode)
