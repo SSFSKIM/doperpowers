@@ -15,7 +15,9 @@
 # no log event at all — while the writer's later events still arrive. Also:
 # hello on every new stream before any upload, hb-ack, the machine's presence
 # after every connect, a live member that joined under a former name joined
-# again under the enrolled one, and the uplink restarted when hub.json changes.
+# again under the enrolled one — also when it joins so on a stream already
+# open, with the daemon saying once that its session still writes under the
+# former name — and the uplink restarted when hub.json changes.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -363,6 +365,18 @@ assert_equals "$(python3 -c 'import json, sys
 print([(e["kind"], e.get("alias") or e.get("state")) for e in map(json.loads, open(sys.argv[1])) if e["kind"] != "joined"])' \
   "$BLOG/betaold.$NB.jsonl")" "[('state', 'idle'), ('renamed', 'nb-renamed')]" \
   "nb's state and its rename to nb-renamed are published under betaold"
+# ob: a session beta holds as betaold in another checkout, a plain git one.
+RO="$T/b/other"
+gitq init -q "$RO"
+OB=5b000003-0000-4000-8000-0000000000b3
+sleep 600 & OB_PID=$!
+PIDS+=("$OB_PID")
+ob_in() {
+  printf '{"pid":%s,"sessionId":"%s","name":"ob","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+    "$OB_PID" "$OB" "$1" > "$HOME/.claude/sessions/ob.json"
+}
+ob_in "$RO"
+(cd "$RO" && "$SMINOS" list >/dev/null)
 run "$SMINOS" hub enroll --name beta <<<"$(ctl code "$HUB" "$(ctl token)" beta "$KEY")"
 assert_contains "$OUT" "enrolled this machine as beta" "beta enrolls under a new name"
 start_daemon
@@ -390,6 +404,32 @@ assert_equals "$(members_of)" "[('ma', 'alpha', False), ('mb', 'beta', True), ('
   "beta keeps mb and nb-renamed its own, and sees ma as alpha's"
 SKIP="betaold/,hub/"
 export SKIP
+
+# ---- ob joins syncproj while beta's stream is open, written as betaold: the
+# hook of a Claude Code whose plugin predates the enrollment names the writer
+# after the host, as that plugin did.
+echo "a member joined as betaold on an open stream:"
+B_GEN="$(ctl gen beta)"
+python3 - "$RB" "$OB" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+project, ob = sminos.resolve_project(sys.argv[1]), sys.argv[2]
+sminos._append(project, "betaold/" + ob, [{"kind": "joined", "session": ob, "alias": "ob", "name_source": "derived",
+                                            "machine": "betaold", "cwd": sys.argv[1], "worktree": "", "role": "",
+                                            "seat": "", "by": ""}])
+PY
+ob_in "$RB"
+until_true 200 hub_has "beta/$OB" 1 || true
+assert_equals "$(ctl state "[(e['kind'], e.get('alias')) for e in d['projects']['$PID']['writers'].get('beta/$OB', [])[:1]]")" \
+  '[["joined", "ob"]]' "ob joins again as beta"
+assert_equals "$(ctl gen beta)" "$B_GEN" "on the stream already open"
+assert_contains "$(cat "$T/b/s/daemon.log")" "ob in syncproj still writes as betaold" \
+  "the daemon says ob still writes under the former name"
+assert_not_contains "$(cat "$T/b/s/daemon.log")" "nb-renamed in syncproj still writes" \
+  "and says nothing of nb, which wrote as betaold only before the enrollment"
+settle "after ob joins again"
+assert_equals "$(grep -c "ob in syncproj still writes" "$T/b/s/daemon.log")" 1 "said once, however many ticks see the writer"
 
 # ---- a burst on both, and messages across
 echo "a burst on both:"
