@@ -683,7 +683,10 @@ for the enrollment step below so the VM does not wait unattended; and ask the ci
 (`@doperpowers/CI-opt`) when its mac lane is measuring on the Mac mini, and run the acceptance
 traffic through the mini's gateway outside those windows.
 
-Run: acceptance 1–3, 5–6, 8 on the container on a machine with Docker; then the VM (created with
+Run: acceptance 1–2 on a Mac (no Docker needed); acceptance 3, 5–6, 8 on a container run on the
+throwaway VM, which has joined the tailnet, so the container reaches the gateway through its host
+as a sandbox on a persistent host would — no Docker daemon is started on either Mac (Decision Log,
+2026-10-17); then the VM itself (created with
 the person's existing provider CLI, never in a cloud project ci-kit operates — ci-kit's agents
 delete what they recognize there, and its spec asks that personal hosts live elsewhere):
 acceptance 3–6 and the unenrolled half of 7; request the
@@ -1003,6 +1006,21 @@ clears a plugin's state when it unloads is unverified).
   from a child `claude`. Rejected: an environment variable (child processes inherit it); a file
   (shared by every process on the machine).
   Date/Author: 2026-10-17, M1 executor.
+- Decision: The auto-mode classifier's request stays on §9's not-covered list, and handles keep
+  restoring in Write and Edit. Rationale: the guard keeps values out of the conversation's context
+  and out of stored copies; the classifier's request is neither — it goes only to the provider,
+  through the person's own gateway, and only after the model deliberately wrote a handle.
+  Rejected: rewriting a Bash call's store handle to a `$(cat …)` read (breaks inside single
+  quotes, covers store handles only, and Writes would still carry the value); not restoring
+  handles under auto mode (breaks editing a redacted file).
+  Date/Author: 2026-10-17, the person, through the design session.
+- Decision: No Docker daemon is started on either Mac. M2's container tests run on ci-kit's hosted
+  Ubuntu runner (the `devcloud` gate); M5 runs the container acceptance on the throwaway VM, which
+  joins the tailnet, so its container reaches the gateway as a sandbox on a persistent host
+  would. A wall in that plan goes to the design session before any fallback to a Mac.
+  Rationale: the MacBook's load is what ci-kit moves off it, and Docker.app may ask for a
+  privileged helper, which the person's privilege rule stops at.
+  Date/Author: 2026-10-17, the design session.
 
 ## Outcomes & Retrospective
 
