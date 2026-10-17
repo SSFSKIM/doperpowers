@@ -48,7 +48,9 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
   waves (the Bash restoration rule narrowed each time; Decision Log). Release to both Macs and the
   `cua` ticket follow the M1 pull request's merge.
 - [ ] `cua`'s ticket landed; acceptance 1–2 rerun with both plugins enabled, and once with `cua` alone.
-- [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
+- [x] (2026-10-17 15:20) M2 — devcloud core: image, boot program, secrets materializer, pull-only config,
+  services (devcloud 0.2.0), reviewed clean after three fix waves; container tests on ci-kit's hosted
+  runner (no Docker on the Macs).
 - [x] (2026-10-17 10:30) M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository
   (config repo, reviewed clean after two fix waves). Secret Manager: seven entries created by the person;
   one application key's entry waits on that key's rotation (`optional = true`, reports `missing`).
@@ -1144,6 +1146,29 @@ clears a plugin's state when it unloads is unverified).
   person's credentials. Root's shells do not load `/etc/devcloud/env`, which can put
   user-writable directories on root's `PATH`.
   Date/Author: 2026-10-17, the design session on the plan executor's proposal.
+
+- Decision: M2's host core as built. Boot steps are named `identity`, `tailnet-attach`, `seed`,
+  `bootstrap-secret`, `configuration`, `tailnet-check`, `secrets`, `home`, `apply`,
+  `settings-and-env`, `services`, `projects`; `missing` is also a step state (only optional entries
+  absent). The materializer lives in a package (`boot/devcloudlib/`) so it never shadows Python's
+  `secrets`. Test seams are environment variables (`DEVCLOUD_SM_ENDPOINT`, `GCE_METADATA_HOST`,
+  `DEVCLOUD_ALLOW_HTTP`, `DEVCLOUD_JOB_INTERVAL`), not descriptor keys, so I5 is unchanged. The
+  bootstrap token reaches git through a root-owned 0440 file read by a credential helper passed with
+  `-c` and deleted after the fetch. `/etc/devcloud/env` double-quotes and escapes every value so sh,
+  bash, zsh and systemd read it alike, expanding `$HOME`/`$PATH` in `profile.env` once at write
+  time. Store entries and template-less files get the value's exact bytes; `env` and template
+  targets drop one trailing newline; writes into the home run as the user. A container's
+  `DAEMON_BOOT_ID` derives from the host boot id and the container's start time (fresh per start,
+  stable across reruns). Under systemd the boot queues service starts rather than waiting (the
+  units are ordered after the boot; waiting deadlocked). Every child's and service's output is
+  scrubbed of every value the host knows — the set only grows, refreshed inside the one drain path
+  after bytes are read and before they are emitted — and bounded before it is logged.
+  `devcloud-services` follows a desired-state file (`/run/devcloud/services.json`) that step 11
+  writes, so a reconcile adds and removes services. Acceptance 6's check fails closed on any tool
+  error, scans every byte for known values, and verifies dpkg results one tool at a time.
+  Rationale: each follows a review finding or a contract the spec left open. Residue: an entry
+  removed from `secrets.toml` leaves its files on the host.
+  Date/Author: 2026-10-17, M2 executor; folded by the plan executor.
 
 ## Outcomes & Retrospective
 
