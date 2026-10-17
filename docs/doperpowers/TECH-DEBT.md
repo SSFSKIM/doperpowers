@@ -325,3 +325,31 @@ the spec's Decision Log entry "the branch review round"
   real sessions get, so the live rate may be lower. Trigger: a transcript
   audit of interactive to-human sessions, counting final turns with text
   and no mark, that finds the same order of rate.
+
+## to-human view in the fullscreen transcript (2026-10-16, engine 2.1.302)
+
+- **A wheel or trackpad scroll up jumps back down, 6–30 rows at a time.** It
+  is the engine's, not the mod's logic: the transcript's virtual list counts a
+  row it never mounted at 3 lines, a row a plugin draws mounts at 0 lines
+  until the plugin answers, and the anchor correction is skipped while a
+  wheel scroll is still draining, so a stretch of rows that turns out shorter
+  than assumed moves the view. The report view draws most rows empty, so it
+  hits this hardest. Measured on a resumed session, three fast bursts × two
+  launches: no render-hook plugin 0 jumps; this plugin with every hook
+  passing through 1; the report view 10. PageUp, a slow wheel, and a second
+  pass over rows already laid out never jump. Nothing in the render API lets
+  a mod avoid it; the fix belongs in the engine (keep the anchor delta during
+  a drain, or hold a pending plugin site at the assumed height). Workaround:
+  PageUp/PageDown. Trigger: an engine release whose virtual list changes, or
+  an upstream report being answered.
+- **Run boundaries follow the order rows first draw, which in fullscreen is
+  not transcript order.** `see()` appends a row to `view.order` the first
+  time it draws; on resume, and for rows that arrived while the human was
+  scrolled away, the virtual list mounts the bottom first and older rows
+  later, so `runStart`/`runEnd` walk a scrambled order. Seen in the scroll
+  repro as two `[ working record ]` buttons back to back with nothing between
+  them, where the design draws one. Render inputs carry no transcript position,
+  so a fix needs one from the engine or a placement inferred from
+  `$.session.messages()` (tool rows by `tool_use_id`, text rows by their text).
+  Trigger: the human deciding between those, or an engine release that adds
+  a position to render inputs.
