@@ -33,7 +33,7 @@
     },
     {
       "name": "devcloud",
-      "description": "The secrets guard: stored values, credential files and token-shaped strings become handles in what the model reads and the transcript keeps, restored to their bytes on write",
+      "description": "The secrets guard: stored values, credential files and token-shaped strings become handles in what the model reads and the transcript keeps, restored to their bytes on write. And the host image and boot program that make any Linux userland work like your Mac",
       "version": "0.1.0",
       "source": "./devcloud",
       "author": {
