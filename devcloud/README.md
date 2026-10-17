@@ -360,7 +360,17 @@ its own SIGTERM it forwards the signal to every child and waits up to 8 s
 
 **sminos.** A persistent host is a sminos machine once the person enrolls it
 (`sminos hub enroll`, a human step: its code carries the organization's key),
-which leaves `$SMINOS_HOME/daemon/hub.json`. From then on step 11 — at the
+which leaves `$SMINOS_HOME/daemon/hub.json`. On the host, as the image's user
+in that user's own login shell:
+
+    su - <user>
+    sminos hub enroll        # paste the code at the hidden prompt
+    sminos hub show          # the machine's enrolled identity
+
+A login shell, because the command's paths must expand in the user's
+environment: typed from root as `runuser -u <user> -- ~/.claude/...`, root's
+shell expands `~` to `/root` before the switch, and the enroll fails with
+permission denied. From then on step 11 — at the
 next boot, or at once with `devcloud reconcile` — runs `sminos daemon
 install` as the user (the doperpowers marketplace clone's `sminos.py`, which
 `sync/apply.py` installs), adds a drop-in naming `/etc/devcloud/env` as the
