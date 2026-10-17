@@ -9,7 +9,9 @@
 # each POST is; what fails its code or its shape never enters the log; the uplink and the
 # tick loop restart and fail apart; the run lock and the exit on a change of
 # the daemon's own code still hold; an event the uplink imports while a tick is
-# mid-delivery to the same member is delivered once.
+# mid-delivery to the same member is delivered once; the machine's lease at the
+# hub never lapses while the main thread is held, and lapses once the stream
+# is silent.
 # Hermetic: HOME and SMINOS_HOME are temporary (short, for the inbox sockets),
 # `claude` is a stub, and nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -176,6 +178,17 @@ elif cmd == "post-delay":  # seconds — every frame POST waits this long from n
 elif cmd == "opened":  # project — whether the stream opened last has it open
     d = call("GET", "/control/state")[1]
     print("yes" if d["projects"].get(sys.argv[3], {}).get("open", {}).get("testhost") == d["generation"] else "no")
+elif cmd == "lease":  # testhost's current lease: its generation and whether it is online
+    lease = call("GET", "/control/state")[1]["leases"].get("testhost")
+    print("%s %s" % (lease["generation"], "online" if lease["online"] else "offline") if lease else "none")
+elif cmd == "lapses":  # generation — how many times testhost's lease of that stream lapsed
+    print(len([x for x in call("GET", "/control/state")[1]["lapses"]
+               if x["machine"] == "testhost" and str(x["generation"]) == sys.argv[3]]))
+elif cmd == "acks":  # generation — how many hb-acks of that stream testhost posted
+    print(len([a for a in call("GET", "/control/state")[1]["hb_acks"]
+               if a["machine"] == "testhost" and str(a["generation"]) == sys.argv[3]]))
+elif cmd == "mute":
+    call("POST", "/control/mute", {"machine": "testhost"})
 elif cmd == "held":  # the generation of each POST held, in order
     print(" ".join(p["generation"] for p in call("GET", "/control/state")[1]["posted"] if p["status"] == "held"))
 elif cmd == "after-held":  # POSTs of events on the generation of the last held one, after it
@@ -608,6 +621,59 @@ for fault in hold stall-headers stall-body; do
 done
 if [ "$(grep -c "the uplink is ending during a POST" "$DLOG")" -ge 6 ]; then pass "each of the six says it ended during a POST"; else
   fail "each of the six says it ended during a POST"; grep "ending" "$DLOG" | tail -8; fi
+
+# ---- the lease while the main thread is held
+# The hub renews the machine's lease only with an hb-ack of the stream's
+# generation, and lapses it three heartbeats (here 6 s) after the last. The
+# main thread can be held far longer than that: in a POST the hub holds, in a
+# delivery to a session slow to take its frames, in a slow tick. The stream
+# is answered meanwhile; a stream that is really dead still goes offline.
+echo "the lease while the main thread is held:"
+lease_is() { [ "$(ctl lease)" = "$1" ]; }
+acks_since() { echo $(( $(ctl acks "$1") - $2 )); }
+start_run
+until_true 200 opened || true
+GEN="$(ctl generation)"
+until_true 200 lease_is "$GEN online" || true
+assert_equals "$(ctl lease)" "$GEN online" "the stream's hello starts its lease"
+ACKS="$(ctl acks "$GEN")"
+ctl fault events hold
+backlog "held while the heartbeats go on"
+HELD=$((HELD + 1))
+until_true 200 held_count "$HELD" || true
+if held_count "$HELD"; then pass "the hub holds the answer to an upload: the main thread waits in that POST"; else
+  fail "the hub holds the answer to an upload"; fi
+sleep 10
+assert_equals "$(ctl lapses "$GEN") $(ctl lease)" "0 $GEN online" "10 s into the held POST, the stream's lease never lapsed"
+if [ "$(acks_since "$GEN" "$ACKS")" -ge 3 ]; then pass "its heartbeats were answered meanwhile"; else
+  fail "its heartbeats were answered meanwhile"; echo "    $(acks_since "$GEN" "$ACKS") hb-acks"; fi
+ctl release
+GEN=$((GEN + 1))
+until_true 200 lease_is "$GEN online" || true
+assert_equals "$(ctl lease)" "$GEN online" "released and refused, the POST ends the stream, and the next one's lease starts"
+ACKS="$(ctl acks "$GEN")"
+rm -f "$INBOX.held"
+touch "$INBOX.hold"
+# Seqs 307 on: hub/$MEMBER's 1-306 are taken above. m's inbox holds each
+# frame's ack, which a push waits 5 s for: three take the main thread 15 s.
+for seq in 307 308 309; do ctl send "$(seal ok "$seq" "said while m holds its frames, $seq")" >/dev/null; done
+until_true 200 test -f "$INBOX.held" || true
+assert_equals "$(test -f "$INBOX.held" && echo held)" held "a delivery to m waits on m's inbox"
+sleep 10
+assert_equals "$(ctl lapses "$GEN") $(ctl lease)" "0 $GEN online" "10 s into that delivery, the stream's lease never lapsed"
+if [ "$(acks_since "$GEN" "$ACKS")" -ge 3 ]; then pass "its heartbeats were answered meanwhile"; else
+  fail "its heartbeats were answered meanwhile"; echo "    $(acks_since "$GEN" "$ACKS") hb-acks"; fi
+rm -f "$INBOX.hold"
+until_true 200 grep -q "said while m holds its frames, 309" "$INBOX" || true
+assert_contains "$(cat "$INBOX")" "said while m holds its frames, 309" "and the delivery goes through"
+ctl mute
+has_lapsed() { [ "$(ctl lapses "$1")" -ge 1 ]; }
+until_true 200 has_lapsed "$GEN" || true
+assert_equals "$(ctl lapses "$GEN")" 1 "a half-open stream (no heartbeat, nothing closed): its lease lapses"
+until_true 200 gen_is $((GEN + 1)) || true
+assert_equals "$(ctl generation)" $((GEN + 1)) "the uplink gives the silent stream up and opens another"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
 
 # ---- a position of this machine's own writer, refused, and what it writes next
 # A lying hub holds a forgery at testhost/<session>:1, which this machine

@@ -25,7 +25,12 @@ is <client-id> / <client-secret>.
   writer not the machine's `refused` (`writer-not-yours`), an event past
   1 MiB `refused` (`too-large`), a gap answered by `resend` — and fans what it stored out to every other machine that opened
   the project; `rejected` goes to the project's audit record; `session`
-  messages and `hb-ack` are kept; `part` frames are joined. Events or a
+  messages and `hb-ack` are kept (each with when it was received); `part`
+  frames are joined. A machine's lease (DX2) starts at the first `hello` of
+  a stream, is renewed by each `hb-ack` of that stream's generation, and
+  lapses three heartbeats after the last renewal while its stream is open:
+  `leases` says whether each machine's current one is online, `lapses`
+  records each lapse. Events or a
   rejection for a project not opened on this stream are `refused`
   (`not-open`). The answer, `200 {"ok": true, "frames": n}`, comes once every
   reply is written down the stream.
@@ -82,7 +87,8 @@ The test's own hands (the stand-in plays a hub that may lie):
   half of it and closes).
 - `GET /control/state`: `{"generation" (of the stream opened last),
   "generations", "connected", "posted", "machines", "enrollments",
-  "redemptions", "faults", "post_faults", "projects", "hb_acks", "sessions"}`
+  "redemptions", "faults", "post_faults", "projects", "hb_acks", "sessions",
+  "leases", "lapses"}`
   — `machines` without their secrets, `redemptions` every body
   `/machine/enroll` received, `projects` each project's name, vector,
   events per writer, the machines that opened it, and its audit record.
@@ -100,6 +106,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT_FILE, CLIENT_ID, CLIENT_SECRET = sys.argv[1:4]
 HEARTBEAT_MS = int(sys.argv[4]) if len(sys.argv) > 4 else 15000
+LEASE = 3 * HEARTBEAT_MS / 1000  # DX2's LEASE_PERIODS of the heartbeat, in seconds
 WAIT = 20
 ORG = "org-1"
 NAME_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
@@ -113,7 +120,7 @@ TOO_LARGE = "an event is at most 1 MiB"
 lock = threading.Condition()
 state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults": [], "post_faults": [],
          "release": threading.Event(), "post_delay": 0.0,
-         "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [],
+         "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [], "leases": {}, "lapses": [],
          # name_key → {name, client_id, client_secret, state, enrollment}
          "machines": {"testhost": {"name": "testhost", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
                                    "state": "active", "enrollment": ""}},
@@ -157,6 +164,25 @@ class Stream:
     def end(self):
         self.ended.set()
         self.queue.put((None, None))
+
+
+def lease_live(machine, lease):
+    """Whether the stream a lease belongs to is still open (lock held)."""
+    s = state["streams"].get(machine)
+    return s is not None and s.generation == lease["generation"] and not s.ended.is_set()
+
+
+def sweep_leases():
+    """The hub's alarm: the lease of a stream still open whose time ran out
+    lapses, recorded once until a renewal."""
+    while True:
+        time.sleep(0.05)
+        with lock:
+            now = time.time()
+            for machine, lease in state["leases"].items():
+                if lease_live(machine, lease) and not lease["lapsed"] and now > lease["expires"]:
+                    lease["lapsed"] = True
+                    state["lapses"].append({"machine": machine, "generation": lease["generation"], "at": now})
 
 
 def expire_lapsed(now):
@@ -219,7 +245,11 @@ def apply(machine, s, frame, replies):
     to `replies`, in order."""
     t = frame.get("t")
     if t == "hb-ack":
-        state["hb_acks"].append({"machine": machine, "generation": frame.get("generation"), "at": frame.get("at")})
+        state["hb_acks"].append({"machine": machine, "generation": frame.get("generation"), "at": frame.get("at"),
+                                 "received": time.time()})
+        lease = state["leases"].get(machine)
+        if lease is not None and frame.get("generation") == s.generation == lease["generation"]:
+            lease.update(expires=time.time() + LEASE, lapsed=False)
         return
     if t == "session":
         state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message")})
@@ -242,6 +272,8 @@ def apply(machine, s, frame, replies):
             return refuse({"reason": "bad-shape", "message": "hello is {project, name, have: {writer: seq}}"})
         p["name"] = p["name"] or frame["name"]
         p["open"][machine] = s.generation
+        if state["leases"].get(machine, {}).get("generation") != s.generation:
+            state["leases"][machine] = {"generation": s.generation, "expires": time.time() + LEASE, "lapsed": False}
         replies.append({"t": "have", "project": pid, "have": vector(p), "archive": p["archive"] == machine})
         for w, evs in sorted(p["writers"].items()):
             suffix = [e for e in evs if e["seq"] > have.get(w, 0)]
@@ -367,6 +399,10 @@ class Handler(BaseHTTPRequestHandler):
                     "connected": any(not s.ended.is_set() for s in state["streams"].values()),
                     "posted": state["posted"], "redemptions": state["redemptions"], "faults": state["faults"],
                     "post_faults": state["post_faults"], "hb_acks": state["hb_acks"], "sessions": state["sessions"],
+                    "leases": {m: {"generation": lease["generation"],
+                                   "online": not lease["lapsed"] and lease_live(m, lease)}
+                               for m, lease in state["leases"].items()},
+                    "lapses": state["lapses"],
                     "projects": {pid: {"name": p["name"], "vector": vector(p), "writers": p["writers"],
                                        "open": p["open"], "audit": p["audit"]}
                                  for pid, p in state["projects"].items()},
@@ -641,6 +677,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, {"generation": s.generation, "written": len(frames), "took": time.time() - started})
 
 
+threading.Thread(target=sweep_leases, daemon=True).start()
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 server.daemon_threads = True
 with open(PORT_FILE + ".tmp", "w") as f:
