@@ -371,6 +371,26 @@ rung for DC8); the PR opened, not merged; the report at
   Date/Author: 2026-10-17, design session's ask; route chosen by the
   controller.
 
+- Decision: **What M2 settled.** A page's (and the snapshot's) 512 KB
+  budget counts each row's line bytes as the engine wrote them, so a page
+  picks its span without parsing anything else. Lines without the bytes
+  `"uuid"` are not parsed, in the index and in `Tail` (a top-level `uuid`
+  key is always written so; a nested one only makes the line parsed, and
+  the parse decides). The index registry is process-wide (`TRANSCRIPTS`,
+  an LRU of 4), so it outlives a stream's reconnect, and the uplink is
+  untouched. The worker's answers return on each subscription's own queue,
+  drained by `pump`. An ended subscription keeps tailing its transcript,
+  transcript-only: a Resume without a bridge streams into it; one with a
+  bridge ends it `discontinuity` through `tick`'s existing check.
+  `session-ended` is decided at the open (no process and no file for the
+  subscription's transcript). A read failure ends the subscription
+  `error`, a `Reset` `discontinuity`. The hub stand-in's heartbeat runs on
+  a timer (every frame down used to postpone it, so none went out while
+  pages ran). M4's seam: `Index.extend(on_row=…)` and the `Built` result,
+  to which M4 adds the ledger copy exact at the offset the `Tail` continues
+  from.
+  Date/Author: 2026-10-17, M2 executor (report `task-2-report.md`).
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
@@ -395,6 +415,27 @@ rung for DC8); the PR opened, not merged; the report at
   if needed.]`; engine 2.1.300 `cli.pretty.js:900351-900352`, `dEr`).
   Seen 2 times in 300 recent transcripts, beside 26 statusless event
   notices. See the Decision Log on expiry.
+
+- Observation: **G1's figures** (`tests/sminos/measure_pages.py`, copies
+  under a temporary `HOME`, the machine under heavy load — load average
+  216–267 — throughout). Index build against one full parse before DC8:
+  synthetic 160 MB / 16,606 rows 0.62 s vs 1.00 s; the coordinator's copy
+  178.9 MB / 13,683 rows 0.76 s vs 2.80 s; MAWS's 256 MB / 51,314 rows
+  1.98 s vs 3.77 s; a second subscription builds nothing (its snapshot in
+  7–22 ms). Pages from the newest row to the first line, frame sent to
+  answer back: medians 8–16 ms, p95 21–95 ms; over 200 ms: 0 of 156
+  (synthetic), 2 of 94 (coordinator, max 286 ms), 7 of 476 (MAWS, max
+  750 ms) — the slow ones re-run at 1.3–1.7 ms in process (a page's read
+  0.1–0.2 ms, its parse 1.3–2 ms), so scheduling stalls under that load;
+  a run on a quiet machine settles the figure. Heartbeat answers at most
+  26 ms in every phase; presence at most 443 ms, the build phase no slower
+  than idle.
+  Evidence: `task-2-report.md`, "G1 figures".
+- Observation: 129 of the coordinator transcript's 178 MB are records with
+  no `uuid` (`api-request` 110.6 MB, `api-request-blob` 8.8 MB); skipping
+  them cut the parse from 3.15 s to 0.62 s. On MAWS's transcript rows are
+  232 of 256 MB, so the skip saves little there.
+  Evidence: `task-2-report.md`.
 
 ## Outcomes & Retrospective
 
