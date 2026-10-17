@@ -4124,8 +4124,9 @@ def transcript_path(session_id):
     one written last."""
     if not session_id:
         return ""
-    if session_id in _TRANSCRIPTS:
-        return _TRANSCRIPTS[session_id]
+    hit = _TRANSCRIPTS.get(session_id)   # one lookup: the session plane's threads ask while the uplink forgets
+    if hit:
+        return hit
     hits = glob.glob(os.path.join(home_dir(), ".claude", "projects", "*", session_id + ".jsonl"))
     if not hits:
         return ""
