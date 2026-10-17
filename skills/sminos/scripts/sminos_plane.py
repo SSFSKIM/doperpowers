@@ -129,9 +129,12 @@ OUTPUT_TAIL_MAX = 524288  # bytes an `output` may ask for: the answer fits one f
 DISK_KEEP = 4096          # files whose facts the disk cache keeps (metas, agent transcripts, parent loops)
 STAMP_BLOCK = 64 << 10    # bytes read at a time looking backward for an agent transcript's last row
 SLUG_MAX = 200            # UTF-16 units of the engine's slug before it is cut and hashed (2.1.300 `xge`)
-# A line without one of these holds nothing a jobs ledger reads (a call, a result, an attachment, a
-# notification as a plain row): a parent loop's ledger parses only lines that have one.
-LEDGER_KEYS = (b'"tool_use', b'"attachment"', b"task-notification")
+# What a parent loop's ledger parses — only what an agent's outcome reads (Loop.add): a call of Agent, Task or
+# TaskStop; a notification or a task_status; a result of a call it holds. Every other line (the loop's Bash,
+# Read, Edit calls and their results: most of an agent transcript's bytes) is passed over unparsed.
+AGENT_CALL = re.compile(rb'"name":\s*"(?:Agent|Task)')   # TaskStop and the Task tools too
+OUTCOME_KEYS = (b"task-notification", b'"task_status"')
+RESULT_OF = re.compile(rb'"tool_use_id":\s*"([^"\\]+)"')
 
 
 def envelope(project, machine, session, kind, sub, n, body):
@@ -512,8 +515,9 @@ def last_stamp(f, size):
 class Loop:
     """A parent loop's transcript read forward into a jobs ledger, from where
     it stopped, again only when the file's size or mtime changed; started
-    over when it was replaced or shrank. Only the lines that can carry what
-    a ledger reads are parsed."""
+    over when it was replaced or shrank. The ledger holds what the agents
+    the loop ran come to — all a view of it is read for — so only the lines
+    that can say it are parsed: its jobs and MCP names are not kept."""
 
     def __init__(self):
         self.lock = threading.Lock()   # one reader at a time, which views are taken under
@@ -523,10 +527,15 @@ class Loop:
         self.ledger = jobs.Ledger()
 
     def add(self, line):
-        if ROW_KEY in line and any(k in line for k in LEDGER_KEYS):
-            row = parse_row(line)
-            if row is not None:
-                self.ledger.add(row)
+        if ROW_KEY not in line:
+            return
+        if not (AGENT_CALL.search(line) or any(k in line for k in OUTCOME_KEYS)
+                or (b'"tool_result"' in line
+                    and any(i.decode("ascii", "replace") in self.ledger.calls for i in RESULT_OF.findall(line)))):
+            return
+        row = parse_row(line)
+        if row is not None:
+            self.ledger.add(row)
 
     def read(self, path, disk):
         st = os.stat(path)

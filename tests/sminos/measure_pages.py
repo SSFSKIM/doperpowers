@@ -4,7 +4,7 @@ uplink's thread, on transcripts of at least 150 MB and 10,000 rows. Run by
 hand, one at a time on a busy machine, never in the suites:
 
     /tmp/maws-review/with-slot.sh python3 tests/sminos/measure_pages.py \\
-        [--copy TRANSCRIPT]... [--synthetic-mb 160 | --no-synthetic] [--heartbeat-ms 1200]
+        [--copy TRANSCRIPT]... [--synthetic-mb 160 | --no-synthetic] [--heartbeat-ms 1200] [--subagents]
 
 Each transcript — a synthetic one this writes (12,000 rows and records of
 the engine's other kinds, at least 150 MB) and a copy of each --copy file,
@@ -19,7 +19,10 @@ twice over:
    subscribe's snapshot, from the moment the stand-in flushed the
    `subscribe` frame down the stream to the moment the POST carrying the
    snapshot reached it; every `rows` page the same way, paging from the
-   newest row to the first line; a second subscription's snapshot. (The
+   newest row to the first line; a second subscription's snapshot; with
+   --subagents (the copy's subagents directory copied beside it), a
+   subscription to its largest top-level agent, whose first look reads the
+   main loop's ledger off disk (DC8 M4), as its own phase, `agent`. (The
    time from the test's own control request is kept beside it, as
    `pages_end_to_end`.) Throughout, timed by phase — idle, while the
    subscribe builds, while pages run: each heartbeat answer (the `hb`'s `at`
@@ -37,6 +40,7 @@ Hermetic: HOME and SMINOS_HOME are temporary; nothing reaches beyond
 import argparse
 import base64
 import gc
+import glob
 import json
 import math
 import os
@@ -286,9 +290,10 @@ def spread(values):
             "p95_ms": round(p95 * 1000, 1), "max_ms": round(values[-1] * 1000, 1)}
 
 
-def through_uplink(rig, sid, record_path, holder, postbox, inbox):
-    """Subscribe, page to the first line, subscribe again, daemon-side;
-    heartbeats, presence and deliveries timed throughout, by phase."""
+def through_uplink(rig, sid, record_path, holder, postbox, inbox, agent=None):
+    """Subscribe, page to the first line, subscribe again, and (`agent`)
+    subscribe to one subagent's transcript, daemon-side; heartbeats,
+    presence and deliveries timed throughout, by phase."""
     probes, humans, stop = {}, {}, threading.Event()   # humans: delivery probe number → when written down
 
     def probe():
@@ -339,12 +344,24 @@ def through_uplink(rig, sid, record_path, holder, postbox, inbox):
     snap2 = rig.wait(lambda m: m.get("sub") == again, "the second snapshot")
     second_snapshot = snap2["received"] - at
     time.sleep(2)
+    agent_snapshot, subs = None, [sub, again]
+    if agent:
+        # DC8 M4: an agent's subscription reads the loops above it off disk — on a top-level agent, the main
+        # transcript's ledger, once per process, on that agent transcript's worker.
+        asub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+        subs.append(asub)
+        phases.append(("agent", time.time()))
+        at = rig.send({"t": "subscribe", "project": rig.project, "session": sid, "agentId": agent, "sub": asub})
+        snap3 = rig.wait(lambda m: m.get("sub") == asub, "the agent's snapshot")
+        assert snap3["message"]["kind"] == "snapshot", snap3["message"]
+        agent_snapshot = snap3["received"] - at
+        time.sleep(3)
     stop.set()
     for p in probers:
         p.join()
     load.append(os.getloadavg()[0])
     rig.poll()
-    for s in (sub, again):
+    for s in subs:
         rig.send({"t": "unsubscribe", "project": rig.project, "sub": s})
     phases.append(("end", time.time()))
 
@@ -376,10 +393,12 @@ def through_uplink(rig, sid, record_path, holder, postbox, inbox):
             deliveries.setdefault(phase_of(at), []).append(inbox.came[k] - at)
         elif at < phases[-2][1] - 1:
             undelivered += 1
-    shown = ("idle", "subscribe", "pages")
+    shown = ("idle", "subscribe", "pages", "agent")
     return {"load_average_1m": [round(x) for x in load], "rows_reached": total,
             "first_snapshot_ms": round(first_snapshot * 1000, 1),
-            "second_snapshot_ms": round(second_snapshot * 1000, 1), "pages": spread(pages),
+            "second_snapshot_ms": round(second_snapshot * 1000, 1),
+            **({"agent": agent, "agent_snapshot_ms": round(agent_snapshot * 1000, 1)} if agent else {}),
+            "pages": spread(pages),
             "pages_over_200ms": sorted(round(p * 1000) for p in pages if p > 0.2),
             "pages_end_to_end": spread(ends),
             "heartbeat_answers": {k: spread(v) for k, v in hb.items() if k in shown},
@@ -389,6 +408,25 @@ def through_uplink(rig, sid, record_path, holder, postbox, inbox):
             "deliveries_unanswered": undelivered}
 
 
+def copy_subagents(src, dest):
+    """The session's subagents directory copied beside `dest` (the original
+    only read); the id of its largest top-level agent (a meta with no
+    parentAgentId), whose subscription reads the main loop off disk."""
+    shutil.copytree(src[:-len(".jsonl")] + "/subagents", dest[:-len(".jsonl")] + "/subagents")
+    top = []
+    for meta_path in glob.glob(dest[:-len(".jsonl")] + "/subagents/agent-*.meta.json"):
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        agent = os.path.basename(meta_path)[len("agent-"):-len(".meta.json")]
+        transcript = meta_path[:-len(".meta.json")] + ".jsonl"
+        if isinstance(meta, dict) and not meta.get("parentAgentId") and os.path.exists(transcript):
+            top.append((os.path.getsize(transcript), agent))
+    return max(top)[1] if top else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--copy", action="append", default=[], help="a transcript to measure a copy of")
@@ -396,6 +434,9 @@ def main():
     ap.add_argument("--no-synthetic", action="store_true", help="measure the copies alone")
     # Above the uplink's ACK_GAP (1 s), so each heartbeat is answered on its own.
     ap.add_argument("--heartbeat-ms", type=int, default=1200)
+    ap.add_argument("--subagents", action="store_true",
+                    help="copy each --copy's subagents directory too, and add a phase subscribing to its largest "
+                         "top-level agent")
     a = ap.parse_args()
     rig = Rig(a.heartbeat_ms)
     results = []
@@ -407,12 +448,15 @@ def main():
                 None if name == "synthetic" else os.path.basename(name)[:-len(".jsonl")])
             fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], sid)
             dest = fake.path(None)
+            agent = None
             if name == "synthetic":
                 synthetic(dest, a.synthetic_mb)
             else:
                 shutil.copyfile(name, dest)
+                if a.subagents:
+                    agent = copy_subagents(name, dest)
             rig.record(sid, record_path, holder, "start")
-            cases.append((name, sid, record_path, holder, dest))
+            cases.append((name, sid, record_path, holder, dest, agent))
         # The member the delivery probes go to: a live session with an inbox.
         postbox, postbox_record, postbox_holder = rig.session()
         inbox = Inbox(os.path.join(T, "inbox.sock"))
@@ -425,10 +469,10 @@ def main():
                 raise SystemExit("timed out waiting for the sessions' presence")
             rig.poll()
             time.sleep(0.05)
-        for name, sid, record_path, holder, dest in cases:
+        for name, sid, record_path, holder, dest, agent in cases:
             sys.stderr.write("measuring %s\n" % os.path.basename(name))
             result = {"transcript": os.path.basename(name), **in_process(dest)}
-            result.update(through_uplink(rig, sid, record_path, holder, postbox, inbox))
+            result.update(through_uplink(rig, sid, record_path, holder, postbox, inbox, agent))
             results.append(result)
             print(json.dumps(result, indent=2), flush=True)
     finally:

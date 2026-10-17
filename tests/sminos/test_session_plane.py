@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.parse
 import uuid as uuidlib
@@ -1483,6 +1484,126 @@ class Roots(unittest.TestCase):
             self.assertEqual(plane.output_roots(sid, main, []),
                              [os.path.join(os.path.realpath("/tmp"), "claude-%d" % os.getuid(),
                                            "-w-repo--claude-worktrees-x", sid, "tasks")])
+
+
+class ParentLoop(unittest.TestCase):
+    """A parent loop's ledger read off disk (Loop) parses only what an agent's
+    outcome reads, and gives every agent the outcome the whole ledger gives."""
+
+    def test_its_views_agree_with_the_whole_ledger(self):
+        r, path = Rows(), os.path.join(tempfile.mkdtemp(dir=T), "agent-p.jsonl")
+        rows = [r.call("Bash", "toolu_sh", command="make", run_in_background=True),
+                r.result("toolu_sh", {"backgroundTaskId": "b1"}, "Output is being written to: /x/b1.output"),
+                r.call("Read", "toolu_read", file_path="/x"), r.result("toolu_read", {}, "x" * 5000),
+                r.call("Agent", "toolu_a", description="done"), r.result("toolu_a", {"status": "completed"}, "ok"),
+                r.call("Agent", "toolu_b", description="bg", run_in_background=True),
+                r.result("toolu_b", {"status": "async_launched"}),
+                r.call("TaskStop", "toolu_stop", task_id="ab"),
+                r.result("toolu_stop", {"message": "Successfully stopped task: ab"}, "stopped"),
+                r.call("Agent", "toolu_c", description="c", run_in_background=True),
+                r.result("toolu_c", {"status": "async_launched"}),
+                r.task_status("ac", "failed", kind="local_agent"),
+                r.call("Agent", "toolu_d", description="d", run_in_background=True),
+                r.result("toolu_d", {"status": "async_launched"}),
+                r.row(type="user", origin={"kind": "task-notification"}, message={"role": "user", "content":
+                      "<task-notification>\n<task-id>ad</task-id>\n<status>killed</status>\n</task-notification>"}),
+                r.call("Agent", "toolu_e", description="e")]
+        with open(path, "w") as f:
+            f.writelines(json.dumps(row) + "\n" for row in rows)
+        whole = plane.jobs.Ledger()
+        whole.feed(rows)
+        cases = list(zip(["aa", "ab", "ac", "ad", "ae"], ["toolu_a", "toolu_b", "toolu_c", "toolu_d", "toolu_e"],
+                         (False, True, True, True, False)))
+        disk = plane.Disk()
+        view = disk.view(path, [c[0] for c in cases], [c[1] for c in cases])
+        for agent, tool, background in cases:
+            self.assertEqual(view.agent_outcome(agent, tool, background),
+                             whole.agent_outcome(agent, tool, background), agent)
+        self.assertEqual([(view.agent_outcome(*c) or {}).get("status") for c in cases],
+                         ["completed", "stopped", "failed", "stopped", None])
+        loop = disk.get(("loop", path))
+        self.assertNotIn("toolu_read", loop.ledger.calls, "a call no agent's outcome reads is not parsed")
+        self.assertEqual(loop.ledger.jobs, {}, "nor are the loop's jobs kept")
+
+
+class FixtureOutput(unittest.TestCase):
+    """Every `output` case of dx4-jobs.json through the plane's own path. The
+    case's roots are never handed to anything: the plane derives them from
+    this machine's state, set up so they come out as the case's. The session's
+    transcript sits in the worktree's project directory, it joined from the
+    launch directory (`here`), its engine record's cwd is the worktree, and
+    CLAUDE_CODE_TMPDIR is `<ROOT>/tmp`. The frame goes through Plane.output,
+    the read runs on the transcript's worker, and the DX4 `output` message is
+    what is checked."""
+
+    SID = "d0c8a000-0000-4000-8000-00000000c0de"   # the fixture's session
+    LAUNCH = "/Users/me/work/proj"                     # engine slug -Users-me-work-proj
+    WORKTREE = "/Users/me/work/proj/.claude/worktrees/dc8"   # engine slug -Users-me-work-proj--claude-worktrees-dc8
+
+    @classmethod
+    def setUpClass(cls):
+        home = os.environ["HOME"]
+        cls.holder = subprocess.Popen(["sleep", "3600"])
+        cls.record = os.path.join(home, ".claude", "sessions", "%d.json" % cls.holder.pid)
+        with open(cls.record, "w") as f:
+            json.dump({"pid": cls.holder.pid, "sessionId": cls.SID, "cwd": cls.WORKTREE, "kind": "interactive",
+                       "status": "busy"}, f)
+        cls.transcript = os.path.join(home, ".claude", "projects", plane.engine_slug(cls.WORKTREE), cls.SID + ".jsonl")
+        os.makedirs(os.path.dirname(cls.transcript), exist_ok=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.holder.terminate()
+        cls.holder.wait(5)
+        for path in (cls.record, cls.transcript):
+            os.unlink(path)
+
+    def pump(self, p, until):
+        out, deadline = [], time.time() + 5
+        while time.time() < deadline:
+            out += p.pump_one("fx")
+            if until(out):
+                return out
+            time.sleep(0.01)
+        self.fail("nothing came: %r" % [m["kind"] for m in out])
+
+    def test_every_output_case_through_the_plane(self):
+        for case in FIXTURE["outputCases"]:
+            with self.subTest(case=case["name"]):
+                root = os.path.realpath(tempfile.mkdtemp(dir=T))
+                # The fixture spells the engine's per-uid directory for uid 501, this machine's; the plane
+                # derives it from its own uid.
+                c = json.loads(json.dumps(case).replace("<ROOT>", root).replace("/claude-501/",
+                                                                               "/claude-%d/" % os.getuid()))
+                inp, want = c["input"], c["expect"]
+                self.assertEqual(inp["session"], self.SID)
+                for item in inp["layout"]:
+                    path = item["path"]
+                    os.makedirs(path if item.get("dir") else os.path.dirname(path), exist_ok=True)
+                    if "file" in item:
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(item["file"])
+                    elif "symlink" in item:
+                        os.symlink(item["symlink"], path)
+                with open(self.transcript + ".tmp", "w") as f:
+                    f.writelines(json.dumps(row) + "\n" for row in inp["main"])
+                os.replace(self.transcript + ".tmp", self.transcript)
+                with mock.patch.dict(os.environ, {"CLAUDE_CODE_TMPDIR": os.path.join(root, "tmp")}):
+                    p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
+                    try:
+                        p.here = {PROJECT: {self.SID: self.LAUNCH}}
+                        out = p.subscribe(types.SimpleNamespace(id=PROJECT, name="fixture"),
+                                          {"session": self.SID, "agentId": None, "sub": "fx"})
+                        self.pump(p, lambda ms: any(m["kind"] == "snapshot" for m in out + ms))
+                        self.assertEqual(p.live[self.SID]["cwd"], self.WORKTREE, "the engine record is read")
+                        self.assertEqual(p.output({"sub": "fx", **inp["request"]}), [], "read on the worker")
+                        got = [m for m in self.pump(p, lambda ms: any(m["kind"] == "output" for m in ms))
+                               if m["kind"] == "output"][0]["body"]
+                    finally:
+                        p.close()
+                if want["result"] == "refused":
+                    self.assertTrue(str(got.pop("reason", "")).strip(), "a refusal gives its reason")
+                self.assertEqual(got, want)
 
 
 class TranscriptIndex(unittest.TestCase):
