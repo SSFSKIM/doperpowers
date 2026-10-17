@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""The stand-in session store shipper: records the environment it started
+with, then waits; on SIGTERM it records its final pass and exits."""
+import json
+import os
+import pathlib
+import signal
+import sys
+import time
+
+state = pathlib.Path.home() / ".local/state/devcloud-test"
+state.mkdir(parents=True, exist_ok=True)
+if sys.argv[1:] != ["ship"]:
+    sys.exit("usage: session-mirror ship")
+
+
+def final_pass(*_):
+    with open(state / "ship.log", "a") as log:
+        log.write(f"term {os.getpid()}\n")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, final_pass)
+keys = ("SESSION_MIRROR_HOST", "DAEMON_BOOT_ID", "DEVCLOUD_PROBE_PROFILE", "TZ", "PATH", "HOME", "USER")
+seen = {k: os.environ.get(k) for k in keys}
+seen["EXAMPLE_API_KEY set"] = bool(os.environ.get("EXAMPLE_API_KEY"))
+seen["uid"] = os.getuid()
+seen["pid"] = os.getpid()
+(state / "ship.json").write_text(json.dumps(seen))
+with open(state / "ship.log", "a") as log:
+    log.write(f"start {os.getpid()}\n")
+while True:
+    time.sleep(1)

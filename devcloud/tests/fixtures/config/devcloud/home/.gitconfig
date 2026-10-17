@@ -1,0 +1,5 @@
+[user]
+	name = Devcloud Test
+	email = devcloud-test@example.com
+[init]
+	defaultBranch = main

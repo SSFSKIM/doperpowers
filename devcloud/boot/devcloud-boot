@@ -1,0 +1,16 @@
+#!/usr/bin/python3 -P
+"""devcloud-boot: makes this Linux userland a devcloud host (Design §4). Run as
+root at every boot; reads /etc/devcloud/boot.env; idempotent. Each step is
+recorded in /var/lib/devcloud/status.json (`devcloud status`); a failed step
+stops the boot with the step named, and the next run retries from the top."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+# Root runs only system binaries: the user can write to their own PATH entries.
+os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+from devcloudlib import steps  # noqa: E402
+
+if os.geteuid() != 0:
+    sys.exit("devcloud-boot: run as root")
+sys.exit(steps.boot())
