@@ -486,6 +486,30 @@ rung for DC8); the PR opened, not merged; the report at
   424 MB of parents' transcripts in full before (3.0 s → 1.9 s).
   Date/Author: 2026-10-17, M4 executor (fix wave); kept by the controller.
 
+- Decision: **The whole-branch xhigh panel's three P2s, fixed**
+  (wf_23f926ab-0cc, run by the design session on
+  `b8f7d19702a6dd13832591427d86dbbff6691060..d5a54a13`). (1) A refusal
+  survives the resync that recovers its lost post: the mod holds each
+  refusal until a post the child answered carried it, and every resync
+  carries the held ones as `refused: [{key, reason}]`, which the child
+  adds once per key (bounded); a `/clear` forgets them as it forgets
+  `delivered` (`370662a2`; DX5). (2) A launch is read from the call and
+  the result, not only from `toolUseResult`: `input.run_in_background`
+  (`true` or `"true"`; `false` means nothing — 13 calls flagged false were
+  launched async) marks the agent background; a result whose text is the
+  engine's launch text (`Async agent launched successfully.` then a line
+  `agentId: …`) or a fork's (`Fork started — processing in background`;
+  all 272 fork launches here lack a `toolUseResult`) is `async_launched`
+  running evidence; such a launch names no `outputFile`. The shared
+  fixture's legacy case became three (cold open, list-seeded reload,
+  background known only from the spawn) (`c81b77fc`, the fixture commit;
+  DX4). (3) A `/clear`'s retried list read never hides the new
+  conversation's agents: an agent the new conversation's own hooks name
+  (its spawn hook, or the first turn of a loop the bridge does not know)
+  is claimed, never set aside, and restored if it already was
+  (`578b11b8`).
+  Date/Author: 2026-10-17, panel fix wave (report `task-5-report.md`).
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
@@ -501,8 +525,10 @@ rung for DC8); the PR opened, not merged; the report at
   seed carries it when present (M3). Told to the design session.
 - Observation: about 5,089 of 12,077 metas on this machine are of the
   older form with no `requestShape`; a background agent there is known as
-  such only from `spawn.background` or its launch result.
-  Evidence: read-only count, 2026-10-17 (M1 report).
+  such from the persisted call's `input.run_in_background`, its launch
+  result (with or without a `toolUseResult`), or `spawn.background` (the
+  panel's fix wave corrected the M1 reading that only the spawn knew it).
+  Evidence: read-only count, 2026-10-17 (M1 report); `task-5-report.md`.
 - Observation: an expired monitor's notice carries no `<status>`; its
   `<event>` is one of the engine's fixed texts (`[Monitor expired after
   <dur> with … delivered. …]`, or the older `[Monitor timed out — re-arm
