@@ -305,3 +305,41 @@ describe('an oversized output', () => {
     expect(file).toBe(`[secret:API_KEY]\n${filler}\n[secret:API_KEY]\n`)
   })
 })
+
+describe('fix wave 1', () => {
+  test('#1 a Bash command gets a value with shell metacharacters as its exact bytes, not as code', async ($, on) => {
+    const value = 'x$(printf INJECTED)y'
+    const ran = tool(on, () => bash(''))
+    await start($, on, { [`${STORE}/SHELL`]: value })
+    await $.tool.call({ tool: 'Bash', command: 'printf "%s" "[secret:SHELL]"', description: 'print [secret:SHELL]' })
+    expect(ran[0]?.command).toBe('printf "%s" "x\\$(printf INJECTED)y"')
+    expect(ran[0]?.description).toBe('print [secret:SHELL]')
+  })
+
+  test('#2 a persisted output that handles grow past 4 MiB is still rewritten', async ($, on) => {
+    const saved = `${HOME}/.claude/projects/-work-repo/s1/tool-results/b3.txt`
+    const short = 'qz7Kp2'
+    const original = `${short}\n`.repeat(300_000) // 2.1 MB, 16-character handles push it past 4 MiB
+    const writes: Run = (argv, disk, stdin) => {
+      if (stdin !== undefined) disk.put(argv[4]!, stdin)
+      return ok()
+    }
+    tool(on, () => bash('preview', { persistedOutputPath: saved, persistedOutputSize: original.length }))
+    const fs = await start($, on, { [`${STORE}/SHORT`]: short, [saved]: original }, writes)
+    const call = await $.tool.call({ tool: 'Bash', command: 'many' })
+    expect(call.deny).toBeUndefined()
+    const file = fs.files.get(saved)!.text
+    expect(file).not.toContain(short + '\n')
+    expect(file.startsWith('[secret:SHORT]\n[secret:SHORT]\n')).toBe(true)
+  })
+
+  test("#3 another project's stored value is redacted under its own handle and restores to that tier's value", async ($, on) => {
+    const other = `${STORED}-other`
+    const ran = tool(on, (e) => (e.tool === 'Bash' ? bash(`${other}\n`) : { type: 'create', filePath: e.file_path, content: e.content, structuredPatch: [] }))
+    await start($, on, { [`${STORE}/projects/-work-other/API_KEY`]: other, [`${STORE}/API_KEY`]: STORED })
+    const printed = await $.tool.call({ tool: 'Bash', command: `cat ${STORE}/projects/-work-other/API_KEY` })
+    expect(printed.result).toEqual(bash('[secret:API_KEY@-work-other]\n'))
+    await $.tool.call({ tool: 'Write', file_path: '/work/repo/x', content: '[secret:API_KEY@-work-other]' })
+    expect(ran[1]?.content).toBe(other)
+  })
+})

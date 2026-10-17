@@ -108,6 +108,15 @@ async function readTier($: EngineInterface, dir: string, isGlobal: boolean): Pro
   return out
 }
 
+// The project tiers the store holds: each folder under `projects/`.
+async function projectTiers($: EngineInterface, store: string): Promise<string[]> {
+  try {
+    return (await $.fs.list(`${store}/projects`)).filter((e) => e.kind === 'dir').map((e) => e.name)
+  } catch {
+    return []
+  }
+}
+
 async function statFile($: EngineInterface, path: string) {
   try {
     const stat = await $.fs.stat(path)
@@ -135,8 +144,8 @@ async function gcloudFiles($: EngineInterface, dir: string, depth: number): Prom
 
 /**
  * Reads what is known now: the store's project tier, then its global one (a
- * global key the project's shadows is `KEY@global`), then the credential
- * files. A source that cannot be read adds nothing and stops nothing.
+ * global key the project's shadows is `KEY@global`), then every other
+ * project's tier (`KEY@<slug>`), then the credential files. A source that cannot be read adds nothing and stops nothing.
  */
 async function refresh($: EngineInterface, isForced: boolean) {
   const now = Date.now()
@@ -145,10 +154,16 @@ async function refresh($: EngineInterface, isForced: boolean) {
   home ??= await $.env.get('HOME')
   if (!home) return
   const store = `${home}/${STORE_DIR}`
-  const projectKnown = await readTier($, `${store}/projects/${projectSlug(await projectOf($))}`, false)
+  const own = projectSlug(await projectOf($))
+  const projectKnown = await readTier($, `${store}/projects/${own}`, false)
   const shadowed = new Set(projectKnown.map((k) => k.label))
   const known: Known[] = [...projectKnown]
   for (const { label, value } of await readTier($, store, true)) known.push({ label: shadowed.has(label) ? `${label}@global` : label, value })
+  // Every other project's tier: a command can print any of them.
+  for (const slug of await projectTiers($, store)) {
+    if (slug === own) continue
+    for (const { label, value } of await readTier($, `${store}/projects/${slug}`, false)) known.push({ label: `${label}@${slug}`, value })
+  }
 
   const files: { path: string; format: Format }[] = [...CREDENTIAL_FILES, ...(await gcloudFiles($, GCLOUD_DIR, 3)).map((path) => ({ path, format: 'gcloud' as const }))]
   const present: { path: string; format: Format; stat: { mtimeMs: number; size: number } }[] = []
@@ -190,17 +205,16 @@ async function readLarge($: EngineInterface, path: string, size: number): Promis
  */
 async function scrubPersisted($: EngineInterface, path: string) {
   const stat = await $.fs.stat(path)
-  if (stat.size <= READ_MAX) {
-    const text = await $.fs.read(path)
-    const scrubbed = handles.scrub(text)
-    if (scrubbed !== text) await $.fs.write(path, scrubbed)
-    return
-  }
-  // Past what `$.fs.write` takes too: through a child's input, into a file
-  // beside it (`.tmp`, which the session store skips) renamed over it.
-  const text = await readLarge($, path, stat.size)
+  const text = stat.size <= READ_MAX ? await $.fs.read(path) : await readLarge($, path, stat.size)
   const scrubbed = handles.scrub(text)
   if (scrubbed === text) return
+  // Handles can grow a file: the writer goes by the scrubbed size. Past what
+  // `$.fs.write` takes, through a child's input into a file beside it (`.tmp`,
+  // which the session store skips) renamed over it.
+  if (new TextEncoder().encode(scrubbed).length <= READ_MAX) {
+    await $.fs.write(path, scrubbed)
+    return
+  }
   const r = await $.process.run(['/bin/sh', '-c', 'umask 077 && cat > "$1.scrub.tmp" && mv -f "$1.scrub.tmp" "$1"', 'sh', path], { stdin: scrubbed, timeoutMs: 60_000 })
   if (r.exitCode !== 0) throw new Error('secrets: a persisted output could not be rewritten')
 }
@@ -245,10 +259,18 @@ export function registerSecrets(on: On) {
     let unrestored: string[] = []
     if (RESTORED.has(e.tool)) {
       await refresh($, true)
-      const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
-      const restored = handles.restoreRecord(args)
-      if (restored.value !== args) input = { ...e, ...restored.value }
-      unrestored = restored.unrestored
+      if (e.tool === 'Bash' && typeof e.command === 'string') {
+        // The command alone, which a shell reads: each value goes in quoted for
+        // where it stands, so its bytes arrive as data, never as code.
+        const shell = handles.restoreShell(e.command)
+        if (shell.text !== e.command) input = { ...e, command: shell.text }
+        unrestored = shell.unrestored
+      } else {
+        const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
+        const restored = handles.restoreRecord(args)
+        if (restored.value !== args) input = { ...e, ...restored.value }
+        unrestored = restored.unrestored
+      }
     }
     const ran = await next(input)
     try {

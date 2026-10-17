@@ -104,3 +104,30 @@ test('spans come in order and never overlap', () => {
   expect(spans.map((s) => s.kind)).toEqual(['github-pat', 'github-pat', 'pem'])
   for (let i = 1; i < spans.length; i++) expect(spans[i]!.start >= spans[i - 1]!.end).toBe(true)
 })
+
+describe('fix wave 1', () => {
+  const value = chars(24, 71)
+
+  test('#9 a reference in code is not a credential', () => {
+    for (const line of [
+      'const apiKey = process.env.API_KEY',
+      'password = credentials.password',
+      'const token = getAccessTokenFromVault(config)',
+      'secret = os.environ["SERVICE_SECRET"]',
+      'let password = userSuppliedPassword;',
+      'TOKEN=${GITHUB_TOKEN_FOR_DEPLOYMENT}',
+    ]) {
+      expect(found(line)).toEqual([])
+    }
+  })
+
+  test('#9 a credential literal is still found, quoted or not', () => {
+    expect(found(`const apiKey = "${value}"`)).toEqual([['assignment', value]])
+    expect(found(`API_KEY=${value}`)).toEqual([['assignment', value]])
+    expect(found(`password: ${value}`)).toEqual([['assignment', value]])
+  })
+
+  test('#10 every separator the name grammar accepts reaches the detector', () => {
+    for (const name of ['api-key', 'api.key', 'private-key', 'private.key']) expect(found(`${name}=${value}`)).toEqual([['assignment', value]])
+  })
+})

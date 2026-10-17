@@ -79,6 +79,10 @@ const VALUE_MIN = 16
 const ENTROPY_MIN = 3.5
 // A reference, a path or an address: what names a value rather than holds one.
 const NOT_A_VALUE = /^(?:\$|%|~|\.{0,2}\/|[a-z][a-z0-9+.-]*:\/\/)/i
+// Unquoted, an expression in code rather than a literal: a dotted name
+// (`process.env.API_KEY`, `credentials.password`) or a bare identifier with no
+// digit (`userSuppliedPassword`); a credential almost always carries a digit.
+const REFERENCE = /^[A-Za-z_$][A-Za-z_$]*(?:\.[A-Za-z_$][A-Za-z_$]*)*$/
 
 /** Shannon entropy of the string's characters, in bits per character. */
 export function entropy(text: string): number {
@@ -94,7 +98,8 @@ export function entropy(text: string): number {
 
 // A line that may hold a secret-named assignment: only these are searched for
 // one, so a long output of ordinary lines costs one quick test each.
-const MAY_ASSIGN = /token|secret|passw|api_?key|apikey|private_?key|bearer|credential/i
+// The separators match `isSecretName`'s split (`_`, `-`, `.`, or none).
+const MAY_ASSIGN = /token|secret|passw|api[_.-]?key|private[_.-]?key|bearer|credential/i
 
 function assignments(text: string): Span[] {
   const spans: Span[] = []
@@ -106,6 +111,9 @@ function assignments(text: string): Span[] {
           const value = m[valueAt] ?? ''
           if (!isSecretName(m[nameAt] ?? '')) continue
           if (value.length < VALUE_MIN || NOT_A_VALUE.test(value) || entropy(value) < ENTROPY_MIN) continue
+          // Unquoted and followed by a call or an index, or shaped as a name: code.
+          const after = line[(m.index ?? 0) + m[0].length]
+          if (!m[valueAt - 1] && (after === '(' || after === '[' || REFERENCE.test(value))) continue
           const end = at + (m.index ?? 0) + m[0].length
           spans.push({ start: end - value.length, end, kind: 'assignment' })
         }

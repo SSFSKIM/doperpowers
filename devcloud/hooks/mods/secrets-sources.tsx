@@ -75,6 +75,35 @@ function yamlFields(text: string): Field[] {
   return out
 }
 
+// A TOML value as the file means it: a basic string's escapes decoded, a
+// literal string as written, a bare value up to an inline comment.
+function tomlValue(raw: string): string {
+  const quote = raw[0]
+  if (quote === "'") {
+    const end = raw.indexOf("'", 1)
+    return end === -1 ? raw.slice(1) : raw.slice(1, end)
+  }
+  if (quote === '"') {
+    let out = ''
+    for (let i = 1; i < raw.length; i++) {
+      const c = raw[i]!
+      if (c === '"') return out
+      if (c !== '\\') {
+        out += c
+        continue
+      }
+      const e = raw[++i] ?? ''
+      if (e === 'u' || e === 'U') {
+        const n = e === 'u' ? 4 : 8
+        out += String.fromCodePoint(parseInt(raw.slice(i + 1, i + 1 + n), 16))
+        i += n
+      } else out += ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' } as Record<string, string>)[e] ?? e
+    }
+    return out
+  }
+  return raw.replace(/\s+#.*$/, '').trim()
+}
+
 function tomlFields(text: string): Field[] {
   const out: Field[] = []
   type Block = { prefix: string; isArray: boolean; index: number; entries: [string, string][] }
@@ -97,7 +126,7 @@ function tomlFields(text: string): Field[] {
       continue
     }
     const kv = /^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+?)\s*$/.exec(line)
-    if (kv) block.entries.push([kv[1]!, unquote(kv[2]!)])
+    if (kv) block.entries.push([kv[1]!, tomlValue(kv[2]!)])
   }
   flush()
   return out
@@ -115,9 +144,26 @@ function pgpassFields(text: string): Field[] {
   return out
 }
 
+// A .netrc's tokens: whitespace-separated, a double-quoted token taken whole
+// with its backslash escapes decoded.
+function netrcTokens(text: string): string[] {
+  const words: string[] = []
+  for (let i = 0; i < text.length; ) {
+    while (i < text.length && /\s/.test(text[i]!)) i++
+    if (i >= text.length) break
+    let word = ''
+    if (text[i] === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) word += text[i] === '\\' ? (text[++i] ?? '') : text[i]
+      i++
+    } else for (; i < text.length && !/\s/.test(text[i]!); i++) word += text[i]
+    words.push(word)
+  }
+  return words
+}
+
 function netrcFields(text: string): Field[] {
   const out: Field[] = []
-  const words = text.split(/\s+/).filter(Boolean)
+  const words = netrcTokens(text)
   let machine = ''
   for (let i = 0; i < words.length; i++) {
     const word = words[i]
@@ -139,8 +185,10 @@ function gitCredentialFields(text: string): Field[] {
     }
   }
   for (const line of text.split('\n')) {
-    const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/]*):([^@/]+)@([^/\s]+)/i.exec(line.trim())
-    if (m) out.push({ field: `${decode(m[1]!)}@${m[3]}`, value: decode(m[2]!) })
+    // The repository path is part of the identity: one user may hold a
+    // credential per repository on one host.
+    const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/]*):([^@/]+)@([^/\s]+)(\/\S*)?/i.exec(line.trim())
+    if (m) out.push({ field: `${decode(m[1]!)}@${m[3]}${m[4] ?? ''}`, value: decode(m[2]!) })
   }
   return out
 }

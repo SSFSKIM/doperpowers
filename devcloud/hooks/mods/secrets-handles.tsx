@@ -1,4 +1,5 @@
 import { detect, keepFirst } from './secrets-detect'
+import { quoteFor, shellContexts } from './secrets-shell'
 
 /**
  * Handles: the text that stands where a secret was, one per distinct byte
@@ -6,8 +7,12 @@ import { detect, keepFirst } from './secrets-detect'
  * known values it reads and calls it on every text it passes.
  *
  *   [secret:LABEL]              a known value: a store key (`KEY`, `KEY@global`
- *                               for a global value a project key shadows) or a
- *                               credential file's field (`hosts.yml:<field>`)
+ *                               for a global value a project key shadows,
+ *                               `KEY@<slug>` for another project's) or a
+ *                               credential file's field (`hosts.yml:<field>`);
+ *                               whitespace, `[`, `]`, `~` and `%` in a label
+ *                               are written %XX, and a second value under a
+ *                               label already taken is `LABEL#2`, `#3`, ...
  *   [secret:LABEL~<enc>]        an encoded spelling of it
  *   [superseded:LABEL]          a value LABEL held earlier in this process
  *   [redacted:<kind>#<ns>.<n>]  a pattern detection, bound to this process
@@ -24,6 +29,22 @@ export type Spelling = { enc: string; text: string }
 export const SCRUB_MIN = 6
 
 const HANDLE = /\[(secret|superseded|redacted):([^\]\s]+)\]/g
+// What looks like a handle, parsable or not: one that is not is named as not
+// restored rather than passed over.
+const HANDLE_LIKE = /\[(secret|superseded|redacted):([^\]\n]*)\]/g
+const PARSABLE = /^[^\]\s]+$/
+
+// A label's characters the handle grammar reserves, written %XX (UTF-8).
+const RESERVED = /[\s[\]~%]|[^\x21-\x7e]/gu
+export const encodeLabel = (label: string) =>
+  label.replace(RESERVED, (c) => Array.from(utf8(c), (b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join(''))
+const decodeLabel = (body: string): string | undefined => {
+  try {
+    return decodeURIComponent(body.replace(/%(?![0-9A-Fa-f]{2})/g, '%25'))
+  } catch {
+    return undefined
+  }
+}
 
 const utf8 = (value: string) => new TextEncoder().encode(value)
 const base64 = (value: string) => {
@@ -46,6 +67,8 @@ const ENCODINGS: readonly [string, (value: string) => string][] = [
   ['url', (v) => encodeURIComponent(v)],
   // As a JSON string's body prints it: a key file's PEM with `\n` escapes.
   ['json', (v) => JSON.stringify(v).slice(1, -1)],
+  // As a .pgpass line prints it: `\` and `:` escaped with a backslash.
+  ['pgpass', (v) => v.replace(/[\\:]/g, '\\$&')],
 ]
 const ENCODING = new Map(ENCODINGS)
 
@@ -62,7 +85,7 @@ export function spellings(value: string): Spelling[] {
   return out
 }
 
-const handleOf = (kind: 'secret' | 'superseded', label: string, enc: string) => `[${kind}:${label}${enc ? `~${enc}` : ''}]`
+const handleOf = (kind: 'secret' | 'superseded', label: string, enc: string) => `[${kind}:${encodeLabel(label)}${enc ? `~${enc}` : ''}]`
 
 type Candidate = { start: number; end: number; rank: number; replace?: string; kind?: string }
 
@@ -81,12 +104,20 @@ export class Handles {
 
   /**
    * The values known now, in priority order (the first label to hold a value
-   * keeps it). A label whose value changed or vanished leaves its old value
-   * superseded, unless another label holds it now.
+   * keeps it). A distinct value under a label already taken gets `#2`, `#3`,
+   * ...; none is dropped. A label whose value changed or vanished leaves its old
+   * value superseded, unless another label holds it now.
    */
   setKnown(list: readonly Known[]) {
     const next = new Map<string, string>()
-    for (const { label, value } of list) if (!next.has(label)) next.set(label, value)
+    const held = new Set<string>()
+    for (const { label, value } of list) {
+      if (held.has(value)) continue
+      held.add(value)
+      let name = label
+      for (let n = 2; next.has(name); n++) name = `${label}#${n}`
+      next.set(name, value)
+    }
     for (const [label, value] of this.current) if (next.get(label) !== value) this.former.set(value, label)
     this.current = next
     this.known = new Map()
@@ -150,20 +181,31 @@ export class Handles {
     if (kind !== 'secret') return undefined
     const tilde = body.lastIndexOf('~')
     const enc = tilde > 0 && ENCODING.has(body.slice(tilde + 1)) ? body.slice(tilde + 1) : ''
-    const value = this.current.get(enc ? body.slice(0, tilde) : body)
+    const label = decodeLabel(enc ? body.slice(0, tilde) : body)
+    const value = label === undefined ? undefined : this.current.get(label)
     return value === undefined ? undefined : ENCODING.get(enc)!(value)
   }
 
-  /** `text` with each handle this process can restore replaced by its bytes; the rest named. */
-  restore(text: string): { text: string; unrestored: string[] } {
+  /**
+   * `text` with each handle this process can restore replaced by its bytes,
+   * written through `write` (given the bytes and the handle's position); every
+   * other handle-like text, parsable or not, left as it is and named.
+   */
+  restore(text: string, write: (value: string, at: number) => string = (value) => value): { text: string; unrestored: string[] } {
     const unrestored: string[] = []
-    const restored = text.replace(HANDLE, (handle: string, kind: string, body: string) => {
-      const value = this.resolve(kind, body)
-      if (value !== undefined) return value
+    const restored = text.replace(HANDLE_LIKE, (handle: string, kind: string, body: string, at: number) => {
+      const value = PARSABLE.test(body) ? this.resolve(kind, body) : undefined
+      if (value !== undefined) return write(value, at)
       if (!unrestored.includes(handle)) unrestored.push(handle)
       return handle
     })
     return { text: restored, unrestored }
+  }
+
+  /** A shell command with its handles restored so the shell receives each value's exact bytes. */
+  restoreShell(command: string): { text: string; unrestored: string[] } {
+    let contexts: ReturnType<typeof shellContexts> | undefined
+    return this.restore(command, (value, at) => quoteFor((contexts ??= shellContexts(command))[at] ?? 'none', value))
   }
 
   /** A record with every string scrubbed (an image's bytes left); the same object when none changed. */

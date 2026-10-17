@@ -62,7 +62,7 @@ describe('credential files', () => {
     ])
     expect(credentialFields('git-credentials', `https://me:${v(17)}@github.com\nhttps://x:a%40b${v(18)}@git.example/path\n`)).toEqual([
       { field: 'me@github.com', value: v(17) },
-      { field: 'x@git.example', value: `a@b${v(18)}` },
+      { field: 'x@git.example/path', value: `a@b${v(18)}` },
     ])
     expect(credentialFields('npmrc', `registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=${v(19)}\n`)).toEqual([
       { field: '//registry.npmjs.org/:_authToken', value: v(19) },
@@ -116,5 +116,28 @@ describe('the store', () => {
   test("a worktree's project is its main checkout; a submodule's is its own top level", () => {
     expect(rootFromGit('/work/repo/.git', '/work/repo-wt')).toBe('/work/repo')
     expect(rootFromGit('/work/super/.git/modules/sub', '/work/super/sub')).toBe('/work/super/sub')
+  })
+})
+
+describe('fix wave 1', () => {
+  test('#5 .git-credentials: the repository path is part of the identity', () => {
+    expect(credentialFields('git-credentials', `https://me:${v(30)}@github.com/org/one.git\nhttps://me:${v(31)}@github.com/org/two.git\n`)).toEqual([
+      { field: 'me@github.com/org/one.git', value: v(30) },
+      { field: 'me@github.com/org/two.git', value: v(31) },
+    ])
+  })
+
+  test('#7 hcloud TOML: an inline comment and the quotes are not the value', () => {
+    const text = `[[contexts]]\n  name = "one # not a comment"\n  token = "${v(32)}" # rotated\n[[contexts]]\n  name = 'two'\n  token = '${v(33)}'   # old\n`
+    expect(credentialFields('toml', text)).toEqual([
+      { field: 'contexts.one # not a comment.token', value: v(32) },
+      { field: 'contexts.two.token', value: v(33) },
+    ])
+  })
+
+  test('#8 .netrc: a quoted value is decoded, spaces and escapes included', () => {
+    expect(credentialFields('netrc', `machine api.example login me password "${v(34)} with \\"space\\""\n`)).toEqual([
+      { field: 'api.example.password', value: `${v(34)} with "space"` },
+    ])
   })
 })

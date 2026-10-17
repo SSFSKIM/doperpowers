@@ -141,3 +141,58 @@ test("a 6 MB output is scrubbed well within a hook's 10 s budget", () => {
   expect(Date.now() - started < 2_000).toBe(true)
   expect(scrubbed.endsWith('KEY_1 [secret:KEY_1] and [redacted:github-pat#abcd.1]\n')).toBe(true)
 })
+
+describe('fix wave 1', () => {
+  test('#1 a handle restored into a shell command reaches the shell as its exact bytes, whatever the quoting', () => {
+    const value = `$(printf INJECTED)'"\\\`x`
+    const h = withStored({ SHELL: value, SAFE: STORED })
+    const cases: [string, string][] = [
+      ['printf "%s" "[secret:SHELL]"', `printf "%s" "\\$(printf INJECTED)'\\"\\\\\\\`x"`],
+      ["printf '%s' '[secret:SHELL]'", `printf '%s' '$(printf INJECTED)'\\''"\\\`x'`],
+      ['printf %s [secret:SHELL]', `printf %s '$(printf INJECTED)'\\''"\\\`x'`],
+      ["printf %s $'[secret:SHELL]'", `printf %s $'$(printf INJECTED)\\'"\\\\\`x'`],
+      ["cat <<'EOF'\n[secret:SHELL]\nEOF", `cat <<'EOF'\n${value}\nEOF`],
+      ['cat <<EOF\n[secret:SHELL]\nEOF', `cat <<EOF\n\\$(printf INJECTED)'"\\\\\\\`x\nEOF`],
+      ['echo "$(printf %s [secret:SHELL])"', `echo "$(printf %s '$(printf INJECTED)'\\''"\\\`x')"`],
+    ]
+    for (const [command, expected] of cases) expect(h.restoreShell(command)).toEqual({ text: expected, unrestored: [] })
+    // A value of safe characters comes out as it always did, in any context.
+    for (const command of ['curl -H "Authorization: Bearer [secret:SAFE]" x', "echo '[secret:SAFE]'", 'echo [secret:SAFE]', 'cat <<EOF\n[secret:SAFE]\nEOF']) {
+      expect(h.restoreShell(command).text).toBe(command.replace('[secret:SAFE]', STORED))
+    }
+  })
+
+  test('#4 a label with spaces, brackets or tildes round-trips through its handle', () => {
+    const label = 'cli.toml:contexts.my ctx]~x%.token'
+    const h = withStored({ [label]: STORED })
+    const handle = h.scrub(STORED)
+    expect(handle).toMatch(/^\[secret:[^\]\s]+\]$/)
+    expect(h.restore(`a ${handle} b`)).toEqual({ text: `a ${STORED} b`, unrestored: [] })
+    expect(h.restore(h.scrub(btoa(STORED))).text).toBe(btoa(STORED))
+  })
+
+  test('#4 a handle-like text that cannot be parsed is named as not restored', () => {
+    expect(withStored().restore('k=[secret:foo bar] [secret:API_KEY]')).toEqual({ text: `k=[secret:foo bar] ${STORED}`, unrestored: ['[secret:foo bar]'] })
+  })
+
+  test('#5 two distinct values under one label are both redacted and both restore', () => {
+    const h = new Handles('abcd')
+    h.setKnown([
+      { label: 'x:y', value: `${STORED}-one` },
+      { label: 'x:y', value: `${STORED}-two` },
+    ])
+    const one = h.scrub(`${STORED}-one`)
+    const two = h.scrub(`${STORED}-two`)
+    expect(one).not.toBe(two)
+    expect(two).toMatch(/^\[secret:/)
+    expect([h.restore(one).text, h.restore(two).text]).toEqual([`${STORED}-one`, `${STORED}-two`])
+  })
+
+  test("#6 a value's pgpass spelling (\\: and \\\\ escaped) is its own encoding", () => {
+    const value = `pa:ss\\${STORED}`
+    const h = withStored({ '.pgpass:db:5432:*:app': value })
+    const printed = `db:5432:*:app:pa\\:ss\\\\${STORED}`
+    expect(h.scrub(printed)).toBe('db:5432:*:app:[secret:.pgpass:db:5432:*:app~pgpass]')
+    expect(h.restore('[secret:.pgpass:db:5432:*:app~pgpass]').text).toBe(`pa\\:ss\\\\${STORED}`)
+  })
+})
