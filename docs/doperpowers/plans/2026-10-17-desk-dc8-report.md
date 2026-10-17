@@ -4,13 +4,24 @@ Execution of child DC8 of MAWS's composite `docs/doperpowers/specs/2026-10-15-de
 `smns-erb`, last pinned at `a87d7fa04`), from its execution document
 `docs/doperpowers/plans/2026-10-17-desk-dc8-machine.md` (Progress, Decision Log, Surprises & Discoveries,
 Outcomes & Retrospective there are the record; this file is the run's account). Branch `desk-dc8`, version
-7.166.0, merged with `origin/main` at `b8f7d197` (#218 took 7.165.0).
+7.168.0, merged with `origin/main` at `ca793e40` (main reached 7.167.0 while the branch was in review).
 
 ## Status
 
-All four milestones were built and reviewed clean, and the whole branch passes its suites. The whole-branch
-review is the xhigh panel, which the design session runs on the pinned range handed up to it. Its fix wave comes
-back here. The PR is open and not merged.
+All four milestones were built and reviewed clean.
+
+The whole-branch xhigh panel (wf_23f926ab-0cc) ran in the design session on
+`b8f7d19702a6dd13832591427d86dbbff6691060..d5a54a13fa948aa88626fcdf30faa91ad78d1931`.
+It confirmed three P2s:
+- a delivery refusal lost across the bridge's resync;
+- legacy background launches derived `completed` when the state was rebuilt cold;
+- a `/clear` retry that could hide a new conversation's agent.
+
+One fix wave fixed all three (`370662a2`, `578b11b8`, `c81b77fc`). reviewer-high read that delta and found that
+the launch text could override an explicit `toolUseResult`. That was fixed at `48f254aa`, which is also the
+shared-fixture commit DC9 vendors, and reviewer-high's verdict on the fix was "correct".
+
+The PR is open and not merged; the design session merges it.
 
 ## Milestones
 
