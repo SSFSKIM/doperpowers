@@ -4,7 +4,7 @@
 > (branch `smns-erb`; on this machine
 > `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
 > **DC8** (The machine — history and jobs — plan). **Parent pin:** commit
-> `896f04acc`, blob `78412d366bf324c073a794dec5b96a9a7df06331` of that file
+> `62bd81840`, blob `f24db648ce8db120fa1ba93fb8f82f11ed7faba6` of that file
 > (re-pinned 2026-10-17 from `77e82d832` to `f60dd668b` — the review's
 > round 2, DX4's precedence and `output`'s `missing` with `path: null` —
 > and then to `896f04acc`, which records this document's two pre-flight
@@ -23,7 +23,7 @@
 
 ## Progress
 
-- [ ] M1 — The jobs ledger, the normalization table, `output`'s containment, and the shared fixture (DC8.G3's and G4's derivations)
+- [x] M1 — The jobs ledger, the normalization table, `output`'s containment, and the shared fixture (DC8.G3's and G4's derivations) — reviewed clean 2026-10-17 (`38a45f6b`, fix `8b34237b`)
 - [ ] M2 — The offset index, pages and the open off the uplink's thread, ended sessions pageable (DC8.G1, G2)
 - [ ] M3 — The bridge: the `$.agent.list()` seed and refresh; a refused submission reported as a `failed` delivery (DC8.G3's seed, G5; G6 optional)
 - [ ] M4 — The plane carries status, jobs and MCP names, the bridge's agent state forwarded, and answers `output` (DC8.G3, G4)
