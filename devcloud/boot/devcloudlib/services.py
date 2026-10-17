@@ -93,10 +93,14 @@ def apply_systemd(user, env_changed):
             path.write_text(text)
             changed.add(name)
     gone = [s for s in service_list(user) if s not in listed]
+    removed = False
     for s in gone:
-        run(["systemctl", "disable", "--now", f"devcloud-{s.name}.service"], log="services", timeout=60)
-        (UNIT_DIR / f"devcloud-{s.name}.service").unlink(missing_ok=True)
-    if changed or gone:
+        unit = UNIT_DIR / f"devcloud-{s.name}.service"
+        if unit.exists():
+            run(["systemctl", "disable", "--now", unit.name], log="services", timeout=60)
+            unit.unlink()
+            removed = True
+    if changed or removed:
         run(["systemctl", "daemon-reload"], log="services", timeout=60)
     started = []
     for s in listed:

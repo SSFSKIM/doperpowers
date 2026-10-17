@@ -42,8 +42,9 @@ failures = []
 
 
 def cleanup():
-    for container in (HOST, FX):
+    for container in (HOST, FX, VM):
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+    subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE], capture_output=True)
     subprocess.run(["docker", "network", "rm", NET], capture_output=True)
     subprocess.run(["rm", "-rf", str(TMP)])
 
@@ -141,6 +142,15 @@ def boot_once(name, desc, hostname=None):
     return int(rc_line.split("=")[1]), {s["name"]: s for s in status["steps"]}, store.strip()
 
 
+# Detector findings the image carries from software it installs, not from
+# devcloud or the person: published example keys in vendored libraries' tests.
+THIRD_PARTY = ()
+
+
+def _third_party(path):
+    return any(path.startswith(prefix) for prefix in THIRD_PARTY)
+
+
 # --- acceptance 6 ------------------------------------------------------------------
 
 @case("the image holds no secret (acceptance 6)")
@@ -173,15 +183,6 @@ def image_is_clean():
     for value in SECRETS.values():
         hit = subprocess.run(["grep", "-rlF", value.strip(), str(root)], capture_output=True, text=True).stdout
         check(not hit, "a test value is in the image")
-
-
-# Detector findings the image carries from software it installs, not from
-# devcloud or the person: published example keys in vendored libraries' tests.
-THIRD_PARTY = ()
-
-
-def _third_party(path):
-    return any(path.startswith(prefix) for prefix in THIRD_PARTY)
 
 
 # --- the stand-ins -----------------------------------------------------------------
@@ -254,7 +255,8 @@ def shells():
 @case("~/.claude is a receive-only clone with no token in it")
 def configuration():
     git = f"git -C {HOME}/.claude"
-    check(out(HOST, f"{git} config --get remote.origin.url").strip() == "http://fixtures:8083/config.git", "url")
+    check(out(HOST, f"{git} config --get remote.origin.url", user=USER).strip() == "http://fixtures:8083/config.git",
+          "url")
     check("DISABLED" in out(HOST, f"{git} config --get remote.origin.pushurl", user=USER), "push URL disabled")
     push = sh(HOST, f"{git} push origin main 2>&1", user=USER, check_rc=False)
     check(push.returncode != 0, "git push fails")
@@ -388,6 +390,69 @@ def stop_and_restart():
     wait_healthy(HOST)
     check(f"term {shipper}" in out(HOST, f"cat {STATE}/ship.log"), "the shipper never got its final pass")
     check(out(HOST, "grep DAEMON_BOOT_ID /etc/devcloud/env") != boot_id, "DAEMON_BOOT_ID did not change")
+
+
+# --- under systemd ---------------------------------------------------------------------
+
+SYSTEMD_IMAGE = f"{TAG}-systemd"
+VM = f"{TAG}-vm"
+# Under systemd, units get none of the container's environment: a drop-in
+# points the boot and the jobs at the stand-ins.
+SYSTEMD_DOCKERFILE = f"""
+FROM {IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \\
+ && rm -rf /var/lib/apt/lists/* && systemctl enable devcloud-boot.service \\
+ && for unit in devcloud-boot devcloud-pull-config devcloud-refresh-secrets; do \\
+      mkdir -p /etc/systemd/system/$unit.service.d \\
+      && printf '[Service]\\nEnvironment=GCE_METADATA_HOST=fixtures:8082 DEVCLOUD_SM_ENDPOINT=http://fixtures:8081 DEVCLOUD_ALLOW_HTTP=1\\n' \\
+         > /etc/systemd/system/$unit.service.d/stand-ins.conf; done
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/sbin/init"]
+"""
+
+
+def wait_systemd_boot(timeout=300):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        state = sh(VM, "systemctl is-active devcloud-boot.service", check_rc=False).stdout.strip()
+        if state == "active":
+            return
+        if state == "failed":
+            raise Fail("devcloud-boot.service failed:\n" + sh(VM, "devcloud status; journalctl -u devcloud-boot "
+                                                              "--no-pager | tail -40", check_rc=False).stdout)
+        time.sleep(2)
+    raise Fail("devcloud-boot.service never finished: " + sh(VM, "systemctl status devcloud-boot --no-pager",
+                                                            check_rc=False).stdout[-1500:])
+
+
+@case("with systemd as PID 1, a persistent host boots from its unit and runs the services as units")
+def under_systemd():
+    docker("build", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE, timeout=900)
+    desc = TMP / "boot-vm.env"
+    desc.write_text(descriptor("sbx-vm").read_text().replace("KIND=container", "KIND=vm")
+                    .replace("ROLE=sandbox", "ROLE=persistent").replace("TAILSCALE=host", "TAILSCALE=none"))
+    docker("run", "-d", "--name", VM, "--hostname", "sbx-vm", "--network", NET, "--privileged",
+           "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
+           "-v", f"{desc}:/etc/devcloud/boot.env:ro", SYSTEMD_IMAGE)
+    wait_systemd_boot()
+    check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
+    for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer"):
+        check(out(VM, f"systemctl is-active {unit} || true").strip() == "active", f"{unit} is not active")
+    ship = json.loads(out(VM, f"cat {STATE}/ship.json"))
+    check(ship["uid"] == int(UID) and ship["SESSION_MIRROR_HOST"] == "sbx-vm" and ship["EXAMPLE_API_KEY set"],
+          f"the shipper's unit environment {ship}")
+    pulled = sh(VM, "systemctl start devcloud-pull-config.service", check_rc=False)
+    check(pulled.returncode == 0, "the pull job's unit failed")
+
+
+@case("after a restart, systemd boots the host again and the units come back (acceptance 4, in a container)")
+def systemd_restart():
+    docker("restart", "-t", "30", VM)
+    time.sleep(3)
+    wait_systemd_boot()
+    check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
+    check(out(VM, "systemctl is-active devcloud-session-mirror.service || true").strip() == "active",
+          "the shipper did not come back")
 
 
 # --- the boot's failure paths ------------------------------------------------------------
