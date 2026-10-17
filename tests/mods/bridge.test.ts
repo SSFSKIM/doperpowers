@@ -1490,6 +1490,69 @@ describe("a delivered prompt's row (G6)", () => {
       ['refused', 'a Stop hook stands'],
     ])
   })
+
+  /** Releases the posts after the first in order until one carries a refusal; that post is left held. */
+  const untilRefusal = async (h: ReturnType<typeof harness>) => {
+    const isRefusal = (e: Record<string, unknown>) => e.type === 'delivered' && e.outcome === 'refused'
+    for (let i = 1; !h.posts.slice(0, i + 1).some((p) => p.events.some(isRefusal)); i++) {
+      h.posts[i]!.release()
+      await h.settle()
+    }
+    return h.posts.find((p) => p.events.some(isRefusal))!
+  }
+  /** The poster's retry after a failed post, and the post it makes. */
+  const retry = async (h: ReturnType<typeof harness>) => {
+    h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
+    await h.settle()
+    return h.posts.at(-1)!
+  }
+
+  test('a refusal whose post is lost rides every resync, with its reason, until a post that carried it is answered', async () => {
+    const h = harness({ hold: true, submitDrops: 'a Stop hook stands' })
+    await h.start()
+    h.children[0]!.write(hello())
+    await h.settle()
+    h.posts[0]!.release()
+    await h.settle()
+    const key = { writer: 'hub/m1', seq: 8 }
+    h.children[0]!.write(line({ id: 'c1', op: 'deliver', key, text: 'dropped' }))
+    await h.settle()
+    ;(await untilRefusal(h)).fail() // the refusal never reaches the child
+    await h.settle()
+    let recovery = await retry(h)
+    expect(recovery.events.map((e) => e.type)).toEqual(['gap', 'resync'])
+    expect(recovery.events[1]!.refused).toEqual([{ key, reason: 'a Stop hook stands' }])
+    recovery.fail() // nor does the resync that carried it
+    await h.settle()
+    recovery = await retry(h)
+    expect(recovery.events[1]!.refused).toEqual([{ key, reason: 'a Stop hook stands' }])
+    recovery.release() // the child has it now
+    await h.settle()
+    await h.turn('t9')
+    await h.settle()
+    h.posts.at(-1)!.fail()
+    await h.settle()
+    recovery = await retry(h)
+    expect(recovery.events[1]).toMatchObject({ type: 'resync', refused: [] })
+  })
+
+  test('a refusal whose own post was answered is not carried by a later resync', async () => {
+    const h = harness({ hold: true, submitDrops: 'a Stop hook stands' })
+    await h.start()
+    h.children[0]!.write(hello())
+    await h.settle()
+    h.posts[0]!.release()
+    await h.settle()
+    h.children[0]!.write(line({ id: 'c1', op: 'deliver', key: { writer: 'hub/m1', seq: 9 }, text: 'dropped' }))
+    await h.settle()
+    ;(await untilRefusal(h)).release()
+    await h.settle()
+    await h.turn('t9')
+    await h.settle()
+    h.posts.at(-1)!.fail()
+    await h.settle()
+    expect((await retry(h)).events[1]).toMatchObject({ type: 'resync', refused: [] })
+  })
 })
 
 describe('agents the module did not see spawn ($.agent.list())', () => {

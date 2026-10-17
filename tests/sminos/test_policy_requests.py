@@ -539,6 +539,10 @@ class Bridge:
         # A reason here: each delivery is then dropped by the engine after
         # it was submitted, as the mod reports a PromptSubmitResult.drop.
         self.refusing = None
+        # True: the post carrying each refusal is lost, and the mod recovers
+        # as it does (bridge-stream.tsx, lose): a gap, then a resync of its
+        # state, which carries the refusals no answered post has.
+        self.losing_refusals = False
         self.proc = subprocess.Popen([CLI, "bridge", "--session", sid], stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True)
         hello = json.loads(self.proc.stdout.readline())
@@ -563,7 +567,12 @@ class Bridge:
                     self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"},
                               {"type": "result", "id": cmd["id"], "op": "deliver", "ok": True,
                                "result": {"submitted": True}})
-                    if self.refusing is not None:
+                    if self.refusing is not None and self.losing_refusals:
+                        self.post({"type": "gap", "dropped": 1, "t": 0},
+                                  {"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                                   "delivered": {cmd["key"]["writer"]: cmd["key"]["seq"]},
+                                   "refused": [{"key": cmd["key"], "reason": self.refusing}], "t": 0})
+                    elif self.refusing is not None:
                         self.post({"type": "delivered", "key": cmd["key"], "outcome": "refused",
                                    "reason": self.refusing})
 
@@ -628,6 +637,7 @@ class Refusals(unittest.TestCase):
 
     def tearDown(self):
         self.bridge.refusing = None
+        self.bridge.losing_refusals = False
 
     def human_from_hub(self, text, sid=None, alias=None):
         Refusals.hub_seq += 1
@@ -687,6 +697,34 @@ class Refusals(unittest.TestCase):
         self.assertIn("a Stop hook stands", got[-1][1], "with the bridge's reason")
         self.a_pass()
         self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered", "failed"], "recorded once")
+
+    def test_b2_a_refusal_whose_post_was_lost_is_reported_from_the_resync(self):
+        """The mod's post carrying the refusal fails; its recovery's resync
+        carries the refusal with its reason, which the child keeps beside
+        any it holds, once per key, so the `failed` still reaches the
+        outbox."""
+        import sminos_bridge as bridge
+        self.bridge.refusing = "the prompt queue was cleared"
+        self.bridge.losing_refusals = True
+        e = self.human_from_hub("dropped, and its refusal's post lost")
+        self.deliver()
+        self.assertIn("dropped, and its refusal's post lost", self.bridge.texts())
+        key = {"writer": e["writer"], "seq": e["seq"]}
+        self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]),
+                        "the child kept the refusal from the resync")
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                          "refused": [{"key": key, "reason": "the prompt queue was cleared"},
+                                      {"key": {"writer": "hub/" + MEMBER, "seq": 9300}, "reason": "y" * 5000}],
+                          "t": 0})
+        kept = self.kept_refused()
+        self.assertEqual([r["key"] for r in kept].count(key), 1, "a key the child holds is kept once")
+        self.assertEqual(kept[-1]["key"], {"writer": "hub/" + MEMBER, "seq": 9300}, "a new one after the rest")
+        self.assertLessEqual(len(kept[-1]["reason"]), bridge.REASON_MAX)
+        self.assertLessEqual(len(kept), bridge.REFUSED_KEPT, "bounded")
+        self.a_pass()
+        got = self.outcomes_of(e)
+        self.assertEqual([o for o, _ in got], ["delivered", "failed"])
+        self.assertIn("the prompt queue was cleared", got[-1][1], "with the bridge's reason")
 
     def test_c_a_refusal_of_an_event_written_here_is_not_reported(self):
         self.bridge.refusing = "a Stop hook stands"

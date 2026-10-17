@@ -98,6 +98,8 @@ export type Check = { toolUseId: string; tool: string; agentId: string | null; i
 export type ListedAgent = { id: string; description: string; type: string; status: string; parentId?: string; name?: string }
 /** A log event submitted as the human's words, whose row is still to be kept. */
 export type Submission = { key: { writer: string; seq: number }; text: string }
+/** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
+export type Refusal = { key: { writer: string; seq: number }; reason: string }
 
 export type BridgeState = {
   /**
@@ -230,6 +232,11 @@ export type BridgeState = {
   agentListsInFlight: Set<Promise<readonly ListedAgent[]>>
   /** Deliveries submitted whose prompt row has not been kept yet, oldest first (`delivered` `entered`). */
   submissions: Submission[]
+  /**
+   * Refusals no post the child answered has carried yet, oldest first: every
+   * resync carries them, so one whose post was lost still reaches the child.
+   */
+  refusals: Refusal[]
 }
 
 const fresh = (): BridgeState => ({
@@ -256,6 +263,7 @@ const fresh = (): BridgeState => ({
   conversation: 0,
   agentListsInFlight: new Set(),
   submissions: [],
+  refusals: [],
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,
   queue: [],

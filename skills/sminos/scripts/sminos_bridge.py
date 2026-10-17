@@ -269,6 +269,20 @@ def _key(e):
     return "%s|%s|%s" % (e.get("turnId"), e.get("agentId"), e.get("step"))
 
 
+def _refused(kept, key, reason):
+    """`kept` with a refusal of the delivery `key` added, once per key, the
+    last REFUSED_KEPT, its reason cut to REASON_MAX; as it was for a key that
+    is not one."""
+    key = key if isinstance(key, dict) else {}
+    writer, seq = key.get("writer"), key.get("seq")
+    refused = kept.get("refused") or []
+    if not isinstance(writer, str) or type(seq) is not int \
+            or any(r["key"] == {"writer": writer, "seq": seq} for r in refused):
+        return kept
+    entry = {"key": {"writer": writer, "seq": seq}, "reason": str(reason or "")[:REASON_MAX]}
+    return {**kept, "refused": (refused + [entry])[-REFUSED_KEPT:]}
+
+
 def _now_ms():
     return int(time.time() * 1000)
 
@@ -653,6 +667,11 @@ class Bridge:
                 kept["override"] = e["override"] if isinstance(e["override"], dict) else None
             if isinstance(e.get("delivered"), dict):
                 kept["delivered"] = {str(w): s for w, s in e["delivered"].items() if type(s) is int}
+            # Refusals whose own post may have been lost: kept beside those
+            # this child holds, which the mod's copy never replaces.
+            for r in e.get("refused") or []:
+                if isinstance(r, dict):
+                    kept = _refused(kept, r.get("key"), r.get("reason"))
             self._keep(kept)
         elif kind == "model":
             o = {"model": e.get("model"), "effort": e.get("effort")}
@@ -665,13 +684,7 @@ class Bridge:
         elif kind == "delivered" and e.get("outcome") == "refused":
             # The engine dropped what the mod submitted: kept with its key,
             # for the daemon's next delivery pass to report `failed` (DC8.G5).
-            key = e.get("key") if isinstance(e.get("key"), dict) else {}
-            writer, seq = key.get("writer"), key.get("seq")
-            refused = self.kept.get("refused") or []
-            if isinstance(writer, str) and type(seq) is int \
-                    and not any(r["key"] == {"writer": writer, "seq": seq} for r in refused):
-                entry = {"key": {"writer": writer, "seq": seq}, "reason": str(e.get("reason") or "")[:REASON_MAX]}
-                self._keep({**self.kept, "refused": (refused + [entry])[-REFUSED_KEPT:]})
+            self._keep(_refused(self.kept, e.get("key"), e.get("reason")))
         elif kind == "step" and phase == "start":
             self.broken.discard(_key(e))
             self.streaming[_key(e)] = _message({k: v for k, v in e.items() if k in ("turnId", "agentId", "step", "model")})
