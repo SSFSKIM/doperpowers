@@ -335,15 +335,23 @@ through the permission check (a deny rule or an ask rule still applies) and,
 in auto mode, past the classifier by its plugin-origin fast path (SPEC §26.7,
 fast path 3; off where the user has `autoMode.soft_deny`/`hard_deny` rules,
 in which case the classifier judges the relay too). The result, as the model
-would have read it, is the appeal's result, and a `relayed` event is logged.
-No pass is left, so nothing of the pass's bindings below applies: the call
-ran before any prompt could arrive and in the directory of the block (the
-epoch is re-checked after the judge, before the relay). Chosen by the human
+would have read it, is the appeal's result (with any content the tool
+answered beyond text — an image — as content blocks beside it), and a
+`relayed` event is logged. No pass is left, so nothing of the pass's
+bindings below applies: the call ran before any prompt could arrive and in
+the directory of the block — the epoch is re-checked after the ruling's log
+write, immediately before the relay, and a prompt or an answer that arrived
+since leaves the call unrun (`The call was not run: a prompt or an answer
+arrived meanwhile. Run it again if it is still wanted`; the re-run is
+classified as usual). A relay the engine refused, or one not run, is logged
+as `no-relay`, not counted among the calls run. Chosen by the human
 (2026-10-17) over the model re-running the call, which cost a model turn per
 grant for the same effect.
 
 A call whose arguments carry a key `$.tool.call` reserves (`tool`,
-`tool_use_id`, `consent`, …) cannot be relayed and gets a pass instead.
+`tool_use_id`, `consent`, …), and a call of a tool `$.tool.call` refuses by
+redirect (`Agent`, `AskUserQuestion`, `Workflow`), cannot be relayed and get
+a pass instead.
 
 A grant of a **subagent's** block leaves a pass: a plugin's call always runs
 in the main session's loop, so a relay would run the subagent's command in
@@ -429,6 +437,7 @@ resume appends rather than truncates. Events:
 {"at":"…","event":"no-ruling","block":"b3","reason":"timeout"}
 {"at":"…","event":"used","block":"b3"}
 {"at":"…","event":"relayed","block":"b4","isError":false,"text":"…"}
+{"at":"…","event":"no-relay","block":"b5","reason":"a prompt or an answer arrived after the ruling"}
 ```
 
 Inputs in the log keep each string field to 2,000 characters. Blocks are
@@ -777,6 +786,13 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   Rationale: one model turn saved per grant at no change in what runs; the
   bindings of the pass are moot for a call that runs at once in its own
   directory.
+  Date/Author: 2026-10-17, the authoring session.
+- Decision: the relay's review (`doperpowers:reviewer-medium`, 2026-10-17)
+  — four findings, all taken: the epoch is re-checked after the ruling's log
+  write, immediately before the relay; a result's non-text content rides
+  along as content blocks; `Agent`, `AskUserQuestion` and `Workflow`, which
+  `$.tool.call` refuses, get a pass; a refused or unrun relay is logged as
+  `no-relay` and not counted as a call run.
   Date/Author: 2026-10-17, the authoring session.
 - Decision: both milestones are executed in the authoring session, not through
   `doperpowers:plan-executor`.

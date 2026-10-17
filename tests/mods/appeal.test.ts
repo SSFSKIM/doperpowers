@@ -654,6 +654,39 @@ describe('registerAppeal', () => {
     await thrown.start()
     await thrown.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf x' }, blocked('[Irreversible Local Destruction]'))
     expect(((await thrown.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }).result).toContain('the engine refused it: aborted')
+    // A refused relay is logged as no-relay, not counted as a call run.
+    expect(refused.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'no-relay'])
+    expect(aggregate([{ text: refused.files.get('/home/t/.claude/appeals/sess-1.jsonl') ?? '' }]).used).toBe(0)
+  })
+
+  test("a prompt or an answer during the ruling's log write leaves the granted call unrun", async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    h.onWrite(() => void h.prompt('stop, do not delete'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toBe('Granted (block b1): Fine. The call was not run: a prompt or an answer arrived meanwhile. Run it again if it is still wanted.')
+    expect(h.calls.some((c) => c.op === 'tool.call')).toBe(false)
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'no-relay'])
+  })
+
+  test('a relayed result with an image carries it as a content block beside the text', async () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>', relay: { result: [{ type: 'text', text: 'shot taken' }, image], text: 'shot taken' } })
+    await h.start()
+    await h.call({ tool: 'mcp__s__screenshot', tool_use_id: 't1', target: 'window' }, blocked('[Credential Exploration]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: unknown }
+    expect(ruling.result).toEqual([{ type: 'text', text: 'Granted (block b1): Fine. The call was then run for you; its result:\n\nshot taken' }, image])
+  })
+
+  test('an Agent block in the main loop gets a pass, since $.tool.call refuses the tool', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>' })
+    await h.start()
+    await h.call({ tool: 'Agent', tool_use_id: 't1', prompt: 'do x', description: 'x' }, blocked('[Create Unsafe Agents]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toContain('Run the identical call again')
+    expect(h.calls.some((c) => c.op === 'tool.call')).toBe(false)
+    expect(await h.check({ tool: 'Agent', tool_use_id: 't3', input: { prompt: 'do x', description: 'x' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
   })
 
   test("an expired pass does not allow (a subagent's grant, which is not relayed)", async () => {

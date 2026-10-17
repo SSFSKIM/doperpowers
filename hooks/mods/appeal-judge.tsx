@@ -200,8 +200,18 @@ export const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'r
  */
 export function canRelay(block: Block): boolean {
   const input = block.input
-  return block.agentId === undefined && input !== null && typeof input === 'object' && !Array.isArray(input) && !Object.keys(input).some((k) => RESERVED.has(k))
+  return (
+    block.agentId === undefined &&
+    !NOT_RELAYED.has(block.tool) &&
+    input !== null &&
+    typeof input === 'object' &&
+    !Array.isArray(input) &&
+    !Object.keys(input).some((k) => RESERVED.has(k))
+  )
 }
+
+/** The tools `$.tool.call` refuses by redirect (`$.agent.spawn`, `$.ui.ask`): their grants are passes. */
+const NOT_RELAYED = new Set(['Agent', 'AskUserQuestion', 'Workflow'])
 
 /**
  * Records the ruling; a grant that is not relayed leaves the pass, for the
@@ -260,8 +270,15 @@ export function startBash(ledger: Ledger, agentId: string | undefined, input: un
   }
 }
 
-/** How a relayed call ended: it ran (its result as the model reads it), or the engine refused it. */
-export type Relay = { kind: 'ran'; text: string; isError: boolean } | { kind: 'refused'; deny: string }
+/**
+ * How a relayed call ended: it ran (its result as the model reads it, and the
+ * tool's record for any content that is not text), the engine refused it, or
+ * it was not run because a prompt or an answer arrived after the ruling.
+ */
+export type Relay =
+  | { kind: 'ran'; text: string; isError: boolean; result?: unknown }
+  | { kind: 'refused'; deny: string }
+  | { kind: 'stale' }
 
 export function rulingText(block: Block, verdict: Verdict, response: string, relay?: Relay): string {
   if (verdict !== 'grant') {
@@ -270,10 +287,21 @@ export function rulingText(block: Block, verdict: Verdict, response: string, rel
   if (relay === undefined) {
     return `Granted (block ${block.id}): ${response} Run the identical call again; this grant covers that one call for the next 10 minutes.`
   }
+  if (relay.kind === 'stale') {
+    return `Granted (block ${block.id}): ${response} The call was not run: a prompt or an answer arrived meanwhile. Run it again if it is still wanted.`
+  }
   if (relay.kind === 'refused') {
     return `Granted (block ${block.id}): ${response} The call was then run for you, and the engine refused it: ${relay.deny}`
   }
   return `Granted (block ${block.id}): ${response} The call was then run for you${relay.isError ? ' and reported an error' : ''}; its result:\n\n${relay.text}`
+}
+
+/**
+ * The blocks of a relayed result that are not text (an image a tool
+ * answered with), which `text` does not carry; none for a built-in's record.
+ */
+export function nonTextBlocks(result: unknown): unknown[] {
+  return Array.isArray(result) ? result.filter((b) => b !== null && typeof b === 'object' && (b as { type?: unknown }).type !== 'text' && typeof (b as { type?: unknown }).type === 'string') : []
 }
 
 /** The tool as the model reads it. */
@@ -553,6 +581,7 @@ export type LogEvent =
   | { event: 'no-ruling'; block: string; reason: string }
   | { event: 'used'; block: string }
   | { event: 'relayed'; block: string; isError: boolean; text: string }
+  | { event: 'no-relay'; block: string; reason: string }
 
 export function logLine(at: number, event: LogEvent): string {
   const capped =
