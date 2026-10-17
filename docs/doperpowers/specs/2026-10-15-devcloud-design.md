@@ -1088,6 +1088,18 @@ clears a plugin's state when it unloads is unverified).
   value's bytes to run as code. Leaving a handle unrestored is redaction, not refusal: the
   command runs. Rejected: patching each shell form (an open set).
   Date/Author: 2026-10-17, plan executor; confirmed by the design session.
+- Decision (narrows the entry above): In a Bash command only an inert value is ever restored, and
+  only at a plain position (plain neighbors; never after `$`, `$name`, `==`, `:=`) in a plain
+  command (no heredoc or here-string, backtick, arithmetic — `((`, `$[`, `let`, `[[`, integer
+  declarations — comment, or continuation). A non-inert value is never restored into a command;
+  the context-quoting code is deleted. Every unrestored handle's notice names a read that works
+  for its kind: the store file, the credential file and field (`jq -r` for JSON), the encoding
+  step for an encoded spelling, and for a pattern handle a temp file written with a file tool.
+  Rationale: the proved-context quoting leaked again in the third review (escaped handle starts,
+  arithmetic contexts), and each round found a new construct; a whitelist of positions with an
+  execution matrix over seven shell variants is checkable, and the notice keeps every handle
+  usable. Rejected: further lexer patches.
+  Date/Author: 2026-10-17, plan executor; confirmed by the design session.
 
 ## Outcomes & Retrospective
 
