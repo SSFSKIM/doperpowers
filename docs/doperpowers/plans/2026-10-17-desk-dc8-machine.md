@@ -475,6 +475,17 @@ rung for DC8); the PR opened, not merged; the report at
   output under another root is refused. Told to the design session.
   Date/Author: 2026-10-17, M4 executor (report `task-4-report.md`).
 
+- Decision: **The first snapshot waits for the first disk-facts look**
+  (about 1.9 s once per process on the coordinator session, 189 agents,
+  33 parents of nested agents; off the uplink's thread; an unchanged look
+  3 ms), so a nested agent never shows `unknown` for a moment. Rejected:
+  a snapshot first and a `subagents` correction seconds later — faster to
+  draw, wrong statuses until then. A parent loop's ledger parses only what
+  agents' outcomes read (Agent/Task/TaskStop calls, notifications,
+  `task_status`, results of calls it holds): the first look read about
+  424 MB of parents' transcripts in full before (3.0 s → 1.9 s).
+  Date/Author: 2026-10-17, M4 executor (fix wave); kept by the controller.
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
@@ -541,6 +552,15 @@ rung for DC8); the PR opened, not merged; the report at
   (130–340 all day) the owner's normal state and G1's page bound judged on
   the work itself, the distribution reported with the load.
   Evidence: `task-2-report.md`, "Fix wave 1".
+
+- Observation: **Latencies with M4 in place** (coordinator copy with its
+  `subagents/`, load 316→314, `measure_pages.py --subagents`): heartbeat /
+  presence / delivery maxima — idle 2 / 120 / 249 ms; subscribe 26 / 210
+  / 131 ms; pages 51 / 198 / 422 ms; agent-scope subscribe 2 / 214 / 108
+  ms; no delivery lost. First snapshot 3.4 s, agent snapshot 773 ms; pages
+  p95 151 ms, max 371 ms, 5 of 110 over 200 ms. Before the parent-loop fix,
+  at load 632→576, deliveries reached 1.3 s during pages.
+  Evidence: `task-4-report.md`, fix wave.
 
 ## Outcomes & Retrospective
 
