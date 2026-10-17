@@ -4,6 +4,7 @@ import {
   APPEAL_DESCRIPTION,
   APPEAL_SCHEMA,
   JUDGE_SYSTEM,
+  TRUSTED_SOURCES,
   type Block,
   type EvidenceParts,
   type Ledger,
@@ -12,6 +13,7 @@ import {
   applyRuling,
   blockNotice,
   blockReason,
+  bumpEpoch,
   isAppealable,
   judgePrompt,
   logLine,
@@ -20,6 +22,7 @@ import {
   recordBlock,
   recordFailure,
   rulingText,
+  settingsEvidence,
   takePass,
 } from './appeal-judge'
 import { asyncAsks } from './ask'
@@ -41,11 +44,12 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...described, isDeferred: false }) as ToolDescribeResult
 
 /**
- * The session's ledger, and its log: one file per session, rewritten whole
- * on each event. Module memory: a hot reload forgets open blocks and passes.
+ * The session's ledger, and its log: one file per session, seeded from what
+ * the file held at start and rewritten whole on each event, the writes in
+ * order. Module memory: a hot reload forgets open blocks and passes.
  */
 let ledger: Ledger = newLedger()
-let log: { path: string; lines: string[] } | undefined
+let log: { path: string; lines: string[]; writing: Promise<void> } | undefined
 
 /** Forgets both; for tests, which share this module. */
 export function resetAppeal() {
@@ -57,43 +61,68 @@ async function record($: EngineInterface, event: LogEvent) {
   if (log === undefined) {
     return
   }
-  log.lines.push(logLine(await $.clock.now(), event))
-  try {
-    await $.fs.write(log.path, `${log.lines.join('\n')}\n`)
-  } catch (error) {
+  const own = log
+  own.lines.push(logLine(await $.clock.now(), event))
+  // Each write waits for the one before it, so a later event's snapshot is
+  // never overwritten by an earlier one's finishing last.
+  own.writing = own.writing.then(() => $.fs.write(own.path, `${own.lines.join('\n')}\n`)).catch((error: unknown) => {
     $.ui.log(`appeal: the log could not be written: ${message(error)}`)
-  }
+  })
+  await own.writing
 }
 
 /**
- * Session start: the log's path, and the tool, in every loop. A headless run
- * in auto mode is blocked too, so no `isInteractive` matcher.
+ * Session start: the log, with the events a file of this session already
+ * holds (a reload, a resume), and the tool, in every loop. A headless run in
+ * auto mode is blocked too, so no `isInteractive` matcher.
  */
 export async function appealStart($: EngineInterface) {
   const home = await $.env.get('HOME')
   if (home !== undefined) {
-    log = { path: `${home}/.claude/appeals/${await $.session.id()}.jsonl`, lines: [] }
+    const path = `${home}/.claude/appeals/${await $.session.id()}.jsonl`
+    let lines: string[] = []
+    try {
+      if (await $.fs.exists(path)) {
+        lines = (await $.fs.read(path)).split('\n').filter((l) => l.trim() !== '')
+      }
+    } catch (error) {
+      $.ui.log(`appeal: the log could not be read: ${message(error)}`)
+    }
+    log = { path, lines, writing: Promise.resolve() }
   }
   await $.tool.register({ name: 'appeal', description: APPEAL_DESCRIPTION, inputSchema: APPEAL_SCHEMA })
 }
 
-/** The instruction files the judge reads, each skipped when absent. */
+/**
+ * The user's standing words the judge reads: the instruction files (each
+ * skipped when absent) and, source by source, the settings the classifier
+ * itself trusts.
+ */
 async function instructions($: EngineInterface): Promise<{ name: string; text: string }[]> {
   const home = await $.env.get('HOME')
   const root = await $.session.root()
-  const paths = [...(home === undefined ? [] : [`${home}/.claude/CLAUDE.md`]), `${root}/CLAUDE.md`, `${root}/CLAUDE.local.md`]
+  const paths = [
+    ...(home === undefined ? [] : [{ path: `${home}/.claude/CLAUDE.md`, name: `${home}/.claude/CLAUDE.md (the user's own)` }]),
+    { path: `${root}/CLAUDE.md`, name: `${root}/CLAUDE.md (in the repository)` },
+    { path: `${root}/CLAUDE.local.md`, name: `${root}/CLAUDE.local.md (in the repository, untracked)` },
+  ]
   const found: { name: string; text: string }[] = []
-  for (const path of paths) {
+  for (const { path, name } of paths) {
     try {
       if (await $.fs.exists(path)) {
-        found.push({ name: path, text: await $.fs.read(path) })
+        found.push({ name, text: await $.fs.read(path) })
       }
     } catch (error) {
       $.ui.log(`appeal: ${path} could not be read: ${message(error)}`)
     }
   }
-  const settings = (await $.settings.read()) as { autoMode?: unknown }
-  found.push({ name: 'autoMode settings', text: JSON.stringify(settings.autoMode ?? null, null, 1) })
+  for (const source of TRUSTED_SOURCES) {
+    try {
+      found.push(...settingsEvidence(source, (await $.settings.read({ source })) as Record<string, unknown>))
+    } catch (error) {
+      $.ui.log(`appeal: the ${source} settings could not be read: ${message(error)}`)
+    }
+  }
   return found
 }
 
@@ -109,6 +138,8 @@ async function evidence($: EngineInterface, block: Block, argument: string): Pro
 
 /** An appeal: the checks, the judge, the ruling, in the tool's own result. */
 export async function appeal($: EngineInterface, e: { agentId?: string; block?: unknown; argument?: unknown }): Promise<{ result: string }> {
+  // Read before the first await: a prompt from here on makes the evidence stale.
+  const epoch = ledger.epoch
   const checked = appealCheck(ledger, e.block, e.agentId, e.argument)
   if (!checked.ok) {
     return { result: `Not appealed: ${checked.error}` }
@@ -117,23 +148,26 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
   const argument = (e.argument as string).trim()
   const model = (await $.env.get('DOPERPOWERS_APPEAL_MODEL')) ?? 'opus'
   const started = await $.clock.now()
+  const failed = async (reason: string) => {
+    await record($, { event: 'no-ruling', block: block.id, reason })
+    return { result: recordFailure(block, reason) }
+  }
   let reply: Awaited<ReturnType<EngineInterface['model']['complete']>>
   try {
     const prompt = judgePrompt(await evidence($, block, argument))
     reply = await $.model.complete({ model, system: JUDGE_SYSTEM, prompt, effort: 'high', maxTokens: 8000, timeoutMs: 180_000 })
   } catch (error) {
-    await record($, { event: 'no-ruling', block: block.id, reason: message(error) })
-    return { result: recordFailure(block, message(error)) }
+    return failed(message(error))
   }
   if (!reply.isAnswered) {
-    const reason = reply.reason === 'api-error' ? `api-error ${reply.status ?? ''}`.trim() : reply.reason
-    await record($, { event: 'no-ruling', block: block.id, reason })
-    return { result: recordFailure(block, reason) }
+    return failed(reply.reason === 'api-error' ? `api-error ${reply.status ?? ''}`.trim() : reply.reason)
   }
   const ruling = parseRuling(reply.text)
   if (ruling === undefined) {
-    await record($, { event: 'no-ruling', block: block.id, reason: 'the judge gave no verdict' })
-    return { result: recordFailure(block, 'the judge gave no verdict') }
+    return failed('the judge gave no verdict')
+  }
+  if (ledger.epoch !== epoch) {
+    return failed('a prompt arrived while the judge was reading, so its evidence is stale')
   }
   const now = await $.clock.now()
   applyRuling(ledger, block, ruling.verdict, now)
@@ -154,7 +188,8 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
 /**
  * Registers the tool and the hooks: a classifier block gets an id and a note;
  * the tool rules through the judge; a pass lets the identical re-run through
- * where core's own verdict is the plain ask the blocked call reached.
+ * where core's own verdict is the plain ask the blocked call reached; a
+ * prompt submitted ends every outstanding pass.
  */
 export function registerAppeal(on: On) {
   on('session.start', { cwd: /^/ }, async ($, e, next) => {
@@ -202,5 +237,12 @@ export function registerAppeal(on: On) {
     }
     await record($, { event: 'used', block: pass.block })
     return { decision: 'allow', reason: `appeal ${pass.block} granted` }
+  }).catch((_, e, next) => next(e))
+
+  // Any prompt — the user's words, or anything that starts a turn in their
+  // place — ends the passes: what a judge ruled on may no longer be wanted.
+  on('prompt.submit', { text: /^/ }, (_, e, next) => {
+    bumpEpoch(ledger)
+    return next(e)
   }).catch((_, e, next) => next(e))
 }
