@@ -626,6 +626,29 @@ PY
 assert_equals "$HELD" '[1, ["bad-shape"], 0, []]' \
   "the malformed event is refused bad-shape, and the genuine event's echo imports as present, not refused as spent"
 
+# An event whose code verifies, at a position another event holds here, is
+# refused `conflict` (DX2): its code is good, its position taken. The position
+# stays the held event's, whose echo still imports as present.
+echo "an event that verifies, at a position another event holds:"
+CONFLICT="$(python3 - "$SCRIPTS" "$HP" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_hublog as hublog
+p = sminos.find_project(sys.argv[2])
+key = bytes(range(32))
+hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+w = "testhost/5a000005-0000-4000-8000-0000000000e5"
+mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
+other = hublog.seal(key, p.id, {**mine, "text": "another event at the same position"})
+appended, refused = hl.take([other])
+echo_appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+print(json.dumps([mine["seq"], appended, [[f["reason"], f["event"]] for f in refused], echo_appended,
+                  [f["reason"] for f in echoed]]))
+PY
+)"
+assert_equals "$CONFLICT" '[1, 0, [["conflict", {"writer": "testhost/5a000005-0000-4000-8000-0000000000e5", "seq": 1}]], 0, []]' \
+  "a different event that verifies at a held position is refused conflict, not bad-code, and the held event's echo imports as present"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES uplink assertions passed"

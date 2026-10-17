@@ -125,7 +125,10 @@ STEER_ROW_RE = re.compile(r"\(row ([0-9a-f-]{36})\)")
 BG_SHORT_RE = re.compile(r"backgrounded · ([0-9a-f]+)")
 COPY_RE = re.compile(r"started a copy as ([0-9a-f]+)")
 IDLE = "no turn is running"   # the mod's steer refusal (DX5): "no turn is running to steer: send it instead"
-SMINOS_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sminos")
+# A verb runs on the daemon's own Python, as its derivation and its uplink do:
+# the launcher would take the first python3 on the service's PATH, which the
+# install did not pin (sminos_daemon.interpreter).
+SMINOS_CLI = [sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "sminos.py")]
 
 
 def log(line):
@@ -955,7 +958,7 @@ def verb_env(member=None):
 def run_verb(argv, cwd, timeout, member=None):
     """(exit code, stdout, stderr) of a `sminos` verb."""
     try:
-        p = subprocess.run([SMINOS_CLI] + argv, cwd=cwd, env=verb_env(member), stdin=subprocess.DEVNULL,
+        p = subprocess.run(SMINOS_CLI + argv, cwd=cwd, env=verb_env(member), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Refused("failed", "sminos %s did not finish within %d s" % (argv[0], timeout))

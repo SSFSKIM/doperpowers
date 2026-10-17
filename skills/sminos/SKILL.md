@@ -11,7 +11,10 @@ Sminos is one CLI (`skills/sminos/scripts/sminos`; it is not on PATH) and
 one registry (`~/.claude/sminos/`, override with `$SMINOS_HOME`). Its unit
 is the **project**: a repository carrying a committed `.smns`, or else the
 git repository a directory belongs to (a linked worktree resolves to its
-owning repository). A directory in no git repository is no project.
+owning repository). A directory in no git repository is no project. It
+runs on the first `python3` on PATH, which must be 3.10 or newer; an
+older one (macOS's own `/usr/bin/python3` is 3.9) stops, saying what
+fixes it.
 
 Every session working in a project is a **member** of its family, with no
 join step: the sessions your human partner opened and the ones sminos
@@ -116,7 +119,8 @@ on this machine.
     sminos seat add <group> <alias> [--session S]   # register a vacant seat, or give a session one
     sminos meta get|set <seat> <field> [<value>]
     sminos project init|show|attach   # below
-    sminos daemon run|tick|install|status   # below
+    sminos hub enroll|show            # below: this machine at the desk hub
+    sminos daemon run|tick|install|status|policy   # below
     sminos migrate [--quiet]          # also runs on every verb
 
 A bare name resolves in the working directory's project, and only there;
@@ -228,7 +232,7 @@ transcript.
 
 ## The project and its mirror
 
-    sminos project init [--name N] [--remote URL]   # writes .smns at the repository root
+    sminos project init [--name N] [--remote URL] [--hub]   # writes .smns at the repository root
     sminos project show [DIR]                       # the project a directory resolves to
     sminos project attach [DIR]                     # adopt log/ into the remote's mirror
 
@@ -255,18 +259,60 @@ chats again. `migrate` runs before every verb, so running a working
 copy's CLI against the real `~/.claude/sminos` performs it — point
 `HOME` and `SMINOS_HOME` at temporary directories when testing.
 
+## The desk hub
+
+    sminos hub enroll [--name N] [--replace]   # this machine at the desk hub; the code at a hidden prompt
+    sminos hub show                            # its enrolled name, hub, org, and the names it wrote under before
+    sminos project init --hub                  # this repository syncs through the hub, never git
+
+The desk's **Machines → Enroll a machine** gives a one-time code.
+`hub enroll` reads it at a hidden prompt, or from stdin when piped, and
+refuses it as an argument: the code carries the org key, which argv and
+the shell's history would expose. The enrolled name is this machine's
+name from then on, in every project: what it writes is `<name>/…`,
+because the hub takes from a machine only its own writers. Without
+`--name` it keeps the name it writes under now (its host name, or
+`DAEMON_HOST`) when the hub admits it, whatever the code proposed. What it
+wrote under an earlier name stays on this machine and never reaches the
+hub. `--replace` enrolls again with a new code. The credential is
+`$SMINOS_HOME/daemon/hub.json` (mode 0600).
+
+`project init --hub` writes the enrolled hub into `.smns`: a new one, or
+added to the one there, changing nothing else. Commit it; on each other
+enrolled machine, pull and run `project init --hub` too, which registers
+the project there at once. A hub project is never synced through git (a
+`remote` it names stays the log's archive), and its sessions, already
+running ones included, write to it from their next message. The daemon's
+uplink carries it to the hub: install the daemon on every enrolled
+machine.
+
 ## The daemon
 
     sminos daemon run [--interval 5]   # the loop, one per machine
     sminos daemon tick                 # one iteration over every project known here
     sminos daemon install              # write the machine's service: a launchd agent (macOS), a systemd user unit (Linux)
-    sminos daemon status               # whether a loop runs; each project's last tick
+    sminos daemon status               # whether a loop and its uplink run; each project's last tick
+    sminos daemon policy [--read-only on|off] [--ceiling MODE|settings]   # what this machine admits from outside
 
 Each tick, per project: sync the mirror (projects with a remote), join
 sessions seen on this machine, publish state changes and renames, retry
 owed deliveries (a failed push is retried each tick and given up after 60
 with a line in `$SMINOS_HOME/daemon.log`), push; hourly, `derive --all`. A
-`say` to a remote member nudges a running loop to tick at once.
+`say` to a remote member nudges a running loop to tick at once. On an
+enrolled machine the loop also keeps the uplink, the stream to the hub
+that carries every hub project both ways.
+
+`daemon policy` is the owner's bound on what reaches this machine from
+outside it: the desk, the hub, other machines. With no flags it prints
+the policy. `--read-only on` delivers nothing written elsewhere (it is
+recorded, and settled undelivered) and refuses every request from the
+desk; this machine's own sessions still reach each other. `--ceiling` is
+the loosest permission mode a session spawned from outside may run under
+(`plan`, `default`, `acceptEdits`, `auto`, `dontAsk`,
+`bypassPermissions`); `settings`, the default, follows your settings'
+`defaultMode`. The policy is read at every use, so a change holds from
+the next delivery. A policy file that cannot be read keeps the machine
+read-only until `daemon policy` writes it again.
 
 `daemon install` writes, on macOS,
 `~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist` and prints
@@ -275,7 +321,9 @@ the `launchctl bootstrap` and `bootout` lines; on Linux,
 `systemctl --user` lines that enable and disable it, and `loginctl
 enable-linger`, without which the user's services stop at logout and do
 not start at boot. Either file is mode 0600 (the gateway route in it in
-plain text), and nothing is loaded. From an installed plugin it points
+plain text), and nothing is loaded. The service runs the Python the
+install ran on, pinned, never the first `python3` its recorded PATH
+finds. From an installed plugin it points
 the service at the marketplace clone, a stable path, not the versioned
 cache, and refuses when no clone is known; `run` exits after a tick once
 its own code changes, so `KeepAlive` or `Restart=always` restarts it on

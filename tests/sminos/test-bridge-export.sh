@@ -179,9 +179,9 @@ except OSError:
 print(" ".join(json.loads(l)["kind"] + (":" + json.loads(l)["src"] if json.loads(l).get("src") else "") for l in lines))' \
     "$LOG/testhost.$1.jsonl"
 }
-peer() { # session name kind entrypoint — a running harness session in the project
+peer() { # session name kind entrypoint [cwd] — a running harness session, in the project unless cwd says
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"%s","entrypoint":"%s","status":"busy","cwd":"%s"}\n' \
-    "$$" "$1" "$2" "$3" "$4" "$REPO" > "$HOME/.claude/sessions/$2.json"
+    "$$" "$1" "$2" "$3" "$4" "${5:-$REPO}" > "$HOME/.claude/sessions/$2.json"
 }
 start_child() { # session
   python3 "$T/ctl.py" fakemod "$SMINOS" "$1" &
@@ -302,6 +302,49 @@ until_true 100 grep -q after-enrolling "$LOG/enrolled.$SE.jsonl" 2>/dev/null || 
 assert_contains "$(cat "$LOG/enrolled.$SE.jsonl" 2>/dev/null)" '"src": "after-enrolling#0"' \
   "after it, under the enrolled name: the child reads the machine's identity afresh at each export"
 assert_not_contains "$(events_of "$SE")" "after-enrolling" "and not under the name it began with"
+rm -f "$SMINOS_HOME/daemon/hub.json"
+
+echo "a checkout that becomes a hub project while the child runs:"
+# A session in a checkout with no .smns exports to the repository's local
+# project. The machine enrolls, the checkout gets a .smns naming the hub, and
+# the session's next export goes to that project under the enrolled name: the
+# child, which began before both, resolves the project afresh at each export.
+SG=5b000001-0000-4000-8000-0000000000e6
+R2="$T/walk"
+mkdir -p "$R2/sub"
+git -c init.defaultBranch=main init -q "$R2"
+writer_events() { # project-id file-stem → "kind[:src]" words of that writer file
+  python3 -c 'import json, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    lines = []
+print(" ".join(json.loads(l)["kind"] + (":" + json.loads(l)["src"] if json.loads(l).get("src") else "") for l in lines))' \
+    "$SMINOS_HOME/projects/$1/log/$2.jsonl"
+}
+peer "$SG" exwalk interactive cli "$R2/sub"
+start_child "$SG"
+ctl post "$SMINOS_HOME/bridge/$SG.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SG\",\"cwd\":\"$R2/sub\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SG.sock" "$(rows export before-smns)" >/dev/null
+local_has() { [[ " $(writer_events local-walk "testhost.$SG") " == *" message:before-smns#0 "* ]]; }
+until_true 100 local_has || true
+assert_equals "$(writer_events local-walk "testhost.$SG")" "joined message:before-smns#0" \
+  "before the .smns, an export goes to the repository's local project"
+mkdir -p "$SMINOS_HOME/daemon"
+printf '{"hub": "https://hub.test", "org": "org-a", "machine": "enrolled", "former": {"testhost": ["%s"]}}\n' "$SG" \
+  > "$SMINOS_HOME/daemon/hub.json"
+(cd "$R2" && "$SMINOS" project init --hub --name walk >/dev/null)
+HUBP="$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["project"] if d.get("hub") else "")' "$R2/.smns")"
+assert_contains "$HUBP" "-" "project init --hub wrote a .smns naming the hub"
+ctl post "$SMINOS_HOME/bridge/$SG.sock" "$(rows export after-hub)" >/dev/null
+hub_has() { [[ " $(writer_events "$HUBP" "enrolled.$SG") " == *" message:after-hub#0 "* ]]; }
+until_true 100 hub_has || true
+assert_equals "$(writer_events "$HUBP" "enrolled.$SG")" "joined message:after-hub#0" \
+  "after it, the next export goes to the hub project, under the enrolled name, the session joined there on sight"
+assert_not_contains "$(writer_events local-walk "testhost.$SG") $(writer_events local-walk "enrolled.$SG")" "after-hub" \
+  "and nothing more to the local project"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("hub"))' "$SMINOS_HOME/projects/$HUBP/project.json")" \
+  "{'url': 'https://hub.test', 'org': 'org-a'}" "the hub project is registered with its hub"
 rm -f "$SMINOS_HOME/daemon/hub.json"
 
 echo

@@ -6,9 +6,11 @@
   `sminos daemon install` into ~/Library/LaunchAgents/{{LABEL}}.plist; the
   placeholders are filled from the installing environment. Load it with
   `launchctl bootstrap gui/$(id -u) <that file>`.
-  The program is the marketplace clone's CLI when the installing one ran
-  from the versioned plugin cache, so a plugin update does not strand it;
-  the daemon exits when its scripts change and KeepAlive restarts it on the
+  The program is the Python that ran the install, pinned (the PATH below
+  may find an older python3 first, which cannot import sminos), running
+  the marketplace clone's sminos.py when the installing one ran from the
+  versioned plugin cache, so a plugin update does not strand it; the
+  daemon exits when its scripts change and KeepAlive restarts it on the
   new code. The gateway route's values (a token among them) sit here in
   plain text, in a file only its owner can read (0600): accepted.
 -->
@@ -17,6 +19,7 @@
   <key>Label</key><string>{{LABEL}}</string>
   <key>ProgramArguments</key>
   <array>
+    <string>{{PYTHON}}</string>
     <string>{{SMINOS_CLI}}</string>
     <string>daemon</string>
     <string>run</string>

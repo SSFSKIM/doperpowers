@@ -5056,16 +5056,20 @@ PLIST="$MD/inst/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist"
 assert_file_exists "$PLIST" "it writes the agent under the HOME it is given"
 assert_contains "$OUT" "launchctl bootstrap gui/" "and says how to load it"
 assert_file_absent "$MD/launchctl.calls" "loading nothing itself"
-assert_equals "$(python3 - "$PLIST" "$MD/inst/sminos" "$SMINOS" <<'PY_PLIST'
+INSTALL_PY="$(PATH="$MD/lc:$PATH" command -v python3)"
+assert_equals "$(python3 - "$PLIST" "$MD/inst/sminos" "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$INSTALL_PY" <<'PY_PLIST'
 import os, plistlib, sys
 d = plistlib.load(open(sys.argv[1], "rb"))
 env = d["EnvironmentVariables"]
-print(d["Label"], d["ProgramArguments"][1:], os.path.realpath(d["ProgramArguments"][0]) == os.path.realpath(sys.argv[3]),
+args = d["ProgramArguments"]
+print(d["Label"], args[2:], os.path.realpath(args[1]) == os.path.realpath(sys.argv[3]),
+      os.path.realpath(args[0]) == os.path.realpath(sys.argv[4]),
       env["SMINOS_HOME"] == sys.argv[2], env.get("ANTHROPIC_BASE_URL"), "ANTHROPIC_AUTH_TOKEN" in env,
       bool(env.get("PATH")), d["KeepAlive"], d["RunAtLoad"])
 PY_PLIST
-)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True http://gateway.test False True True True" \
-  "a well-formed plist: daemon run through this CLI, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
+)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True True http://gateway.test False True True True" \
+  "a well-formed plist: daemon run through this CLI's sminos.py on the Python that ran the install, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
+assert_contains "$OUT" "on $INSTALL_PY (Python 3." "the install says which Python the service runs on"
 assert_equals "$(mode_of "$PLIST")" "0600" "readable only by its owner: it may carry the gateway's token"
 # A first install, before any verb made the registry: launchd opens daemon.out
 # in it before the daemon runs, so the install makes it.
@@ -5080,21 +5084,20 @@ CACHE="$MD/inst/.claude/plugins/cache/doperpowers/doperpowers/9.9.9"
 MKT="$MD/inst/.claude/plugins/marketplaces/doperpowers"
 mkdir -p "$CACHE/skills" "$MKT/skills/sminos/scripts"
 cp -R "$REPO_ROOT/skills/sminos" "$CACHE/skills/"
-printf '#!/bin/sh\n' > "$MKT/skills/sminos/scripts/sminos"
-chmod +x "$MKT/skills/sminos/scripts/sminos"
+printf '\n' > "$MKT/skills/sminos/scripts/sminos.py"
 printf '{"doperpowers": {"installLocation": "%s", "autoUpdate": true}}\n' "$MKT" > "$MD/inst/.claude/plugins/known_marketplaces.json"
-plist_cli() { python3 -c 'import os, plistlib, sys; print(os.path.realpath(plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"][0]))' "$PLIST"; }
+plist_cli() { python3 -c 'import os, plistlib, sys; print(os.path.realpath(plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"][1]))' "$PLIST"; }
 real() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
 assert_rc 0 "$RC" "install from the plugin cache succeeds"
-assert_equals "$(plist_cli)" "$(real "$MKT/skills/sminos/scripts/sminos")" "and runs the marketplace clone's CLI, not the versioned cache's"
+assert_equals "$(plist_cli)" "$(real "$MKT/skills/sminos/scripts/sminos.py")" "and runs the marketplace clone's CLI, not the versioned cache's"
 PLIST_BEFORE="$(cat "$PLIST")"
-mv "$MKT/skills/sminos/scripts/sminos" "$MD/clone-cli.away"
+mv "$MKT/skills/sminos/scripts/sminos.py" "$MD/clone-cli.away"
 run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
 assert_rc 1 "$RC" "from the cache with the clone's CLI missing, install is refused"
 assert_contains "$OUT" "marketplace clone it would run instead is missing" "saying the clone is missing"
 assert_contains "$OUT" "or run the install from a checkout" "and how to recover"
-mv "$MD/clone-cli.away" "$MKT/skills/sminos/scripts/sminos"
+mv "$MD/clone-cli.away" "$MKT/skills/sminos/scripts/sminos.py"
 rm "$MD/inst/.claude/plugins/known_marketplaces.json"
 run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" PATH="$MD/lc:$PATH" "$CACHE/skills/sminos/scripts/sminos" daemon install
 assert_rc 1 "$RC" "with no marketplace entry at all, refused too"
@@ -5143,8 +5146,9 @@ for line in open(sys.argv[1]):
         continue
     key, value = line.split("=", 1)
     if key == "ExecStart":
-        cmd, args = re.fullmatch(r'("(?:[^"\\]|\\.)*") (.*)', value).groups()
-        value = "%s | %s" % (os.path.realpath(word(cmd)), args)
+        # The program, then its first argument, whose `$$` systemd reads as `$`.
+        cmd, script, args = re.fullmatch(r'("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*") (.*)', value).groups()
+        value = "%s %s | %s" % (os.path.realpath(word(cmd)), os.path.realpath(word(script).replace("$$", "$")), args)
     elif key == "Environment":
         value = word(value)
     out.append("%s %s=%s" % (section, key, value))
@@ -5152,7 +5156,8 @@ print("\n".join(out))
 PY_UNIT
 }
 FIELDS="$(unit_fields "$UNIT")"
-assert_contains "$FIELDS" "[Service] ExecStart=$(real "$SMINOS") | daemon run" "it runs daemon run through this CLI"
+assert_contains "$FIELDS" "[Service] ExecStart=$(real "$INSTALL_PY") $(real "$REPO_ROOT/skills/sminos/scripts/sminos.py") | daemon run" \
+  "it runs daemon run through this CLI's sminos.py, on the Python that ran the install"
 assert_contains "$FIELDS" "[Service] Environment=SMINOS_HOME=$MD/sd/sminos" "with the registry"
 assert_contains "$FIELDS" "[Service] Environment=PATH=$MD/lc:" "the PATH it was installed with"
 assert_contains "$FIELDS" "[Service] Environment=DAEMON_HOST=sd-box" "the machine's name"
@@ -5178,7 +5183,8 @@ run env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" SMINOS_SERVICE=systemd XDG
   "$CACHE/skills/sminos/scripts/sminos" daemon install
 assert_rc 0 "$RC" "a systemd install from the plugin cache succeeds"
 assert_contains "$(unit_fields "$MD/inst/.config/systemd/user/sminos-daemon.service")" \
-  "[Service] ExecStart=$(real "$MKT/skills/sminos/scripts/sminos") | daemon run" "and runs the marketplace clone's CLI, not the versioned cache's"
+  "[Service] ExecStart=$(real "$INSTALL_PY") $(real "$MKT/skills/sminos/scripts/sminos.py") | daemon run" \
+  "and runs the marketplace clone's CLI, not the versioned cache's"
 assert_file_absent "$MD/service.calls" "still loading nothing"
 # The platform chooses: launchd on macOS, systemd on Linux, a refusal elsewhere.
 run env HOME="$MD/pc" SMINOS_HOME="$MD/pc/sminos" XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" "$SMINOS" daemon install
@@ -5204,6 +5210,69 @@ print(" ".join(picked))
 PY_PLATFORM
 )" "launchd systemd refused 1" "launchd on darwin, systemd on linux, and a refusal on any other platform"
 assert_file_absent "$MD/service.calls" "and no install ran a service manager"
+# sminos needs Python 3.10 (sminos.MIN_PYTHON), and the launcher runs the first
+# python3 on PATH. From a shell whose first python3 is older (macOS's own
+# /usr/bin/python3 is 3.9) every verb, install among them, stops saying what
+# fixes it. An install run there with a newer Python pins that one, so the
+# service it writes starts though its recorded PATH still finds the old one.
+# The old python3 here is this one reporting 3.9; a real one is tried below.
+mkdir -p "$MD/oldpy"
+cat > "$MD/oldpy/python3" <<OLDPY
+#!/bin/sh
+exec "$INSTALL_PY" -c 'import collections, runpy, sys
+sys.version_info = collections.namedtuple("version_info", "major minor micro releaselevel serial")(3, 9, 6, "final", 0)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")' "\$@"
+OLDPY
+chmod +x "$MD/oldpy/python3"
+run env HOME="$MD/oldpy-home" SMINOS_HOME="$MD/oldpy-home/sminos" SMINOS_SERVICE=launchd PATH="$MD/oldpy:$MD/lc:$PATH" \
+  "$SMINOS" daemon install
+assert_rc 1 "$RC" "from a shell whose first python3 is 3.9, daemon install is refused"
+assert_contains "$OUT" "sminos needs Python 3.10 or newer, and $INSTALL_PY is 3.9" "naming the Python it found too old"
+assert_contains "$OUT" "put it first on PATH, or run sminos with it: <that python3> $(real "$REPO_ROOT/skills/sminos/scripts/sminos.py")" \
+  "and the fix"
+assert_not_contains "$OUT" "Traceback" "not a traceback from the middle of an import"
+assert_file_absent "$MD/oldpy-home/Library" "writing no service"
+OLD_REAL=/usr/bin/python3
+if [ -x "$OLD_REAL" ] && "$OLD_REAL" -c 'import sys; sys.exit(sys.version_info >= (3, 10))' 2>/dev/null; then
+  run env HOME="$MD/oldpy-home" SMINOS_HOME="$MD/oldpy-home/sminos" SMINOS_SERVICE=launchd PATH="/usr/bin:/bin:$MD/lc" \
+    "$SMINOS" daemon install
+  assert_rc 1 "$RC" "under this machine's own $OLD_REAL ($("$OLD_REAL" -V 2>&1)), refused the same way"
+  assert_contains "$OUT" "sminos needs Python 3.10 or newer, and " "sminos.py compiles on it, and its check runs"
+  assert_not_contains "$OUT" "Traceback" "with no traceback"
+else
+  echo "  skip no python3 older than 3.10 at $OLD_REAL to try sminos's check on"
+fi
+run env HOME="$MD/pin" SMINOS_HOME="$MD/pin/sminos" SMINOS_SERVICE=launchd PATH="$MD/oldpy:$MD/lc:$PATH" \
+  "$INSTALL_PY" "$REPO_ROOT/skills/sminos/scripts/sminos.py" daemon install
+assert_rc 0 "$RC" "run with a newer Python from that shell, the install succeeds"
+assert_equals "$(python3 - "$MD/pin/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist" "$MD/pin" "$MD/oldpy/python3" <<'PY_PINNED'
+# The service as launchd starts it: its program and arguments, its environment
+# alone. It is running once `daemon status`, run the same way, says so.
+import os, plistlib, subprocess, sys, time
+d = plistlib.load(open(sys.argv[1], "rb"))
+argv, env = d["ProgramArguments"], {**d["EnvironmentVariables"], "HOME": sys.argv[2]}
+first = subprocess.run(["sh", "-c", "command -v python3"], env=env, capture_output=True, text=True).stdout.strip()
+with open(os.path.join(sys.argv[2], "service.out"), "w") as out:
+    service = subprocess.Popen(argv, env=env, stdout=out, stderr=subprocess.STDOUT)
+said, end = "", time.time() + 30
+while time.time() < end and service.poll() is None and "daemon: running" not in said:
+    said = subprocess.run(argv[:2] + ["daemon", "status"], env=env, capture_output=True, text=True).stdout
+    time.sleep(0.2)
+alive = service.poll() is None
+service.terminate()
+service.wait()
+print(first == sys.argv[3], "daemon: running" in said, alive)
+PY_PINNED
+)" "True True True" "its service starts and runs though the PATH it records finds the 3.9 python3 first"
+assert_equals "$(cd "$MD" && env HOME="$MD/pin" SMINOS_HOME="$MD/pin/sminos" PATH="$MD/oldpy:$PATH" "$INSTALL_PY" - "$REPO_ROOT/skills/sminos/scripts" <<'PY_VERB'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos_rpc
+rc, out, err = sminos_rpc.run_verb(["list", "--all"], ".", 60)
+print(rc, err.strip()[:200])
+PY_VERB
+)" "0 " "and a verb it runs for the desk runs on its own Python, not the first python3 on that PATH"
 # run notices new code: a change to its own scripts ends the loop with exit 0,
 # for launchd's KeepAlive to restart it on the new code.
 env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" "$CACHE/skills/sminos/scripts/sminos" daemon run --interval 1 > "$MD/run-code.out" 2>&1 & RUNC=$!
