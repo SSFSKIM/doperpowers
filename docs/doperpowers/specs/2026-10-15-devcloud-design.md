@@ -1218,6 +1218,14 @@ clears a plugin's state when it unloads is unverified).
   a reusable auth key in the vault (unscoped in time, no audit of its use).
   Date/Author: 2026-10-17, the person's choice, through the design session.
 
+- Decision: A failed step 12 (projects) is recorded `failed` and `devcloud-boot` exits 3, a code
+  meaning only "projects failed"; the container entrypoint starts `devcloud-services` on 0 or 3, and
+  the systemd boot unit counts 3 as success for ordering, so a broken project never stops the host's
+  services, while a driver still sees a non-zero exit and `devcloud status` names the failure.
+  Rationale: steps 1–11 make the host; step 12 prepares work on it, which `devenv up` can redo.
+  Rejected: exiting 0 (a caller would believe the environment was prepared); stopping services.
+  Date/Author: 2026-10-17, plan executor, on M4's review.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish. Interim, at M1's pull request (2026-10-17): the guard's hardest
