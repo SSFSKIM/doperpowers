@@ -537,6 +537,11 @@ stop accidents, which arrive as plain text or a common encoding.
 - A keyless seed (workload identity federation against an issuer the person runs) — the right
   move when hosts multiply or one is less trusted than the Macs (Decision Log).
 - A credential proxy or broker (decided against: friction first; Decision Log).
+- Tailscale keys for automated VM creation: a provisioning driver mints a fresh tagged one-off key
+  per VM from a Tailscale OAuth client kept in Secret Manager (scoped to `tag:devcloud`, revocable,
+  audited), or on GCE joins through workload identity federation with no stored secret. Never a
+  reusable auth key in the vault. Until a driver exists, each new persistent VM's key is minted by
+  the person; sandboxes never join.
 
 ## Execution
 
