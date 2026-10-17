@@ -67,32 +67,66 @@ def scanner_output(args, values_json, scanner=None):
     err = result.stderr.decode(errors="replace")
     if result.returncode != 0:
         raise CheckError(f"the scanner exited {result.returncode}: {err.strip()[-600:]}")
-    scanned = re.search(r"scanned (\d+) text files", err)
+    scanned = re.search(r"scanned (\d+) files", err)
     if not scanned or int(scanned.group(1)) == 0:
         raise CheckError(f"the scanner read nothing: {err.strip()[-300:]}")
     return result.stdout.decode().splitlines()
 
 
-# Shell only, so the check runs on any Debian-based image: owned paths, less
-# those `dpkg --verify` reports changed. dpkg-query prints `<packages>: <path>`,
-# a package often arch-qualified (`libpython3.12-stdlib:amd64`), so the path
-# is what follows the last `: ` before its leading slash.
-PRISTINE = r"""
-dpkg --verify 2>/dev/null | awk '{print $NF}' | sort -u > /tmp/modified
-tr '\n' '\0' | xargs -0 -r dpkg-query -S 2>/dev/null | sed -n 's#^[^/]*: /#/#p' | sort -u > /tmp/owned
-comm -23 /tmp/owned /tmp/modified
-"""
+# `dpkg --verify` lines: nine check characters, an optional `c` (a conffile), the path.
+VERIFY_LINE = re.compile(r"^[?.0-9A-Za-z]{9} +(?:c +)?(/.*)$")
+NOT_OWNED = re.compile(r"^dpkg-query: no path found matching pattern ")
+BATCH = 300
+
+
+def _in(container, argv):
+    return subprocess.run(["docker", "exec", container, *argv], capture_output=True, text=True, timeout=900)
 
 
 def _package_pristine(image, paths):
-    """Of `paths`, those a Debian package installed and `dpkg --verify` finds unchanged."""
+    """Of `paths`, those a Debian package installed and `dpkg --verify` finds
+    unchanged. Each tool runs on its own and its result is read: a listing of
+    differences or of unowned paths is an answer; any other failure is
+    CheckError, never an empty answer."""
     if not paths:
         return set()
-    result = subprocess.run(["docker", "run", "--rm", "-i", "--entrypoint", "sh", image, "-c", PRISTINE],
-                            input="\n".join(sorted(paths)) + "\n", capture_output=True, text=True, timeout=900)
-    if result.returncode != 0:
-        raise CheckError(f"dpkg verification failed: {result.stderr[-400:]}")
-    return set(result.stdout.splitlines()) & set(paths)
+    container = subprocess.run(["docker", "run", "-d", "--rm", "--entrypoint", "sleep", image, "infinity"],
+                               capture_output=True, text=True)
+    if container.returncode != 0:
+        raise CheckError(f"cannot start {image} for dpkg: {container.stderr.strip()[-300:]}")
+    name = container.stdout.strip()
+    try:
+        verify = _in(name, ["dpkg", "--verify"])
+        if verify.returncode not in (0, 1):
+            raise CheckError(f"dpkg --verify exited {verify.returncode}: {verify.stderr.strip()[-300:]}")
+        lines = verify.stdout.splitlines()
+        if verify.returncode == 1 and not lines:
+            raise CheckError(f"dpkg --verify exited 1 without listing a difference: {verify.stderr.strip()[-300:]}")
+        modified = set()
+        for line in lines:
+            match = VERIFY_LINE.match(line)
+            if not match:
+                raise CheckError(f"dpkg --verify printed a line it should not: {line[:200]!r}")
+            modified.add(match.group(1))
+        owned = set()
+        wanted = sorted(paths)
+        for k in range(0, len(wanted), BATCH):
+            batch = wanted[k:k + BATCH]
+            # A path is a pattern to dpkg-query: its wildcard characters are escaped.
+            query = _in(name, ["dpkg-query", "-S", *(re.sub(r"([*?\[\\])", r"\\\1", path) for path in batch)])
+            stray = [line for line in query.stderr.splitlines() if line and not NOT_OWNED.match(line)]
+            if query.returncode not in (0, 1) or stray or (query.returncode == 1 and not query.stderr.strip()):
+                raise CheckError(f"dpkg-query -S exited {query.returncode}: {(stray or [query.stderr])[0][:300]}")
+            for line in query.stdout.splitlines():
+                if line.startswith(("diversion by ", "local diversion ")):
+                    continue
+                packages, sep, path = line.partition(": /")
+                if not sep:
+                    raise CheckError(f"dpkg-query -S printed a line it should not: {line[:200]!r}")
+                owned.add("/" + path)
+        return (owned - modified) & set(paths)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
 def check(image, home, values=None, stores=(), scanner=None):

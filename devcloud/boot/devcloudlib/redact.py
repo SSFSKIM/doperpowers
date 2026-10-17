@@ -108,3 +108,27 @@ def host_values(user, env_path="/etc/devcloud/env"):
         if data.startswith(prefix) and data.endswith(suffix) and len(data) > len(prefix) + len(suffix):
             values.add(data[len(prefix):len(data) - len(suffix)])
     return {v for v in values if len(v.strip()) >= MIN}
+
+
+def host_signature(user, env_path="/etc/devcloud/env"):
+    """What changes when host_values would: the size and modification time of
+    every file it reads. Cheap enough to take before each forwarded output."""
+    from . import secrets
+
+    paths = [pathlib.Path(env_path), user.home / ".claude/devcloud/secrets.toml"]
+    store = user.home / secrets.STORE
+    if store.is_dir():
+        paths += sorted(p for p in store.rglob("*") if p.is_file())
+    try:
+        entries = secrets.parse(paths[1].read_text())
+    except (OSError, ValueError):
+        entries = []
+    paths += [user.home / e.file[2:] for e in entries if e.file]
+    signature = []
+    for path in paths:
+        try:
+            st = path.stat()
+            signature.append((str(path), st.st_mtime_ns, st.st_size, st.st_ino))
+        except OSError:
+            signature.append((str(path), None))
+    return tuple(signature)

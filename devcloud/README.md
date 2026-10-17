@@ -149,7 +149,8 @@ mechanism.
 **The image.** `image/setup.sh` (root, Ubuntu 24.04, x86_64 or arm64)
 installs what every host has — git and git-lfs, build tools, Python 3 with
 venv, uv, Node LTS, jq, tmux, mosh, gh, the Google Cloud CLI, hcloud,
-Tailscale, the Docker client, zsh, and Claude Code (native installer, as the
+Tailscale, the Docker client, zsh, perl and xxd (with python3, jq and gh,
+the tools the guard's notices suggest for reading a file), and Claude Code (native installer, as the
 user) — and creates the user from three build inputs, `DEVCLOUD_USER`,
 `DEVCLOUD_UID` and `DEVCLOUD_HOME`, the Mac's own account, so a session
 moves between a Mac and a host under the same paths, with passwordless sudo
@@ -158,14 +159,16 @@ project's `devenv/setup.sh` installs system packages. It carries no
 credential, no descriptor, no `~/.claude` checkout and no sminos enrollment,
 which `tests/check_image.py` checks in three parts: (a) none of a list of
 known values — made-up ones in the tests, the person's own from their secret
-store and Secret Manager when they run it — appears in the image's files or
-`docker history`, in any spelling the guard scrubs (the values go to the
+store and Secret Manager when they run it — appears in any byte of the
+image's files (binaries and files of any size included) or `docker history`, in any spelling the guard scrubs (the values go to the
 guard's matcher in-process and are never printed); (b) none of the
 credential files the guard reads exists under any home, nor the secret
 store, nor the boot descriptor; (c) the guard's pattern detector finds
 nothing outside package-owned trees (unchanged dpkg files, npm's
 `node_modules`, the Claude Code and gcloud install trees, whose vendored code
-matches token shapes by the thousand).
+matches token shapes by the thousand). Each part fails closed: a step of the
+check that fails — the export, a scan that errs or reads nothing, a package
+tool that fails rather than list differences — fails the check.
 
     # needs Docker and bun; prints parts, paths and labels, never a value
     python3 devcloud/tests/check_image.py <image> --home <home> --store <secret store dir> --values - < values.json
@@ -288,7 +291,9 @@ every boot and reconcile, so a service whose program a pull brings starts
 and one whose program a pull removes stops — reaps orphans, restarts a
 crashed service after 1, 2, 4 … 60 s, restarts a continuous service when
 `/etc/devcloud/env` changes, forwards each line a service prints to its own
-output as `<service>: <line>` with every value the host holds scrubbed out,
+output as `<service>: <line>` with every value the host holds, or held while
+the supervisor ran, scrubbed out (it rereads them whenever their files change,
+before it forwards another line),
 and on SIGTERM forwards the signal to every child and waits up to 8 s (the
 shipper's final pass) before it exits.
 
