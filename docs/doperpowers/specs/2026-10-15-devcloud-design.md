@@ -932,6 +932,15 @@ stays out of child processes, records it here, and the ticket names it.
   host need the identity, and "works like the Mac" includes the shell; the Macs' own rc files carry
   exported keys, so a separate host-safe rc is kept rather than copying them.
   Date/Author: 2026-10-16, from the person's question about what the setup covers.
+- Decision: Execution pre-flight. The branch was rebased onto origin/main at 7.164.1, where the
+  marketplace already lists a second plugin (`ci-kit`, a URL source with no version), so devcloud's
+  marketplace entry is the third; "second plugin" in this spec means "a plugin besides
+  doperpowers". Version bumps and the manifest tests address a plugin by its `name`, never by its
+  index, so a later reorder cannot move the wrong version. M1 ships as its own pull request to
+  main (the spec plus M1), released before M2 starts; M2–M5 continue on `devcloud` after it
+  merges. Rationale: the dispatching session's brief (M1 must reach the Macs early); addressing by
+  name follows from a marketplace whose order this work does not own.
+  Date/Author: 2026-10-17, plan executor.
 
 ## Outcomes & Retrospective
 
