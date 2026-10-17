@@ -340,16 +340,13 @@ the spec's Decision Log entry "the branch review round"
   pass over rows already laid out never jump. Nothing in the render API lets
   a mod avoid it; the fix belongs in the engine (keep the anchor delta during
   a drain, or hold a pending plugin site at the assumed height). Workaround:
-  PageUp/PageDown. Trigger: an engine release whose virtual list changes, or
-  an upstream report being answered.
-- **Run boundaries follow the order rows first draw, which in fullscreen is
-  not transcript order.** `see()` appends a row to `view.order` the first
-  time it draws; on resume, and for rows that arrived while the human was
-  scrolled away, the virtual list mounts the bottom first and older rows
-  later, so `runStart`/`runEnd` walk a scrambled order. Seen in the scroll
-  repro as two `[ working record ]` buttons back to back with nothing between
-  them, where the design draws one. Render inputs carry no transcript position,
-  so a fix needs one from the engine or a placement inferred from
-  `$.session.messages()` (tool rows by `tool_use_id`, text rows by their text).
-  Trigger: the human deciding between those, or an engine release that adds
-  a position to render inputs.
+  PageUp/PageDown. Reported upstream as anthropics/claude-code#102893, with a
+  bare repro mod (tool rows drawn as an empty `Box`: 14 jumps in 18 bursts).
+  Trigger: an engine release whose virtual list changes, or the issue being
+  answered.
+- ~~**Run boundaries follow the order rows first draw, which in fullscreen is
+  not transcript order.**~~ **Fixed in 7.162.0**: each row's place is read
+  from the transcript file on resume (a `grep` of row ids and call ids) and
+  taken from each `session.append` after, and drawn rows sort by it. In the
+  resumed-session repro, PageUp through the whole report found two
+  back-to-back `[ working record ]` sites before and none after.

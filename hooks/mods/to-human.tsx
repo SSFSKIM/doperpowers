@@ -468,36 +468,145 @@ export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === A
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked
  * message by its own, a run of working record by the one button that stands
- * for it, keyed by the row the run starts at), and the order the transcript's
- * rows first drew in with what each one is.
+ * for it, keyed by the row the run starts at), and the rows drawn so far, in
+ * the transcript's order, with what each one is.
+ *
+ * The order rows first draw in is not the transcript's: the fullscreen
+ * transcript lays out only the rows near its window, a resumed session's
+ * newest first, and a row that arrived while the human was scrolled away
+ * draws once they scroll to it. So each row's place is read from the
+ * transcript file when a session is resumed and taken from each append after;
+ * a row that draws before its place is known stands after every row appended
+ * by then.
  */
-type View = {
+export type View = {
   unfolded: Set<string>
   order: string[]
   rowOf: Map<string, RowKind>
+  /** Each row's place in the transcript, by its id (a tool row's is its call's `tool_use_id`). */
+  place: Map<string, number>
+  /** The place a row took when it drew before its own was known. */
+  guess: Map<string, number>
+  /** The rows appended since the module loaded, each placed past the file's. */
+  appended: number
   /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
   isFolding: () => boolean
 }
 
+export const newView = (isFolding: () => boolean): View => ({
+  unfolded: new Set(),
+  order: [],
+  rowOf: new Map(),
+  place: new Map(),
+  guess: new Map(),
+  appended: 0,
+  isFolding,
+})
+
+/** A group of calls is known by its first call's id, which is where it stands. */
+const GROUP = 'group:'
+/** Where the rows appended while the session runs are placed: past any line of a file. */
+const LIVE = 1e12
+
+const keyOf = (id: string) => (id.startsWith(GROUP) ? id.slice(GROUP.length) : id)
+
+function placeOf(view: View, id: string): number {
+  const key = keyOf(id)
+  return view.place.get(key) ?? view.guess.get(key) ?? Infinity
+}
+
+/** The index `id` takes in `order`: after every drawn row placed at or before it. */
+function slotOf(view: View, id: string): number {
+  const at = placeOf(view, id)
+  let low = 0
+  let high = view.order.length
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if (placeOf(view, view.order[middle] as string) <= at) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
+/** Sorts the drawn rows by their places, now that more are known; whether any moved. */
+export function reorder(view: View): boolean {
+  const sorted = view.order
+    .map((id, i) => ({ id, i, at: placeOf(view, id) }))
+    .sort((a, b) => (a.at === b.at ? a.i - b.i : a.at < b.at ? -1 : 1))
+    .map(({ id }) => id)
+  if (sorted.every((id, i) => id === view.order[i])) {
+    return false
+  }
+  view.order.splice(0, view.order.length, ...sorted)
+  return true
+}
+
+/** Places `ids` in the order given, from `at` by `step`, each one whose place is not known yet. */
+export function placeAll(view: View, ids: readonly string[], at = 0, step = 1) {
+  ids.forEach((id, i) => {
+    if (!view.place.has(id)) {
+      view.place.set(id, at + i * step)
+    }
+  })
+}
+
 /**
- * Notes a row as it draws: its place in the order rows first drew, and what
- * it is. The row an open run ends at draws its `[ fold to report ]`; a row
- * that joins the run, or that turns from record into one closing it, moves
- * that end, and the row that drew the button (or should now) is cached as
- * it was: the rows are asked for again.
+ * The search that lists a transcript's rows in its order: each row's id, and
+ * a tool call's id where its call is written.
+ */
+export function placeArgs(path: string): string[] {
+  return ['grep', '-o', '-E', '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"', path]
+}
+
+/** The ids `placeArgs`' output names, in the transcript's order. */
+export function placesIn(stdout: string): string[] {
+  return stdout.split('\n').flatMap((line) => {
+    const id = /"(?:uuid|id)":"([^"]+)"$/.exec(line)?.[1]
+    return id === undefined ? [] : [id]
+  })
+}
+
+/** What a drawn row reads of its run: whether it opens it, whether the run is unfolded, and then whether it ends it. */
+function shapeOf(view: View, id: string | undefined): string {
+  if (id === undefined || !inRun(view.rowOf.get(id))) {
+    return ''
+  }
+  const start = runStart(view.order, view.rowOf, id)
+  const isOpen = view.unfolded.has(start)
+  return `${start === id}:${isOpen}:${isOpen && runEnd(view.order, view.rowOf, id) === id}`
+}
+
+/**
+ * Notes a row as it draws: its place among the rows drawn so far, and what it
+ * is. A row that lands beside another, or turns into a kind that ends or joins
+ * its run, can change what that neighbour draws (whether it opens its run and
+ * draws `[ working record ]`, whether it ends an unfolded one and draws
+ * `[ fold to report ]`), and the neighbour's drawing is cached as it was: the
+ * rows are asked for again. So is a turn's closing line, which reads the row
+ * before it, when a row lands among those already drawn while a run is open.
  */
 function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
-  const { order, rowOf, unfolded } = view
+  const { order, rowOf } = view
   const known = rowOf.get(requestId)
   if (known === kind) {
     return
   }
+  const key = keyOf(requestId)
+  if (known === undefined && !view.place.has(key) && !view.guess.has(key)) {
+    view.guess.set(key, LIVE + view.appended + 0.5)
+  }
+  const at = known === undefined ? slotOf(view, requestId) : order.indexOf(requestId)
+  const neighbours = [order[at - 1], order[known === undefined ? at : at + 1]]
+  const shapes = neighbours.map((id) => shapeOf(view, id))
   if (known === undefined) {
-    order.push(requestId)
+    order.splice(at, 0, requestId)
   }
   rowOf.set(requestId, kind)
-  const before = order[order.indexOf(requestId) - 1]
-  if (view.isFolding() && before !== undefined && inRun(rowOf.get(before)) && unfolded.has(runStart(order, rowOf, before))) {
+  const isAmong = known === undefined && at < order.length - 1 && view.unfolded.size > 0
+  if (view.isFolding() && (isAmong || neighbours.some((id, i) => shapeOf(view, id) !== shapes[i]))) {
     $.ui.invalidate('ui.render')
   }
 }
@@ -583,8 +692,63 @@ const native = async ($: EngineInterface, e: object) =>
 export function registerToHuman(on: On) {
   let hasSeenMark = false
   let isFullTranscript = false
-  const view: View = { unfolded: new Set(), order: [], rowOf: new Map(), isFolding: () => hasSeenMark && !isFullTranscript }
+  const view = newView(() => hasSeenMark && !isFullTranscript)
   const { unfolded, isFolding } = view
+
+  // Where each row stands in the transcript (see `View`). A resumed or forked
+  // session's rows are read from its file, which can be far past what one read
+  // takes whole, so a search lists them; one that fails, or is cut, leaves the
+  // rows it could not place to draw in the order they come. A cleared or
+  // resumed session's rows are another transcript's: what the view knew of the
+  // one before is dropped, and the rows still drawn are asked for again.
+  on('classic.SessionStart', { source: /^/ }, async ($, e, next) => {
+    if (e.source === 'clear' || e.source === 'resume' || e.source === 'fork') {
+      view.order.length = 0
+      view.rowOf.clear()
+      view.place.clear()
+      view.guess.clear()
+      unfolded.clear()
+      $.ui.invalidate('ui.render')
+    }
+    if (e.source === 'resume' || e.source === 'fork') {
+      try {
+        const search = await $.process.run(placeArgs(e.transcript_path))
+        // grep: 0 found, 1 none, anything else a failure.
+        if (search.exitCode > 1) {
+          throw new Error(`grep exited ${search.exitCode}`)
+        }
+        placeAll(view, placesIn(search.stdout))
+        if (reorder(view) && isFolding()) {
+          $.ui.invalidate('ui.render')
+        }
+      } catch (error) {
+        $.ui.log(`to-human: the transcript's order could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
+      }
+    }
+    return next(e)
+  })
+
+  // Each row the main conversation keeps, as its append resolves: placed
+  // after every row before it, its tool calls with it. A row that drew while
+  // it streamed, before its place was known, moves to it.
+  on('session.append', { door: /./ }, async ($, e, next) => {
+    const stored = await next(e)
+    if (e.agentId === undefined && e.door !== 'queue' && stored.deny === undefined) {
+      try {
+        view.appended += 1
+        const calls = stored.message.content.flatMap((block) => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
+        const ids = [stored.uuid, ...calls]
+        placeAll(view, ids, LIVE + view.appended, 1 / 1000)
+        if (ids.some((id) => view.rowOf.has(id) || view.rowOf.has(GROUP + id)) && reorder(view) && isFolding()) {
+          $.ui.invalidate('ui.render')
+        }
+      } catch (error) {
+        // The row is kept whatever this hook makes of it; only its place is lost.
+        $.ui.log(`to-human: an appended row could not be placed (${String(error)})`, { to: 'debug' })
+      }
+    }
+    return stored
+  })
 
   // Where the engine expands a group itself (`--verbose`, the ctrl+o
   // transcript) each call is a row of its own: which group's run a call's
@@ -630,7 +794,9 @@ export function registerToHuman(on: On) {
   // started would have no row to draw its button. It is drawn only while
   // the run of the row before it is unfolded, where it is read as the
   // transcript's footer of that stretch; otherwise it draws nothing, and the
-  // full transcript shows it as the engine does.
+  // full transcript shows it as the engine does. The row before it is the
+  // drawn row placed last before it, or, while its place is unknown, the row
+  // drawn last when it first drew.
   const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
@@ -640,7 +806,7 @@ export function registerToHuman(on: On) {
     if (!isFolding()) {
       return next(e)
     }
-    const prior = before.get(e.requestId)
+    const prior = view.place.has(e.requestId) ? view.order[slotOf(view, e.requestId) - 1] : before.get(e.requestId)
     const isShown =
       prior !== undefined && inRun(view.rowOf.get(prior)) && unfolded.has(runStart(view.order, view.rowOf, prior))
     if (isShown) {
@@ -776,7 +942,7 @@ export function registerToHuman(on: On) {
   // group the row that drew it is asked for again.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
-    const id = `group:${e.props.calls[0]?.tool_use_id ?? e.requestId}`
+    const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     see($, view, id, 'record')
     let last: string | undefined
     for (const call of e.props.calls) {

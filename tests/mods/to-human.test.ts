@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import { isRead, markdownBlocks, parse, promptRow, runEnd, runStart } from '../../hooks/mods/to-human'
+import { isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -308,6 +308,78 @@ describe('runEnd', () => {
     const { order, rowOf } = rows(['r1', 'record'])
 
     expect(runEnd(order, rowOf, 'unseen')).toBe('unseen')
+  })
+})
+
+describe('transcript order', () => {
+  // The plugin the runner stages the mods as.
+  const PLUGIN = 'doperpowers-mods'
+
+  test('the search lists each row by its id and each call by its tool_use_id, in the file\'s order', async () => {
+    expect(placeArgs('/t.jsonl').at(-1)).toBe('/t.jsonl')
+    const stdout = ['"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"u2"', '', 'noise'].join('\n')
+
+    expect(placesIn(stdout)).toEqual(['u1', 'toolu_1', 'u2'])
+  })
+
+  test('drawn rows sort by their places; a row with none keeps its spot after them', async () => {
+    const view = newView(() => true)
+    view.order.push('c', 'unplaced', 'b', 'a')
+    placeAll(view, ['a', 'b', 'c'])
+    placeAll(view, ['a'], 99)
+
+    expect(reorder(view)).toBe(true)
+    expect(view.order).toEqual(['a', 'b', 'c', 'unplaced'])
+    expect(reorder(view)).toBe(false)
+  })
+
+  test('a resumed transcript drawn newest first opens each run at its first row', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    const transcript = ['m1', 'r1', 'r2', 'm2', 'r3'].map((id) => `"uuid":"${id}"`).join('\n')
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('classic.SessionStart', () => ({}))
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: false } })
+
+    // The fullscreen transcript lays out the newest rows first, then the
+    // older ones as the human scrolls up.
+    const r3 = await message('r3', 'Pushing.')
+    await message('m2', '<message>Two.</message>')
+    const r2 = await message('r2', 'Testing.')
+    const r1 = await message('r1', 'Reading.')
+    await message('m1', '<message>One.</message>')
+
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await r2.find({ type: 'Button' })).toBeUndefined()
+    expect(await r3.find({ type: 'Button', text: 'working record' })).toBeDefined()
+
+    // Unfolded from its first row, the run ends at its last.
+    await r1.press({ key: 'to-human-toggle' })
+    expect(await r2.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    expect(await r1.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+  })
+
+  test('rows drawn before the transcript is read move to their places once it is', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    const transcript = ['m1', 'r1', 'r2', 'm2'].map((id) => `"uuid":"${id}"`).join('\n')
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('classic.SessionStart', () => ({}))
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: false } })
+    await message('m2', '<message>Two.</message>')
+    const r2 = await message('r2', 'Testing.')
+    const r1 = await message('r1', 'Reading.')
+    await message('m1', '<message>One.</message>')
+
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await r2.find({ type: 'Button' })).toBeUndefined()
   })
 })
 
