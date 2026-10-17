@@ -19,7 +19,7 @@ import {
   withdrawAll,
 } from './bridge-requests'
 import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
-import { refreshAgents, watchAgents } from './bridge-agents'
+import { forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 
 export { TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { STEP_END_WAIT_MS } from './bridge-stream'
@@ -657,6 +657,7 @@ function switchSession(session: string, tries = 0) {
   }
   if (!state.isEnding) {
     // Found by the heartbeat, with no session.end before it.
+    forgetAgents()
     forgetLive()
   }
   state.isEnding = false
@@ -801,6 +802,7 @@ export function registerBridge(on: On) {
     emit({ type: 'session', phase: 'end', reason: e.reason })
     if (e.reason === 'clear' && state.post !== undefined) {
       state.isEnding = true
+      forgetAgents()
       forgetLive()
       awaitNextSession()
     }

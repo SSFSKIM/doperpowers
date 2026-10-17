@@ -699,6 +699,33 @@ class Refusals(unittest.TestCase):
         self.a_pass()
         self.assertEqual(self.outcomes_of(e), [], "nothing from outside, nothing reported")
 
+    def test_e_a_marker_that_cannot_be_written_is_said_once_and_held_by_the_process(self):
+        """The record comes first, then the marker (at least once, as the
+        outbox is): a marker write that fails is said once in daemon.log,
+        and this process does not record the same `failed` again."""
+        self.bridge.refusing = "dropped, marker unwritable"
+        e = self.human_from_hub("its marker will not be kept")
+        self.deliver()
+        key = {"writer": e["writer"], "seq": e["seq"]}
+        self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]))
+        real = sminos.write_json
+
+        def refuse_markers(path, *a, **k):
+            if os.sep + "refused" + os.sep in path:
+                raise OSError("read-only file system")
+            return real(path, *a, **k)
+
+        with mock.patch.object(sminos, "write_json", side_effect=refuse_markers), \
+                mock.patch.object(sminos, "daemon_log") as log:
+            for _ in range(3):
+                self.a_pass()
+        self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered", "failed"], "recorded once")
+        said = [c.args[0] for c in log.call_args_list if "refusals could not be kept" in c.args[0]]
+        self.assertEqual(len(said), 1, "said once: %s" % said)
+        self.a_pass()
+        self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered", "failed"])
+        self.assertEqual(outcomes._UNWRITTEN, {}, "the marker is written once it can be")
+
     def test_d_a_refusal_is_reported_only_once_its_first_outcome_is_recorded(self):
         """The `failed` must follow the `delivered` (the hub keeps the
         latest): a refusal naming an event still owed to the session waits

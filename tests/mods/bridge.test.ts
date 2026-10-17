@@ -1620,6 +1620,96 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
     await h.ready()
     expect(h.events()[1]!.agents).toEqual([])
   })
+
+  /** From here, each read of the list waits until the test answers it (or fails it, `null`), in any order. */
+  const holdLists = (h: ReturnType<typeof harness>) => {
+    const reads: ((agents: Record<string, unknown>[] | null) => void)[] = []
+    ;(h.engine as unknown as { agent: { list: () => Promise<unknown> } }).agent.list = () =>
+      new Promise((resolve, reject) => reads.push((agents) => (agents === null ? reject(new Error('no list')) : resolve(agents))))
+    return reads
+  }
+
+  /**
+   * A /clear, with `before` answering the reads begun before it (the /clear's
+   * own among them); then the new session's child, and a read in the new
+   * conversation that lists `then`. What reached the new child.
+   */
+  const clearWith = async (h: ReturnType<typeof harness>, reads: ReturnType<typeof holdLists>, before: () => Promise<void>, then: Record<string, unknown>[]) => {
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await h.settle()
+    await before()
+    const NEW = '6c000002-0000-4000-8000-00000000006c'
+    const NEWSOCK = `/tmp/s/bridge/${NEW}.sock`
+    h.setSession(NEW)
+    h.timers.filter((t) => t.kind === 'after' && t.ms !== AGENTS_REFRESH_MS && !t.cancelled).at(-1)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    h.timers.find((t) => t.kind === 'every' && !t.cancelled)!.fn()
+    await h.settle()
+    reads.at(-1)!(then)
+    await h.settle()
+    return h.posts.filter((p) => p.socketPath === NEWSOCK).flatMap((p) => p.events)
+  }
+
+  test('reads that overlap: an older list answered after a newer one changes nothing, so a running agent is not stopped', async () => {
+    const h = harness({ messages: [{}], agents: [listed('a1', 'running')] })
+    await h.ready()
+    const reads = holdLists(h)
+    h.timers.find((t) => t.kind === 'every')!.fn() // the heartbeat's read, begun first
+    await h.settle()
+    await h.fire(AGENTS_REFRESH_MS) // the timer's, begun after it
+    expect(reads.length).toBe(2)
+    reads[1]!([listed('a1', 'running')])
+    await h.settle()
+    reads[0]!([]) // older, and answered last: a1 gone from it
+    await h.settle()
+    expect(h.ofType('agent')).toEqual([])
+    const later = reads.length
+    await h.fire(AGENTS_REFRESH_MS)
+    reads[later]!([listed('a1', 'completed')])
+    await h.settle()
+    expect(h.ofType('agent').map((e) => [e.phase, e.agentId])).toEqual([['stop', 'a1']])
+  })
+
+  test("a read begun before a /clear and answered after it does not bring the old conversation's agents into the new one", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    h.timers.find((t) => t.kind === 'every')!.fn() // a read in flight, before the /clear
+    await h.settle()
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        expect(reads.length).toBe(2) // and the one the /clear makes, which fails here
+        reads[0]!([listed('old9', 'running')]) // an agent of the old conversation nobody knew yet
+        reads[1]!(null)
+        await h.settle()
+      },
+      // The engine's list goes on naming it: a read in the new conversation still does not take it.
+      [listed('old9', 'running'), listed('new1', 'running', { type: 'fork' })],
+    )
+    expect(toNew.find((e) => e.type === 'resync')!.agents).toEqual([])
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new1']])
+  })
+
+  test("at a /clear the list is read once more: an old agent nobody knew is not the new conversation's either", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        expect(reads.length).toBe(1)
+        reads[0]!([listed('old8', 'running')])
+        await h.settle()
+      },
+      [listed('old8', 'running'), listed('new2', 'running', { type: 'fork' })],
+    )
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new2']])
+  })
 })
 
 describe('streaming per content block', () => {

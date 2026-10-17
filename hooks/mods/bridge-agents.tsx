@@ -75,18 +75,71 @@ export function learnAgents(listed: readonly ListedAgent[]) {
   }
 }
 
-/** Reads the list and learns from it; then, while an agent runs, the next read is due. */
+/**
+ * Reads the list and learns from it; then, while an agent runs, the next read
+ * is due. Reads overlap (the heartbeat, a turn's start, the timer): a read is
+ * applied only if no read begun after it has been applied already, so an
+ * older list never ends an agent a newer one showed running. One begun before
+ * a /clear is not this conversation's: what it names that nobody knew is set
+ * aside with the rest of the old conversation's agents.
+ */
 export async function refreshAgents() {
   const list = state.listAgents
   if (list === undefined || state.post === undefined) {
     return
   }
+  const asked = ++state.agentReads.asked
+  const conversation = state.conversation
   try {
-    learnAgents(await list())
+    const listed = await list()
+    await state.clearing
+    if (conversation !== state.conversation) {
+      setAside(listed)
+    } else if (asked > state.agentReads.applied) {
+      state.agentReads.applied = asked
+      learnAgents(listed)
+    }
   } catch (error) {
     state.log?.(`bridge: the agent list was not read: ${message(error)}`)
   }
   watchAgents()
+}
+
+/** The agents a list names that this conversation does not know: the conversation before a /clear's. */
+function setAside(listed: readonly ListedAgent[]) {
+  for (const a of listed) {
+    if (!state.agents.has(a.id)) {
+      state.cleared.add(a.id)
+    }
+  }
+}
+
+/**
+ * A /clear (before forgetLive): the old conversation's agents are set aside,
+ * those it knew and those the engine's list names now, before the new
+ * conversation has any of its own, since the list goes on naming them for a
+ * while; every read of the list after this waits for that one.
+ */
+export function forgetAgents() {
+  for (const id of [...state.agents.keys(), ...state.listed]) {
+    state.cleared.add(id)
+  }
+  state.listed.clear()
+  state.conversation++
+  const list = state.listAgents
+  if (list === undefined) {
+    return
+  }
+  const clearing: Promise<void> = list().then(
+    (listed) => setAside(listed),
+    (error: unknown) => state.log?.(`bridge: the agent list was not read at the /clear: ${message(error)}`),
+  )
+  state.clearing = clearing
+  void clearing.then(() => {
+    if (state.clearing === clearing) {
+      state.clearing = undefined
+    }
+  })
 }
 
 /** The list read again in AGENTS_REFRESH_MS, while any agent runs. */

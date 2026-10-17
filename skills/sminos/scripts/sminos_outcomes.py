@@ -259,15 +259,18 @@ def report_closed(project, view):
 
 
 REFUSED = "the session dropped it after taking it, so it never entered the conversation: %s"
+# refused/<session>.json paths whose last write failed → the keys reported, held by this process.
+_UNWRITTEN = {}
 
 
 def report_refused(project, view):
     """A second outcome for a delivery the engine dropped after its bridge
     answered `submitted` (DC8.G5): for each session of a hub project whose
     bridge kept such a refusal (sminos_bridge, `refused` in its kept file),
-    `failed` with the bridge's reason, recorded once per key and session,
-    for an outside-origin event of the project's log addressed to the
-    session. Only once delivery has settled the event for the session, under
+    `failed` with the bridge's reason, recorded once per key and session
+    (at least once, as every outcome here: the record comes before the
+    marker that says it was made), for an outside-origin event of the
+    project's log addressed to the session. Only once delivery has settled the event for the session, under
     the session's delivery lock as deliver_next holds it: its first outcome
     (`delivered`) is then recorded ahead of this one, and the hub keeps the
     latest. How many were recorded."""
@@ -309,6 +312,7 @@ def report_refusals(project, box, sid, refused, events):
         reported = []
     reported = {(w, s) for w, s in (r for r in reported if isinstance(r, list) and len(r) == 2)} \
         if isinstance(reported, list) else set()
+    reported |= _UNWRITTEN.get(path, set())
     settled = sminos.delivered_load(project, sid)
     n = 0
     for r in refused:
@@ -326,8 +330,20 @@ def report_refusals(project, box, sid, refused, events):
         reported.add(k)
         n += 1
     keep = sorted(k for k in reported if any((r["key"]["writer"], r["key"]["seq"]) == k for r in refused))
-    if n or len(keep) != len(reported):
-        sminos.write_json(path, [list(k) for k in keep])
+    if n or len(keep) != len(reported) or path in _UNWRITTEN:
+        try:
+            sminos.write_json(path, [list(k) for k in keep])
+        except OSError as err:
+            # Delivery's outcomes are at least once: the marker comes after
+            # the record, so a marker lost (here, or to a crash between the
+            # two) costs a second identical `failed`, never a missing one.
+            # This process remembers the keys meanwhile, and says so once.
+            if path not in _UNWRITTEN:
+                sminos.daemon_log("delivery: what was reported of %s's refusals could not be kept (%s): this "
+                                  "process remembers it; another may report them again" % (sid, err))
+            _UNWRITTEN[path] = set(keep)
+        else:
+            _UNWRITTEN.pop(path, None)
     return n
 
 
