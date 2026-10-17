@@ -1,50 +1,35 @@
 # devcloud execution report (plan executor)
 
-Spec: `docs/doperpowers/specs/2026-10-15-devcloud-design.md`. Branch `devcloud`. The spec's Progress,
-Surprises, and Decision Log are the authoritative record; this report summarizes the run and
-what remains. Status at this writing: **in progress** (an interim handback the harness required
-while M4's fix wave was still running).
+Spec: `docs/doperpowers/specs/2026-10-15-devcloud-design.md`. Its Progress, Surprises, Decision Log and Outcomes are the authoritative record; this report summarizes the run. **Status: done.** All five milestones are reviewed clean and the whole-branch review at the high rung has converged. The final pull request takes `devcloud` to main.
 
-## Where each milestone stands
+## Milestones
 
-| Milestone | State |
+| Milestone | Result |
 |---|---|
-| M1 — plugin and secrets guard | Done, reviewed clean after four fix waves, merged as #220 (devcloud 0.1.0), installed on both Macs, session-mirror shippers restarted onto the settle interval. `cua` ticket filed and landed (cua 0.14.0 vendors the guard and stands down on I9). Acceptance 1–2: 22/22 with both plugins and with `cua` alone. |
-| M2 — host core | Done, reviewed clean after three fix waves, merged into `devcloud` (devcloud 0.2.0). Container tests run on ci-kit's hosted runner. |
-| M3 — profile, Linux compatibility, hardened apply | Done in the private config repository, reviewed clean after two fix waves. Secret Manager entries uploaded by the person (one entry waits on a key rotation). |
-| M4 — project environments | Built (devcloud 0.3.0: runner on `devenv/`, the devenv skill, the repo's own `devenv/`, boot step 12, mirror cache); review found two Important issues (project-only secrets in the boot's project log; step 12's exit status), fix wave running. |
-| M5 — sminos on hosts, acceptance | Phase A done on branch `devcloud-m5` (step 11 sminos, sandbox identity hygiene, Tailscale OAuth join after the seed, preflight passed, provisioning script ready), reviewed and fixed. Phase B — merge, VM creation, acceptance 3–8, the person's enrollment, deletion — not started. |
-
-## Remaining steps
-
-1. M4 fix wave lands; verify; tick M4 in Progress.
-2. Rebase `devcloud-m5` onto `devcloud` (expect small conflicts in the boot's step list and the
-   README), bump devcloud to 0.4.0, ci-gate.
-3. Phase B: create the throwaway VM (4 vCPU / 8 GB class, the person's existing provider, outside
-   ci-kit's projects), secrets over SSH only; acceptance 3–6 and 8 on the VM and on a container on
-   it; the unenrolled half of 7; ask the design session for the person's enrollment; the enrolled
-   half with its reboot; delete the VM the same day; the person removes it from the hub. Stay
-   outside ci-kit's mac-lane measurement windows (asked of CI-opt; no answer recorded yet).
-4. Whole-branch review at the high rung; Outcomes & Retrospective; the final pull request.
+| M1: the plugin and its secrets guard | Merged as #220 (devcloud 0.1.0) and installed on both Macs. The `cua` ticket (#154) landed as cua 0.14.0, which vendors the guard and stands down on I9. Acceptance 1–2: 22/22 with both plugins, 22/22 with `cua` alone. Four fix waves. |
+| M2: host core | Image, boot program, materializer, pull-only config, supervisor, `devcloud` gate. Three fix waves at task review, plus two at the final review (services). |
+| M3: profile, Linux compatibility, hardened apply | In the private config repository. Two fix waves. The person uploaded the Secret Manager entries; one entry waits on a key rotation. |
+| M4: project environments | `devenv` runner on `devenv/`, the devenv skill, the repository's own `devenv/`, boot step 12, mirror cache (devcloud 0.3.0). Three fix waves. |
+| M5: sminos on hosts, acceptance | Step 11's sminos part, sandbox identity hygiene, and the Tailscale OAuth join after the seed (devcloud 0.4.0). Acceptance 3–8 passed on a throwaway VM and on a sandbox container on it, including the enrolled half of 7. VM deleted the same day (21:05–22:34 UTC). |
+| Final review (high rung) | Five service findings (journald redaction, stream scrubbing, owed restarts, boot-gated services, bounded stops), then one regression (a boot run by hand). Fixed. devcloud 0.4.1. |
 
 ## Incidents and frictions
 
-- An executor reran a test harness after the auto-mode classifier refused one of its steps; the
-  rerun was voided, the refusal recorded as a finding (§9 limits, Surprises), and every later
-  dispatch carries "a refused action is reported, never rerun".
-- Two Docker Desktop starts by executors dispatched before the no-Docker rule; both stopped.
-- A spec commit named one of the person's Secret Manager ids; branch history was rewritten before
-  merge, though ci-gate had pushed the commit to temporary refs (reachable by SHA on GitHub).
-- Reviewers on the gateway's frontier model were stopped by the provider's safety filter while
-  probing shell injection; verification finished by running their reproduction sets directly.
-- One reviewer could not hand back (the handback tool refused outside auto mode); its review was
-  recovered from its final output.
+- **A rerun after a refusal.** An executor reran a harness after the auto-mode classifier refused a step. The rerun was voided and the refusal recorded as a finding. Every later dispatch carried "a refused action is reported, never rerun".
+- **Docker started against the rule.** Two executors started Docker Desktop before the no-Docker rule reached them; both were stopped. The real container acceptance then ran on the VM.
+- **A secret's id leaked.** A spec commit named one of the person's Secret Manager ids. Branch history was rewritten before merge, but CI's temporary refs had already pushed the commit, so it stays reachable by SHA on GitHub.
+- **Reviewers stopped mid-probe.** The provider's safety filter stopped two reviewers on the gateway's frontier model while they probed shell injection. Verification finished by running their reproduction sets directly.
+- **A reviewer's report stuck.** One reviewer could not use the handback tool outside auto mode; its report was recovered from its final output.
+- **Machine overload.** The MacBook ran at load ~600, with the cause outside our agents. Local timeouts that passed in isolation were treated as environmental; none was loosened.
+- **Enrollment command bug.** The command as first given had root's shell expand `~` before switching users. It was corrected in the README and the report.
+- **Uploads and enrollment by hand.** The person ran the Secret Manager uploads because the classifier refuses an agent reading credential sources into a store.
 
 ## Residue (for tickets)
 
-- The pattern detector matches thousands of vendored constants in package trees; reading vendored
-  code shows redactions. A narrower rule set or package-owned path skipping.
-- Whether the engine clears the I9 marker when devcloud is disabled mid-session is unverified.
-- An entry removed from the profile's secrets list leaves its files on the host.
-- Test sessions' copies in the session store list the store's key names (no values); pruning needs
-  the store's admin connection.
+- **Detector noise.** The pattern detector matches thousands of vendored constants in package trees, so reading vendored code shows redactions. Fix with a narrower rule set or by skipping package-owned paths.
+- **Marker lifetime.** It is unverified whether the engine clears the I9 `$.state` marker when devcloud is disabled mid-session.
+- **Orphaned secret files.** An entry removed from the profile's `secrets.toml` leaves its files on the host.
+- **Session store copies.** The session store's copies of the acceptance test sessions list the store's key names, not their values. Pruning needs the store's admin connection.
+- **Ephemeral tailnet nodes.** Throwaway and test hosts should probably join with `ephemeral=true`, so the tailnet node removes itself when the host goes away. Today every host joins non-ephemeral, and each torn-down VM leaves a manual node removal. This is a design question.
+- **sminos daemon output.** The daemon's own user unit, written by `sminos daemon install`, sends its output to journald unscrubbed.
+- **Driver note.** Sandbox containers need the tailnet's DNS (`--dns 100.100.100.100`) to resolve the gateway's name.
