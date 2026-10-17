@@ -25,7 +25,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg git git-lfs build-essential python3 python3-venv jq tmux mosh zsh \
-  unzip xz-utils tzdata locales procps iproute2 iputils-ping openssh-client less file
+  unzip xz-utils tzdata locales procps iproute2 iputils-ping openssh-client less file sudo
 sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
 
@@ -64,6 +64,15 @@ if ! getent passwd "$DEVCLOUD_USER" >/dev/null; then
     --shell /usr/bin/zsh "$DEVCLOUD_USER"
 fi
 chsh -s /usr/bin/zsh "$DEVCLOUD_USER"
+# Passwordless sudo, as cloud images give their default user: a project's
+# devenv/setup.sh installs system packages. A drop-in, checked before it lands.
+sudoers="$(mktemp)"
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$DEVCLOUD_USER" > "$sudoers"
+chmod 0440 "$sudoers"
+visudo -cf "$sudoers" >/dev/null
+install -m 0440 -o root -g root "$sudoers" /etc/sudoers.d/devcloud-user
+rm -f "$sudoers"
+visudo -c >/dev/null
 
 # Claude Code, the native installer, as the user; on every PATH through a link.
 # Its own temporary directory, removed after: the installer leaves a socket behind.

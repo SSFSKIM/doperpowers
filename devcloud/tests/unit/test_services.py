@@ -41,21 +41,28 @@ class ListTest(unittest.TestCase):
         self.assertNotIn("User=", units["devcloud-pull-config.service"])
 
 
-def supervise(tmp, specs, env_text=""):
-    """Starts the supervisor in a child process over `specs`: (name, script, every)."""
+SECRET = "made-up-service-secret-81Qz"
+
+
+def supervise(tmp, specs, env_text="", desired=None, stdout=None):
+    """Starts the supervisor in a child process over `specs`: (name, script,
+    every). With `desired`, the desired-state file names the services to run."""
     env_file = tmp / "env"
     env_file.write_text(env_text)
+    desired_file = tmp / "desired.json"
+    if desired is not None:
+        services.write_desired(desired, desired_file)
     code = textwrap.dedent(f"""
         import sys; sys.path.insert(0, {str(BOOT)!r})
         from devcloudlib import services
-        listed = [services.Service(name=n, argv=("sh", "-c", "exec 2>/dev/null; " + s), as_user=True, every=e,
-                                   description=n)
+        listed = [services.Service(name=n, argv=("sh", "-c", s), as_user=True, every=e, description=n)
                   for n, s, e in {specs!r}]
         supervisor = services.Supervisor(listed, env_path={str(env_file)!r}, user=None, poll=0.1, grace=3,
-                                         log=lambda message: None)
+                                         log=lambda message: None, known=lambda: {{{SECRET!r}}},
+                                         desired_path={str(desired_file) if desired is not None else None!r})
         sys.exit(supervisor.run())
     """)
-    return subprocess.Popen([sys.executable, "-c", code], cwd=tmp)
+    return subprocess.Popen([sys.executable, "-c", code], cwd=tmp, stdout=stdout or subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def wait_for(predicate, timeout=10.0):
@@ -104,6 +111,32 @@ class SupervisorTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.lines("env.log") == ["hello"]))
         (self.tmp / "env").write_text('GREETING="changed"\n')
         self.assertTrue(wait_for(lambda: self.lines("env.log") == ["hello", "changed"], timeout=5))
+
+    def test_forwards_service_output_with_known_values_scrubbed(self):
+        script = f'echo "out {SECRET}"; echo "err {SECRET}" >&2; exec sleep 60'
+        self.proc = supervise(self.tmp, [("talk", script, None)], stdout=subprocess.PIPE)
+        time.sleep(1.0)
+        self.proc.send_signal(signal.SIGTERM)
+        out, _ = self.proc.communicate(timeout=5)
+        text = out.decode()
+        self.assertNotIn(SECRET, text)
+        self.assertIn("talk: out [secret]", text)
+        self.assertIn("talk: err [secret]", text)
+
+    def test_adds_and_removes_services_as_the_desired_list_changes(self):
+        script = 'trap "echo term >> $PWD/$0.log; exit 0" TERM; echo start >> $PWD/$0.log; while :; do sleep 0.05; done'
+        specs = [("a", script.replace("$0", "a"), None), ("b", script.replace("$0", "b"), None)]
+        self.proc = supervise(self.tmp, specs, desired=["a"])
+        self.assertTrue(wait_for(lambda: self.lines("a.log") == ["start"]))
+        time.sleep(0.5)
+        self.assertEqual(self.lines("b.log"), [])
+        services.write_desired(["a", "b"], self.tmp / "desired.json")
+        self.assertTrue(wait_for(lambda: self.lines("b.log") == ["start"]))
+        services.write_desired(["b"], self.tmp / "desired.json")
+        self.assertTrue(wait_for(lambda: self.lines("a.log") == ["start", "term"]))
+        time.sleep(2.5)
+        self.assertEqual(self.lines("a.log"), ["start", "term"], "a removed service is not restarted")
+        self.assertEqual(self.lines("b.log"), ["start"])
 
     def test_runs_a_periodic_job_each_interval_never_at_start(self):
         self.proc = supervise(self.tmp, [("job", "echo run >> $PWD/job.log; sleep 0.3", 1)])

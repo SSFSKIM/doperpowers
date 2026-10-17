@@ -12,6 +12,7 @@ exits 1 when a case failed. Every secret here is made up.
 """
 
 import atexit
+import base64
 import json
 import os
 import pathlib
@@ -22,6 +23,9 @@ import time
 import traceback
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import check_image  # noqa: E402
+
 IMAGE = sys.argv[1] if len(sys.argv) > 1 else "devcloud-test"
 USER, UID, HOME = "dev", "1001", "/Users/dev"
 TAG = f"devcloud-it-{os.getpid()}"
@@ -44,7 +48,7 @@ failures = []
 def cleanup():
     for container in (HOST, FX, VM):
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
-    subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE], capture_output=True)
+    subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE, PLANTED], capture_output=True)
     subprocess.run(["docker", "network", "rm", NET], capture_output=True)
     subprocess.run(["rm", "-rf", str(TMP)])
 
@@ -128,78 +132,81 @@ def commit_profile(script, message):
     sh(FX, f"cd /srv/work && {script} && git commit -qam '{message}' && git push -q origin main")
 
 
-def boot_once(name, desc, hostname=None):
-    """devcloud-boot in a fresh container, then its status; the container goes."""
+def boot_once(name, desc, hostname=None, after="true"):
+    """devcloud-boot in a fresh container, then its status, whether the store
+    exists, and what the `after` script prints; the container goes."""
     result = docker("run", "--rm", "--network", NET, "--hostname", hostname or name, *ENV,
                     "-v", f"{desc}:/etc/devcloud/boot.env:ro", "--entrypoint", "sh", IMAGE, "-c",
-                    'devcloud-boot >/dev/null 2>&1; echo "rc=$?"; cat /var/lib/devcloud/status.json; '
-                    f'test -d {HOME}/.config/claude-secrets && echo store-present || echo store-absent',
+                    'devcloud-boot >/tmp/boot.out 2>&1; echo "rc=$?"; echo "--status"; '
+                    'cat /var/lib/devcloud/status.json; echo "--store"; '
+                    f'test -d {HOME}/.config/claude-secrets && echo store-present || echo store-absent; '
+                    f'echo "--after"; {after}',
                     check_rc=False, timeout=600)
-    text = result.stdout
-    rc_line, _, rest = text.partition("\n")
-    status_text, _, store = rest.rpartition("}")
-    status = json.loads(status_text + "}")
-    return int(rc_line.split("=")[1]), {s["name"]: s for s in status["steps"]}, store.strip()
-
-
-# The detector's secret-named-assignment rule matches ordinary code in the
-# software the image installs (`token = this.readToken(...)`), and npm's
-# documentation carries an example PEM block. A finding is accepted only in a
-# file a Debian package installed and `dpkg --verify` finds unchanged: bytes
-# the package's publisher shipped to everyone, which the build did not touch.
-PRISTINE = r"""
-import subprocess, sys
-paths = sys.stdin.read().splitlines()
-modified = {line.split()[-1] for line in subprocess.run(["dpkg", "--verify"], capture_output=True,
-                                                        text=True).stdout.splitlines() if line.strip()}
-owned = set()
-for i in range(0, len(paths), 200):
-    out = subprocess.run(["dpkg-query", "-S", *paths[i:i + 200]], capture_output=True, text=True).stdout
-    owned.update(line.split(": ", 1)[1] for line in out.splitlines() if ": " in line)
-print("\n".join(p for p in paths if p in owned and p not in modified))
-"""
-
-
-def _package_pristine(paths):
-    if not paths:
-        return set()
-    result = docker("run", "--rm", "-i", "--entrypoint", "python3", IMAGE, "-c", PRISTINE,
-                    input="\n".join(sorted(paths)), timeout=900)
-    return set(result.stdout.splitlines())
+    rc_line, _, rest = result.stdout.partition("\n--status\n")
+    status_text, _, rest = rest.partition("\n--store\n")
+    store, _, extra = rest.partition("\n--after\n")
+    status = json.loads(status_text)
+    return int(rc_line.split("=")[1]), {s["name"]: s for s in status["steps"]}, store.strip(), extra
 
 
 # --- acceptance 6 ------------------------------------------------------------------
 
+def _planted_image():
+    """A small image holding one of each thing the check exists to catch."""
+    planted = SECRETS["api-key"].encode()
+    token = "gh" + "p_" + "x7Kq" * 9
+    dockerfile = (
+        "FROM ubuntu:24.04\n"
+        f"RUN mkdir -p /opt/app && echo {base64.b64encode(planted).decode()} > /opt/app/config"
+        f" && echo 'machine example.com login x password y' > /root/.netrc && echo 'GITHUB_TOKEN={token}' > /opt/app/env\n")
+    docker("build", "-t", PLANTED, "-", input=dockerfile, timeout=600)
+    return PLANTED
+
+
+PLANTED = f"{TAG}-planted"
+
+
+@case("the image check catches a planted value, a credential file and a token (acceptance 6's own test)")
+def image_check_catches():
+    found = check_image.check(_planted_image(), "/root", values=list(SECRETS.values()))
+    check(found["known"] == ["/opt/app/config\tvalue#4", "docker history\tvalue#4"], f"known {found['known']}")
+    check("/root/.netrc" in found["credential"], f"credential {found['credential']}")
+    check(any(line.startswith("/opt/app/env\t") for line in found["pattern"]), f"pattern {found['pattern']}")
+
+
+@case("the image check fails closed: a scanner that fails or reads nothing, an export that fails")
+def image_check_fails_closed():
+    for scanner in (["sh", "-c", "echo crashed >&2; exit 3", "scanner"],
+                    ["sh", "-c", "echo 'scanned 0 text files, 0 values' >&2", "scanner"]):
+        try:
+            check_image.scanner_output(["scan", str(TMP)], "[]", scanner)
+        except check_image.CheckError:
+            continue
+        raise Fail(f"a scanner {scanner[2]!r} passed")
+    unreadable = TMP / "unreadable"
+    (unreadable / "locked").mkdir(parents=True)
+    (unreadable / "locked").chmod(0)
+    try:
+        check_image.scanner_output(["scan", str(unreadable)], "[]")
+        raise Fail("a scan with an unreadable directory passed")
+    except check_image.CheckError as error:
+        check("unreadable" in str(error), str(error))
+    finally:
+        (unreadable / "locked").chmod(0o755)
+    try:
+        check_image.export(f"{TAG}-no-such-image", TMP)
+        raise Fail("exporting a missing image passed")
+    except check_image.CheckError:
+        pass
+
+
 @case("the image holds no secret (acceptance 6)")
 def image_is_clean():
-    absent = [
-        "/etc/devcloud/boot.env", "/var/lib/devcloud", f"{HOME}/.claude/.git", f"{HOME}/.config/claude-secrets",
-        f"{HOME}/.config/gcloud", f"{HOME}/.config/gh", f"{HOME}/.claude/sminos/daemon", "/root/.config/gcloud",
-    ]
-    present = docker("run", "--rm", "--entrypoint", "sh", IMAGE, "-c",
-                     "for p in " + " ".join(absent) + '; do test -e "$p" && echo "$p"; done; true').stdout.split()
-    check(present == [], f"the image holds {present}")
-    root = TMP / "rootfs"
-    root.mkdir()
-    export = subprocess.Popen(["docker", "run", "--rm", "--entrypoint", "tar", IMAGE, "-C", "/", "-cf", "-",
-                               "--exclude=./proc", "--exclude=./sys", "--exclude=./dev", "."],
-                              stdout=subprocess.PIPE)
-    subprocess.run(["tar", "-xf", "-", "-C", str(root), "--no-same-owner", "--no-same-permissions"],
-                   stdin=export.stdout, stderr=subprocess.DEVNULL)
-    export.wait()
-    history = docker("history", "--no-trunc", "--format", "{{.CreatedBy}}", IMAGE).stdout
-    scan = HERE / "scan-secrets.ts"
-    found = subprocess.run(["bun", str(scan), str(root)], capture_output=True, text=True).stdout.splitlines()
-    found += subprocess.run(["bun", str(scan), "-"], input=history, capture_output=True, text=True).stdout.splitlines()
-    found = [line[len(str(root)):] if line.startswith(str(root)) else line for line in found]
-    pristine = _package_pristine({line.split("\t")[0] for line in found if line.startswith("/")})
-    findings = [line for line in found if line.split("\t")[0] not in pristine]
-    print(f"  ({len(found) - len(findings)} detector findings in {len(pristine)} files installed unchanged "
-          "from Ubuntu or vendor packages: their code and documentation, not credentials)")
-    check(findings == [], "the detector found, outside unchanged package files:\n  " + "\n  ".join(findings[:60]))
-    for value in SECRETS.values():
-        hit = subprocess.run(["grep", "-rlF", value.strip(), str(root)], capture_output=True, text=True).stdout
-        check(not hit, "a test value is in the image")
+    found = check_image.check(IMAGE, HOME, values=list(SECRETS.values()) + [ROTATED_GH])
+    print(f"  ({found['allowed']} pattern detections inside package-owned trees)")
+    check(found["known"] == [], f"(a) known values found: {found['known']}")
+    check(found["credential"] == [], f"(b) credential files found: {found['credential']}")
+    check(found["pattern"] == [], "(c) detections outside package-owned trees:\n  " + "\n  ".join(found["pattern"][:60]))
 
 
 # --- the stand-ins -----------------------------------------------------------------
@@ -336,6 +343,8 @@ def nothing_printed():
     for where, text in texts.items():
         for name, value in SECRETS.items():
             check(value.strip() not in text, f"{name}'s value is in the {where}")
+    check("session-mirror: shipping with key [secret]" in texts["host logs"],
+          "the shipper's output was not forwarded, scrubbed, to the container log")
 
 
 @case("a second boot converges")
@@ -394,6 +403,35 @@ def periodic_pull():
     while 'DEVCLOUD_PROBE_PROFILE="profile-3"' not in out(HOST, "cat /etc/devcloud/env"):
         check(time.monotonic() < end, "no scheduled pull applied the change within 120s")
         time.sleep(2)
+
+
+@case("step 11 stops a service whose program a pull removed, and starts it when a pull brings it back")
+def services_follow_the_configuration():
+    def ship_log():
+        return out(HOST, f"cat {STATE}/ship.log").split("\n")
+    running = json.loads(out(HOST, f"cat {STATE}/ship.json"))["pid"]
+    commit_profile("git rm -q tools/session-mirror", "no shipper")
+    check(sh(HOST, "devcloud pull-config", check_rc=False).returncode == 0, "pull-config failed")
+    end = time.monotonic() + 15
+    while f"term {running}" not in ship_log():
+        check(time.monotonic() < end, "the removed shipper was never stopped")
+        time.sleep(0.5)
+    starts = sum(1 for line in ship_log() if line.startswith("start"))
+    time.sleep(5)
+    check(sum(1 for line in ship_log() if line.startswith("start")) == starts, "the removed shipper restarted")
+    check("not run: session-mirror" in steps(HOST)["services"]["detail"], steps(HOST)["services"]["detail"])
+    sh(FX, "cd /srv/work && git revert --no-edit HEAD >/dev/null && git push -q origin main")
+    check(sh(HOST, "devcloud pull-config", check_rc=False).returncode == 0, "pull-config failed")
+    end = time.monotonic() + 15
+    while sum(1 for line in ship_log() if line.startswith("start")) == starts:
+        check(time.monotonic() < end, "the shipper did not start when its program came back")
+        time.sleep(0.5)
+
+
+@case("the image user has passwordless sudo, from a validated drop-in")
+def sudo():
+    check(sh(HOST, "sudo -n true", user=USER, check_rc=False).returncode == 0, "sudo -n true failed for the user")
+    check(out(HOST, "stat -c '%a %U' /etc/sudoers.d/devcloud-user").split() == ["440", "root"], "drop-in mode")
 
 
 @case("docker stop forwards SIGTERM to the services; a restart boots again with a new boot id")
@@ -486,27 +524,27 @@ def systemd_restart():
 
 @case("a persistent role without systemd fails identity (acceptance 7's last line)")
 def persistent_needs_systemd():
-    rc, got, _ = boot_once("sbx-persist", descriptor("sbx-persist", role="persistent"))
+    rc, got, _, _ = boot_once("sbx-persist", descriptor("sbx-persist", role="persistent"))
     check(rc == 1 and got["identity"]["state"] == "failed" and "systemd" in got["identity"]["detail"], str(got))
     check(list(got) == ["identity"], "the boot went past identity")
 
 
 @case("a container started without --hostname fails identity")
 def hostname_mismatch():
-    rc, got, _ = boot_once("sbx-named", descriptor("sbx-named"), hostname="sbx-other")
+    rc, got, _, _ = boot_once("sbx-named", descriptor("sbx-named"), hostname="sbx-other")
     check(rc == 1 and "--hostname sbx-named" in got["identity"]["detail"], str(got))
 
 
 @case("an optional secret absent reads missing and the boot goes on")
 def optional_missing():
-    rc, got, _ = boot_once("sbx-opt", descriptor("sbx-opt", branch="optional-missing"))
+    rc, got, _, _ = boot_once("sbx-opt", descriptor("sbx-opt", branch="optional-missing"))
     check(rc == 0 and got["secrets"]["state"] == "missing", str(got.get("secrets")))
     check("not-uploaded-yet" in got["secrets"]["detail"] and got["services"]["state"] == "ok", str(got))
 
 
 @case("a required secret absent fails the secrets step and stops the boot")
 def required_missing():
-    rc, got, _ = boot_once("sbx-req", descriptor("sbx-req", branch="required-missing"))
+    rc, got, _, _ = boot_once("sbx-req", descriptor("sbx-req", branch="required-missing"))
     check(rc == 1 and got["secrets"]["state"] == "failed" and "not-uploaded-yet" in got["secrets"]["detail"],
           str(got.get("secrets")))
     check("home" not in got, "the boot went past the failed step")
@@ -514,14 +552,29 @@ def required_missing():
 
 @case("a gateway that does not answer stops the boot before any secret is written")
 def gateway_down():
-    rc, got, store = boot_once("sbx-gw", descriptor("sbx-gw", branch="gateway-down"))
+    rc, got, store, _ = boot_once("sbx-gw", descriptor("sbx-gw", branch="gateway-down"))
     check(rc == 1 and got["tailnet-check"]["state"] == "failed", str(got.get("tailnet-check")))
     check("secrets" not in got and store == "store-absent", "secrets were written past a failed gateway check")
 
 
+@case("a failing step whose command prints a secret leaves no value in any log")
+def leaking_apply_is_scrubbed():
+    value = SECRETS["gh-token"]
+    b64 = base64.b64encode(value.encode()).decode()
+    rc, got, _, extra = boot_once("sbx-leak", descriptor("sbx-leak", branch="apply-leaks"), after=(
+        f"cat /var/log/devcloud/apply.log; echo '--boot-output'; cat /tmp/boot.out; echo '--grep'; "
+        f"grep -rlF -e {value} -e {b64} /var/log/devcloud /var/lib/devcloud /tmp/boot.out || echo none"))
+    check(rc == 1 and got["apply"]["state"] == "failed", str(got.get("apply")))
+    log, _, rest = extra.partition("--boot-output")
+    boot_output, _, grep = rest.partition("--grep")
+    check(grep.strip() == "none", f"a value is in {grep.strip()}")
+    check("leaking [secret]" in log and "leaking b64 [secret]" in log, f"the log lost its diagnostic: {log[-400:]!r}")
+    check(value not in got["apply"]["detail"] and value not in boot_output, "a value in the status or output")
+
+
 @case("a wrong repository token fails configuration")
 def wrong_token():
-    rc, got, _ = boot_once("sbx-tok", descriptor("sbx-tok", token="wrong-token"))
+    rc, got, _, _ = boot_once("sbx-tok", descriptor("sbx-tok", token="wrong-token"))
     check(rc == 1 and got["configuration"]["state"] == "failed", str(got.get("configuration")))
 
 

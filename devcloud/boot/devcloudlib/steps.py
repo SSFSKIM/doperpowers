@@ -7,6 +7,7 @@ Runs hold one lock, so a job never interleaves with a boot."""
 import contextlib
 import fcntl
 import hashlib
+import json
 import os
 import pathlib
 import socket
@@ -15,7 +16,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import descriptor, envfile, profile as profile_mod, secrets, services, status
+from . import descriptor, envfile, proc, profile as profile_mod, redact, secrets, services, status
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
@@ -54,6 +55,9 @@ class Run:
             self.desc = descriptor.load(allow_http=os.environ.get("DEVCLOUD_ALLOW_HTTP") == "1")
             self.user = User.from_image()
             self.tokens = Tokens(self.desc)
+            proc.KNOWN.update(redact.host_values(self.user, env_path=ENV_PATH))
+            if self.desc.seed_kind == "file":
+                _know_seed(self.desc.seed_path)
 
     @property
     def claude_dir(self):
@@ -63,6 +67,18 @@ class Run:
         """What profile.env's references expand against: the user's login
         environment and the host's identity."""
         return self.user.env(_read_env(IDENTITY_ENV))
+
+
+def _know_seed(path):
+    """The seed key's secret fields, so no log can hold them."""
+    try:
+        key = json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(key, dict):
+        proc.KNOWN.update(str(key[f]) for f in ("private_key", "private_key_id") if key.get(f))
+        if isinstance(key.get("private_key"), str):
+            proc.KNOWN.update(line for line in key["private_key"].splitlines() if len(line) >= 40)
 
 
 def _read_env(path):
@@ -84,6 +100,7 @@ def step(r, name, fn):
     except Exception as error:  # noqa: BLE001 — recorded, never raised past the step
         result = ("failed", f"{type(error).__name__}: {error}"[:300])
     state, detail = result if isinstance(result, tuple) else ("ok", result)
+    detail = proc.KNOWN.scrub(detail)
     status.record(name, state, detail)
     _say(f"{name}: {state}" + (f" — {detail}" if detail else ""))
     if state == "failed":
@@ -199,6 +216,7 @@ def _fetch_bootstrap(r):
         raise StepError(f"{name} is not UTF-8 text") from None
     if not text:
         raise StepError(f"{name} is empty")
+    proc.KNOWN.add(text)
     r.bootstrap = text
 
 
@@ -284,8 +302,12 @@ def tailnet_check(r):
 
 
 def secrets_step(r):
-    out = secrets.materialize(r.profile.secrets, r.tokens.access, r.user.home,
-                              as_user=lambda fn: as_user(r.user, fn))
+    def fetch(name):
+        value = r.tokens.access(name)
+        if value:
+            proc.KNOWN.add(value)
+        return value
+    out = secrets.materialize(r.profile.secrets, fetch, r.user.home, as_user=lambda fn: as_user(r.user, fn))
     r.secret_env = out.env
     return (out.state, out.detail)
 
@@ -358,13 +380,15 @@ def settings_and_env(r):
 def services_step(r):
     if services.systemd_is_init():
         return services.apply_systemd(r.user, r.env_changed)
-    names = ", ".join(s.name for s in services.service_list(r.user) if s.every is not None or services.available(s))
-    absent = [s for s in services.service_list(r.user) if s.every is None and not services.available(s)]
+    names = services.desired_names(r.user)
+    services.write_desired(names)
+    absent = [s for s in services.service_list(r.user) if s.name not in names]
     note = "; not run: " + ", ".join(f"{s.name} ({s.argv[0]} absent)" for s in absent) if absent else ""
     pid = services.supervisor_running()
     if pid:
-        return f"{names} under devcloud-services (pid {pid}), which restarts them when {ENV_PATH} changes{note}"
-    return f"{names}: devcloud-services starts them when the boot ends{note}"
+        return (f"{', '.join(names)} under devcloud-services (pid {pid}), which follows "
+                f"{services.DESIRED} and restarts them when {ENV_PATH} changes{note}")
+    return f"{', '.join(names)}: devcloud-services starts them when the boot ends{note}"
 
 
 def projects(r):

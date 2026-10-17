@@ -30,3 +30,15 @@ add_secret() { printf '\n[[secret]]\nname = "%s"\nstore = "%s"\n%s\n' "$1" "$2" 
 variant optional-missing add_secret not-uploaded-yet LATER "optional = true"
 variant required-missing add_secret not-uploaded-yet LATER
 variant gateway-down sed -i 's#http://fixtures:8084#http://fixtures:9#' devcloud/managed-settings.json
+# An apply step that prints a materialized secret, plain and base64, then fails.
+leak_apply() {
+  cat >> sync/apply.py <<'PY'
+import base64
+import sys
+value = (pathlib.Path.home() / ".config/claude-secrets/GH_TOKEN").read_text()
+print("leaking", value)
+print("leaking b64", base64.b64encode(value.encode()).decode(), file=sys.stderr)
+sys.exit(1)
+PY
+}
+variant apply-leaks leak_apply

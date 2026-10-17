@@ -1,7 +1,8 @@
 """Running things as root or as the host's user, and writing files safely.
 
 Commands' output goes to a root-only log under /var/log/devcloud, never to the
-status file: a tool may print what it was given, and status names keys only.
+status file, and only after every known value is scrubbed out of it (a tool
+may print what it was given; a log never holds a value).
 Work in the user's home runs with the user's own privileges (`as_user`), so a
 path planted in the home can never steer a root write."""
 
@@ -11,11 +12,14 @@ import pathlib
 import pwd
 import subprocess
 
-from . import envfile
+from . import envfile, redact
 
 IMAGE_ENV = "/etc/devcloud/image.env"
 LOG_DIR = pathlib.Path("/var/log/devcloud")
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# The values this process knows; steps add the bootstrap token, access tokens
+# and every payload as they read them, and the host's own on loading.
+KNOWN = redact.Known()
 
 
 class StepError(Exception):
@@ -90,38 +94,52 @@ def log_path(name):
     return LOG_DIR / f"{name}.log"
 
 
+LOG_LINES = 200
+
+
+def _write_log(log, argv, output):
+    """Appends a command's header and its last LOG_LINES lines of output to
+    its log, every known value scrubbed first."""
+    lines = output.splitlines(keepends=True)
+    head = f"--- {' '.join(pathlib.Path(a).name if i == 0 else a for i, a in enumerate(argv))}\n".encode()
+    if len(lines) > LOG_LINES:
+        head += f"[{len(lines) - LOG_LINES} earlier lines dropped]\n".encode()
+    body = b"".join(lines[-LOG_LINES:])
+    if body and not body.endswith(b"\n"):
+        body += b"\n"
+    fd = os.open(log_path(log), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "ab") as f:
+        f.write(KNOWN.scrub(head + body))
+
+
 def run(argv, *, user=None, env=None, log=None, input=None, capture=False, timeout=600, cwd=None):
-    """Runs `argv` (as `user` when given), appending its output to the log
-    `log` names. Raises StepError naming the command and the log on a nonzero
-    exit; returns stdout when `capture`."""
+    """Runs `argv` (as `user` when given). Its output (stderr only, when
+    `capture` returns stdout) goes to the log `log` names, scrubbed of every
+    known value and cut to its last lines; without a log it is dropped.
+    Raises StepError naming the command and the log on a nonzero exit."""
     label = " ".join(pathlib.Path(argv[0]).name if i == 0 else a for i, a in enumerate(argv[:2]))
-    out_file = None
-    if log:
-        path = log_path(log)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        out_file = os.fdopen(fd, "ab")
-        out_file.write(f"--- {' '.join(pathlib.Path(a).name if i == 0 else a for i, a in enumerate(argv))}\n".encode())
-        out_file.flush()
     kwargs = {}
     if _drops(user):
         kwargs.update(user=user.uid, group=user.gid, extra_groups=[])
+    where = f" (log {log_path(log)})" if log else ""
     try:
         result = subprocess.run(
             argv, env=env, cwd=cwd, timeout=timeout,
             input=input.encode() if isinstance(input, str) else input,
             stdin=None if input is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE if capture else (out_file or subprocess.DEVNULL),
-            stderr=out_file or subprocess.DEVNULL, **kwargs,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE if capture else subprocess.STDOUT, **kwargs,
         )
     except FileNotFoundError:
         raise StepError(f"{label}: command not found") from None
-    except subprocess.TimeoutExpired:
-        raise StepError(f"{label} timed out after {timeout}s" + (f" (log {log_path(log)})" if log else "")) from None
-    finally:
-        if out_file:
-            out_file.close()
+    except subprocess.TimeoutExpired as expired:
+        if log:
+            partial = (expired.stderr if capture else expired.stdout) or b""
+            _write_log(log, argv, partial)
+        raise StepError(f"{label} timed out after {timeout}s{where}") from None
+    if log:
+        _write_log(log, argv, (result.stderr if capture else result.stdout) or b"")
     if result.returncode != 0:
-        raise StepError(f"{label} exited {result.returncode}" + (f" (log {log_path(log)})" if log else ""))
+        raise StepError(f"{label} exited {result.returncode}{where}")
     return result.stdout.decode() if capture else None
 
 

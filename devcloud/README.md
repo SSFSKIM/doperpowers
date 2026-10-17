@@ -152,8 +152,23 @@ venv, uv, Node LTS, jq, tmux, mosh, gh, the Google Cloud CLI, hcloud,
 Tailscale, the Docker client, zsh, and Claude Code (native installer, as the
 user) — and creates the user from three build inputs, `DEVCLOUD_USER`,
 `DEVCLOUD_UID` and `DEVCLOUD_HOME`, the Mac's own account, so a session
-moves between a Mac and a host under the same paths. It carries no
-credential, no descriptor, no `~/.claude` checkout and no sminos enrollment.
+moves between a Mac and a host under the same paths, with passwordless sudo
+(a drop-in checked by `visudo`), as cloud images give their default user: a
+project's `devenv/setup.sh` installs system packages. It carries no
+credential, no descriptor, no `~/.claude` checkout and no sminos enrollment,
+which `tests/check_image.py` checks in three parts: (a) none of a list of
+known values — made-up ones in the tests, the person's own from their secret
+store and Secret Manager when they run it — appears in the image's files or
+`docker history`, in any spelling the guard scrubs (the values go to the
+guard's matcher in-process and are never printed); (b) none of the
+credential files the guard reads exists under any home, nor the secret
+store, nor the boot descriptor; (c) the guard's pattern detector finds
+nothing outside package-owned trees (unchanged dpkg files, npm's
+`node_modules`, the Claude Code and gcloud install trees, whose vendored code
+matches token shapes by the thousand).
+
+    # needs Docker and bun; prints parts, paths and labels, never a value
+    python3 devcloud/tests/check_image.py <image> --home <home> --store <secret store dir> --values - < values.json
 `image/Dockerfile` runs `setup.sh` as its one step; a VM builder runs it and
 snapshots, and its `devcloud-boot.service` runs the boot at every start.
 
@@ -267,18 +282,27 @@ the services without a reboot. Untracked files are left alone.
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |
 
 Under systemd they are units `devcloud-<service>` (the jobs as timers).
-Elsewhere `devcloud-services` runs them as the container's PID 1: it reaps
-orphans, restarts a crashed service after 1, 2, 4 … 60 s, restarts a
-continuous service when `/etc/devcloud/env` changes, and on SIGTERM forwards
-the signal to every child and waits up to 8 s (the shipper's final pass)
-before it exits.
+Elsewhere `devcloud-services` runs them as the container's PID 1: it runs
+the services `/run/devcloud/services.json` names — step 11 rewrites it at
+every boot and reconcile, so a service whose program a pull brings starts
+and one whose program a pull removes stops — reaps orphans, restarts a
+crashed service after 1, 2, 4 … 60 s, restarts a continuous service when
+`/etc/devcloud/env` changes, forwards each line a service prints to its own
+output as `<service>: <line>` with every value the host holds scrubbed out,
+and on SIGTERM forwards the signal to every child and waits up to 8 s (the
+shipper's final pass) before it exits.
 
 **Status.** `devcloud status` prints `/var/lib/devcloud/status.json` one line
 per step — name, state (`ok`, `failed`, `skipped`, `missing`), when, detail —
 and exits 1 unless the last boot finished with no failed step. A reconcile or
 a job records its steps the same way. A detail names steps, keys, secret ids,
-exit codes and log paths, never a value; commands' output goes to root-only
-logs under `/var/log/devcloud/`.
+exit codes and log paths, never a value. A command's output goes to a
+root-only log under `/var/log/devcloud/`, cut to its last 200 lines and with
+every value devcloud knows scrubbed to `[secret]` first — the bootstrap
+token, access tokens, the seed key's private fields, every secret it read,
+and what the host already holds (the store, the env targets, the file
+targets), in each spelling a command prints by accident. Permissions are not
+what keeps a value out of a log.
 
     devcloud status            # one line per boot step
     devcloud reconcile         # steps 5-11 against the configuration as fetched now

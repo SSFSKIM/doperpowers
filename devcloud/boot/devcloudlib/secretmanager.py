@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import proc
 from .proc import StepError, run
 
 GCLOUD_CONFIG = "/var/lib/devcloud/gcloud"
@@ -77,6 +78,7 @@ class Tokens:
                 raise StepError(f"the metadata server gave no token ({_reason(error)})") from None
         if not token:
             raise StepError("the seed yielded an empty access token")
+        proc.KNOWN.add(token)
         return token
 
     def access(self, secret_id):

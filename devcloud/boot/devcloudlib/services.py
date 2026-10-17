@@ -7,14 +7,16 @@ there), and forwards SIGTERM to every child before it exits."""
 
 import dataclasses
 import hashlib
+import json
 import os
 import pathlib
+import selectors
 import signal
 import subprocess
 import sys
 import time
 
-from . import envfile
+from . import envfile, redact
 from .proc import SYSTEM_PATH, run
 
 ENV_PATH = "/etc/devcloud/env"
@@ -124,6 +126,34 @@ def apply_systemd(user, env_changed):
 
 # --- the supervisor --------------------------------------------------------
 
+DESIRED = pathlib.Path("/run/devcloud/services.json")
+
+
+def desired_names(user):
+    """The services this host should run now: the jobs, and each continuous
+    service whose program the configuration holds."""
+    return [s.name for s in service_list(user) if s.every is not None or available(s)]
+
+
+def write_desired(names, path=DESIRED):
+    """Step 11's word to a running supervisor: the services to run. The
+    supervisor rereads the file when it changes, starting what it lacks and
+    stopping what is no longer named."""
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps({"services": list(names)}) + "\n")
+    os.replace(tmp, path)
+
+
+def _read_desired(path):
+    try:
+        names = json.loads(pathlib.Path(path).read_text())["services"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return [n for n in names if isinstance(n, str)]
+
+
 def _digest(path):
     try:
         return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -135,25 +165,50 @@ class _Slot:
     def __init__(self, service, now):
         self.service = service
         self.proc = None
+        self.pipe = None
+        self.pending = b""
         self.started = 0.0
         self.failures = 0
         self.restart_now = False
+        self.removed = False
         self.due = now + service.every if service.every is not None else now
 
 
 class Supervisor:
-    """Runs `listed` until SIGTERM or SIGINT. A user service runs as `user`
+    """Runs the services of `listed` that the desired-state file names (all of
+    them without one) until SIGTERM or SIGINT. A user service runs as `user`
     (when the supervisor is root) with the user's clean environment plus the
-    env file; a root service inherits the supervisor's environment."""
+    env file; a root service inherits the supervisor's environment. Every
+    line a service prints is forwarded as `<service>: <line>`, each value
+    `known()` returns scrubbed out first."""
 
-    def __init__(self, listed, env_path=ENV_PATH, user=None, poll=0.5, grace=8.0, log=None):
-        self.listed = listed
+    REFRESH = 30.0
+    LINE_MAX = 4096
+
+    def __init__(self, listed, env_path=ENV_PATH, user=None, poll=0.5, grace=8.0, log=None, known=None,
+                 desired_path=None, out=None):
+        self.listed = {s.name: s for s in listed}
         self.env_path = env_path
         self.user = user
         self.poll = poll
         self.grace = grace
+        self.known_source = known or (lambda: ())
+        self.known = redact.Known()
+        self.desired_path = desired_path
+        self.out = out or sys.stdout.buffer
         self.stopping = False
-        self.log = log or (lambda message: print(f"devcloud-services: {message}", flush=True))
+        self.selector = selectors.DefaultSelector()
+        self.log = log or (lambda message: self._emit(b"devcloud-services: " + message.encode() + b"\n"))
+
+    def _emit(self, data):
+        self.out.write(self.known.scrub(data))
+        self.out.flush()
+
+    def _refresh_known(self):
+        try:
+            self.known = redact.Known(self.known_source())
+        except Exception as error:  # noqa: BLE001 — keep the old set rather than stop supervising
+            self.log(f"cannot read the host's values ({type(error).__name__}); keeping the previous set")
 
     def _env(self, service):
         if not service.as_user:
@@ -174,14 +229,50 @@ class Supervisor:
         kwargs = {}
         if s.as_user and self.user and os.geteuid() == 0:
             kwargs = dict(user=self.user.uid, group=self.user.gid, extra_groups=[], cwd=str(self.user.home))
+        read, write = os.pipe()
         try:
             slot.proc = subprocess.Popen(list(s.argv), env=self._env(s), start_new_session=True,
-                                         stdin=subprocess.DEVNULL, **kwargs)
+                                         stdin=subprocess.DEVNULL, stdout=write, stderr=write, **kwargs)
             slot.started = now
         except OSError as error:
+            os.close(read)
             self.log(f"{s.name}: cannot start ({type(error).__name__}: {error.strerror})")
             slot.started = now
             self._schedule_after_exit(slot, now)
+            return
+        finally:
+            os.close(write)
+        os.set_blocking(read, False)
+        slot.pipe = read
+        self.selector.register(read, selectors.EVENT_READ, slot)
+
+    def _drain(self, slot, final=False):
+        """Forwards what the slot's pipe holds, line by line; at EOF (or
+        `final`) the rest, and the pipe is closed."""
+        eof = False
+        while True:
+            try:
+                chunk = os.read(slot.pipe, 65536)
+            except BlockingIOError:
+                break
+            if not chunk:
+                eof = True
+                break
+            slot.pending += chunk
+        *lines, slot.pending = slot.pending.split(b"\n")
+        if len(slot.pending) > self.LINE_MAX:
+            lines.append(slot.pending)
+            slot.pending = b""
+        if (eof or final) and slot.pending:
+            lines.append(slot.pending)
+            slot.pending = b""
+        prefix = slot.service.name.encode() + b": "
+        for line in lines:
+            self._emit(prefix + line[:self.LINE_MAX] + b"\n")
+        if eof or final:
+            self.selector.unregister(slot.pipe)
+            os.close(slot.pipe)
+            slot.pipe = None
 
     def _schedule_after_exit(self, slot, now):
         """When a service runs next: a job after its interval; a continuous
@@ -221,14 +312,34 @@ class Supervisor:
                 continue   # an orphan this process adopted as PID 1
             code = os.waitstatus_to_exitcode(wait_status)
             slot.proc.returncode = code
-            if not self.stopping:
-                if slot.service.every is None and not slot.restart_now:
-                    self.log(f"{slot.service.name} exited {code}; restarting")
-                elif code != 0:
-                    self.log(f"{slot.service.name} exited {code}")
-                self._schedule_after_exit(slot, now)
-            else:
+            if slot.pipe is not None:
+                self._drain(slot, final=True)
+            if self.stopping or slot.removed:
                 slot.proc = None
+                continue
+            if slot.service.every is None and not slot.restart_now:
+                self.log(f"{slot.service.name} exited {code}; restarting")
+            elif code != 0:
+                self.log(f"{slot.service.name} exited {code}")
+            self._schedule_after_exit(slot, now)
+
+    def _reconcile(self, slots, now):
+        """Brings the slots in line with the desired-state file."""
+        names = _read_desired(self.desired_path) if self.desired_path else None
+        wanted = set(self.listed) if names is None else {n for n in names if n in self.listed}
+        for slot in slots:
+            if slot.service.name not in wanted and not slot.removed:
+                slot.removed = True
+                if slot.proc:
+                    self.log(f"{slot.service.name} is no longer wanted; stopping it")
+                    self._signal(slot, signal.SIGTERM)
+        have = {slot.service.name for slot in slots if not slot.removed}
+        for name in self.listed:
+            if name in wanted and name not in have:
+                if any(slot.service.name == name and slot.proc for slot in slots):
+                    continue   # still stopping; started again once it is gone
+                slots.append(_Slot(self.listed[name], now))
+        slots[:] = [slot for slot in slots if not (slot.removed and slot.proc is None and slot.pipe is None)]
 
     def _stop(self, *_):
         self.stopping = True
@@ -237,48 +348,72 @@ class Supervisor:
         signal.signal(signal.SIGTERM, self._stop)
         signal.signal(signal.SIGINT, self._stop)
         now = time.monotonic()
-        slots = [_Slot(s, now) for s in self.listed]
+        slots = []
+        self._refresh_known()
+        refreshed = now
         env_digest = _digest(self.env_path)
+        desired_digest = object()
         while not self.stopping:
             now = time.monotonic()
             self._reap(slots, now)
+            digest = _digest(self.desired_path) if self.desired_path else None
+            if digest != desired_digest:
+                desired_digest = digest
+                self._refresh_known()
+                refreshed = now
+            self._reconcile(slots, now)
             digest = _digest(self.env_path)
             if digest != env_digest:
                 env_digest = digest
+                self._refresh_known()
+                refreshed = now
                 for slot in slots:
-                    if slot.service.every is None and slot.proc:
+                    if slot.service.every is None and slot.proc and not slot.removed:
                         self.log(f"{self.env_path} changed; restarting {slot.service.name}")
                         slot.restart_now = True
                         self._signal(slot, signal.SIGTERM)
+            if now - refreshed > self.REFRESH:
+                self._refresh_known()
+                refreshed = now
             for slot in slots:
-                if slot.proc is None and now >= slot.due and not self.stopping:
+                if slot.proc is None and not slot.removed and now >= slot.due and not self.stopping:
                     self._start(slot, now)
-            time.sleep(self.poll)
-        running = [slot for slot in slots if slot.proc]
-        for slot in running:
-            self._signal(slot, signal.SIGTERM)
+            for key, _ in self.selector.select(timeout=self.poll) if self.selector.get_map() else ():
+                if key.data.pipe is not None:
+                    self._drain(key.data)
+            if not self.selector.get_map():
+                time.sleep(self.poll)
+        for slot in slots:
+            if slot.proc:
+                self._signal(slot, signal.SIGTERM)
         deadline = time.monotonic() + self.grace
         while any(slot.proc for slot in slots) and time.monotonic() < deadline:
             self._reap(slots, time.monotonic())
-            time.sleep(0.05)
+            for key, _ in self.selector.select(timeout=0.05) if self.selector.get_map() else ():
+                if key.data.pipe is not None:
+                    self._drain(key.data)
+            if not self.selector.get_map():
+                time.sleep(0.05)
         for slot in slots:
             if slot.proc:
                 self.log(f"{slot.service.name} ignored SIGTERM for {self.grace:.0f}s; killing it")
                 self._signal(slot, signal.SIGKILL)
         self._reap(slots, time.monotonic())
+        for slot in slots:
+            if slot.pipe is not None:
+                self._drain(slot, final=True)
         return 0
 
 
 def main(user):
     interval = int(os.environ.get("DEVCLOUD_JOB_INTERVAL", INTERVAL))
-    listed = [s for s in service_list(user, interval) if s.every is not None or available(s)]
-    for s in service_list(user, interval):
-        if s not in listed:
-            print(f"devcloud-services: {s.name} not started: {s.argv[0]} absent", file=sys.stderr, flush=True)
     PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+    if not DESIRED.exists():
+        write_desired(desired_names(user))
     PIDFILE.write_text(f"{os.getpid()}\n")
     try:
-        return Supervisor(listed, user=user).run()
+        return Supervisor(service_list(user, interval), user=user, desired_path=DESIRED,
+                          known=lambda: redact.host_values(user, env_path=ENV_PATH)).run()
     finally:
         PIDFILE.unlink(missing_ok=True)
 
