@@ -656,7 +656,10 @@ never an agent's notification.
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
 2026-10-07, so it is registered once, by the plugin that owns its store,
-`~/.config/claude-secrets/KEY` (unchanged).
+`~/.config/claude-secrets/KEY` (unchanged). The guard that keeps secrets out
+of what the model reads and what the transcript keeps is the devcloud
+plugin's (`devcloud/hooks/mods/secrets.tsx`, described in
+`devcloud/README.md`), a separate plugin a person opts into.
 
 ## Developing
 
