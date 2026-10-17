@@ -484,6 +484,14 @@ rung for DC8); the PR opened, not merged; the report at
   232 of 256 MB, so the skip saves little there.
   Evidence: `task-2-report.md`.
 
+- Observation: every plain user row that opens with a task-notification
+  (directly, or after the subagent preamble) carries `origin.kind:
+  "task-notification"`: 2,380 in main transcripts and 2,566 in subagent
+  transcripts of the newest 300 sessions, none without it — so the origin
+  gate drops no engine row.
+  Evidence: `/tmp/dc8-scripts/origin.py`, read-only, 2026-10-17
+  (controller, confirming the M1 follow-up's survey).
+
 ## Outcomes & Retrospective
 
 (Written at the end.)
