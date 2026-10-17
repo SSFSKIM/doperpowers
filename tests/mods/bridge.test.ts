@@ -1828,6 +1828,91 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
     )
     expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new3']])
   })
+
+  /**
+   * A /clear whose own read fails, and whose retry is answered (`[old7,
+   * fork1]`) only after the new conversation has started its fork `fork1`:
+   * `race` orders the fork's first turn and that answer. What reached the new
+   * child.
+   */
+  const retryRace = async (race: (h: ReturnType<typeof harness>, reads: ReturnType<typeof holdLists>, retry: () => Promise<void>) => Promise<void>) => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    const both = [listed('old7', 'running'), listed('fork1', 'running', { type: 'fork' })]
+    const retry = async () => {
+      reads[1]!(both)
+      await h.settle()
+    }
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        reads[0]!(null) // the /clear's own read fails; its retry (reads[1]) is not answered yet
+        await h.settle()
+        expect(reads.length).toBe(2)
+      },
+      both, // the new conversation's heartbeat read, waiting on the retry
+      async () => {
+        await race(h, reads, retry)
+        // Every read since is answered with the list as it stands.
+        for (let i = 3; i < reads.length; i++) {
+          reads[i]!(both)
+          await h.settle()
+        }
+      },
+    )
+    return toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])
+  }
+
+  test("a /clear's retry answered after the new conversation's fork started its turn does not hide the fork", async () => {
+    const agents = await retryRace(async (h, _reads, retry) => {
+      await h.turn('t-f', 'fork1')
+      await h.settle()
+      await retry()
+    })
+    expect(agents).toEqual([['spawn', 'fork1']])
+  })
+
+  test("a /clear's retry that names the new conversation's fork before its turn starts sets it aside only until that turn", async () => {
+    const agents = await retryRace(async (h, _reads, retry) => {
+      await retry()
+      await h.turn('t-f', 'fork1')
+      await h.settle()
+    })
+    expect(agents).toEqual([['spawn', 'fork1']])
+  })
+
+  test("a /clear's retry answered while the new conversation's spawn hook runs: the agent it spawns is that hook's, and the list may end it", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        reads[0]!(null)
+        await h.settle()
+      },
+      [],
+      async () => {
+        const spawn = { tool_use_id: 'tu9', prompt: 'p', description: 'scout', subagentType: 'Explore', background: true }
+        await h.hook('agent.spawn', spawn)(h.engine, spawn, async () => {
+          reads[1]!([listed('old7', 'running'), listed('s9', 'running', { type: 'Explore' })])
+          await h.settle()
+          return { model: 'claude-haiku', agentId: 's9' }
+        })
+        await h.settle()
+        await h.fire(AGENTS_REFRESH_MS)
+        reads.at(-1)!([listed('old7', 'running'), listed('s9', 'completed', { type: 'Explore' })])
+        await h.settle()
+      },
+    )
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([
+      ['spawn', 's9'],
+      ['stop', 's9'],
+    ])
+  })
 })
 
 describe('streaming per content block', () => {

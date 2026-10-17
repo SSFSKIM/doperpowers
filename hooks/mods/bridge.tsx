@@ -19,7 +19,7 @@ import {
   withdrawAll,
 } from './bridge-requests'
 import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
-import { forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
+import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 
 export { TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { STEP_END_WAIT_MS } from './bridge-stream'
@@ -817,6 +817,7 @@ export function registerBridge(on: On) {
     state.loopTurns.set(loopKey(e.agentId), e.turnId)
     // A loop whose spawn the bridge did not see (a forked skill): the list names it.
     if (e.agentId !== undefined && !state.agents.has(e.agentId)) {
+      claimAgent(e.agentId)
       void refreshAgents()
     }
     const text = capped(e.text)
@@ -1091,6 +1092,7 @@ export function registerBridge(on: On) {
       state.spawning--
     }
     if (result.agentId !== undefined) {
+      claimAgent(result.agentId)
       state.freshLoops.add(result.agentId)
       // A foreground subagent's calls belong to the main turn it runs in (an
       // interrupt of that turn ends it); a nested one's, to its parent's.

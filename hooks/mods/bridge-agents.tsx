@@ -110,10 +110,21 @@ export async function refreshAgents() {
 /** The agents a list names that this conversation does not know: the conversation before a /clear's. */
 function setAside(listed: readonly ListedAgent[]) {
   for (const a of listed) {
-    if (!state.agents.has(a.id)) {
+    if (!state.agents.has(a.id) && !state.claimed.has(a.id)) {
       state.cleared.add(a.id)
     }
   }
+}
+
+/**
+ * An agent this conversation's own hooks named (its spawn, its loop's first
+ * turn): this conversation's, whatever a list answered at the /clear said. A
+ * /clear's retried read is answered after the new conversation may have
+ * started agents of its own, which it names alongside the old ones.
+ */
+export function claimAgent(id: string) {
+  state.claimed.add(id)
+  state.cleared.delete(id)
 }
 
 /**
@@ -123,13 +134,16 @@ function setAside(listed: readonly ListedAgent[]) {
  * and a read made now, before the new conversation has any of its own (tried
  * twice; if both fail, the outstanding answers and the agents it knew are all
  * that is set aside). Every read of the list after this waits until each of
- * those answers is in, so none of them can seed an agent they name.
+ * those answers is in, so none of them can seed an agent they name. The
+ * retry may be answered once the new conversation has agents of its own:
+ * those its hooks claim (claimAgent) are never set aside, or stop being.
  */
 export function forgetAgents() {
   for (const id of [...state.agents.keys(), ...state.listed]) {
     state.cleared.add(id)
   }
   state.listed.clear()
+  state.claimed.clear()
   state.conversation++
   const list = state.listAgents
   if (list === undefined) {

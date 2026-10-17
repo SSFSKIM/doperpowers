@@ -218,6 +218,8 @@ export type BridgeState = {
   listed: Set<string>
   /** The agents of the conversation before a /clear: never the new session's. */
   cleared: Set<string>
+  /** The agents this conversation's own hooks named since the last /clear (a spawn, a loop's first turn): never set aside. */
+  claimed: Set<string>
   /** `agent.spawn` hooks between their `next` and their spawn event: the agent they report is theirs to report. */
   spawning: number
   /** A refresh of the list is due (while any agent runs). */
@@ -257,6 +259,7 @@ const fresh = (): BridgeState => ({
   minted: 0,
   listed: new Set(),
   cleared: new Set(),
+  claimed: new Set(),
   spawning: 0,
   isAgentsWatched: false,
   agentReads: { asked: 0, applied: 0 },
