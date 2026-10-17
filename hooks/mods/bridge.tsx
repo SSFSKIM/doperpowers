@@ -2,7 +2,7 @@ import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, Sess
 
 import { ASK_TOOL, PLUGIN, observeAsks } from './ask'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
-import type { Answer, Command, Decision, Override, Request, Steer } from './bridge-state'
+import type { Answer, Command, Decision, Override, Request, Steer, Stops } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
@@ -43,7 +43,8 @@ export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
  *
  * Control (DC2 M2): `steer` appends a user row the loop reads at its next
  * request; `interrupt` aborts the main turn and stops each Bash call the abort
- * moved to the background; `model` rewrites the main loop's requests;
+ * moved to the background, and the turn's end appends a user row saying so;
+ * `model` rewrites the main loop's requests;
  * `compact` runs between turns; `deliver` submits a log event as the human's
  * words, once per key. What must outlive a module reload (the model chosen,
  * the keys delivered) the child keeps on disk: its hello hands it back.
@@ -78,6 +79,8 @@ const DRAIN_TRIES = 10
 export const STEER_WAKE = 'I added a note to the conversation while you were finishing your answer. Read it and act on it.'
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
+/** How long a Bash call of an interrupted turn waits for the interrupt's record, at most (a TaskStop that never answers). */
+export const INTERRUPT_HOLD_MS = 10_000
 /**
  * A family alias's model as the engine resolves it first, before its own
  * table: ANTHROPIC_DEFAULT_<FAMILY>_MODEL. Each name is spelled out, as the
@@ -184,7 +187,7 @@ function commandAnswer($: EngineInterface, command: Command): Answer | Promise<A
     case 'steer':
       return steer($, command.text)
     case 'interrupt':
-      return interrupt($)
+      return interrupt($, command.from)
     case 'model':
       return chooseModel($, command.model, command.effort)
     case 'compact':
@@ -271,8 +274,15 @@ function wakeForSteer($: EngineInterface) {
  * those of a foreground subagent spawned in it, which the abort ends with it;
  * a background subagent's calls are its own. Each says where it went in its
  * result. A task TaskStop could not stop is named in `running`.
+ *
+ * Then the model is told (recordInterrupt) before the turn can end: the
+ * turn's Bash calls, whose results the engine waits for after an abort, are
+ * held in their hook until the record is in, since the next turn takes its
+ * messages before it waits for any hook. `from` says where the interrupt came
+ * from (`desk`: the desk's RPC). A second interrupt of the same turn leaves
+ * the first's in place; the engine refuses its abort.
  */
-async function interrupt($: EngineInterface): Promise<Answer> {
+async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   const turnId = state.mainTurn
   if (turnId === undefined) {
     return { ok: true, result: { turnId: null, stopped: [], running: [] } }
@@ -284,31 +294,84 @@ async function interrupt($: EngineInterface): Promise<Answer> {
       r.isAborted = true
     }
   }
-  await $.turn.abort({ turnId })
-  const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
-  const texts = await Promise.all(ours.map((c) => Promise.race([c.done, bound])))
-  const stopped: string[] = []
-  const running: string[] = []
-  for (const text of texts) {
-    const task = BACKGROUNDED.exec(text ?? '')?.[1]
-    if (task === undefined) {
-      continue
-    }
-    let failure: string | undefined
-    try {
-      const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
-      failure = r.isError === true ? (r.text ?? 'TaskStop failed') : undefined
-    } catch (error) {
-      failure = message(error)
-    }
-    if (failure === undefined) {
-      stopped.push(task)
-    } else {
-      $.ui.log(`bridge: TaskStop ${task} failed: ${failure}`, { to: 'debug' })
-      running.push(task)
-    }
+  // Kept before the abort: the calls it ends return as it resolves.
+  let recorded: () => void = () => undefined
+  const pending = { recorded: new Promise<void>((resolve) => (recorded = resolve)) }
+  if (!state.interrupts.has(turnId)) {
+    state.interrupts.set(turnId, pending)
   }
-  return { ok: true, result: { turnId, stopped, running } }
+  try {
+    try {
+      await $.turn.abort({ turnId })
+    } catch (error) {
+      if (state.interrupts.get(turnId) === pending) {
+        state.interrupts.delete(turnId)
+      }
+      throw error
+    }
+    const stops: Stops = { stopped: [], running: [] }
+    const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
+    const texts = await Promise.all(ours.map((c) => Promise.race([c.done, bound])))
+    for (const text of texts) {
+      const task = BACKGROUNDED.exec(text ?? '')?.[1]
+      if (task === undefined) {
+        continue
+      }
+      let failure: string | undefined
+      try {
+        const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
+        failure = r.isError === true ? (r.text ?? 'TaskStop failed') : undefined
+      } catch (error) {
+        failure = message(error)
+      }
+      if (failure === undefined) {
+        stops.stopped.push(task)
+      } else {
+        $.ui.log(`bridge: TaskStop ${task} failed: ${failure}`, { to: 'debug' })
+        stops.running.push(task)
+      }
+    }
+    await recordInterrupt($, from, stops)
+    return { ok: true, result: { turnId, ...stops } }
+  } finally {
+    recorded()
+  }
+}
+
+/**
+ * What an interrupt tells the model: the engine's own marker for Esc, with
+ * where it came from, and each Bash call it moved to the background, whose
+ * result says the command runs on there.
+ */
+function interruptText(from: unknown, stops: Stops): string {
+  return [
+    `[Request interrupted by user from ${from === 'desk' ? 'the desk' : 'outside the terminal'}]`,
+    ...stops.stopped.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`),
+    ...stops.running.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`),
+  ].join('\n')
+}
+
+/**
+ * The interrupt's record: Esc leaves the model `[Request interrupted by
+ * user]`, a plugin's abort no marker at all, so a user row says it, read at
+ * the next request. The terminal does not draw an appended row, so a
+ * transcript line mirrors it.
+ */
+async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops) {
+  const text = interruptText(from, stops)
+  try {
+    const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    if (stored.deny !== undefined) {
+      $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
+      return
+    }
+    // The hook does not see the plugin's own append: named once it is in.
+    noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+    // One line: the transcript line draws a newline as U+FFFD (live, 2.1.302).
+    $.ui.log(`interrupt: ${text.replaceAll('\n', ' ')}`)
+  } catch (error) {
+    $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
+  }
 }
 
 /**
@@ -462,6 +525,7 @@ async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal
  * appends settles. An interrupted or failed turn wakes nothing.
  */
 async function mainTurnEnded($: EngineInterface, turnId: string, reason: string) {
+  state.interrupts.delete(turnId)
   for (const s of state.steers) {
     if (s.turnId === turnId) {
       s.ended = reason
@@ -822,7 +886,7 @@ export function registerBridge(on: On) {
     }
   })
 
-  on('tool.call', { tool: /^/ }, async (_, e, next) => {
+  on('tool.call', { tool: /^/ }, async ($, e, next) => {
     const call = `${e.tool_use_id ?? ''}#${++state.toolCalls}`
     const base = { toolUseId: e.tool_use_id || null, tool: e.tool, agentId: e.agentId ?? null }
     const input = toolInput(e as Record<string, unknown>)
@@ -853,6 +917,15 @@ export function registerBridge(on: On) {
     try {
       const result = await next(e)
       resultText = typeof result.text === 'string' ? result.text : undefined
+      // A Bash call of a turn being interrupted: its result, which the record
+      // names, goes back once the record is in, so the turn ends after it.
+      const interrupted = e.tool === 'Bash' && owner !== undefined ? state.interrupts.get(owner) : undefined
+      if (interrupted !== undefined) {
+        state.calls.get(call)?.settle(resultText)
+        let held: { cancel: () => void } | undefined
+        await Promise.race([interrupted.recorded, new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
+        held?.cancel()
+      }
       const text = capped(result.text)
       const denied = capped(result.deny)
       if (isDialog) {

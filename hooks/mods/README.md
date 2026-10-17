@@ -457,7 +457,11 @@ rows read from the transcript, and the export to the host).
 - **Control.** `steer` appends a user row the loop reads at its next request
   (the running tool goes on; a turn that answers before reading it is woken
   once); `interrupt` aborts the turn and stops each Bash call the abort moved
-  to the background; `model` rewrites the main loop's requests (never
+  to the background, then appends a user row telling the model so (a
+  plugin's abort leaves no marker of its own, and the moved call's result
+  says it runs on), holding the turn's Bash calls until the row is in, since
+  a queued next turn takes its messages before it waits for any hook;
+  `model` rewrites the main loop's requests (never
   `$.config.set`, which is the user's default); `compact` runs at once, or at
   the end of a running turn; `deliver` submits a log event as the human's
   words, once per `(writer, seq)`.
