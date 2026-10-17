@@ -11,22 +11,25 @@ down — `GET /machine/stream`, Server-Sent Events — and frames up by `POST
 /machine/frames`, each under the stream's generation. A stream silent for
 three heartbeat periods is dead; the uplink reconnects with backoff.
 
-Two threads: a reader that only reads the stream (the SSE parse, no sminos
-call) into a queue, so the stream is drained whatever the rest is doing; and
-the process's main thread, which does every sminos call and every POST.
-sminos's per-invocation caches are module globals no second thread may
-share, and a git phase of the tick loop, a derivation, or this process's own
-delivery never holds the reader up. The main thread takes whatever is queued
-as one batch, then ticks once: what the batch imported is delivered once per
-project, so a burst from the hub costs a tick, not a tick a frame.
+Three threads: a reader that only reads the stream (the SSE parse, no
+sminos call) into a queue, so the stream is drained whatever the rest is
+doing; beside it the stream's acker, which answers each heartbeat with
+`hb-ack` (no sminos call either), so the machine's lease at the hub never
+waits on the main thread; and the process's main thread, which does every
+sminos call and every other POST. sminos's per-invocation caches are module
+globals no second thread may share, and a git phase of the tick loop, a
+derivation, or this process's own delivery never holds the reader up. The
+main thread takes whatever is queued as one batch, then ticks once: what the
+batch imported is delivered once per project, so a burst from the hub costs
+a tick, not a tick a frame.
 
 On every stream, for every hub project of this machine's org known here, the
 uplink sends `hello` with its vector and its machine's presence (DX4
 `machine`), then uploads its own writers' suffix past the hub's `have`, and
-from then on what they append; it answers each heartbeat with `hb-ack`,
-follows `resend`, says each `refused` in daemon.log, and imports what the hub
-sends (sminos_hublog.py: each event's code verified before it enters the
-log, a refused one reported up as `rejected`). Every archive period it says
+from then on what they append; it follows `resend`, says each `refused` in
+daemon.log, and imports what the hub sends (sminos_hublog.py: each event's
+code verified before it enters the log, a refused one reported up as
+`rejected`). Every archive period it says
 `hello` again for each project it opened, so the hub's answer — whether this
 machine writes the project's git archive (sminos_archive.py) — is never
 older than a period, even on a stream that never drops. The session plane
@@ -251,18 +254,42 @@ def sse_events(fp):
             data.append(value)
 
 
+def heartbeat_at(data):
+    """The `at` of an `hb` event's data; None when it is no hb frame."""
+    try:
+        frame = json.loads(data)
+    except ValueError:
+        return None
+    if not (isinstance(frame, dict) and frame.get("t") == "hb"):
+        return None
+    return frame["at"] if isinstance(frame.get("at"), str) else ""
+
+
 class Stream(threading.Thread):
     """One connection's reader: everything it reads goes to `items` as
     ("frame", event, data), and its end as ("closed", why). It calls nothing
-    of sminos."""
+    of sminos.
 
-    def __init__(self, cred):
+    The heartbeats are answered here, not on the main thread: the hub renews
+    the machine's lease only with an `hb-ack` of the stream's generation, and
+    the main thread can be held far longer than the lease — a slow tick, a
+    POST the hub holds, a frame that reads a large transcript, a backlog of
+    frames queued ahead of the heartbeat. The reader hands each `hb` to the
+    stream's acker, a thread that posts the answer and touches nothing of
+    sminos, so the lease lasts exactly as long as the stream and this process
+    do. A POST of an answer the hub does not take ends the stream, as any
+    POST's does."""
+
+    def __init__(self, cred, ended=lambda: False):
         super().__init__(name="uplink-reader", daemon=True)
         self.cred = cred
+        self.ended = ended
         self.items = queue.Queue()
         self.conn = None
         self.sock = None
         self.closing = threading.Event()
+        self.generation = None    # the welcome's, once read
+        self.beats = queue.Queue()  # the `at` of each heartbeat, for the acker; None ends it
 
     def connect(self):
         self.conn = connection(self.cred, SILENT_PERIODS * HEARTBEAT_MS / 1000)
@@ -281,24 +308,78 @@ class Stream(threading.Thread):
                 body = resp.read(300).decode("utf-8", "replace")
                 self.items.put(("closed", "the hub answered %d %s" % (resp.status, " ".join(body.split()))))
                 return
+            threading.Thread(target=self.ack, name="uplink-acker", daemon=True).start()
             for event, data in sse_events(resp):
+                # DX2 names each event by its frame's `t`.
+                if event == "hb" and self.generation is not None:
+                    at = heartbeat_at(data)
+                    if at is not None:
+                        self.beats.put(at)
+                        continue
+                elif event == "welcome":
+                    self.welcomed(data)
                 self.items.put(("frame", event, data))
             self.items.put(("closed", "the hub ended the stream"))
         except Exception as e:  # noqa: BLE001 — a connection closed from this end raises from deep inside http.client
             self.items.put(("closed", "closed by this end" if self.closing.is_set() else str(e) or repr(e)))
+        finally:
+            self.beats.put(None)
 
-    def silent_after(self, seconds):
-        """The read bound once the stream's own heartbeat is known."""
+    def welcomed(self, data):
+        """The stream's generation, which every answer names, and its read
+        bound once its own heartbeat is known."""
+        try:
+            frame = json.loads(data)
+        except ValueError:
+            return
+        if not isinstance(frame, dict):
+            return
+        generation, beat = frame.get("generation"), frame.get("heartbeat_ms")
+        self.generation = generation if type(generation) is int else None
+        beat = beat if type(beat) is int and beat > 0 else HEARTBEAT_MS
         if self.sock is not None:
-            self.sock.settimeout(seconds)
+            self.sock.settimeout(SILENT_PERIODS * beat / 1000)
 
-    def close(self):
+    def ack(self):
+        """The acker: answers the newest heartbeat queued, at most once an
+        ACK_GAP (a burst is answered once), until the stream ends."""
+        last = 0.0
+        while True:
+            at = self.beats.get()
+            if at is None:
+                return
+            gap = last + ACK_GAP - time.monotonic()
+            if gap > 0 and self.closing.wait(gap):
+                return
+            while True:
+                try:
+                    newer = self.beats.get_nowait()
+                except queue.Empty:
+                    break
+                if newer is None:
+                    return
+                at = newer
+            last = time.monotonic()
+            try:
+                post(self.cred, self.generation, [{"t": "hb-ack", "generation": self.generation, "at": at}],
+                     lambda: self.ended() or self.closing.is_set())
+            except Stopping:
+                return
+            except NotDelivered as e:
+                self.items.put(("closed", "an hb-ack was not delivered (%s)" % e))
+                self.shut()
+                return
+
+    def shut(self):
         self.closing.set()
         if self.sock is not None:
             try:
                 self.sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+
+    def close(self):
+        self.shut()
         if self.conn:
             self.conn.close()
 
@@ -544,8 +625,6 @@ class Link:
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
         self.parts = Parts()
-        self.ack_due = None       # the newest heartbeat's `at`, while unanswered
-        self.acked_at = 0.0
         self.next_scan = self.next_upload = 0.0
         self.next_confirm = 0.0   # when the opened projects are `hello`ed again (sminos_archive)
         self.nudge = daemon.nudged_at()
@@ -607,9 +686,7 @@ class Link:
     # ---------------------------------------------------- frames down
 
     def on_welcome(self, frame, stream):
-        generation, beat = frame.get("generation"), frame.get("heartbeat_ms")
-        beat = beat if type(beat) is int and beat > 0 else HEARTBEAT_MS
-        stream.silent_after(SILENT_PERIODS * beat / 1000)
+        generation = frame.get("generation")
         self.generation = generation if type(generation) is int else None
         self.opened.clear()
         self.machine_sent.clear()
@@ -621,8 +698,8 @@ class Link:
         self.next_confirm = time.time() + archive.archive_every()
         log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
 
-    def on_hb(self, frame, _stream):
-        self.ack_due = frame.get("at") if isinstance(frame.get("at"), str) else ""
+    def on_hb(self, _frame, _stream):
+        """Answered by the stream's acker (Stream), never here."""
 
     def on_have(self, frame, _stream):
         hl = self.logs.get(frame.get("project"))
@@ -806,15 +883,11 @@ class Link:
             self.rpcs.sent(frames)
 
     def tick(self):
-        """Between frames: the heartbeat answered, new hub projects opened,
-        and what this machine's writers appended uploaded — at once when a
-        sender nudged the daemon."""
+        """Between frames: new hub projects opened, and what this machine's
+        writers appended uploaded — at once when a sender nudged the daemon."""
         if self.generation is None:
             return
         now = time.time()
-        if self.ack_due is not None and now - self.acked_at >= ACK_GAP:
-            at, self.ack_due, self.acked_at = self.ack_due, None, now
-            self.post([{"t": "hb-ack", "generation": self.generation, "at": at}])
         nudge = daemon.nudged_at()
         nudged, self.nudge = nudge != self.nudge, nudge
         try:
@@ -994,7 +1067,7 @@ def cmd_uplink(_a):
     reqs = requests.Requests(cred["key"], cred["machine"])
     rpcs = rpc.Rpcs(cred["key"], cred["machine"])
     while not ended():
-        stream = Stream(cred)
+        stream = Stream(cred, ended)
         stream.start()
         welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs)
         stream.close()
