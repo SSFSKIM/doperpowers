@@ -40,6 +40,11 @@ TABLE = {
 # A background agent's launch result: the engine's word that it started, running
 # evidence from the rows, never terminal (DC8's Decision Log, 2026-10-17).
 LAUNCHED = "async_launched"
+# The engine's launch texts, which name a launch whether or not its row has a toolUseResult (some are written
+# without one, a fork's always): the background agent's first line (with or without the later parenthetical) then
+# its agentId line, or a fork's whole text (2.1.2xx-2.1.300, read from this machine's transcripts; DC8's fix wave).
+LAUNCH_TEXT = re.compile(r"Async agent launched successfully\.(?: \([^\n]*\))?\nagentId: ")
+FORK_STARTED = "Fork started — processing in background"
 # A monitor's expiry notice: a task-notification for a monitor with no <status> whose <event> is the engine's
 # expiry line (2.1.300). It ends the monitor as `completed` (the word MAWS's backfill gives a notification with
 # no status), raw `expired` (DC8's Decision Log, 2026-10-17).
@@ -70,6 +75,11 @@ def _text(content):
         return "".join(b.get("text", "") for b in content
                        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
     return ""
+
+
+def _launch_text(text):
+    """Whether an Agent result's text is one of the engine's launch texts, matched exactly."""
+    return text == FORK_STARTED or LAUNCH_TEXT.match(text) is not None
 
 
 def _output_path(text):
@@ -193,6 +203,8 @@ class Ledger:
         for key, field in (("description", "description"), ("command", "command"), ("taskId", "task_id")):
             if isinstance(inp.get(field), str):
                 call[key] = inp[field]
+        if name in ("Agent", "Task") and inp.get("run_in_background") in (True, "true"):
+            call["background"] = True
         self.calls[tid] = call
 
     def _result(self, block, tur, at):
@@ -205,10 +217,13 @@ class Ledger:
         name = call["name"]
         if name in ("Agent", "Task"):
             status = tur.get("status")
-            raw = LAUNCHED if status == LAUNCHED else "error" if is_error else status if isinstance(status, str) else "completed"
+            launch = status == LAUNCHED or not is_error and _launch_text(_text(block.get("content")))
+            raw = LAUNCHED if launch else "error" if is_error else status if isinstance(status, str) else "completed"
             ev = {"raw": raw, "at": at, "result": True}
             if raw == LAUNCHED and _str(tur.get("outputFile")):
                 ev["outputFile"] = tur["outputFile"]
+            if call.get("background"):
+                ev["background"] = True
             self._said(ev, tool=tid)
         elif name == "Bash" and _str(tur.get("backgroundTaskId")):
             task = tur["backgroundTaskId"]
@@ -292,11 +307,12 @@ class Ledger:
     # -- reading
     def agent_outcome(self, agent_id, tool_use_id, background):
         """The outcome the rows give an agent: what names its task id (its agent id) or its call's toolUseId. A
-        background agent's result row counts only as its launch."""
+        background agent's result row counts only as its launch: `background` as the meta or the spawn says, or
+        as its call's input did."""
         found = set(self.by_task.get(agent_id, ())) | set(self.by_tool.get(tool_use_id, ()) if tool_use_id else ())
         evidence = [self.evidence[i] for i in sorted(found)]
-        if background:
-            evidence = [ev for ev in evidence if not (ev.get("result") and ev["raw"] != LAUNCHED)]
+        evidence = [ev for ev in evidence
+                    if not (ev.get("result") and ev["raw"] != LAUNCHED and (background or ev.get("background")))]
         return fold(evidence)
 
     def jobs_body(self, session_running):

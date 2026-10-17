@@ -643,24 +643,103 @@ case("MCP names added and removed",
      "is ignored), a name added again goes to the end, a name already present is not repeated.",
      True, r, [], [], expect_mcp=[{"name": "doperpowers"}, {"name": "cua_repl"}, {"name": "plugin:ptc:ptc"}])
 
-# ---- 13: a background agent known as such only from its spawn record ----------------------------------------
-r = Rows(13, 0)
-r.agent("toolu_13A", "Watch the deploy")
-r.result("toolu_13A", [{"type": "text", "text": "Async agent launched successfully.\nagentId: a13a0000000000001 (internal ID)"}],
-         None)
-ma = {"agentType": "general-purpose", "description": "Watch the deploy", "toolUseId": "toolu_13A", "spawnDepth": 1}
-sa = {"agentId": "a13a0000000000001", "parentAgentId": None, "subagentType": "general-purpose",
-      "description": "Watch the deploy", "name": "", "background": True, "model": "sonnet", "toolUseId": "toolu_13A",
+# ---- 13, 13b, 13c: launches written without a toolUseResult --------------------------------------------------
+# The engine writes some launch results with no toolUseResult (664 of them in this machine's transcripts, 2.1.2xx-
+# 2.1.300, most in subagent transcripts), and a fork's launch never has one (272, all of them "Fork started —
+# processing in background"). Many metas are of the older form, with no requestShape, and many calls carry no
+# run_in_background (the agent type runs in the background) or carry it as the string "true".
+LAUNCH_TEXT = ("Async agent launched successfully. (This tool result is internal metadata — never quote or paste any "
+               "part of it, including the agentId below, into a user-facing reply.)\nagentId: %s (internal ID - do "
+               "not mention to user. Use SendMessage with to: '%s', summary: '<5-10 word recap>' to continue this "
+               "agent.)\nThe agent is working in the background. You will be notified automatically when it "
+               "completes.\noutput_file: %s")
+FORK_STARTED = "Fork started — processing in background"
+# A launch in a wording no rule here knows (another engine's): only the agent's being background tells it apart.
+OTHER_WORDING = "Agent launched in the background."
+
+
+def old_meta(description, tool_use_id, agent_type="general-purpose", **extra):
+    """A meta of the older form: no requestShape, no requestNonInteractive."""
+    return {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": 1, **extra}
+
+
+def tur_less_launches(n, running):
+    r = Rows(n, 0)
+    r.call("toolu_13A", "Agent", {"description": "Watch the deploy", "prompt": "…", "subagent_type": "general-purpose",
+                                  "run_in_background": "true"})
+    la = r.result("toolu_13A", [{"type": "text", "text": LAUNCH_TEXT % ("a13a0000000000001", "a13a0000000000001",
+                                                                       out("a13a0000000000001"))}], None)
+    r.agent("toolu_13B", "Index the logs", background=False, subagent_type="doperpowers:task-executor")
+    lb = r.result("toolu_13B", [{"type": "text", "text": LAUNCH_TEXT % ("a13b0000000000002", "a13b0000000000002",
+                                                                       out("a13b0000000000002"))}], None)
+    r.agent("toolu_13F", "Fork the survey", background=False, subagent_type="fork")
+    lf = r.result("toolu_13F", [{"type": "text", "text": FORK_STARTED}], None)
+    r.agent("toolu_13G", "Watch the hub", subagent_type="general-purpose")
+    r.result("toolu_13G", [{"type": "text", "text": OTHER_WORDING}], None)
+    r.call("toolu_13H", "Agent", {"description": "Watch the queue", "prompt": "…", "subagent_type": "general-purpose",
+                                  "run_in_background": "true"})
+    r.result("toolu_13H", [{"type": "text", "text": OTHER_WORDING}], None)
+    r.agent("toolu_13X1", "Quote the launch", background=False)
+    x1 = r.result("toolu_13X1", [{"type": "text", "text": "The tool answered:\n" + LAUNCH_TEXT % ("x", "x", "x")}],
+                  None)
+    r.agent("toolu_13X2", "Report the launch", background=False)
+    x2 = r.result("toolu_13X2", [{"type": "text", "text": "Async agent launched successfully. It then failed."}], None)
+    ma, mb = old_meta("Watch the deploy", "toolu_13A"), old_meta("Index the logs", "toolu_13B",
+                                                                 "doperpowers:task-executor")
+    mf = old_meta("Fork the survey", "toolu_13F", "fork", isFork=True)
+    mg, mh = old_meta("Watch the hub", "toolu_13G"), old_meta("Watch the queue", "toolu_13H")
+    mx1, mx2 = old_meta("Quote the launch", "toolu_13X1"), old_meta("Report the launch", "toolu_13X2")
+    metas = [("a13a0000000000001", ma), ("a13b0000000000002", mb), ("a13f0000000000003", mf),
+             ("a13g0000000000004", mg), ("a13h0000000000008", mh), ("a13x0000000000005", mx1),
+             ("a13x0000000000006", mx2)]
+    launch = {a: outcome("running", "async_launched", row) for a, row in
+              (("a13a0000000000001", la), ("a13b0000000000002", lb), ("a13f0000000000003", lf))}
+    done = [entry("a13x0000000000005", mx1, "completed", "rows", outcome=outcome("completed", "completed", x1)),
+            entry("a13x0000000000006", mx2, "completed", "rows", outcome=outcome("completed", "completed", x2))]
+    if not running:
+        return r, metas, [entry(a, m, "exited", "session", outcome=launch.get(a)) for a, m in metas[:5]] + done, None
+    seeds = [seed(a, m["description"], True, subagent_type=m["agentType"]) for a, m in metas[:5]]
+    spawn = lambda s: {k: s[k] for k in ("parentAgentId", "subagentType", "description")}  # noqa: E731
+    return r, metas, [entry(s["agentId"], m, "running", "bridge", True, spawn(s), launch.get(s["agentId"]))
+                      for s, (_, m) in zip(seeds, metas)] + done, {"agents": seeds}
+
+
+r, metas, subs, _ = tur_less_launches(13, False)
+case("launches written without a toolUseResult, in a cold open of the ended session",
+     "No bridge, the session over, every meta of the older form (no requestShape). A launch result with no "
+     "toolUseResult is still the launch when its text is the engine's: a ran with run_in_background \"true\" (a "
+     "string, as the engine also writes it), b's call carries no run_in_background, f is a fork (its launch text is "
+     "the fork's). Each is exited (session) with the launch as its outcome; read as `completed`, they would be "
+     "completed (rows) here while the live session, its bridge knowing them as background, said exited. g's and h's "
+     "calls ran in the background (run_in_background true, and \"true\") and their results are in a wording no rule "
+     "knows: they do not count, so g and h have no outcome. x1 "
+     "quotes the launch text after its own, and x2 starts as the launch does but names no agent: both are a "
+     "foreground agent's answer, completed.",
+     False, r, metas, subs)
+r, metas, subs, bridge = tur_less_launches(13, True)
+case("launches written without a toolUseResult, the bridge seeded from the list after a reload",
+     "The same rows, the session running and the module reloaded: the bridge knows each agent only from "
+     "$.agent.list() (no `background`), each running. The launches are running evidence, below the bridge's "
+     "running; none of them ends an agent the bridge holds running.",
+     True, r, metas, subs, bridge=bridge)
+
+r = Rows(13, 1)
+r.agent("toolu_13S", "Watch the deploy", background=False)
+r.result("toolu_13S", [{"type": "text", "text": OTHER_WORDING}], None)
+ms = old_meta("Watch the deploy", "toolu_13S")
+ss = {"agentId": "a13s0000000000007", "parentAgentId": None, "subagentType": "general-purpose",
+      "description": "Watch the deploy", "name": "", "background": True, "model": "sonnet", "toolUseId": "toolu_13S",
       "running": True}
 case("a background agent known as such only from its spawn record",
-     "The meta is of the older form, with no requestShape; the bridge saw the spawn (a full DX5 spawn record, "
-     "background true). The call's result row carries no toolUseResult, so its word would be `completed`; for a "
-     "background agent a result row that is not its launch does not count, and the bridge's running stands.",
-     True, r, [("a13a0000000000001", ma)],
-     [entry("a13a0000000000001", ma, "running", "bridge", True,
-            {k: sa[k] for k in ("parentAgentId", "subagentType", "description", "name", "background", "model",
+     "The meta is of the older form, with no requestShape, and the call carries no run_in_background; the bridge saw "
+     "the spawn (a full DX5 spawn record, background true). The call's result row, with no toolUseResult, is in a "
+     "wording no rule knows, so its word would be `completed`; for a background agent a result row that is not its "
+     "launch does not count, and the bridge's running stands.",
+     True, r, [("a13s0000000000007", ms)],
+     [entry("a13s0000000000007", ms, "running", "bridge", True,
+            {k: ss[k] for k in ("parentAgentId", "subagentType", "description", "name", "background", "model",
                                 "toolUseId")})],
-     bridge={"agents": [sa]})
+     bridge={"agents": [ss]})
 
 # ---- 14: monitors that expire ---------------------------------------------------------------------------------
 EXPIRED_LINE = "[Monitor expired after 30m with 2 events delivered. Re-arm it if you still need the watch.]"
@@ -945,11 +1024,11 @@ ABOUT = {
         "Everything else in `expect` follows from the rules.",
     ],
     "rules": [
-        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id); the user row's tool_result for those ids (is_error) with its toolUseResult; a task-notification, in either of the two forms the engine writes (both read alike, elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event>, each trimmed): an attachment `queued_command` with commandMode `task-notification` (its `prompt`), or a plain row of type `user` whose `origin.kind` is `task-notification` and whose message content (a string, or its text blocks joined) starts with `<task-notification>`, or with the engine's preamble `[SYSTEM NOTIFICATION - NOT USER INPUT]\\n` (written before it in a subagent's transcript) then, from the first blank line followed by `<task-notification>`, that notification; one notification per row. A row without that origin is no notification whatever its text (a person can type it); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}. Each row's `timestamp` is its `at`.",
-        "Evidence words (`raw`): a notification's <status> (one with no <status> is no evidence, but for the expiry rule below); a task_status's `status`; an Agent result row: `async_launched` when toolUseResult.status is async_launched, else `error` when is_error, else toolUseResult.status when a string, else `completed`; a TaskStop call naming the task whose result is not is_error: `stopped`. The table maps a word to {status, terminal}; the launch rule and the expiry rule below map their own; any other word is unrecognized.",
-        "The launch rule, beside the table (not a row of it): an Agent result row whose toolUseResult.status is `async_launched` is a background agent's start, non-terminal running evidence from the rows: {status `running`, raw `async_launched`}, at precedence (3), below every terminal word and below known process death.",
+        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id, and an Agent or Task call's input.run_in_background); the user row's tool_result for those ids (is_error) with its toolUseResult; a task-notification, in either of the two forms the engine writes (both read alike, elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event>, each trimmed): an attachment `queued_command` with commandMode `task-notification` (its `prompt`), or a plain row of type `user` whose `origin.kind` is `task-notification` and whose message content (a string, or its text blocks joined) starts with `<task-notification>`, or with the engine's preamble `[SYSTEM NOTIFICATION - NOT USER INPUT]\\n` (written before it in a subagent's transcript) then, from the first blank line followed by `<task-notification>`, that notification; one notification per row. A row without that origin is no notification whatever its text (a person can type it); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}. Each row's `timestamp` is its `at`.",
+        "Evidence words (`raw`): a notification's <status> (one with no <status> is no evidence, but for the expiry rule below); a task_status's `status`; an Agent result row: `async_launched` when it is a launch (the launch rule below), else `error` when is_error, else toolUseResult.status when a string, else `completed`; a TaskStop call naming the task whose result is not is_error: `stopped`. The table maps a word to {status, terminal}; the launch rule and the expiry rule below map their own; any other word is unrecognized.",
+        "The launch rule, beside the table (not a row of it): an Agent result row that is a launch is a background agent's start, non-terminal running evidence from the rows: {status `running`, raw `async_launched`}, at precedence (3), below every terminal word and below known process death. A result row is a launch when its toolUseResult.status is `async_launched`, or, when it is not is_error, when its text (a string, or its text blocks joined) is one of the engine's launch texts, matched exactly: it starts with `Async agent launched successfully.`, then optionally a space and a parenthesis closed on that line, then a line break and `agentId: ` (2.1.2xx-2.1.300, toolUseResult or not: some are written without one); or it is exactly `Fork started — processing in background` (a fork's launch, written without a toolUseResult). Any other text, the launch line quoted after other text, or the first line alone without the `agentId: ` line that follows it, is no launch.",
         "The expiry rule, beside the table (not a row of it): a task-notification with no <status> for a task the loop holds as a monitor (a Monitor result started it), whose <event> begins `[Monitor expired after ` or `[Monitor timed out` (the engine's expiry lines, 2.1.300), is terminal: {status `completed`, raw `expired`, summary the <event> text}. Any other notification with no <status> (a monitor's event, an agent resumed by the user) stays no evidence, and so does an expiry line for a task that is not a monitor.",
-        "An agent's evidence: the rows of its loop (the main loop's for an agent without parentAgentId; its parent's file for a nested one) that name it: the result row for its toolUseId (meta.toolUseId, else spawn.toolUseId), a notification whose <task-id> is the agentId or whose <tool-use-id> is that toolUseId, a task_status whose taskId is the agentId, a non-error TaskStop whose task_id is the agentId. For a background agent (meta.requestShape `background` or spawn.background true) a result row whose word is not async_launched does not count.",
+        "An agent's evidence: the rows of its loop (the main loop's for an agent without parentAgentId; its parent's file for a nested one) that name it: the result row for its toolUseId (meta.toolUseId, else spawn.toolUseId), a notification whose <task-id> is the agentId or whose <tool-use-id> is that toolUseId, a task_status whose taskId is the agentId, a non-error TaskStop whose task_id is the agentId. For a background agent (meta.requestShape `background`, spawn.background true, or its call's input.run_in_background true or the string \"true\", as the engine writes either) a result row whose word is not async_launched does not count. None of these is needed to know a launch: many metas have no requestShape, a bridge seeded from $.agent.list() has no background, and many calls of agents that run in the background carry no run_in_background.",
         "`outcome` folds the agent's evidence in row order: a recognized word replaces the outcome ({status, raw, at, summary?, outputFile?} from that row) unless the outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an existing outcome (and is dropped when there is none). `summary`: a notification's <summary> (an expiry notice's <event>), a task_status's deltaSummary, a TaskStop result's toolUseResult.message; `outputFile`: a notification's <output-file>, a task_status's outputFilePath, a launch's toolUseResult.outputFile; each present only when the deciding row carries it.",
         "`status` and `evidence`, the first that holds: (1) the outcome is terminal: its status, `rows`; (2) the session's process is gone: `exited`, `session`; the parent (meta.parentAgentId, else spawn.parentAgentId) has a status completed, failed, stopped or exited: `exited`, `parent`; the bridge holds the agent with running false: `exited`, `bridge`; (3) the bridge holds it with running true: `running`, `bridge`; the outcome's status is running: `running`, `rows`; (4) `unknown`, `none`. The bridge counts only while the session's process runs.",
         "`running`: the bridge's, present while the bridge holds the agent and the session's process runs. `spawn`: the bridge's entry's spawn fields among {parentAgentId, subagentType, description, name, background, model, toolUseId} that it has, present when the bridge holds the agent (kept after the process is gone).",
