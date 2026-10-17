@@ -176,9 +176,11 @@ A container cannot change its own hostname without `CAP_SYS_ADMIN`, which Docker
 by default; so the container driver passes `--hostname <DEVCLOUD_NAME>` and the boot program only
 verifies it, where on a VM or microVM it sets it.
 
-Tailscale also varies: a VM or microVM joins the tailnet itself (`DEVCLOUD_TAILSCALE=join`, with a
-one-time, short-lived, tagged auth key the driver supplies in a file that the boot program
-deletes after use); a container uses its host's tailnet through the host's routing
+Tailscale also varies: a VM or microVM joins the tailnet itself (`DEVCLOUD_TAILSCALE=join`), with
+the person's one Tailscale OAuth client, scoped to `tag:devcloud` and kept in Secret Manager
+(`DEVCLOUD_TS_SECRET` names it; the boot fetches it with the seed and joins the node tagged,
+non-ephemeral and pre-authorized), or, as the fallback, a one-time tagged auth key the driver
+supplies in a file the boot program deletes after use; a container uses its host's tailnet through the host's routing
 (`DEVCLOUD_TAILSCALE=host`). A sandbox never joins the tailnet as its own node: the free
 Tailscale plan bounds short-lived tagged nodes to 1,000 node-minutes a month (enforcement
 announced), which per-sandbox joins would exhaust in days.
@@ -227,20 +229,25 @@ Secret Manager project, and the name of the secret holding the GitHub token used
 
 `devcloud-boot` runs these steps in order, each recorded in `/var/lib/devcloud/status.json`
 (`devcloud status` prints it). A step's failure stops the boot with the step named; the next run
-retries from the top. Nothing reaches the tailnet's services before step 6, because only the
-profile (step 5) names them.
+retries from the top. Steps 2–5 use only the public internet (Google's APIs, GitHub); nothing
+reaches the tailnet's services before step 6, because only the profile (step 5) names them.
 
 1. **Identity.** Refuse `DEVCLOUD_ROLE=persistent` without systemd as PID 1. Set the hostname to
    `DEVCLOUD_NAME` (VM, microVM) or verify it equals it (container). Write `SESSION_MIRROR_HOST`
    and, for a container (which sees its host's boot id), a fresh `DAEMON_BOOT_ID` into
    `/etc/devcloud/env`. Sandbox names must be unique; drivers use `sbx-<random>`.
-2. **Tailnet attach.** When `DEVCLOUD_TAILSCALE=join`, join with the auth key from the file, then
-   delete the file. Otherwise nothing to do here.
-3. **Seed.** `DEVCLOUD_SEED=file:<path>`: activate the key in a root-private gcloud configuration
+2. **Seed.** `DEVCLOUD_SEED=file:<path>`: activate the key in a root-private gcloud configuration
    directory (`CLOUDSDK_CONFIG=/var/lib/devcloud/gcloud`), from which every later step takes an
    access token (`gcloud auth print-access-token`); `gce-metadata`: tokens come from the metadata
    server. The token then calls the Secret Manager REST API from the standard library.
-4. **Bootstrap secret.** Fetch the GitHub token named by `DEVCLOUD_CONFIG_TOKEN_SECRET`.
+3. **Bootstrap secrets.** Fetch the GitHub token named by `DEVCLOUD_CONFIG_TOKEN_SECRET`, and, when
+   the descriptor names `DEVCLOUD_TS_SECRET`, the Tailscale OAuth client secret.
+4. **Tailnet attach.** When `DEVCLOUD_TAILSCALE=join`: with the OAuth client, `tailscale up
+   --advertise-tags=tag:devcloud` with the client secret as its auth key
+   (`<secret>?ephemeral=false&preauthorized=true`), handed over as `--auth-key=file:<root-only
+   temporary file>` so it never stands in an argument list another process can read; with the
+   fallback, the auth key from `DEVCLOUD_TS_AUTHKEY_FILE`, then delete the file. Already joined:
+   nothing to do. `host` or `none`: nothing to do.
 5. **Configuration.** As the user, clone (or fetch and reset) the config repository into
    `~/.claude` (Design §5), passing the token through a credential helper that reads it from a
    root-owned temporary file — never in a URL or in `.git/config`; then read the profile.
@@ -537,11 +544,10 @@ stop accidents, which arrive as plain text or a common encoding.
 - A keyless seed (workload identity federation against an issuer the person runs) — the right
   move when hosts multiply or one is less trusted than the Macs (Decision Log).
 - A credential proxy or broker (decided against: friction first; Decision Log).
-- Tailscale keys for automated VM creation: a provisioning driver mints a fresh tagged one-off key
-  per VM from a Tailscale OAuth client kept in Secret Manager (scoped to `tag:devcloud`, revocable,
-  audited), or on GCE joins through workload identity federation with no stored secret. Never a
-  reusable auth key in the vault. Until a driver exists, each new persistent VM's key is minted by
-  the person; sandboxes never join.
+- Tailscale for VMs beyond the boot's join: the boot already joins with the one OAuth client in
+  Secret Manager (Design §1, step 4). A driver may instead mint a per-VM one-off key from that
+  client, and on GCE a join through workload identity federation needs no stored secret. Never a
+  reusable auth key in the vault; sandboxes never join.
 - Driver note, for the drivers that follow: secrets never ride cloud-init user-data. A provider keeps
   user-data for the server's life, readable through its API by any holder of the project's token
   and from inside the VM — sandbox containers included — through the metadata address unless it is
@@ -840,7 +846,8 @@ the foreground; `devenv start` runs it in tmux session `<name>`), `devenv/valida
     DEVCLOUD_KIND=vm|microvm|container
     DEVCLOUD_ROLE=persistent|sandbox           # persistent requires systemd as PID 1
     DEVCLOUD_TAILSCALE=join|host|none
-    DEVCLOUD_TS_AUTHKEY_FILE=<path>            # join only; deleted after use
+    DEVCLOUD_TS_SECRET=<Secret Manager id>     # join: the Tailscale OAuth client (tag:devcloud)
+    DEVCLOUD_TS_AUTHKEY_FILE=<path>            # join, fallback: a one-time key; deleted after use
     DEVCLOUD_SEED=file:<path>|gce-metadata
     DEVCLOUD_SM_PROJECT=<GCP project id>
     DEVCLOUD_CONFIG_REPO=<https clone URL>
@@ -1197,6 +1204,16 @@ clears a plugin's state when it unloads is unverified).
   Rationale: one guard implementation instead of two that drift. Cost: devcloud's guard changes
   reach `cua` only through a resync ticket (Constraints).
   Date/Author: 2026-10-17, the person's re-scope of cua#154, through the design session.
+
+- Decision: VMs join the tailnet with one Tailscale OAuth client kept in Secret Manager, scoped to
+  `tag:devcloud` (descriptor `DEVCLOUD_TS_SECRET`), not a per-VM key the person mints. The tailnet
+  attach moves after the seed and the bootstrap secrets (steps 2–4; steps 5–12 keep their numbers),
+  since the client secret is fetched with the seed. The secret reaches `tailscale up` as
+  `--auth-key=file:<root-only temporary file>`; where the installed tailscale lacks `file:`, the
+  brief argument-list exposure is recorded as a deviation. The per-VM key file stays the fallback.
+  Rationale: no human step per VM, and the client is revocable and audited in one place. Rejected:
+  a reusable auth key in the vault (unscoped in time, no audit of its use).
+  Date/Author: 2026-10-17, the person's choice, through the design session.
 
 ## Outcomes & Retrospective
 
