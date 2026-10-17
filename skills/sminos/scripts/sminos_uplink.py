@@ -43,11 +43,14 @@ handshake: nothing posted is taken as landed without its answer. Frames
 larger than a frame's bound travel as parts, both ways.
 """
 
+import errno
 import fcntl
 import http.client
+import itertools
 import json
 import os
 import queue
+import selectors
 import signal
 import socket
 import ssl
@@ -79,6 +82,7 @@ LOOPBACK = ("127.0.0.1", "::1", "localhost")
 FRAME_LIMIT = 1 << 20     # every frame, either way, at most 1 MiB of UTF-8 (DX2); a larger one goes as parts
 POST_LIMIT = 4 << 20      # a POST's body
 POST_TIMEOUT = 30
+STAGGER = 0.25            # RFC 8305's connection attempt delay: the next address is tried this long after the last
 ANSWER_MAX = 1 << 16
 ACK_GAP = 1.0             # heartbeats are answered at most once a second, the newest: a burst is answered once
 SCAN_EVERY = 2.0          # how often the projects known here are looked over for a hub project to open
@@ -131,12 +135,83 @@ def log(line):
     sminos.daemon_log("uplink: " + line)
 
 
+def dial(address, timeout, source_address=None):
+    """A TCP socket connected to address, (host, port), by RFC 8305's
+    essentials (Happy Eyeballs): the resolved addresses interleaved by family,
+    the next attempt started STAGGER after the last while earlier ones are
+    still pending (at once when one fails), the first to connect taken and the
+    rest closed. http.client dials with socket.create_connection, which tries
+    one address after another with the whole timeout each: where IPv6
+    resolves first and is dropped on the way (a global IPv6 address on a
+    network that blackholes it), a connect waited out a timeout per IPv6
+    address before it tried IPv4 — longer than a POST's deadline. The whole
+    connect is bounded by `timeout` (seconds), the socket's I/O bound once
+    connected. http.client's source_address is never set here."""
+    host, port = address
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    first = [i for i in infos if i[0] == infos[0][0]]
+    other = [i for i in infos if i[0] != infos[0][0]]
+    todo = [i for pair in itertools.zip_longest(first, other) for i in pair if i]
+    deadline = time.monotonic() + timeout
+    attempts, failed = selectors.DefaultSelector(), []
+    try:
+        next_at = time.monotonic()
+        while todo or attempts.get_map():
+            now = time.monotonic()
+            if now >= deadline:
+                raise TimeoutError("no connection to %s port %s within %gs%s" % (
+                    host, port, timeout, " (%s)" % "; ".join(failed) if failed else ""))
+            if todo and now >= next_at:
+                family, kind, proto, _, addr = todo.pop(0)
+                try:
+                    sock = socket.socket(family, kind, proto)
+                except OSError as e:
+                    failed.append("%s: %s" % (addr[0], e.strerror or e))
+                    continue
+                sock.setblocking(False)
+                err = sock.connect_ex(addr)
+                if err not in (0, errno.EINPROGRESS):
+                    failed.append("%s: %s" % (addr[0], os.strerror(err)))
+                    sock.close()
+                    continue
+                attempts.register(sock, selectors.EVENT_WRITE, addr)
+                next_at = now + STAGGER
+            wait = deadline - now if not todo else min(deadline, next_at) - now
+            for key, _ in attempts.select(max(wait, 0)):
+                sock = key.fileobj
+                attempts.unregister(sock)
+                err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if err == 0:
+                    sock.settimeout(timeout)
+                    return sock
+                failed.append("%s: %s" % (key.data[0], os.strerror(err)))
+                sock.close()
+                next_at = time.monotonic()
+        raise OSError("no connection to %s port %s: %s" % (host, port, "; ".join(failed) or "no address"))
+    finally:
+        for key in list(attempts.get_map().values()):
+            key.fileobj.close()
+        attempts.close()
+
+
+class HTTPConnection(http.client.HTTPConnection):
+    """http.client's connection, dialled by `dial`; TLS, its SNI and its
+    certificate checks stay http.client's own."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = dial
+
+
+class HTTPSConnection(HTTPConnection, http.client.HTTPSConnection):
+    pass
+
+
 def connection(cred, timeout):
     url = urllib.parse.urlsplit(cred["hub"])
     if url.scheme == "https":
-        return http.client.HTTPSConnection(url.hostname, url.port, timeout=timeout,
-                                           context=ssl.create_default_context())
-    return http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
+        return HTTPSConnection(url.hostname, url.port, timeout=timeout, context=ssl.create_default_context())
+    return HTTPConnection(url.hostname, url.port, timeout=timeout)
 
 
 def admission(cred):

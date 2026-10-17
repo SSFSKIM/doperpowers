@@ -372,6 +372,8 @@ run_suites() {
     fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
   echo
   if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
+  if python3 "$SCRIPT_DIR/test_happy_eyeballs.py"; then pass "the hub's connections past a blackholed IPv6 (test_happy_eyeballs.py)"; else
+    fail "the hub's connections past a blackholed IPv6 (test_happy_eyeballs.py)"; fi
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
