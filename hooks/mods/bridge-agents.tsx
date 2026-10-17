@@ -90,8 +90,10 @@ export async function refreshAgents() {
   }
   const asked = ++state.agentReads.asked
   const conversation = state.conversation
+  const reading = list()
+  state.agentListsInFlight.add(reading)
   try {
-    const listed = await list()
+    const listed = await reading.finally(() => state.agentListsInFlight.delete(reading))
     await state.clearing
     if (conversation !== state.conversation) {
       setAside(listed)
@@ -116,9 +118,12 @@ function setAside(listed: readonly ListedAgent[]) {
 
 /**
  * A /clear (before forgetLive): the old conversation's agents are set aside,
- * those it knew and those the engine's list names now, before the new
- * conversation has any of its own, since the list goes on naming them for a
- * while; every read of the list after this waits for that one.
+ * those it knew and those the engine's list names, since the list goes on
+ * naming them for a while: every answer to a read outstanding at the /clear,
+ * and a read made now, before the new conversation has any of its own (tried
+ * twice; if both fail, the outstanding answers and the agents it knew are all
+ * that is set aside). Every read of the list after this waits until each of
+ * those answers is in, so none of them can seed an agent they name.
  */
 export function forgetAgents() {
   for (const id of [...state.agents.keys(), ...state.listed]) {
@@ -130,10 +135,17 @@ export function forgetAgents() {
   if (list === undefined) {
     return
   }
-  const clearing: Promise<void> = list().then(
-    (listed) => setAside(listed),
-    (error: unknown) => state.log?.(`bridge: the agent list was not read at the /clear: ${message(error)}`),
-  )
+  const now = list().catch(() => list())
+  const clearing: Promise<void> = Promise.allSettled([now, state.clearing, ...state.agentListsInFlight]).then(([read, ...rest]) => {
+    if (read?.status === 'rejected') {
+      state.log?.(`bridge: the agent list was not read at the /clear: ${message(read.reason)}`)
+    }
+    for (const a of [read, ...rest]) {
+      if (a?.status === 'fulfilled' && Array.isArray(a.value)) {
+        setAside(a.value)
+      }
+    }
+  })
   state.clearing = clearing
   void clearing.then(() => {
     if (state.clearing === clearing) {

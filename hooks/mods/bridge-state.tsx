@@ -224,8 +224,10 @@ export type BridgeState = {
   agentReads: { asked: number; applied: number }
   /** Moves at each /clear: a read begun in an earlier conversation is not this one's. */
   conversation: number
-  /** After a /clear, the read that sets the old conversation's agents aside; every later read waits for it. */
+  /** After a /clear, the answers that set the old conversation's agents aside; every later read waits for them. */
   clearing?: Promise<void>
+  /** The reads of the list not answered yet: a /clear waits for each of them. */
+  agentListsInFlight: Set<Promise<readonly ListedAgent[]>>
   /** Deliveries submitted whose prompt row has not been kept yet, oldest first (`delivered` `entered`). */
   submissions: Submission[]
 }
@@ -252,6 +254,7 @@ const fresh = (): BridgeState => ({
   isAgentsWatched: false,
   agentReads: { asked: 0, applied: 0 },
   conversation: 0,
+  agentListsInFlight: new Set(),
   submissions: [],
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,

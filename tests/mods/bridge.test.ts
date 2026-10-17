@@ -1634,7 +1634,13 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
    * own among them); then the new session's child, and a read in the new
    * conversation that lists `then`. What reached the new child.
    */
-  const clearWith = async (h: ReturnType<typeof harness>, reads: ReturnType<typeof holdLists>, before: () => Promise<void>, then: Record<string, unknown>[]) => {
+  const clearWith = async (
+    h: ReturnType<typeof harness>,
+    reads: ReturnType<typeof holdLists>,
+    before: () => Promise<void>,
+    then: Record<string, unknown>[],
+    after: () => Promise<void> = async () => undefined,
+  ) => {
     await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
     await h.settle()
     await before()
@@ -1649,6 +1655,7 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
     await h.settle()
     reads.at(-1)!(then)
     await h.settle()
+    await after()
     return h.posts.filter((p) => p.socketPath === NEWSOCK).flatMap((p) => p.events)
   }
 
@@ -1682,9 +1689,11 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
       h,
       reads,
       async () => {
-        expect(reads.length).toBe(2) // and the one the /clear makes, which fails here
+        expect(reads.length).toBe(2) // and the one the /clear makes, which fails here, and fails again
         reads[0]!([listed('old9', 'running')]) // an agent of the old conversation nobody knew yet
         reads[1]!(null)
+        await h.settle()
+        reads[2]!(null)
         await h.settle()
       },
       // The engine's list goes on naming it: a read in the new conversation still does not take it.
@@ -1709,6 +1718,52 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
       [listed('old8', 'running'), listed('new2', 'running', { type: 'fork' })],
     )
     expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new2']])
+  })
+
+  test('a read outstanding at a /clear and answered last, after a new read: the new read waits for it, so it seeds nothing it names', async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    h.timers.find((t) => t.kind === 'every')!.fn() // outstanding at the /clear
+    await h.settle()
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        // The /clear's own read fails, and so does its retry.
+        reads[1]!(null)
+        await h.settle()
+        reads[2]!(null)
+        await h.settle()
+      },
+      [listed('old9', 'running'), listed('new1', 'running', { type: 'fork' })],
+      async () => {
+        expect(h.posts.flatMap((p) => p.events).filter((e) => e.type === 'agent')).toEqual([]) // still waiting
+        reads[0]!([listed('old9', 'running')]) // the old conversation's answer, last of all
+        await h.settle()
+      },
+    )
+    expect(toNew.find((e) => e.type === 'resync')!.agents).toEqual([])
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new1']])
+  })
+
+  test("a /clear's own read that fails once is tried again", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        reads[0]!(null)
+        await h.settle()
+        expect(reads.length).toBe(2)
+        reads[1]!([listed('old7', 'running')])
+        await h.settle()
+      },
+      [listed('old7', 'running'), listed('new3', 'running', { type: 'fork' })],
+    )
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new3']])
   })
 })
 
