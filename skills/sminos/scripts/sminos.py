@@ -108,6 +108,7 @@ import argparse
 import calendar
 import datetime
 import fcntl
+import functools
 import glob
 import hashlib
 import heapq
@@ -118,6 +119,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -3298,15 +3300,73 @@ _PSTART = {}
 def read_proc_start(pid):
     """The live process's start time as `ps -o lstart=` prints it, whitespace
     normalised; "" when ps cannot tell. Asked afresh, no cache: what a
-    thread beside the one owning the invocation's caches reads."""
+    thread beside the one owning the invocation's caches reads. On macOS it
+    is read where ps reads it, the kernel's process table, without running
+    ps: a long-lived reader of every live session (the uplink) asked this
+    about each of them, a fork and an exec apiece."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    started = _darwin_start(pid) if sys.platform == "darwin" else None
+    if started is not None:
+        return _lstart_text(started) if started else ""
     try:
         # The harness records procStart in the C locale ("Tue Sep  1 20:27:08
         # 2026"); ps must print the same shape, not the user's locale.
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
                              timeout=5, env={**os.environ, "LC_ALL": "C", "LANG": "C"}).stdout
     except Exception:
         out = ""
     return " ".join(out.split())
+
+
+KINFO_PROC_SIZE = 648  # sizeof(struct kinfo_proc) on 64-bit macOS
+_SYSCTL = None         # (ctypes, sysctl) once looked up; False where there is none
+
+
+def _darwin_start(pid):
+    """A process's start, in whole epoch seconds, from `sysctl
+    kern.proc.pid` — the kinfo_proc ps reads, whose kp_proc opens with
+    p_starttime and holds p_pid at byte 40; 0 when there is no such process;
+    None when this cannot tell (no sysctl, or a record of another shape),
+    for ps to answer."""
+    global _SYSCTL
+    if _SYSCTL is None:
+        try:
+            import ctypes
+            sysctl = ctypes.CDLL(None, use_errno=True).sysctl
+            sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                               ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+            sysctl.restype = ctypes.c_int
+            _SYSCTL = (ctypes, sysctl)
+        except (ImportError, OSError, AttributeError):
+            _SYSCTL = False
+    if not _SYSCTL:
+        return None
+    ctypes, sysctl = _SYSCTL
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    buf = ctypes.create_string_buffer(KINFO_PROC_SIZE)
+    size = ctypes.c_size_t(KINFO_PROC_SIZE)
+    if sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    if size.value == 0:
+        return 0
+    sec, = struct.unpack_from("=q", buf, 0)
+    p_pid, = struct.unpack_from("=i", buf, 40)
+    return sec if size.value == KINFO_PROC_SIZE and p_pid == pid and sec > 0 else None
+
+
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _lstart_text(epoch):
+    """An instant as `ps -o lstart=` prints it in the C locale and the local
+    zone, whitespace normalised."""
+    t = time.localtime(epoch)
+    return "%s %s %d %02d:%02d:%02d %d" % (_DAYS[t.tm_wday], _MONTHS[t.tm_mon - 1], t.tm_mday,
+                                           t.tm_hour, t.tm_min, t.tm_sec, t.tm_year)
 
 
 PROC = "/proc"  # Linux's process table (tests point it at a stand-in)
@@ -3340,9 +3400,16 @@ def proc_start(pid):
 
 
 def _parse_lstart(s):
+    return _lstart_struct(" ".join(str(s).split()))
+
+
+@functools.lru_cache(maxsize=4096)
+def _lstart_struct(text):
+    """strptime, kept: the same few start times are compared again and again
+    (every live session, every reconciling read), and strptime is slow."""
     try:
-        return time.strptime(" ".join(str(s).split()), "%a %b %d %H:%M:%S %Y")
-    except (ValueError, TypeError):
+        return time.strptime(text, "%a %b %d %H:%M:%S %Y")
+    except ValueError:
         return None
 
 
