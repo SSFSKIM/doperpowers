@@ -651,7 +651,9 @@ seed's token exchange reads the bootstrap secret; check that a container on the 
 reaches tailnet peers through its host's route (Docker's masquerade should carry it; if not, the
 container gets the host's network namespace and the deviation is logged); then request from the
 person, through the dispatching session, a one-time tagged Tailscale auth key, and agree a window
-for the enrollment step below so the VM does not wait unattended.
+for the enrollment step below so the VM does not wait unattended; and ask the ci-kit session
+(`@doperpowers/CI-opt`) when its mac lane is measuring on the Mac mini, and run the acceptance
+traffic through the mini's gateway outside those windows.
 
 Run: acceptance 1–3, 5–6, 8 on the container on a machine with Docker; then the VM (created with
 the person's existing provider CLI, never in a cloud project ci-kit operates — ci-kit's agents
