@@ -710,6 +710,17 @@ def failed_boot_keeps_services_down():
     wait_active("devcloud-session-mirror.service")
 
 
+@case("devcloud-boot run by hand on a systemd host leaves the shipper running")
+def boot_run_by_hand():
+    # No boot-unit job is pending, so the shipper's start from step 11 is not
+    # ordered after anything: its condition is read while the boot still runs.
+    sh(VM, "systemctl stop devcloud-session-mirror.service")
+    booted = sh(VM, RECONCILE_WITH_STAND_INS.replace("devcloud reconcile", "devcloud-boot"), check_rc=False,
+                timeout=900)
+    check(booted.returncode in (0, 3), f"devcloud-boot exited {booted.returncode}: {booted.stdout[-800:]}")
+    wait_active("devcloud-session-mirror.service")
+
+
 @case("a sandbox carrying a sminos machine identity fails services (acceptance 7)")
 def sandbox_with_identity():
     plant = (f"mkdir -p {HOME}/.claude/sminos/daemon && echo '{{}}' > {HOME}/.claude/sminos/daemon/machine.json "

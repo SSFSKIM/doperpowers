@@ -167,9 +167,42 @@ class OwedRestartTest(unittest.TestCase):
         self.units = tmp / "units"
         self.units.mkdir()
         self.pending = tmp / "pending"
+        self.booted = tmp / "booted"
+        self.booted.write_text("")             # a boot made this host
+        patcher = mock.patch.object(services, "BOOTED", self.booted)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def apply(self, env_changed, run):
         return services.apply_systemd(self.user, env_changed, run=run, unit_dir=self.units, pending_dir=self.pending)
+
+    def test_during_a_boot_the_gated_start_waits_for_the_marker_and_keeps_what_it_owes(self):
+        self.apply(False, Recorder())
+        ship = "devcloud-session-mirror.service"
+        self.booted.unlink()                   # a boot is under way: run directly, no unit job to order after
+        during = Recorder()
+        self.apply(True, during)               # the environment changed: a restart is owed
+        self.assertEqual(self.verbs(during, ship), [], "queued while the unit's condition would skip it")
+        self.assertTrue((self.pending / ship).exists(), "the owed restart was cleared before it was queued")
+        self.booted.write_text("")             # the boot made the host
+        after = Recorder()
+        services.start_gated(self.user, run=after, pending_dir=self.pending)
+        self.assertEqual(self.verbs(after, ship), ["restart"])
+        self.assertFalse((self.pending / ship).exists())
+
+    def test_the_boot_starts_the_gated_services_once_its_marker_is_written(self):
+        calls = []
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(steps, "_locked", contextlib.nullcontext))
+            stack.enter_context(mock.patch.object(steps.status, "reset", lambda: None))
+            stack.enter_context(mock.patch.object(steps, "_run", lambda steps_, r, done=None: 0))
+            stack.enter_context(mock.patch.object(steps, "Run", lambda kind: mock.Mock(user=self.user)))
+            stack.enter_context(mock.patch.object(services, "systemd_is_init", lambda: True))
+            stack.enter_context(mock.patch.object(services, "start_gated", lambda user, **_: calls.append(
+                ("start_gated", self.booted.exists()))))
+            self.booted.unlink()
+            self.assertEqual(steps.boot(), 0)
+        self.assertEqual(calls, [("start_gated", True)])
 
     def verbs(self, recorder, unit):
         return [c[2] for c in recorder.calls if c[:2] == ["systemctl", "--no-block"] and c[-1] == unit]

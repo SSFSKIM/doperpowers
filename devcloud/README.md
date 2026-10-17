@@ -340,7 +340,10 @@ through `devcloud run-scrubbed --`, which passes the command's output to
 journald scrubbed of every value the host holds. The shipper runs only on a
 host a boot made: the boot writes `/run/devcloud/booted` when it exits 0 or 3
 and removes it when it starts, and the unit is ordered after the boot and
-conditioned on that file, so after a boot that failed it stays down. A
+conditioned on that file, so after a boot that failed it stays down. During a
+boot, step 11 leaves the shipper's start (or owed restart) to the boot's end,
+which queues it once the marker is written — so a boot run by hand, with no
+unit job for the start to wait behind, still ends with the shipper running. A
 restart or reload a run owes is recorded under `/var/lib/devcloud/pending/`
 before the first systemctl call and cleared once made, so a run that fails
 leaves it for the next.

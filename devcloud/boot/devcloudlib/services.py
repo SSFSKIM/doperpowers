@@ -155,17 +155,33 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
             done(f"{unit}.timer")
             done(f"{unit}.service")    # a oneshot job's next run reads its new unit
         else:
-            verb = "restart" if due(f"{unit}.service") else "start"
             run(["systemctl", "enable", f"{unit}.service"], log="services", timeout=60)
-            # Queued, not awaited: the unit is ordered after devcloud-boot.service
-            # (so a reboot starts it after the boot), and the boot is the caller.
-            run(["systemctl", "--no-block", verb, f"{unit}.service"], log="services", timeout=60)
-            done(f"{unit}.service")
         started.append(s.name)
+    if BOOTED.exists():
+        start_gated(user, run=run, pending_dir=pending_dir)
     detail = "systemd: " + ", ".join(started)
+    if not BOOTED.exists():
+        detail += f" ({', '.join(s.name for s in listed if s.every is None)} once the boot has made the host)"
     if gone:
         detail += "; not installed: " + ", ".join(f"{s.name} ({s.argv[0]} absent)" for s in gone)
     return detail
+
+
+def start_gated(user, run=run, pending_dir=PENDING_DIR):
+    """Queues the start of each continuous unit — a restart where one is owed,
+    whose flag is cleared once it is queued. Only once the boot's marker
+    exists: the units are conditioned on it, and a start queued before it is
+    written is skipped by systemd (a boot run by hand has no unit job for the
+    start to wait behind). Queued, not awaited: from inside the boot unit the
+    start waits for the boot to end."""
+    pending_dir = pathlib.Path(pending_dir)
+    for s in service_list(user):
+        if s.every is not None or not available(s):
+            continue
+        unit = f"devcloud-{s.name}.service"
+        verb = "restart" if (pending_dir / unit).exists() else "start"
+        run(["systemctl", "--no-block", verb, unit], log="services", timeout=60)
+        (pending_dir / unit).unlink(missing_ok=True)
 
 
 def mark_booted(ok):

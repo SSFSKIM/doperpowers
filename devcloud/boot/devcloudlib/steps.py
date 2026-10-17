@@ -525,7 +525,17 @@ def boot():
             # The host works without a project: the failure is recorded, and
             # its own exit status lets the services start all the same.
             code = PROJECTS_FAILED
-        services.mark_booted(code in (0, PROJECTS_FAILED))
+        made = code in (0, PROJECTS_FAILED)
+        services.mark_booted(made)
+        if made and services.systemd_is_init():
+            # Step 11 left the continuous units for now: their condition is the
+            # marker just written.
+            try:
+                services.start_gated(r.user)
+            except StepError as error:
+                status.record("services", "failed", proc.KNOWN.scrub(f"starting the services: {error}"))
+                _say(f"services: failed — {proc.KNOWN.scrub(str(error))}")
+                return 1
         return code
 
 
