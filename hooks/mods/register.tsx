@@ -4,6 +4,7 @@ import { registerAgents } from './agents'
 import { registerAsk, registerAskBand } from './ask'
 import { registerBridge } from './bridge'
 import { registerCompact } from './compact'
+import { registerInterim } from './interim'
 import { registerKairos } from './kairos'
 import { registerToHuman } from './to-human'
 
@@ -28,4 +29,7 @@ export function register(on: On) {
   registerAgents(on)
   registerKairos(on)
   registerCompact(on)
+  // Inside the ask's prompt.submit hook, which puts back what it attached
+  // to a prompt dropped beneath it.
+  registerInterim(on)
 }

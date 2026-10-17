@@ -504,6 +504,99 @@ named by none, and a reader emits them unnamed, on the next notice of their
 loop or after 2 seconds; a hook's success with nothing to say is raised to
 the hook but never written, so it is named by none.
 
+## interim (`interim.ts`)
+
+A subagent that ends its turn while its own background shell, monitor or
+workflow still runs makes the engine send its parent a completion
+notification anyway, and again each time that work wakes it and it stops to
+wait once more. Each one is a parent turn spent on "still running, nothing to
+do": in two sessions read on 2026-10-17 they were 597 of the turns, about
+190M tokens of cached context re-read, from subagents parked on test suites, CI
+gates and wait scripts. By 2.1.300 the engine's summary says `is waiting on
+its own background work` rather than `finished`; the wake is the same. The
+engine marks them, writing "This agent stopped with background work of its
+own still running" into the notification's `<note>` (the final one carries
+the other note), and a `prompt.submit` hook matched on `origin.kind:
+'task-notification'` drops one before it enters the session only when all
+three of these hold.
+
+- The text is the engine's envelope alone, status `completed`, that note,
+  and a `<result>` that is wholly the waiting placeholder ("This agent has not
+  reported yet: ... through SubagentHandback when that finishes."). The
+  pointer placeholder ("This agent's report was delivered to you as a
+  message ...") passes: when the agent the report went to has ended, the
+  engine moves the notification to the main session but not the report, so
+  the pointer can name a message the session never got, and a pointer routed
+  to the main session the engine already queues without waking it.
+- The placeholder is the engine's. The engine writes it only for a run under
+  the hand-back contract; outside it (a fork, a run not in auto mode) the
+  agent's own words stand, and they could be that very sentence. So the
+  agent's transcript is read as the engine reads it at each run's start: the
+  latest meta user record that opens with the hand-back reminder or with its
+  countermand must be the reminder. A compaction after both ends the reading
+  unanswered, since the engine's own view of the run starts there. The
+  transcript is where the notification's `<output-file>` link lands (a
+  subagent's `.output` is a symlink to it), which must be
+  `agent-<task-id>.jsonl`; `grep` searches it, as it runs far past the 4 MiB
+  `$.fs.read` takes. All 725 waiting notifications in the two sessions below
+  carried the line, each linking to its agent's transcript; the engine
+  leaves it out for an unreadable output or saved web-fetch files, and then
+  the notification passes.
+- It tells the session nothing its conversation does not hold. The session
+  knows the agent when its own loop spawned it (`$.agent.list()` gives no
+  `parentId`). An orphan's notification, fallen back to the main session
+  when the agent that spawned it ended, is the session's first sign of it,
+  so one drops only once the conversation holds an earlier notification of
+  that task; and one carrying a `<worktree>` drops only once the
+  conversation holds an earlier notification carrying the same worktree,
+  since the launch never says where an isolated agent's work lives. The
+  conversation is read as it stands, `$.session.messages({ as: "api" })`:
+  the engine's live messages from the last compaction on, a rewind applied,
+  a notification that came in mid-turn rendered into a user message under
+  the engine's system-notification frame (the rows form leaves those out),
+  the newest 4096 messages. So a notification rewound or summarized away,
+  refused or answered by a hook beneath before it reached the session, or
+  rewritten there without its worktree, is not held, and the next one
+  passes.
+
+Every check fails open: a lookup that errs or cannot tell (no
+`<output-file>`, a link that is dangling or lands anywhere but the agent's
+transcript, an agent the list does not name, a conversation that cannot be
+read, `grep` missing, failing, past 10 s or cut at 4 MiB, a line that does
+not parse) lets the notification through, and so does a hook that throws.
+The hook keeps no state, so a reload into a running session (a plugin update
+and `/reload-plugins`) filters from its first notification. Replayed over
+those sessions, each main transcript read in order (engine 2.1.283 to
+2.1.301; the agent list taken from each agent's meta file, the `.output`
+links still on disk, the conversation rebuilt from the notifications the
+hook let in and emptied at each of the 65 compactions, rewinds and the
+4096-message window not modeled), the filter drops 551 of 749 interim
+notifications, where the text alone dropped 745: 20 pointers pass, 133 whose
+worktree the conversation did not hold yet, 41 orphans' with no earlier
+notification there, and 4 carrying the safety classifier's warning. Every
+parked agent's transcript held the reminder, so telling the engine's
+placeholder from an agent's cost no drops.
+
+What it gives up: the parent no longer sees that the agent parked again. An
+agent killed while parked gets no notification either way, since the engine
+counts the interim one as its notice when it queues it, before any hook
+runs, so the parent hears of the kill only if it did the killing or looks.
+The transcript read can misjudge whose sentence the placeholder is in two
+cases: a fork, whose own contract is off while its transcript inherits its
+parent's reminder, and a notification still queued from an earlier run after
+a permission-mode change let a later run write the reminder. In either, what
+the filter drops is an agent's whole answer that is, byte for byte, the
+engine's waiting sentence; no report is in it. Each drop still leaves a line
+in the transcript, "Prompt dropped by a hook: interim agent notification:
+its work is still running": the engine writes a `system` notice at level
+`warning` for every `prompt.submit` that ends without entering (a hook's
+answer without `next` reads "Prompt not submitted"), and draws it through a
+component no render hook reaches, so neither the engine's view nor the
+to-human view can fold it. `session.append` can rewrite a stored row's text
+but refuses only a plugin's own append, and `session.receive`, which can
+take a delivery without a trace, sees deliveries from outside the process,
+never an agent's notification.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
