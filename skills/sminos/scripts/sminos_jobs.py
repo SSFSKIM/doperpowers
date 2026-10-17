@@ -45,6 +45,7 @@ LAUNCHED = "async_launched"
 # no status), raw `expired` (DC8's Decision Log, 2026-10-17).
 EXPIRED = "expired"
 EXPIRY_EVENTS = ("[Monitor expired after ", "[Monitor timed out")
+NOTIFICATION_PREAMBLE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
 ENDED = ("completed", "failed", "stopped", "exited")
 SPAWN_FIELDS = ("parentAgentId", "subagentType", "description", "name", "background", "model", "toolUseId")
 CALLS = ("Agent", "Task", "Bash", "Monitor", "TaskStop")
@@ -84,6 +85,22 @@ def _output_path(text):
 def _element(prompt, name):
     m = ELEMENT[name].search(prompt)
     return m.group(1).strip() if m else None
+
+
+def _plain_notification(row, content):
+    """The notification text of a plain user row the engine wrote for one, or None. The engine marks the row
+    `origin.kind: "task-notification"` (no prompt a person types carries it) and writes one notification as the
+    row's whole text: bare in the main loop's transcript, after its fixed `[SYSTEM NOTIFICATION - NOT USER INPUT]`
+    preamble (ending in a blank line) in a subagent's. The text must then start with `<task-notification>`, as
+    MAWS's parseTaskNotification requires."""
+    origin = row.get("origin")
+    if row.get("type") != "user" or not isinstance(origin, dict) or origin.get("kind") != "task-notification":
+        return None
+    text = content if isinstance(content, str) else _text(content)
+    if text.startswith(NOTIFICATION_PREAMBLE):
+        cut = text.find("\n\n<task-notification>")
+        text = text[cut + 2:] if cut >= 0 else ""
+    return text if text.startswith("<task-notification>") else None
 
 
 def _str(value):
@@ -138,6 +155,9 @@ class Ledger:
             self._attachment(att, at)
         msg = row.get("message")
         content = msg.get("content") if isinstance(msg, dict) else None
+        plain = _plain_notification(row, content)
+        if plain is not None:
+            self._notification(plain, at)
         if isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -206,27 +226,8 @@ class Ledger:
                     ev["outputFile"] = path
                 self._said(ev, task=task)
         elif kind == "queued_command" and att.get("commandMode") == "task-notification":
-            prompt = att.get("prompt")
-            if not isinstance(prompt, str):
-                return
-            task, tool = _element(prompt, "task-id") or None, _element(prompt, "tool-use-id") or None
-            path, raw = _element(prompt, "output-file") or None, _element(prompt, "status")
-            if task:
-                self.known[task] = True
-                if path:
-                    self.outputs[task] = path
-            if raw is not None and (task or tool):
-                ev = {"raw": raw, "at": at}
-                summary = _element(prompt, "summary")
-                if summary:
-                    ev["summary"] = summary
-                if path:
-                    ev["outputFile"] = path
-                self._said(ev, task=task, tool=tool)
-            elif raw is None and task and self.jobs.get(task, {}).get("kind") == "monitor":
-                event = _element(prompt, "event")
-                if event and event.startswith(EXPIRY_EVENTS):
-                    self._said({"raw": EXPIRED, "at": at, "expiry": True, "summary": event}, task=task)
+            if isinstance(att.get("prompt"), str):
+                self._notification(att["prompt"], at)
         elif kind == "mcp_instructions_delta":
             removed, added = att.get("removedNames"), att.get("addedNames")
             for name in removed if isinstance(removed, list) else ():
@@ -235,6 +236,27 @@ class Ledger:
             for name in added if isinstance(added, list) else ():
                 if isinstance(name, str) and name not in self.mcp:
                     self.mcp.append(name)
+
+    def _notification(self, prompt, at):
+        """One task-notification's text, from either form the engine writes it in."""
+        task, tool = _element(prompt, "task-id") or None, _element(prompt, "tool-use-id") or None
+        path, raw = _element(prompt, "output-file") or None, _element(prompt, "status")
+        if task:
+            self.known[task] = True
+            if path:
+                self.outputs[task] = path
+        if raw is not None and (task or tool):
+            ev = {"raw": raw, "at": at}
+            summary = _element(prompt, "summary")
+            if summary:
+                ev["summary"] = summary
+            if path:
+                ev["outputFile"] = path
+            self._said(ev, task=task, tool=tool)
+        elif raw is None and task and self.jobs.get(task, {}).get("kind") == "monitor":
+            event = _element(prompt, "event")
+            if event and event.startswith(EXPIRY_EVENTS):
+                self._said({"raw": EXPIRED, "at": at, "expiry": True, "summary": event}, task=task)
 
     def _start(self, task, kind, tid, call):
         self.known[task] = True
