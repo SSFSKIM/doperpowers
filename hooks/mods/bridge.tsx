@@ -219,6 +219,10 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   if (typeof text !== 'string' || text.trim() === '') {
     return { ok: false, error: 'steer needs text' }
   }
+  // Kept as the interrupt's marker row is (isMeta, from this plugin), it would be one.
+  if (isInterruptText(text)) {
+    return { ok: false, error: 'that text is the interrupt marker, which would read as an interrupt: interrupt the session instead' }
+  }
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
   }
@@ -348,6 +352,16 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
 
 /** Esc's own marker, whole: the one text a transcript's reader knows a turn's interrupt by. */
 const INTERRUPT_MARKER = '[Request interrupted by user]'
+
+/**
+ * A text a transcript's reader takes for an interrupt: either of the engine's
+ * markers whole (Esc's, and its tool-use form), or the bridge's earlier
+ * record, `[Request interrupted by user from …]`.
+ */
+function isInterruptText(text: string): boolean {
+  const t = text.trim()
+  return t === INTERRUPT_MARKER || t === '[Request interrupted by user for tool use]' || t.startsWith('[Request interrupted by user from ')
+}
 
 /**
  * What an interrupt tells the model beyond Esc's marker: where it came from,
