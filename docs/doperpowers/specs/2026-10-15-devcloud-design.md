@@ -329,6 +329,20 @@ runs `devenv up <name>` against the registry; an entry `<owner>/<repo>` runs `de
 --url https://github.com/<owner>/<repo>.git`, creating the registry entry on that host when absent;
 an `@<ref>` suffix on either overrides the registry's ref for the root repository on that host.
 
+The `devenv` skill (in the devcloud plugin, invoked as `/devcloud:devenv` in a repository or
+triggered by asking for one) writes a repository's `devenv/` from what the repository already
+says about itself: its CI workflows first — the install path something already runs and tests —
+then its manifests and lockfiles, compose files, bootstrap scripts and Makefile targets, and the
+setup section of its README. It writes `setup.sh` with the `# devenv-inputs:` lines naming the
+lockfiles it read, working on macOS and Ubuntu alike (the package manager chosen by platform);
+`start.sh` only when the repository runs long-lived services; `validate.sh` as the repository's
+quickest real check; and `env` with non-secret values and `secret:` lines naming Secret Manager
+ids, asking the person for an id it cannot infer and never reading a value. It then proves what it
+wrote — `devenv up` twice (the second run skips setup), then `devenv validate`, and on Linux in a
+devcloud sandbox container when one is available — and commits the result on a branch in that
+repository. A repository whose `devenv/` already exists gets a review against the same sources
+rather than a rewrite.
+
 Sandboxes start from a bare mirror their persistent host keeps per repository
 (`/srv/devcloud/mirrors/<owner>/<repo>.git`, refreshed by the host), cloning with `--reference`
 so a checkout takes seconds.
