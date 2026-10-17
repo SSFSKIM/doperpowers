@@ -17,6 +17,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = tempfile.mkdtemp(prefix="test-jobs-")
@@ -77,6 +78,46 @@ class Incremental(unittest.TestCase):
             mixed.append(row)
             mixed.append(noise[i % len(noise)])
         self.assertEqual(body(fed(mixed), case), body(fed(rows), case))
+
+
+class Containment(unittest.TestCase):
+    """The pathname checked is not the file opened: a directory above the output file swapped for a link between
+    the check and the open must not lead the read outside every root (O_NOFOLLOW guards only the last component)."""
+
+    def test_a_parent_swapped_for_a_link_before_the_open_is_refused(self):
+        base = os.path.realpath(tempfile.mkdtemp(dir=HOME))
+        session, task = "d0c8a000-0000-4000-8000-0000000000aa", "bswap0001"
+        root = os.path.join(base, "claude-501", "-proj", session, "tasks")
+        outside = os.path.join(base, "elsewhere")
+        named = os.path.join(root, task + ".output")
+        for directory, text in ((root, "ours\n"), (outside, "not ours\n")):
+            os.makedirs(directory)
+            with open(os.path.join(directory, task + ".output"), "w") as f:
+                f.write(text)
+        ledger = fed([
+            {"type": "assistant", "uuid": "u1", "timestamp": "2026-10-17T09:00:01.000Z", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_swap", "name": "Bash",
+                 "input": {"command": "make", "description": "Make", "run_in_background": True}}]}},
+            {"type": "user", "uuid": "u2", "timestamp": "2026-10-17T09:00:02.000Z", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_swap", "is_error": False,
+                 "content": "Command running in background with ID: %s. Output is being written to: %s." % (task, named)}]},
+             "toolUseResult": {"backgroundTaskId": task}},
+        ])
+        request = {"taskId": task, "tail": 100}
+        self.assertEqual(jobs.output_answer(request, ledger, session, [root])["text"], "ours\n")
+        real_open = os.open
+
+        def swap_then_open(path, flags, *rest):
+            if path == named:  # the checks have passed: put a link to elsewhere in the tasks directory's place
+                os.rename(root, root + ".moved")
+                os.symlink(outside, root)
+            return real_open(path, flags, *rest)
+
+        with mock.patch.object(jobs.os, "open", side_effect=swap_then_open):
+            got = jobs.output_answer(request, ledger, session, [root])
+        self.assertEqual(got["result"], "refused", got)
+        self.assertEqual(got["path"], named)
+        self.assertNotIn("text", got)
 
 
 class Table(unittest.TestCase):

@@ -19,6 +19,7 @@ pin them, with the rules spelled out in their `about`.
 
 import copy
 import errno
+import fcntl
 import os
 import re
 import stat
@@ -39,12 +40,17 @@ TABLE = {
 # A background agent's launch result: the engine's word that it started, running
 # evidence from the rows, never terminal (DC8's Decision Log, 2026-10-17).
 LAUNCHED = "async_launched"
+# A monitor's expiry notice: a task-notification for a monitor with no <status> whose <event> is the engine's
+# expiry line (2.1.300). It ends the monitor as `completed` (the word MAWS's backfill gives a notification with
+# no status), raw `expired` (DC8's Decision Log, 2026-10-17).
+EXPIRED = "expired"
+EXPIRY_EVENTS = ("[Monitor expired after ", "[Monitor timed out")
 ENDED = ("completed", "failed", "stopped", "exited")
 SPAWN_FIELDS = ("parentAgentId", "subagentType", "description", "name", "background", "model", "toolUseId")
 CALLS = ("Agent", "Task", "Bash", "Monitor", "TaskStop")
 OUTPUT_PATH = re.compile(r"Output is being written to: (\S+)")
 ELEMENT = {name: re.compile(r"<%s>([\s\S]*?)</%s>" % (name, name))
-           for name in ("task-id", "tool-use-id", "output-file", "status", "summary")}
+           for name in ("task-id", "tool-use-id", "output-file", "status", "summary", "event")}
 
 
 def normalize(raw):
@@ -88,7 +94,7 @@ def fold(evidence, outcome=None):
     """The outcome a run of evidence comes to, in row order: a recognized word replaces the outcome unless the
     outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an outcome there is."""
     for ev in evidence:
-        word = _word(ev["raw"])
+        word = ("completed", True) if ev.get("expiry") else _word(ev["raw"])
         if word is None:
             if outcome is not None:
                 outcome = dict(outcome, raw=ev["raw"])
@@ -217,6 +223,10 @@ class Ledger:
                 if path:
                     ev["outputFile"] = path
                 self._said(ev, task=task, tool=tool)
+            elif raw is None and task and self.jobs.get(task, {}).get("kind") == "monitor":
+                event = _element(prompt, "event")
+                if event and event.startswith(EXPIRY_EVENTS):
+                    self._said({"raw": EXPIRED, "at": at, "expiry": True, "summary": event}, task=task)
         elif kind == "mcp_instructions_delta":
             removed, added = att.get("removedNames"), att.get("addedNames")
             for name in removed if isinstance(removed, list) else ():
@@ -331,6 +341,20 @@ def derive(ledger, metas, *, bridge, files, parents, session_running):
             "mcp": [{"name": n} for n in ledger.mcp]}
 
 
+def _opened_path(fd):
+    """The path of the file a descriptor holds, as the kernel names it (macOS F_GETPATH, Linux /proc), or None
+    where it cannot say."""
+    if hasattr(fcntl, "F_GETPATH"):
+        try:
+            return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
+        except OSError:
+            return None
+    try:
+        return os.readlink("/proc/self/fd/%d" % fd)
+    except OSError:
+        return None
+
+
 def output_answer(request, ledger, session, roots):
     """DX4's `output` body for `request` {taskId, tail}: the last `tail` bytes of the file the loop's rows named
     for the task, only when it is <a root>/<taskId>.output once resolved and a regular file. `roots` are the
@@ -360,6 +384,12 @@ def output_answer(request, ledger, session, roots):
         # Gone, or nothing readable there: `refused` is the containment refusal alone (DX4).
         return {"taskId": task, "result": "missing", "path": path}
     try:
+        # The pathname was checked; the open walks it again, and O_NOFOLLOW guards only its last component. What
+        # the descriptor holds must itself be that file, so a directory above it swapped for a link meanwhile
+        # cannot lead the read outside every root.
+        if _opened_path(fd) != real:
+            return refused("The output file this task's rows named moved outside this session's task directories "
+                           "while it was opened.")
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             return refused("The output path is not a regular file.")

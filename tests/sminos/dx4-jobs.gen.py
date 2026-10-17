@@ -628,6 +628,48 @@ case("a background agent known as such only from its spawn record",
                                 "toolUseId")})],
      bridge={"agents": [sa]})
 
+# ---- 14: monitors that expire ---------------------------------------------------------------------------------
+EXPIRED_LINE = "[Monitor expired after 30m with 2 events delivered. Re-arm it if you still need the watch.]"
+TIMED_OUT_LINE = "[Monitor timed out — re-arm if needed.]"
+SILENT_LINE = ("[Monitor expired after 30m with no events delivered. Re-arm it if you still need the watch — and "
+               "widen the filter if silence was unexpected.]")
+r = Rows(14, 0)
+ce = r.monitor("toolu_14M1", "tail -F /tmp/fold.log | grep --line-buffered '#74'", "ticket #74 state changes")
+r.monitor_started("toolu_14M1", "bexpire01")
+ct = r.monitor("toolu_14M2", "tail -F /tmp/hub.log", "the hub's log")
+r.monitor_started("toolu_14M2", "btimeout2")
+cv = r.monitor("toolu_14M3", "tail -F /tmp/run.log | grep --line-buffered FAIL", "failures of the suites")
+r.monitor_started("toolu_14M3", "bevent003")
+cs = r.bash("toolu_14J", "python3 -m http.server 8772", "Serve the probes")
+r.bash_background("toolu_14J", "bshell004")
+r.notification("bexpire01", None, 'Monitor event: "ticket #74 state changes"',
+               event="02:57:14 tick 1  #74 ready-for-architect\n03:07:37 tick 3  #74 in-design")
+ne = r.notification("bexpire01", None, 'Monitor event: "ticket #74 state changes"', event=EXPIRED_LINE)
+nt = r.notification("btimeout2", None, 'Monitor event: "the hub\'s log"', event=TIMED_OUT_LINE)
+r.notification("bevent003", None, 'Monitor event: "failures of the suites"', event="FAIL test_plane")
+r.notification("bshell004", None, 'Background command "Serve the probes"', event=SILENT_LINE)
+case("monitors that expire",
+     "A monitor ends on its expiry notice: a task-notification with no <status> whose <event> is the engine's expiry "
+     "line, in either form (`[Monitor expired after …]`, `[Monitor timed out …]`): completed, raw `expired`, its "
+     "<event> as summary, ended at the notice. A monitor's event notice changes nothing (bevent003 runs on, and "
+     "bexpire01's earlier event did not end it), and an expiry line for a task that is not a monitor is no evidence "
+     "(bshell004 runs on).",
+     True, r, [], [],
+     expect_jobs=[
+         {"taskId": "bexpire01", "kind": "monitor", "toolUseId": "toolu_14M1", "startedAt": ce["timestamp"],
+          "description": "ticket #74 state changes", "command": "tail -F /tmp/fold.log | grep --line-buffered '#74'",
+          "outputFile": None, "status": "completed", "endedAt": ne["timestamp"], "summary": EXPIRED_LINE},
+         {"taskId": "btimeout2", "kind": "monitor", "toolUseId": "toolu_14M2", "startedAt": ct["timestamp"],
+          "description": "the hub's log", "command": "tail -F /tmp/hub.log", "outputFile": None,
+          "status": "completed", "endedAt": nt["timestamp"], "summary": TIMED_OUT_LINE},
+         {"taskId": "bevent003", "kind": "monitor", "toolUseId": "toolu_14M3", "startedAt": cv["timestamp"],
+          "description": "failures of the suites", "command": "tail -F /tmp/run.log | grep --line-buffered FAIL",
+          "outputFile": None, "status": "running"},
+         {"taskId": "bshell004", "kind": "shell", "toolUseId": "toolu_14J", "startedAt": cs["timestamp"],
+          "description": "Serve the probes", "command": "python3 -m http.server 8772", "outputFile": out("bshell004"),
+          "status": "running"},
+     ])
+
 # ---- output -----------------------------------------------------------------------------------------------------
 OUTPUT = []
 OSLUG, LAUNCH = "-Users-me-work-proj--claude-worktrees-dc8", "-Users-me-work-proj"
@@ -799,10 +841,12 @@ ABOUT = {
         "Everything else in `expect` follows from the rules.",
     ],
     "rules": [
-        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id); the user row's tool_result for those ids (is_error) with its toolUseResult; an attachment `queued_command` with commandMode `task-notification` (prompt elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, each trimmed); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}. Each row's `timestamp` is its `at`.",
-        "Evidence words (`raw`): a notification's <status> (none when it has no <status>: no evidence); a task_status's `status`; an Agent result row: `async_launched` when toolUseResult.status is async_launched, else `error` when is_error, else toolUseResult.status when a string, else `completed`; a TaskStop call naming the task whose result is not is_error: `stopped`. The table maps a word to {status, terminal}; a word not in it is unrecognized.",
+        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id); the user row's tool_result for those ids (is_error) with its toolUseResult; an attachment `queued_command` with commandMode `task-notification` (prompt elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event>, each trimmed); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}. Each row's `timestamp` is its `at`.",
+        "Evidence words (`raw`): a notification's <status> (one with no <status> is no evidence, but for the expiry rule below); a task_status's `status`; an Agent result row: `async_launched` when toolUseResult.status is async_launched, else `error` when is_error, else toolUseResult.status when a string, else `completed`; a TaskStop call naming the task whose result is not is_error: `stopped`. The table maps a word to {status, terminal}; the launch rule and the expiry rule below map their own; any other word is unrecognized.",
+        "The launch rule, beside the table (not a row of it): an Agent result row whose toolUseResult.status is `async_launched` is a background agent's start, non-terminal running evidence from the rows: {status `running`, raw `async_launched`}, at precedence (3), below every terminal word and below known process death.",
+        "The expiry rule, beside the table (not a row of it): a task-notification with no <status> for a task the loop holds as a monitor (a Monitor result started it), whose <event> begins `[Monitor expired after ` or `[Monitor timed out` (the engine's expiry lines, 2.1.300), is terminal: {status `completed`, raw `expired`, summary the <event> text}. Any other notification with no <status> (a monitor's event, an agent resumed by the user) stays no evidence, and so does an expiry line for a task that is not a monitor.",
         "An agent's evidence: the rows of its loop (the main loop's for an agent without parentAgentId; its parent's file for a nested one) that name it: the result row for its toolUseId (meta.toolUseId, else spawn.toolUseId), a notification whose <task-id> is the agentId or whose <tool-use-id> is that toolUseId, a task_status whose taskId is the agentId, a non-error TaskStop whose task_id is the agentId. For a background agent (meta.requestShape `background` or spawn.background true) a result row whose word is not async_launched does not count.",
-        "`outcome` folds the agent's evidence in row order: a recognized word replaces the outcome ({status, raw, at, summary?, outputFile?} from that row) unless the outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an existing outcome (and is dropped when there is none). `summary`: a notification's <summary>, a task_status's deltaSummary, a TaskStop result's toolUseResult.message; `outputFile`: a notification's <output-file>, a task_status's outputFilePath, a launch's toolUseResult.outputFile; each present only when the deciding row carries it.",
+        "`outcome` folds the agent's evidence in row order: a recognized word replaces the outcome ({status, raw, at, summary?, outputFile?} from that row) unless the outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an existing outcome (and is dropped when there is none). `summary`: a notification's <summary> (an expiry notice's <event>), a task_status's deltaSummary, a TaskStop result's toolUseResult.message; `outputFile`: a notification's <output-file>, a task_status's outputFilePath, a launch's toolUseResult.outputFile; each present only when the deciding row carries it.",
         "`status` and `evidence`, the first that holds: (1) the outcome is terminal: its status, `rows`; (2) the session's process is gone: `exited`, `session`; the parent (meta.parentAgentId, else spawn.parentAgentId) has a status completed, failed, stopped or exited: `exited`, `parent`; the bridge holds the agent with running false: `exited`, `bridge`; (3) the bridge holds it with running true: `running`, `bridge`; the outcome's status is running: `running`, `rows`; (4) `unknown`, `none`. The bridge counts only while the session's process runs.",
         "`running`: the bridge's, present while the bridge holds the agent and the session's process runs. `spawn`: the bridge's entry's spawn fields among {parentAgentId, subagentType, description, name, background, model, toolUseId} that it has, present when the bridge holds the agent (kept after the process is gone).",
         "`jobs`: one per Bash result whose toolUseResult.backgroundTaskId is set (kind `shell`) and per Monitor result whose toolUseResult.taskId is set (kind `monitor`), in the order of those result rows: taskId, toolUseId, `startedAt` the call row's at, `description` the call's input.description (\"\" when none), `command` the call's input.command when present, `outputFile` the latest path any row named for the task (null until one does), and the status of the fold above over the rows naming the task (notification by <task-id>, task_status by taskId, non-error TaskStop by task_id), starting from running: terminal: that status with `endedAt` its row's at; else `exited` when the session's process is gone; else `running`. `summary` the deciding row's, when it has one.",
