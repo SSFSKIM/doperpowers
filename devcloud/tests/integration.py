@@ -547,6 +547,8 @@ ENTRYPOINT ["/sbin/init"]
 """
 
 
+RECONCILE_WITH_STAND_INS = ("env GCE_METADATA_HOST=fixtures:8082 DEVCLOUD_SM_ENDPOINT=http://fixtures:8081 "
+                            "DEVCLOUD_ALLOW_HTTP=1 devcloud reconcile")
 SMINOS_UNIT = f"{HOME}/.config/systemd/user/sminos-daemon.service"
 MARKETPLACE = f"{HOME}/.claude/plugins/marketplaces/doperpowers"
 
@@ -618,7 +620,8 @@ def enrolled_daemon():
            f"echo '{{\"machine\": \"sbx-vm\"}}' > {HOME}/.claude/sminos/daemon/hub.json && "
            f"chown {USER}:{USER} {scripts}/sminos.py {HOME}/.claude/plugins/known_marketplaces.json "
            f"{HOME}/.claude/sminos/daemon/hub.json")
-    reconciled = sh(VM, "devcloud reconcile", check_rc=False, timeout=600)
+    # As the units run it: a docker exec gets none of their drop-ins' stand-in environment.
+    reconciled = sh(VM, RECONCILE_WITH_STAND_INS, check_rc=False, timeout=600)
     check(reconciled.returncode == 0, f"reconcile exited {reconciled.returncode}: {reconciled.stdout[-800:]}\n"
           + _systemd_diagnostics())
     detail = steps(VM)["services"]["detail"]
@@ -636,7 +639,7 @@ def enrolled_daemon():
         time.sleep(0.5)
     seen = json.loads(out(VM, f"cat {STATE}/sminos.json"))
     check(seen["SESSION_MIRROR_HOST"] == "sbx-vm", f"the daemon lacks the host environment: {seen}")
-    again = sh(VM, "devcloud reconcile", check_rc=False, timeout=600)
+    again = sh(VM, RECONCILE_WITH_STAND_INS, check_rc=False, timeout=600)
     check(again.returncode == 0 and "sminos-daemon.service enabled and running" in steps(VM)["services"]["detail"],
           "a second reconcile restarted an unchanged daemon: " + steps(VM)["services"]["detail"])
 
