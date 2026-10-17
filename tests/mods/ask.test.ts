@@ -304,7 +304,8 @@ function harness(
   const classicStart = (transcript_path: string, session_id: string, source = 'startup') =>
     dispatch('classic.SessionStart', { hook_event_name: 'SessionStart', source, transcript_path, session_id, cwd: '/' }, MODEL, async () => ({}))
 
-  const turnStart = () => dispatch('turn.start', { text: '', turnId: 'turn-2' }, MODEL, async (e) => ({ turnId: e.turnId }))
+  const turnStart = (agentId?: string) =>
+    dispatch('turn.start', { text: '', turnId: 'turn-2', ...(agentId !== undefined && { agentId }) }, MODEL, async (e) => ({ turnId: e.turnId }))
 
   /** One model request through the turn.step hooks; `sent` says whether it reached the engine. */
   const step = async (index: number, agentId?: string) => {
@@ -646,6 +647,12 @@ describe('the turn a declined ask ends', () => {
     await h.turnStart()
     expect((await h.step(0)).sent).toBe(true)
     expect((await h.call('Write', { file_path: 'x.txt' })).ran.length).toBe(1)
+  })
+
+  test("a subagent's turn starting does not unlatch it", async () => {
+    const h = await declined(ESC)
+    await h.turnStart('agent-1')
+    expect((await h.call('Write', { file_path: 'x.txt' })).result).toEqual({ deny: LATCHED })
   })
 })
 
@@ -1071,6 +1078,22 @@ describe('delivery while the model works', () => {
   test('a turn the model answered submits what is held, in one prompt', async () => {
     const { h, id } = await held()
     await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test("a subagent's turn starting after the main turn ended is not a main turn: an answer then is submitted at once", async () => {
+    const h = harness()
+    await h.start()
+    await h.turnStart()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    await h.turnComplete('answer')
+    await h.turnStart('agent-1')
+    const id = asyncAsks()[0]?.id ?? ''
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    await h.raise(0, answered(ANSWER))
+    await pressed
     await h.settle()
     expect(h.submitted()).toEqual([deliveryText(id, ANSWER)])
   })
