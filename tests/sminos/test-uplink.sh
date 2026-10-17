@@ -5,7 +5,8 @@
 # (hub_standin.py stands in for DX2). Pins DC4.G4: the stream is drained and
 # an event from the hub reaches a local member within a second while the tick
 # sits in a hung git fetch of a hub-less project, and while a derivation runs;
-# what fails its code or its shape never enters the log; the uplink and the
+# a burst from the hub costs a few ticks, not a tick a frame, however slow
+# each POST is; what fails its code or its shape never enters the log; the uplink and the
 # tick loop restart and fail apart; the run lock and the exit on a change of
 # the daemon's own code still hold; an event the uplink imports while a tick is
 # mid-delivery to the same member is delivered once.
@@ -170,6 +171,11 @@ elif cmd == "fault":  # has fault — the next POST carrying a frame of `has` me
     call("POST", "/control/post-fault", {"faults": [{"has": sys.argv[3], "fault": sys.argv[4]}]})
 elif cmd == "release":
     call("POST", "/control/release", {})
+elif cmd == "post-delay":  # seconds — every frame POST waits this long from now on
+    call("POST", "/control/post-delay", {"seconds": float(sys.argv[3])})
+elif cmd == "opened":  # project — whether the stream opened last has it open
+    d = call("GET", "/control/state")[1]
+    print("yes" if d["projects"].get(sys.argv[3], {}).get("open", {}).get("testhost") == d["generation"] else "no")
 elif cmd == "held":  # the generation of each POST held, in order
     print(" ".join(p["generation"] for p in call("GET", "/control/state")[1]["posted"] if p["status"] == "held"))
 elif cmd == "after-held":  # POSTs of events on the generation of the last held one, after it
@@ -504,6 +510,53 @@ if dead "$UP"; then pass "SIGTERM to daemon run under the flow ends its uplink";
 assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "which stopped on the supervisor's SIGTERM, before any kill"
 rm -f "$T/flowing"
 set +e; wait "$FLOW"; set -e
+
+# ---- a burst from the hub while every POST is slow
+# A loaded machine's tick is slow (its POSTs, a ps for each live session),
+# and an import was a tick of its own, so a burst of one-event frames queued
+# for minutes: what is queued is now one batch, delivered once, then a tick.
+echo "a burst from the hub while every POST is slow:"
+cat > "$T/burst.py" <<'PY'
+import http.client, json, os, re, sys, time
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos_codes as codes
+port, first, n, log_path, inbox, bound = (int(open(sys.argv[1]).read()), int(sys.argv[2]), int(sys.argv[3]),
+                                          sys.argv[4], sys.argv[5], float(sys.argv[6]))
+project, member, session = os.environ["HP"], os.environ["MEMBER"], os.environ["M"]
+frames = []
+for seq in range(first, first + n):  # one event a frame, as the hub fans a live sender's events out
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    draft = {"ts": ts, "writer": "hub/" + member, "seq": seq, "kind": "human", "from": "human", "member": member,
+             "to": [{"session": session, "alias": "m"}], "text": "burst <%d>" % seq, "created": ts}
+    frames.append({"t": "events", "project": project,
+                   "events": [codes.seal(bytes(range(32)), "log", project, draft, codes.b64url(os.urandom(16)))]})
+last = ("burst <%d>" % (first + n - 1)).encode()
+t0 = time.time()
+c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+c.request("POST", "/control/send", json.dumps({"frames": frames}), {"Content-Type": "application/json"})
+took = "never"
+if c.getresponse().status == 200:
+    while time.time() - t0 < bound:
+        if last in open(log_path, "rb").read() and last in open(inbox, "rb").read():
+            took = "%.2f" % (time.time() - t0)
+            break
+        time.sleep(0.05)
+got = [int(x) for x in re.findall(rb"burst <(\d+)>", open(inbox, "rb").read())]
+print(took, len(got), len(set(got)), "ordered" if got == sorted(got) else "unordered")
+PY
+start_run
+opened() { [ "$(ctl opened "$HP")" = yes ]; }
+until_true 200 opened || true
+ctl post-delay 0.5
+# Seqs 7 on (hub/$MEMBER's 1-6 are taken above); one tick a frame would take
+# 300 × 0.5 s at least.
+read -r TOOK GOT DISTINCT ORDER <<<"$(python3 "$T/burst.py" "$T/hub.port" 7 300 "$HPLOG/hub.$MEMBER.jsonl" "$INBOX" 30)"
+ctl post-delay 0
+assert_within "$TOOK" 30 "300 one-event frames with every POST taking 0.5 s are all imported and delivered in a few ticks, not 150 s"
+assert_equals "$(grep -c '"text": "burst <' "$HPLOG/hub.$MEMBER.jsonl")" 300 "each imported once"
+assert_equals "$GOT $DISTINCT $ORDER" "300 300 ordered" "and each pushed to m once, in seq order"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
 
 # ---- ending while the hub holds a POST's answer, a backlog still to go
 echo "ending during a held POST:"
