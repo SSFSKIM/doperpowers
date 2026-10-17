@@ -82,7 +82,8 @@ export type Block = {
   failures: number
 }
 
-export type Pass = { block: string; expires: number; epoch: number }
+/** A grant's pass: for the block's loop's directory as it was (`cwd`), within the epoch of the grant. */
+export type Pass = { block: string; expires: number; epoch: number; cwd?: string }
 
 /** How long a grant covers the identical re-run. */
 export const PASS_MS = 10 * 60 * 1000
@@ -139,10 +140,19 @@ export function blockNotice(id: string): string {
 }
 
 /**
- * Whether an appeal of `id` from the loop `agentId` may go to the judge: the
- * block, or why not, in one line for the model.
+ * Whether an appeal of `id` from the loop `agentId`, whose directory is now
+ * `cwd`, may go to the judge: the block, or why not, in one line for the
+ * model. A block made in another directory is stale: a relative target names
+ * something else now (EnterWorktree, ExitWorktree and `/cd` move a loop's
+ * directory through no prompt and no Bash call).
  */
-export function appealCheck(ledger: Ledger, id: unknown, agentId: string | undefined, argument: unknown): { ok: true; block: Block } | { ok: false; error: string } {
+export function appealCheck(
+  ledger: Ledger,
+  id: unknown,
+  agentId: string | undefined,
+  argument: unknown,
+  cwd?: string,
+): { ok: true; block: Block } | { ok: false; error: string } {
   if (typeof id !== 'string' || id.trim() === '') {
     return { ok: false, error: 'block names no block id (b1, b2, …).' }
   }
@@ -165,6 +175,9 @@ export function appealCheck(ledger: Ledger, id: unknown, agentId: string | undef
   if (block.tool === 'Bash' && block.bashGen !== bashGeneration(ledger, agentId)) {
     return { ok: false, error: `block ${block.id} is stale: another Bash command ran in this conversation since, and the shell's directory may differ. Run the command again for a fresh block.` }
   }
+  if (block.cwd !== undefined && cwd !== undefined && block.cwd !== cwd) {
+    return { ok: false, error: `block ${block.id} is stale: the conversation's directory changed since (it was ${block.cwd}). Run the call again for a fresh block.` }
+  }
   const size = JSON.stringify(block.input).length
   if (size > CALL_CAP) {
     return { ok: false, error: `the call is too large to review whole (${size.toLocaleString('en-US')} characters; the limit is ${CALL_CAP.toLocaleString('en-US')}).` }
@@ -176,7 +189,12 @@ export function appealCheck(ledger: Ledger, id: unknown, agentId: string | undef
 export function applyRuling(ledger: Ledger, block: Block, verdict: Verdict, now: number): void {
   block.ruling = verdict
   if (verdict === 'grant') {
-    ledger.passes.set(passKey(block.agentId, block.tool, block.input), { block: block.id, expires: now + PASS_MS, epoch: ledger.epoch })
+    ledger.passes.set(passKey(block.agentId, block.tool, block.input), {
+      block: block.id,
+      expires: now + PASS_MS,
+      epoch: ledger.epoch,
+      ...(block.cwd !== undefined && { cwd: block.cwd }),
+    })
   }
 }
 
@@ -187,15 +205,20 @@ export function recordFailure(block: Block, reason: string): string {
   return block.failures >= 2 ? standing : `${standing} You may appeal it again once.`
 }
 
-/** The live pass for this call, spent; undefined when none matches. */
-export function takePass(ledger: Ledger, agentId: string | undefined, tool: string, input: unknown, now: number): Pass | undefined {
+/**
+ * The live pass for this call, spent; undefined when none matches, or the
+ * match is expired, of an earlier epoch, or for another directory than the
+ * loop's now (`cwd`).
+ */
+export function takePass(ledger: Ledger, agentId: string | undefined, tool: string, input: unknown, now: number, cwd?: string): Pass | undefined {
   const key = passKey(agentId, tool, input)
   const pass = ledger.passes.get(key)
   if (pass === undefined) {
     return undefined
   }
   ledger.passes.delete(key)
-  return pass.expires >= now && pass.epoch === ledger.epoch ? pass : undefined
+  const here = pass.cwd === undefined || cwd === undefined || pass.cwd === cwd
+  return pass.expires >= now && pass.epoch === ledger.epoch && here ? pass : undefined
 }
 
 /**

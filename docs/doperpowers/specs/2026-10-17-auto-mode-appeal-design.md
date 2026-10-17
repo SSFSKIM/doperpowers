@@ -44,8 +44,9 @@ and escalating every challenge to the human.
 - [x] (2026-10-17) Design chosen by the human (own appeals judge); spec written.
 - [x] (2026-10-17) Independent spec review and buildability review: round one's seven findings taken (Decision Log).
 - [x] (2026-10-17) M1 — Block, appeal, ruling, pass: the mod, its tests, three review rounds' fixes, the live check's uphold scenario end to end. The grant scenario could not be provoked live: the classifier allowed all four candidates in a subagent (Surprises & Discoveries); the pass path stands on the unit tests and the engine facts, and the first real grant in daily use (`/appeals`) is its live proof.
-- [x] (2026-10-17) M2 — `/appeals`, the README section, the CLAUDE.md row, version 7.165.0; 360 mod tests pass.
-- [ ] Whole-branch review at the `high` rung; retrospective; merge.
+- [x] (2026-10-17) M2 — `/appeals`, the README section, the CLAUDE.md row; the version is 7.167.0 after two merges of `main`; 403 mod tests pass.
+- [x] (2026-10-17) Whole-branch review at the `high` rung: three rounds, eleven findings taken (Decision Log).
+- [ ] Round four (medium, the directory binding alone); retrospective; merge.
 
 ## Terms
 
@@ -338,6 +339,14 @@ before it answers `allow`, and leaves the call to the classifier otherwise
 was; "stop, don't push" typed after a grant must reach the classifier, which
 this path skips, so the pass dies with the prompt. The agent re-runs a
 granted call at once, so the rule costs nothing in the ordinary case.
+
+A block and its pass belong to their loop's **directory**, too — the one
+`$.session.cwd()` gives inside the hook (a subagent's own in its loop),
+recorded with the block: `EnterWorktree`, `ExitWorktree` and `/cd` move a
+loop's directory through no prompt and no Bash call, and a relative target
+names something else after. An appeal of a block made in another directory
+is refused as stale, and a pass is spent without allowing when the directory
+at the re-run is not the block's.
 
 A Bash block and a Bash pass belong to their loop's **Bash generation**, too:
 the shell's working directory persists between commands and the mod cannot
@@ -686,6 +695,16 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   ruling. Round one's six were confirmed resolved.
   Rationale: each was a revocation or a directory change a pass could still
   outlive.
+  Date/Author: 2026-10-17, the authoring session.
+- Decision: branch review round three (`doperpowers:reviewer-high`,
+  2026-10-17) — one finding, taken: a block and its pass belong to the loop's
+  directory as `$.session.cwd()` gives it, since `EnterWorktree`,
+  `ExitWorktree` and `/cd` move it through no prompt and no Bash call (The
+  pass). Round two's items were confirmed resolved. A fourth round, at the
+  medium rung and on this one binding, closes the loop whatever it finds:
+  what it finds is fixed inline when a line, else logged.
+  Rationale: the same family as round one's working-directory finding, now
+  closed for every way a loop's directory moves that the engine exposes.
   Date/Author: 2026-10-17, the authoring session.
 - Decision: both milestones are executed in the authoring session, not through
   `doperpowers:plan-executor`.

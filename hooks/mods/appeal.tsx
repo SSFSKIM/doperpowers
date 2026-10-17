@@ -197,7 +197,8 @@ async function evidence($: EngineInterface, block: Block, argument: string): Pro
 export async function appeal($: EngineInterface, e: { agentId?: string; block?: unknown; argument?: unknown }): Promise<{ result: string }> {
   // Read before the first await: a prompt from here on makes the evidence stale.
   const epoch = ledger.epoch
-  const checked = appealCheck(ledger, e.block, e.agentId, e.argument)
+  // Inside the hook, the loop's own directory (a subagent's, in its loop).
+  const checked = appealCheck(ledger, e.block, e.agentId, e.argument, await $.session.cwd())
   if (!checked.ok) {
     return { result: `Not appealed: ${checked.error}` }
   }
@@ -302,7 +303,7 @@ export function registerAppeal(on: On) {
       return verdict
     }
     const epoch = ledger.epoch
-    const pass = takePass(ledger, e.agentId, e.tool, e.input, await $.clock.now())
+    const pass = takePass(ledger, e.agentId, e.tool, e.input, await $.clock.now(), await $.session.cwd())
     if (pass === undefined) {
       return verdict
     }

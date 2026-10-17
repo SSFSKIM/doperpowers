@@ -137,6 +137,19 @@ describe('the ledger', () => {
     expect(ledger.passes.size).toBe(0)
   })
 
+  test("a block and its pass belong to the loop's directory: moved, the appeal is refused and the pass is spent without allowing", async () => {
+    const ledger = newLedger()
+    const block = recordBlock(ledger, { tool: 'Bash', input: { command: 'rm -rf target' }, reason: '[Irreversible Local Destruction]', cwd: '/wt/a' }, 0)
+    expect((appealCheck(ledger, 'b1', undefined, 'mine', '/wt/b') as { error: string }).error).toContain("the conversation's directory changed since (it was /wt/a)")
+    expect(appealCheck(ledger, 'b1', undefined, 'mine', '/wt/a').ok).toBe(true)
+    applyRuling(ledger, block, 'grant', 0)
+    expect(takePass(ledger, undefined, 'Bash', { command: 'rm -rf target' }, 1, '/wt/b')).toBeUndefined()
+    expect(ledger.passes.size).toBe(0)
+    const again = recordBlock(ledger, { tool: 'Bash', input: { command: 'rm -rf target' }, reason: 'x', cwd: '/wt/a' }, 0)
+    applyRuling(ledger, again, 'grant', 0)
+    expect(takePass(ledger, undefined, 'Bash', { command: 'rm -rf target' }, 1, '/wt/a')?.block).toBe('b2')
+  })
+
   test('a call too large to review whole is refused before the judge', async () => {
     const ledger = newLedger()
     recordBlock(ledger, { tool: 'Bash', input: { command: 'x'.repeat(CALL_CAP + 1) }, reason: 'Blocked by classifier' }, 0)
@@ -340,6 +353,7 @@ function harness(
     calls.push({ op, args })
   }
   let now = 1_000_000
+  let cwd = '/work'
   const files = new Map<string, string>()
   const $ = {
     env: { get: async (name: string) => (name === 'HOME' ? '/home/t' : undefined) },
@@ -351,7 +365,7 @@ function harness(
     },
     session: {
       id: async () => 'sess-1',
-      cwd: async () => '/work',
+      cwd: async () => cwd,
       root: async () => '/work',
       messages: async (args?: { agentId?: string }) => (args?.agentId === undefined ? (options.messages ?? []) : (options.agentMessages ?? { deny: `no agent ${args.agentId}` })),
     },
@@ -429,6 +443,9 @@ function harness(
   const tick = (ms: number) => {
     now += ms
   }
+  const move = (to: string) => {
+    cwd = to
+  }
   return {
     calls,
     start,
@@ -438,6 +455,7 @@ function harness(
     prompt,
     logged,
     tick,
+    move,
     files,
     hooks,
     engine,
@@ -561,6 +579,24 @@ describe('registerAppeal', () => {
       h.call({ tool: 'Bash', tool_use_id: 't3', command: 'z' }, blocked('Blocked by classifier')),
     ])
     expect(h.logged().map((l) => l.block)).toEqual(['b0', 'b1', 'b2', 'b3'])
+  })
+
+  test("a worktree move (EnterWorktree, ExitWorktree, /cd) between the grant and the re-run leaves the call to the classifier; before the appeal, it is refused", async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Scratch target.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'The user named target.' })
+    h.move('/Users/x/repo')
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'rm -rf target' } }, ask)).toEqual(ask)
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling'])
+
+    const h2 = harness({ judge: '<verdict>grant</verdict><response>Scratch target.</response>' })
+    await h2.start()
+    await h2.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    h2.move('/Users/x/repo')
+    const refused = (await h2.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'The user named target.' })) as { result: string }
+    expect(refused.result).toContain("the conversation's directory changed since (it was /work)")
+    expect(h2.calls.some((c) => c.op === 'model.complete')).toBe(false)
   })
 
   test('an expired pass does not allow', async () => {
