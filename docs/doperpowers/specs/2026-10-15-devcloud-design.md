@@ -1057,6 +1057,16 @@ clears a plugin's state when it unloads is unverified).
   agent's script that reads credential sources and writes a secret store, and that refusal is
   not routed around.
   Date/Author: 2026-10-17, M3 executor and plan executor.
+- Decision: Bash restoration is safe by construction rather than context-aware. An inert value
+  (only characters no bash or zsh context treats specially) restores raw anywhere; a non-inert
+  value restores only inside a plain single- or double-quoted string or an unquoted top-level word
+  of a command with no backtick, heredoc, here-string, nested expansion, comment, or line
+  continuation; any other handle stays unrestored and its result names it, pointing to
+  `"$(cat …)"`. Rationale: fix wave 1's context-aware quoting leaked through here-strings,
+  heredoc bodies and delimiters, backticks, comments, and zsh's `=` expansion — each a way for a
+  value's bytes to run as code. Leaving a handle unrestored is redaction, not refusal: the
+  command runs. Rejected: patching each shell form (an open set).
+  Date/Author: 2026-10-17, plan executor; confirmed by the design session.
 
 ## Outcomes & Retrospective
 
