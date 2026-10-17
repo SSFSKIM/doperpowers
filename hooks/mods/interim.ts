@@ -20,17 +20,36 @@ export const PLACEHOLDERS = [
   /^This agent's report was delivered to you as a message from "[^"\n]*" \(its SubagentHandback call\)(?:, under a SECURITY WARNING from auto mode \u2014 the warning above the report says why)?\. Read it there; it is not repeated here\.$/,
 ]
 
-const element = (text: string, tag: string) =>
-  new RegExp(`^<${tag}>([\\s\\S]*?)</${tag}>$`, 'm').exec(text)?.[1]
+const INTERIM_NOTE_IN_FULL = `${INTERIM_NOTE} It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.`
+
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const line = (tag: string) => `(?:\\n<${tag}>[^<\\n]*</${tag}>)`
+
+/**
+ * The whole of an interim notification as the engine builds it (`ci` around
+ * `oRt`'s body), and nothing else: its header lines, the interim note alone,
+ * one result, and the usage and worktree lines. Every value the engine
+ * escapes or writes itself holds no `<`, so a second notification, an extra
+ * element, a clause appended to the note, a warning beside the result, or
+ * text before or after the envelope makes the text something else.
+ */
+const ENVELOPE = new RegExp([
+  '^<task-notification>',
+  `${line('task-id')}`,
+  `${line('tool-use-id')}?`,
+  `${line('task-type')}?`,
+  `${line('output-file')}?`,
+  '\\n<status>completed</status>',
+  `${line('summary')}?`,
+  `\\n<note>${escape(INTERIM_NOTE_IN_FULL)}</note>`,
+  '\\n<result>([^<]*)</result>',
+  '(?:\\n<usage><subagent_tokens>\\d+</subagent_tokens><tool_uses>\\d+</tool_uses><duration_ms>\\d+</duration_ms></usage>)?',
+  '(?:\\n<worktree><worktreePath>[^<\\n]*</worktreePath>(?:<worktreeBranch>[^<\\n]*</worktreeBranch>)?</worktree>)?',
+  '\\n</task-notification>$',
+].join(''))
 
 export function isInterim(text: string): boolean {
-  if (!text.trimStart().startsWith('<task-notification>')) {
-    return false
-  }
-  if (element(text, 'status')?.trim() !== 'completed' || !element(text, 'note')?.startsWith(INTERIM_NOTE)) {
-    return false
-  }
-  const result = element(text, 'result')?.trim()
+  const result = ENVELOPE.exec(text.trim())?.[1]?.trim()
   return result !== undefined && PLACEHOLDERS.some((placeholder) => placeholder.test(result))
 }
 
