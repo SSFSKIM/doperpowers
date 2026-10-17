@@ -603,7 +603,12 @@ per tick):
    published for it, append `titled`: a member is named by it on the desk
    and on every other machine, its ended sessions and an offline machine's
    included. A transcript scanned every tick is read backward from its end
-   and not again while it is unchanged.
+   and not again while it is unchanged. A session of this machine whose
+   membership has ended is published the same way, looked at once per
+   retirement for the life of the daemon's process, since its transcript
+   has stopped changing: a session renamed and closed since the last tick
+   is retired by this tick's reconciliation before it could be published
+   as a member, and one that ended before the daemon ran never was one.
 4. **Deliver.** For each local member, every event owed to it (§4), in
    writer order from its settled prefix: push a frame or resume, exactly as
    a local `say` would, and settle per §4.
