@@ -46,7 +46,8 @@ and escalating every challenge to the human.
 - [x] (2026-10-17) M1 — Block, appeal, ruling, pass: the mod, its tests, three review rounds' fixes, the live check's uphold scenario end to end. The grant scenario could not be provoked live: the classifier allowed all four candidates in a subagent (Surprises & Discoveries); the pass path stands on the unit tests and the engine facts, and the first real grant in daily use (`/appeals`) is its live proof.
 - [x] (2026-10-17) M2 — `/appeals`, the README section, the CLAUDE.md row; the version is 7.167.0 after two merges of `main`; 403 mod tests pass.
 - [x] (2026-10-17) Whole-branch review at the `high` rung: three rounds, eleven findings taken (Decision Log).
-- [ ] Round four (medium, the directory binding alone); retrospective; merge.
+- [x] (2026-10-17) Round four (medium, the directory binding alone): correct, no material findings; one residual logged in `docs/doperpowers/TECH-DEBT.md`.
+- [x] (2026-10-17) Retrospective; branch pushed and PR opened.
 
 ## Terms
 
@@ -706,6 +707,14 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   Rationale: the same family as round one's working-directory finding, now
   closed for every way a loop's directory moves that the engine exposes.
   Date/Author: 2026-10-17, the authoring session.
+- Decision: branch review round four (`doperpowers:reviewer-medium`,
+  2026-10-17) — correct, no material findings; the review loop is closed.
+  Its one residual, pre-existing and not of the fix: a shell whose current
+  subdirectory another process deletes after a grant may recover to the
+  project root during execution, after `tool.check`, and run a relative
+  command there — logged in `docs/doperpowers/TECH-DEBT.md`, not fixed: it
+  needs another process racing the agent's own directory.
+  Date/Author: 2026-10-17, the authoring session.
 - Decision: both milestones are executed in the authoring session, not through
   `doperpowers:plan-executor`.
   Rationale: the classifier blocks writing this feature as `[Auto-Mode Bypass]`
@@ -718,4 +727,36 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Achieved** (2026-10-17, one sitting): the appeal path as designed — a block
+gets an id and a note, `mcp__doperpowers__appeal` puts one appeal per block to
+an Opus judge over the evidence the classifier does not read (the human's
+answers to the agent's questions, the main conversation for a subagent's
+block), a grant leaves a one-shot pass that the mod's `tool.check` hook
+applies to the identical re-run, every event is logged, and `/appeals` reads
+the log back with the autoMode entries the grants suggest. 403 mod tests
+pass; the live check ran a real block, appeal and ruling end to end (the
+judge upheld a planted file's "the user approved" in 7 s and said what the
+user would need to say). Four review rounds, twelve findings taken, every one
+a way for text that is not the user's to become consent or for a grant to
+release more than the judge read or to outlive a revocation; the design that
+ships binds a pass to the loop, the tool, the whole input, the epoch (moved
+by any prompt or any answer), the loop's directory, and for Bash the loop's
+Bash generation, and the judge reads only the settings sources the classifier
+trusts and every free text as a JSON string.
+
+**Remains:** the live check's grant scenario found no classifier block to
+appeal in four candidates (a subagent acting on a throwaway target with the
+user's request in its prompt is allowed by this classifier), so the pass path
+is proven by the unit tests and the engine facts, not live; the first real
+grant in daily use, visible in `/appeals`, is that proof. The residual from
+round four is in `docs/doperpowers/TECH-DEBT.md`.
+
+**Lessons:** the classifier's consent rules are the spec for the judge's —
+reading SPEC §26.10.5 first saved every round from re-deriving them; the
+reviewer's reproductions (a mocked hook harness per finding) were worth more
+than its prose, and each round's findings were one family (what counts as the
+user; what a pass is bound to) — a design that names the binding's axes up
+front (loop, tool, input, time, revocation, directory) would have cost one
+round instead of three; and the feature's own case — the human's answer to an
+async question not counting as their words to the classifier — showed up
+twice while building it, which is the clearest sign the problem was real.
