@@ -141,3 +141,9 @@ describe('fix wave 1', () => {
     ])
   })
 })
+
+describe('fix wave 2', () => {
+  test('#3 .netrc: \\n, \\r and \\t in a quoted value are control characters', () => {
+    expect(credentialFields('netrc', `machine m login me password "${v(40)}\\n\\r\\t\\q"\n`)).toEqual([{ field: 'm.password', value: `${v(40)}\n\r\tq` }])
+  })
+})

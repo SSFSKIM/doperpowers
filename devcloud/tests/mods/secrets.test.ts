@@ -343,3 +343,17 @@ describe('fix wave 1', () => {
     expect(ran[1]?.content).toBe(other)
   })
 })
+
+describe('fix wave 2', () => {
+  test('#1 a value that needs quoting where the guard cannot prove it is left as the handle, and the result says how to read it', async ($, on) => {
+    const ran = tool(on, () => bash(''))
+    await start($, on, { [`${STORE}/SHELL`]: 'a b;c', [`${PROJECT_STORE}/MINE`]: 'd e;f' })
+    const command = 'cat <<EOF\n[secret:SHELL] [secret:MINE]\nEOF'
+    const call = await $.tool.call({ tool: 'Bash', command })
+    expect(ran[0]?.command).toBe(command)
+    const note = call.context?.join('\n') ?? ''
+    expect(note).toContain('needs shell quoting in a context the guard cannot prove: [secret:SHELL], [secret:MINE]')
+    expect(note).toContain('[secret:SHELL] as "$(cat ~/.config/claude-secrets/SHELL)"')
+    expect(note).toContain('[secret:MINE] as "$(cat ~/.config/claude-secrets/projects/-work-repo/MINE)"')
+  })
+})

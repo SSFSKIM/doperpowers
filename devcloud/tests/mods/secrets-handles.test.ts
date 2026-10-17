@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { Handles, spellings } from '../../hooks/mods/secrets-handles'
+import { isInert } from '../../hooks/mods/secrets-shell'
 import { chars, githubPat, pem } from './fake'
 
 const STORED = `sk-live-${chars(20, 41)}`
@@ -143,25 +144,6 @@ test("a 6 MB output is scrubbed well within a hook's 10 s budget", () => {
 })
 
 describe('fix wave 1', () => {
-  test('#1 a handle restored into a shell command reaches the shell as its exact bytes, whatever the quoting', () => {
-    const value = `$(printf INJECTED)'"\\\`x`
-    const h = withStored({ SHELL: value, SAFE: STORED })
-    const cases: [string, string][] = [
-      ['printf "%s" "[secret:SHELL]"', `printf "%s" "\\$(printf INJECTED)'\\"\\\\\\\`x"`],
-      ["printf '%s' '[secret:SHELL]'", `printf '%s' '$(printf INJECTED)'\\''"\\\`x'`],
-      ['printf %s [secret:SHELL]', `printf %s '$(printf INJECTED)'\\''"\\\`x'`],
-      ["printf %s $'[secret:SHELL]'", `printf %s $'$(printf INJECTED)\\'"\\\\\`x'`],
-      ["cat <<'EOF'\n[secret:SHELL]\nEOF", `cat <<'EOF'\n${value}\nEOF`],
-      ['cat <<EOF\n[secret:SHELL]\nEOF', `cat <<EOF\n\\$(printf INJECTED)'"\\\\\\\`x\nEOF`],
-      ['echo "$(printf %s [secret:SHELL])"', `echo "$(printf %s '$(printf INJECTED)'\\''"\\\`x')"`],
-    ]
-    for (const [command, expected] of cases) expect(h.restoreShell(command)).toEqual({ text: expected, unrestored: [] })
-    // A value of safe characters comes out as it always did, in any context.
-    for (const command of ['curl -H "Authorization: Bearer [secret:SAFE]" x', "echo '[secret:SAFE]'", 'echo [secret:SAFE]', 'cat <<EOF\n[secret:SAFE]\nEOF']) {
-      expect(h.restoreShell(command).text).toBe(command.replace('[secret:SAFE]', STORED))
-    }
-  })
-
   test('#4 a label with spaces, brackets or tildes round-trips through its handle', () => {
     const label = 'cli.toml:contexts.my ctx]~x%.token'
     const h = withStored({ [label]: STORED })
@@ -194,5 +176,49 @@ describe('fix wave 1', () => {
     const printed = `db:5432:*:app:pa\\:ss\\\\${STORED}`
     expect(h.scrub(printed)).toBe('db:5432:*:app:[secret:.pgpass:db:5432:*:app~pgpass]')
     expect(h.restore('[secret:.pgpass:db:5432:*:app~pgpass]').text).toBe(`pa\\:ss\\\\${STORED}`)
+  })
+})
+
+describe('fix wave 2', () => {
+  test('#1 an inert value is non-empty and made only of characters no bash or zsh context treats specially', () => {
+    for (const value of [STORED, 'abcDEF012_./+:@-', 'YWJj+/9=', 'a=b', 'x%41', githubPat(80)]) expect(isInert(value)).toBe(true)
+    for (const value of ['', '=cmd', '%1', '~root', 'a b', 'a;b', 'a$b', 'a`b', "a'b", 'a"b', 'a\\b', 'a\nb', 'a*', 'a?', 'a[b]', 'a{b,c}', 'a!b', 'a#b', 'a^b', 'a~b', 'a(b)', 'a<b', 'a>b', 'a|b', 'a&b', 'a,b']) {
+      expect(isInert(value)).toBe(false)
+    }
+  })
+
+  test('#1 an inert value restores raw in any command shape', () => {
+    const h = withStored({ SAFE: STORED })
+    for (const command of ['echo [secret:SAFE]', "cat <<'EOF'\n[secret:SAFE]\nEOF", 'x=`echo [secret:SAFE]`', ': # [secret:SAFE]', 'cat <<< [secret:SAFE]']) {
+      expect(h.restoreShell(command)).toEqual({ text: command.replace('[secret:SAFE]', STORED), unrestored: [], unquotable: [] })
+    }
+  })
+
+  test('#1 a non-inert value is quoted only in a plain quoted string or an unquoted word, and left as the handle elsewhere', () => {
+    const value = `a'b"c$d\`e\\f g`
+    const h = withStored({ V: value })
+    expect(h.restoreShell("printf %s '[secret:V]'").text).toBe(`printf %s 'a'\\''b"c$d\`e\\f g'`)
+    expect(h.restoreShell('printf %s "[secret:V]"').text).toBe(`printf %s "a'b\\"c\\$d\\\`e\\\\f g"`)
+    expect(h.restoreShell('printf %s [secret:V]').text).toBe(`printf %s 'a'\\''b"c$d\`e\\f g'`)
+    for (const command of ['cat <<EOF\n[secret:V]\nEOF', "cat <<'EOF'\n[secret:V]\nEOF", 'cat <<< [secret:V]', 'echo `printf %s [secret:V]`', 'echo "$(printf %s [secret:V])"', ': # [secret:V]', 'printf %s ${X:-[secret:V]}', "printf %s $'[secret:V]'", 'printf %s \\\n[secret:V]', 'echo $[secret:V]']) {
+      expect(h.restoreShell(command)).toEqual({ text: command, unrestored: [], unquotable: ['[secret:V]'] })
+    }
+  })
+
+  test('#2 two labels holding the same value both restore; the bytes display as the first', () => {
+    const h = withStored({ A: STORED, B: STORED })
+    expect(h.scrub(STORED)).toBe('[secret:A]')
+    expect(h.restore('[secret:A] [secret:B]').text).toBe(`${STORED} ${STORED}`)
+  })
+
+  test("#2 a label that rotates to another label's value still restores its already-issued handle", () => {
+    const h = withStored({ A: STORED, B: `${STORED}-b` })
+    expect(h.scrub(`${STORED}-b`)).toBe('[secret:B]')
+    h.setKnown([
+      { label: 'A', value: STORED },
+      { label: 'B', value: STORED },
+    ])
+    expect(h.restore('[secret:B]').text).toBe(STORED)
+    expect(h.scrub(`${STORED}-b`)).toBe('[superseded:B]')
   })
 })

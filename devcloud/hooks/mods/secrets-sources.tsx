@@ -145,7 +145,8 @@ function pgpassFields(text: string): Field[] {
 }
 
 // A .netrc's tokens: whitespace-separated, a double-quoted token taken whole
-// with its backslash escapes decoded.
+// with its backslash escapes decoded as curl reads them (`\n`, `\r`, `\t` the
+// control characters, any other `\x` the character itself).
 function netrcTokens(text: string): string[] {
   const words: string[] = []
   for (let i = 0; i < text.length; ) {
@@ -153,7 +154,13 @@ function netrcTokens(text: string): string[] {
     if (i >= text.length) break
     let word = ''
     if (text[i] === '"') {
-      for (i++; i < text.length && text[i] !== '"'; i++) word += text[i] === '\\' ? (text[++i] ?? '') : text[i]
+      for (i++; i < text.length && text[i] !== '"'; i++) {
+        if (text[i] !== '\\') word += text[i]
+        else {
+          const e = text[++i] ?? ''
+          word += ({ n: '\n', r: '\r', t: '\t' } as Record<string, string>)[e] ?? e
+        }
+      }
       i++
     } else for (; i < text.length && !/\s/.test(text[i]!); i++) word += text[i]
     words.push(word)

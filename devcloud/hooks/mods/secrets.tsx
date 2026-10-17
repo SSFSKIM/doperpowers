@@ -64,6 +64,9 @@ let project: string | undefined
 let home: string | undefined
 const sources = new Map<string, { mtimeMs: number; size: number; known: Known[] }>()
 let refreshedAt = 0
+// Where each store label's file is, from $HOME: the read a command can do in
+// place of a handle the guard cannot restore into it.
+const storePaths = new Map<string, string>()
 
 async function projectOf($: EngineInterface, cwd?: string): Promise<string> {
   if (project !== undefined) return project
@@ -158,11 +161,20 @@ async function refresh($: EngineInterface, isForced: boolean) {
   const projectKnown = await readTier($, `${store}/projects/${own}`, false)
   const shadowed = new Set(projectKnown.map((k) => k.label))
   const known: Known[] = [...projectKnown]
-  for (const { label, value } of await readTier($, store, true)) known.push({ label: shadowed.has(label) ? `${label}@global` : label, value })
+  storePaths.clear()
+  for (const { label } of projectKnown) storePaths.set(label, `~/${STORE_DIR}/projects/${own}/${label}`)
+  for (const { label, value } of await readTier($, store, true)) {
+    const name = shadowed.has(label) ? `${label}@global` : label
+    known.push({ label: name, value })
+    storePaths.set(name, `~/${STORE_DIR}/${label}`)
+  }
   // Every other project's tier: a command can print any of them.
   for (const slug of await projectTiers($, store)) {
     if (slug === own) continue
-    for (const { label, value } of await readTier($, `${store}/projects/${slug}`, false)) known.push({ label: `${label}@${slug}`, value })
+    for (const { label, value } of await readTier($, `${store}/projects/${slug}`, false)) {
+      known.push({ label: `${label}@${slug}`, value })
+      storePaths.set(`${label}@${slug}`, `~/${STORE_DIR}/projects/${slug}/${label}`)
+    }
   }
 
   const files: { path: string; format: Format }[] = [...CREDENTIAL_FILES, ...(await gcloudFiles($, GCLOUD_DIR, 3)).map((path) => ({ path, format: 'gcloud' as const }))]
@@ -232,6 +244,19 @@ const notRestored = (unrestored: readonly string[]) =>
   `secrets: not restored, so written as is: ${unrestored.join(', ')} ` +
   "(a superseded value, a key no longer stored, or another session's redaction)."
 
+// A handle left in a command because its value needs shell quoting where the
+// guard cannot prove the quoting; for a store key, the read that works there.
+const notQuoted = (unquotable: readonly string[]) => {
+  const reads = unquotable.flatMap((h) => {
+    const path = storePaths.get(handles.labelOf(h) ?? '')
+    return path ? [`${h} as "$(cat ${path})"`] : []
+  })
+  return (
+    `secrets: not restored, as its value needs shell quoting in a context the guard cannot prove: ${unquotable.join(', ')}.` +
+    (reads.length ? ` Read a stored key inside the command instead: ${reads.join(', ')}.` : '')
+  )
+}
+
 /**
  * Interfaces I9: from its start the session carries the guard marker in
  * `$.state`, under this plugin's name, and `cua`'s scrubbing stands down so
@@ -256,20 +281,21 @@ export function registerSecrets(on: On) {
 
   on('tool.call', async ($, e, next) => {
     let input = e
-    let unrestored: string[] = []
+    const notes: string[] = []
     if (RESTORED.has(e.tool)) {
       await refresh($, true)
       if (e.tool === 'Bash' && typeof e.command === 'string') {
-        // The command alone, which a shell reads: each value goes in quoted for
-        // where it stands, so its bytes arrive as data, never as code.
+        // The command alone, which a shell reads, by the safe rule: a value
+        // goes in only where its bytes are proved to arrive as data.
         const shell = handles.restoreShell(e.command)
         if (shell.text !== e.command) input = { ...e, command: shell.text }
-        unrestored = shell.unrestored
+        if (shell.unrestored.length) notes.push(notRestored(shell.unrestored))
+        if (shell.unquotable.length) notes.push(notQuoted(shell.unquotable))
       } else {
         const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
         const restored = handles.restoreRecord(args)
         if (restored.value !== args) input = { ...e, ...restored.value }
-        unrestored = restored.unrestored
+        if (restored.unrestored.length) notes.push(notRestored(restored.unrestored))
       }
     }
     const ran = await next(input)
@@ -281,12 +307,12 @@ export function registerSecrets(on: On) {
       }
       if (ran.isError) {
         const text = handles.scrub(ran.text ?? '')
-        return text === ran.text && unrestored.length === 0 ? ran : { deny: unrestored.length ? `${text}\n${notRestored(unrestored)}` : text }
+        return text === ran.text && notes.length === 0 ? ran : { deny: [text, ...notes].join('\n') }
       }
       const path = persistedPath(ran.result)
       if (path !== undefined) await scrubPersisted($, path)
       const result = handles.scrubRecord(ran.result)
-      const context = unrestored.length ? [...(ran.context ?? []), notRestored(unrestored)] : ran.context
+      const context = notes.length ? [...(ran.context ?? []), ...notes] : ran.context
       if (result === ran.result && context === ran.context) return ran
       return { result, context }
     } catch {

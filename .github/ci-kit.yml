@@ -82,6 +82,8 @@ gates:
         timeout 300 npm i -g @anthropic-ai/claude-code bun && break
         [ "$i" = 3 ] && exit 1; sleep 10
       done
+      # shell-exec.ts runs restored commands under /bin/zsh as well as bash.
+      [ -x /bin/zsh ] || sudo apt-get install -y -qq zsh >/dev/null
       bash devcloud/tests/mods/run.sh
     timeout: 15
     paths: ["devcloud/**", ".github/**"]
