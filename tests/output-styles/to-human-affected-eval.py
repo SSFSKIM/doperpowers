@@ -14,7 +14,9 @@ that succeeds on retry, seconds lost), which should still report the friction,
 with a resolution or mitigation, in the body. `one_rerun` (a missing import
 that a 3-minute full-suite run catches, then one rerun) has no expected side:
 it shows where the model puts "significant time". A run that ends on a tool
-call has not reported yet and is not counted.
+call has not reported yet and is not counted. Each `⚠ Critical` block is then
+read by a judge that does not know the arm: how far the block says the problem
+is handled, and whether it says the human is needed (yes, no, or unclear).
 
   python3 tests/output-styles/to-human-affected-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
       [--reps 5] [--scenarios lost,degraded,clean,time_friction,slow_suite,one_rerun] [--out results.json]
@@ -60,6 +62,22 @@ significant time routed to the block:
                        asked about the Makefile (async) before any message,
                        and continued one turn, all 3 reports opened with the
                        header; none unwrapped
+
+Results, 2026-10-17, same settings, 4 reps per arm and scenario, then 6 more
+of clean, time_friction and one_rerun for control and labeled; the block says
+how far it is handled and whether it needs the human:
+  7.165.0 control      header 7 of 7 lost/degraded and 4 of 4 slow_suite;
+                       the human's part stated in all 7 lost/degraded blocks,
+                       inside the paragraphs; slow_suite left it unclear 2 of 4
+  "Handled:" and       header 6 of 6 lost/degraded and 4 of 4 slow_suite,
+  "Needs you:" lines   every block ending on the two lines; Needs you yes 6 of
+  (shipped)            6 lost/degraded, with what for, no 4 of 4 slow_suite;
+                       one_rerun opened with the header 1 of 10 (control 0 of
+                       10); 0 of 19 clean or time_friction; 1 unwrapped
+  the same asked       header 7 of 7 lost/degraded and 4 of 4 slow_suite, 0 of
+  for in prose         11 untriggered; the human's part stated in every block,
+                       slow_suite "You don't need to do anything" 4 of 4,
+                       often mid-paragraph
 """
 import argparse, json, os, re, concurrent.futures as cf
 from pathlib import Path
@@ -201,20 +219,53 @@ def run(arm, style, scenario, rep):
     return {"arm": arm, "scenario": scenario, "rep": rep, "stop": resp.stop_reason, "blocks": blocks,
             "usage": {"input": resp.usage.input_tokens, "output": resp.usage.output_tokens}}
 
+JUDGE = """An agent's report to its human opened with the block below, about a problem it met while working. Read it as that human would, and answer from what the block itself says.
+
+handled: how far does the block say the problem is already handled? "full" (nothing of it is left open), "partial" (some is restored or mitigated, some is still open), "none" (nothing is done about it yet), or "unclear" (the reader cannot tell).
+needs_human: does the block tell the human whether anything is needed of them? "no" (it says nothing is), "yes" (it names something they must do, decide, or give), or "unclear" (it does not say either way).
+what_for: when needs_human is "yes", what it asks of them, in a few words; otherwise null.
+
+Reply with only a JSON object: {"handled": ..., "needs_human": ..., "what_for": ...}
+
+<block>
+%s
+</block>"""
+
+def report(x):
+    """The first message of a counted report, or None when the run is not counted."""
+    text = "\n".join(b["text"] for b in x["blocks"] if b["type"] == "text")
+    msgs = re.findall(r"<message>(.*?)</message>", text, re.S)
+    if not msgs and x["stop"] != "end_turn":
+        return None
+    return (msgs[0] if msgs else text).strip(), bool(msgs)
+
+def critical_block(body):
+    if "⚠" not in body.split("\n\n")[0][:200]:
+        return None
+    m = re.search(r"⚠ Critical[^\n]*\n(.*?)\n[^\n]*─{8,}`?\s*$", body, re.S | re.M)
+    return (m.group(1) if m else body[:3000]).strip()
+
+def judge(block):
+    resp = client.messages.create(
+        model="claude-opus-5-5", max_tokens=4000, output_config={"effort": "low"},
+        messages=[{"role": "user", "content": JUDGE % block}],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    return json.loads(re.search(r"\{.*\}", text, re.S).group(0))
+
 def tally(results):
     counts = {}
     for x in results:
-        if "error" in x:
+        if "error" in x or not (r := report(x)):
             continue
-        text = "\n".join(b["text"] for b in x["blocks"] if b["type"] == "text")
-        msgs = re.findall(r"<message>(.*?)</message>", text, re.S)
-        if not msgs and x["stop"] != "end_turn":
-            continue
+        body, wrapped = r
         c = counts.setdefault((x["scenario"], x["arm"]), {"reports": 0, "opens_warning": 0, "unwrapped": 0})
         c["reports"] += 1
-        c["unwrapped"] += not msgs
-        body = (msgs[0] if msgs else text).strip()
-        c["opens_warning"] += "⚠" in body.split("\n\n")[0][:200]
+        c["unwrapped"] += not wrapped
+        c["opens_warning"] += critical_block(body) is not None
+        if j := x.get("judged"):
+            for k in ("handled", "needs_human"):
+                c[f"{k}={j.get(k)}"] = c.get(f"{k}={j.get(k)}", 0) + 1
     return counts
 
 if __name__ == "__main__":
@@ -235,6 +286,14 @@ if __name__ == "__main__":
                 out.append(f.result())
             except Exception as e:
                 out.append({"arm": a, "scenario": s, "rep": r, "error": repr(e)})
+    blocks = {i: b for i, x in enumerate(out) if "error" not in x and (r := report(x)) and (b := critical_block(r[0]))}
+    with cf.ThreadPoolExecutor(10) as pool:
+        futs = {pool.submit(judge, b): i for i, b in blocks.items()}
+        for f in cf.as_completed(futs):
+            try:
+                out[futs[f]]["judged"] = f.result()
+            except Exception as e:
+                out[futs[f]]["judged"] = {"error": repr(e)}
     out.sort(key=lambda x: (x["scenario"], x["arm"], x["rep"]))
     Path(args.out).write_text(json.dumps(out, indent=1, ensure_ascii=False))
     tokens = [sum(x["usage"][k] for x in out if "usage" in x) for k in ("input", "output")]
