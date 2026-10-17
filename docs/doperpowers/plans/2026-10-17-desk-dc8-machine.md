@@ -28,7 +28,7 @@
 ## Progress
 
 - [x] M1 — The jobs ledger, the normalization table, `output`'s containment, and the shared fixture (DC8.G3's and G4's derivations) — reviewed clean 2026-10-17 (`38a45f6b`, fix `8b34237b`)
-- [ ] M2 — The offset index, pages and the open off the uplink's thread, ended sessions pageable (DC8.G1, G2)
+- [x] M2 — The offset index, pages and the open off the uplink's thread, ended sessions pageable (DC8.G1, G2) — reviewed clean 2026-10-17 (`545a8b17`, fix `e0d22d10`)
 - [ ] M3 — The bridge: the `$.agent.list()` seed and refresh; a refused submission reported as a `failed` delivery (DC8.G3's seed, G5; G6 optional)
 - [ ] M4 — The plane carries status, jobs and MCP names, the bridge's agent state forwarded, and answers `output` (DC8.G3, G4)
 
@@ -491,6 +491,20 @@ rung for DC8); the PR opened, not merged; the report at
   gate drops no engine row.
   Evidence: `/tmp/dc8-scripts/origin.py`, read-only, 2026-10-17
   (controller, confirming the M1 follow-up's survey).
+
+- Observation: **G1, timed daemon-side (M2's fix wave)** — from the stand-in
+  flushing the `rows` frame down the stream to the POST carrying the
+  answer. Coordinator copy at load 318–331: pages median 15.2 ms, p95
+  199.9 ms, max 289 ms, 4 of 95 over 200 ms; MAWS's copy at load 334–343:
+  median 11.4 ms, p95 73.2 ms, max 358 ms, 5 of 476 over. The page's own
+  work in process at load 321–323: median 1.9–2.9 ms, max 69 ms, none over
+  200 ms, each slow page re-run at 1.5–5 ms. Deliveries (an outside-origin
+  `human` every 0.3 s to a live member's inbox): max 42/58 ms idle, 74/111
+  ms during the build, 325/311 ms during pages, none lost; heartbeats at
+  most 35 ms, presence at most 315 ms. The design session ruled the load
+  (130–340 all day) the owner's normal state and G1's page bound judged on
+  the work itself, the distribution reported with the load.
+  Evidence: `task-2-report.md`, "Fix wave 1".
 
 ## Outcomes & Retrospective
 
