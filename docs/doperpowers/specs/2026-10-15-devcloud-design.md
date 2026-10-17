@@ -542,6 +542,12 @@ stop accidents, which arrive as plain text or a common encoding.
   audited), or on GCE joins through workload identity federation with no stored secret. Never a
   reusable auth key in the vault. Until a driver exists, each new persistent VM's key is minted by
   the person; sandboxes never join.
+- Driver note, for the drivers that follow: secrets never ride cloud-init user-data. A provider keeps
+  user-data for the server's life, readable through its API by any holder of the project's token
+  and from inside the VM — sandbox containers included — through the metadata address unless it is
+  blocked. User-data carries only the non-secret descriptor and the bootstrap; the seed and the
+  Tailscale key file are copied over SSH into root-only paths once the VM answers, and the boot
+  runs after.
 
 ## Execution
 
