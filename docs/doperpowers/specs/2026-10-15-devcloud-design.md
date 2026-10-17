@@ -47,7 +47,10 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-17 13:40) M1 — The devcloud plugin and its secrets guard, reviewed clean after four fix
   waves (the Bash restoration rule narrowed each time; Decision Log). Release to both Macs and the
   `cua` ticket follow the M1 pull request's merge.
-- [ ] `cua`'s ticket landed; acceptance 1–2 rerun with both plugins enabled, and once with `cua` alone.
+- [x] (2026-10-17 17:30) `cua`'s ticket landed (cua 0.14.0, which vendors this guard and stands down on
+  I9); acceptance 1–2 rerun with both plugins enabled and with `cua` alone: 22/22 checks each, no
+  refusal; raw values in transcripts 0 and in the session store's copy 0, in recorded requests only
+  the auto-mode classifier's (not covered, Decision Log).
 - [x] (2026-10-17 15:20) M2 — devcloud core: image, boot program, secrets materializer, pull-only config,
   services (devcloud 0.2.0), reviewed clean after three fix waves; container tests on ci-kit's hosted
   runner (no Docker on the Macs).
