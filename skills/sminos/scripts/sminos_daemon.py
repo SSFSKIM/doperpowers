@@ -28,9 +28,11 @@ every project known here, each in the order of §8:
   1. integrate   (mirrored projects) commit, fetch, merge — the daemon
                  attaches a mirror it has not seen before
   2. reconcile   as every reading verb does
-  3. publish     (mirrored and hub projects) `state` once a word has held
-                 for two ticks, the first at once; (every project)
-                 `renamed` on a harness rename
+  3. publish     (hub projects) a local member joined under a former name
+                 of this machine joins again under its name now; (mirrored
+                 and hub projects) `state` once a word has held for two
+                 ticks, the first at once; (every project) `renamed` on a
+                 harness rename
   4. deliver     everything owed to a local member, through deliver_next
   5. push        (mirrored projects) commit what the tick appended, push
   6. archive     (hub projects with a remote, on the machine the hub
@@ -506,6 +508,100 @@ def publish_renames(project, view):
     return n
 
 
+def rejoin_former(project, view=None):
+    """Duty 3, for a hub project: each local member whose latest `joined`
+    this machine wrote under a former name joins again under its name now,
+    once: the hub takes only `<machine>/…` writers, so otherwise no other
+    machine and no browser would see it. Its earlier history stays here — a
+    rename or a state published under the former name included — so the new
+    writer starts from what the member is now: its alias and name source in
+    the `joined`, and its state after it (publish_renames and publish_state
+    compare against those former events and would find nothing to say).
+    The uplink runs it as it opens the project, so the vector and the upload
+    carry it, and the tick runs it too: a former-named `joined` can come at
+    any time while the stream is open, from a session whose Claude Code still
+    runs a plugin from before the enrollment. Returns how many joined again."""
+    if not sminos.machine_identity()[1]:
+        return 0
+    view = view or sminos.view_of(project, titles=False)
+    n = 0
+    for m in view.members:
+        if not (m.local and m.session):
+            continue
+        j = (view.info.get(m.session) or {}).get("joined") or {}
+        if not j or j.get("writer") == sminos.writer_id(m.session):
+            continue
+
+        def guard(evs, mine=sminos.writer_id(m.session)):
+            last = next((e for e in reversed(evs) if e["kind"] in sminos.MEMBERSHIP), None)
+            return last is not None and last["kind"] == "joined" and last["writer"] != mine
+
+        got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,
+                               **sminos.joined_fields(m.alias, m.name_source, *(
+                                   j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by"))))
+        if got:
+            n += 1
+            if m.state:
+                sminos.lifecycle(project, m.session, "state", required=False, state=m.state,
+                                 machine=sminos.host_name())
+            sminos.daemon_log("%s in %s joined again as %s (it had joined as %s)"
+                              % (m.alias, project.name, sminos.host_name(), j.get("machine")))
+    return n
+
+
+def enrolled_at():
+    """When this machine enrolled at its hub (daemon/hub.json's `enrolled`,
+    whole seconds), in epoch seconds; None when it is not known."""
+    try:
+        with open(daemon_path("hub.json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return sminos._ts_epoch(d.get("enrolled")) if isinstance(d, dict) else None
+
+
+def notice_former_writers(project, view, record):
+    """For a hub project: says once in daemon.log, for each writer of a name
+    this machine wrote under before it enrolled that appended here after the
+    enrollment, whose it is and what moves it. The hub never takes such a
+    writer, so what that session writes there — its messages to its human
+    included — stays on this machine, and nothing the daemon does moves the
+    writer: the process appending to it runs code from before the enrollment
+    (most likely a Claude Code's plugin, whose hooks name the writer after
+    the host), and only that session can load newer code. An event under a
+    former name that carries a code came from the hub, from another machine
+    enrolled under that name: no sign. The writers said are kept in
+    `record`."""
+    former = sminos.machine_identity()[1]
+    since = enrolled_at() if former else None
+    if since is None:
+        return
+    said = record.get("former_writers")
+    said = [w for w in said if isinstance(w, str)] if isinstance(said, list) else []
+    late = {}
+    for e in view.events:
+        w = e["writer"]
+        if w.partition("/")[0] in former and "mac" not in e and w not in said:
+            t = sminos._ts_epoch(e.get("ts"))
+            # `enrolled` is whole seconds: only an event a second past it is surely later.
+            if t is not None and t >= since + 1:
+                late[w] = e
+    if not late:
+        return
+    me = sminos.host_name()
+    aliases = {m.session: m.alias for m in view.members if m.session}
+    for w, e in sorted(late.items()):
+        sid = sminos.writer_session(w)
+        sminos.daemon_log(
+            "%s in %s still writes as %s, this machine's name before it enrolled as %s (%s at %s): the hub never "
+            "takes that writer. That session runs sminos code from before the enrollment, most likely its Claude "
+            "Code's plugin: /reload-plugins in it, or a restart, makes it write as %s"
+            % (aliases.get(sid) or sid[:8] or w, project.name, w.partition("/")[0], me, sminos.event_ref(e),
+               e.get("ts"), me))
+        said.append(w)
+    record["former_writers"] = said
+
+
 def deliver_owed(project, view):
     """Duty 4: for each local member with anything owed to it, deliver_next —
     the same operation the sender's fast path calls — in writer order from
@@ -555,8 +651,15 @@ def tick(project, all_seats=None):
             errors.append(str(e))
     view = sminos.view_of(project, all_seats, titles=False)
     out["reconciled"] = view.reconciled
+    if project.hub is not None:
+        rejoined = rejoin_former(project, view)
+        if rejoined:
+            # Read again, so what is published next compares against the joined just written.
+            out["published"] = rejoined
+            view = sminos.view_of(project, all_seats, titles=False)
+        notice_former_writers(project, view, record)
     if shared(project):
-        out["published"] = publish_state(project, view, record)
+        out["published"] += publish_state(project, view, record)
     out["published"] += publish_renames(project, view)
     out["delivered"], out["to"] = deliver_owed(project, view)
     if out["integrated"]:
