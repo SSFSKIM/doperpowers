@@ -733,9 +733,13 @@ Run from the devcloud worktree unless stated. `$DESC` and `$SEED` are paths outs
 
     [secret:KEY]                  the effective store value of KEY
     [secret:KEY@global]           a global value shadowed by a project-tier KEY
-    [secret:<file>:<field>]       a credential-file value (file basename, field)
-    ...~<enc>]                    an encoded spelling of any of the above: ~b64, ~b64u, ~hex, ~url
-                                  (e.g. [secret:KEY~b64]); padding variants get their own <enc>
+    [secret:KEY@<slug>]           another project's value of KEY (<slug>: that project's folder
+                                  under the store's projects/); restores to that tier's value
+    [secret:<file>:<field>]       a credential-file value (file basename, or its path from $HOME
+                                  when two files share a basename; field: the path inside it)
+    ...#<n>]                      a second distinct value under a label already taken (#2, #3, …)
+    ...~<enc>]                    an encoded spelling of any of the above: ~b64, ~b64np, ~b64u,
+                                  ~b64up, ~hex, ~HEX, ~url, ~json, ~pgpass (e.g. [secret:KEY~b64])
     [superseded:<label>]          a value <label> (any of the above) held earlier in this
                                   process; never restored
     [redacted:<kind>#<ns>.<n>]    a pattern detection; kind is the rule id (github-pat,
@@ -744,7 +748,10 @@ Run from the devcloud worktree unless stated. `$DESC` and `$SEED` are paths outs
 
 Restored in the inputs of Write, Edit, MultiEdit, NotebookEdit, and Bash: a known-value handle to
 the credential's current value in the named spelling; a pattern handle only when this process
-issued it. Anything else is left as written and named in the result.
+issued it. Anything else is left as written and named in the result. A label component writes
+whitespace, `[`, `]`, `~`, `%`, and non-ASCII bytes as `%XX` (UTF-8), so every label round-trips.
+In Bash only `command` is restored, each value quoted for the shell context its handle stands in
+(§9.3); file tools get raw bytes.
 
 **I3 — `secrets.toml`** (the materializer's input, in the profile):
 
@@ -1028,6 +1035,16 @@ clears a plugin's state when it unloads is unverified).
   Rationale: the MacBook's load is what ci-kit moves off it, and Docker.app may ask for a
   privileged helper, which the person's privilege rule stops at.
   Date/Author: 2026-10-17, the design session.
+- Decision: M1 review fixes widen I2: other projects' tiers are loaded and redacted
+  (`[secret:KEY@<slug>]`), labels are `%XX`-encoded, a colliding label takes `#<n>`, `~pgpass`
+  joins the encodings, and a Bash restoration quotes the value for its shell context. An unquoted
+  assignment value with no digit reads as a code reference and is not redacted. Rationale:
+  removing `cua`'s refusal of other-project reads needs redaction in its place; raw substitution
+  into a shell let a value's metacharacters run; ordinary auth code (`process.env.API_KEY`) must
+  stay readable. Cost accepted: a digit-free unquoted random value (about 1.5% of 24-character
+  alphanumerics) is missed by the assignment rule; quoted values and prefixed tokens are still
+  caught.
+  Date/Author: 2026-10-17, M1 fix wave 1 (task and high-rung reviews).
 
 ## Outcomes & Retrospective
 
