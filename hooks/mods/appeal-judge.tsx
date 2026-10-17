@@ -136,7 +136,7 @@ export function recordBlock(ledger: Ledger, call: { agentId?: string; tool: stri
 
 /** The note the model reads after a denial it may appeal. */
 export function blockNotice(id: string): string {
-  return `Auto mode block ${id}. The classifier judged from the transcript alone: it does not read your reasoning, and in a subagent it never sees the main conversation. If it misread this call, or the user's own words authorize it (in the main conversation too), appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}".`
+  return `Auto mode block ${id}. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}".`
 }
 
 /**
@@ -247,10 +247,10 @@ export function rulingText(block: Block, verdict: Verdict, response: string): st
 
 /** The tool as the model reads it. */
 export const APPEAL_DESCRIPTION = [
-  "Appeal a block by auto mode's classifier. The classifier judges each call from the transcript alone and blocks when in doubt: it does not read your reasoning, and in a subagent it never sees the main conversation — the user's words there, and their answers to questions you asked, do not reach it. A block can therefore be wrong about a legitimate call. Appeal when it is: when the block misreads the call — what it does, what it touches, whose it is — or when the user's own words authorize this exact action, in this conversation or, for a subagent, in the main one. An independent judge rules with that evidence in view. Not for arguing that you need the action: an action the user has not authorized is a question for the user.",
-  "- block: the id the block's notice gave (b1, b2, …).",
-  '- argument: the facts and where they are (a user message, an answer to your question, an earlier call or its result, CLAUDE.md). The judge checks each against the conversations; a claim it cannot find counts against the appeal.',
-  'One appeal per block; appeal before you stop or work around the block. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; if the action is still needed, ask the user that.',
+  "Appeal a block by auto mode's classifier. The classifier lacks context and can misjudge a legitimate call; read its block critically, and appeal when you think the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.",
+  "- block: the id from the block's notice (b1, b2, …).",
+  '- argument: the facts and where they are (a user message, an answer to your question, an earlier call or result, CLAUDE.md); the judge checks each, and a claim it cannot find counts against you.',
+  'One appeal per block, before you stop or work around it. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; ask the user that if the action is still needed.',
 ].join('\n')
 
 export const APPEAL_SCHEMA: Record<string, unknown> = {

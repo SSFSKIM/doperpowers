@@ -501,7 +501,7 @@ describe('registerAppeal', () => {
     await h.start()
     const result = (await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force', description: 'Push' }, blocked('[Git Destructive]'))) as { context?: string[] }
     expect(result.context).toEqual([
-      'Auto mode block b1. The classifier judged from the transcript alone: it does not read your reasoning, and in a subagent it never sees the main conversation. If it misread this call, or the user\'s own words authorize it (in the main conversation too), appeal once before you stop or work around it: mcp__doperpowers__appeal with block "b1".',
+      'Auto mode block b1. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "b1".',
     ])
     expect(h.logged()).toEqual([expect.objectContaining({ event: 'block', block: 'b1', tool: 'Bash', reason: '[Git Destructive]', agentId: null })])
 
