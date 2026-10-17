@@ -29,5 +29,7 @@ seen["pid"] = os.getpid()
 (state / "ship.json").write_text(json.dumps(seen))
 with open(state / "ship.log", "a") as log:
     log.write(f"start {os.getpid()}\n")
+# What a careless tool might print: the supervisor scrubs it before the container log.
+print("shipping with key", os.environ.get("EXAMPLE_API_KEY"), flush=True)
 while True:
     time.sleep(1)
