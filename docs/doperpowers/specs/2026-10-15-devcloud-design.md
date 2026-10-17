@@ -124,8 +124,15 @@ made-up value written for the test, never a real one.
    the config pull job: the edit is gone and `git -C ~/.claude status --porcelain` lists no tracked
    change; `git -C ~/.claude push` fails. A profile change committed on a Mac (a managed-settings
    value) reaches `/etc/claude-code/managed-settings.json` at the next pull, without a reboot.
-6. **Credential-free image.** The built image contains no secret: the M1 detector run over its
-   filesystem (and `docker history`) finds nothing, and `/etc/devcloud/boot.env` is absent from it.
+6. **Credential-free image.** No credential of the person's and no per-host input is baked into
+   the image: (a) none of the person's known secret values — the store's and the Secret Manager
+   entries', fed in-process to the guard's known-value matcher and compared without printing —
+   appears anywhere in the image filesystem or `docker history` (the check that matters; M2's
+   tests run it with made-up values, M5 with the real ones); (b) none of the credential files the
+   guard knows exists in the image, and `/etc/devcloud/boot.env` is absent; (c) the pattern
+   detector finds nothing outside package-manager-owned trees — dpkg files that verify unchanged,
+   npm's `node_modules`, and the Claude Code and gcloud install trees, where vendored constants
+   and fixtures match token shapes by the thousand.
 7. **sminos on a persistent host.** On the VM, unenrolled, sminos runs local-only and `sminos chat`
    works in a project checkout; after the person enrolls it, the next boot (or `devcloud
    reconcile`) installs and starts the sminos daemon as a systemd user unit, and it survives a
@@ -1100,6 +1107,14 @@ clears a plugin's state when it unloads is unverified).
   execution matrix over seven shell variants is checkable, and the notice keeps every handle
   usable. Rejected: further lexer patches.
   Date/Author: 2026-10-17, plan executor; confirmed by the design session.
+- Decision: Acceptance 6 checks what it is for — no credential and no per-host input in the
+  image — in three parts (known values, credential files and `boot.env`, pattern detections outside
+  package-owned trees), since the pattern detector flags about 15,000 vendored strings in about
+  1,800 package files (M2). The image user gets passwordless sudo: a project's `devenv/setup.sh`
+  installs system packages, the cloud images' default user has it, and the host already holds the
+  person's credentials. Root's shells do not load `/etc/devcloud/env`, which can put
+  user-writable directories on root's `PATH`.
+  Date/Author: 2026-10-17, the design session on the plan executor's proposal.
 
 ## Outcomes & Retrospective
 
