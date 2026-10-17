@@ -322,7 +322,9 @@ type Matcher = Record<string, unknown> | undefined
  * A registrar that keeps the hooks, and an engine of plain records: the
  * judge answers what the test sets, and what the hooks call is written down.
  */
-function harness(options: { judge?: string | { reason: string }; messages?: SessionMessage[]; agentMessages?: SessionMessage[]; settingsFail?: string } = {}) {
+function harness(
+  options: { judge?: string | { reason: string }; messages?: SessionMessage[]; agentMessages?: SessionMessage[]; settingsFail?: string; readFail?: string } = {},
+) {
   let onWrite: (() => void) | undefined
   let onClock: (() => void) | undefined
   const hooks: { event: string; matcher: Matcher; handler: Handler; fallback?: Handler }[] = []
@@ -355,7 +357,12 @@ function harness(options: { judge?: string | { reason: string }; messages?: Sess
     },
     fs: {
       exists: async (path: string) => files.has(path) || [...files.keys()].some((k) => k.startsWith(`${path}/`)),
-      read: async (path: string) => files.get(path) ?? '',
+      read: async (path: string) => {
+        if (path === options.readFail) {
+          throw new Error('EIO')
+        }
+        return files.get(path) ?? ''
+      },
       write: async (path: string, text: string) => {
         files.set(path, text)
         calls.push({ op: 'fs.write', args: path })
@@ -650,14 +657,54 @@ describe('registerAppeal', () => {
     expect(await h2.check({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
   })
 
-  test('an answer to an async question ends the passes, as a prompt does', async () => {
+  test('an answer to a question, async or in the dialog, ends the passes as a prompt does; the observer before is still told', async () => {
+    const told: unknown[] = []
+    observeAsks((note) => told.push(note))
+    // Registered after that observer, the appeal's chains to it.
     const h = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
     await h.start()
     await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
     await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
     const appealObserver = observeAsks(() => {})
     appealObserver?.({ kind: 'answered', id: 'q1', by: 'the terminal' })
+    expect(told).toEqual([{ kind: 'answered', id: 'q1', by: 'the terminal' }])
     expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
+
+    const h2 = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
+    await h2.start()
+    await h2.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
+    await h2.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
+    const observer2 = observeAsks(() => {})
+    observer2?.({ kind: 'dialog', toolUseId: 'q2', isError: false, text: 'No, do not push.' })
+    expect(await h2.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
+  })
+
+  test('a Bash block is stale once another Bash command ran in its loop; two passes, the one not running is void when the other starts', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    await h.call({ tool: 'Bash', tool_use_id: 't2', command: 'cd /other' }, { result: 'ok', text: 'ok' })
+    const stale = (await h.appealCall({ tool: APPEAL, tool_use_id: 't3', block: 'b1', argument: 'the user asked' })) as { result: string }
+    expect(stale.result).toContain('block b1 is stale')
+    expect(h.calls.some((c) => c.op === 'model.complete')).toBe(false)
+    // Another loop's Bash leaves this loop's block appealable.
+    await h.call({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    await h.call({ tool: 'Bash', tool_use_id: 't5', command: 'ls' }, { result: 'ok', text: 'ok' })
+    expect(((await h.appealCall({ tool: APPEAL, tool_use_id: 't6', agentId: 'a1', block: 'b2', argument: 'the user asked' })) as { result: string }).result).toContain('Granted')
+
+    const h2 = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
+    await h2.start()
+    await h2.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf a' }, blocked('[Irreversible Local Destruction]'))
+    await h2.call({ tool: 'Bash', tool_use_id: 't2', command: 'rm -rf b; cd /other' }, blocked('[Irreversible Local Destruction]'))
+    // The first block is stale (the second command ran after it); the second is appealable.
+    expect(((await h2.appealCall({ tool: APPEAL, tool_use_id: 't3', block: 'b1', argument: 'y' })) as { result: string }).result).toContain('stale')
+    expect(((await h2.appealCall({ tool: APPEAL, tool_use_id: 't4', block: 'b2', argument: 'y' })) as { result: string }).result).toContain('Granted')
+    // A third Bash call starts: the second's pass is void (it is not this call's own), and only
+    // the third's block, of the newest generation, is appealable — two Bash passes never coexist.
+    await h2.call({ tool: 'Bash', tool_use_id: 't5', command: 'rm -rf c' }, blocked('[Irreversible Local Destruction]'))
+    expect(await h2.check({ tool: 'Bash', tool_use_id: 't6', input: { command: 'rm -rf b; cd /other' } }, ask)).toEqual(ask)
+    expect(((await h2.appealCall({ tool: APPEAL, tool_use_id: 't7', block: 'b3', argument: 'y' })) as { result: string }).result).toContain('Granted')
+    expect(await h2.check({ tool: 'Bash', tool_use_id: 't8', input: { command: 'rm -rf c' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b3 granted' })
   })
 
   test('a prompt during the pass\'s own log write leaves the call to the classifier; one after the judge, before the pass is installed, makes no ruling', async () => {
@@ -678,7 +725,7 @@ describe('registerAppeal', () => {
     expect(await h2.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
   })
 
-  test('a trusted settings source that cannot be read makes no ruling', async () => {
+  test('a trusted settings source, or an instruction file that is there, that cannot be read makes no ruling', async () => {
     const h = harness({ judge: '<verdict>grant</verdict><response>x</response>', settingsFail: 'policy' })
     await h.start()
     await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'x' }, blocked('Blocked by classifier'))
@@ -686,5 +733,13 @@ describe('registerAppeal', () => {
     expect(ruling.result).toContain('the policy settings could not be read')
     expect(h.calls.some((c) => c.op === 'model.complete')).toBe(false)
     expect(h.logged().map((l) => l.event)).toEqual(['block', 'no-ruling'])
+
+    const h2 = harness({ judge: '<verdict>grant</verdict><response>x</response>', readFail: '/work/CLAUDE.md' })
+    h2.files.set('/work/CLAUDE.md', 'never delete target')
+    await h2.start()
+    await h2.call({ tool: 'Bash', tool_use_id: 't1', command: 'x' }, blocked('Blocked by classifier'))
+    const unread = (await h2.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(unread.result).toContain('/work/CLAUDE.md could not be read')
+    expect(h2.calls.some((c) => c.op === 'model.complete')).toBe(false)
   })
 })

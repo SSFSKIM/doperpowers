@@ -74,6 +74,8 @@ export type Block = {
   reason: string
   /** The session's directory when the call was blocked; a shell's own cwd may differ (The pass). */
   cwd?: string
+  /** For a Bash block: the loop's Bash generation when it was made (The pass). */
+  bashGen?: number
   at: number
   ruling?: Verdict
   /** Judge calls that ended without a ruling; the second spends the appeal. */
@@ -94,10 +96,29 @@ export const CALL_CAP = 100_000
  * prompt (the user's words, or anything that starts a turn in their place)
  * ends it: what the judge ruled on may no longer be what the user wants.
  */
-export type Ledger = { blocks: Map<string, Block>; passes: Map<string, Pass>; next: number; epoch: number }
+export type Ledger = {
+  blocks: Map<string, Block>
+  passes: Map<string, Pass>
+  next: number
+  epoch: number
+  /**
+   * Per loop (keyed by agentId, '' for main), how many Bash calls have
+   * started: a shell's working directory persists between its commands and
+   * the mod cannot read it, so a Bash block or pass belongs to the
+   * generation it was made in and is stale once another command ran.
+   */
+  bashGen: Map<string, number>
+}
 
 export function newLedger(): Ledger {
-  return { blocks: new Map(), passes: new Map(), next: 1, epoch: 0 }
+  return { blocks: new Map(), passes: new Map(), next: 1, epoch: 0, bashGen: new Map() }
+}
+
+const loopKey = (agentId: string | undefined) => agentId ?? ''
+
+/** The loop's Bash generation now. */
+export function bashGeneration(ledger: Ledger, agentId: string | undefined): number {
+  return ledger.bashGen.get(loopKey(agentId)) ?? 0
 }
 
 /** A prompt was submitted: the outstanding passes are void. */
@@ -107,7 +128,7 @@ export function bumpEpoch(ledger: Ledger): void {
 }
 
 export function recordBlock(ledger: Ledger, call: { agentId?: string; tool: string; input: unknown; reason: string; cwd?: string }, at: number): Block {
-  const block: Block = { id: `b${ledger.next++}`, ...call, at, failures: 0 }
+  const block: Block = { id: `b${ledger.next++}`, ...call, at, failures: 0, ...(call.tool === 'Bash' && { bashGen: bashGeneration(ledger, call.agentId) }) }
   ledger.blocks.set(block.id, block)
   return block
 }
@@ -140,6 +161,9 @@ export function appealCheck(ledger: Ledger, id: unknown, agentId: string | undef
   }
   if (typeof argument !== 'string' || argument.trim() === '') {
     return { ok: false, error: 'argument is empty: say what the block misread, or where the user authorized the action.' }
+  }
+  if (block.tool === 'Bash' && block.bashGen !== bashGeneration(ledger, agentId)) {
+    return { ok: false, error: `block ${block.id} is stale: another Bash command ran in this conversation since, and the shell's directory may differ. Run the command again for a fresh block.` }
   }
   const size = JSON.stringify(block.input).length
   if (size > CALL_CAP) {
@@ -174,21 +198,19 @@ export function takePass(ledger: Ledger, agentId: string | undefined, tool: stri
   return pass.expires >= now && pass.epoch === ledger.epoch ? pass : undefined
 }
 
-/** Whether a pass is stored for this call (live or not); nothing is spent. */
-export function hasPass(ledger: Ledger, agentId: string | undefined, tool: string, input: unknown): boolean {
-  return ledger.passes.has(passKey(agentId, tool, input))
-}
-
 /**
- * A Bash call other than a passed one ran in the loop: its shell's working
- * directory may have moved, so a Bash pass of that loop no longer names the
- * call the judge read (the same command in another directory is another
- * call). The loop's Bash passes are void.
+ * A Bash call starts in the loop: its shell's working directory may move, so
+ * the loop's Bash generation moves on — every Bash block of the loop not yet
+ * appealed is stale, and every Bash pass but this call's own (which its own
+ * `tool.check`, inside, consumes) is void: the same command in another
+ * directory is another call, and the judge read the one it was given.
  */
-export function voidBashPasses(ledger: Ledger, agentId: string | undefined): void {
-  const prefix = `${agentId ?? ''}\u0000Bash\u0000`
+export function startBash(ledger: Ledger, agentId: string | undefined, input: unknown): void {
+  ledger.bashGen.set(loopKey(agentId), bashGeneration(ledger, agentId) + 1)
+  const own = passKey(agentId, 'Bash', input)
+  const prefix = `${loopKey(agentId)}\u0000Bash\u0000`
   for (const key of [...ledger.passes.keys()]) {
-    if (key.startsWith(prefix)) {
+    if (key.startsWith(prefix) && key !== own) {
       ledger.passes.delete(key)
     }
   }

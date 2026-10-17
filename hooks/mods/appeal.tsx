@@ -17,7 +17,6 @@ import {
   blockNotice,
   blockReason,
   bumpEpoch,
-  hasPass,
   isAppealable,
   judgePrompt,
   logLine,
@@ -28,9 +27,9 @@ import {
   reportText,
   rulingText,
   settingsEvidence,
+  startBash,
   suggestPrompt,
   takePass,
-  voidBashPasses,
 } from './appeal-judge'
 import { asyncAsks, observeAsks } from './ask'
 
@@ -159,6 +158,9 @@ async function instructions($: EngineInterface): Promise<{ name: string; text: s
     { path: `${root}/CLAUDE.md`, name: `${root}/CLAUDE.md (in the repository)` },
     { path: `${root}/CLAUDE.local.md`, name: `${root}/CLAUDE.local.md (in the repository, untracked)` },
   ]
+  // A file that is absent is skipped; one that is there and cannot be read
+  // may hold a standing boundary: no evidence, no ruling (the throw fails
+  // the appeal).
   const found: { name: string; text: string }[] = []
   for (const { path, name } of paths) {
     try {
@@ -166,7 +168,7 @@ async function instructions($: EngineInterface): Promise<{ name: string; text: s
         found.push({ name, text: await $.fs.read(path) })
       }
     } catch (error) {
-      $.ui.log(`appeal: ${path} could not be read: ${message(error)}`)
+      throw new Error(`${path} could not be read: ${message(error)}`)
     }
   }
   // A trusted source that cannot be read may hold a deny rule the judge must
@@ -259,13 +261,14 @@ export function registerAppeal(on: On) {
 
   on('command.run', { command: 'appeals' }, async ($) => ({ text: await appealsReport($) }))
 
-  // Every call: a Bash call other than a passed one voids the loop's Bash
-  // passes before it runs (its shell may change directory); a result that is
-  // a classifier block is given its id.
+  // Every call: a Bash call moves its loop's Bash generation before it runs
+  // (its shell may change directory: the loop's pending Bash blocks are
+  // stale and its other Bash passes void); a result that is a classifier
+  // block is given its id.
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
     const input = toolInput(e as Record<string, unknown>)
-    if (e.tool === 'Bash' && !hasPass(ledger, e.agentId, e.tool, input)) {
-      voidBashPasses(ledger, e.agentId)
+    if (e.tool === 'Bash') {
+      startBash(ledger, e.agentId, input)
     }
     const result = await next(e)
     if (result.isError !== true || typeof result.text !== 'string') {
@@ -316,12 +319,13 @@ export function registerAppeal(on: On) {
     return next(e)
   }).catch((_, e, next) => next(e))
 
-  // So does an answer to an async question, which reaches the model beside
-  // a tool result, through no prompt. The bridge observes the asks too:
-  // chained, not replaced.
+  // So does an answer to a question: an async one, which reaches the model
+  // beside a tool result, and a blocking one, whose dialog's outcome is the
+  // ask's own result — neither through a prompt. The bridge observes the
+  // asks too: chained, not replaced.
   const previous = observeAsks((note) => {
     previous?.(note)
-    if (note.kind === 'answered') {
+    if (note.kind === 'answered' || note.kind === 'dialog') {
       bumpEpoch(ledger)
     }
   })
