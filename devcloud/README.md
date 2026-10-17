@@ -66,16 +66,23 @@ keeps its secret, and `Authorization: Bearer [secret:KEY]` in a command works
 like `"$(cat ~/.config/claude-secrets/KEY)"`. In a Bash command (its `command`
 only) a handle is restored only where that is shown safe, and never quoted: an
 inert value (`[A-Za-z0-9_./+:@-]`, `=` and `%` past the first character, no `=`
-right after `=` or `:` but in a trailing run: most tokens and base64), at a
-plain position (not after `\`, `$`, `$name`, `{`, `[`, `(`, `==` or `:=`; not
-before `}` or `]`), in a command with no heredoc or here-string, backtick,
-arithmetic (`((`, `$[`, `[[`, `let`, integer declarations), comment or line
-continuation. Every other handle stays, and the result gives one line per
-handle with a read that works instead: `"$(cat <store file>)"` for a store key,
-a `jq` read or the field and file for a credential, the read piped through its
-encoding for an encoded spelling, and for a pattern handle a file tool writing
-it to a temporary file to `cat`. `tests/mods/shell-exec.ts` proves it by running
-the restored commands under bash and zsh, with their word-reading options. File tools get the bytes raw. A handle that cannot be
+right after `=` or `:` but in a trailing run: most tokens and base64), standing
+in a plain string or word: inside `'…'`, inside a `"…"` with no other `$`,
+backtick, `\` or `!`, or in an unquoted word made only of that alphabet and
+inert as a whole, not a redirection's target. The command must hold no heredoc
+or here-string, backtick, `${`, arithmetic (`((`, `$((`, `$[`, `[[`, `let`,
+`integer`, `float`), flagged declaration, comment or line continuation. So
+`"Authorization: Bearer [secret:K]"`, `--token=[secret:K]`, `X=[secret:K] cmd`
+and `https://user:[secret:K]@host` work. Every other handle stays, and the
+result gives one line per handle with a read that prints exactly the value:
+`"$(cat <store file>)"` for a store key, `jq -j` for a JSON field, `gh auth
+token` for gh's hosts file, a `python3` read that undoes the file's escaping for
+TOML, `.pgpass`, `.netrc`, `.git-credentials` and `.npmrc`, that read piped into
+its encoding for an encoded spelling, a pipe or `<(…)` for a value ending in a
+newline, and for a pattern handle a file tool writing it to a temporary file to
+`cat`. `tests/mods/shell-exec.ts` proves it by running the restored commands
+under bash and zsh, with their word-reading options, and each read against real
+files. File tools get the bytes raw. A handle that cannot be
 restored — `[superseded:…]`, a key no longer stored, another process's (or a
 resumed session's earlier) pattern handle — is written as is, and the tool's
 result carries a line naming it. The transcript keeps the call as the model

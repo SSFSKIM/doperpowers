@@ -474,22 +474,33 @@ The guard differs from `cua`'s in four ways:
    - the value is inert: non-empty, of `[A-Za-z0-9_./+:@-]` with `=` and `%` past the first
      character, and no `=` right after `=` or `:` except in a trailing run (base64 padding),
      since zsh's `MAGIC_EQUAL_SUBST` reads `==cmd` and `:=cmd` as `=cmd`;
-   - the command holds no `<<` (heredoc or here-string), backtick, `((`, `$[`, `[[`, `let`,
-     integer declaration, comment or line continuation;
-   - the character before the handle is the command's start, whitespace, a quote, or one of
-     `= : / , @ . - + _` or an alphanumeric — never `\`, `$`, `{`, `[`, `(`, never right after a
-     `$name`, and never after `==` or `:=`; the character after it is the command's end,
-     whitespace, a quote, or one of `; | & ) / : , . - = @` or an alphanumeric — never `}` or
-     `]` (and a value ending in `=` or `:` must end its word).
+   - the command holds no `<<` (heredoc or here-string), backtick, `((`, `$((`, `$[`, `${`,
+     `[[`, `let`, `integer`, `float`, `declare`/`typeset`/`local`/`export`/`readonly` with a
+     flag, comment or line continuation;
+   - the handle stands in a plain string or a plain word, judged over the whole of it rather
+     than its neighbours: inside `'…'`; inside a `"…"` whose other content has no `$`, backtick,
+     `\` or `!`; or in an unquoted word (a maximal run between whitespace and `; | & ( ) < >`)
+     whose other characters are all of the inert alphabet — so no quote, `$ { } [ ] * ? \ ~` —
+     and which, restored, is inert as a whole (no leading `=` or `%`, no `==` or `:=` but a
+     trailing run), is not the target of a redirection, and touches no `(` but one that opens a
+     subshell or a substitution.
+   So `"Authorization: Bearer [secret:K]"`, `'…[secret:K]…'`, `--token=[secret:K]`,
+   `X=[secret:K] cmd` and `https://user:[secret:K]@host` restore; `$USER:[secret:K]` (a zsh
+   modifier), `=[secret:K]`, `${X/[secret:K]/…}`, `> [secret:K]` and `{a,[secret:K]}` do not.
    A value that is not inert is never restored into a command. Every handle left in a command
-   gets one line in the tool's result naming a read that works there: for a store key
-   `"$(cat <its tier's store file>)"`; for a credential-file value a `jq` read of a JSON field, or
-   the field and file to read; for an encoded spelling the same read piped through its encoding;
-   for a pattern handle, which has no source on disk, a file tool writing it to a temporary file
-   (file tools restore it) and `"$(cat <that file>)"`. The command still runs. Executing the
-   restored commands under bash (also `--posix` and `-f`) and zsh (also with
-   `magic_equal_subst`, `extendedglob` and `noglob`) over a matrix of values and command shapes
-   proves it (`devcloud/tests/mods/shell-exec.ts`). File tools get the bytes raw: their content
+   gets one line in the tool's result naming a read that works there and prints exactly the
+   value's bytes (`devcloud/hooks/mods/secrets-reads.tsx`): for a store key
+   `"$(cat <its tier's store file>)"`; for a JSON field `jq -j`; for `gh`'s hosts file
+   `gh auth token`; for a TOML, `.pgpass`, `.netrc`, `.git-credentials` or `.npmrc` value a
+   `python3` read that undoes the file's own quoting or escaping (and picks the `#n`th of
+   repeated entries); for an encoded spelling that read piped into its encoding, with no `$()`
+   in between; for a value that ends in a newline, which `"$(…)"` would drop, the read to pipe
+   or pass as `<(…)`; for a pattern handle, which has no source on disk, a file tool writing it
+   to a temporary file (file tools restore it) and `"$(cat <that file>)"`. The command still
+   runs. Executing the restored commands under bash (also `--posix` and `-f`) and zsh (also with
+   `magic_equal_subst`, `extendedglob`, `noglob`, `braceccl` and `kshglob`) over a matrix of
+   values and command shapes, and each read against real files, proves it
+   (`devcloud/tests/mods/shell-exec.ts`). File tools get the bytes raw: their content
    is not parsed by a shell. A handle-like text that does not parse (a space inside it) is named
    as not restored too.
    The tool call as the transcript records it keeps the handle. A handle that cannot be restored —
@@ -777,9 +788,9 @@ Restored in the inputs of Write, Edit, MultiEdit, NotebookEdit, and Bash: a know
 the credential's current value in the named spelling; a pattern handle only when this process
 issued it. Anything else is left as written and named in the result. A label component writes
 whitespace, `[`, `]`, `~`, `%`, and non-ASCII bytes as `%XX` (UTF-8), so every label round-trips.
-In Bash only `command` is restored, and only an inert value at a plain position in a plain
-command, as it is; every other handle stays, the result naming a read that works in its place
-(§9.3); file tools get raw bytes.
+In Bash only `command` is restored, and only an inert value in a plain string or plain word
+(judged whole) of a plain command, as it is; every other handle stays, the result naming a read
+that prints exactly its bytes in its place (§9.3); file tools get raw bytes.
 
 **I3 — `secrets.toml`** (the materializer's input, in the profile):
 
