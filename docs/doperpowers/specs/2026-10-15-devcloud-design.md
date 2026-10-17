@@ -331,8 +331,9 @@ an `@<ref>` suffix on either overrides the registry's ref for the root repositor
 
 The `devenv` skill (in the devcloud plugin, invoked as `/devcloud:devenv` in a repository or
 triggered by asking for one) writes a repository's `devenv/` from what the repository already
-says about itself: its CI workflows first — the install path something already runs and tests —
-then its manifests and lockfiles, compose files, bootstrap scripts and Makefile targets, and the
+says about itself: its CI first — `.github/ci-kit.yml` where the repository has adopted ci-kit
+(its `setup` and gate commands), else its workflows — because that install path is one something
+already runs and tests; then its manifests and lockfiles, compose files, bootstrap scripts and Makefile targets, and the
 setup section of its README. It writes `setup.sh` with the `# devenv-inputs:` lines naming the
 lockfiles it read, working on macOS and Ubuntu alike (the package manager chosen by platform);
 `start.sh` only when the repository runs long-lived services; `validate.sh` as the repository's
@@ -480,6 +481,11 @@ stop accidents, which arrive as plain text or a common encoding.
   in `devcloud/.claude-plugin/plugin.json` and its marketplace entry), bumped by the same script
   once M1 teaches it to take the plugin to bump. A doperpowers bump never moves devcloud's
   version, nor the reverse.
+- doperpowers' CI is ci-kit (`.github/ci-kit.yml`, schema in ci-kit's `docs/adopting.md`). Every
+  test suite this work adds becomes a gate there, scoped by `paths` to the files it covers, and
+  the existing `repo-checks` gate stays green with a second plugin in the marketplace. The ci-kit
+  session (sminos `@doperpowers/CI-opt`) is told when doperpowers' gates change; ci-kit owns the
+  schema, doperpowers owns its own file.
 
 ### Plan of Work
 
@@ -500,8 +506,11 @@ the `cua` project for its half. Touches, in doperpowers: the plugin skeleton —
 secrets.tsx,tsconfig.json}`, `devcloud/tests/mods/secrets.test.ts` with its runner
 (`devcloud/tests/mods/run.sh`, staging like `tests/mods/run-mods-tests.sh` if `claude plugin test`
 cannot take the folder directly), `scripts/bump-version.sh` and `.version-bump.json` (a plugin to
-bump), and `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence: the command stays in
-`cua`, the guard is devcloud's). In
+bump), `CLAUDE.md`'s repo map (a `devcloud/` row; the `/secret` sentence: the command stays in
+`cua`, the guard is devcloud's), and `.github/ci-kit.yml` (a `devcloud-mods` gate running
+`devcloud/tests/mods/run.sh`, installed like the `mods` gate, `paths: ["devcloud/**",
+".github/**"]`; `repo-checks`' version-bump and marketplace-manifest tests extended for the second
+plugin). In
 the config repository: `sync/plugins.manifest.json` gains `devcloud@doperpowers`, and
 `tools/session-mirror` ships a `tool-results/` file only once it has been unchanged for a settle
 interval (Design §9.1), with a test. `cua` is not touched by this initiative: its half — dropping
@@ -549,8 +558,10 @@ working host given a descriptor and seed, against a stand-in profile and with no
 secrets map, services, status),
 `image/setup.sh`, `image/Dockerfile`, `boot/devcloud-boot`, `boot/devcloud-services`,
 `boot/devcloud` (`status`, `reconcile`, and the jobs' entry points), `boot/secrets.py` (the
-materializer), `tests/` (new, `devcloud/tests/run.sh`). Interfaces: produces I3, I5, I6, I7, and
-the reader side of I8; consumes I1 (writes `store` entries in its layout).
+materializer), `tests/` (new, `devcloud/tests/run.sh`), and a `devcloud` gate in
+`.github/ci-kit.yml` running it on the hosted Ubuntu runner, which has Docker (`paths:
+["devcloud/**", ".github/**"]`). Interfaces: produces I3, I5, I6, I7, and the reader side of I8;
+consumes I1 (writes `store` entries in its layout).
 
 Decisions: Secret Manager access is the REST API called from the standard library with an access
 token from `gcloud` running against the root-private configuration the seed was activated into (a
@@ -643,7 +654,9 @@ person, through the dispatching session, a one-time tagged Tailscale auth key, a
 for the enrollment step below so the VM does not wait unattended.
 
 Run: acceptance 1–3, 5–6, 8 on the container on a machine with Docker; then the VM (created with
-the person's existing provider CLI): acceptance 3–6 and the unenrolled half of 7; request the
+the person's existing provider CLI, never in a cloud project ci-kit operates — ci-kit's agents
+delete what they recognize there, and its spec asks that personal hosts live elsewhere):
+acceptance 3–6 and the unenrolled half of 7; request the
 person's enrollment of the VM; the enrolled half of 7 including its reboot; delete the VM the same
 day and record it in Progress.
 
@@ -863,6 +876,18 @@ stays out of child processes, records it here, and the ticket names it.
   retire. Descriptor entries map to registry names or `owner/repo`, with `@ref` overriding.
   Rationale: the person's everyday launch paths must survive the change of declaration format.
   Date/Author: 2026-10-15, review round 1.
+- Decision: Coordination with ci-kit (the person's CI initiative, `SSFSKIM/ci-kit`) is limited
+  to four points: devcloud's suites become gates in doperpowers' `.github/ci-kit.yml`; the
+  `devenv` skill reads a repository's `ci-kit.yml` first; M5's VM stays out of ci-kit's cloud
+  projects; and devcloud's acceptance traffic through the Mac mini's gateway avoids ci-kit's mac
+  lane measurement windows, which the CI-opt session names when asked. Rationale: the two meet at
+  a repository's install path and at shared machines, not in their images or launchers — ci-kit's
+  runner image and VMs deliberately carry no credentials and no service account for untrusted
+  job code, devcloud's carry the person's, so sharing either would weaken one or burden the
+  other. Deferred, to propose to CI-opt after M4: a ci-kit `setup` that runs `devenv/setup.sh`,
+  so a repository states its install once for both. Later, a devcloud provisioning driver for GCE
+  spot starts from ci-kit's launcher (`lib/gce.mjs`: zone fallback, `maxRunDuration` deletion).
+  Date/Author: 2026-10-17, design session, on the person's question.
 - Decision: Packaging. The secrets mod, the `devenv` skill, and the host image and boot program
   ship as a second plugin, `devcloud`, in the doperpowers repository and marketplace, versioned on
   its own; doperpowers stays the workflow plugin.
