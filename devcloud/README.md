@@ -181,7 +181,10 @@ snapshots, and its `devcloud-boot.service` runs the boot at every start.
       -v "$DESC":/etc/devcloud/boot.env:ro -v "$SEED":/run/devcloud/seed.json:ro devcloud
 
 A container cannot set its own host name, so the driver passes
-`--hostname` and the boot only checks it. Its entrypoint runs
+`--hostname` and the boot only checks it. A sandbox reaches the gateway
+through its host's tailnet (`DEVCLOUD_TAILSCALE=host`), and the gateway's
+tailnet name resolves only through the tailnet's resolver, so on such a host
+the driver also passes `--dns 100.100.100.100`. Its entrypoint runs
 `devcloud-boot`, then `exec devcloud-services` when the boot exited 0 or 3
 (below): any other failure ends the container, and
 `docker run --restart on-failure` retries it from the top.
