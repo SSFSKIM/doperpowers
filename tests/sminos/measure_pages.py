@@ -4,7 +4,7 @@ uplink's thread, on transcripts of at least 150 MB and 10,000 rows. Run by
 hand, one at a time on a busy machine, never in the suites:
 
     /tmp/maws-review/with-slot.sh python3 tests/sminos/measure_pages.py \\
-        [--copy TRANSCRIPT]... [--synthetic-mb 160] [--heartbeat-ms 1200]
+        [--copy TRANSCRIPT]... [--synthetic-mb 160 | --no-synthetic] [--heartbeat-ms 1200]
 
 Each transcript — a synthetic one this writes (12,000 rows and records of
 the engine's other kinds, at least 150 MB) and a copy of each --copy file,
@@ -15,17 +15,21 @@ twice over:
    file read whole, every line given to json.loads; each page and each open
    cost this), against the offset index's build, then a second build of the
    same file (it reads nothing).
-2. Through `sminos daemon uplink` against the hub stand-in: a subscribe's
-   snapshot, from the `subscribe` frame's sending to the snapshot's arrival
-   back; every `rows` page the same way, paging from the newest row to the
-   first line; a second subscription's snapshot. Throughout, each heartbeat
-   answer (the `hb`'s `at` to its `hb-ack`'s arrival) and each presence (the
-   session's engine record rewritten every 0.3 s to its `presence` message's
-   arrival), counted by phase: idle, while the subscribe builds, while pages
-   run.
+2. Through `sminos daemon uplink` against the hub stand-in, daemon-side: a
+   subscribe's snapshot, from the moment the stand-in flushed the
+   `subscribe` frame down the stream to the moment the POST carrying the
+   snapshot reached it; every `rows` page the same way, paging from the
+   newest row to the first line; a second subscription's snapshot. (The
+   time from the test's own control request is kept beside it, as
+   `pages_end_to_end`.) Throughout, timed by phase — idle, while the
+   subscribe builds, while pages run: each heartbeat answer (the `hb`'s `at`
+   to its `hb-ack`'s arrival); each presence (the session's engine record
+   rewritten every 0.3 s to its `presence` message's arrival); and each
+   delivery (an outside-origin `human`, sealed as the hub stores a web send,
+   written down the stream every 0.3 s for another live member, to its
+   frame's arrival on that member's inbox socket).
 
-A latency measured from the frame's sending includes the stand-in's control
-POST: an upper bound on the time from the frame reaching the daemon.
+The load average is read at each transcript's start and end.
 Hermetic: HOME and SMINOS_HOME are temporary; nothing reaches beyond
 127.0.0.1.
 """
@@ -37,7 +41,9 @@ import json
 import math
 import os
 import random
+import re
 import shutil
+import socket
 import statistics
 import subprocess
 import sys
@@ -51,11 +57,44 @@ sys.path.insert(0, HERE)
 import test_session_plane as tsp  # noqa: E402 — its import isolates HOME and SMINOS_HOME under a temporary root
 
 import fake_session  # noqa: E402
+import sminos_codes as codes  # noqa: E402
 import sminos_plane as plane  # noqa: E402
 
 T = tsp.T
 SMINOS = os.path.join(tsp.SCRIPTS, "sminos")
 PROBE_EVERY = 0.3
+KEY = bytes(range(32))                   # the org key the credential below names
+MEMBER = "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"  # the web member whose sends are probed
+
+
+class Inbox(threading.Thread):
+    """A live member's inbox socket: when each delivery probe's frame came."""
+
+    def __init__(self, path):
+        super().__init__(daemon=True)
+        self.path = path
+        self.came = {}       # probe number → arrival
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(path)
+        self.sock.listen(16)
+        self.start()
+
+    def run(self):
+        while True:
+            try:
+                c, _ = self.sock.accept()
+            except OSError:
+                return
+            data = b""
+            while True:
+                chunk = c.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            at = time.time()
+            c.close()
+            for k in re.findall(r"dprobe-(\d+)-x", data.decode("utf-8", "replace")):
+                self.came.setdefault(int(k), at)
 
 
 def full_parse_before_dc8(path):
@@ -134,6 +173,7 @@ class Rig:
 
     def __init__(self, heartbeat_ms):
         self.procs = []
+        self.seq = 0      # the probed web member's last seq
         home = os.environ["HOME"]
         bindir = os.path.join(T, "bin")
         os.makedirs(bindir)
@@ -181,9 +221,9 @@ class Rig:
         holder = self.spawn(["sleep", "3600"])
         return sid, os.path.join(self.home, ".claude", "sessions", "%d.json" % holder.pid), holder
 
-    def record(self, sid, path, holder, waiting):
+    def record(self, sid, path, holder, waiting, inbox=None):
         rec = {"pid": holder.pid, "sessionId": sid, "cwd": self.root, "kind": "interactive", "status": "busy",
-               "waitingFor": waiting}
+               "waitingFor": waiting, **({"messagingSocketPath": inbox} if inbox else {})}
         with open(path + ".tmp", "w") as f:
             json.dump(rec, f)
         os.replace(path + ".tmp", path)
@@ -202,8 +242,19 @@ class Rig:
         return body["sessions"]
 
     def send(self, frame):
+        """Writes the frame down the stream; when it was flushed there."""
         status, body = tsp.call(self.url, "POST", "/control/send", {"frames": [frame]})
         assert status == 200, body
+        return body["at"]
+
+    def human(self, sid, k):
+        """Delivery probe `k`: a web send to member `sid`, sealed as the hub
+        stores it, written down the stream as the hub fans it out; when."""
+        draft = {"kind": "human", "from": "human", "member": MEMBER, "to": [{"session": sid, "alias": sid[:8]}],
+                 "text": "dprobe-%d-x" % k, "created": "2026-10-17T00:00:00.000Z"}
+        sealed = codes.seal(KEY, "log", self.project, draft, codes.b64url(os.urandom(16)))
+        e = {**sealed, "writer": "hub/" + MEMBER, "seq": k, "ts": "2026-10-17T00:00:00.000Z"}
+        return self.send({"t": "events", "project": self.project, "events": [e]})
 
     def wait(self, test, what, timeout=120.0):
         deadline = time.time() + timeout
@@ -235,10 +286,10 @@ def spread(values):
             "p95_ms": round(p95 * 1000, 1), "max_ms": round(values[-1] * 1000, 1)}
 
 
-def through_uplink(rig, sid, record_path, holder):
-    """Subscribe, page to the first line, subscribe again; heartbeats and
-    presence timed throughout, by phase."""
-    probes, stop = {}, threading.Event()
+def through_uplink(rig, sid, record_path, holder, postbox, inbox):
+    """Subscribe, page to the first line, subscribe again, daemon-side;
+    heartbeats, presence and deliveries timed throughout, by phase."""
+    probes, humans, stop = {}, {}, threading.Event()   # humans: delivery probe number → when written down
 
     def probe():
         k = 0
@@ -248,41 +299,50 @@ def through_uplink(rig, sid, record_path, holder):
             rig.record(sid, record_path, holder, "probe %d" % k)
             stop.wait(PROBE_EVERY)
 
+    def deliver():
+        while not stop.is_set():
+            rig.seq += 1
+            humans[rig.seq] = rig.human(postbox, rig.seq)
+            stop.wait(PROBE_EVERY)
+
+    load = [os.getloadavg()[0]]
     phases = [("idle", time.time())]
-    prober = threading.Thread(target=probe, daemon=True)
-    prober.start()
+    probers = [threading.Thread(target=f, daemon=True) for f in (probe, deliver)]
+    for p in probers:
+        p.start()
     time.sleep(3)
     sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
     phases.append(("subscribe", time.time()))
-    t0 = time.time()
-    rig.send({"t": "subscribe", "project": rig.project, "session": sid, "agentId": None, "sub": sub})
+    at = rig.send({"t": "subscribe", "project": rig.project, "session": sid, "agentId": None, "sub": sub})
     snap = rig.wait(lambda m: m.get("sub") == sub, "the snapshot")
     assert snap["message"]["kind"] == "snapshot", snap["message"]
-    first_snapshot = snap["received"] - t0
+    first_snapshot = snap["received"] - at
     rows = snap["message"]["body"]["rows"]
     phases.append(("pages", time.time()))
-    pages, before, total = [], rows[-1]["uuid"], len(rows)
+    pages, ends, before, total = [], [], rows[-1]["uuid"], len(rows)
     while True:
         t0 = time.time()
-        rig.send({"t": "rows", "project": rig.project, "session": sid, "agentId": None, "sub": sub,
-                  "before": before, "limit": 1000})
+        at = rig.send({"t": "rows", "project": rig.project, "session": sid, "agentId": None, "sub": sub,
+                       "before": before, "limit": 1000})
         got = rig.wait(lambda m: m.get("sub") == sub and m["kind"] in ("rows", "end"), "page %d" % len(pages))
         assert got["message"]["kind"] == "rows", got["message"]
         body = got["message"]["body"]
-        pages.append(got["received"] - t0)
+        pages.append(got["received"] - at)
+        ends.append(got["received"] - t0)
         total += len(body["rows"])
         if not body["more"]:
             break
         before = body["rows"][-1]["uuid"]
     phases.append(("after", time.time()))
     again = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
-    t0 = time.time()
-    rig.send({"t": "subscribe", "project": rig.project, "session": sid, "agentId": None, "sub": again})
+    at = rig.send({"t": "subscribe", "project": rig.project, "session": sid, "agentId": None, "sub": again})
     snap2 = rig.wait(lambda m: m.get("sub") == again, "the second snapshot")
-    second_snapshot = snap2["received"] - t0
+    second_snapshot = snap2["received"] - at
     time.sleep(2)
     stop.set()
-    prober.join()
+    for p in probers:
+        p.join()
+    load.append(os.getloadavg()[0])
     rig.poll()
     for s in (sub, again):
         rig.send({"t": "unsubscribe", "project": rig.project, "sub": s})
@@ -310,18 +370,30 @@ def through_uplink(rig, sid, record_path, holder):
             if waiting in probes:
                 sent = probes.pop(waiting)
                 presence.setdefault(phase_of(sent), []).append(s["received"] - sent)
-    return {"rows_reached": total, "first_snapshot_ms": round(first_snapshot * 1000, 1),
+    deliveries, undelivered = {}, 0
+    for k, at in humans.items():
+        if k in inbox.came:
+            deliveries.setdefault(phase_of(at), []).append(inbox.came[k] - at)
+        elif at < phases[-2][1] - 1:
+            undelivered += 1
+    shown = ("idle", "subscribe", "pages")
+    return {"load_average_1m": [round(x) for x in load], "rows_reached": total,
+            "first_snapshot_ms": round(first_snapshot * 1000, 1),
             "second_snapshot_ms": round(second_snapshot * 1000, 1), "pages": spread(pages),
-            "pages_over_200ms": sum(1 for p in pages if p > 0.2),
-            "heartbeat_answers": {k: spread(v) for k, v in hb.items() if k in ("idle", "subscribe", "pages")},
-            "presence": {k: spread(v) for k, v in presence.items() if k in ("idle", "subscribe", "pages")},
-            "presence_probes_unanswered": len([k for k, t in probes.items() if t < phases[-2][1] - 1])}
+            "pages_over_200ms": sorted(round(p * 1000) for p in pages if p > 0.2),
+            "pages_end_to_end": spread(ends),
+            "heartbeat_answers": {k: spread(v) for k, v in hb.items() if k in shown},
+            "presence": {k: spread(v) for k, v in presence.items() if k in shown},
+            "presence_probes_unanswered": len([k for k, t in probes.items() if t < phases[-2][1] - 1]),
+            "deliveries": {k: spread(v) for k, v in deliveries.items() if k in shown},
+            "deliveries_unanswered": undelivered}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--copy", action="append", default=[], help="a transcript to measure a copy of")
     ap.add_argument("--synthetic-mb", type=float, default=160)
+    ap.add_argument("--no-synthetic", action="store_true", help="measure the copies alone")
     # Above the uplink's ACK_GAP (1 s), so each heartbeat is answered on its own.
     ap.add_argument("--heartbeat-ms", type=int, default=1200)
     a = ap.parse_args()
@@ -329,7 +401,7 @@ def main():
     results = []
     try:
         cases = []
-        for name in ["synthetic"] + a.copy:
+        for name in ([] if a.no_synthetic else ["synthetic"]) + a.copy:
             # A copy keeps its own session id: its rows name it.
             sid, record_path, holder = rig.session(
                 None if name == "synthetic" else os.path.basename(name)[:-len(".jsonl")])
@@ -341,10 +413,14 @@ def main():
                 shutil.copyfile(name, dest)
             rig.record(sid, record_path, holder, "start")
             cases.append((name, sid, record_path, holder, dest))
+        # The member the delivery probes go to: a live session with an inbox.
+        postbox, postbox_record, postbox_holder = rig.session()
+        inbox = Inbox(os.path.join(T, "inbox.sock"))
+        rig.record(postbox, postbox_record, postbox_holder, "", inbox=inbox.path)
         rig.start()
         deadline = time.time() + 120
-        while not all(any(s["message"].get("kind") == "presence" and s["message"].get("session") == c[1]
-                          for s in rig.sessions) for c in cases):
+        while not all(any(s["message"].get("kind") == "presence" and s["message"].get("session") == sid
+                          for s in rig.sessions) for sid in [c[1] for c in cases] + [postbox]):
             if time.time() > deadline:
                 raise SystemExit("timed out waiting for the sessions' presence")
             rig.poll()
@@ -352,7 +428,7 @@ def main():
         for name, sid, record_path, holder, dest in cases:
             sys.stderr.write("measuring %s\n" % os.path.basename(name))
             result = {"transcript": os.path.basename(name), **in_process(dest)}
-            result.update(through_uplink(rig, sid, record_path, holder))
+            result.update(through_uplink(rig, sid, record_path, holder, postbox, inbox))
             results.append(result)
             print(json.dumps(result, indent=2), flush=True)
     finally:

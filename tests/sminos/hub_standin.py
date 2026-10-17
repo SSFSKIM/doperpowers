@@ -52,7 +52,8 @@ The test's own hands (the stand-in plays a hub that may lie):
   frames (N times over) to the machine's current stream (by default the
   stream opened last) and answers once they are written — a reader that does
   not drain the stream holds the answer back — `{"generation", "written",
-  "took"}`; 504 when no stream is open, or the write does not finish, within
+  "took", "at"}` (`at`: the epoch time the write was flushed down the
+  stream); 504 when no stream is open, or the write does not finish, within
   20 seconds.
 - `POST /control/inject` `{"project", "events"}` stores events in a project's
   log as they are, at the positions they name, checking nothing (what a
@@ -659,6 +660,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(sse(frame))
                 self.wfile.flush()
                 if done is not None:
+                    done.at = time.time()
                     done.set()
         except OSError:
             pass
@@ -692,7 +694,8 @@ class Handler(BaseHTTPRequestHandler):
         if not done.wait(max(0.0, deadline - time.time())):
             self.reply(504, {"error": "the write did not finish", "generation": s.generation})
             return
-        self.reply(200, {"generation": s.generation, "written": len(frames), "took": time.time() - started})
+        self.reply(200, {"generation": s.generation, "written": len(frames), "took": time.time() - started,
+                         "at": getattr(done, "at", None)})
 
 
 threading.Thread(target=sweep_leases, daemon=True).start()

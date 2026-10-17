@@ -755,6 +755,123 @@ class Engine(unittest.TestCase):
         self.assertEqual(b.rows, [], "its rows stay in its own transcript")
         self.assertEqual(b.errors, [])
 
+    # ---------------------------------------------------- the worker, held
+
+    def test_rows_flushed_during_the_build_and_after_its_offset(self):
+        """The build held on its worker before it reads, while a response
+        streams and its first block's row flushes (past the cut: read by the
+        build, released live by its notice); then held after it read, while
+        the next block's row and a user row flush past the offset it reached
+        (read by the Tail). Every row once, in disk order, every block
+        settled by its own row."""
+        self.fake.start_bridge()
+        self.fake.user_row("before")
+        held = Held()
+        with mock.patch.object(plane, "build", held):
+            sub, b = self.subscribe()
+            self.assertTrue(self.pump(sub, b, held.entered.is_set), "the build is asked once the bridge snapped")
+            m = self.fake.message()
+            m.text(0, "during ")
+            m.text(0, "the build")
+            during = m.row(0)
+            m.text(1, "after ")
+            held.go.set()
+            self.assertTrue(held.built.wait(10))
+            m.text(1, "the offset")
+            after = m.row(1)
+            tail = self.fake.user_row("past the offset")
+            self.settle(sub, b)
+            self.assertIsNone(b.snapshot, "nothing until the build's answer")
+            held.deliver.set()
+            self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == len(self.fake.rows())))
+        self.assertIn(during, held.read, "the build read the row flushed while it waited")
+        self.assertNotIn(after, held.read)
+        self.assertEqual(b.uuids()[-3:], [during, after, tail])
+        self.assertEqual(b.settled, {(m.turn, None, 0, 0), (m.turn, None, 0, 1)}, "both blocks settled by their rows")
+        self.assertClean(b)
+
+    def test_a_reset_between_the_build_and_its_answer(self):
+        for how in ("replaced", "shrunk"):
+            with self.subTest(how=how):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                old = [fake.user_row("%s %d" % (how, i), post=False) for i in range(5)]
+                held = Held(go=True)
+                with mock.patch.object(plane, "build", held):
+                    sub, b = self.subscribe(bridge=False, fake=fake)
+                    self.pump(sub, b, held.built.is_set)
+                    self.assertTrue(held.built.is_set())
+                    path = fake.path(None)
+                    if how == "replaced":
+                        with open(path + ".new", "w") as f:
+                            for i in range(9):
+                                f.write(json.dumps({"type": "user", "uuid": "new-%d" % i,
+                                                    "message": {"content": "x" * 50}}) + "\n")
+                        os.replace(path + ".new", path)
+                    else:
+                        with open(path, "r+") as f:
+                            f.truncate(os.path.getsize(path) // 3)
+                    held.deliver.set()
+                    self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+                self.assertEqual(b.end["reason"], "discontinuity")
+                self.assertEqual(b.uuids(), old, "the snapshot is the file the build read, and nothing of the new")
+                self.assertEqual(b.errors, [])
+                fresh, b2 = self.subscribe(bridge=False, fake=fake)
+                self.assertTrue(self.pump(fresh, b2, lambda: b2.snapshot is not None))
+                self.assertEqual(b2.uuids(), [r["uuid"] for r in fake.rows()], "a fresh one reads the file as it is")
+
+    def test_a_second_subscription_extends_the_index_before_the_first_answer_is_taken(self):
+        """The first subscription's build answered and not taken yet; a
+        second one, on the same index, extends it past rows flushed since; the
+        first then starts from its own build's offset: its Tail reads what
+        the second's build already indexed, once."""
+        first_rows = [self.fake.user_row("first %d" % i, post=False) for i in range(5)]
+        first, b1 = self.subscribe(bridge=False)
+        self.assertEqual(first.pump(), [], "asked, not answered")
+        deadline = time.time() + 10
+        while first.answers.empty() and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(first.answers.empty(), "the first build answered, untaken")
+        between = [self.fake.user_row("between %d" % i, post=False) for i in range(4)]
+        index = self.transcripts.held[self.fake.path(None)].index
+        second, b2 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(second, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(index.uuids, first_rows + between, "the second extended the shared index")
+        later = self.fake.user_row("later", post=False)
+        tailed = []
+        real = plane.parse_rows
+        with mock.patch.object(plane, "parse_rows", lambda lines: tailed.extend(lines) or real(lines)):
+            self.assertTrue(self.pump(first, b1, lambda: len(b1.rows) == 10))
+        self.assertEqual(len(tailed), 5, "the uplink's thread parsed only what flushed after its build's offset")
+        self.assertEqual([r["uuid"] for r in reversed(b1.snapshot["rows"])], first_rows, "its own build's history")
+        self.assertEqual(b1.uuids(), first_rows + between + [later], "then the rest, live, once each")
+        self.assertTrue(self.pump(second, b2, lambda: len(b2.rows) == 10))
+        self.assertEqual(b2.uuids(), first_rows + between + [later])
+        for b in (b1, b2):
+            self.assertEqual(b.errors, [])
+
+
+class Held:
+    """`plane.build` on the worker, held where a test opens it: before it
+    reads (`entered`, released by `go`) and after (`built`, then `read`: the
+    uuids it read; released by `deliver`)."""
+
+    real = staticmethod(plane.build)
+
+    def __init__(self, go=False):
+        self.entered, self.go, self.built, self.deliver = (threading.Event() for _ in range(4))
+        if go:
+            self.go.set()
+        self.read = []
+
+    def __call__(self, t, cut, bridged):
+        self.entered.set()
+        assert self.go.wait(10), "never let go"
+        answer = self.real(t, cut, bridged)
+        self.read = list(t.index.uuids)
+        self.built.set()
+        assert self.deliver.wait(10), "never delivered"
+        return answer
+
 
 class RealChild(Engine):
     """Every engine case again, the bridge being the real child (`sminos
