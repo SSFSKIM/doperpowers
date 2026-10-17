@@ -5,18 +5,21 @@ import {
   APPEAL_SCHEMA,
   JUDGE_SYSTEM,
   REPORT_DAYS,
+  RESERVED,
   SUGGEST_SYSTEM,
   TRUSTED_SOURCES,
   type Block,
   type EvidenceParts,
   type Ledger,
   type LogEvent,
+  type Relay,
   aggregate,
   appealCheck,
   applyRuling,
   blockNotice,
   blockReason,
   bumpEpoch,
+  canRelay,
   isAppealable,
   judgePrompt,
   logLine,
@@ -38,8 +41,6 @@ import { asyncAsks, observeAsks } from './ask'
  * manifest name; written out so the engine's scan reads the matchers.
  */
 export const APPEAL = 'mcp__doperpowers__appeal'
-
-const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta', '$shadowed'])
 
 /**
  * A tool call's own arguments, as the engine reconstructs them: the envelope
@@ -243,7 +244,22 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
     usage: reply.usage,
   })
   $.ui.toast(`appeal ${block.id} ${ruling.verdict === 'grant' ? 'granted' : 'upheld'}: ${block.tool}`)
-  return { result: rulingText(block, ruling.verdict, ruling.response) }
+  if (ruling.verdict !== 'grant' || !canRelay(block)) {
+    return { result: rulingText(block, ruling.verdict, ruling.response) }
+  }
+  // A main-loop grant: the call runs now, by the plugin, in the session's
+  // loop — the same shell and directory the judge read — and its result is
+  // the appeal's. A plugin's own call passes the classifier by the engine's
+  // plugin-origin fast path; the deny and ask rules still apply to it.
+  let relay: Relay
+  try {
+    const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) })
+    relay = ran.deny !== undefined ? { kind: 'refused', deny: ran.deny } : { kind: 'ran', text: ran.text ?? '', isError: ran.isError === true }
+  } catch (error) {
+    relay = { kind: 'refused', deny: message(error) }
+  }
+  await record($, { event: 'relayed', block: block.id, isError: relay.kind === 'refused' || relay.isError, text: relay.kind === 'ran' ? relay.text : relay.deny })
+  return { result: rulingText(block, ruling.verdict, ruling.response, relay) }
 }
 
 /**

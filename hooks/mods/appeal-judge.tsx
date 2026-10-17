@@ -185,10 +185,31 @@ export function appealCheck(
   return { ok: true, block }
 }
 
-/** Records the ruling; a grant leaves the pass, for the ledger's epoch now. */
+/**
+ * The keys a `tool.call` input carries beside the tool's own arguments; an
+ * argument named like one cannot be given to `$.tool.call`, so such a call
+ * is not relayed.
+ */
+export const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta', '$shadowed'])
+
+/**
+ * Whether a granted call is run by the appeal itself (The grant): a call of
+ * the main loop, which is where a plugin's own call runs, whose arguments
+ * can be given to `$.tool.call`. A subagent's call runs in another shell and
+ * directory than the plugin's would: it gets a pass and re-runs.
+ */
+export function canRelay(block: Block): boolean {
+  const input = block.input
+  return block.agentId === undefined && input !== null && typeof input === 'object' && !Array.isArray(input) && !Object.keys(input).some((k) => RESERVED.has(k))
+}
+
+/**
+ * Records the ruling; a grant that is not relayed leaves the pass, for the
+ * ledger's epoch now.
+ */
 export function applyRuling(ledger: Ledger, block: Block, verdict: Verdict, now: number): void {
   block.ruling = verdict
-  if (verdict === 'grant') {
+  if (verdict === 'grant' && !canRelay(block)) {
     ledger.passes.set(passKey(block.agentId, block.tool, block.input), {
       block: block.id,
       expires: now + PASS_MS,
@@ -239,10 +260,20 @@ export function startBash(ledger: Ledger, agentId: string | undefined, input: un
   }
 }
 
-export function rulingText(block: Block, verdict: Verdict, response: string): string {
-  return verdict === 'grant'
-    ? `Granted (block ${block.id}): ${response} Run the identical call again; this grant covers that one call for the next 10 minutes.`
-    : `Upheld (block ${block.id}): ${response}`
+/** How a relayed call ended: it ran (its result as the model reads it), or the engine refused it. */
+export type Relay = { kind: 'ran'; text: string; isError: boolean } | { kind: 'refused'; deny: string }
+
+export function rulingText(block: Block, verdict: Verdict, response: string, relay?: Relay): string {
+  if (verdict !== 'grant') {
+    return `Upheld (block ${block.id}): ${response}`
+  }
+  if (relay === undefined) {
+    return `Granted (block ${block.id}): ${response} Run the identical call again; this grant covers that one call for the next 10 minutes.`
+  }
+  if (relay.kind === 'refused') {
+    return `Granted (block ${block.id}): ${response} The call was then run for you, and the engine refused it: ${relay.deny}`
+  }
+  return `Granted (block ${block.id}): ${response} The call was then run for you${relay.isError ? ' and reported an error' : ''}; its result:\n\n${relay.text}`
 }
 
 /** The tool as the model reads it. */
@@ -250,7 +281,7 @@ export const APPEAL_DESCRIPTION = [
   "Appeal a block by auto mode's classifier. The classifier lacks context and can misjudge a legitimate call; read its block critically, and appeal when you think the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.",
   "- block: the id from the block's notice (b1, b2, …).",
   '- argument: the facts and where they are (a user message, an answer to your question, an earlier call or result, CLAUDE.md); the judge checks each, and a claim it cannot find counts against you.',
-  'One appeal per block, before you stop or work around it. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; ask the user that if the action is still needed.',
+  'One appeal per block, before you stop or work around it. Granted: in the main conversation the call is run for you and its result returned; in a subagent, run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; ask the user that if the action is still needed.',
 ].join('\n')
 
 export const APPEAL_SCHEMA: Record<string, unknown> = {
@@ -521,10 +552,16 @@ export type LogEvent =
   | { event: 'ruling'; block: string; verdict: Verdict; response: string; argument: string; model: string; durationMs: number; usage?: unknown }
   | { event: 'no-ruling'; block: string; reason: string }
   | { event: 'used'; block: string }
+  | { event: 'relayed'; block: string; isError: boolean; text: string }
 
 export function logLine(at: number, event: LogEvent): string {
-  const input = event.event === 'block' ? { ...event, input: capStrings(event.input, 2000) } : event
-  return JSON.stringify({ at: new Date(at).toISOString(), ...input })
+  const capped =
+    event.event === 'block'
+      ? { ...event, input: capStrings(event.input, 2000) }
+      : event.event === 'relayed'
+        ? { ...event, text: cut(event.text, 2000) }
+        : event
+  return JSON.stringify({ at: new Date(at).toISOString(), ...capped })
 }
 
 /** What `/appeals` reads back: the last 30 days of every session's log. */
@@ -536,6 +573,7 @@ export type Report = {
   granted: number
   upheld: number
   noRuling: number
+  /** Granted calls that ran: relayed by the appeal, or re-run on a pass. */
   used: number
   /** Each grant with its block, newest first. */
   grants: { at: string; tool: string; input: unknown; reason: string; response: string; argument: string }[]
@@ -589,7 +627,7 @@ export function aggregate(files: readonly { text: string }[]): Report {
       } else if (e.event === 'no-ruling') {
         report.appeals += 1
         report.noRuling += 1
-      } else if (e.event === 'used') {
+      } else if (e.event === 'used' || e.event === 'relayed') {
         report.used += 1
       }
     }
@@ -610,7 +648,7 @@ export function inputLine(tool: string, input: unknown): string {
 /** The report as `/appeals` prints it; `suggestions` is the model's text, when there were grants. */
 export function reportText(report: Report, suggestions: string | undefined): string {
   const lines = [
-    `Appeals, last ${REPORT_DAYS} days: blocks ${report.blocks} · appeals ${report.appeals} · granted ${report.granted} · upheld ${report.upheld} · no ruling ${report.noRuling} · passes used ${report.used}`,
+    `Appeals, last ${REPORT_DAYS} days: blocks ${report.blocks} · appeals ${report.appeals} · granted ${report.granted} · upheld ${report.upheld} · no ruling ${report.noRuling} · granted calls run ${report.used}`,
   ]
   if (report.grants.length > 0) {
     lines.push('', 'Granted:')

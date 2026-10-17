@@ -149,8 +149,12 @@ Rejected shapes for the judge and the grant:
 agent ── Bash {command} ──▶ classifier: block
         ◀── denial + "Auto mode block b3 … appeal once" (context)
 agent ── appeal {block: "b3", argument} ──▶ judge (Opus, high effort)
-        ◀── "Granted: … run the identical call again" | "Upheld: … what would change it"
-agent ── Bash {command} (identical) ──▶ tool.check: pass b3 matches → allow
+        ◀── "Upheld: … what would change it"
+        ◀── main loop:  "Granted: … The call was then run for you; its result: …"
+                        (the appeal ran it through $.tool.call: a plugin's own call,
+                         which the engine's plugin-origin fast path never classifies)
+        ◀── subagent:   "Granted: … run the identical call again"
+agent ── Bash {command} (identical, subagent) ──▶ tool.check: pass b3 matches → allow
         (classifier never asked; the pass is spent)
 ```
 
@@ -202,7 +206,13 @@ an empty argument; a call whose input, as JSON, is over 100,000 characters
 input and the judge must have read all of it. Otherwise it gathers the
 evidence, calls the judge, and answers with the ruling:
 
-- grant: `Granted (block b3): <response> Run the identical call again; this grant covers that one call for the next 10 minutes.`
+- grant, in the main loop (The grant): the call is run by the appeal and
+  `Granted (block b3): <response> The call was then run for you; its result:`
+  followed by the result as the model would have read it (`and reported an
+  error` added when the tool erred); when the engine refused the relayed
+  call — a deny rule, an ask rule answered no — `… The call was then run for
+  you, and the engine refused it: <reason>`.
+- grant, in a subagent: `Granted (block b3): <response> Run the identical call again; this grant covers that one call for the next 10 minutes.`
 - uphold: `Upheld (block b3): <response>`
 - no ruling (the judge's call failed, its answer did not parse, one of the
   trusted settings sources or an instruction file that is there could not be
@@ -316,6 +326,30 @@ lowercased, and must be `grant` or `uphold`; the response is the first
 a timeout, a missing or unknown verdict — is no ruling (fail closed: the block
 stands).
 
+### The grant: a relay in the main loop, a pass in a subagent
+
+A grant of a **main-loop** block runs the call at once, inside the appeal:
+`$.tool.call({ tool, ...input })`, the plugin's own call, which the engine
+runs in the session's loop — the same shell and directory the judge read —
+through the permission check (a deny rule or an ask rule still applies) and,
+in auto mode, past the classifier by its plugin-origin fast path (SPEC §26.7,
+fast path 3; off where the user has `autoMode.soft_deny`/`hard_deny` rules,
+in which case the classifier judges the relay too). The result, as the model
+would have read it, is the appeal's result, and a `relayed` event is logged.
+No pass is left, so nothing of the pass's bindings below applies: the call
+ran before any prompt could arrive and in the directory of the block (the
+epoch is re-checked after the judge, before the relay). Chosen by the human
+(2026-10-17) over the model re-running the call, which cost a model turn per
+grant for the same effect.
+
+A call whose arguments carry a key `$.tool.call` reserves (`tool`,
+`tool_use_id`, `consent`, …) cannot be relayed and gets a pass instead.
+
+A grant of a **subagent's** block leaves a pass: a plugin's call always runs
+in the main session's loop, so a relay would run the subagent's command in
+the main loop's shell and directory, not where the judge approved it. The
+subagent re-runs the identical call; the pass lets it through once.
+
 ### The pass
 
 A grant stores a pass keyed by the loop (`agentId`, or none for main), the
@@ -394,6 +428,7 @@ resume appends rather than truncates. Events:
 {"at":"…","event":"ruling","block":"b3","verdict":"grant","response":"…","argument":"…","model":"opus","durationMs":41200,"usage":{"input_tokens":61234,"output_tokens":512}}
 {"at":"…","event":"no-ruling","block":"b3","reason":"timeout"}
 {"at":"…","event":"used","block":"b3"}
+{"at":"…","event":"relayed","block":"b4","isError":false,"text":"…"}
 ```
 
 Inputs in the log keep each string field to 2,000 characters. Blocks are
@@ -406,7 +441,8 @@ A slash command registered at `session.start`. It reads every file under
 `~/.claude/appeals/` from the last 30 days and answers with text (a transcript
 line the person reads):
 
-1. Counts: blocks, appeals, grants, upholds, no-rulings, passes used.
+1. Counts: blocks, appeals, grants, upholds, no-rulings, granted calls run
+   (relayed or re-run on a pass).
 2. Each grant, newest first: date, tool, a one-line summary of the input, the
    classifier's reason, and the judge's response.
 3. **Suggested autoMode entries** — one `$.model.complete` call (model `opus`,
@@ -429,7 +465,9 @@ line the person reads):
 2. A subagent blocked from an action the human authorized in the main
    conversation appeals; the judge grants, citing the human's message; the
    subagent re-runs the identical call and it runs, with no second classifier
-   verdict (the log shows `ruling: grant` then `used`).
+   verdict (the log shows `ruling: grant` then `used`). A main-loop block
+   granted is run by the appeal itself, its result in the appeal's, with no
+   re-run by the model (the log shows `ruling: grant` then `relayed`).
 3. An appeal whose argument claims a user authorization the conversation does
    not contain is upheld, and the response names what the user would need to
    say.
@@ -728,6 +766,17 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   the human's wording at their ask: the classifier lacks context and can
   misjudge; read its block critically; appeal when the call was legitimate
   — the mechanism of its blindness is the judge's concern, not the model's.
+  Date/Author: 2026-10-17, the authoring session.
+- Decision: a main-loop grant is relayed — the appeal runs the call through
+  `$.tool.call` and returns its result — and a subagent's grant stays a pass
+  (The grant). Replaces the earlier rejection of "the appeal tool running the
+  call itself", which weighed the rendering and the tool's semantics; the
+  human asked for the relay after the merge (2026-10-17) and chose this split
+  over relaying always, because a plugin's call runs in the main session's
+  loop and a subagent's command would run in the wrong shell and directory.
+  Rationale: one model turn saved per grant at no change in what runs; the
+  bindings of the pass are moot for a call that runs at once in its own
+  directory.
   Date/Author: 2026-10-17, the authoring session.
 - Decision: both milestones are executed in the authoring session, not through
   `doperpowers:plan-executor`.

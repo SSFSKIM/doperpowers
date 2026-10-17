@@ -281,14 +281,22 @@ not the user's. The judge grants only when the block misread facts the
 evidence shows, or the user's own words authorize the exact action; two
 bars no authorization clears (sending sensitive material out, reaching a
 deny rule's effect); when in doubt it upholds and says what the user would
-need to say. A grant leaves a pass: the identical call (for Bash, its
-`description` aside) in the same loop, within 10 minutes, once. The
+need to say. A main-loop grant is run by the appeal itself through
+`$.tool.call` — the plugin's own call, which the engine runs in the
+session's loop and, in auto mode, past the classifier by its plugin-origin
+fast path, the deny and ask rules still applying — and the result is the
+appeal's; the model does not re-run it. A subagent's grant leaves a pass
+instead, since a plugin's call would run in the main loop's shell and
+directory, not the subagent's: the identical call (for Bash, its
+`description` aside) in the same loop and directory, within 10 minutes,
+once, and for Bash before any other Bash call in that loop. The
 `tool.check` hook applies it only over core's plain `ask` — no `rule`,
 `hook`, `setting`, `decider`, no organization `ceiling` — so a pass never
 overrides a deny rule, a settings ask rule, a classic hook, or a host. Any
-`prompt.submit` ends every pass and makes a judge call in flight no ruling:
-the ruling was on the conversation as it was. One appeal per block; a judge
-call that fails leaves the appeal open once more. Every event is logged to
+`prompt.submit`, and any answer to a question, ends every pass and makes a
+judge call in flight no ruling: the ruling was on the conversation as it
+was. One appeal per block; a judge call that fails leaves the appeal open
+once more. Every event is logged to
 `~/.claude/appeals/<session-id>.jsonl` (seeded from the file at start, the
 writes chained), and `/appeals` prints the last 30 days — counts, the grants,
 and the `autoMode` entries one more model call suggests from them, for the
