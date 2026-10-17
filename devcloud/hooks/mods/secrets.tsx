@@ -67,6 +67,9 @@ let refreshedAt = 0
 // Where each store label's file is, from $HOME: the read a command can do in
 // place of a handle the guard cannot restore into it.
 const storePaths = new Map<string, string>()
+// Each credential-file label's file (from $HOME), field, and for a JSON file
+// the key path to it.
+const credentialReads = new Map<string, { path: string; field: string; keys?: string[] }>()
 
 async function projectOf($: EngineInterface, cwd?: string): Promise<string> {
   if (project !== undefined) return project
@@ -184,9 +187,16 @@ async function refresh($: EngineInterface, isForced: boolean) {
     if (stat) present.push({ ...file, stat })
   }
   const labels = credentialLabels(present.map((f) => f.path))
+  credentialReads.clear()
   for (const { path, format, stat } of present) {
     const name = labels.get(path)!
-    known.push(...(await readSource($, `${home}/${path}`, stat, (text) => credentialFields(format, text).map((f) => ({ label: `${name}:${f.field}`, value: f.value })))))
+    const fields = await readSource($, `${home}/${path}`, stat, (text) =>
+      credentialFields(format, text).map((f) => ({ label: `${name}:${f.field}`, value: f.value, keys: f.keys })),
+    )
+    for (const f of fields as (Known & { keys?: string[] })[]) {
+      known.push({ label: f.label, value: f.value })
+      credentialReads.set(f.label, { path: `~/${path}`, field: f.label.slice(name.length + 1), keys: f.keys })
+    }
   }
   handles.setKnown(known)
 }
@@ -244,18 +254,51 @@ const notRestored = (unrestored: readonly string[]) =>
   `secrets: not restored, so written as is: ${unrestored.join(', ')} ` +
   "(a superseded value, a key no longer stored, or another session's redaction)."
 
-// A handle left in a command because its value needs shell quoting where the
-// guard cannot prove the quoting; for a store key, the read that works there.
-const notQuoted = (unquotable: readonly string[]) => {
-  const reads = unquotable.flatMap((h) => {
-    const path = storePaths.get(handles.labelOf(h) ?? '')
-    return path ? [`${h} as "$(cat ${path})"`] : []
-  })
-  return (
-    `secrets: not restored, as its value needs shell quoting in a context the guard cannot prove: ${unquotable.join(', ')}.` +
-    (reads.length ? ` Read a stored key inside the command instead: ${reads.join(', ')}.` : '')
-  )
+// The step that turns a value read in a command into a handle's encoding.
+const ENCODE: Record<string, string> = {
+  b64: "base64 | tr -d '\\n'",
+  b64np: "base64 | tr -d '\\n='",
+  b64u: "base64 | tr -d '\\n=' | tr '+/' '-_'",
+  b64up: "base64 | tr -d '\\n' | tr '+/' '-_'",
+  hex: "xxd -p | tr -d '\\n'",
+  HEX: "xxd -p | tr -d '\\n' | tr a-f A-F",
+  url: `python3 -c 'import sys,urllib.parse; sys.stdout.write(urllib.parse.quote(sys.stdin.read(), safe="!*()\\x27"))'`,
+  json: `python3 -c 'import sys,json; sys.stdout.write(json.dumps(sys.stdin.read(), ensure_ascii=False)[1:-1])'`,
+  pgpass: "sed 's/[\\\\:]/\\\\&/g'",
 }
+
+// A jq path to a JSON field's keys, or undefined where one would need quoting.
+const jqPath = (keys: readonly string[]) =>
+  keys.some((k) => k.includes("'"))
+    ? undefined
+    : keys.map((k) => (/^\d+$/.test(k) ? `[${k}]` : /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? `.${k}` : `[${JSON.stringify(k)}]`)).join('').replace(/^\[/, '.[')
+
+// A read that works in the command where a handle could not be restored,
+// for each kind of handle.
+function readInstead(handle: string): string {
+  const { kind, label = '', enc } = handles.describe(handle)
+  if (kind === 'redacted') {
+    return 'it has no source on disk, so it stays unrestored in shell commands: to use it, write it with a file tool (file tools restore it) to a temporary file, then use "$(cat <that file>)" in the command'
+  }
+  const base = label.replace(/#\d+$/, '')
+  const encode = enc ? ENCODE[enc] : undefined
+  const piped = (read: string) => (encode ? `"$(printf %s "$(${read})" | ${encode})"` : `"$(${read})"`)
+  const store = storePaths.get(label) ?? storePaths.get(base)
+  if (store) return `use ${piped(`cat ${store}`)} in the command`
+  const credential = credentialReads.get(label) ?? credentialReads.get(base)
+  if (credential) {
+    const path = credential.keys && jqPath(credential.keys)
+    if (path) return `use ${piped(`jq -r '${path}' ${credential.path}`)} in the command`
+    return `read field ${credential.field} of ${credential.path} in the command${encode ? `, then encode it: ${encode}` : ''}`
+  }
+  return 'read its source in the command'
+}
+
+// One line per handle left in a command: why, and the read to use instead.
+const notQuoted = (unquotable: readonly string[]) =>
+  unquotable.map(
+    (h) => `secrets: ${h} was not restored into this command (the guard restores into a shell command only a plain value, at a plain position, in a plain command); ${readInstead(h)}.`,
+  )
 
 /**
  * Interfaces I9: from its start the session carries the guard marker in
@@ -290,7 +333,7 @@ export function registerSecrets(on: On) {
         const shell = handles.restoreShell(e.command)
         if (shell.text !== e.command) input = { ...e, command: shell.text }
         if (shell.unrestored.length) notes.push(notRestored(shell.unrestored))
-        if (shell.unquotable.length) notes.push(notQuoted(shell.unquotable))
+        notes.push(...notQuoted(shell.unquotable))
       } else {
         const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
         const restored = handles.restoreRecord(args)

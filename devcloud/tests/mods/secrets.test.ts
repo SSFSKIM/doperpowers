@@ -312,7 +312,8 @@ describe('fix wave 1', () => {
     const ran = tool(on, () => bash(''))
     await start($, on, { [`${STORE}/SHELL`]: value })
     await $.tool.call({ tool: 'Bash', command: 'printf "%s" "[secret:SHELL]"', description: 'print [secret:SHELL]' })
-    expect(ran[0]?.command).toBe('printf "%s" "x\\$(printf INJECTED)y"')
+    // Since fix wave 3: a value that is not inert is never restored into a command.
+    expect(ran[0]?.command).toBe('printf "%s" "[secret:SHELL]"')
     expect(ran[0]?.description).toBe('print [secret:SHELL]')
   })
 
@@ -344,16 +345,29 @@ describe('fix wave 1', () => {
   })
 })
 
-describe('fix wave 2', () => {
-  test('#1 a value that needs quoting where the guard cannot prove it is left as the handle, and the result says how to read it', async ($, on) => {
-    const ran = tool(on, () => bash(''))
-    await start($, on, { [`${STORE}/SHELL`]: 'a b;c', [`${PROJECT_STORE}/MINE`]: 'd e;f' })
-    const command = 'cat <<EOF\n[secret:SHELL] [secret:MINE]\nEOF'
+describe('fix wave 3', () => {
+  test('#1 each handle a command keeps gets one line naming a read that works there', async ($, on) => {
+    const ran = tool(on, (e) => (e.tool === 'Bash' ? bash(`${githubPat(90)}`) : { type: 'create', filePath: e.file_path, content: e.content, structuredPatch: [] }))
+    await start($, on, {
+      [`${STORE}/SHELL`]: 'a b;c',
+      [`${PROJECT_STORE}/MINE`]: 'd e;f',
+      [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { access_token: `tok;${chars(30, 91)}` } }),
+      [`${HOME}/.pgpass`]: `db:5432:*:app:pw;${chars(20, 92)}\n`,
+    })
+    const pattern = ((await $.tool.call({ tool: 'Bash', command: 'cat f' })).result as { stdout: string }).stdout
+    const handles = ['[secret:SHELL]', '[secret:MINE]', '[secret:SHELL~b64]', '[secret:auth.json:tokens.access_token]', '[secret:.pgpass:db:5432:*:app]', pattern]
+    const command = `cat <<EOF\n${handles.join(' ')}\nEOF`
     const call = await $.tool.call({ tool: 'Bash', command })
-    expect(ran[0]?.command).toBe(command)
-    const note = call.context?.join('\n') ?? ''
-    expect(note).toContain('needs shell quoting in a context the guard cannot prove: [secret:SHELL], [secret:MINE]')
-    expect(note).toContain('[secret:SHELL] as "$(cat ~/.config/claude-secrets/SHELL)"')
-    expect(note).toContain('[secret:MINE] as "$(cat ~/.config/claude-secrets/projects/-work-repo/MINE)"')
+    expect(ran[1]?.command).toBe(command)
+    const lines = (call.context?.join('\n') ?? '').split('\n').filter((l) => l.startsWith('secrets:'))
+    expect(lines).toHaveLength(handles.length)
+    const line = (h: string) => lines.find((l) => l.startsWith(`secrets: ${h} `)) ?? ''
+    expect(line('[secret:SHELL]')).toContain('"$(cat ~/.config/claude-secrets/SHELL)"')
+    expect(line('[secret:MINE]')).toContain('"$(cat ~/.config/claude-secrets/projects/-work-repo/MINE)"')
+    expect(line('[secret:SHELL~b64]')).toContain(`"$(printf %s "$(cat ~/.config/claude-secrets/SHELL)" | base64 | tr -d '\\n')"`)
+    expect(line('[secret:auth.json:tokens.access_token]')).toContain(`"$(jq -r '.tokens.access_token' ~/.codex/auth.json)"`)
+    expect(line('[secret:.pgpass:db:5432:*:app]')).toContain('field db:5432:*:app of ~/.pgpass')
+    expect(line(pattern)).toContain('no source on disk')
+    expect(line(pattern)).toContain('file tool')
   })
 })

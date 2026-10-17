@@ -5,7 +5,7 @@
  * module lists and reads the files; this one says what they hold.
  */
 
-export type Field = { field: string; value: string }
+export type Field = { field: string; value: string; keys?: string[] }
 export type Format = 'yaml' | 'json' | 'gcloud' | 'toml' | 'pgpass' | 'netrc' | 'git-credentials' | 'npmrc'
 
 /** The secret store, relative to $HOME: one value per file, a folder per project under `projects/`. */
@@ -47,7 +47,7 @@ function jsonFields(value: unknown, path: string[] = [], out: Field[] = []): Fie
   else if (value !== null && typeof value === 'object') {
     for (const [k, v] of Object.entries(value)) {
       if (typeof v === 'string') {
-        if (isSecretField(k, v)) out.push({ field: [...path, k].join('.'), value: v })
+        if (isSecretField(k, v)) out.push({ field: [...path, k].join('.'), value: v, keys: [...path, k] })
       } else jsonFields(v, [...path, k], out)
     }
   }

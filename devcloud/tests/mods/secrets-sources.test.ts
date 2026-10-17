@@ -4,6 +4,8 @@ import { CREDENTIAL_FILES, credentialFields, credentialLabels, projectSlug, root
 import { chars, githubPat, pem } from './fake'
 
 const v = (seed: number) => chars(28, seed)
+// A JSON field's key path is its own test; these compare field and value.
+const fv = (fields: { field: string; value: string }[]) => fields.map(({ field, value }) => ({ field, value }))
 
 describe('credential files', () => {
   test("gh's hosts.yml: each token, by its path", () => {
@@ -21,7 +23,7 @@ describe('credential files', () => {
       last_refresh: '2026-10-01',
       mcpOAuth: { 'plugin:x|1': { serverUrl: 'https://example.com/mcp', accessToken: v(4) } },
     })
-    expect(credentialFields('json', text)).toEqual([
+    expect(fv(credentialFields('json', text))).toEqual([
       { field: 'tokens.id_token', value: v(1) },
       { field: 'tokens.access_token', value: v(2) },
       { field: 'tokens.refresh_token', value: v(3) },
@@ -30,17 +32,17 @@ describe('credential files', () => {
   })
 
   test("docker's auths and a gcloud key file", () => {
-    expect(credentialFields('json', JSON.stringify({ auths: { 'registry.example': { auth: v(5) } }, credsStore: 'desktop' }))).toEqual([
+    expect(fv(credentialFields('json', JSON.stringify({ auths: { 'registry.example': { auth: v(5) } }, credsStore: 'desktop' })))).toEqual([
       { field: 'auths.registry.example.auth', value: v(5) },
     ])
     const key = { type: 'service_account', private_key_id: chars(40, 6), private_key: pem(7), client_email: 'a@b', token_uri: 'https://oauth2.example/token' }
-    expect(credentialFields('gcloud', JSON.stringify(key))).toEqual([{ field: 'private_key', value: pem(7) }])
+    expect(fv(credentialFields('gcloud', JSON.stringify(key)))).toEqual([{ field: 'private_key', value: pem(7) }])
     const user = { type: 'authorized_user', client_id: 'c', client_secret: v(8), refresh_token: v(9) }
-    expect(credentialFields('gcloud', JSON.stringify(user))).toEqual([
+    expect(fv(credentialFields('gcloud', JSON.stringify(user)))).toEqual([
       { field: 'client_secret', value: v(8) },
       { field: 'refresh_token', value: v(9) },
     ])
-    expect(credentialFields('gcloud', JSON.stringify({ core: { project: 'p' }, token: v(10) }))).toEqual([])
+    expect(fv(credentialFields('gcloud', JSON.stringify({ core: { project: 'p' }, token: v(10) })))).toEqual([])
   })
 
   test("hcloud's cli.toml: each context's token, by its name", () => {
@@ -70,8 +72,8 @@ describe('credential files', () => {
   })
 
   test('a file that does not parse gives nothing', () => {
-    expect(credentialFields('json', '{ not json')).toEqual([])
-    expect(credentialFields('gcloud', '[1, 2]')).toEqual([])
+    expect(fv(credentialFields('json', '{ not json'))).toEqual([])
+    expect(fv(credentialFields('gcloud', '[1, 2]'))).toEqual([])
   })
 
   test('every well-known credential file has a format', () => {
@@ -146,4 +148,10 @@ describe('fix wave 2', () => {
   test('#3 .netrc: \\n, \\r and \\t in a quoted value are control characters', () => {
     expect(credentialFields('netrc', `machine m login me password "${v(40)}\\n\\r\\t\\q"\n`)).toEqual([{ field: 'm.password', value: `${v(40)}\n\r\tq` }])
   })
+})
+
+test("a JSON field carries its key path, so a command can read it", () => {
+  expect(credentialFields('json', JSON.stringify({ auths: { 'registry.example': { auth: v(41) } } }))).toEqual([
+    { field: 'auths.registry.example.auth', value: v(41), keys: ['auths', 'registry.example', 'auth'] },
+  ])
 })

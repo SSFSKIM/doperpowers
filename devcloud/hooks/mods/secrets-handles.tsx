@@ -1,5 +1,5 @@
 import { detect, keepFirst } from './secrets-detect'
-import { followsExpansion, isInert, quoteFor, shellContexts } from './secrets-shell'
+import { isInert, isPlainCommand, isPlainPosition } from './secrets-shell'
 
 /**
  * Handles: the text that stands where a secret was, one per distinct byte
@@ -174,10 +174,14 @@ export class Handles {
     return out + text.slice(at)
   }
 
-  /** The label a `[secret:LABEL]` handle (no encoding) names, or undefined. */
-  labelOf(handle: string): string | undefined {
-    const m = /^\[secret:([^\]\s~]+)\]$/.exec(handle)
-    return m ? decodeLabel(m[1]!) : undefined
+  /** What a handle names: its kind, and for a known one its label and encoding (`''` for the value itself). */
+  describe(handle: string): { kind: string; label?: string; enc: string } {
+    const m = /^\[(secret|superseded|redacted):([^\]\s]+)\]$/.exec(handle)
+    if (!m) return { kind: 'unparsed', enc: '' }
+    const body = m[2]!
+    const tilde = body.lastIndexOf('~')
+    const enc = tilde > 0 && ENCODING.has(body.slice(tilde + 1)) ? body.slice(tilde + 1) : ''
+    return { kind: m[1]!, label: decodeLabel(enc ? body.slice(0, tilde) : body), enc }
   }
 
   /** What a handle's text stands for now, or undefined when nothing it names can be restored. */
@@ -202,7 +206,7 @@ export class Handles {
 
   // Each handle resolved and written through `write`; one `write` declines is
   // named in `unquotable`, one nothing resolves in `unrestored`.
-  private restoreWith(text: string, write: (value: string, at: number) => string | undefined): { text: string; unrestored: string[]; unquotable: string[] } {
+  private restoreWith(text: string, write: (value: string, at: number, length: number) => string | undefined): { text: string; unrestored: string[]; unquotable: string[] } {
     const unrestored: string[] = []
     const unquotable: string[] = []
     const restored = text.replace(HANDLE_LIKE, (handle: string, kind: string, body: string, at: number) => {
@@ -211,7 +215,7 @@ export class Handles {
         if (!unrestored.includes(handle)) unrestored.push(handle)
         return handle
       }
-      const written = write(value, at)
+      const written = write(value, at, handle.length)
       if (written !== undefined) return written
       if (!unquotable.includes(handle)) unquotable.push(handle)
       return handle
@@ -220,20 +224,13 @@ export class Handles {
   }
 
   /**
-   * A shell command with its handles restored by the safe rule
-   * (secrets-shell): an inert value as it is; another value quoted where the
-   * command's quoting is proved; elsewhere, and after a `$`, the handle stays
-   * and is named in `unquotable`.
+   * A shell command with its handles restored where that is shown safe
+   * (secrets-shell): an inert value, at a plain position, in a plain command.
+   * Every other handle stays as written and is named in `unquotable`.
    */
   restoreShell(command: string): { text: string; unrestored: string[]; unquotable: string[] } {
-    let contexts: ReturnType<typeof shellContexts> | null | undefined
-    return this.restoreWith(command, (value, at) => {
-      if (followsExpansion(command, at)) return undefined
-      if (isInert(value)) return value
-      if (contexts === undefined) contexts = shellContexts(command) ?? null
-      const context = contexts?.[at]
-      return context === undefined ? undefined : quoteFor(context, value)
-    })
+    const isPlain = isPlainCommand(command)
+    return this.restoreWith(command, (value, at, length) => (isPlain && isInert(value) && isPlainPosition(command, at, length, value) ? value : undefined))
   }
 
   /** A record with every string scrubbed (an image's bytes left); the same object when none changed. */

@@ -180,31 +180,6 @@ describe('fix wave 1', () => {
 })
 
 describe('fix wave 2', () => {
-  test('#1 an inert value is non-empty and made only of characters no bash or zsh context treats specially', () => {
-    for (const value of [STORED, 'abcDEF012_./+:@-', 'YWJj+/9=', 'a=b', 'x%41', githubPat(80)]) expect(isInert(value)).toBe(true)
-    for (const value of ['', '=cmd', '%1', '~root', 'a b', 'a;b', 'a$b', 'a`b', "a'b", 'a"b', 'a\\b', 'a\nb', 'a*', 'a?', 'a[b]', 'a{b,c}', 'a!b', 'a#b', 'a^b', 'a~b', 'a(b)', 'a<b', 'a>b', 'a|b', 'a&b', 'a,b']) {
-      expect(isInert(value)).toBe(false)
-    }
-  })
-
-  test('#1 an inert value restores raw in any command shape', () => {
-    const h = withStored({ SAFE: STORED })
-    for (const command of ['echo [secret:SAFE]', "cat <<'EOF'\n[secret:SAFE]\nEOF", 'x=`echo [secret:SAFE]`', ': # [secret:SAFE]', 'cat <<< [secret:SAFE]']) {
-      expect(h.restoreShell(command)).toEqual({ text: command.replace('[secret:SAFE]', STORED), unrestored: [], unquotable: [] })
-    }
-  })
-
-  test('#1 a non-inert value is quoted only in a plain quoted string or an unquoted word, and left as the handle elsewhere', () => {
-    const value = `a'b"c$d\`e\\f g`
-    const h = withStored({ V: value })
-    expect(h.restoreShell("printf %s '[secret:V]'").text).toBe(`printf %s 'a'\\''b"c$d\`e\\f g'`)
-    expect(h.restoreShell('printf %s "[secret:V]"').text).toBe(`printf %s "a'b\\"c\\$d\\\`e\\\\f g"`)
-    expect(h.restoreShell('printf %s [secret:V]').text).toBe(`printf %s 'a'\\''b"c$d\`e\\f g'`)
-    for (const command of ['cat <<EOF\n[secret:V]\nEOF', "cat <<'EOF'\n[secret:V]\nEOF", 'cat <<< [secret:V]', 'echo `printf %s [secret:V]`', 'echo "$(printf %s [secret:V])"', ': # [secret:V]', 'printf %s ${X:-[secret:V]}', "printf %s $'[secret:V]'", 'printf %s \\\n[secret:V]', 'echo $[secret:V]']) {
-      expect(h.restoreShell(command)).toEqual({ text: command, unrestored: [], unquotable: ['[secret:V]'] })
-    }
-  })
-
   test('#2 two labels holding the same value both restore; the bytes display as the first', () => {
     const h = withStored({ A: STORED, B: STORED })
     expect(h.scrub(STORED)).toBe('[secret:A]')
@@ -220,5 +195,59 @@ describe('fix wave 2', () => {
     ])
     expect(h.restore('[secret:B]').text).toBe(STORED)
     expect(h.scrub(`${STORED}-b`)).toBe('[superseded:B]')
+  })
+})
+
+describe('fix wave 3', () => {
+  test('#1 the inert alphabet: no = right after = or :, but a trailing run (base64 padding) is plain', () => {
+    for (const value of [STORED, 'abcDEF012_./+:@-', 'YWJj+/9=', 'YWJjZA==', 'a=b', 'x%41', 'a:=', githubPat(80)]) expect(isInert(value)).toBe(true)
+    for (const value of ['', '=cmd', '%1', '~root', 'foo==printf', 'a:=printf', 'a b', 'a;b', 'a$b', 'a`b', "a'b", 'a"b', 'a\\b', 'a\nb', 'a*', 'a?', 'a[b]', 'a{b,c}', 'a!b', 'a#b', 'a^b', 'a~b', 'a(b)', 'a<b', 'a>b', 'a|b', 'a&b', 'a,b']) {
+      expect(isInert(value)).toBe(false)
+    }
+  })
+
+  test('#1 a value that is not inert is never restored into a command, whatever its quoting', () => {
+    const h = withStored({ V: 'a b' })
+    for (const command of ["printf %s '[secret:V]'", 'printf %s "[secret:V]"', 'printf %s [secret:V]', 'x=[secret:V]']) {
+      expect(h.restoreShell(command)).toEqual({ text: command, unrestored: [], unquotable: ['[secret:V]'] })
+    }
+  })
+
+  test('#1 an inert value is restored at a plain position of a plain command', () => {
+    const h = withStored({ SAFE: STORED })
+    for (const command of ['echo [secret:SAFE]', "printf %s '[secret:SAFE]'", 'curl -H "Authorization: Bearer [secret:SAFE]" x', 'X=[secret:SAFE] cmd', 'export X=[secret:SAFE]; echo "$(printf %s [secret:SAFE])"', 'a,[secret:SAFE].b', 'echo x[secret:SAFE]y', 'cat <(echo [secret:SAFE])']) {
+      expect(h.restoreShell(command)).toEqual({ text: command.split('[secret:SAFE]').join(STORED), unrestored: [], unquotable: [] })
+    }
+  })
+
+  test('#1 an inert value is left as the handle in a command or at a position the rule does not admit', () => {
+    const h = withStored({ SAFE: STORED, PAD: 'YWJjZA==' })
+    for (const command of [
+      "cat <<'EOF'\n[secret:SAFE]\nEOF",
+      'cat <<< [secret:SAFE]',
+      'x=`echo [secret:SAFE]`',
+      ': # [secret:SAFE]',
+      'echo \\\n[secret:SAFE]',
+      '(( x = [secret:SAFE] ))',
+      'echo $(( [secret:SAFE] ))',
+      'echo $[ [secret:SAFE] ]',
+      'let x=[secret:SAFE]',
+      '[[ [secret:SAFE] -eq 1 ]]',
+      'typeset -i x=[secret:SAFE]',
+      'echo ${[secret:SAFE]}',
+      'echo ${X:-[secret:SAFE]}',
+      'echo \\[secret:SAFE]',
+      'echo "\\[secret:SAFE]"',
+      'echo {a,[secret:SAFE]}',
+      'echo *[secret:SAFE]',
+      'echo $[secret:SAFE]',
+      'echo $X[secret:SAFE]',
+      'echo x==[secret:SAFE]',
+      'echo x:=[secret:SAFE]',
+      'echo [secret:PAD]x',
+    ]) {
+      const r = h.restoreShell(command)
+      expect([command, r.text, r.unquotable.length > 0]).toEqual([command, command, true])
+    }
   })
 })

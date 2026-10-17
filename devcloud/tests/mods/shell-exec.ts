@@ -32,6 +32,12 @@ const VALUES: [string, string][] = [
   ['bang', `a!b!!c${RUN}`],
   ['brace', 'a{b,c}d'],
   ['hash', 'a #b'],
+  ['delimiter word', 'END_SECRET'],
+  ['==', 'foo==printf'],
+  ['trailing ==', 'YWJjZA=='],
+  [':=', 'a:=printf'],
+  ['command name', 'printf'],
+  ['arithmetic', '1+1'],
 ]
 
 // [name, command with {H} for the handle, the bytes it prints given the value]
@@ -55,9 +61,31 @@ const SHAPES: [string, string, (v: string) => string][] = [
   ['ansi-c', "printf %s $'{H}'", (v) => v],
   ['continuation', 'printf %s \\\n{H}', (v) => v],
   ['after $', 'X=1; printf %s ${H}', (v) => v],
+  ['delimiter equal', `cat <<'END_SECRET'\n{H}\nprintf "%s%s" INJ ECTED\nEND_SECRET`, (v) => `${v}\nprintf "%s%s" INJ ECTED\n`],
+  ['after =', 'printf %s x={H}', (v) => `x=${v}`],
+  ['after ==', 'printf %s x=={H}', (v) => `x==${v}`],
+  ['after :=', 'printf %s x=a:={H}', (v) => `x=a:=${v}`],
+  ['braced', 'printf %s ${{H}}', (v) => v],
+  ['backslash', 'printf %s \\{H}', (v) => v],
+  ['backslash in double', 'printf %s "\\{H}"', (v) => `\\${v}`],
+  ['(( ))', '(( x = {H} )); printf %s ok', () => 'ok'],
+  ['$(( ))', 'printf %s $(( {H} ))', (v) => v],
+  ['$[ ]', 'printf %s $[ {H} ]', (v) => v],
+  ['let', 'let x={H}; printf %s ok', () => 'ok'],
+  ['[[ ]]', '[[ {H} == {H} ]] && printf %s ok', () => 'ok'],
+  ['brace list', 'printf %s {a,{H}}', (v) => `a${v}`],
 ]
 
-const SHELLS = ['/bin/bash', '/bin/zsh']
+// Each shell, and the options that change how words are read.
+const SHELLS: string[][] = [
+  ['/bin/bash'],
+  ['/bin/bash', '--posix'],
+  ['/bin/bash', '-f'],
+  ['/bin/zsh'],
+  ['/bin/zsh', '-o', 'magic_equal_subst'],
+  ['/bin/zsh', '-o', 'extendedglob'],
+  ['/bin/zsh', '-o', 'noglob'],
+]
 const dir = mkdtempSync(join(tmpdir(), 'devcloud-shell-'))
 let failures = 0
 let restored = 0
@@ -75,16 +103,17 @@ function check(name: string, value: string, shape: string, template: string, exp
     return
   }
   restored++
-  for (const shell of SHELLS) {
+  for (const [shell, ...options] of SHELLS) {
     // Into a file, not a pipe: a pipe's output from a quick child was now and
     // then lost under bun (exit 0, nothing read).
     const sink = join(dir, 'out')
     const fd = openSync(sink, 'w')
-    spawnSync(shell, ['-c', r.text], { cwd: dir, stdio: ['ignore', fd, 'ignore'], timeout: 10_000 })
+    spawnSync(shell!, [...options, '-c', r.text], { cwd: dir, stdio: ['ignore', fd, 'ignore'], timeout: 10_000 })
     closeSync(fd)
     const out = readFileSync(sink, 'utf8')
-    if (out.includes(MARKER) && !expected(value).includes(MARKER)) fail(`${shell}: the value ran`)
-    else if (out !== expected(value)) fail(`${shell}: printed ${JSON.stringify(out)}, not ${JSON.stringify(expected(value))}`)
+    const name = [shell, ...options].join(' ')
+    if (out.includes(MARKER) && !expected(value).includes(MARKER)) fail(`${name}: the value ran`)
+    else if (out !== expected(value)) fail(`${name}: printed ${JSON.stringify(out)}, not ${JSON.stringify(expected(value))}`)
   }
   function fail(why: string) {
     failures++
@@ -95,7 +124,7 @@ function check(name: string, value: string, shape: string, template: string, exp
 for (const [name, value] of VALUES) for (const [shape, template, expected] of SHAPES) check(name, value, shape, template, expected)
 
 // A small fuzz over the same shapes: values drawn from the characters that matter.
-const ALPHABET = ['a', 'Z', '0', '_', '-', '.', '/', '+', ':', '@', '=', '%', ' ', '\n', "'", '"', '\\', '$', '`', ';', '&', '|', '<', '>', '(', ')', '*', '?', '[', ']', '{', '}', ',', '~', '!', '#', '^', 'EOF', RUN]
+const ALPHABET = ['a', 'Z', '0', '_', '-', '.', '/', '+', ':', '@', '=', '==', ':=', '%', 'printf', 'END_SECRET', ' ', '\n', "'", '"', '\\', '$', '`', ';', '&', '|', '<', '>', '(', ')', '*', '?', '[', ']', '{', '}', ',', '~', '!', '#', '^', 'EOF', RUN]
 let seed = 20261017
 const next = () => (seed = (seed * 1103515245 + 12345) >>> 0) >>> 16
 for (let i = 0; i < 40; i++) {
