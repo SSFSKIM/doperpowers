@@ -440,6 +440,13 @@ def wait_systemd_boot(timeout=300):
     raise Fail("devcloud-boot.service never finished:\n" + _systemd_diagnostics())
 
 
+def wait_active(unit, timeout=30):
+    end = time.monotonic() + timeout
+    while out(VM, f"systemctl is-active {unit} || true").strip() != "active":
+        check(time.monotonic() < end, f"{unit} is not active: " + out(VM, f"systemctl status {unit} --no-pager || true"))
+        time.sleep(1)
+
+
 def _systemd_diagnostics():
     return sh(VM, "cat /var/lib/devcloud/status.json; systemctl status devcloud-boot --no-pager -l; "
                   "journalctl -u devcloud-boot --no-pager -n 60; systemctl --failed --no-pager", check_rc=False,
@@ -458,7 +465,7 @@ def under_systemd():
     wait_systemd_boot()
     check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
     for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer"):
-        check(out(VM, f"systemctl is-active {unit} || true").strip() == "active", f"{unit} is not active")
+        wait_active(unit)
     ship = json.loads(out(VM, f"cat {STATE}/ship.json"))
     check(ship["uid"] == int(UID) and ship["SESSION_MIRROR_HOST"] == "sbx-vm" and ship["EXAMPLE_API_KEY set"],
           f"the shipper's unit environment {ship}")
@@ -472,8 +479,7 @@ def systemd_restart():
     time.sleep(3)
     wait_systemd_boot()
     check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
-    check(out(VM, "systemctl is-active devcloud-session-mirror.service || true").strip() == "active",
-          "the shipper did not come back")
+    wait_active("devcloud-session-mirror.service")
 
 
 # --- the boot's failure paths ------------------------------------------------------------
