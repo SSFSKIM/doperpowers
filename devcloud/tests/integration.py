@@ -3,9 +3,11 @@
 in containers against stand-ins (tests/fixtures/fakes.py) for Secret Manager,
 the GCE metadata server, the configuration repository and the gateway.
 
-Proves acceptance 3 (container, stand-in profile, no projects), 5 (container,
-a reconciled profile change) and 6 (a credential-free image), plus the boot's
-failure paths. Prints one line per case, "ok <case>" or "FAIL <case>: why";
+Proves acceptance 3 (container, stand-in profile, and step 12 with a stand-in
+`devenv` runner: a test repository and this checkout's own devenv/), 5
+(container, a reconciled profile change), 6 (a credential-free image) and the
+host half of 8 (projects from the descriptor, the mirror cache on a persistent
+host), plus the boot's failure paths. Prints one line per case, "ok <case>" or "FAIL <case>: why";
 exits 1 when a case failed. Every secret here is made up.
 
     python3 devcloud/tests/integration.py <image>
@@ -23,6 +25,7 @@ import time
 import traceback
 
 HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parents[1]  # the checkout under test, served as example/doperpowers
 sys.path.insert(0, str(HERE))
 import check_image  # noqa: E402
 
@@ -94,13 +97,15 @@ def case(name):
     return run
 
 
-def descriptor(name="sbx-test", branch="main", role="sandbox", token="config-token"):
+def descriptor(name="sbx-test", branch="main", role="sandbox", token="config-token", projects="", mirror=""):
     path = TMP / f"boot-{name}-{branch}-{role}-{token}.env"
     path.write_text(
         f"DEVCLOUD_NAME={name}\nDEVCLOUD_KIND=container\nDEVCLOUD_ROLE={role}\nDEVCLOUD_TAILSCALE=host\n"
         "DEVCLOUD_SEED=gce-metadata\nDEVCLOUD_SM_PROJECT=devcloud-test-project\n"
         "DEVCLOUD_CONFIG_REPO=http://fixtures:8083/config.git\n"
-        f"DEVCLOUD_CONFIG_BRANCH={branch}\nDEVCLOUD_CONFIG_TOKEN_SECRET={token}\n")
+        f"DEVCLOUD_CONFIG_BRANCH={branch}\nDEVCLOUD_CONFIG_TOKEN_SECRET={token}\n"
+        + (f'DEVCLOUD_PROJECTS="{projects}"\n' if projects else "")
+        + (f"DEVCLOUD_MIRROR_DIR={mirror}\n" if mirror else ""))
     path.chmod(0o644)
     return path
 
@@ -132,7 +137,7 @@ def commit_profile(script, message):
     sh(FX, f"cd /srv/work && {script} && git commit -qam '{message}' && git push -q origin main")
 
 
-def boot_once(name, desc, hostname=None, after="true"):
+def boot_once(name, desc, hostname=None, after="true", timeout=600):
     """devcloud-boot in a fresh container, then its status, whether the store
     exists, and what the `after` script prints; the container goes."""
     result = docker("run", "--rm", "--network", NET, "--hostname", hostname or name, *ENV,
@@ -141,7 +146,7 @@ def boot_once(name, desc, hostname=None, after="true"):
                     'cat /var/lib/devcloud/status.json; echo "--store"; '
                     f'test -d {HOME}/.config/claude-secrets && echo store-present || echo store-absent; '
                     f'echo "--after"; {after}',
-                    check_rc=False, timeout=600)
+                    check_rc=False, timeout=timeout)
     rc_line, _, rest = result.stdout.partition("\n--status\n")
     status_text, _, rest = rest.partition("\n--store\n")
     store, _, extra = rest.partition("\n--after\n")
@@ -226,7 +231,8 @@ def image_is_clean():
 def fixtures():
     docker("network", "create", NET)
     docker("run", "-d", "--name", FX, "--network", NET, "--network-alias", "fixtures",
-           "-v", f"{HERE / 'fixtures'}:/fixtures:ro", "--entrypoint", "python3", IMAGE, "/fixtures/fakes.py")
+           "-v", f"{HERE / 'fixtures'}:/fixtures:ro", "-v", f"{REPO}:/repo:ro",
+           "--entrypoint", "python3", IMAGE, "/fixtures/fakes.py")
     sh(FX, "bash /fixtures/make-repo.sh")
     put_secrets(SECRETS)
     end = time.monotonic() + 30
@@ -467,6 +473,35 @@ def stop_and_restart():
     check(out(HOST, "grep DAEMON_BOOT_ID /etc/devcloud/env") != boot_id, "DAEMON_BOOT_ID did not change")
 
 
+# --- acceptance 8, the host's half: projects ----------------------------------------------
+
+@case("step 12 runs devenv up per descriptor entry, as the user with the host's environment (acceptance 3, 8)")
+def projects_set_up():
+    desc = descriptor("sbx-proj", projects="example/app example/doperpowers@under-test", mirror="/srv/host-mirrors")
+    validate = f"runuser -l {USER} -c 'cd ~/src/doperpowers && bash devenv/validate.sh' >/tmp/validate.out 2>&1"
+    rc, got, _, extra = boot_once("sbx-proj", desc, timeout=1800, after=(
+        f"cat {STATE}/devenv.log {STATE}/app-setup.log; echo '--validate'; {validate}; "
+        "echo \"rc=$?\"; tail -n 20 /tmp/validate.out"))
+    projects = got.get("projects", {})
+    check(rc == 0 and projects.get("state") == "ok", f"rc={rc} projects={projects}\n{extra[-3000:]}")
+    check(projects["detail"] == "example/app ok; example/doperpowers@under-test ok", projects["detail"])
+    logs, _, validated = extra.partition("--validate\n")
+    check(logs.splitlines() == [
+        "up app --url https://github.com/example/app.git | mirror=/srv/host-mirrors",
+        "up doperpowers --url https://github.com/example/doperpowers.git --ref under-test | mirror=/srv/host-mirrors",
+        f"setup as {USER} in {HOME}/src/app api-key=set"], logs)
+    check(validated.startswith("rc=0"), f"doperpowers' devenv/validate.sh after its setup.sh:\n{validated[-2000:]}")
+
+
+@case("a project that fails is recorded failed; the boot itself succeeds")
+def project_fails():
+    rc, got, _, _ = boot_once("sbx-noproj", descriptor("sbx-noproj", projects="example/app example/missing"))
+    projects = got.get("projects", {})
+    check(rc == 0 and projects.get("state") == "failed", f"rc={rc} projects={projects}")
+    check(projects["detail"].startswith("example/app ok; example/missing failed (devenv up exited"), projects["detail"])
+    check(all(s["state"] == "ok" for name, s in got.items() if name != "projects"), str(got))
+
+
 # --- under systemd ---------------------------------------------------------------------
 
 SYSTEMD_IMAGE = f"{TAG}-systemd"
@@ -477,7 +512,7 @@ SYSTEMD_DOCKERFILE = f"""
 FROM {IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \\
  && rm -rf /var/lib/apt/lists/* && systemctl enable devcloud-boot.service \\
- && for unit in devcloud-boot devcloud-pull-config devcloud-refresh-secrets; do \\
+ && for unit in devcloud-boot devcloud-pull-config devcloud-refresh-secrets devcloud-refresh-mirrors; do \\
       mkdir -p /etc/systemd/system/$unit.service.d \\
       && printf '[Service]\\nEnvironment=GCE_METADATA_HOST=fixtures:8082 DEVCLOUD_SM_ENDPOINT=http://fixtures:8081 DEVCLOUD_ALLOW_HTTP=1\\n' \\
          > /etc/systemd/system/$unit.service.d/stand-ins.conf; done
@@ -515,20 +550,38 @@ def _systemd_diagnostics():
 def under_systemd():
     docker("build", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE, timeout=900)
     desc = TMP / "boot-vm.env"
-    desc.write_text(descriptor("sbx-vm").read_text().replace("KIND=container", "KIND=vm")
+    desc.write_text(descriptor("sbx-vm", projects="example/app").read_text().replace("KIND=container", "KIND=vm")
                     .replace("ROLE=sandbox", "ROLE=persistent").replace("TAILSCALE=host", "TAILSCALE=none"))
     docker("run", "-d", "--name", VM, "--hostname", "sbx-vm", "--network", NET, "--privileged",
            "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
            "-v", f"{desc}:/etc/devcloud/boot.env:ro", SYSTEMD_IMAGE)
     wait_systemd_boot()
     check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
-    for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer"):
+    for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer",
+                 "devcloud-refresh-mirrors.timer"):
         wait_active(unit)
     ship = json.loads(out(VM, f"cat {STATE}/ship.json"))
     check(ship["uid"] == int(UID) and ship["SESSION_MIRROR_HOST"] == "sbx-vm" and ship["EXAMPLE_API_KEY set"],
           f"the shipper's unit environment {ship}")
     pulled = sh(VM, "systemctl start devcloud-pull-config.service", check_rc=False)
     check(pulled.returncode == 0, "the pull job's unit failed")
+
+
+@case("a persistent host keeps a mirror of its projects' repositories and refreshes it (Design §7)")
+def mirror_cache():
+    projects = steps(VM)["projects"]
+    check(projects["state"] == "ok" and projects["detail"] == "example/app ok; mirrors: example/app", str(projects))
+    mirror = "/srv/devcloud/mirrors/example/app.git"
+    check(out(VM, f"stat -c '%U' {mirror}").strip() == USER, "the mirror is the user's")
+    check(out(VM, f"git -C {mirror} rev-parse --is-bare-repository", user=USER).strip() == "true", "not a bare mirror")
+    check(sh(VM, f"test -e {mirror}/objects/info/alternates", check_rc=False).returncode != 0,
+          "the mirror depends on the checkout")
+    sh(FX, "cd /srv/app-work && echo v2 > app.lock && git -c user.name=f -c user.email=f@example.com commit -qam two "
+           "&& git push -q /srv/git/example/app.git main")
+    refreshed = sh(VM, "systemctl start devcloud-refresh-mirrors.service", check_rc=False)
+    check(refreshed.returncode == 0, "the mirror refresh unit failed:\n" + _systemd_diagnostics())
+    head = out(VM, f"git -C {mirror} log -1 --format=%s main", user=USER).strip()
+    check(head == "two", f"the mirror was not refreshed (main is {head!r})")
 
 
 @case("after a restart, systemd boots the host again and the units come back (acceptance 4, in a container)")

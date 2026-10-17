@@ -16,12 +16,15 @@ USER = User(name="dev", uid=1001, gid=1001, home=pathlib.Path("/Users/dev"))
 
 
 class ListTest(unittest.TestCase):
-    def test_the_three_services_of_i7(self):
+    def test_the_services_of_i7(self):
         listed = services.service_list(USER)
-        self.assertEqual([s.name for s in listed], ["pull-config", "refresh-secrets", "session-mirror"])
-        pull, refresh, ship = listed
+        self.assertEqual([s.name for s in listed],
+                         ["pull-config", "refresh-secrets", "refresh-mirrors", "session-mirror"])
+        pull, refresh, mirrors, ship = listed
         self.assertEqual((pull.every, pull.as_user), (1800, False))
         self.assertEqual((refresh.every, refresh.as_user), (1800, False))
+        self.assertEqual((mirrors.every, mirrors.as_user, mirrors.argv),
+                         (1800, False, ("/usr/local/bin/devcloud", "refresh-mirrors")))
         self.assertEqual((ship.every, ship.as_user), (None, True))
         self.assertEqual(ship.argv, ("/Users/dev/.claude/tools/session-mirror", "ship"))
 
@@ -29,6 +32,7 @@ class ListTest(unittest.TestCase):
         units = services.units(services.service_list(USER), USER)
         self.assertEqual(sorted(units), [
             "devcloud-pull-config.service", "devcloud-pull-config.timer",
+            "devcloud-refresh-mirrors.service", "devcloud-refresh-mirrors.timer",
             "devcloud-refresh-secrets.service", "devcloud-refresh-secrets.timer",
             "devcloud-session-mirror.service",
         ])

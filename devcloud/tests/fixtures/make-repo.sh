@@ -2,7 +2,10 @@
 # Builds the stand-in configuration repository the fakes serve: main holds
 # /fixtures/config as it is; each variant branch changes one thing for a
 # failure case. Run in the fixtures container; the tests then commit to the
-# work tree at /srv/work and push to change the profile.
+# work tree at /srv/work and push to change the profile. Beside it, two project
+# repositories standing in for GitHub's: example/app, a small one carrying
+# devenv/, and example/doperpowers, the checkout under test (mounted at /repo)
+# with its commit as branch under-test.
 set -euo pipefail
 
 work=/srv/work
@@ -42,3 +45,28 @@ sys.exit(1)
 PY
 }
 variant apply-leaks leak_apply
+
+# --- the project repositories ---------------------------------------------------
+app=/srv/app-work
+rm -rf "$app" /srv/git/example
+mkdir -p "$app/devenv" /srv/git/example
+cat > "$app/devenv/setup.sh" <<'SH'
+#!/usr/bin/env bash
+# devenv-inputs: app.lock
+set -eu
+state="$HOME/.local/state/devcloud-test"
+mkdir -p "$state"
+echo "setup as $(id -un) in $PWD api-key=${EXAMPLE_API_KEY:+set}" >> "$state/app-setup.log"
+SH
+echo v1 > "$app/app.lock"
+git -C "$app" init -q -b main
+git -C "$app" -c user.name=fixtures -c user.email=fixtures@example.com add -A
+git -C "$app" -c user.name=fixtures -c user.email=fixtures@example.com commit -qm "app with devenv/"
+git clone -q --bare "$app" /srv/git/example/app.git
+
+if [ -e /repo/.git ]; then
+  git config --global --add safe.directory '*'
+  # A fetch of HEAD, which works whether the checkout is detached or shallow.
+  git init -q --bare -b under-test /srv/git/example/doperpowers.git
+  git -C /srv/git/example/doperpowers.git fetch -q --no-tags --update-shallow /repo +HEAD:refs/heads/under-test
+fi

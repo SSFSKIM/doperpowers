@@ -5,6 +5,7 @@
   devcloud reconcile         boot steps 5-11 against the configuration as fetched now
   devcloud pull-config       fetch and reset ~/.claude; reconcile when the commit moved
   devcloud refresh-secrets   materialize secrets.toml again (steps 7, 10, 11)
+  devcloud refresh-mirrors   fetch the mirrors a persistent host keeps for its sandboxes
 
 Every command but status runs as root. Exit 1 when a step failed (status:
 when the last boot did not finish, or a step failed)."""
@@ -16,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 from devcloudlib import status, steps  # noqa: E402
 
-JOBS = {"reconcile": steps.reconcile, "pull-config": steps.pull_config, "refresh-secrets": steps.refresh_secrets}
+JOBS = {"reconcile": steps.reconcile, "pull-config": steps.pull_config, "refresh-secrets": steps.refresh_secrets,
+        "refresh-mirrors": steps.refresh_mirrors}
 
 
 def main(argv):

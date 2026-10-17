@@ -3,9 +3,9 @@
 A second plugin in the doperpowers marketplace, installed on its own
 (`claude plugin install devcloud@doperpowers`): doperpowers stays the
 workflow plugin, and a person opts into devcloud. It carries the secrets
-guard, and the host image and boot program that make any Linux userland
-work like the person's Mac; the `devenv` skill follows (design:
-`docs/doperpowers/specs/2026-10-15-devcloud-design.md`).
+guard, the host image and boot program that make any Linux userland work
+like the person's Mac, and the `devenv` skill that writes a repository's
+`devenv/` (design: `docs/doperpowers/specs/2026-10-15-devcloud-design.md`).
 
 ## The secrets guard (`hooks/mods/secrets.tsx`)
 
@@ -199,7 +199,7 @@ and `docker run --restart on-failure` retries it from the top.
     DEVCLOUD_CONFIG_BRANCH=<branch>            # default main
     DEVCLOUD_CONFIG_TOKEN_SECRET=<Secret Manager id of the GitHub token>
     DEVCLOUD_PROJECTS="<entry> ..."            # optional; <name>[@ref] | <owner>/<repo>[@ref]
-    DEVCLOUD_MIRROR_DIR=<path>                 # optional
+    DEVCLOUD_MIRROR_DIR=<absolute path>        # optional; sandboxes: where the host's mirrors are mounted
 
 The seed is a Google Cloud service-account key file the driver mounts (or,
 on GCE, the VM's attached account through the metadata server). The boot
@@ -224,7 +224,42 @@ boot with the step named, and the next run starts again from the top:
 | 9 | `apply` | runs the configuration's `sync/apply.py` as the user |
 | 10 | `settings-and-env` | writes `/etc/claude-code/managed-settings.json` and `/etc/devcloud/env`; `TZ` sets the system time zone |
 | 11 | `services` | installs or starts the services; restarts one whose unit or environment changed |
-| 12 | `projects` | `skipped` in this version (project environments arrive with `devenv`) |
+| 12 | `projects` | `devenv up` per `DEVCLOUD_PROJECTS` entry, as the user; `skipped` when none (see "Projects") |
+
+Step 12 is the one step whose failure does not fail the boot: the host works
+without a project, so its services still start, the step records which
+project failed, and `devcloud status` exits 1.
+
+**Projects.** A repository describes its own environment in `devenv/` at its
+root (the `devenv` skill writes it):
+
+- `setup.sh` (required) installs its dependencies, on macOS and Ubuntu, and
+  is safe to re-run; run as the user from the repository root. Leading
+  `# devenv-inputs: <glob> ...` lines name the files (lockfiles) whose change
+  makes it run again.
+- `start.sh` (optional) runs the project's services in the foreground;
+  `devenv start` runs it in tmux session `<name>`.
+- `validate.sh` (optional) is the quickest real check that the environment
+  works; `devenv validate` runs it.
+- `env` (optional) holds `KEY=value` lines and `secret:KEY=<Secret Manager id>`
+  lines, never a value.
+
+The runner is the person's `devenv` (in their configuration repository, linked
+to `~/.local/bin/devenv` by its apply step). Step 12 bridges each descriptor
+entry to it: `<name>` runs `devenv up <name>` against the person's registry;
+`<owner>/<repo>` runs `devenv up <repo> --url https://github.com/<owner>/<repo>.git`;
+`@<ref>` on either adds `--ref <ref>`, which picks the ref for this host's
+clone. Every entry is tried, with the user's login environment and
+`/etc/devcloud/env`; the output goes to `/var/log/devcloud/projects.log`. A
+reconcile does not run projects; `devenv up` is run when the work needs it.
+
+**The mirror cache.** A persistent host keeps a bare mirror of each GitHub
+repository of its projects at `/srv/devcloud/mirrors/<owner>/<repo>.git` (the
+user's), made at step 12 and fetched by the `refresh-mirrors` job. A driver
+that starts a sandbox on that host mounts the directory into it and names the
+mount as `DEVCLOUD_MIRROR_DIR`; the sandbox's `devenv up` then clones with
+`--reference` to it, so a checkout takes seconds. A sandbox lives hours; its
+clone reads objects from the mount for that long.
 
 **The profile** is `~/.claude/devcloud/` in the configuration repository.
 Only `managed-settings.json` is required.
@@ -282,6 +317,7 @@ the services without a reboot. Untracked files are left alone.
 |---|---|---|
 | `pull-config` | `devcloud pull-config`, every 30 min | root |
 | `refresh-secrets` | `devcloud refresh-secrets` (steps 7, 10, 11), every 30 min | root |
+| `refresh-mirrors` | `devcloud refresh-mirrors`: fetches the mirror cache, every 30 min; nothing on a sandbox | root (git as the user) |
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |
 
 Under systemd they are units `devcloud-<service>` (the jobs as timers).
@@ -313,6 +349,7 @@ what keeps a value out of a log.
     devcloud reconcile         # steps 5-11 against the configuration as fetched now
     devcloud pull-config       # the pull job, by hand
     devcloud refresh-secrets   # the refresh job, by hand
+    devcloud refresh-mirrors   # the mirror job, by hand
 
 ## Developing
 
@@ -326,7 +363,10 @@ Typechecking reads `.claude/types/claude-code.d.ts` at the repository root,
 as doperpowers' own mods do. The host's integration tests
 (`tests/integration.py`) build the image and boot it in containers against
 stand-ins (`tests/fixtures/fakes.py`) for Secret Manager, the metadata
-server, the configuration repository and the gateway; three environment
+server, the configuration repository, GitHub's project repositories (a
+`url.insteadOf` rule in the stand-in profile's `.gitconfig`) and the gateway,
+with a stand-in `devenv` runner (the person's own is private), which clones
+this checkout as a project and runs its `devenv/`; three environment
 variables point a host at such stand-ins and exist for that use:
 `DEVCLOUD_SM_ENDPOINT` (Secret Manager's base URL), `GCE_METADATA_HOST` (the
 variable Google's libraries read) and `DEVCLOUD_ALLOW_HTTP=1` (a plain-HTTP
