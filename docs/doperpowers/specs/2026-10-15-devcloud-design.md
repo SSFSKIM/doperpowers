@@ -377,8 +377,8 @@ refuses any command for touching the store.
 
 devcloud's `devcloud/hooks/mods/secrets.tsx` is the guard: it reads the same store (Interfaces
 I1), registers no `/secret` command, and adds one system-prompt line saying what its handles mean
-and that they restore on write. When it is loaded it marks the process (Interfaces I9; set at
-module load, checked by `cua`'s mod at hook time, not at load, so load order does not matter),
+and that they restore on write. When a session starts it sets the guard marker (Interfaces I9,
+in the session's `$.state`; checked by `cua`'s mod at hook time, so load order does not matter),
 and `cua`'s scrubbing stands down, so one guard decides every handle: two scrubbers in
 sequence would lose the encoding a handle names.
 
@@ -402,6 +402,34 @@ The guard differs from `cua`'s in four ways:
    transcript and the session store's copy searched — and for each path either intercepts it with
    a hook that reaches it or lists it in this section as not covered. The guarantee the mod states
    is exactly the covered list.
+
+   **Probe result (2026-10-17, Claude Code 2.1.302, headless sessions through the gateway).**
+   Covered — no made-up value in any recorded request, the transcript files, or the session
+   store's copy: a tool's result and its record, in the main loop and in a subagent; an
+   oversized command output, its preview and its `tool-results/` file (rewritten 39 ms after the
+   engine created it); a background command's output as the model reads it and its
+   notification; a subagent's result; the person's prompt; `CLAUDE.md` as a context block
+   (`prompt.context`); the composed system-prompt sections (`prompt.compose`); an attachment's
+   text as a request carries it (`prompt.attachment`); a manual compaction's instructions and
+   its summary (`session.compact`, which reaches both: the compaction bypass named above does
+   not leave them raw). Not covered:
+   - an attachment row's own payload in the transcript file: a changed file the model had read,
+     and the files the engine attaches again after a compaction (a background command's output
+     file among them), keep their content beside the scrubbed rendering, so the session store's
+     copy holds it too (observed);
+   - system-prompt text given with `--system-prompt` or `--append-system-prompt`, which the
+     engine adds after composition: every request carries it, and the transcript keeps it in its
+     `prompt_snapshot` attachment rows and `api-request-shape` rows (observed);
+   - a background command's output file in the engine's temporary directory: local, never
+     shipped, read by the model only through a scrubbed tool result (observed);
+   - the call a restored handle runs in: the permission dialog shows it, a command's arguments
+     are visible to the machine's processes while it runs, and in auto mode a call the mode
+     sends to its classifier is judged with its values in place — the classifier's request (a
+     model call through the same gateway) carried a restored global value in the acceptance run
+     (observed for a Write); `tool.check`'s input is pinned, so no hook can hand it the handles;
+   - where an organization manages Claude Code: a plugin a person installs gets no
+     `prompt.compose`, `prompt.context`, `prompt.attachment` or `session.compact` hook there
+     (`claude plugin validate`), so those four paths are then not covered.
 2. **Known values from three sources**: values stored through `/secret`; values in well-known
    credential files (gh `hosts.yml`, `~/.pgpass`, service-account JSON keys under
    `~/.config/gcloud/`, `~/.codex/auth.json`, `~/.claude/.credentials.json`, hcloud `cli.toml`,
@@ -755,12 +783,18 @@ system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_
 `DEVCLOUD_HOME`, read where the image is built), `home/` (files copied into the user's home at
 boot step 8 and every reconcile; secret-free).
 
-**I9 — Guard marker** (devcloud sets it; `cua` reads it): while devcloud's guard module is loaded,
-`globalThis[Symbol.for("claude-code.secrets-guard")]` is `{ owner: "devcloud", version: 1 }`. A
-process-wide value that child processes do not inherit, unlike an environment variable, so a
-`claude` started from a tool call decides for itself. M1 first checks that the engine loads every
-plugin's modules into one realm; if it does not, M1 picks the narrowest shared channel that also
-stays out of child processes, records it here, and the ticket names it.
+**I9 — Guard marker** (devcloud sets it; `cua` reads it): from each session's start, the
+session's `$.state` holds `{ owner: "devcloud", version: 1 }` under
+`{ plugin: "devcloud", key: "secrets-guard" }`, typed in devcloud's contract
+(`devcloud/types/devcloud.d.ts`, named as `types` in its `plugin.json`). Every plugin reads it
+(`await $.state.get({ plugin: "devcloud", key: "secrets-guard" })`, at hook time); only devcloud
+writes it; a `claude` started from a tool call has a session of its own and decides for itself.
+Not a `globalThis` symbol, as first drafted: M1's check (2026-10-17, 2.1.302) found that the
+engine evaluates each plugin's module in a realm of its own — a symbol devcloud's module set
+read `undefined` from another plugin's module at hook time, while `$.state` read the value — so
+`$.state` is the narrowest shared channel that stays out of child processes, and the ticket names
+it. Limit: a session in which devcloud is disabled mid-way may keep the value (whether the engine
+clears a plugin's state when it unloads is unverified).
 
 ## Surprises & Discoveries
 
@@ -782,6 +816,27 @@ stays out of child processes, records it here, and the ticket names it.
   immutable (round-2 review, from the 2.1.301 engine and `tools/session-mirror`).
 - (2026-10-16) The shared MCP configuration (`sync/mcp.json`) holds one server and no secret value;
   the secret-bearing MCP servers are machine-local today.
+
+- (2026-10-17) The engine evaluates each plugin's hooks module in a realm of its own: a
+  `globalThis` symbol one plugin's module sets is not visible to another's, at load or at hook
+  time; `$.state` is (two-plugin probe with `--plugin-dir`, 2.1.302).
+- (2026-10-17) The transcript records the system prompt itself: `prompt_snapshot` attachment rows
+  (`attachment.systemPrompt`) and `api-request-shape` rows (`shape.system`); text from
+  `--append-system-prompt` is joined after the composed sections, where `prompt.compose` does not
+  see it (boundary probe).
+- (2026-10-17) After a compaction the engine attaches again, as `file` attachments with their full
+  content, the files the model had read — a background command's output file among them — so an
+  attachment payload is where values reach the transcript (boundary probe).
+- (2026-10-17) `session.compact` hands a hook the compaction's instructions on the way down and the
+  summary messages on the way up, both rewritable, so a manual compaction is covered even though
+  its rows bypass `session.append` (d.ts of 2.1.300; boundary probe run 2).
+- (2026-10-17) The auto-mode classifier reads the call as `tool.call` hooks left it: a Write whose
+  content held a restored handle reached the classifier's request (a `claude-sonnet-5` call
+  through the gateway, `{"Write":"<path>: <content>"}`) with the value in place, while the
+  transcript it was shown carried earlier calls' handles. `tool.check` refuses a rewritten
+  input ("the tool, its input and the call are the question and are pinned"). In the probe's
+  sessions no classifier request appeared for `nc` or `python3 -c` commands, so which calls the
+  mode sends to it is not settled (acceptance run, 2026-10-17).
 
 ## Decision Log
 
@@ -941,6 +996,13 @@ stays out of child processes, records it here, and the ticket names it.
   merges. Rationale: the dispatching session's brief (M1 must reach the Macs early); addressing by
   name follows from a marketplace whose order this work does not own.
   Date/Author: 2026-10-17, plan executor.
+
+- Decision: The guard marker (I9) is a `$.state` value, not a `globalThis` symbol, set at
+  `session.start`. Rationale: plugin modules do not share a realm (Surprises, 2026-10-17);
+  `$.state` is session-scoped, readable by every plugin, writable only by its owner, and absent
+  from a child `claude`. Rejected: an environment variable (child processes inherit it); a file
+  (shared by every process on the machine).
+  Date/Author: 2026-10-17, M1 executor.
 
 ## Outcomes & Retrospective
 
