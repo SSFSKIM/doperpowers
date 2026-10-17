@@ -214,10 +214,17 @@ its chat cursor is copied, a seat that held the old session moves to it,
 and a tag, `alias#short`, or full id naming the old session resolves to
 it. The link is recorded when the job joins while the old process still
 exits (the usual case: observed, it outlives the job's start by half a minute), else
-when the old one's membership would end. The record is read as the harness
-reads it, the latest one with no turn after it, so an old session resumed
-and worked in again is its own. A `continued` retirement holds against the
-exiting process as a `retire` does.
+when the old one's membership would end, and for a seat at every
+reconciliation while the session it holds no longer runs (the harness
+writes the record only once the job has started, so the job may join
+first). The cursor is copied and the seat moved before the retirement is
+recorded, so a hand-off cut short (a seat lock another command holds, a
+hook out of time) leaves the old session joined and is done again whole.
+The record is read as the harness reads it, the latest one with no turn
+after it, so an old session resumed and worked in again is its own: it
+re-joins, and a `joined` of its own after the `continued` retirement ends
+the link, the job keeping what its own events hold. A `continued`
+retirement holds against the exiting process as a `retire` does.
 
 **Names the harness makes up.** The alias of a seat-less session is its
 harness name, unless that name is one the harness made up (`nameSource`

@@ -3724,6 +3724,107 @@ assert_not_contains "$OUT" "wardenjob" "under the seat's alias alone"
 assert_contains "$(events_of "$SO")" "retired:continued" "the session it held is retired, continued"
 rm -f "$HOME/.claude/sessions/pf-warden.json" "$HOME/.claude/sessions/pf-wardenjob.json"
 "$SMINOS" remove pf-repo/warden >/dev/null
+# A seat whose job joined before the harness wrote the record: the hand-off
+# is read once the record is there and the old process has exited.
+KO=6a000024-0000-4000-8000-00000000006a
+KN=6b000025-0000-4000-8000-00000000006b
+run "$SMINOS" seat add pf-repo keeper --session "$KO"
+pf_peer keeper "$KO" idle user
+run "$SMINOS" list
+bg_peer keeperjob "$KN" auto
+run "$SMINOS" list
+assert_equals "$(events_of "$KN")" "joined " "a seat's job seen before the record joins as a member of its own"
+handoff_tx "$KO" "$KN"
+rm -f "$HOME/.claude/sessions/pf-keeper.json"
+run "$SMINOS" list
+assert_equals "$(field "$KO" current)" "$KN" "once the record is there and the seat's process gone, the seat moves to the job"
+assert_contains "$(events_of "$KO")" "retired:continued" "and the session it held is retired, continued"
+assert_equals "$(json_row keeper session)" "$KN" "the seat's alias names the job"
+# One writer (a remote operator) that set a line for the old session, then for
+# the job: the job's is the later, and clearing it leaves neither.
+python3 - "$REPO_ROOT/skills/sminos/scripts" "$PF" "$KO" "$KN" <<'PY_CHARGES'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos as mod
+project = mod.find_project(sys.argv[2])
+for sid, text in ((sys.argv[3], "the old line"), (sys.argv[4], "the job's line")):
+    mod._append(project, mod.writer_id(), [{"kind": "in-charge", "session": sid, "text": text, "source": "set"}])
+PY_CHARGES
+assert_equals "$(json_row keeper charge)" "the job's line" "lines one writer set along the chain are read in its order"
+python3 - "$REPO_ROOT/skills/sminos/scripts" "$PF" "$KN" <<'PY_CLEAR'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos as mod
+mod._append(mod.find_project(sys.argv[2]), mod.writer_id(),
+            [{"kind": "in-charge", "session": sys.argv[3], "text": "", "source": "set"}])
+PY_CLEAR
+assert_equals "$(json_row keeper charge_source)" "" "and a line it clears is cleared, the old one not read again"
+rm -f "$HOME/.claude/sessions/pf-keeperjob.json"
+"$SMINOS" remove pf-repo/keeper >/dev/null
+# A hand-off whose seat another command holds locked is left whole, not half
+# done: nothing retired and the seat unmoved, and the next reading finishes it.
+GO=6c000026-0000-4000-8000-00000000006c
+GN=6d000027-0000-4000-8000-00000000006d
+run "$SMINOS" seat add pf-repo gatekeeper --session "$GO"
+pf_peer gatekeeper "$GO" idle user
+run "$SMINOS" list
+handoff_tx "$GO" "$GN"
+rm -f "$HOME/.claude/sessions/pf-gatekeeper.json" "$TEST_ROOT/seat-held" "$TEST_ROOT/seat-release"
+python3 - "$(lock_file pf-repo/gatekeeper)" "$TEST_ROOT/seat-held" "$TEST_ROOT/seat-release" <<'PY_SEATLOCK' &
+import fcntl, os, sys, time
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+with open(sys.argv[1], "a+") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(sys.argv[2], "w").close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+PY_SEATLOCK
+SEATHOLDER=$!
+for _ in $(seq 1 100); do [ -f "$TEST_ROOT/seat-held" ] && break; sleep .05; done
+bg_peer gatekeeperjob "$GN" auto
+run "$SMINOS" list
+assert_not_contains "$(events_of "$GO")" "retired" "with the seat's lock held, the session it holds is not retired"
+assert_equals "$(field "$GO" current)" "$GO" "nor the seat moved"
+touch "$TEST_ROOT/seat-release"; wait "$SEATHOLDER"
+run "$SMINOS" list
+assert_equals "$(field "$GO" current)" "$GN" "once the lock is free, the next reading moves the seat"
+assert_contains "$(events_of "$GO")" "retired:continued" "and retires the session it held, continued"
+rm -f "$HOME/.claude/sessions/pf-gatekeeperjob.json"
+"$SMINOS" remove pf-repo/gatekeeper >/dev/null
+# A handed-off session the human resumes is its own member again: its id and
+# short name it alone, and what it sets is not the job's.
+VO=6e000028-0000-4000-8000-00000000006e
+VN=6f000029-0000-4000-8000-00000000006f
+pf_peer rover "$VO" idle derived
+run "$SMINOS" list
+handoff_tx "$VO" "$VN"
+bg_peer roverjob "$VN" auto
+run "$SMINOS" list
+rm -f "$HOME/.claude/sessions/pf-rover.json"
+run "$SMINOS" list
+assert_contains "$(events_of "$VO")" "retired:continued" "a handed-off session is retired, continued"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"back to it"}}' >> "$HOME/.claude/projects/pl-proj/$VO.jsonl"
+printf '{"pid":%s,"sessionId":"%s","name":"rover-2a","nameSource":"derived","kind":"interactive","startedAt":%s,"status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$VO" "$(python3 -c 'import time; print(int(time.time() * 1000))')" "$R" "$TEST_ROOT/in-rover.sock" \
+  > "$HOME/.claude/sessions/pf-rover.json"
+run "$SMINOS" list
+assert_equals "$(events_of "$VO")" "joined retired:continued joined " "resumed, it re-joins"
+session_row() { # session field → that field of the session's row in list --json
+  "$SMINOS" list --json | python3 -c 'import json, sys
+rows = [d for d in json.load(sys.stdin) if d["session"] == sys.argv[1]]
+v = rows[0].get(sys.argv[2]) if rows else "<no row>"
+print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
+}
+assert_equals "$(session_row "$VN" former)" "[]" "and the job no longer continues it"
+run "$SMINOS" say "@${VO:0:8} to the resumed one"
+assert_rc 0 "$RC" "its short names one member"
+assert_contains "$(inbox rover)" "to the resumed one" "the resumed session"
+assert_not_contains "$(inbox roverjob)" "to the resumed one" "not the job"
+CLAUDE_CODE_SESSION_ID="$VO" run "$SMINOS" charge "the resumed line"
+assert_rc 0 "$RC" "the resumed session sets its line"
+assert_not_contains "$(session_row "$VN" charge)" "the resumed line" "which is not the job's"
+rm -f "$HOME/.claude/sessions/pf-rover.json" "$HOME/.claude/sessions/pf-roverjob.json"
+run "$SMINOS" list
 # A name the harness made up is drawn again by every process: a resume
 # keeps the member's alias. A name someone gives renames it.
 RS=5d000021-0000-4000-8000-00000000005d
