@@ -142,6 +142,22 @@ class Ledger:
     def copy(self):
         return copy.deepcopy(self)
 
+    def view(self, agents, tools):
+        """A ledger holding only the evidence that names these agent ids or calls, in row order: all
+        `agent_outcome` reads of a parent loop for the agents it ran, small enough to hand to another thread
+        where a copy of the whole would not be. Its entries are this ledger's own, never changed once said."""
+        picks = {}
+        for key, ids, index in (("by_task", agents, self.by_task), ("by_tool", tools, self.by_tool)):
+            for name in ids:
+                for i in index.get(name, ()):
+                    picks.setdefault(i, []).append((key, name))
+        out = Ledger()
+        for i in sorted(picks):
+            out.evidence.append(self.evidence[i])
+            for key, name in picks[i]:
+                getattr(out, key).setdefault(name, []).append(len(out.evidence) - 1)
+        return out
+
     def feed(self, rows):
         for row in rows:
             self.add(row)

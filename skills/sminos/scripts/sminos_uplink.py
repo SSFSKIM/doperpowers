@@ -641,7 +641,8 @@ class Link:
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
-                         "rows": self.on_rows, "diff": self.on_diff, "rpc": self.on_rpc, "rpc-ack": self.on_rpc_ack}
+                         "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "rpc": self.on_rpc,
+                         "rpc-ack": self.on_rpc_ack}
 
     def post(self, frames):
         post(self.cred, self.generation, frames, self.ended)
@@ -766,6 +767,10 @@ class Link:
     def on_diff(self, frame, _stream):
         if self.opened_project(frame) is not None:
             self.post_session(self.plane.diff(frame))
+
+    def on_output(self, frame, _stream):
+        if self.opened_project(frame) is not None:
+            self.post_session(self.plane.output(frame))
 
     def on_rpc(self, frame, _stream):
         self.rpcs.receive(frame.get("rpc"), Here(self))
