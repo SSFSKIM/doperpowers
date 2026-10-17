@@ -127,6 +127,9 @@ After=network-online.target cloud-init.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/devcloud-boot
+# 3: the host is made and only step 12 (projects) failed; the services, ordered
+# after this unit, start, and `devcloud status` names the failure.
+SuccessExitStatus=3
 TimeoutStartSec=45min
 
 [Install]

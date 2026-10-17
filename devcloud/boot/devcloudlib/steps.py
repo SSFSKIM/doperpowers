@@ -24,6 +24,9 @@ from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
 
 RUN_DIR = pathlib.Path("/run/devcloud")
+# devcloud-boot's exit status when steps 1-11 made the host and only step 12
+# (projects) failed: the entrypoint and the boot unit still start the services.
+PROJECTS_FAILED = 3
 STATE_DIR = pathlib.Path("/var/lib/devcloud")
 IDENTITY_ENV = STATE_DIR / "identity.env"
 APPLIED = STATE_DIR / "applied-commit"
@@ -441,11 +444,10 @@ def boot():
                  ("bootstrap-secret", bootstrap_secret), ("configuration", configuration),
                  RECONCILE[0], RECONCILE[1], RECONCILE[2], RECONCILE[3], RECONCILE[4], RECONCILE[5])
         code = _run(steps, r, done=lambda: _mark_applied(r))
-        if code == 0:
-            # The host works without a project: a failed project is recorded
-            # (`devcloud status` reports it) but does not fail the boot, so a
-            # container's services still start and its checkout can be examined.
-            _run((("projects", projects),), r)
+        if code == 0 and _run((("projects", projects),), r):
+            # The host works without a project: the failure is recorded, and
+            # its own exit status lets the services start all the same.
+            return PROJECTS_FAILED
         return code
 
 

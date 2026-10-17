@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -P
 """devcloud-services: the service runner where PID 1 is not systemd — the
-container entrypoint's foreground after boot (`devcloud-boot && exec
-devcloud-services`). Runs the services of Interfaces I7 until SIGTERM, which
+container entrypoint's foreground after a boot that exited 0 or 3 (only the
+projects failed). Runs the services of Interfaces I7 until SIGTERM, which
 it forwards to every child."""
 import os
 import sys

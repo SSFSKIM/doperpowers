@@ -99,7 +99,8 @@ gates:
       done
       bash devcloud/tests/run.sh
     timeout: 45
-    paths: ["devcloud/**", ".github/**"]
+    # devenv/: the integration tests set up this checkout's own devenv/ on the image.
+    paths: ["devcloud/**", "devenv/**", ".github/**"]
 
   - name: triaging-feedback
     run: cd application-agents/triaging-feedback && npm ci && npm test
