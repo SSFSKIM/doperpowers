@@ -173,10 +173,13 @@ export async function compactStart($: EngineInterface, _: SessionStartInput) {
 /**
  * Turn start: a request still pending is stale (its turn ended by an
  * interruption or an error, not by the model's answer) and is dropped, so a
- * turn the person starts is not compacted behind them.
+ * turn the person starts is not compacted behind them. A subagent's turn
+ * start (it carries the agentId) is not the main conversation's and passes.
  */
-export function compactTurnStart() {
-  pending = undefined
+export function compactTurnStart(e: { agentId?: string }) {
+  if (e.agentId === undefined) {
+    pending = undefined
+  }
 }
 
 /**
@@ -230,7 +233,7 @@ export function registerCompact(on: On) {
   })
 
   on('turn.start', (_, e, next) => {
-    compactTurnStart()
+    compactTurnStart(e)
     return next(e)
   })
 
