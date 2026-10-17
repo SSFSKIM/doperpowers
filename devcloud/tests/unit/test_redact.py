@@ -54,6 +54,22 @@ class KnownTest(unittest.TestCase):
         self.assertEqual(known.scrub("Europe/Berlin user: x"), "Europe/Berlin user: x")
 
 
+class SignatureTest(unittest.TestCase):
+    def test_changes_when_a_value_source_is_rewritten(self):
+        home = pathlib.Path(tempfile.mkdtemp())
+        user = User(name="dev", uid=0, gid=0, home=home)
+        (home / ".claude/devcloud").mkdir(parents=True)
+        (home / ".claude/devcloud/secrets.toml").write_text('[[secret]]\nname = "c"\nfile = "~/cred"\n')
+        (home / "cred").write_text("made-up-one")
+        env = home / "env"
+        before = redact.host_signature(user, env_path=env)
+        self.assertEqual(redact.host_signature(user, env_path=env), before)
+        tmp = home / ".cred.tmp"
+        tmp.write_text("made-up-two")
+        tmp.replace(home / "cred")
+        self.assertNotEqual(redact.host_signature(user, env_path=env), before)
+
+
 class RunLogTest(unittest.TestCase):
     def setUp(self):
         self.saved = (proc.LOG_DIR, proc.KNOWN)

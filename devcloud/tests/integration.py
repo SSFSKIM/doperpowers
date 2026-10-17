@@ -48,7 +48,7 @@ failures = []
 def cleanup():
     for container in (HOST, FX, VM):
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
-    subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE, PLANTED], capture_output=True)
+    subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE, PLANTED, BROKEN_DPKG], capture_output=True)
     subprocess.run(["docker", "network", "rm", NET], capture_output=True)
     subprocess.run(["rm", "-rf", str(TMP)])
 
@@ -158,18 +158,21 @@ def _planted_image():
     dockerfile = (
         "FROM ubuntu:24.04\n"
         f"RUN mkdir -p /opt/app && echo {base64.b64encode(planted).decode()} > /opt/app/config"
-        f" && echo 'machine example.com login x password y' > /root/.netrc && echo 'GITHUB_TOKEN={token}' > /opt/app/env\n")
+        f" && echo 'machine example.com login x password y' > /root/.netrc && echo 'GITHUB_TOKEN={token}' > /opt/app/env"
+        f" && printf 'bin\\000ary %s\\000' {planted.decode()} > /opt/app/blob\n")
     docker("build", "-t", PLANTED, "-", input=dockerfile, timeout=600)
     return PLANTED
 
 
 PLANTED = f"{TAG}-planted"
+BROKEN_DPKG = f"{TAG}-broken-dpkg"
 
 
 @case("the image check catches a planted value, a credential file and a token (acceptance 6's own test)")
 def image_check_catches():
     found = check_image.check(_planted_image(), "/root", values=list(SECRETS.values()))
-    check(found["known"] == ["/opt/app/config\tvalue#4", "docker history\tvalue#4"], f"known {found['known']}")
+    check(found["known"] == ["/opt/app/blob\tvalue#4", "/opt/app/config\tvalue#4", "docker history\tvalue#4"],
+          f"known {found['known']}")
     check("/root/.netrc" in found["credential"], f"credential {found['credential']}")
     check(any(line.startswith("/opt/app/env\t") for line in found["pattern"]), f"pattern {found['pattern']}")
 
@@ -177,7 +180,7 @@ def image_check_catches():
 @case("the image check fails closed: a scanner that fails or reads nothing, an export that fails")
 def image_check_fails_closed():
     for scanner in (["sh", "-c", "echo crashed >&2; exit 3", "scanner"],
-                    ["sh", "-c", "echo 'scanned 0 text files, 0 values' >&2", "scanner"]):
+                    ["sh", "-c", "echo 'scanned 0 files, 0 values' >&2", "scanner"]):
         try:
             check_image.scanner_output(["scan", str(TMP)], "[]", scanner)
         except check_image.CheckError:
@@ -198,6 +201,14 @@ def image_check_fails_closed():
         raise Fail("exporting a missing image passed")
     except check_image.CheckError:
         pass
+    docker("build", "-t", BROKEN_DPKG, "-", input="FROM ubuntu:24.04\nRUN rm /var/lib/dpkg/status\n", timeout=600)
+    try:
+        check_image._package_pristine(BROKEN_DPKG, {"/usr/bin/dpkg"})
+        raise Fail("package verification with a broken dpkg database passed")
+    except check_image.CheckError as error:
+        check("dpkg" in str(error), str(error))
+    check(check_image._package_pristine(PLANTED, {"/usr/bin/dpkg", "/opt/app/env"}) == {"/usr/bin/dpkg"},
+          "an unchanged package file is pristine and a planted one is not")
 
 
 @case("the image holds no secret (acceptance 6)")
@@ -426,6 +437,15 @@ def services_follow_the_configuration():
     while sum(1 for line in ship_log() if line.startswith("start")) == starts:
         check(time.monotonic() < end, "the shipper did not start when its program came back")
         time.sleep(0.5)
+
+
+@case("the tools the guard's notices suggest are on the user's PATH: python3 (3.11+), jq, perl, xxd, gh")
+def guard_tools():
+    for tool in ("python3", "jq", "perl", "xxd", "gh"):
+        found = sh(HOST, f"zsh -c 'command -v {tool}'", user=USER, check_rc=False)
+        check(found.returncode == 0 and found.stdout.strip(), f"{tool} is not on the user's PATH")
+    version = out(HOST, "python3 -c 'import sys, tomllib; print(sys.version_info >= (3, 11))'", user=USER)
+    check(version.strip() == "True", "python3 lacks 3.11's tomllib")
 
 
 @case("the image user has passwordless sudo, from a validated drop-in")

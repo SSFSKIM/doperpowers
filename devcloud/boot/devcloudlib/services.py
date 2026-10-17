@@ -186,13 +186,15 @@ class Supervisor:
     LINE_MAX = 4096
 
     def __init__(self, listed, env_path=ENV_PATH, user=None, poll=0.5, grace=8.0, log=None, known=None,
-                 desired_path=None, out=None):
+                 desired_path=None, out=None, known_signature=None):
         self.listed = {s.name: s for s in listed}
         self.env_path = env_path
         self.user = user
         self.poll = poll
         self.grace = grace
         self.known_source = known or (lambda: ())
+        self.known_signature = known_signature
+        self.signature = None
         self.known = redact.Known()
         self.desired_path = desired_path
         self.out = out or sys.stdout.buffer
@@ -205,10 +207,25 @@ class Supervisor:
         self.out.flush()
 
     def _refresh_known(self):
+        """Adds the host's current values to every value known before: a
+        credential rotated away is still what an old process may print."""
         try:
-            self.known = redact.Known(self.known_source())
-        except Exception as error:  # noqa: BLE001 — keep the old set rather than stop supervising
-            self.log(f"cannot read the host's values ({type(error).__name__}); keeping the previous set")
+            self.known.update(self.known_source())
+        except Exception as error:  # noqa: BLE001 — keep the set rather than stop supervising
+            self.log(f"cannot read the host's values ({type(error).__name__}); keeping the set known so far")
+
+    def _follow_sources(self):
+        """Refreshes the known values when their sources changed on disk, so a
+        just-rotated credential is known before the next line is forwarded."""
+        if self.known_signature is None:
+            return
+        try:
+            signature = self.known_signature()
+        except Exception:  # noqa: BLE001 — refresh rather than trust a signature we cannot read
+            signature = object()
+        if signature != self.signature:
+            self.signature = signature
+            self._refresh_known()
 
     def _env(self, service):
         if not service.as_user:
@@ -313,6 +330,7 @@ class Supervisor:
             code = os.waitstatus_to_exitcode(wait_status)
             slot.proc.returncode = code
             if slot.pipe is not None:
+                self._follow_sources()
                 self._drain(slot, final=True)
             if self.stopping or slot.removed:
                 slot.proc = None
@@ -378,7 +396,10 @@ class Supervisor:
             for slot in slots:
                 if slot.proc is None and not slot.removed and now >= slot.due and not self.stopping:
                     self._start(slot, now)
-            for key, _ in self.selector.select(timeout=self.poll) if self.selector.get_map() else ():
+            ready = self.selector.select(timeout=self.poll) if self.selector.get_map() else ()
+            if ready:
+                self._follow_sources()
+            for key, _ in ready:
                 if key.data.pipe is not None:
                     self._drain(key.data)
             if not self.selector.get_map():
@@ -389,7 +410,10 @@ class Supervisor:
         deadline = time.monotonic() + self.grace
         while any(slot.proc for slot in slots) and time.monotonic() < deadline:
             self._reap(slots, time.monotonic())
-            for key, _ in self.selector.select(timeout=0.05) if self.selector.get_map() else ():
+            ready = self.selector.select(timeout=0.05) if self.selector.get_map() else ()
+            if ready:
+                self._follow_sources()
+            for key, _ in ready:
                 if key.data.pipe is not None:
                     self._drain(key.data)
             if not self.selector.get_map():
@@ -399,6 +423,7 @@ class Supervisor:
                 self.log(f"{slot.service.name} ignored SIGTERM for {self.grace:.0f}s; killing it")
                 self._signal(slot, signal.SIGKILL)
         self._reap(slots, time.monotonic())
+        self._follow_sources()
         for slot in slots:
             if slot.pipe is not None:
                 self._drain(slot, final=True)
@@ -413,7 +438,8 @@ def main(user):
     PIDFILE.write_text(f"{os.getpid()}\n")
     try:
         return Supervisor(service_list(user, interval), user=user, desired_path=DESIRED,
-                          known=lambda: redact.host_values(user, env_path=ENV_PATH)).run()
+                          known=lambda: redact.host_values(user, env_path=ENV_PATH),
+                          known_signature=lambda: redact.host_signature(user, env_path=ENV_PATH)).run()
     finally:
         PIDFILE.unlink(missing_ok=True)
 

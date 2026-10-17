@@ -44,9 +44,11 @@ class ListTest(unittest.TestCase):
 SECRET = "made-up-service-secret-81Qz"
 
 
-def supervise(tmp, specs, env_text="", desired=None, stdout=None):
+def supervise(tmp, specs, env_text="", desired=None, stdout=None, known=None, signature="None"):
     """Starts the supervisor in a child process over `specs`: (name, script,
-    every). With `desired`, the desired-state file names the services to run."""
+    every). With `desired`, the desired-state file names the services to run;
+    `known` and `signature` are Python expressions for its value source and
+    the source's change signature."""
     env_file = tmp / "env"
     env_file.write_text(env_text)
     desired_file = tmp / "desired.json"
@@ -54,11 +56,13 @@ def supervise(tmp, specs, env_text="", desired=None, stdout=None):
         services.write_desired(desired, desired_file)
     code = textwrap.dedent(f"""
         import sys; sys.path.insert(0, {str(BOOT)!r})
-        from devcloudlib import services
+        import os
+        from devcloudlib import envfile, services
         listed = [services.Service(name=n, argv=("sh", "-c", s), as_user=True, every=e, description=n)
                   for n, s, e in {specs!r}]
         supervisor = services.Supervisor(listed, env_path={str(env_file)!r}, user=None, poll=0.1, grace=3,
-                                         log=lambda message: None, known=lambda: {{{SECRET!r}}},
+                                         log=lambda message: None, known={known or "lambda: {" + repr(SECRET) + "}"},
+                                         known_signature={signature},
                                          desired_path={str(desired_file) if desired is not None else None!r})
         sys.exit(supervisor.run())
     """)
@@ -122,6 +126,40 @@ class SupervisorTest(unittest.TestCase):
         self.assertNotIn(SECRET, text)
         self.assertIn("talk: out [secret]", text)
         self.assertIn("talk: err [secret]", text)
+
+    def test_a_rotated_env_credential_printed_on_sigterm_stays_scrubbed(self):
+        old, new = "made-up-old-credential-41", "made-up-new-credential-42"
+        script = 'trap "echo \\"bye $GREETING\\"; exit 0" TERM; echo "hello $GREETING"; while :; do sleep 0.05; done'
+        known = f"lambda: {{envfile.parse(open({str(self.tmp / 'env')!r}).read()).get('GREETING', '')}}"
+        self.proc = supervise(self.tmp, [("ship", script, None)], env_text=f'GREETING="{old}"\n',
+                              stdout=subprocess.PIPE, known=known)
+        time.sleep(1.0)
+        (self.tmp / "env").write_text(f'GREETING="{new}"\n')
+        time.sleep(1.5)
+        self.proc.send_signal(signal.SIGTERM)
+        out, _ = self.proc.communicate(timeout=5)
+        text = out.decode()
+        self.assertIn("ship: bye [secret]", text)
+        self.assertNotIn(old, text)
+        self.assertNotIn(new, text)
+
+    def test_a_just_rotated_file_credential_is_scrubbed_from_the_first_line_that_prints_it(self):
+        cred = self.tmp / "cred"
+        cred.write_text("made-up-first-credential-51")
+        script = f'while :; do echo "using $(cat {cred})"; sleep 0.05; done'
+        known = f"lambda: {{open({str(cred)!r}).read().strip()}}"
+        signature = f"lambda: os.stat({str(cred)!r}).st_mtime_ns"
+        self.proc = supervise(self.tmp, [("ship", script, None)], stdout=subprocess.PIPE, known=known,
+                              signature=signature)
+        time.sleep(1.0)
+        cred.write_text("made-up-second-credential-52")
+        time.sleep(1.0)
+        self.proc.send_signal(signal.SIGTERM)
+        out, _ = self.proc.communicate(timeout=5)
+        text = out.decode()
+        self.assertIn("ship: using [secret]", text)
+        self.assertNotIn("made-up-first-credential-51", text)
+        self.assertNotIn("made-up-second-credential-52", text)
 
     def test_adds_and_removes_services_as_the_desired_list_changes(self):
         script = 'trap "echo term >> $PWD/$0.log; exit 0" TERM; echo start >> $PWD/$0.log; while :; do sleep 0.05; done'
