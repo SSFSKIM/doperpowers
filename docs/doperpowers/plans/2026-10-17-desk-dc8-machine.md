@@ -358,6 +358,19 @@ rung for DC8); the PR opened, not merged; the report at
   ledger, its jobs and MCP names from its own).
   Date/Author: 2026-10-17, M1 executor (report `task-1-report.md`).
 
+- Decision: **An expired monitor ends on its expiry notice**: a
+  task-notification for a monitor task with no `<status>` whose `<event>`
+  begins `[Monitor expired after ` or is `[Monitor timed out` is terminal —
+  `completed` (the word MAWS's backfill gives a statusless notification,
+  `backfill.ts:678-682`), raw `expired`, `endedAt` the notice's time,
+  `summary` the event text. Other statusless notices stay no evidence.
+  Rationale: the jobs view shows what is running; a 30-minute monitor
+  shown running for hours defeats it (the design session, 2026-10-17).
+  The notice is recognizable by shape, so no clock on `timeoutMs` is
+  needed. Built in M1's fix wave, pinned by a fixture case.
+  Date/Author: 2026-10-17, design session's ask; route chosen by the
+  controller.
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
@@ -376,9 +389,12 @@ rung for DC8); the PR opened, not merged; the report at
   older form with no `requestShape`; a background agent there is known as
   such only from `spawn.background` or its launch result.
   Evidence: read-only count, 2026-10-17 (M1 report).
-- Observation: an expired monitor's notice carries no `<status>`, so it
-  stays `running` until the session ends (accepted; DX4 has no word for
-  expiry).
+- Observation: an expired monitor's notice carries no `<status>`; its
+  `<event>` is one of the engine's fixed texts (`[Monitor expired after
+  <dur> with … delivered. …]`, or the older `[Monitor timed out — re-arm
+  if needed.]`; engine 2.1.300 `cli.pretty.js:900351-900352`, `dEr`).
+  Seen 2 times in 300 recent transcripts, beside 26 statusless event
+  notices. See the Decision Log on expiry.
 
 ## Outcomes & Retrospective
 
