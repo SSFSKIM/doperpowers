@@ -1118,6 +1118,14 @@ clears a plugin's state when it unloads is unverified).
   execution matrix over seven shell variants is checkable, and the notice keeps every handle
   usable. Rejected: further lexer patches.
   Date/Author: 2026-10-17, plan executor; confirmed by the design session.
+  Amended (fix wave 4, same day): positions are judged by the whole word or quoted string that
+  holds the handle, not by its two neighbors — inside `'…'`; inside `"…"` with no `$`, backtick,
+  `\` or `!`; or in an unquoted word of inert characters that does not start with `=` or follow a
+  redirection — after zsh's `$name:` modifiers, word-initial `=`, float and subscript arithmetic,
+  and `${X/…}` changed bytes silently under the neighbor rule. Notices give exact reads that keep
+  trailing newlines, decode each credential file's own escaping, and name each `#n` entry; they
+  assume `python3`, `jq`, `perl`, `xxd`, and `gh`, which the image installs. Padded base64 inside
+  a URL word stays unrestored.
 - Decision: Acceptance 6 checks what it is for — no credential and no per-host input in the
   image — in three parts (known values, credential files and `boot.env`, pattern detections outside
   package-owned trees), since the pattern detector flags about 15,000 vendored strings in about
