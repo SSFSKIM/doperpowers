@@ -374,6 +374,18 @@ the spec's Decision Log entry "the branch review round"
   later run's reminder after a permission-mode change. Only that exact
   sentence can be lost. Trigger: any observed agent-authored answer equal to
   the placeholder.
+- **A quoted notice counts as delivered.** The worktree and orphan rules ask
+  the conversation (`$.session.messages({ as: 'api' })`) for an earlier
+  notice of the task, and that view keeps only role and text, so a user-role
+  text quoting a notice with the same task id and worktree (a fenced example,
+  a pasted transcript, a peer's relay) satisfies it and the first real
+  notice drops (review round 3). A relay carries the same text the notice
+  would; only a fabricated quote of a live agent's exact id and worktree
+  loses anything, and then only the worktree path or the orphan's first
+  notice, which the agent's report and final notice carry again. Cheap
+  hardening if it ever matters: anchor the match to a text block that opens
+  with the notice or the engine's notification frame. Trigger: a dropped
+  first notice traced to a quote.
 - **Engine loss, with or without the filter.** An auto-mode subagent that
   writes its report as plain text while its own background shell runs, and
   is then killed while parked, loses the report: the engine withholds the
