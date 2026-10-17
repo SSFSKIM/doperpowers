@@ -105,17 +105,19 @@ export class Handles {
   /**
    * The values known now, in priority order (the first label to hold a value
    * keeps it). A distinct value under a label already taken gets `#2`, `#3`,
-   * ...; none is dropped. A label whose value changed or vanished leaves its old
+   * ...; none is dropped. Returns the name each entry got, in order. A label whose value changed or vanished leaves its old
    * value superseded, unless another label holds it now.
    */
-  setKnown(list: readonly Known[]) {
+  setKnown(list: readonly Known[]): string[] {
     // Every label stays resolvable, two holding the same bytes included; only
     // which handle the bytes display as goes to the first (below).
     const next = new Map<string, string>()
+    const names: string[] = []
     for (const { label, value } of list) {
       let name = label
       for (let n = 2; next.has(name) && next.get(name) !== value; n++) name = `${label}#${n}`
       next.set(name, value)
+      names.push(name)
     }
     for (const [label, value] of this.current) if (next.get(label) !== value) this.former.set(value, label)
     this.current = next
@@ -129,6 +131,7 @@ export class Handles {
       if (current.has(value) || value.length < SCRUB_MIN) continue
       for (const { enc, text } of spellings(value)) if (!this.known.has(text)) this.known.set(text, handleOf('superseded', label, enc))
     }
+    return names
   }
 
   private patternHandle(kind: string, text: string): string {
@@ -172,6 +175,12 @@ export class Handles {
       at = c.end
     }
     return out + text.slice(at)
+  }
+
+  /** The bytes a handle restores to now, or undefined. */
+  valueOf(handle: string): string | undefined {
+    const m = /^\[(secret|superseded|redacted):([^\]\s]+)\]$/.exec(handle)
+    return m ? this.resolve(m[1]!, m[2]!) : undefined
   }
 
   /** What a handle names: its kind, and for a known one its label and encoding (`''` for the value itself). */

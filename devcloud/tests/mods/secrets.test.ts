@@ -364,10 +364,31 @@ describe('fix wave 3', () => {
     const line = (h: string) => lines.find((l) => l.startsWith(`secrets: ${h} `)) ?? ''
     expect(line('[secret:SHELL]')).toContain('"$(cat ~/.config/claude-secrets/SHELL)"')
     expect(line('[secret:MINE]')).toContain('"$(cat ~/.config/claude-secrets/projects/-work-repo/MINE)"')
-    expect(line('[secret:SHELL~b64]')).toContain(`"$(printf %s "$(cat ~/.config/claude-secrets/SHELL)" | base64 | tr -d '\\n')"`)
-    expect(line('[secret:auth.json:tokens.access_token]')).toContain(`"$(jq -r '.tokens.access_token' ~/.codex/auth.json)"`)
-    expect(line('[secret:.pgpass:db:5432:*:app]')).toContain('field db:5432:*:app of ~/.pgpass')
+    // Re-pinned in fix wave 4: an exact read piped into the encoding, jq -j, a command for .pgpass.
+    expect(line('[secret:SHELL~b64]')).toContain(`"$(perl -pe 'chomp if eof' ~/.config/claude-secrets/SHELL | base64 | tr -d '\\n')"`)
+    expect(line('[secret:auth.json:tokens.access_token]')).toContain(`"$(jq -j '.tokens.access_token' ~/.codex/auth.json)"`)
+    expect(line('[secret:.pgpass:db:5432:*:app]')).toContain(`~/.pgpass db 5432 '*' app 0)"`)
     expect(line(pattern)).toContain('no source on disk')
     expect(line(pattern)).toContain('file tool')
+  })
+})
+
+describe('fix wave 4', () => {
+  test('#7 two credentials under one label each name their own read', async ($, on) => {
+    tool(on, () => bash(''))
+    await start($, on, { [`${HOME}/.config/hcloud/cli.toml`]: `[[contexts]]\n  name = "one"\n  token = "t;${chars(30, 93)}"\n[[contexts]]\n  name = "one"\n  token = "u;${chars(30, 94)}"\n` })
+    const call = await $.tool.call({ tool: 'Bash', command: 'cat <<EOF\n[secret:cli.toml:contexts.one.token] [secret:cli.toml:contexts.one.token#2]\nEOF' })
+    const lines = (call.context?.join('\n') ?? '').split('\n')
+    expect(lines.find((l) => l.startsWith('secrets: [secret:cli.toml:contexts.one.token] '))).toContain(` contexts 0 token)"`)
+    expect(lines.find((l) => l.startsWith('secrets: [secret:cli.toml:contexts.one.token#2] '))).toContain(` contexts 1 token)"`)
+  })
+
+  test('#8 the system prompt says only plain values restore in Bash', async ($, on) => {
+    on('prompt.compose', () => ({ sections: [] }))
+    await start($, on, {})
+    const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] })
+    const line = composed.sections.find((s) => s.id === 'devcloud:secrets')?.text ?? ''
+    expect(line).toContain('In Bash only')
+    expect(line).not.toContain('Write, Edit, MultiEdit, NotebookEdit and Bash it is restored')
   })
 })

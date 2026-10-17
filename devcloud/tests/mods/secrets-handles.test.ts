@@ -215,7 +215,8 @@ describe('fix wave 3', () => {
 
   test('#1 an inert value is restored at a plain position of a plain command', () => {
     const h = withStored({ SAFE: STORED })
-    for (const command of ['echo [secret:SAFE]', "printf %s '[secret:SAFE]'", 'curl -H "Authorization: Bearer [secret:SAFE]" x', 'X=[secret:SAFE] cmd', 'export X=[secret:SAFE]; echo "$(printf %s [secret:SAFE])"', 'a,[secret:SAFE].b', 'echo x[secret:SAFE]y', 'cat <(echo [secret:SAFE])']) {
+    // Since fix wave 4, `a,[secret:SAFE].b` (a `,` in the word) and `"$(printf %s [secret:SAFE])"` (a `$` in the string) are left.
+    for (const command of ['echo [secret:SAFE]', "printf %s '[secret:SAFE]'", 'curl -H "Authorization: Bearer [secret:SAFE]" x', 'X=[secret:SAFE] cmd', 'export X=[secret:SAFE]; echo "$(printf %s ok)"', 'echo x[secret:SAFE]y']) {
       expect(h.restoreShell(command)).toEqual({ text: command.split('[secret:SAFE]').join(STORED), unrestored: [], unquotable: [] })
     }
   })
@@ -249,5 +250,64 @@ describe('fix wave 3', () => {
       const r = h.restoreShell(command)
       expect([command, r.text, r.unquotable.length > 0]).toEqual([command, command, true])
     }
+  })
+})
+
+describe('fix wave 4', () => {
+  test('#1 the common shapes still restore: a plain quoted string, a plain word', () => {
+    for (const value of ['hunter2abcdef', 'tok12345', 'abcdef12', 'sk-live-x9', 'ghp_x9abc', 'AKIAX9ABC']) {
+      const h = withStored({ K: value })
+      for (const command of [
+        'curl -H "Authorization: Bearer [secret:K]" https://x',
+        "printf %s 'a [secret:K] b'",
+        'cmd --token=[secret:K]',
+        'X=[secret:K] cmd',
+        'git push https://user:[secret:K]@github.com/o/r.git',
+      ]) {
+        expect(h.restoreShell(command)).toEqual({ text: command.replace('[secret:K]', value), unrestored: [], unquotable: [] })
+      }
+    }
+  })
+
+  test('#1 a word or string the rule does not admit keeps the handle', () => {
+    const h = withStored({ K: 'habcdef12' })
+    for (const command of [
+      'printf %s $USER:[secret:K]',
+      'printf %s "$USER:[secret:K]"',
+      'git push https://$USER:[secret:K]@github.com/o/r.git',
+      'printf %s $1:[secret:K]',
+      'printf %s ${USER}:[secret:K]',
+      'printf %s =[secret:K]',
+      "printf %s ''=[secret:K]",
+      'a=( =[secret:K] ); printf %s "$a"',
+      'printf %s {a,=[secret:K],b}',
+      'typeset -F x=[secret:K]',
+      'local -F x=[secret:K]',
+      'float x=[secret:K]',
+      'export -n X=[secret:K]',
+      'printf %s ${a[ [secret:K] ]}',
+      'printf %s ${X: [secret:K] }',
+      'printf %s ${X/a[secret:K]/Q}',
+      'printf %s ok >& [secret:K]',
+      'printf %s ok > [secret:K]',
+      'printf %s {x[secret:K]y}',
+      'printf %s *(.[secret:K])',
+      'printf %s a,[secret:K]',
+      'printf %s "a$b[secret:K]"',
+      'printf %s "a!b[secret:K]"',
+      'printf %s "\\[secret:K]"',
+    ]) {
+      const r = h.restoreShell(command)
+      expect([command, r.text, r.unquotable]).toEqual([command, command, ['[secret:K]']])
+    }
+  })
+
+  test('#7 setKnown names each entry, a second value under a taken label #2', () => {
+    const h = new Handles('abcd')
+    expect(h.setKnown([
+      { label: 'f:one', value: `${STORED}-1` },
+      { label: 'f:one', value: `${STORED}-2` },
+      { label: 'g', value: `${STORED}-1` },
+    ])).toEqual(['f:one', 'f:one#2', 'g'])
   })
 })

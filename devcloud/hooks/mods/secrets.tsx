@@ -1,6 +1,8 @@
 import type { EngineInterface, Hook, On } from 'claude-code'
 
 import { Handles } from './secrets-handles'
+import { PATTERN_READ, readNotice } from './secrets-reads'
+import type { Read } from './secrets-reads'
 import type { Known } from './secrets-handles'
 import {
   CREDENTIAL_FILES,
@@ -45,10 +47,12 @@ const REFRESH_EVERY_MS = 1000
 const PROMPT_LINE =
   'Secrets in what you read are replaced by handles: [secret:KEY] stands for a stored or credential-file value ' +
   '(~b64, ~hex, ~url and the like name an encoding of it), [redacted:<kind>#<id>] for a token-shaped string, ' +
-  '[superseded:…] for a value that has since changed. Write a handle where its value belongs: in the input of ' +
-  'Write, Edit, MultiEdit, NotebookEdit and Bash it is restored to the exact bytes before the call runs, so ' +
-  '`Authorization: Bearer [secret:KEY]` works and a file edited through a handle keeps its secret. A [superseded:…] ' +
-  "handle, or another session's [redacted:…] one, is written as is, and the tool's result says so."
+  '[superseded:…] for a value that has since changed. Write a handle where its value belongs. In Write, Edit, ' +
+  'MultiEdit and NotebookEdit it is restored to the exact bytes before the call runs, so a file edited through a ' +
+  'handle keeps its secret. In Bash only a plain token in a plain position is restored ' +
+  '(`Authorization: Bearer [secret:KEY]` inside double quotes, `--token=[secret:KEY]`); any other handle stays as ' +
+  "written, and the tool's result names a read that works in its place. A [superseded:…] handle, or another " +
+  "session's [redacted:…] one, is never restored, and the result says so."
 
 // Four base32 characters, drawn when the module loads: this process's pattern handles.
 function namespace(): string {
@@ -66,10 +70,9 @@ const sources = new Map<string, { mtimeMs: number; size: number; known: Known[] 
 let refreshedAt = 0
 // Where each store label's file is, from $HOME: the read a command can do in
 // place of a handle the guard cannot restore into it.
-const storePaths = new Map<string, string>()
-// Each credential-file label's file (from $HOME), field, and for a JSON file
-// the key path to it.
-const credentialReads = new Map<string, { path: string; field: string; keys?: string[] }>()
+// Each known label's source, as setKnown named it (`#2` and on included): the
+// read a command can do in place of a handle the guard leaves in it.
+const reads = new Map<string, Read>()
 
 async function projectOf($: EngineInterface, cwd?: string): Promise<string> {
   if (project !== undefined) return project
@@ -163,20 +166,15 @@ async function refresh($: EngineInterface, isForced: boolean) {
   const own = projectSlug(await projectOf($))
   const projectKnown = await readTier($, `${store}/projects/${own}`, false)
   const shadowed = new Set(projectKnown.map((k) => k.label))
-  const known: Known[] = [...projectKnown]
-  storePaths.clear()
-  for (const { label } of projectKnown) storePaths.set(label, `~/${STORE_DIR}/projects/${own}/${label}`)
+  const known: (Known & { read?: Read })[] = projectKnown.map((k) => ({ ...k, read: { kind: 'store', path: `${STORE_DIR}/projects/${own}/${k.label}` } }))
   for (const { label, value } of await readTier($, store, true)) {
-    const name = shadowed.has(label) ? `${label}@global` : label
-    known.push({ label: name, value })
-    storePaths.set(name, `~/${STORE_DIR}/${label}`)
+    known.push({ label: shadowed.has(label) ? `${label}@global` : label, value, read: { kind: 'store', path: `${STORE_DIR}/${label}` } })
   }
   // Every other project's tier: a command can print any of them.
   for (const slug of await projectTiers($, store)) {
     if (slug === own) continue
     for (const { label, value } of await readTier($, `${store}/projects/${slug}`, false)) {
-      known.push({ label: `${label}@${slug}`, value })
-      storePaths.set(`${label}@${slug}`, `~/${STORE_DIR}/projects/${slug}/${label}`)
+      known.push({ label: `${label}@${slug}`, value, read: { kind: 'store', path: `${STORE_DIR}/projects/${slug}/${label}` } })
     }
   }
 
@@ -187,18 +185,16 @@ async function refresh($: EngineInterface, isForced: boolean) {
     if (stat) present.push({ ...file, stat })
   }
   const labels = credentialLabels(present.map((f) => f.path))
-  credentialReads.clear()
   for (const { path, format, stat } of present) {
     const name = labels.get(path)!
-    const fields = await readSource($, `${home}/${path}`, stat, (text) =>
-      credentialFields(format, text).map((f) => ({ label: `${name}:${f.field}`, value: f.value, keys: f.keys })),
-    )
-    for (const f of fields as (Known & { keys?: string[] })[]) {
-      known.push({ label: f.label, value: f.value })
-      credentialReads.set(f.label, { path: `~/${path}`, field: f.label.slice(name.length + 1), keys: f.keys })
-    }
+    known.push(...(await readSource($, `${home}/${path}`, stat, (text) => credentialFields(format, text, path).map((f) => ({ label: `${name}:${f.field}`, value: f.value, read: f.read })))))
   }
-  handles.setKnown(known)
+  const names = handles.setKnown(known)
+  reads.clear()
+  names.forEach((name, i) => {
+    const read = known[i]!.read
+    if (read && !reads.has(name)) reads.set(name, read)
+  })
 }
 
 // A file of more than one read's worth, in pieces through `dd`, base64 so no
@@ -254,44 +250,11 @@ const notRestored = (unrestored: readonly string[]) =>
   `secrets: not restored, so written as is: ${unrestored.join(', ')} ` +
   "(a superseded value, a key no longer stored, or another session's redaction)."
 
-// The step that turns a value read in a command into a handle's encoding.
-const ENCODE: Record<string, string> = {
-  b64: "base64 | tr -d '\\n'",
-  b64np: "base64 | tr -d '\\n='",
-  b64u: "base64 | tr -d '\\n=' | tr '+/' '-_'",
-  b64up: "base64 | tr -d '\\n' | tr '+/' '-_'",
-  hex: "xxd -p | tr -d '\\n'",
-  HEX: "xxd -p | tr -d '\\n' | tr a-f A-F",
-  url: `python3 -c 'import sys,urllib.parse; sys.stdout.write(urllib.parse.quote(sys.stdin.read(), safe="!*()\\x27"))'`,
-  json: `python3 -c 'import sys,json; sys.stdout.write(json.dumps(sys.stdin.read(), ensure_ascii=False)[1:-1])'`,
-  pgpass: "sed 's/[\\\\:]/\\\\&/g'",
-}
-
-// A jq path to a JSON field's keys, or undefined where one would need quoting.
-const jqPath = (keys: readonly string[]) =>
-  keys.some((k) => k.includes("'"))
-    ? undefined
-    : keys.map((k) => (/^\d+$/.test(k) ? `[${k}]` : /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? `.${k}` : `[${JSON.stringify(k)}]`)).join('').replace(/^\[/, '.[')
-
-// A read that works in the command where a handle could not be restored,
-// for each kind of handle.
+// A read that works in the command where a handle could not be restored.
 function readInstead(handle: string): string {
   const { kind, label = '', enc } = handles.describe(handle)
-  if (kind === 'redacted') {
-    return 'it has no source on disk, so it stays unrestored in shell commands: to use it, write it with a file tool (file tools restore it) to a temporary file, then use "$(cat <that file>)" in the command'
-  }
-  const base = label.replace(/#\d+$/, '')
-  const encode = enc ? ENCODE[enc] : undefined
-  const piped = (read: string) => (encode ? `"$(printf %s "$(${read})" | ${encode})"` : `"$(${read})"`)
-  const store = storePaths.get(label) ?? storePaths.get(base)
-  if (store) return `use ${piped(`cat ${store}`)} in the command`
-  const credential = credentialReads.get(label) ?? credentialReads.get(base)
-  if (credential) {
-    const path = credential.keys && jqPath(credential.keys)
-    if (path) return `use ${piped(`jq -r '${path}' ${credential.path}`)} in the command`
-    return `read field ${credential.field} of ${credential.path} in the command${encode ? `, then encode it: ${encode}` : ''}`
-  }
-  return 'read its source in the command'
+  if (kind === 'redacted') return PATTERN_READ
+  return readNotice(reads.get(label), enc, handles.valueOf(handle)?.endsWith('\n') ?? false)
 }
 
 // One line per handle left in a command: why, and the read to use instead.

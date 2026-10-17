@@ -5,7 +5,10 @@
  * module lists and reads the files; this one says what they hold.
  */
 
-export type Field = { field: string; value: string; keys?: string[] }
+import type { Read } from './secrets-reads'
+
+/** A secret field: its name in handles, its value, and how a command reads it from its file. */
+export type Field = { field: string; value: string; read?: Read }
 export type Format = 'yaml' | 'json' | 'gcloud' | 'toml' | 'pgpass' | 'netrc' | 'git-credentials' | 'npmrc'
 
 /** The secret store, relative to $HOME: one value per file, a folder per project under `projects/`. */
@@ -47,7 +50,7 @@ function jsonFields(value: unknown, path: string[] = [], out: Field[] = []): Fie
   else if (value !== null && typeof value === 'object') {
     for (const [k, v] of Object.entries(value)) {
       if (typeof v === 'string') {
-        if (isSecretField(k, v)) out.push({ field: [...path, k].join('.'), value: v, keys: [...path, k] })
+        if (isSecretField(k, v)) out.push({ field: [...path, k].join('.'), value: v, read: { kind: 'json', path: '', keys: [...path, k] } })
       } else jsonFields(v, [...path, k], out)
     }
   }
@@ -70,7 +73,17 @@ function yamlFields(text: string): Field[] {
     const key = m[2]!.trim()
     const value = unquote((m[3] ?? '').replace(/\s+#.*$/, ''))
     if (value === '') stack.push({ indent, key })
-    else if (isSecretField(key, value)) out.push({ field: [...stack.map((s) => s.key), key].join('.'), value })
+    else if (isSecretField(key, value)) {
+      const keys = [...stack.map((s) => s.key), key]
+      // gh's hosts.yml: `gh auth token` reads it, from the keyring too.
+      const read: Read | undefined =
+        keys.length === 2 && key === 'oauth_token'
+          ? { kind: 'gh', host: keys[0]! }
+          : keys.length === 4 && keys[1] === 'users' && key === 'oauth_token'
+            ? { kind: 'gh', host: keys[0]!, user: keys[2]! }
+            : undefined
+      out.push({ field: keys.join('.'), value, ...(read ? { read } : {}) })
+    }
   }
   return out
 }
@@ -112,7 +125,11 @@ function tomlFields(text: string): Field[] {
   const flush = () => {
     const name = block.entries.find(([k]) => k === 'name')?.[1]
     const base = block.isArray ? `${block.prefix}.${name ?? block.index}` : block.prefix
-    for (const [k, v] of block.entries) if (isSecretField(k, v)) out.push({ field: base ? `${base}.${k}` : k, value: v })
+    for (const [k, v] of block.entries) {
+      if (!isSecretField(k, v)) continue
+      const read: Read = { kind: 'toml', path: '', table: block.prefix, key: k, ...(block.isArray ? { index: block.index } : {}) }
+      out.push({ field: base ? `${base}.${k}` : k, value: v, read })
+    }
   }
   for (const line of text.split('\n')) {
     const table = /^\s*(\[\[?)\s*([^\]]+?)\s*\]\]?\s*$/.exec(line)
@@ -139,7 +156,9 @@ function pgpassFields(text: string): Field[] {
     const parts = line.split(/(?<!\\):/)
     if (parts.length !== 5) continue
     const value = parts[4]!.replace(/\\(.)/g, '$1')
-    if (value) out.push({ field: parts.slice(0, 4).join(':'), value })
+    const match = parts.slice(0, 4)
+    const nth = out.filter((f) => f.read?.kind === 'pgpass' && f.read.match.join('\0') === match.join('\0')).length
+    if (value) out.push({ field: match.join(':'), value, read: { kind: 'pgpass', path: '', match, nth } })
   }
   return out
 }
@@ -172,11 +191,16 @@ function netrcFields(text: string): Field[] {
   const out: Field[] = []
   const words = netrcTokens(text)
   let machine = ''
+  const seen = new Map<string, number>()
   for (let i = 0; i < words.length; i++) {
     const word = words[i]
     if (word === 'machine') machine = words[++i] ?? ''
     else if (word === 'default') machine = 'default'
-    else if (word === 'password' && words[i + 1] !== undefined) out.push({ field: `${machine}.password`, value: words[++i]! })
+    else if (word === 'password' && words[i + 1] !== undefined) {
+      const nth = seen.get(machine) ?? 0
+      seen.set(machine, nth + 1)
+      out.push({ field: `${machine}.password`, value: words[++i]!, read: { kind: 'netrc', path: '', machine, nth } })
+    }
     else if (word === 'login' || word === 'account') i++
   }
   return out
@@ -195,7 +219,10 @@ function gitCredentialFields(text: string): Field[] {
     // The repository path is part of the identity: one user may hold a
     // credential per repository on one host.
     const m = /^[a-z][a-z0-9+.-]*:\/\/([^:@/]*):([^@/]+)@([^/\s]+)(\/\S*)?/i.exec(line.trim())
-    if (m) out.push({ field: `${decode(m[1]!)}@${m[3]}${m[4] ?? ''}`, value: decode(m[2]!) })
+    if (!m) continue
+    const id = `${decode(m[1]!)}@${m[3]}${m[4] ?? ''}`
+    const nth = out.filter((f) => f.field === id).length
+    out.push({ field: id, value: decode(m[2]!), read: { kind: 'git-credentials', path: '', id, nth } })
   }
   return out
 }
@@ -204,13 +231,23 @@ function npmrcFields(text: string): Field[] {
   const out: Field[] = []
   for (const line of text.split('\n')) {
     const m = /^\s*([^=#;\s][^=]*?)\s*=\s*(.+?)\s*$/.exec(line)
-    if (m && /(?:^|:)(?:_authToken|_auth|_password|token)$/i.test(m[1]!) && m[2]!.length >= FIELD_MIN) out.push({ field: m[1]!, value: unquote(m[2]!) })
+    if (m && /(?:^|:)(?:_authToken|_auth|_password|token)$/i.test(m[1]!) && m[2]!.length >= FIELD_MIN) {
+      const nth = out.filter((f) => f.field === m[1]).length
+      out.push({ field: m[1]!, value: unquote(m[2]!), read: { kind: 'npmrc', path: '', key: m[1]!, nth } })
+    }
   }
   return out
 }
 
-/** The secret fields of a credential file's text, by its format; nothing for one that does not parse. */
-export function credentialFields(format: Format, text: string): Field[] {
+/**
+ * The secret fields of a credential file's text, by its format; nothing for
+ * one that does not parse. `path` (from $HOME) is the file each read names.
+ */
+export function credentialFields(format: Format, text: string, path = ''): Field[] {
+  return parseFields(format, text).map((f) => (f.read && 'path' in f.read ? { ...f, read: { ...f.read, path } } : f))
+}
+
+function parseFields(format: Format, text: string): Field[] {
   try {
     switch (format) {
       case 'json':
