@@ -462,17 +462,26 @@ The guard differs from `cua`'s in four ways:
    Before a Write, Edit, MultiEdit, NotebookEdit, or Bash call runs, every known-value handle and
    every pattern handle this process issued is replaced by its bytes, so a model editing a file it saw redacted leaves
    the secret intact, and `Authorization: Bearer [secret:KEY]` in a command works like `$(cat …)`.
-   In a Bash command (its `command` alone) restoration follows a rule safe by construction. An
-   inert value — non-empty, of `[A-Za-z0-9_./+:@-]` with `=` and `%` past the first character,
-   none of which bash or zsh treats specially anywhere — goes in as it is, in any command. Any
-   other value goes in only where the command's quoting is proved: a plain single-quoted string, a
-   plain double-quoted string (and only without `!`), or an unquoted word, in a command with no
-   backtick, no `<<` of any kind, no `$(`, `${`, `$'` or `$"`, no comment and no line
-   continuation; it is quoted for that one context. A handle right after `$` or a `$name` is never
-   restored. Everywhere else the handle stays as written and the tool's result says, in one line,
-   that its value needs shell quoting in a context the guard cannot prove, with
-   `"$(cat <the key's store file>)"` as the read to use for a store key; the command still runs.
-   Executing the restored commands under bash and zsh over a matrix of values and command shapes
+   In a Bash command (its `command` alone) a handle is restored only where that is shown safe,
+   and nothing is ever quoted:
+   - the value is inert: non-empty, of `[A-Za-z0-9_./+:@-]` with `=` and `%` past the first
+     character, and no `=` right after `=` or `:` except in a trailing run (base64 padding),
+     since zsh's `MAGIC_EQUAL_SUBST` reads `==cmd` and `:=cmd` as `=cmd`;
+   - the command holds no `<<` (heredoc or here-string), backtick, `((`, `$[`, `[[`, `let`,
+     integer declaration, comment or line continuation;
+   - the character before the handle is the command's start, whitespace, a quote, or one of
+     `= : / , @ . - + _` or an alphanumeric — never `\`, `$`, `{`, `[`, `(`, never right after a
+     `$name`, and never after `==` or `:=`; the character after it is the command's end,
+     whitespace, a quote, or one of `; | & ) / : , . - = @` or an alphanumeric — never `}` or
+     `]` (and a value ending in `=` or `:` must end its word).
+   A value that is not inert is never restored into a command. Every handle left in a command
+   gets one line in the tool's result naming a read that works there: for a store key
+   `"$(cat <its tier's store file>)"`; for a credential-file value a `jq` read of a JSON field, or
+   the field and file to read; for an encoded spelling the same read piped through its encoding;
+   for a pattern handle, which has no source on disk, a file tool writing it to a temporary file
+   (file tools restore it) and `"$(cat <that file>)"`. The command still runs. Executing the
+   restored commands under bash (also `--posix` and `-f`) and zsh (also with
+   `magic_equal_subst`, `extendedglob` and `noglob`) over a matrix of values and command shapes
    proves it (`devcloud/tests/mods/shell-exec.ts`). File tools get the bytes raw: their content
    is not parsed by a shell. A handle-like text that does not parse (a space inside it) is named
    as not restored too.
@@ -761,9 +770,9 @@ Restored in the inputs of Write, Edit, MultiEdit, NotebookEdit, and Bash: a know
 the credential's current value in the named spelling; a pattern handle only when this process
 issued it. Anything else is left as written and named in the result. A label component writes
 whitespace, `[`, `]`, `~`, `%`, and non-ASCII bytes as `%XX` (UTF-8), so every label round-trips.
-In Bash only `command` is restored: an inert value as it is, any other only in a context the
-guard proves (a plain quoted string or an unquoted word, in a command with none of the forms it
-does not read), and otherwise not at all, the result naming it (§9.3); file tools get raw bytes.
+In Bash only `command` is restored, and only an inert value at a plain position in a plain
+command, as it is; every other handle stays, the result naming a read that works in its place
+(§9.3); file tools get raw bytes.
 
 **I3 — `secrets.toml`** (the materializer's input, in the profile):
 

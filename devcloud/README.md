@@ -64,14 +64,18 @@ current value in the named spelling, a pattern handle by exactly the bytes
 it replaced, if this process issued it. So a file edited through a handle
 keeps its secret, and `Authorization: Bearer [secret:KEY]` in a command works
 like `"$(cat ~/.config/claude-secrets/KEY)"`. In a Bash command (its `command`
-only) the rule is safe by construction: an inert value (`[A-Za-z0-9_./+:@-]`,
-with `=` and `%` past the first character: most tokens and base64) goes in as
-it is; any other value goes in only inside a plain single- or double-quoted
-string or an unquoted word, in a command with no backtick, heredoc or
-here-string, `$(`, `${`, `$'`, `$"`, comment or line continuation, quoted for
-that context; anywhere else the handle stays and the result says so, with the
-`"$(cat …)"` read to use for a store key. `tests/mods/shell-exec.ts` proves it by
-running the restored commands under bash and zsh. File tools get the bytes raw. A handle that cannot be
+only) a handle is restored only where that is shown safe, and never quoted: an
+inert value (`[A-Za-z0-9_./+:@-]`, `=` and `%` past the first character, no `=`
+right after `=` or `:` but in a trailing run: most tokens and base64), at a
+plain position (not after `\`, `$`, `$name`, `{`, `[`, `(`, `==` or `:=`; not
+before `}` or `]`), in a command with no heredoc or here-string, backtick,
+arithmetic (`((`, `$[`, `[[`, `let`, integer declarations), comment or line
+continuation. Every other handle stays, and the result gives one line per
+handle with a read that works instead: `"$(cat <store file>)"` for a store key,
+a `jq` read or the field and file for a credential, the read piped through its
+encoding for an encoded spelling, and for a pattern handle a file tool writing
+it to a temporary file to `cat`. `tests/mods/shell-exec.ts` proves it by running
+the restored commands under bash and zsh, with their word-reading options. File tools get the bytes raw. A handle that cannot be
 restored — `[superseded:…]`, a key no longer stored, another process's (or a
 resumed session's earlier) pattern handle — is written as is, and the tool's
 result carries a line naming it. The transcript keeps the call as the model
