@@ -5,9 +5,10 @@ the GCE metadata server, the configuration repository and the gateway.
 
 Proves acceptance 3 (container, stand-in profile, and step 12 with a stand-in
 `devenv` runner: a test repository and this checkout's own devenv/), 5
-(container, a reconciled profile change), 6 (a credential-free image) and the
-host half of 8 (projects from the descriptor, the mirror cache on a persistent
-host), plus the boot's failure paths. Prints one line per case, "ok <case>" or "FAIL <case>: why";
+(container, a reconciled profile change), 6 (a credential-free image), 7
+(sminos: a stand-in daemon under a systemd container, a sandbox's identity
+hygiene) and the host half of 8 (projects from the descriptor, the mirror cache
+on a persistent host), plus the boot's failure paths. Prints one line per case, "ok <case>" or "FAIL <case>: why";
 exits 1 when a case failed. Every secret here is made up.
 
     python3 devcloud/tests/integration.py <image>
@@ -18,6 +19,7 @@ import base64
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -137,11 +139,13 @@ def commit_profile(script, message):
     sh(FX, f"cd /srv/work && {script} && git commit -qam '{message}' && git push -q origin main")
 
 
-def boot_once(name, desc, hostname=None, after="true", timeout=600):
-    """devcloud-boot in a fresh container, then its status, whether the store
-    exists, and what the `after` script prints; the container goes."""
+def boot_once(name, desc, hostname=None, after="true", timeout=600, before="true"):
+    """devcloud-boot in a fresh container (after the `before` script, as
+    root), then its status, whether the store exists, and what the `after`
+    script prints; the container goes."""
     result = docker("run", "--rm", "--network", NET, "--hostname", hostname or name, *ENV,
                     "-v", f"{desc}:/etc/devcloud/boot.env:ro", "--entrypoint", "sh", IMAGE, "-c",
+                    f'{{ {before}; }} >/dev/null; '
                     'devcloud-boot >/tmp/boot.out 2>&1; echo "rc=$?"; echo "--status"; '
                     'cat /var/lib/devcloud/status.json; echo "--store"; '
                     f'test -d {HOME}/.config/claude-secrets && echo store-present || echo store-absent; '
@@ -266,7 +270,10 @@ def identity_and_env():
     for line in ('SESSION_MIRROR_HOST="sbx-test"', 'DEVCLOUD_PROBE_PROFILE="profile-1"', 'TZ="Europe/Berlin"',
                  f'EXAMPLE_API_KEY="{SECRETS["api-key"]}"', f'PATH="{HOME}/bin:{HOME}/.local/bin:'):
         check(line in env, f"/etc/devcloud/env lacks {line.split('=')[0]}")
-    check("DAEMON_BOOT_ID=" in env, "a container gets its own DAEMON_BOOT_ID")
+    own = re.search(r'^DAEMON_BOOT_ID="([^"]+)"$', env, re.M)
+    check(own, "a container gets its own DAEMON_BOOT_ID")
+    check(own.group(1) != out(HOST, "cat /proc/sys/kernel/random/boot_id").strip(),
+          "the container's DAEMON_BOOT_ID is its host's (acceptance 7)")
     check(out(HOST, "stat -c '%a %U %G' /etc/devcloud/env").split() == ["640", "root", USER], "env file mode")
     check(out(HOST, "readlink /etc/localtime").strip().endswith("Europe/Berlin"), "TZ sets the system zone")
 
@@ -333,6 +340,9 @@ def services_running():
     ship = json.loads(out(HOST, f"cat {STATE}/ship.json"))
     check(ship["uid"] == int(UID) and ship["SESSION_MIRROR_HOST"] == "sbx-test", f"ship env {ship}")
     check(ship["EXAMPLE_API_KEY set"] and ship["DEVCLOUD_PROBE_PROFILE"] == "profile-1", f"ship env {ship}")
+    check("a sandbox, not a sminos machine" in steps(HOST)["services"]["detail"], steps(HOST)["services"]["detail"])
+    check(sh(HOST, f"test -e {HOME}/.claude/sminos/daemon", check_rc=False).returncode != 0,
+          "a sandbox carries $SMINOS_HOME/daemon/ (acceptance 7)")
 
 
 @case("claude -p answers through the gateway; managed env merges key by key")
@@ -526,7 +536,7 @@ VM = f"{TAG}-vm"
 # points the boot and the jobs at the stand-ins.
 SYSTEMD_DOCKERFILE = f"""
 FROM {IMAGE}
-RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \\
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus libpam-systemd \\
  && rm -rf /var/lib/apt/lists/* && systemctl enable devcloud-boot.service \\
  && for unit in devcloud-boot devcloud-pull-config devcloud-refresh-secrets devcloud-refresh-mirrors; do \\
       mkdir -p /etc/systemd/system/$unit.service.d \\
@@ -535,6 +545,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd
 STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT ["/sbin/init"]
 """
+
+
+SMINOS_UNIT = f"{HOME}/.config/systemd/user/sminos-daemon.service"
+MARKETPLACE = f"{HOME}/.claude/plugins/marketplaces/doperpowers"
+
+
+def user_unit_active(unit):
+    return sh(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user is-active {unit}", user=USER,
+              check_rc=False).stdout.strip() == "active"
 
 
 def wait_systemd_boot(timeout=300):
@@ -583,6 +602,43 @@ def under_systemd():
           f"the shipper's unit environment {ship}")
     pulled = sh(VM, "systemctl start devcloud-pull-config.service", check_rc=False)
     check(pulled.returncode == 0, "the pull job's unit failed")
+    check("sminos: not enrolled, local-only" in steps(VM)["services"]["detail"], steps(VM)["services"]["detail"])
+    check(sh(VM, f"test -e {SMINOS_UNIT}", check_rc=False).returncode != 0, "a sminos unit on an unenrolled host")
+
+
+@case("once enrolled, a reconcile installs the sminos daemon as a lingering user unit (acceptance 7)")
+def enrolled_daemon():
+    scripts = f"{MARKETPLACE}/skills/sminos/scripts"
+    sh(VM, f"install -d -o {USER} -g {USER} {HOME}/.claude/plugins {MARKETPLACE} {MARKETPLACE}/skills "
+           f"{MARKETPLACE}/skills/sminos {scripts} {HOME}/.claude/sminos {HOME}/.claude/sminos/daemon")
+    docker("cp", str(HERE / "fixtures/sminos.py"), f"{VM}:{scripts}/sminos.py")
+    known = json.dumps({"doperpowers": {"source": {"source": "github", "repo": "example/doperpowers"},
+                                        "installLocation": MARKETPLACE}})
+    sh(VM, f"echo '{known}' > {HOME}/.claude/plugins/known_marketplaces.json && "
+           f"echo '{{\"machine\": \"sbx-vm\"}}' > {HOME}/.claude/sminos/daemon/hub.json && "
+           f"chown {USER}:{USER} {scripts}/sminos.py {HOME}/.claude/plugins/known_marketplaces.json "
+           f"{HOME}/.claude/sminos/daemon/hub.json")
+    reconciled = sh(VM, "devcloud reconcile", check_rc=False, timeout=600)
+    check(reconciled.returncode == 0, f"reconcile exited {reconciled.returncode}: {reconciled.stdout[-800:]}\n"
+          + _systemd_diagnostics())
+    detail = steps(VM)["services"]["detail"]
+    check("sminos daemon: sminos-daemon.service enabled" in detail, detail)
+    check(out(VM, f"loginctl show-user {USER} --property=Linger").strip() == "Linger=yes", "lingering is off")
+    end = time.monotonic() + 30
+    while not user_unit_active("sminos-daemon.service"):
+        check(time.monotonic() < end, "the sminos user unit is not active: " + out(
+            VM, f"XDG_RUNTIME_DIR=/run/user/{UID} runuser -u {USER} -- systemctl --user status sminos-daemon "
+                "--no-pager || true"))
+        time.sleep(1)
+    end = time.monotonic() + 15
+    while sh(VM, f"test -s {STATE}/sminos.json", check_rc=False).returncode != 0:
+        check(time.monotonic() < end, "the stand-in daemon never recorded its environment")
+        time.sleep(0.5)
+    seen = json.loads(out(VM, f"cat {STATE}/sminos.json"))
+    check(seen["SESSION_MIRROR_HOST"] == "sbx-vm", f"the daemon lacks the host environment: {seen}")
+    again = sh(VM, "devcloud reconcile", check_rc=False, timeout=600)
+    check(again.returncode == 0 and "sminos-daemon.service enabled and running" in steps(VM)["services"]["detail"],
+          "a second reconcile restarted an unchanged daemon: " + steps(VM)["services"]["detail"])
 
 
 @case("a persistent host keeps a mirror of its projects' repositories and refreshes it (Design §7)")
@@ -609,6 +665,19 @@ def systemd_restart():
     wait_systemd_boot()
     check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
     wait_active("devcloud-session-mirror.service")
+    end = time.monotonic() + 30
+    while not user_unit_active("sminos-daemon.service"):
+        check(time.monotonic() < end, "the sminos daemon did not come back after the restart (acceptance 7)")
+        time.sleep(1)
+
+
+@case("a sandbox carrying a sminos machine identity fails services (acceptance 7)")
+def sandbox_with_identity():
+    plant = (f"mkdir -p {HOME}/.claude/sminos/daemon && echo '{{}}' > {HOME}/.claude/sminos/daemon/machine.json "
+             f"&& chown -R {USER}:{USER} {HOME}/.claude")
+    rc, got, _, _ = boot_once("sbx-clone", descriptor("sbx-clone"), before=plant)
+    check(rc == 1 and got["services"]["state"] == "failed", str(got.get("services")))
+    check("machine.json" in got["services"]["detail"] and "sandbox" in got["services"]["detail"], str(got["services"]))
 
 
 # --- the boot's failure paths ------------------------------------------------------------

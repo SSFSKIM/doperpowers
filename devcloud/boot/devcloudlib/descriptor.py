@@ -11,7 +11,7 @@ PATH = "/etc/devcloud/boot.env"
 
 REQUIRED = ("DEVCLOUD_NAME", "DEVCLOUD_KIND", "DEVCLOUD_ROLE", "DEVCLOUD_TAILSCALE", "DEVCLOUD_SEED",
             "DEVCLOUD_SM_PROJECT", "DEVCLOUD_CONFIG_REPO", "DEVCLOUD_CONFIG_TOKEN_SECRET")
-OPTIONAL = ("DEVCLOUD_TS_AUTHKEY_FILE", "DEVCLOUD_CONFIG_BRANCH", "DEVCLOUD_PROJECTS", "DEVCLOUD_MIRROR_DIR")
+OPTIONAL = ("DEVCLOUD_TS_SECRET", "DEVCLOUD_TS_AUTHKEY_FILE", "DEVCLOUD_CONFIG_BRANCH", "DEVCLOUD_PROJECTS", "DEVCLOUD_MIRROR_DIR")
 
 _HOSTNAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _PROJECT = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?(?:@\S+)?\Z")
@@ -28,7 +28,8 @@ class Descriptor:
     kind: str          # vm | microvm | container
     role: str          # persistent | sandbox
     tailscale: str     # join | host | none
-    ts_authkey_file: str | None
+    ts_secret: str | None        # join: the Secret Manager id of the Tailscale OAuth client
+    ts_authkey_file: str | None  # join, the fallback: a one-time auth key's file
     seed_kind: str     # file | gce-metadata
     seed_path: str | None
     sm_project: str
@@ -64,13 +65,23 @@ def parse(text, allow_http=False):
     kind = _one_of(values, "DEVCLOUD_KIND", ("vm", "microvm", "container"))
     role = _one_of(values, "DEVCLOUD_ROLE", ("persistent", "sandbox"))
     tailscale = _one_of(values, "DEVCLOUD_TAILSCALE", ("join", "host", "none"))
+    ts_secret = values.get("DEVCLOUD_TS_SECRET") or None
     authkey = values.get("DEVCLOUD_TS_AUTHKEY_FILE") or None
     if tailscale == "join":
         if role == "sandbox":
             raise DescriptorError("a sandbox never joins the tailnet as its own node: "
                                   "DEVCLOUD_TAILSCALE=join needs DEVCLOUD_ROLE=persistent")
-        if not authkey:
-            raise DescriptorError("DEVCLOUD_TAILSCALE=join needs DEVCLOUD_TS_AUTHKEY_FILE")
+        if not (ts_secret or authkey):
+            raise DescriptorError("DEVCLOUD_TAILSCALE=join needs DEVCLOUD_TS_SECRET or DEVCLOUD_TS_AUTHKEY_FILE")
+        if ts_secret and authkey:
+            raise DescriptorError("name one of DEVCLOUD_TS_SECRET (the OAuth client) and "
+                                  "DEVCLOUD_TS_AUTHKEY_FILE (the fallback), not both")
+        if ts_secret and not _SECRET_ID.match(ts_secret):
+            raise DescriptorError("DEVCLOUD_TS_SECRET is not a Secret Manager secret id")
+    elif ts_secret or authkey:
+        # A host that does not join never fetches or holds the tailnet's credential.
+        raise DescriptorError(f"{'DEVCLOUD_TS_SECRET' if ts_secret else 'DEVCLOUD_TS_AUTHKEY_FILE'} "
+                              "is for DEVCLOUD_TAILSCALE=join only")
 
     seed = values["DEVCLOUD_SEED"]
     if seed == "gce-metadata":
@@ -97,7 +108,7 @@ def parse(text, allow_http=False):
         raise DescriptorError("DEVCLOUD_MIRROR_DIR must be an absolute path")
 
     return Descriptor(
-        name=name, kind=kind, role=role, tailscale=tailscale, ts_authkey_file=authkey,
+        name=name, kind=kind, role=role, tailscale=tailscale, ts_secret=ts_secret, ts_authkey_file=authkey,
         seed_kind=seed_kind, seed_path=seed_path, sm_project=values["DEVCLOUD_SM_PROJECT"],
         config_repo=repo, config_branch=values.get("DEVCLOUD_CONFIG_BRANCH") or "main",
         config_token_secret=token_secret, projects=projects,

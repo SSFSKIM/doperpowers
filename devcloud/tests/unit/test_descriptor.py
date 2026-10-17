@@ -36,14 +36,26 @@ class DescriptorTest(unittest.TestCase):
         self.assertEqual(d.config_branch, "hosts")
         self.assertEqual(d.projects, ("doperpowers", "example/repo@v2", "other@main"))
 
-    def test_join_needs_an_auth_key_file_and_a_persistent_host(self):
-        d = descriptor.parse(text(DEVCLOUD_KIND="vm", DEVCLOUD_ROLE="persistent", DEVCLOUD_TAILSCALE="join",
-                                  DEVCLOUD_TS_AUTHKEY_FILE="/run/devcloud/ts.key"))
-        self.assertEqual(d.ts_authkey_file, "/run/devcloud/ts.key")
-        with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_TS_AUTHKEY_FILE"):
-            descriptor.parse(text(DEVCLOUD_KIND="vm", DEVCLOUD_ROLE="persistent", DEVCLOUD_TAILSCALE="join"))
+    def test_join_takes_the_oauth_client_or_an_auth_key_file_on_a_persistent_host(self):
+        vm = dict(DEVCLOUD_KIND="vm", DEVCLOUD_ROLE="persistent", DEVCLOUD_TAILSCALE="join")
+        d = descriptor.parse(text(**vm, DEVCLOUD_TS_SECRET="tailscale-client"))
+        self.assertEqual((d.ts_secret, d.ts_authkey_file), ("tailscale-client", None))
+        d = descriptor.parse(text(**vm, DEVCLOUD_TS_AUTHKEY_FILE="/run/devcloud/ts.key"))
+        self.assertEqual((d.ts_secret, d.ts_authkey_file), (None, "/run/devcloud/ts.key"))
+        with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_TS_SECRET or DEVCLOUD_TS_AUTHKEY_FILE"):
+            descriptor.parse(text(**vm))
+        with self.assertRaisesRegex(descriptor.DescriptorError, "one of"):
+            descriptor.parse(text(**vm, DEVCLOUD_TS_SECRET="tailscale-client", DEVCLOUD_TS_AUTHKEY_FILE="/k"))
+        with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_TS_SECRET"):
+            descriptor.parse(text(**vm, DEVCLOUD_TS_SECRET="projects/x/secrets/y"))
         with self.assertRaisesRegex(descriptor.DescriptorError, "sandbox"):
-            descriptor.parse(text(DEVCLOUD_TAILSCALE="join", DEVCLOUD_TS_AUTHKEY_FILE="/k"))
+            descriptor.parse(text(DEVCLOUD_TAILSCALE="join", DEVCLOUD_TS_SECRET="tailscale-client"))
+
+    def test_a_tailscale_credential_is_named_only_for_a_join(self):
+        # A host that does not join never fetches or holds the tailnet's credential.
+        for key, value in (("DEVCLOUD_TS_SECRET", "tailscale-client"), ("DEVCLOUD_TS_AUTHKEY_FILE", "/k")):
+            with self.subTest(key=key), self.assertRaisesRegex(descriptor.DescriptorError, "join"):
+                descriptor.parse(text(**{key: value}))
 
     def test_refuses_missing_unknown_and_malformed_keys(self):
         cases = {
