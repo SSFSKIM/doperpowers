@@ -1,0 +1,403 @@
+import { describe, expect, test, tier } from 'claude-code/testing'
+import type { EngineInterface, On, SessionMessage } from 'claude-code'
+
+import {
+  DENIAL_PREFIX,
+  JUDGE_SYSTEM,
+  PASS_MS,
+  appealCheck,
+  applyRuling,
+  blockReason,
+  fitLines,
+  isAppealable,
+  judgePrompt,
+  newLedger,
+  parseRuling,
+  passKey,
+  recordBlock,
+  recordFailure,
+  renderMessages,
+  takePass,
+  withoutReminders,
+} from '../../hooks/mods/appeal-judge'
+import { APPEAL, registerAppeal, resetAppeal } from '../../hooks/mods/appeal'
+
+tier('user')
+
+const TAIL =
+  ". If you have other tasks that don't depend on this action, continue working on those. IMPORTANT: You *may* attempt to accomplish this action using other tools."
+const denial = (reason: string) => `${DENIAL_PREFIX}${reason}${TAIL}`
+
+describe('blockReason', () => {
+  test('reads each form of the classifier reason, wrapped or not', async () => {
+    expect(blockReason(denial('[Modify Shared Resources]'))).toBe('[Modify Shared Resources]')
+    expect(blockReason(denial('Blocked by fast classifier'))).toBe('Blocked by fast classifier')
+    expect(blockReason(denial('Blocked by classifier'))).toBe('Blocked by classifier')
+    expect(blockReason(denial('The server-side auto mode classifier judged this action dangerous (it gave no explanation)'))).toBe(
+      'The server-side auto mode classifier judged this action dangerous (it gave no explanation)',
+    )
+    expect(blockReason(`<tool_use_error>${denial('[Git Destructive]')}</tool_use_error>`)).toBe('[Git Destructive]')
+    expect(blockReason(`${DENIAL_PREFIX}[Self-Modification].`)).toBe('[Self-Modification].')
+  })
+
+  test('is undefined for any other error', async () => {
+    expect(blockReason('Permission for this action has been denied. Reason: a rule')).toBeUndefined()
+    expect(blockReason('No such tool available')).toBeUndefined()
+  })
+})
+
+describe('isAppealable', () => {
+  test('refuses the hard block and the user deny rules, nothing else', async () => {
+    expect(isAppealable('[Data Exfiltration]')).toBe(false)
+    expect(isAppealable('[User Deny Rules] The agent bypasses the denied command')).toBe(false)
+    expect(isAppealable('[Modify Shared Resources]')).toBe(true)
+    expect(isAppealable('Blocked by classifier')).toBe(true)
+  })
+})
+
+describe('passKey', () => {
+  test('ignores the description and key order, nothing else', async () => {
+    const a = passKey(undefined, 'Bash', { command: 'git push --force', description: 'Push' })
+    expect(passKey(undefined, 'Bash', { description: 'Force-push it', command: 'git push --force' })).toBe(a)
+    expect(passKey(undefined, 'Bash', { command: 'git push --force' })).toBe(a)
+    expect(passKey(undefined, 'Bash', { command: 'git push --force', timeout: 1 })).not.toBe(a)
+    expect(passKey(undefined, 'Bash', { command: 'git push' })).not.toBe(a)
+    expect(passKey('a1', 'Bash', { command: 'git push --force' })).not.toBe(a)
+    expect(passKey(undefined, 'Edit', { command: 'git push --force' })).not.toBe(a)
+  })
+})
+
+describe('the ledger', () => {
+  test('a block is numbered, appealed once in its own loop, and a grant leaves a pass the identical call spends', async () => {
+    const ledger = newLedger()
+    const block = recordBlock(ledger, { agentId: 'a1', tool: 'Bash', input: { command: 'git push --force', description: 'x' }, reason: '[Git Destructive]' }, 1000)
+    expect(block.id).toBe('b1')
+    expect(appealCheck(ledger, 'b1', undefined, 'the user said so').ok).toBe(false)
+    expect((appealCheck(ledger, 'b1', undefined, 'x') as { error: string }).error).toContain('not made in this conversation')
+    expect((appealCheck(ledger, 'b9', 'a1', 'x') as { error: string }).error).toContain('not a block of this session')
+    expect((appealCheck(ledger, 'b1', 'a1', '  ') as { error: string }).error).toContain('argument is empty')
+    expect(appealCheck(ledger, 'b1', 'a1', 'the user said so').ok).toBe(true)
+
+    applyRuling(ledger, block, 'grant', 2000)
+    expect((appealCheck(ledger, 'b1', 'a1', 'again') as { error: string }).error).toContain('already ruled on: grant')
+    // Another command, another loop: no pass.
+    expect(takePass(ledger, 'a1', 'Bash', { command: 'git push' }, 3000)).toBeUndefined()
+    expect(takePass(ledger, undefined, 'Bash', { command: 'git push --force' }, 3000)).toBeUndefined()
+    // The identical call, its description reworded: the pass, once.
+    expect(takePass(ledger, 'a1', 'Bash', { command: 'git push --force', description: 'y' }, 3000)?.block).toBe('b1')
+    expect(takePass(ledger, 'a1', 'Bash', { command: 'git push --force', description: 'y' }, 3000)).toBeUndefined()
+  })
+
+  test('an expired pass is spent without allowing', async () => {
+    const ledger = newLedger()
+    const block = recordBlock(ledger, { tool: 'Write', input: { file_path: '/tmp/x', content: 'c' }, reason: '[Modify Shared Resources]' }, 0)
+    applyRuling(ledger, block, 'grant', 0)
+    expect(takePass(ledger, undefined, 'Write', { file_path: '/tmp/x', content: 'c' }, PASS_MS + 1)).toBeUndefined()
+    expect(takePass(ledger, undefined, 'Write', { file_path: '/tmp/x', content: 'c' }, 1)).toBeUndefined()
+  })
+
+  test('an uphold leaves no pass', async () => {
+    const ledger = newLedger()
+    const block = recordBlock(ledger, { tool: 'Bash', input: { command: 'rm -rf x' }, reason: '[Irreversible Local Destruction]' }, 0)
+    applyRuling(ledger, block, 'uphold', 0)
+    expect(takePass(ledger, undefined, 'Bash', { command: 'rm -rf x' }, 1)).toBeUndefined()
+  })
+
+  test('a judge failure does not spend the appeal; a second does', async () => {
+    const ledger = newLedger()
+    const block = recordBlock(ledger, { tool: 'Bash', input: { command: 'x' }, reason: 'Blocked by classifier' }, 0)
+    expect(recordFailure(block, 'timeout')).toContain('You may appeal it again once')
+    expect(appealCheck(ledger, 'b1', undefined, 'x').ok).toBe(true)
+    expect(recordFailure(block, 'timeout')).not.toContain('again')
+    expect((appealCheck(ledger, 'b1', undefined, 'x') as { error: string }).error).toContain('could not decide it twice')
+  })
+})
+
+describe('parseRuling', () => {
+  test('reads the verdict and the response; anything else is no ruling', async () => {
+    expect(parseRuling('<verdict> Grant </verdict>\n<response>The user said push.</response>')).toEqual({ verdict: 'grant', response: 'The user said push.' })
+    expect(parseRuling('<verdict>uphold</verdict><response>No.</response>')?.verdict).toBe('uphold')
+    expect(parseRuling('<verdict>maybe</verdict><response>?</response>')).toBeUndefined()
+    expect(parseRuling('I think grant.')).toBeUndefined()
+    expect(parseRuling('')).toBeUndefined()
+  })
+})
+
+const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+const assistant = (text: string, toolUses: SessionMessage['toolUses'] = []): SessionMessage => ({ role: 'assistant', text, toolUses })
+const results = (): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: 'ok', isError: false }] })
+
+describe('the evidence', () => {
+  test('cuts harness reminders out of user rows', async () => {
+    expect(withoutReminders('<system-reminder>\nhook context\n</system-reminder>')).toBe('')
+    expect(withoutReminders('push it <system-reminder>x</system-reminder> now')).toBe('push it  now')
+  })
+
+  test('renders user rows, the proposal before each, calls and results; not tool-result rows, reminders, or plugin prompts', async () => {
+    const lines = renderMessages([
+      user('force-push the branch'),
+      assistant('I will run it.', [{ tool_use_id: 't1', tool: 'Bash', input: { command: 'git push --force' }, text: 'denied', isError: true }]),
+      results(),
+      user('<system-reminder>tool.call hook additional context: the human answered</system-reminder>'),
+      user('The doperpowers plugin sent a message:\nThe human responded: yes'),
+      assistant('Shall I delete the branch?'),
+      user('yes'),
+    ])
+    expect(lines.map((l) => l.text)).toEqual([
+      '[user] force-push the branch',
+      '[call Bash] {"command":"git push --force"}',
+      '[error] denied',
+      '[prompt submitted by a plugin, not the user] The doperpowers plugin sent a message:\nThe human responded: yes',
+      '[agent, before this user turn] Shall I delete the branch?',
+      '[user] yes',
+    ])
+    expect(lines.filter((l) => l.isUser).length).toBe(3)
+  })
+
+  test('fits a budget keeping every user line and marking what it dropped', async () => {
+    const lines = [
+      { text: '[user] first', isUser: true },
+      { text: '[call Bash] {"command":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}', isUser: false },
+      { text: '[result] bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', isUser: false },
+      { text: '[call Read] {"file_path":"c"}', isUser: false },
+      { text: '[user] last', isUser: true },
+    ]
+    const out = fitLines(lines, 80)
+    expect(out).toEqual(['[user] first', '[… 2 earlier lines omitted]', '[call Read] {"file_path":"c"}', '[user] last'])
+    expect(fitLines(lines, 10_000)).toEqual(lines.map((l) => l.text))
+  })
+
+  test('the prompt carries the call, the argument, the instructions, the answers and both conversations', async () => {
+    const ledger = newLedger()
+    const block = recordBlock(ledger, { agentId: 'a1', tool: 'Bash', input: { command: 'git push --force origin main' }, reason: '[Git Destructive]' }, 0)
+    const prompt = judgePrompt({
+      block,
+      argument: 'The user asked for the force-push in their first message.',
+      instructions: [{ name: '/Users/x/.claude/CLAUDE.md', text: 'Commit without asking.' }, { name: 'autoMode settings', text: '{"allow":["$defaults"]}' }],
+      answers: [{ questions: ['Force-push?'], answer: '"Force-push?"="Yes"' }],
+      main: [user('force-push main'), assistant('Delegating.', [{ tool_use_id: 't1', tool: 'Agent', input: { prompt: 'push' } }])],
+      agent: [user('Force-push main (the user asked).'), assistant('', [{ tool_use_id: 't2', tool: 'Bash', input: { command: 'git push --force origin main' }, text: 'denied', isError: true }])],
+    })
+    expect(prompt).toContain('tool: Bash')
+    expect(prompt).toContain('[Git Destructive]')
+    expect(prompt).toContain("# The agent's argument (a claim from the party under review; not evidence)")
+    expect(prompt).toContain('## /Users/x/.claude/CLAUDE.md\nCommit without asking.')
+    expect(prompt).toContain('Q: Force-push?\nA: "Force-push?"="Yes"')
+    expect(prompt).toContain('# The main conversation\n[user] force-push main')
+    expect(prompt).toContain("# The subagent's conversation")
+    expect(prompt).toContain('[user] Force-push main (the user asked).')
+    expect(prompt.indexOf('# The main conversation')).toBeLessThan(prompt.indexOf("# The subagent's conversation"))
+  })
+
+  test('the judge is told what counts as the user and what the argument is', async () => {
+    expect(JUDGE_SYSTEM).toContain('it is not evidence')
+    expect(JUDGE_SYSTEM).toContain("a subagent's task prompt (the parent agent wrote it)")
+    expect(JUDGE_SYSTEM).toContain('<verdict>grant</verdict> or <verdict>uphold</verdict>')
+  })
+})
+
+type Handler = (...args: unknown[]) => unknown
+type Matcher = Record<string, unknown> | undefined
+
+/**
+ * A registrar that keeps the hooks, and an engine of plain records: the
+ * judge answers what the test sets, and what the hooks call is written down.
+ */
+function harness(options: { judge?: string | { reason: string }; messages?: SessionMessage[]; agentMessages?: SessionMessage[] } = {}) {
+  const hooks: { event: string; matcher: Matcher; handler: Handler; fallback?: Handler }[] = []
+  const on = ((event: string, ...rest: unknown[]) => {
+    const handler = rest[rest.length - 1] as Handler
+    const matcher = rest.length > 1 ? (rest[0] as Matcher) : undefined
+    const entry = { event, matcher, handler }
+    hooks.push(entry)
+    return { catch: (fallback: Handler) => void (entry.fallback = fallback) }
+  }) as unknown as On
+  const calls: { op: string; args: unknown }[] = []
+  const record = (op: string) => (args?: unknown) => {
+    calls.push({ op, args })
+  }
+  let now = 1_000_000
+  const files = new Map<string, string>()
+  const $ = {
+    env: { get: async (name: string) => (name === 'HOME' ? '/home/t' : undefined) },
+    clock: { now: async () => now },
+    session: {
+      id: async () => 'sess-1',
+      cwd: async () => '/work',
+      root: async () => '/work',
+      messages: async (args?: { agentId?: string }) => (args?.agentId === undefined ? (options.messages ?? []) : (options.agentMessages ?? { deny: `no agent ${args.agentId}` })),
+    },
+    fs: {
+      exists: async (path: string) => files.has(path),
+      read: async (path: string) => files.get(path) ?? '',
+      write: async (path: string, text: string) => {
+        files.set(path, text)
+        calls.push({ op: 'fs.write', args: path })
+      },
+    },
+    settings: { read: async () => ({ autoMode: { allow: ['$defaults'] } }) },
+    tool: { register: async (spec: { name: string }) => (calls.push({ op: 'tool.register', args: spec }), { tool: `mcp__doperpowers__${spec.name}` }) },
+    model: {
+      complete: async (request: unknown) => {
+        calls.push({ op: 'model.complete', args: request })
+        const judge = options.judge
+        if (judge === undefined) {
+          return { isAnswered: false, reason: 'empty-reply', usage: {} }
+        }
+        if (typeof judge !== 'string') {
+          throw new Error(judge.reason)
+        }
+        return { isAnswered: true, text: judge, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }
+      },
+    },
+    ui: { toast: record('ui.toast'), log: record('ui.log') },
+  }
+  resetAppeal()
+  registerAppeal(on)
+  const engine = $ as unknown as EngineInterface
+  const find = (event: string, e: Record<string, unknown>) =>
+    hooks.find((h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v)))
+  const run = (event: string, e: Record<string, unknown>, beneath: unknown) => {
+    const hook = find(event, e)
+    if (hook === undefined) {
+      throw new Error(`no ${event} hook for ${String(e.tool ?? e.cwd)}`)
+    }
+    return hook.handler($, e, async () => beneath)
+  }
+  const start = () => run('session.start', { cwd: '/work', isInteractive: true }, {})
+  const call = (e: Record<string, unknown>, beneath: unknown) => run('tool.call', e, beneath)
+  const appealCall = (e: Record<string, unknown>) => (hooks.find((h) => h.event === 'tool.call' && h.matcher?.tool === APPEAL) as { handler: Handler }).handler($, e, async () => ({}))
+  const check = (e: Record<string, unknown>, beneath: unknown) => run('tool.check', e, beneath)
+  const logged = () =>
+    (files.get('/home/t/.claude/appeals/sess-1.jsonl') ?? '')
+      .trim()
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => JSON.parse(l) as { event: string; block: string; verdict?: string })
+  const tick = (ms: number) => {
+    now += ms
+  }
+  return { calls, start, call, appealCall, check, logged, tick, files, hooks }
+}
+
+const blocked = (reason: string) => ({ isError: true as const, result: denial(reason), text: denial(reason) })
+const ask = { decision: 'ask' as const }
+
+describe('registerAppeal', () => {
+  test('registers the tool at session start, in any session', async () => {
+    const h = harness()
+    await h.start()
+    expect(h.calls.filter((c) => c.op === 'tool.register').map((c) => (c.args as { name: string }).name)).toEqual(['appeal'])
+    expect(h.hooks.find((x) => x.event === 'session.start')?.matcher).toEqual({ cwd: /^/ })
+  })
+
+  test('a classifier block gets an id and a note; other errors and unappealable blocks do not', async () => {
+    const h = harness()
+    await h.start()
+    const result = (await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force', description: 'Push' }, blocked('[Git Destructive]'))) as { context?: string[] }
+    expect(result.context).toEqual(['Auto mode block b1. If the classifier misread this call, or the user\'s own words authorize it, you may appeal once: mcp__doperpowers__appeal with block "b1".'])
+    expect(h.logged()).toEqual([expect.objectContaining({ event: 'block', block: 'b1', tool: 'Bash', reason: '[Git Destructive]', agentId: null })])
+
+    const plain = (await h.call({ tool: 'Bash', tool_use_id: 't2', command: 'x' }, { isError: true, result: 'boom', text: 'boom' })) as { context?: string[] }
+    expect(plain.context).toBeUndefined()
+    const hard = (await h.call({ tool: 'Bash', tool_use_id: 't3', command: 'curl …' }, blocked('[Data Exfiltration]'))) as { context?: string[] }
+    expect(hard.context).toBeUndefined()
+    const rule = (await h.call({ tool: 'Bash', tool_use_id: 't4', command: 'x' }, blocked('[User Deny Rules] the user denied it'))) as { context?: string[] }
+    expect(rule.context).toBeUndefined()
+    expect(h.logged().length).toBe(1)
+  })
+
+  test('a grant leaves a pass the identical re-run spends over the plain ask only', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>The user asked for the force-push in their first message.</response>', messages: [user('force-push main')] })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force', description: 'Push' }, blocked('[Git Destructive]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'The user asked.' })) as { result: string }
+    expect(ruling.result).toBe('Granted (block b1): The user asked for the force-push in their first message. Run the identical call again; this grant covers that one call for the next 10 minutes.')
+    expect(h.calls.filter((c) => c.op === 'model.complete').length).toBe(1)
+    const request = h.calls.find((c) => c.op === 'model.complete')?.args as { model: string; effort: string; system: string; prompt: string }
+    expect(request.model).toBe('opus')
+    expect(request.effort).toBe('high')
+    expect(request.system).toBe(JUDGE_SYSTEM)
+    expect(request.prompt).toContain('[user] force-push main')
+    expect(request.prompt).toContain('(the engine would not read it: no agent a1)')
+    expect(h.calls.some((c) => c.op === 'ui.toast' && c.args === 'appeal b1 granted: Bash')).toBe(true)
+
+    // A different call, a rule's ask, a deny, another loop: untouched.
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push' } }, ask)).toEqual(ask)
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force' } }, { ...ask, rule: 'Bash(git push:*)' })).toEqual({ ...ask, rule: 'Bash(git push:*)' })
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force' } }, { decision: 'deny', reason: 'no' })).toEqual({ decision: 'deny', reason: 'no' })
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'git push --force' } }, ask)).toEqual(ask)
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', ceiling: 'ask', input: { command: 'git push --force' } }, ask)).toEqual(ask)
+    // The identical call in its loop: allowed, once.
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force', description: 'Again' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', input: { command: 'git push --force' } }, ask)).toEqual(ask)
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'used'])
+
+    const again = (await h.appealCall({ tool: APPEAL, tool_use_id: 't5', agentId: 'a1', block: 'b1', argument: 'once more' })) as { result: string }
+    expect(again.result).toBe('Not appealed: block b1 was already ruled on: grant.')
+    expect(h.calls.filter((c) => c.op === 'model.complete').length).toBe(1)
+  })
+
+  test('an expired pass does not allow', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Scratch file.</response>' })
+    await h.start()
+    await h.call({ tool: 'Write', tool_use_id: 't1', file_path: '/tmp/x', content: 'c' }, blocked('[Modify Shared Resources]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'I made /tmp/x myself at t0.' })
+    h.tick(PASS_MS + 1)
+    expect(await h.check({ tool: 'Write', tool_use_id: 't3', input: { file_path: '/tmp/x', content: 'c' } }, ask)).toEqual(ask)
+  })
+
+  test('an uphold answers the judge response and leaves no pass', async () => {
+    const h = harness({ judge: '<verdict>uphold</verdict><response>No user message names the branch. Ask the user to name it.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'The user wants it.' })) as { result: string }
+    expect(ruling.result).toBe('Upheld (block b1): No user message names the branch. Ask the user to name it.')
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'git push --force' } }, ask)).toEqual(ask)
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling'])
+  })
+
+  test('a judge that answers nothing, or throws, leaves the block standing and the appeal open once', async () => {
+    const h = harness()
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'x' }, blocked('Blocked by classifier'))
+    const first = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(first.result).toBe('The appeal of block b1 could not be decided (empty-reply); the block stands. You may appeal it again once.')
+    const second = (await h.appealCall({ tool: APPEAL, tool_use_id: 't3', block: 'b1', argument: 'y' })) as { result: string }
+    expect(second.result).toBe('The appeal of block b1 could not be decided (empty-reply); the block stands.')
+    const third = (await h.appealCall({ tool: APPEAL, tool_use_id: 't4', block: 'b1', argument: 'y' })) as { result: string }
+    expect(third.result).toContain('could not decide it twice')
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'no-ruling', 'no-ruling'])
+
+    const thrown = harness({ judge: { reason: 'network down' } })
+    await thrown.start()
+    await thrown.call({ tool: 'Bash', tool_use_id: 't1', command: 'x' }, blocked('Blocked by classifier'))
+    const result = (await thrown.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(result.result).toContain('(network down)')
+  })
+
+  test('an unknown block and a block of another loop are refused without the judge', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'x' }, blocked('Blocked by classifier'))
+    const unknown = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b7', argument: 'y' })) as { result: string }
+    expect(unknown.result).toBe('Not appealed: block b7 is not a block of this session.')
+    const other = (await h.appealCall({ tool: APPEAL, tool_use_id: 't3', block: 'b1', argument: 'y' })) as { result: string }
+    expect(other.result).toBe('Not appealed: block b1 was not made in this conversation.')
+    expect(h.calls.some((c) => c.op === 'model.complete')).toBe(false)
+  })
+
+  test("a subagent's block puts both conversations to the judge, the user's words first", async () => {
+    const h = harness({
+      judge: '<verdict>grant</verdict><response>x</response>',
+      messages: [user('force-push main')],
+      agentMessages: [user('Force-push main (the user asked).')],
+    })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'The user asked.' })
+    const request = h.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
+    expect(request.prompt).toContain('# The main conversation\n[user] force-push main')
+    expect(request.prompt).toContain("# The subagent's conversation (where the call was made; its first user row is the task the parent agent wrote, not the user's words)\n[user] Force-push main (the user asked).")
+  })
+})

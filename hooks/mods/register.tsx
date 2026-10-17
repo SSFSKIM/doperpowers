@@ -1,6 +1,7 @@
 import type { On } from 'claude-code'
 
 import { registerAgents } from './agents'
+import { registerAppeal } from './appeal'
 import { registerAsk, registerAskBand } from './ask'
 import { registerBridge } from './bridge'
 import { registerCompact } from './compact'
@@ -16,6 +17,9 @@ export function register(on: On) {
   // First: the bridge's hooks are the outermost, so it reports what the
   // session showed and recorded, after every other mod had its say.
   registerBridge(on)
+  // After the bridge: its outer hooks see the appeal's notice on a block's
+  // result and its allow on a passed re-run, as the session showed them.
+  registerAppeal(on)
   // Before to-human: its band above the prompt draws without calling on, so
   // the ask's line there must be the outer hook, drawing above it.
   registerAskBand(on)
