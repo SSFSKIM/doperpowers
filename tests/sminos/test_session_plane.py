@@ -1710,7 +1710,7 @@ class Lifecycle(unittest.TestCase):
         records = plane.Records()
         alive, start = [True], ["Thu Oct 15 09:52:25 2026"]
         with mock.patch.object(plane.sminos, "pid_alive", lambda _pid: alive[0]), \
-                mock.patch.object(plane.sminos, "proc_start", lambda _pid: start[0]):
+                mock.patch.object(plane.sminos, "read_proc_start", lambda _pid: start[0]):
             self.assertIn(self.sid, records.scan(), "its process runs")
             alive[0] = False
             self.assertNotIn(self.sid, records.scan(), "the session crashed: its record is left behind")
@@ -1725,17 +1725,17 @@ class Lifecycle(unittest.TestCase):
         records = plane.Records(clock=clock)
         start, reads = ["Thu Oct 15 09:52:25 2026"], []
 
-        def proc_start(pid):
+        def read_proc_start(pid):
             reads.append(pid)
             return start[0]
 
         with mock.patch.object(plane.sminos, "pid_alive", lambda _pid: True), \
-                mock.patch.object(plane.sminos, "proc_start", proc_start):
+                mock.patch.object(plane.sminos, "read_proc_start", read_proc_start):
             self.assertIn(self.sid, records.scan())
             start[0] = "Fri Oct 16 11:00:00 2026"  # reused between polls, never seen dead
             clock.advance(plane.PRESENCE_EVERY)
             self.assertIn(self.sid, records.scan(), "within the bound the identity is not read again")
-            self.assertEqual(len(reads), 1, "ps is not asked at every poll")
+            self.assertEqual(len(reads), 1, "the start time is not read at every poll")
             clock.advance(plane.IDENTITY_EVERY)
             self.assertNotIn(self.sid, records.scan(), "past the bound the pid's start time is read again")
             self.assertEqual(len(reads), 2)
@@ -1933,6 +1933,29 @@ class Lifecycle(unittest.TestCase):
             holder.kill()
             holder.wait()
             os.unlink(rec)
+
+
+class TickCost(unittest.TestCase):
+    """What the uplink's tick reads again and again — every live session's
+    start time — read without running a process."""
+
+    @unittest.skipUnless(sys.platform == "darwin", "read off the kernel on macOS; ps elsewhere")
+    def test_a_start_time_is_what_ps_prints_read_without_running_it(self):
+        import sminos
+        holder = subprocess.Popen(["sleep", "60"])
+        try:
+            ps = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(holder.pid)], capture_output=True,
+                                         text=True, env={**os.environ, "LC_ALL": "C", "LANG": "C"}).stdout.split())
+            with mock.patch.object(sminos.subprocess, "run", side_effect=AssertionError("a process was run")):
+                self.assertEqual(sminos.read_proc_start(holder.pid), ps)
+                self.assertTrue(sminos.same_process({"pid": holder.pid, "procStart": ps}, fresh=True))
+                self.assertFalse(sminos.same_process({"pid": holder.pid, "procStart": "Mon Jan 1 00:00:00 2001"},
+                                                     fresh=True), "another process's start time")
+        finally:
+            holder.kill()
+            holder.wait()
+        with mock.patch.object(sminos.subprocess, "run", side_effect=AssertionError("a process was run")):
+            self.assertEqual(sminos.read_proc_start(holder.pid), "", "no process holds the pid now")
 
 
 def call(url, method, path, body=None, headers=None):

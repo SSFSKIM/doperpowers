@@ -3957,6 +3957,8 @@ elif kind == "asst-part":   # uuid message-id thinking|text text: one block of a
     rec = {"type": "assistant", "message": {"id": args[1], "role": "assistant", "content": [block]}}
 elif kind == "title":
     rec, base = {"type": "ai-title", "aiTitle": args[0]}, {}
+elif kind == "custom-title":   # what /rename writes; "" clears it
+    rec, base = {"type": "custom-title", "customTitle": args[0]}, {}
 elif kind == "sidechain":
     rec = {"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "content": [{"type": "text", "text": args[1]}]}}
     base.pop("isSidechain")
@@ -4450,6 +4452,13 @@ assert_rc 2 "$RC" "a line given as several words is refused: quote it"
 tx "$TC" title "구글 테이크아웃 Gemini 대화 기록"
 assert_equals "$(json_row hc charge)" "구글 테이크아웃 Gemini 대화 기록" "with no line set, named, or derived, the transcript's latest title"
 assert_equals "$(json_row hc charge_source)" "title" "sourced from the title"
+# The title is the harness's "Session name": the name /rename gave it, else the generated one.
+tx "$TC" custom-title "interactive learning"
+tx "$TC" title "구글 테이크아웃 Gemini 대화 기록"
+assert_equals "$(json_row hc charge)" "interactive learning" \
+  "a name /rename gave the session is its title, however recent the generated one (the harness re-appends both)"
+tx "$TC" custom-title ""
+assert_equals "$(json_row hc charge)" "구글 테이크아웃 Gemini 대화 기록" "an empty one clears it: the generated title again"
 
 # derive: a headless internal fork answers; nothing of it stays.
 HD=5f000006-0000-4000-8000-00000000005f

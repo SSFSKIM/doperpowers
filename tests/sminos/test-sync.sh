@@ -444,12 +444,93 @@ assert_contains "$(cat "$T/mb.received")" "ping from ma" "ma's say reaches mb on
 until_true 200 grep -q "pong from mb" "$T/ma.received" || true
 assert_contains "$(cat "$T/ma.received")" "pong from mb" "and mb's reaches ma on alpha"
 
+# ---- titles: a session named as its human knows it, published by its machine on a change
+echo "titles:"
+as a alpha
+TXA="$HOME/.claude/projects/-syncproj"
+mkdir -p "$TXA"
+title_rec() { # kind value: one title record into ma's transcript, as the harness appends (and re-appends) it
+  printf '{"type":"%s","%s":"%s","sessionId":"%s"}\n' "$1" "$([ "$1" = custom-title ] && echo customTitle || echo aiTitle)" \
+    "$2" "$MA" >> "$TXA/$MA.jsonl"
+}
+filler() { printf '{"type":"user","message":{"role":"user","content":"a turn"}}\n' >> "$TXA/$MA.jsonl"; }
+hub_titles() { # [session] → the titles alpha published for it (ma's by default), as the hub holds them
+  ctl state "[e['title'] for e in d['projects']['$PID']['writers'].get('alpha/${1:-$MA}', []) if e['kind'] == 'titled']"; }
+hub_titles_are() { [ "$(hub_titles "${2:-$MA}")" = "$1" ]; }
+membership() { # log-file → its session's latest joined/retired (with the reason) and the titles the file holds
+  python3 -c 'import json, sys
+evs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+m = [e for e in evs if e["kind"] in ("joined", "retired")][-1]
+print(m["kind"] + (":" + m["reason"] if m.get("reason") else ""), [e["title"] for e in evs if e["kind"] == "titled"])' "$1" 2>/dev/null || true
+}
+membership_is() { [ "$(membership "$1")" = "$2" ]; }
+tick_a() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tick", ""))' "$T/a/s/projects/$PID/daemon.json" 2>/dev/null || true; }
+tick_moved() { [ "$(tick_a)" != "$1" ]; }
+two_ticks() { local t; t="$(tick_a)"; until_true 100 tick_moved "$t" || true; t="$(tick_a)"; until_true 100 tick_moved "$t" || true; }
+ma_on_beta() { # → ma's in-charge line and its source as beta's list --json carries them
+  (as b beta && cd "$RB" && "$SMINOS" list --json) | python3 -c 'import json, sys
+print(" / ".join("%s (%s)" % (r["charge"], r["charge_source"]) for r in json.load(sys.stdin) if r["alias"] == "ma"))'
+}
+ma_on_beta_is() { [ "$(ma_on_beta)" = "$1" ]; }
+for _ in 1 2 3; do filler; title_rec ai-title "Codex native Computer Use internals"; done
+until_true 200 hub_titles_are '["Codex native Computer Use internals"]' || true
+assert_equals "$(hub_titles)" '["Codex native Computer Use internals"]' \
+  "alpha's daemon publishes ma's title once, as a titled in ma's own file, though the harness re-appended it"
+until_true 200 ma_on_beta_is "Codex native Computer Use internals (title)" || true
+assert_equals "$(ma_on_beta)" "Codex native Computer Use internals (title)" \
+  "beta, which holds no transcript of ma, names ma by the title alpha published"
+# /rename: the name the human gave it outranks the generated title, which the harness keeps re-appending.
+for _ in 1 2 3; do filler; title_rec custom-title "cua_repl"; title_rec ai-title "Codex native Computer Use internals"; done
+until_true 200 hub_titles_are '["Codex native Computer Use internals", "cua_repl"]' || true
+two_ticks
+for _ in 1 2 3; do filler; title_rec custom-title "cua_repl"; title_rec ai-title "Codex native Computer Use internals"; done
+two_ticks
+assert_equals "$(membership "$ALOG/alpha.$MA.jsonl")" "joined ['Codex native Computer Use internals', 'cua_repl']" \
+  "a /rename is published as the new title, once: ticks over an unchanged title publish nothing"
+until_true 200 ma_on_beta_is "cua_repl (title)" || true
+assert_equals "$(ma_on_beta)" "cua_repl (title)" "and beta names ma by it"
+# Renamed, then closed, before the next tick: that tick's reconciliation ends
+# ma's membership before the title could be published for a member. Both
+# changes land just after a tick, so the next one sees them together.
+MA_REC="$(cat "$HOME/.claude/sessions/ma.json")"
+ma_ends_renamed() { # title
+  local t; t="$(tick_a)"; until_true 100 tick_moved "$t" || true
+  filler; title_rec custom-title "$1"; rm "$HOME/.claude/sessions/ma.json"
+}
+ma_ends_renamed "cua_repl, wrapped up"
+until_true 200 hub_titles_are '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up"]' || true
+assert_equals "$(hub_titles)" '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up"]' \
+  "ma renamed and closed between two ticks: alpha publishes the name it ended under"
+until_true 200 membership_is "$BLOG/alpha.$MA.jsonl" "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
+assert_equals "$(membership "$BLOG/alpha.$MA.jsonl")" \
+  "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" \
+  "and beta holds it beside ma's retirement, for a view of ended sessions to name it by"
+# Resumed, it is a member again; renamed and closed again before the next
+# tick, its new retirement is looked at as the first was.
+printf '%s\n' "$MA_REC" > "$HOME/.claude/sessions/ma.json"
+until_true 200 membership_is "$ALOG/alpha.$MA.jsonl" "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
+ma_ends_renamed "cua_repl, round two"
+until_true 200 hub_titles_are '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up", "cua_repl, round two"]' || true
+assert_equals "$(hub_titles)" '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up", "cua_repl, round two"]' \
+  "resumed, renamed and closed again between two ticks: that name is published too"
+settle "after titles"
+
 # ---- a daemon restart
 echo "a daemon restart:"
 kill "$A_DAEMON"
 set +e; wait "$A_DAEMON"; set -e
 as a alpha
 (cd "$RA" && says 5 "alpha while its daemon is down")
+# ea joins and ends while no daemon runs here: no daemon ever saw it a member.
+EA=5a000002-0000-4000-8000-0000000000a2
+sleep 600 & EA_PID=$!
+PIDS+=("$EA_PID")
+printf '{"type":"ai-title","aiTitle":"Desk sidebar for ended sessions","sessionId":"%s"}\n' "$EA" > "$TXA/$EA.jsonl"
+printf '{"pid":%s,"sessionId":"%s","name":"ea","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$EA_PID" "$EA" "$RA" > "$HOME/.claude/sessions/ea.json"
+(cd "$RA" && "$SMINOS" list >/dev/null)
+rm "$HOME/.claude/sessions/ea.json"
+(cd "$RA" && "$SMINOS" list >/dev/null)
 as b beta
 (cd "$RB" && says 5 "beta while alpha's daemon is down")
 as a alpha
@@ -457,7 +538,10 @@ A_GEN="$(ctl gen alpha)"
 start_daemon
 A_DAEMON=$DAEMON_PID
 until_true 200 gen_above alpha "$A_GEN" || true
+until_true 200 membership_is "$BLOG/alpha.$EA.jsonl" "retired:ended ['Desk sidebar for ended sessions']" || true
 settle "after alpha's daemon restarts"
+assert_equals "$(membership "$BLOG/alpha.$EA.jsonl")" "retired:ended ['Desk sidebar for ended sessions']" \
+  "a session that ended before alpha's daemon started has its title published by it, and beta holds it"
 
 # ---- a dropped connection
 echo "a dropped connection:"

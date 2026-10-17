@@ -508,6 +508,56 @@ def publish_renames(project, view):
     return n
 
 
+# (project id, session, writer and seq of its `retired`): the retirements of
+# this machine's sessions whose title this process has settled. A retired
+# session's transcript stops changing, so one look per retirement keeps the
+# tick from globbing for every session the project ever ended; a resume and
+# a later retirement is another event, looked at again.
+_TITLES_SETTLED = set()
+
+
+def publish_titles(project, view):
+    """Duty 3, for a project another machine reads (`shared`): a `titled`
+    when the title of a session of this machine (sminos.transcript_title: its
+    /rename name, else the harness's generated one) differs from the last one
+    the log holds for it, into the session's own file — every tick for a
+    local member, once per retirement for a session that has ended (one
+    renamed and closed between two ticks is retired by this tick's
+    reconciliation before it could be published; one that ended before this
+    process ran was never its member). The desk and every other machine's
+    views name the session by it, its ended sessions and an offline
+    machine's included. The harness re-appends title records thousands of
+    times a session, mostly unchanged; only a change is an event. A title
+    that cannot be read says nothing, so "" is never published. Returns how
+    many events it appended."""
+    n = 0
+    for m in view.members:
+        if m.local and m.session:
+            n += publish_title(project, m.session, view.info.get(m.session)) or 0
+    for sid, r in view.info.items():
+        last = r["latest"]
+        if not (last and last["kind"] == "retired" and r["joined"]):
+            continue
+        key = (project.id, sid, last["writer"], last["seq"])
+        if key in _TITLES_SETTLED or not sminos.is_self(str(r["joined"].get("machine") or ""), sid):
+            continue
+        got = publish_title(project, sid, r)
+        if got is not None:
+            n += got
+            _TITLES_SETTLED.add(key)
+    return n
+
+
+def publish_title(project, session, r):
+    """A `titled` for one session of this machine when its title is not
+    empty and differs from the last one published (`r`: its _projection
+    row). How many it appended; None when the append failed."""
+    title = sminos.transcript_title(session)
+    if not title or title == sminos.published_title(r):
+        return 0
+    return len(sminos.lifecycle(project, session, "titled", required=False, title=title)) or None
+
+
 def rejoin_former(project, view=None):
     """Duty 3, for a hub project: each local member whose latest `joined`
     this machine wrote under a former name joins again under its name now,
@@ -666,7 +716,7 @@ def tick(project, all_seats=None):
             view = sminos.view_of(project, all_seats, titles=False)
         notice_former_writers(project, view, record)
     if shared(project):
-        out["published"] += publish_state(project, view, record)
+        out["published"] += publish_state(project, view, record) + publish_titles(project, view)
     out["published"] += publish_renames(project, view)
     out["delivered"], out["to"] = deliver_owed(project, view)
     if out["integrated"]:

@@ -108,6 +108,7 @@ import argparse
 import calendar
 import datetime
 import fcntl
+import functools
 import glob
 import hashlib
 import heapq
@@ -118,6 +119,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -497,7 +499,7 @@ PUSHED = ("sent", "woken", "sent?", "woken?")
 MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
 # session on its machine appends it to that session's file.
-LIFECYCLE = MEMBERSHIP + ("renamed", "state", "in-charge", "status")
+LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status")
 # The harness session kinds that are members on sight; any other is not.
 JOINABLE_KINDS = ("interactive", "bg")
 # A headless or SDK run (`claude -p`, the agent SDKs) registers as
@@ -1333,9 +1335,9 @@ def latest_across_writers(events):
 def _projection(events):
     """Per session, what the log says of it: its latest membership event and
     latest joined (by seq, in its own file), the first non-empty `by`, its
-    latest rename and published state (its own file), its in-charge events
-    (for charge_of), and its status: each writer's latest by seq, the later
-    ts between writers (§3)."""
+    latest rename, published state, and published title (its own file), its
+    in-charge events (for charge_of), and its status: each writer's latest by
+    seq, the later ts between writers (§3)."""
     info = {}
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -1343,8 +1345,8 @@ def _projection(events):
             continue
         own = writer_session(e["writer"]) == sid
         r = info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
-                                  "in_charge": [], "status": []})
-        if kind in MEMBERSHIP or kind in ("renamed", "state"):
+                                  "titled": None, "in_charge": [], "status": []})
+        if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
             if not own:
                 continue
             if kind in MEMBERSHIP:
@@ -1364,20 +1366,24 @@ def _projection(events):
     return info
 
 
-def charge_of(member, events, title=True):
+def charge_of(member, events, title=True, published=""):
     """(line, source): what a member is in charge of, the first present of
     (§5) the latest `set` in-charge line, the name the human gave it, the
-    latest `derived` line, and — on this machine only — its transcript's
-    latest title; ("", "") when none is. A set or derived line written
-    empty is no line. `events` is the log, or any part of it holding the
-    member's in-charge events, each writer's in seq order. With title=False
-    the transcript is not read (the daemon's tick has no use for the line)."""
+    latest `derived` line, and its title — read from its transcript on this
+    machine, else the one its machine `published` (`titled`); ("", "") when
+    none is. A set or derived line written empty is no line. `events` is the
+    log, or any part of it holding the member's in-charge events, each
+    writer's in seq order. With title=False the transcript is not read (the
+    daemon's tick has no use for the line)."""
     mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") == member.session]
     for source in ("set", "name", "derived", "title"):
         if source == "name":
             line = member.alias if member.name_source == "user" else ""
         elif source == "title":
-            line = transcript_title(member.session) if title and member.local and member.session else ""
+            if member.local:
+                line = transcript_title(member.session) if title and member.session else ""
+            else:
+                line = published
         else:
             e = latest_across_writers([x for x in mine if x.get("source") == source])
             line = str(e.get("text") or "").strip() if e else ""
@@ -1431,8 +1437,14 @@ def _member(sid, r, seat, peer, local, title=True):
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
         by=(r or {}).get("by") or "", worktree=seat["worktree"] if seat else str(j.get("worktree") or ""),
         seat=seat)
-    charge, source = charge_of(m, (r or {}).get("in_charge") or [], title)
+    charge, source = charge_of(m, (r or {}).get("in_charge") or [], title, published_title(r))
     return m._replace(charge=charge, charge_source=source)
+
+
+def published_title(r):
+    """The title the session's machine last published (`titled`, in the
+    session's own file), from a _projection row; "" for none."""
+    return " ".join(str(((r or {}).get("titled") or {}).get("title") or "").split())
 
 
 class View(NamedTuple):
@@ -2174,24 +2186,52 @@ def _lines_backward(f, end, budget=None):
         yield 0, head
 
 
+# How far before the latest `ai-title` a `custom-title` that outranks it is
+# looked for. The harness re-appends both whenever either has left the last
+# 32 KiB of the transcript, the custom one first (planReAppendSessionMetadata),
+# so a current custom title sits within that window of the latest ai title.
+TITLE_REACH = 256 << 10
+_TITLES = {}  # session -> ((path, size, mtime_ns), title): valid while the file is unchanged
+
+
 def transcript_title(session_id):
-    """The latest `ai-title` record of a session's transcript on this machine:
-    the harness rewrites it as the conversation moves, so it is the current
-    topic, the last fallback of the in-charge line (§5). Looked for in the
-    file's last 8 MiB."""
+    """A session's title on this machine, as the harness names it ("Session
+    name" in /status): the latest `custom-title` record of its transcript (set
+    by /rename; an empty one clears it), else the latest `ai-title`; "" for
+    neither. The ai title follows the conversation's topic; the custom one is
+    the name the human gave it. The last fallback of the in-charge line (§5),
+    and what the daemon publishes as `titled` (§8). Read backward from the end,
+    at most 8 MiB, and at most TITLE_REACH past the latest ai title."""
     path = transcript_path(session_id)
     if not path:
         return ""
     try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime_ns)
+        held = _TITLES.get(session_id)
+        if held and held[0] == key:
+            return held[1]
+        custom, ai, ai_at = None, None, 0
         with open(path, "rb") as f:
-            for _, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
-                if b'"ai-title"' in line:
-                    r = _record(line)
-                    if r and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
-                        return " ".join(r["aiTitle"].split())
+            for at, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
+                if ai is not None and ai_at - at > TITLE_REACH:
+                    break
+                if b'-title"' not in line:
+                    continue
+                r = _record(line) or {}
+                if custom is None and r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str):
+                    custom = " ".join(r["customTitle"].split())
+                    if custom or ai is not None:
+                        break
+                elif ai is None and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
+                    ai, ai_at = " ".join(r["aiTitle"].split()), at
+                    if custom is not None:
+                        break
+        title = custom or ai or ""
+        _TITLES[session_id] = (key, title)
+        return title
     except OSError:
-        pass
-    return ""
+        return ""
 
 
 def _position_path(project, session):
@@ -3260,15 +3300,73 @@ _PSTART = {}
 def read_proc_start(pid):
     """The live process's start time as `ps -o lstart=` prints it, whitespace
     normalised; "" when ps cannot tell. Asked afresh, no cache: what a
-    thread beside the one owning the invocation's caches reads."""
+    thread beside the one owning the invocation's caches reads. On macOS it
+    is read where ps reads it, the kernel's process table, without running
+    ps: a long-lived reader of every live session (the uplink) asked this
+    about each of them, a fork and an exec apiece."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    started = _darwin_start(pid) if sys.platform == "darwin" else None
+    if started is not None:
+        return _lstart_text(started) if started else ""
     try:
         # The harness records procStart in the C locale ("Tue Sep  1 20:27:08
         # 2026"); ps must print the same shape, not the user's locale.
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
                              timeout=5, env={**os.environ, "LC_ALL": "C", "LANG": "C"}).stdout
     except Exception:
         out = ""
     return " ".join(out.split())
+
+
+KINFO_PROC_SIZE = 648  # sizeof(struct kinfo_proc) on 64-bit macOS
+_SYSCTL = None         # (ctypes, sysctl) once looked up; False where there is none
+
+
+def _darwin_start(pid):
+    """A process's start, in whole epoch seconds, from `sysctl
+    kern.proc.pid` — the kinfo_proc ps reads, whose kp_proc opens with
+    p_starttime and holds p_pid at byte 40; 0 when there is no such process;
+    None when this cannot tell (no sysctl, or a record of another shape),
+    for ps to answer."""
+    global _SYSCTL
+    if _SYSCTL is None:
+        try:
+            import ctypes
+            sysctl = ctypes.CDLL(None, use_errno=True).sysctl
+            sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                               ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+            sysctl.restype = ctypes.c_int
+            _SYSCTL = (ctypes, sysctl)
+        except (ImportError, OSError, AttributeError):
+            _SYSCTL = False
+    if not _SYSCTL:
+        return None
+    ctypes, sysctl = _SYSCTL
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    buf = ctypes.create_string_buffer(KINFO_PROC_SIZE)
+    size = ctypes.c_size_t(KINFO_PROC_SIZE)
+    if sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    if size.value == 0:
+        return 0
+    sec, = struct.unpack_from("=q", buf, 0)
+    p_pid, = struct.unpack_from("=i", buf, 40)
+    return sec if size.value == KINFO_PROC_SIZE and p_pid == pid and sec > 0 else None
+
+
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _lstart_text(epoch):
+    """An instant as `ps -o lstart=` prints it in the C locale and the local
+    zone, whitespace normalised."""
+    t = time.localtime(epoch)
+    return "%s %s %d %02d:%02d:%02d %d" % (_DAYS[t.tm_wday], _MONTHS[t.tm_mon - 1], t.tm_mday,
+                                           t.tm_hour, t.tm_min, t.tm_sec, t.tm_year)
 
 
 PROC = "/proc"  # Linux's process table (tests point it at a stand-in)
@@ -3302,9 +3400,16 @@ def proc_start(pid):
 
 
 def _parse_lstart(s):
+    return _lstart_struct(" ".join(str(s).split()))
+
+
+@functools.lru_cache(maxsize=4096)
+def _lstart_struct(text):
+    """strptime, kept: the same few start times are compared again and again
+    (every live session, every reconciling read), and strptime is slow."""
     try:
-        return time.strptime(" ".join(str(s).split()), "%a %b %d %H:%M:%S %Y")
-    except (ValueError, TypeError):
+        return time.strptime(text, "%a %b %d %H:%M:%S %Y")
+    except ValueError:
         return None
 
 

@@ -114,7 +114,7 @@ BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
 LOCATE_EVERY = 1.0        # s: how often a transcript not found yet is looked for
 MEMBERS_EVERY = 10.0      # s: how often the members are read again when no session came or went
-IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (a `ps` per running session this often)
+IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (its start time read this often)
 TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its sessions' leaving was last said and taken
 TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
@@ -1439,10 +1439,10 @@ class Records:
 
     def running(self, rec):
         """The record's pid is alive and is the process the record describes.
-        The identity (`ps`'s start time against the record's) is read again
-        every IDENTITY_EVERY, and at once once the pid is seen dead: a pid
-        reused between two polls, alive at both, is found out within that
-        bound. Polls between reads cost an os.kill each, not a `ps`."""
+        The identity (the process's start time against the record's, read
+        afresh) is read again every IDENTITY_EVERY, and at once once the pid
+        is seen dead: a pid reused between two polls, alive at both, is found
+        out within that bound. Polls between reads cost an os.kill each."""
         pid = rec.get("pid")
         if not sminos.pid_alive(pid):
             self.same = {k: v for k, v in self.same.items() if k[0] != pid}
@@ -1450,8 +1450,7 @@ class Records:
         key, now = (pid, rec.get("procStart")), self.clock()
         held = self.same.get(key)
         if held is None or now - held[1] >= IDENTITY_EVERY:
-            sminos.forget_caches()  # the start time ps gives now, not one sminos read for this pid before
-            held = self.same[key] = (sminos.same_process(rec), now)
+            held = self.same[key] = (sminos.same_process(rec, fresh=True), now)
         return held[0]
 
 
@@ -1743,8 +1742,8 @@ class Plane:
         """Everything now due for the projects open on the stream ({id:
         project}): presence that changed, each subscription's messages,
         finished diffs. Envelopes, in the order to post them. The members are
-        read again — a reconciling read of each log, which asks `ps` about
-        every live session — when a session came or went, and every
+        read again — a reconciling read of each log, which reads the start
+        time of every live session — when a session came or went, and every
         MEMBERS_EVERY for what only the log changes (a seat retired)."""
         now = time.monotonic()
         out = []
