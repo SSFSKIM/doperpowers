@@ -323,7 +323,8 @@ enable-linger`, without which the user's services stop at logout and do
 not start at boot. Either file is mode 0600 (the gateway route in it in
 plain text), and nothing is loaded. The service runs the Python the
 install ran on, pinned, never the first `python3` its recorded PATH
-finds. From an installed plugin it points
+finds; the install names it, and once that Python is removed, install
+again. From an installed plugin it points
 the service at the marketplace clone, a stable path, not the versioned
 cache, and refuses when no clone is known; `run` exits after a tick once
 its own code changes, so `KeepAlive` or `Restart=always` restarts it on

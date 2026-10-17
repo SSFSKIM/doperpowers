@@ -5056,7 +5056,10 @@ PLIST="$MD/inst/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist"
 assert_file_exists "$PLIST" "it writes the agent under the HOME it is given"
 assert_contains "$OUT" "launchctl bootstrap gui/" "and says how to load it"
 assert_file_absent "$MD/launchctl.calls" "loading nothing itself"
-INSTALL_PY="$(PATH="$MD/lc:$PATH" command -v python3)"
+# The Python the launcher ran, as it names itself (the install pins
+# sys.executable, which need not be the path PATH found: Homebrew's python3
+# reports its versioned binary).
+INSTALL_PY="$(PATH="$MD/lc:$PATH" python3 -c 'import sys; print(sys.executable)')"
 assert_equals "$(python3 - "$PLIST" "$MD/inst/sminos" "$REPO_ROOT/skills/sminos/scripts/sminos.py" "$INSTALL_PY" <<'PY_PLIST'
 import os, plistlib, sys
 d = plistlib.load(open(sys.argv[1], "rb"))
