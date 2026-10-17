@@ -531,13 +531,17 @@ three of these hold.
 - The placeholder is the engine's. The engine writes it only for a run under
   the hand-back contract; outside it (a fork, a run not in auto mode) the
   agent's own words stand, and they could be that very sentence. So the
-  agent's transcript, `<session>/subagents/agent-<task-id>.jsonl` from
-  SessionStart's `transcript_path`, is searched with `grep` (it runs far past
-  the 4 MiB `$.fs.read` takes) and read as the engine reads it at each run's
-  start: the latest meta user record that opens with the hand-back reminder
-  or with its countermand must be the reminder. A compaction after both ends
-  the reading unanswered, since the engine's own view of the run starts
-  there.
+  agent's transcript is read as the engine reads it at each run's start: the
+  latest meta user record that opens with the hand-back reminder or with its
+  countermand must be the reminder. A compaction after both ends the reading
+  unanswered, since the engine's own view of the run starts there. The
+  transcript is where the notification's `<output-file>` link lands (a
+  subagent's `.output` is a symlink to it), which must be
+  `agent-<task-id>.jsonl`; `grep` searches it, as it runs far past the 4 MiB
+  `$.fs.read` takes. All 725 waiting notifications in the two sessions below
+  carried the line, each linking to its agent's transcript; the engine
+  leaves it out for an unreadable output or saved web-fetch files, and then
+  the notification passes.
 - It tells the session nothing new. The session knows the agent, because its
   own loop spawned it (`$.agent.list()` gives no `parentId`) or an earlier
   notification of it entered: an orphan's, fallen back to the main session
@@ -545,26 +549,27 @@ three of these hold.
   And any `<worktree>` it carries came in an earlier one, since the launch
   never says where an isolated agent's work lives.
 
-Every check fails open: a lookup that errs or cannot tell (no SessionStart
-seen since the module loaded, an agent the list no longer names, `grep`
-missing, failing, past 10 s or cut at 4 MiB, a line that does not parse)
-lets the notification through, and so does a hook that throws. Replayed over
-those sessions (engine 2.1.283 to 2.1.301, the agent list taken from each
-agent's meta file), the filter drops 553 of 749 interim notifications, where
-the text alone dropped 745: 20 pointers, 139 first notices of a worktree and
-33 first notices of an orphan pass, and 4 carry the safety classifier's
-warning. Every parked agent's transcript held the reminder, so telling the
-engine's placeholder from an agent's cost no drops; dropping for the main
-loop's own agents alone would have dropped 362.
+Every check fails open: a lookup that errs or cannot tell (no
+`<output-file>`, a link that is dangling or lands anywhere but the agent's
+transcript, an agent the list no longer names, `grep` missing, failing, past
+10 s or cut at 4 MiB, a line that does not parse) lets the notification
+through, and so does a hook that throws. Replayed over those sessions
+(engine 2.1.283 to 2.1.301, the agent list taken from each agent's meta
+file, the `.output` links still on disk), the filter drops 553 of 749
+interim notifications, where the text alone dropped 745: 20 pointers, 139
+first notices of a worktree and 33 first notices of an orphan pass, and 4
+carry the safety classifier's warning. Every parked agent's transcript held
+the reminder, so telling the engine's placeholder from an agent's cost no
+drops; dropping for the main loop's own agents alone would have dropped 362.
 
 What it gives up: the parent no longer sees that the agent parked again. An
 agent killed while parked gets no notification either way, since the engine
 counts the interim one as its notice when it queues it, before any hook
 runs, so the parent hears of the kill only if it did the killing or looks.
-What the session was told is kept in the module, so after a reload the first
-notice of each agent and worktree passes again, and until the next
-SessionStart (a resume, a clear, a compaction) a reloaded module knows no
-transcripts and passes everything. Each drop still leaves a line in the
+What the session was told is kept in the module, so after a reload (a
+plugin update and `/reload-plugins` in a running session) the first notice
+of each agent and worktree passes again; the module holds no other state
+and filters from its first notification. Each drop still leaves a line in the
 transcript, "Prompt dropped by a hook: interim agent notification: its work
 is still running": the engine writes a `system` notice at level `warning`
 for every `prompt.submit` that ends without entering (a hook's answer without

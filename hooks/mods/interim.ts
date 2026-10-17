@@ -1,7 +1,5 @@
 import type { EngineInterface, On } from 'claude-code'
 
-import { subagentsDir } from './agents'
-
 /**
  * The note the engine writes into an agent's completion notification when the
  * agent ended its turn with background work of its own still running (a
@@ -37,7 +35,7 @@ const ENVELOPE = new RegExp([
   '\\n<task-id>(?<taskId>[^<\\n]*)</task-id>',
   `${line('tool-use-id')}?`,
   `${line('task-type')}?`,
-  `${line('output-file')}?`,
+  '(?:\\n<output-file>(?<outputFile>[^<\\n]*)</output-file>)?',
   '\\n<status>completed</status>',
   `${line('summary')}?`,
   `\\n<note>${escape(INTERIM_NOTE_IN_FULL)}</note>`,
@@ -49,6 +47,11 @@ const ENVELOPE = new RegExp([
 
 export type Interim = {
   taskId: string
+  /**
+   * The agent's `.output`, a link to its transcript; absent where the engine
+   * leaves it out (an unreadable output, saved web-fetch files).
+   */
+  outputFile?: string
   /** The `<worktree>` element as written: where an isolated agent's work lives. */
   worktree?: string
 }
@@ -62,7 +65,11 @@ export function readInterim(text: string): Interim | undefined {
   if (groups?.taskId === undefined || groups.result?.trim() !== WAITING) {
     return undefined
   }
-  return { taskId: groups.taskId, ...(groups.worktree !== undefined && { worktree: groups.worktree }) }
+  return {
+    taskId: groups.taskId,
+    ...(groups.outputFile !== undefined && { outputFile: groups.outputFile }),
+    ...(groups.worktree !== undefined && { worktree: groups.worktree }),
+  }
 }
 
 const REMINDER = '<system-reminder>\nYour final report is delivered through SubagentHandback'
@@ -113,36 +120,35 @@ export function handsBack(lines: string): boolean {
   return false
 }
 
-type State = {
-  /** The session's `subagents/` directory, once a SessionStart named it. */
-  subagents?: string
-  /** What notifications that entered told the session: agents by task-id, worktrees by `task-id\n<worktree>`. */
-  told: Set<string>
-}
-
 /**
  * Whether the notification tells the session nothing it has not been told:
  * any worktree it carries came in an earlier one; the session knows the
  * agent, because its own loop spawned it or an earlier notification of it
  * entered (an orphan's, fallen back from a parent that ended, is the
- * session's first sign of it); and the agent's transcript shows the
- * hand-back contract on, so the placeholder is the engine's. Any lookup
- * that fails or cannot tell answers false.
+ * session's first sign of it); and the agent's transcript, which its
+ * `<output-file>` links to, shows the hand-back contract on, so the
+ * placeholder is the engine's. `told` holds what notifications that entered
+ * told the session: agents by task-id, worktrees by `task-id\n<worktree>`.
+ * Any lookup that fails or cannot tell answers false.
  */
-async function isRepeat($: EngineInterface, state: State, { taskId, worktree }: Interim): Promise<boolean> {
-  if (worktree !== undefined && !state.told.has(`${taskId}\n${worktree}`)) {
+async function isRepeat($: EngineInterface, told: ReadonlySet<string>, { taskId, outputFile, worktree }: Interim): Promise<boolean> {
+  if (worktree !== undefined && !told.has(`${taskId}\n${worktree}`)) {
     return false
   }
-  if (state.subagents === undefined || !/^[\w-]+$/.test(taskId)) {
+  if (outputFile === undefined) {
     return false
   }
-  if (!state.told.has(taskId)) {
+  if (!told.has(taskId)) {
     const agent = (await $.agent.list()).find((listed) => listed.id === taskId)
     if (agent === undefined || agent.parentId !== undefined) {
       return false
     }
   }
-  const search = await $.process.run(searchArgs(`${state.subagents}/agent-${taskId}.jsonl`), { timeoutMs: 10_000 })
+  const transcript = (await $.fs.stat(outputFile, { resolve: true })).realPath
+  if (transcript === undefined || !transcript.endsWith(`/agent-${taskId}.jsonl`)) {
+    return false
+  }
+  const search = await $.process.run(searchArgs(transcript), { timeoutMs: 10_000 })
   return search.exitCode === 0 && !search.isStdoutTruncated && handsBack(search.stdout)
 }
 
@@ -156,12 +162,7 @@ async function isRepeat($: EngineInterface, state: State, { taskId, worktree }: 
  * errs on.
  */
 export function registerInterim(on: On) {
-  const state: State = { told: new Set() }
-
-  on('classic.SessionStart', { transcript_path: /^/ }, async (_$, e, next) => {
-    state.subagents = subagentsDir(e.transcript_path)
-    return next(e)
-  })
+  const told = new Set<string>()
 
   on('prompt.submit', { origin: { kind: 'task-notification' } }, async ($, e, next) => {
     const interim = readInterim(e.text)
@@ -170,7 +171,7 @@ export function registerInterim(on: On) {
     }
     let isDropped = false
     try {
-      isDropped = await isRepeat($, state, interim)
+      isDropped = await isRepeat($, told, interim)
     } catch (error) {
       $.ui.log(`interim: a check failed (${String(error)}); the notification passes`, { to: 'debug' })
     }
@@ -179,9 +180,9 @@ export function registerInterim(on: On) {
     }
     const passed = await next(e)
     if (passed.drop === undefined) {
-      state.told.add(interim.taskId)
+      told.add(interim.taskId)
       if (interim.worktree !== undefined) {
-        state.told.add(`${interim.taskId}\n${interim.worktree}`)
+        told.add(`${interim.taskId}\n${interim.worktree}`)
       }
     }
     return passed

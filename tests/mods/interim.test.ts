@@ -8,8 +8,10 @@ tier('user')
 // The two notes the engine writes into an agent's completion notification
 // (2.1.292 to 2.1.302), the interim one first.
 const TASK = 'a6f9399af416f127b'
+const output = (task: string) => `/tmp/claude-501/p/s/tasks/${task}.output`
 const notification = (note: string, result = WAITING, status = 'completed', task = TASK) => `<task-notification>
 <task-id>${task}</task-id>
+<output-file>${output(task)}</output-file>
 <status>${status}</status>
 <summary>Agent "Execute C10 sessions plan" finished</summary>
 <note>${note}</note>
@@ -33,8 +35,9 @@ const lines = (...records: string[]) => `${records.join('\n')}\n`
 
 describe('readInterim', () => {
   test('reads the interim note and nothing else', async () => {
-    expect(readInterim(INTERIM)).toEqual({ taskId: TASK })
+    expect(readInterim(INTERIM)).toEqual({ taskId: TASK, outputFile: output(TASK) })
     expect(readInterim(FINAL)).toBeUndefined()
+    expect(readInterim(INTERIM.replace(/\n<output-file>.*<\/output-file>/, ''))).toEqual({ taskId: TASK })
   })
 
   test('passes a pointer to a delivered report: it does not prove the report reached this session', async () => {
@@ -82,6 +85,7 @@ describe('readInterim', () => {
 <worktree><worktreePath>/Users/new/Developer/GitHub/MAWS/.claude/worktrees/agent-a3e145df620ee3bfc</worktreePath><worktreeBranch>worktree-agent-a3e145df620ee3bfc</worktreeBranch></worktree>
 </task-notification>`)).toEqual({
       taskId: 'a3e145df620ee3bfc',
+      outputFile: '/private/tmp/claude-501/-Users-new-Developer-GitHub-MAWS/e3ce7feb-2e31-42ee-b836-829ecb01458b/tasks/a3e145df620ee3bfc.output',
       worktree: '<worktree><worktreePath>/Users/new/Developer/GitHub/MAWS/.claude/worktrees/agent-a3e145df620ee3bfc</worktreePath><worktreeBranch>worktree-agent-a3e145df620ee3bfc</worktreeBranch></worktree>',
     })
   })
@@ -136,15 +140,20 @@ describe('handsBack', () => {
 type Hook = { event: string; matcher: unknown; handler: (...args: unknown[]) => Promise<unknown> }
 type Run = { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean; isStderrTruncated: boolean }
 type Submitted = { text?: string; drop?: string }
+type Stat = { kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number; isLink: boolean; realPath?: string }
+
+/** Where an agent's `.output` link lands: its transcript, as the engine lays them out. */
+const transcriptOf = (task: string) => `/Users/u/.claude/projects/p/s/subagents/agent-${task}.jsonl`
+const linked = (realPath: string | undefined) => async (): Promise<Stat> => ({ kind: realPath === undefined ? 'other' : 'file', size: 0, mtimeMs: 0, isLink: true, ...(realPath !== undefined && { realPath }) })
 
 /**
- * The mod's hooks over a fake engine: the agents `$.agent.list()` names, and
- * what the transcript search answers. `start` raises SessionStart first.
+ * The mod's hooks over a fake engine: the agents `$.agent.list()` names,
+ * where each `.output` link lands, and what the transcript search answers.
  */
 function harness({
   agents = [{ id: TASK }] as { id: string; parentId?: string }[] | (() => never),
+  stat = (async (path: string): Promise<Stat> => linked(transcriptOf(/\/tasks\/([^/]+)\.output$/.exec(path)![1]!))()) as (path: string) => Promise<Stat>,
   search = (async () => ({ exitCode: 0, stdout: lines(REMINDER), stderr: '', isStdoutTruncated: false, isStderrTruncated: false })) as (argv: string[]) => Promise<Run>,
-  start = true,
   beneath = async (e: { text: string }): Promise<Submitted> => ({ text: e.text }),
 } = {}) {
   const hooks: Hook[] = []
@@ -154,16 +163,13 @@ function harness({
   const searched: string[][] = []
   const $ = {
     agent: { list: async () => (typeof agents === 'function' ? agents() : agents) },
+    fs: { stat: async (path: string, options: { resolve: boolean }) => (expect(options).toEqual({ resolve: true }), stat(path)) },
     process: { run: async (argv: string[]) => (searched.push(argv), search(argv)) },
     ui: { log: () => {} },
   }
-  const sessionStart = hooks.find((hook) => hook.event === 'classic.SessionStart')!
   const promptSubmit = hooks.find((hook) => hook.event === 'prompt.submit')!
   let entered = 0
   const submit = async (text: string) => {
-    if (start) {
-      await sessionStart.handler($, { source: 'startup', transcript_path: '/p/session.jsonl' }, async () => ({}))
-    }
     return promptSubmit.handler($, { text, origin: { kind: 'task-notification' } }, async (e: { text: string }) => (entered++, beneath(e))) as Promise<Submitted>
   }
   return { hooks, submit, searched, entered: () => entered }
@@ -172,18 +178,34 @@ function harness({
 const failing = (stdout: string, exitCode = 0, isStdoutTruncated = false) => async (): Promise<Run> => ({ exitCode, stdout, stderr: '', isStdoutTruncated, isStderrTruncated: false })
 
 describe('registerInterim', () => {
-  test('hooks task notifications, and the session start for where transcripts are', async () => {
+  test('hooks task notifications alone: no session state, so a module loaded mid-session filters from its first notice', async () => {
     const { hooks } = harness()
-    expect(hooks.find((hook) => hook.event === 'prompt.submit')!.matcher).toEqual({ origin: { kind: 'task-notification' } })
-    expect(hooks.find((hook) => hook.event === 'classic.SessionStart')).toBeDefined()
+    expect(hooks.map((hook) => [hook.event, hook.matcher])).toEqual([['prompt.submit', { origin: { kind: 'task-notification' } }]])
   })
 
-  test('drops the main loop\'s parked agent whose transcript shows the reminder, searching that transcript', async () => {
+  test('drops the main loop\'s parked agent whose transcript shows the reminder, searching where its .output lands', async () => {
     const h = harness()
     const dropped = await h.submit(INTERIM)
     expect(typeof dropped.drop).toBe('string')
     expect(h.entered()).toBe(0)
-    expect(h.searched).toEqual([searchArgs(`/p/session/subagents/agent-${TASK}.jsonl`)])
+    expect(h.searched).toEqual([searchArgs(transcriptOf(TASK))])
+  })
+
+  test('passes a notification without an output file, or whose link does not land on the agent\'s transcript', async () => {
+    const bare = INTERIM.replace(/\n<output-file>.*<\/output-file>/, '')
+    const h = harness()
+    expect(await h.submit(bare)).toEqual({ text: bare })
+    expect(h.searched).toEqual([])
+    for (const stat of [
+      linked(undefined), // dangling
+      linked(output(TASK)), // a plain output file, no link
+      linked(transcriptOf('b1')), // another agent's transcript
+      async (): Promise<Stat> => { throw new Error('ENOENT') },
+    ]) {
+      const other = harness({ stat })
+      expect(await other.submit(INTERIM)).toEqual({ text: INTERIM })
+      expect(other.searched).toEqual([])
+    }
   })
 
   test('passes the final notification without a lookup', async () => {
@@ -256,7 +278,6 @@ describe('registerInterim', () => {
 
   test('every lookup that fails or cannot tell lets the notification through', async () => {
     const cases = [
-      harness({ start: false }),
       harness({ agents: [] }),
       harness({ agents: () => { throw new Error('list refused') } }),
       harness({ search: async () => { throw new Error('grep did not start') } }),
@@ -268,9 +289,5 @@ describe('registerInterim', () => {
     for (const h of cases) {
       expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
     }
-    const unsafe = notification(INTERIM_TEXT, WAITING, 'completed', '../a6f9399af416f127b')
-    const h = harness({ agents: [{ id: '../a6f9399af416f127b' }] })
-    expect(await h.submit(unsafe)).toEqual({ text: unsafe })
-    expect(h.searched).toEqual([])
   })
 })
