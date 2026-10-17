@@ -134,6 +134,7 @@ class NeedsABootTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(steps.status, "reset", lambda: None))
             stack.enter_context(mock.patch.object(steps, "_run", run_steps))
             stack.enter_context(mock.patch.object(services, "BOOTED", marker))
+            stack.enter_context(mock.patch.object(services, "systemd_is_init", lambda: False))
             code = steps.boot()
         return code, marker.exists()
 

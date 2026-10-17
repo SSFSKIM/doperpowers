@@ -20,6 +20,8 @@ class BootExitTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(steps, "_mark_applied", lambda r: None))
             stack.enter_context(mock.patch.object(status, "reset", lambda: None))
             stack.enter_context(mock.patch.object(steps.services, "mark_booted", lambda ok: None))
+            # The host running the tests may itself run systemd (GitHub's runners do).
+            stack.enter_context(mock.patch.object(steps.services, "systemd_is_init", lambda: False))
             stack.enter_context(mock.patch.object(
                 status, "record", lambda name, state, detail: recorded.append((name, state))))
             for name in HOST_STEPS:
