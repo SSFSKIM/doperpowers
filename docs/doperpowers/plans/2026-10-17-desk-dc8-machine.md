@@ -391,6 +391,32 @@ rung for DC8); the PR opened, not merged; the report at
   from.
   Date/Author: 2026-10-17, M2 executor (report `task-2-report.md`).
 
+- Decision: **What M3 settled** (built on branch `desk-dc8-m3`, merged
+  into this branch once reviewed). The seed carries `name` only when
+  `$.agent.list()` gives one (2.1.300's `AgentInfo.name?` is optional,
+  set by `eor()`). List statuses `completed`, `failed`, `killed` are over;
+  `pending`, `running`, `waiting`, `idle` are running; leaving the list is
+  over; an agent already over at load is seeded as a spawn then a stop.
+  The spawn hook keeps reporting what it sees; the list only adds agents
+  the bridge does not know (never while a spawn hook runs) and only stops
+  agents, and `SubagentStop` says nothing for an agent the list already
+  stopped. The list is refreshed every 500 ms while any agent runs, at
+  each heartbeat, and when a loop the bridge does not know starts a turn;
+  after `/clear` the old conversation's agents are not carried over. G5's
+  report runs in `sminos_daemon.deliver_owed`, not `deliver_next` (which
+  runs only while something is owed, so the last send's refusal would
+  never be reported), under the session's delivery lock and only for
+  settled events, so `failed` lands after `delivered`; reported keys are
+  kept in the project's `refused/<session>.json`; `sminos.py` is
+  untouched. The child keeps the last 100 refusals, reasons cut to 1000
+  characters. G6 is built: `delivered {outcome: "entered", uuid}` names a
+  main-loop `prompt` row the plugin submitted as the user's words whose
+  first text block equals exactly one waiting delivery's text, anything
+  ambiguous named nothing (all 174 bridge deliveries in this machine's
+  transcripts arrive so); it stops at the bridge's stream — where it rides
+  to the web is a contract question put to the design session.
+  Date/Author: 2026-10-17, M3 executor (report `task-3-report.md`).
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
@@ -401,10 +427,9 @@ rung for DC8); the PR opened, not merged; the report at
   2026-10-17: 387 paths under the launch cwd's slug, 137 under the
   worktree's, 43 under `cd5fc75d…`. See the Decision Log on the roots.
 
-- Observation: `$.agent.list()` has no `name`; DX5's seed shape lists one.
-  Evidence: `hooks/mods/agents.tsx:331-345` reads `{id, description, type,
-  status, parentId}`. The derivation passes through whatever spawn fields
-  the bridge entry has. Told to the design session.
+- Observation: `agents.tsx` reads no `name` from `$.agent.list()`, but the
+  engine's list has an optional one (2.1.300 d.ts `AgentInfo.name?`); the
+  seed carries it when present (M3). Told to the design session.
 - Observation: about 5,089 of 12,077 metas on this machine are of the
   older form with no `requestShape`; a background agent there is known as
   such only from `spawn.background` or its launch result.
