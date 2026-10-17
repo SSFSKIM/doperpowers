@@ -1,7 +1,7 @@
 # devcloud — a cloud host that works like your Mac, on any substrate
 
-**Date.** 2026-10-15. **Status.** Design approved in conversation; review round 1 folded; awaiting
-the person's read before execution. **Prior art, reference only.**
+**Date.** 2026-10-15. **Status.** Design approved in conversation; independent review converged over three rounds;
+awaiting the person's read before execution. **Prior art, reference only.**
 `docs/doperpowers/specs/2026-10-02-personal-cloud-env-design.md` (the discarded devbox spec) and its
 research under `docs/doperpowers/research/2026-09-30-personal-cloud-env/`;
 `docs/doperpowers/specs/2026-10-02-project-env-manifest-design.md` (the manifest `devenv` reads
