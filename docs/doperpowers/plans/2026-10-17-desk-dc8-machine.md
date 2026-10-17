@@ -453,6 +453,26 @@ rung for DC8); the PR opened, not merged; the report at
   Date/Author: 2026-10-17, M3 executor and controller (the M3 review's
   three rounds).
 
+- Decision: **What M4 settled.** The disk cache is process-wide (`DISK`),
+  keyed by path, re-reading metas, agent-file facts and parent ledgers
+  only when inode, size or mtime changed (`Disk.opened` counts the
+  opens); a parent loop's ledger is read forward from where it stopped,
+  and the main thread gets a small filtered copy (`Ledger.view`), never
+  the live ledger. An agent-scope subscription reads the ledgers of the
+  loops above it from that cache, the main transcript's included (its
+  first read 0.8–1.4 s on a 180–256 MB transcript, once per process, off
+  the uplink's thread), and its own entry is derived over its chain of
+  ancestors, so "parent ended → exited" holds in an agent's own view. File
+  facts read only the head and tail of each agent transcript; `mtimeMs` is
+  a float, as node gives it. The bridge's spawn records survive the end of
+  its stream; `running` is dropped once the process is gone.
+  `CLAUDE_CODE_TMPDIR` is read from the daemon's own environment.
+  **`adoptShellOutputRoot` is not added**: in 2.1.300 it is not a setting
+  but the in-process `--bg` takeover state (`cli.pretty.js:977177`,
+  `:1017414`), so nothing on the machine names it; an adopted shell's
+  output under another root is refused. Told to the design session.
+  Date/Author: 2026-10-17, M4 executor (report `task-4-report.md`).
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
