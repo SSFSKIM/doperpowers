@@ -7,10 +7,11 @@ loudly, in a terminal session and in `--bg` jobs:
   at its next request; the terminal shows the mirror line; a steer given
   during the final answer wakes the session once, without repeating it;
 - an interrupt ends the turn within 2 s and stops the Bash call the abort
-  moved to the background, and leaves the model a record of both (from the
-  desk, as the daemon's RPC sends it, in the terminal session; through
-  `sminos interrupt` in the --bg job), which the next request carries after
-  the moved call's result, and no notification for the stopped task follows;
+  moved to the background, and leaves the model a record of both: Esc's
+  marker in a row of its own, then a note (from the desk, as the daemon's RPC
+  sends it, in the terminal session; through `sminos interrupt` in the --bg
+  job), which the next request carries after the moved call's result, and no
+  notification for the stopped task follows;
 - a model change takes the next request, survives a module reload, and leaves
   the config's settings.json untouched;
 - a compact asked during a turn runs after it;
@@ -260,17 +261,27 @@ class Control(LB.Live):
 
         moved = re.compile(r"running in background with ID: ([A-Za-z0-9_-]+)")
 
+        marker = "[Request interrupted by user]"
+
         def record():
             rows = self.transcript_rows(sid)
-            at = [row for row in rows if row.get("type") == "user" and row.get("isMeta")
-                  and "[Request interrupted by user" in json.dumps(row.get("message"))]
-            found = [moved.search(json.dumps(row.get("message"))) for row in rows if row.get("type") == "user"]
+            users = [row for row in rows if row.get("type") == "user"]
+            at = [i for i, row in enumerate(users) if (row.get("message") or {}).get("content") == [{"type": "text", "text": marker}]]
+            note = [row for row in users[at[-1] + 1:] if row.get("isMeta")
+                    and "The interrupt came from" in json.dumps(row.get("message"))] if at else []
+            found = [moved.search(json.dumps(row.get("message"))) for row in users]
             found = [f.group(1) for f in found if f]
-            return ("\n".join(b.get("text", "") for b in at[-1]["message"]["content"]), found[-1]) if at and found else None
-        text, task = wait_for("the interrupt's record and the moved call's result", 15, record)
+            if not (note and found):
+                return None
+            return users[at[-1]], "\n".join(b.get("text", "") for b in note[0]["message"]["content"]), found[-1]
+        row, text, task = wait_for("the interrupt's record and the moved call's result", 15, record)
         where = "the desk" if desk else "outside the terminal"
-        self.check("%s: the interrupt leaves the model a record: from %s, the task it stopped not running" % (label, where),
-                   text.startswith("[Request interrupted by user from %s]" % where)
+        # The marker's row is Esc's text whole, which is how a transcript's reader knows the interrupt.
+        self.check("%s: the interrupt's marker is a row of Esc's text alone, kept isMeta from the plugin" % label,
+                   row.get("isMeta") is True and (row.get("origin") or {}).get("kind") == "plugin",
+                   json.dumps({k: row.get(k) for k in ("isMeta", "origin", "message")}))
+        self.check("%s: then a note for the model: from %s, the task it stopped not running" % (label, where),
+                   text.startswith("The interrupt came from %s." % where)
                    and task in said and task in text and "is not running" in text, repr(text))
         self.idle(endpoint)
         t = time.time()
@@ -284,8 +295,8 @@ class Control(LB.Live):
             content = (row.get("message") or {}).get("content") if row.get("type") == "api-request-blob" else None
             if isinstance(content, list) and any(b.get("type") == "tool_result" and task in json.dumps(b) for b in content):
                 carried = [b.get("type") if b.get("type") != "text" else b.get("text", "").split("\n")[0] for b in content]
-        self.check("%s: the next request carries it after the moved call's result" % label,
-                   carried[:2] == ["tool_result", "[Request interrupted by user from %s]" % where], repr(carried))
+        self.check("%s: the next request carries the marker, then the note, after the moved call's result" % label,
+                   carried[:3] == ["tool_result", marker, "The interrupt came from %s." % where], repr(carried))
         self.check("%s: and the model, reading it, knows the command is stopped" % label,
                    "STOPPED" in answer and "RUNNING" not in answer, repr(answer[-120:]))
         notes = [row for row in self.transcript_rows(sid) if "<task-notification>" in json.dumps(row)

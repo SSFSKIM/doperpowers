@@ -1067,7 +1067,7 @@ describe('interrupt', () => {
     expect(record).not.toContain('is not running')
   })
 
-  test('the interrupt leaves the model its record, read at the next request: interrupted from the desk, and the Bash call it moved to the background stopped, not running', async () => {
+  test("the interrupt leaves the model its record, read at the next request: Esc's marker in a row of its own, then a note: from the desk, and the Bash call it moved to the background stopped, not running", async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
@@ -1080,23 +1080,22 @@ describe('interrupt', () => {
     // The moved call's result goes back to the engine (which ends the turn on it) only once the record is in:
     // a turn queued behind this one takes its messages before it waits for any hook.
     const rowsWhenBack = Promise.resolve(running).then(() => h.conversation.length)
-    expect(await rowsWhenBack).toBe(1)
+    expect(await rowsWhenBack).toBe(2)
     // What `sminos interrupt` and the desk read is unchanged.
     expect(await answered).toEqual(expect.objectContaining({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } }))
     await h.complete('t1', 'aborted')
     await h.turn('t2')
     await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 4 }, [])
     const read = h.requests[h.requests.length - 1]!
-    expect(read.length).toBe(1)
-    expect(read[0]!.type).toBe('user')
-    const record = said(read)
-    expect(record.split('\n')[0]).toBe('[Request interrupted by user from the desk]')
-    expect(record).toContain('b5y6zo7fe')
-    expect(record).toContain('not running')
-    // The terminal draws no appended row: a transcript line mirrors it, on one line.
-    expect(h.logs).toContain(`interrupt: ${record.split('\n').join(' ')}`)
-    // Its row is named on the stream, as every row the session keeps is.
-    expect(h.ofType('row-seen').map((e) => e.door)).toContain('note')
+    // The marker's row holds the marker alone, as Esc's does: a transcript's reader knows an interrupt by nothing else.
+    expect(read).toEqual([
+      { type: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+      { type: 'user', content: [{ type: 'text', text: expect.stringMatching(/^The interrupt came from the desk\.\nTask b5y6zo7fe, .* was then stopped: it is not running/) }] },
+    ])
+    // The terminal draws no appended row: a transcript line mirrors both, on one line.
+    expect(h.logs).toContain(`interrupt: ${said(read).split('\n').join(' ')}`)
+    // Its rows are named on the stream, as every row the session keeps is.
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note').length).toBe(2)
   })
 
   test('an interrupt with nothing to stop still leaves the record; one not from the desk says it came from outside the terminal', async () => {
@@ -1107,7 +1106,17 @@ describe('interrupt', () => {
     await h.complete('t1', 'aborted')
     await h.turn('t2')
     await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 3 }, [])
-    expect(said(h.requests[h.requests.length - 1]!)).toBe('[Request interrupted by user from outside the terminal]')
+    expect(said(h.requests[h.requests.length - 1]!)).toBe('[Request interrupted by user]\nThe interrupt came from outside the terminal.')
+  })
+
+  test('a marker a hook refused leaves no note after it: a note alone would read as no interrupt at all', async () => {
+    const h = harness({ denyAppend: '[Request interrupted by user]' })
+    await h.ready()
+    await h.turn('t1')
+    expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: true, result: { turnId: 't1' } })
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(1)
+    expect(h.conversation).toEqual([])
+    expect(h.logs.some((l) => l.startsWith('interrupt: '))).toBe(false)
   })
 
   test('a turn the bridge did not interrupt gets nothing extra: one that answered, and one aborted from the terminal', async () => {
@@ -1144,12 +1153,12 @@ describe('interrupt', () => {
     await h.settle()
     expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: false, error: expect.stringContaining('already ending') })
     finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /o')
-    expect(await Promise.resolve(running).then(() => h.conversation.length)).toBe(1)
+    expect(await Promise.resolve(running).then(() => h.conversation.length)).toBe(2)
     expect(await first).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } })
     await h.complete('t1', 'aborted')
-    expect(h.calls.filter((c) => c.op === 'append').length).toBe(1)
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(2)
     const record = said(h.conversation)
-    expect(record).toContain('[Request interrupted by user from the desk]')
+    expect(record).toMatch(/^\[Request interrupted by user\]\nThe interrupt came from the desk\.\n/)
     expect(record).toContain('b5y6zo7fe')
   })
 
