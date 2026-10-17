@@ -572,6 +572,8 @@ class Checks(unittest.TestCase):
         intr = self.send("interrupt", {"session": self.bridged.sid})
         self.assertEqual(self.outcome(intr), {"state": "done", "result": {"turnId": "turn-1", "stopped": ["b1x2y3z4"],
                                                                          "running": []}})
+        self.assertEqual(self.mod.ops("interrupt")[-1].get("from"), "desk",
+                         "the record the mod leaves the model says the interrupt came from the desk")
         model = self.send("model", {"session": self.bridged.sid, "model": "claude-opus-4-1"})
         self.assertEqual(self.outcome(model), {"state": "done", "result": {"model": "claude-opus-4-1",
                                                                            "effort": None}})

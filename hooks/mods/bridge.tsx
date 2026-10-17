@@ -2,7 +2,7 @@ import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, Sess
 
 import { ASK_TOOL, PLUGIN, observeAsks } from './ask'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
-import type { Answer, Command, Decision, Override, Request, Steer } from './bridge-state'
+import type { Answer, Command, Decision, Override, Request, Steer, Stops } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
@@ -43,7 +43,8 @@ export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
  *
  * Control (DC2 M2): `steer` appends a user row the loop reads at its next
  * request; `interrupt` aborts the main turn and stops each Bash call the abort
- * moved to the background; `model` rewrites the main loop's requests;
+ * moved to the background, and the turn's end appends a user row saying so;
+ * `model` rewrites the main loop's requests;
  * `compact` runs between turns; `deliver` submits a log event as the human's
  * words, once per key. What must outlive a module reload (the model chosen,
  * the keys delivered) the child keeps on disk: its hello hands it back.
@@ -184,7 +185,7 @@ function commandAnswer($: EngineInterface, command: Command): Answer | Promise<A
     case 'steer':
       return steer($, command.text)
     case 'interrupt':
-      return interrupt($)
+      return interrupt($, command.from)
     case 'model':
       return chooseModel($, command.model, command.effort)
     case 'compact':
@@ -270,9 +271,11 @@ function wakeForSteer($: EngineInterface) {
  * stopped with TaskStop. Only that turn's calls count: the main loop's, and
  * those of a foreground subagent spawned in it, which the abort ends with it;
  * a background subagent's calls are its own. Each says where it went in its
- * result. A task TaskStop could not stop is named in `running`.
+ * result. A task TaskStop could not stop is named in `running`. The turn's
+ * end records the interrupt for the model (recordInterrupt); `from` says
+ * where it came from (`desk`: the desk's RPC).
  */
-async function interrupt($: EngineInterface): Promise<Answer> {
+async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   const turnId = state.mainTurn
   if (turnId === undefined) {
     return { ok: true, result: { turnId: null, stopped: [], running: [] } }
@@ -284,31 +287,85 @@ async function interrupt($: EngineInterface): Promise<Answer> {
       r.isAborted = true
     }
   }
-  await $.turn.abort({ turnId })
-  const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
-  const texts = await Promise.all(ours.map((c) => Promise.race([c.done, bound])))
-  const stopped: string[] = []
-  const running: string[] = []
-  for (const text of texts) {
-    const task = BACKGROUNDED.exec(text ?? '')?.[1]
-    if (task === undefined) {
-      continue
-    }
-    let failure: string | undefined
-    try {
-      const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
-      failure = r.isError === true ? (r.text ?? 'TaskStop failed') : undefined
-    } catch (error) {
-      failure = message(error)
-    }
-    if (failure === undefined) {
-      stopped.push(task)
-    } else {
-      $.ui.log(`bridge: TaskStop ${task} failed: ${failure}`, { to: 'debug' })
-      running.push(task)
-    }
+  // Kept before the abort, which may end the turn before it resolves.
+  let settle: (stops: Stops | undefined) => void = () => undefined
+  state.interrupts.set(turnId, { from, stops: new Promise((resolve) => (settle = resolve)) })
+  try {
+    await $.turn.abort({ turnId })
+  } catch (error) {
+    state.interrupts.delete(turnId)
+    settle(undefined)
+    throw error
   }
-  return { ok: true, result: { turnId, stopped, running } }
+  const stops: Stops = { stopped: [], running: [] }
+  try {
+    const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
+    const texts = await Promise.all(ours.map((c) => Promise.race([c.done, bound])))
+    for (const text of texts) {
+      const task = BACKGROUNDED.exec(text ?? '')?.[1]
+      if (task === undefined) {
+        continue
+      }
+      let failure: string | undefined
+      try {
+        const r = await $.tool.call({ tool: 'TaskStop', task_id: task })
+        failure = r.isError === true ? (r.text ?? 'TaskStop failed') : undefined
+      } catch (error) {
+        failure = message(error)
+      }
+      if (failure === undefined) {
+        stops.stopped.push(task)
+      } else {
+        $.ui.log(`bridge: TaskStop ${task} failed: ${failure}`, { to: 'debug' })
+        stops.running.push(task)
+      }
+    }
+  } finally {
+    settle(stops)
+  }
+  return { ok: true, result: { turnId, ...stops } }
+}
+
+/**
+ * What an interrupt tells the model: the engine's own marker for Esc, with
+ * where it came from, and each Bash call it moved to the background, whose
+ * result says the command runs on there.
+ */
+function interruptText(from: unknown, stops: Stops): string {
+  return [
+    `[Request interrupted by user from ${from === 'desk' ? 'the desk' : 'outside the terminal'}]`,
+    ...stops.stopped.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`),
+    ...stops.running.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`),
+  ].join('\n')
+}
+
+/**
+ * The record of the interrupt that aborted this turn, at the turn's end, so
+ * it follows the turn's own rows and precedes the next turn: Esc leaves the
+ * model `[Request interrupted by user]`, a plugin's abort no marker at all, so
+ * a user row says it, read at the next request. The terminal does not draw
+ * an appended row, so a transcript line mirrors it.
+ */
+async function recordInterrupt($: EngineInterface, turnId: string) {
+  const interrupted = state.interrupts.get(turnId)
+  state.interrupts.delete(turnId)
+  const stops = await interrupted?.stops
+  if (interrupted === undefined || stops === undefined) {
+    return
+  }
+  const text = interruptText(interrupted.from, stops)
+  try {
+    const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    if (stored.deny !== undefined) {
+      $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
+      return
+    }
+    // The hook does not see the plugin's own append: named once it is in.
+    noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+    $.ui.log(`interrupt: ${text}`)
+  } catch (error) {
+    $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
+  }
 }
 
 /**
@@ -455,11 +512,12 @@ async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal
 }
 
 /**
- * The end of the main turn: a compaction held for it, then the turn's steers
- * settled (settleSteers): when it answered before any request read one, one
- * wake (the row is in the conversation already), as a prompt typed mid-turn
- * would start the next turn — at once, or once the last of its pending
- * appends settles. An interrupted or failed turn wakes nothing.
+ * The end of the main turn: the record of an interrupt that aborted it, then
+ * a compaction held for it, then the turn's steers settled (settleSteers):
+ * when it answered before any request read one, one wake (the row is in the
+ * conversation already), as a prompt typed mid-turn would start the next
+ * turn — at once, or once the last of its pending appends settles. An
+ * interrupted or failed turn wakes nothing.
  */
 async function mainTurnEnded($: EngineInterface, turnId: string, reason: string) {
   for (const s of state.steers) {
@@ -467,6 +525,7 @@ async function mainTurnEnded($: EngineInterface, turnId: string, reason: string)
       s.ended = reason
     }
   }
+  await recordInterrupt($, turnId)
   const request = state.compact
   state.compact = undefined
   if (request !== undefined) {

@@ -869,7 +869,9 @@ def steered(out):
 
 
 def interrupt(path):
-    out, _ = command(path, {"op": "interrupt"})
+    """The interrupt as a bridge command saying it came from the desk, which
+    the record the mod leaves the model names."""
+    out, _ = command(path, {"op": "interrupt", "from": "desk"})
     if not out.get("ok"):
         raise Refused("failed", refusal(out))
     r = out.get("result") or {}

@@ -100,6 +100,8 @@ function harness(
     holdAppend?: boolean
     taskStopFails?: string[]
     denyAppend?: string
+    /** `$.turn.abort` rejects, as it does when the turn is no longer running. */
+    abortFails?: boolean
     /** What `$.session.messages()` answers at load: none, a session the module starts with; some, a reload or a resume. */
     messages?: unknown[]
   } = {},
@@ -135,6 +137,9 @@ function harness(
   const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
   /** Appends held by `holdAppend`, each released by the test. */
   const appends: (() => void)[] = []
+  /** The rows the mod's appends put in the main conversation, in order; and what each model request carried of them. */
+  const conversation: { type: string; content: { type: string; text: string }[] }[] = []
+  const requests: (typeof conversation)[] = []
   /** Files `$.fs.read` reads (the session's transcripts). */
   const files: Record<string, string> = {}
   /** Each loop's rows on disk, as the child's GET /rows reads them; and the reads made. */
@@ -154,10 +159,16 @@ function harness(
         calls.push({ op: 'append', args })
         const denied = options.denyAppend !== undefined && JSON.stringify(args).includes(options.denyAppend)
         const stored = denied ? { deny: 'refused by a hook' } : { uuid: `row-${calls.length}`, message: {} }
-        if (!options.holdAppend) {
-          return Promise.resolve(stored)
+        const keep = () => {
+          if (!denied) {
+            conversation.push((args as { message: (typeof conversation)[number] }).message)
+          }
+          return stored
         }
-        return new Promise((resolve) => appends.push(() => resolve(stored)))
+        if (!options.holdAppend) {
+          return Promise.resolve(keep())
+        }
+        return new Promise((resolve) => appends.push(() => resolve(keep())))
       },
       compact: (args: unknown) => {
         calls.push({ op: 'compact', args })
@@ -167,6 +178,9 @@ function harness(
     turn: {
       abort: async (args: unknown) => {
         calls.push({ op: 'abort', args })
+        if (options.abortFails) {
+          throw new Error('$.turn.abort: no turn is running')
+        }
       },
     },
     tool: {
@@ -275,6 +289,8 @@ function harness(
   const step = async (e: Record<string, unknown>, chunks: Record<string, unknown>[], during?: () => Promise<void>) => {
     const result = { turnId: e.turnId, index: e.index, answer: 'x', toolUses: [], stopReason: 'end_turn', usage: null }
     const next = () => {
+      // The request is made now, with the conversation as it stands.
+      requests.push([...conversation])
       const gen = (async function* () {
         for (const c of chunks) {
           yield c
@@ -400,6 +416,8 @@ function harness(
     calls,
     compactions,
     appends,
+    conversation,
+    requests,
     command,
     turn,
     complete,
@@ -1013,8 +1031,85 @@ describe('interrupt', () => {
     finish('Command running in background with ID: stuck01. Output is being written to: /o')
     await running
     expect(await answered).toMatchObject({ ok: true, result: { turnId: 't1', stopped: [], running: ['stuck01'] } })
+    await h.complete('t1', 'aborted')
+    const record = said(h.conversation)
+    expect(record).toContain('stuck01')
+    expect(record).toContain('may still be running')
+    expect(record).not.toContain('is not running')
+  })
+
+  test("the turn's end leaves the model the interrupt's record, read at the next request: interrupted from the desk, and the Bash call it moved to the background stopped, not running", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    let finish: (text: string) => void = () => undefined
+    const running = h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'python3 -c sleep' }, () => new Promise((resolve) => (finish = (text) => resolve({ text }))))
+    await h.settle()
+    const answered = h.command({ op: 'interrupt', from: 'desk' })
+    await h.settle()
+    finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /tmp/o. You will be notified when it completes.')
+    await running
+    // What `sminos interrupt` and the desk read is unchanged.
+    expect(await answered).toEqual(expect.objectContaining({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } }))
+    // Not before the turn's end: the turn's own rows come first.
+    expect(h.conversation).toEqual([])
+    await h.complete('t1', 'aborted')
+    await h.turn('t2')
+    await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 4 }, [])
+    const read = h.requests[h.requests.length - 1]!
+    expect(read.length).toBe(1)
+    expect(read[0]!.type).toBe('user')
+    const record = said(read)
+    expect(record.split('\n')[0]).toBe('[Request interrupted by user from the desk]')
+    expect(record).toContain('b5y6zo7fe')
+    expect(record).toContain('not running')
+    // The terminal draws no appended row: a transcript line mirrors it.
+    expect(h.logs).toContain(`interrupt: ${record}`)
+    // Its row is named on the stream, as every row the session keeps is.
+    expect(h.ofType('row-seen').map((e) => e.door)).toContain('note')
+  })
+
+  test('an interrupt with nothing to stop still leaves the record; one not from the desk says it came from outside the terminal', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    expect(await h.command({ op: 'interrupt' })).toMatchObject({ ok: true, result: { turnId: 't1', stopped: [], running: [] } })
+    await h.complete('t1', 'aborted')
+    await h.turn('t2')
+    await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 3 }, [])
+    expect(said(h.requests[h.requests.length - 1]!)).toBe('[Request interrupted by user from outside the terminal]')
+  })
+
+  test('a turn the bridge did not interrupt gets nothing extra: one that answered, and one aborted from the terminal', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'ls' }, async () => ({ text: 'a\nb' }))
+    await h.complete('t1')
+    await h.turn('t2')
+    await h.complete('t2', 'aborted')
+    await h.turn('t3')
+    await h.step({ turnId: 't3', index: 0, model: 'm', messageCount: 6 }, [])
+    expect(h.requests[h.requests.length - 1]).toEqual([])
+    expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
+  })
+
+  test('an abort the engine refuses records nothing, and the turn ends without waiting on it', async () => {
+    const h = harness({ abortFails: true })
+    await h.ready()
+    await h.turn('t1')
+    expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: false })
+    await h.complete('t1')
+    expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
   })
 })
+
+/** The text of the user rows a conversation holds, as the model reads them. */
+const said = (rows: { type: string; content: { type: string; text: string }[] }[]) =>
+  rows
+    .filter((r) => r.type === 'user')
+    .flatMap((r) => r.content.map((b) => b.text))
+    .join('\n')
 
 /** Runs one turn.step hook with an empty response, recording the input the hook passed down. */
 async function stepThrough(h: ReturnType<typeof harness>, e: Record<string, unknown>, seen: Record<string, unknown>[]) {

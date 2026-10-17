@@ -7,7 +7,10 @@ loudly, in a terminal session and in `--bg` jobs:
   at its next request; the terminal shows the mirror line; a steer given
   during the final answer wakes the session once, without repeating it;
 - an interrupt ends the turn within 2 s and stops the Bash call the abort
-  moved to the background;
+  moved to the background, and the turn's end leaves the model a record of
+  both (from the desk, as the daemon's RPC sends it, in the terminal session;
+  through `sminos interrupt` in the --bg job), which the model reads at its
+  next request, and no notification for the stopped task follows;
 - a model change takes the next request, survives a module reload, and leaves
   the config's settings.json untouched;
 - a compact asked during a turn runs after it;
@@ -34,6 +37,7 @@ import http.client
 import importlib.util
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -227,8 +231,9 @@ class Control(LB.Live):
                    and "PINEAPPLE" not in str(woke[0].get("text")) and "PINEAPPLE" in text,
                    "%s; turns %d, wake prompt %r" % (r.stdout.strip(), len(starts), str(woke[0].get("text"))[:70]))
 
-    def interrupt_check(self, who, stream, endpoint, prompt, label):
+    def interrupt_check(self, who, stream, endpoint, prompt, label, desk=False):
         m = self.marker + "i" + label
+        sid = os.path.basename(endpoint)[:-len(".sock")]
         t = time.time()
         prompt("Run exactly this Bash command and nothing else: "
                "python3 -c 'import time; time.sleep(90); print(\"%s\")'" % m)
@@ -236,17 +241,53 @@ class Control(LB.Live):
         time.sleep(2)
         before = self.running(m)
         t0 = time.time()
-        r = self.cli("interrupt", who)
+        if desk:
+            # The command the daemon sends for the desk's Interrupt (sminos_rpc.interrupt).
+            s, body = LB.request(endpoint, "POST", "/command?wait=10000", {"op": "interrupt", "from": "desk"}, timeout=20)
+            ok, said = s == 200 and (body or {}).get("ok") is True, json.dumps(body)
+        else:
+            r = self.cli("interrupt", who)
+            ok, said = r.returncode == 0, (r.stdout + r.stderr).strip()
         ended = wait_for("the aborted turn", 15, lambda: stream.seen_at(
             lambda e: is_main(e, "turn", "complete") and e.get("reason") == "aborted", t0))
         took = ended[0][0] - t0
         time.sleep(2)
         after = self.running(m)
-        self.check("%s: interrupt ends the turn within 2 s" % label, r.returncode == 0 and took <= 2.0,
-                   "%.2f s; %s" % (took, (r.stdout + r.stderr).strip()))
+        self.check("%s: interrupt ends the turn within 2 s" % label, ok and took <= 2.0, "%.2f s; %s" % (took, said))
         self.check("%s: and stops the Bash call the abort moved to the background" % label,
-                   before and not after and "stopped" in r.stdout,
+                   before and not after and "stopped" in said,
                    "python running before %s, after %s" % (before, after))
+
+        def record():
+            rows = self.transcript_rows(sid)
+            at = [i for i, row in enumerate(rows) if row.get("type") == "user" and row.get("isMeta")
+                  and "[Request interrupted by user" in json.dumps(row.get("message"))]
+            return (rows, at[-1]) if at else None
+        rows, at = wait_for("the interrupt's record", 15, record)
+        text = "\n".join(b.get("text", "") for b in rows[at]["message"]["content"])
+        # The moved call's result: the task it names, which the interrupt said it stopped.
+        moved = [(i, re.search(r"running in background with ID: ([A-Za-z0-9_-]+)", json.dumps(row.get("message"))))
+                 for i, row in enumerate(rows) if row.get("type") == "user"]
+        moved = [(i, found.group(1)) for i, found in moved if found]
+        task = moved[-1][1] if moved else None
+        where = "the desk" if desk else "outside the terminal"
+        self.check("%s: the turn's end leaves the model a record after the moved call's result: from %s, its task stopped"
+                   % (label, where),
+                   text.startswith("[Request interrupted by user from %s]" % where) and task is not None
+                   and task in said and task in text and "is not running" in text and at > moved[-1][0],
+                   repr(text))
+        self.idle(endpoint)
+        t = time.time()
+        prompt("Without running any tool, answer with one word: is the python sleep command from your last "
+               "turn still running? Reply RUNNING or STOPPED.")
+        self.turn_end(stream, t)
+        answer = main_text(stream, t)
+        self.check("%s: the model reads it at its next request: the command is stopped" % label,
+                   "STOPPED" in answer and "RUNNING" not in answer, repr(answer[-120:]))
+        notes = [row for row in self.transcript_rows(sid) if "<task-notification>" in json.dumps(row)
+                 and task is not None and task in json.dumps(row)]
+        self.check("%s: and no notification for the stopped task follows" % label, not notes,
+                   "%d notification rows" % len(notes))
         self.idle(endpoint)
 
     def run(self):
@@ -264,7 +305,7 @@ class Control(LB.Live):
         # -- the terminal session
         self.steer_check(NAME, term, self.endpoint(), self.prompt, "terminal")
         self.final_steer_check(NAME, term, self.endpoint())
-        self.interrupt_check(NAME, term, self.endpoint(), self.prompt, "terminal")
+        self.interrupt_check(NAME, term, self.endpoint(), self.prompt, "terminal", desk=True)
 
         settings = os.path.join(self.cfg, "settings.json")
         with open(settings, "rb") as f:

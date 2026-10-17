@@ -38,6 +38,14 @@ export type Call = {
  * `ended`: how its turn ended, while some append of that turn is still pending.
  */
 export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string }
+/** What an interrupt did to the Bash calls it moved to the background: the tasks it stopped, and those it could not. */
+export type Stops = { stopped: string[]; running: string[] }
+/**
+ * An interrupt of a main turn, until that turn's end records it for the
+ * model: where it came from, and its stops once they settle (undefined: the
+ * abort failed, and there is nothing to record).
+ */
+export type Interrupt = { from: unknown; stops: Promise<Stops | undefined> }
 /** A content block still streaming: its text (a tool call's arguments as JSON), and its last chunk's index. */
 export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string }
 /**
@@ -156,6 +164,8 @@ export type BridgeState = {
   isSeeded: boolean
   /** Steers given in the main turn, and those whose turn ended before their row was in. */
   steers: Steer[]
+  /** The main turns the bridge's interrupt aborted, by turn, until each one's end records it. */
+  interrupts: Map<string, Interrupt>
   /** For each running foreground subagent, the main turn it belongs to (its tool calls are that turn's). */
   foreground: Map<string, string>
   /** A compaction asked for during the main turn, run when it ends. */
@@ -234,6 +244,7 @@ const fresh = (): BridgeState => ({
   delivered: new Map(),
   isSeeded: false,
   steers: [],
+  interrupts: new Map(),
   foreground: new Map(),
 })
 
