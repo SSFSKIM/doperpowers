@@ -193,7 +193,10 @@ def _fetch_bootstrap(r):
         raise StepError(f"{name}: {error}") from None
     if value is None:
         raise StepError(f"{name} is absent from Secret Manager")
-    text = value.decode("utf-8", errors="strict").rstrip("\n")
+    try:
+        text = value.decode("utf-8").rstrip("\n")
+    except UnicodeDecodeError:
+        raise StepError(f"{name} is not UTF-8 text") from None
     if not text:
         raise StepError(f"{name} is empty")
     r.bootstrap = text

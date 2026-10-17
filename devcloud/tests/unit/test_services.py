@@ -1,4 +1,3 @@
-import os
 import pathlib
 import signal
 import subprocess
