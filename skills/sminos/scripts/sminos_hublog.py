@@ -337,40 +337,10 @@ class HubLog:
         self.save(d)
 
     def rejoin_former(self):
-        """Each live local member whose latest `joined` this machine wrote
-        under a former name joins again under its name now, once: the hub
-        takes only `<machine>/…` writers, so otherwise no other machine and
-        no browser would see it. Its earlier history stays here — a rename or
-        a state published under the former name included — so the new writer
-        starts from what the member is now: its alias and name source in the
-        `joined`, and its state after it (publish_renames and publish_state
-        compare against those former events and would find nothing to say)."""
-        if not sminos.machine_identity()[1]:
-            return 0
-        view = sminos.view_of(self.project, titles=False)
-        n = 0
-        for m in view.members:
-            if not (m.local and m.session):
-                continue
-            j = (view.info.get(m.session) or {}).get("joined") or {}
-            if not j or j.get("writer") == sminos.writer_id(m.session):
-                continue
-
-            def guard(evs, mine=sminos.writer_id(m.session)):
-                last = next((e for e in reversed(evs) if e["kind"] in sminos.MEMBERSHIP), None)
-                return last is not None and last["kind"] == "joined" and last["writer"] != mine
-
-            got = sminos.lifecycle(self.project, m.session, "joined", guard=guard, required=False,
-                                   **sminos.joined_fields(m.alias, m.name_source, *(
-                                       j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by"))))
-            if got:
-                n += 1
-                if m.state:
-                    sminos.lifecycle(self.project, m.session, "state", required=False, state=m.state,
-                                     machine=sminos.host_name())
-                log("%s in %s joined again as %s (it had joined as %s)"
-                    % (m.alias, self.project.name, self.machine, j.get("machine")))
-        return n
+        """The daemon's rejoin_former for this project, as the stream opens
+        it: a member joined under a former name of this machine joins again
+        under its name now, so the vector and the upload carry it."""
+        return daemon.rejoin_former(self.project)
 
     def on_have(self, frame):
         have = frame.get("have")
