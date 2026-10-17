@@ -5,8 +5,14 @@ its machine-side producer, DX2's session frames, DX5 as a consumer).
 The uplink (sminos_uplink.py) holds the stream and posts; this module says
 what the machine's sessions are doing and serves the hub's subscriptions.
 Everything here runs on the uplink's main thread but the readers of the
-bridges' streams and the diff runs, which only read sockets and run git, and
-hand what they read over through queues.
+bridges' streams, the diff runs, and every read of a transcript's bulk —
+which only read sockets, run git, and read files, and hand what they read
+over through queues. A transcript's bulk is read on its worker (Transcript),
+one per file, one read at a time: an open's build and every `rows` page,
+through the file's offset index (Index: each row's uuid, byte offset and
+length, built once per file, extended from where it stopped, shared by every
+subscription on it and kept a while after the last one goes). The main
+thread parses only the bytes flushed since its subscription's Tail last read.
 
 Presence. For every session of a hub project on this machine, its record in
 the engine's registry (`~/.claude/sessions/<pid>.json`: `status`,
@@ -50,9 +56,16 @@ row order, composite cd2667d8):
 A gap in the bridge's stream, and its end while the session runs (the child
 ends every subscription on a module reload), end the subscription with
 `discontinuity`: the browser subscribes again. Without a bridge the rows come
-from the transcript alone, streaming empty and usage null. A session that is
-no longer running ends its subscriptions `session-ended`, once what it
-flushed is drawn.
+from the transcript alone, streaming empty and usage null.
+
+A subscription outlives its session (DX4, "History and ended sessions"):
+once the session is not running and what it flushed is drawn, it goes on
+transcript-only and idle, answering pages until it is unsubscribed, the
+stream ends, or a discontinuity ends it — a bridge answering for the session
+again (Resume) among them. A session with no process is served the same way,
+a snapshot from disk, then pages. Only a subscription to a session with no
+process whose transcript this machine does not hold ends `session-ended`, at
+`n` 0.
 """
 
 import collections
@@ -77,6 +90,9 @@ NOTICE_WAIT = 5.0         # s: a row a notice named that is not on disk by then 
 OPEN_WAIT = 20.0          # s: a bridge that sends no snapshot by then ends the subscription (the reader's 503 retries take up to 15)
 END_GRACE = 1.0           # s: once the session is not running, what it still flushes is drawn this long
 ROWS_BUDGET = 512 * 1024  # bytes of row JSON in a snapshot or a page: "as many as fit"
+ROW_KEY = b'"uuid"'       # a line without these bytes holds no row: it is not parsed
+READ_BLOCK = 8 << 20      # bytes an index reads at a time
+INDEX_KEEP = 4            # transcripts whose index is kept after their last subscription went
 PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
 BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
@@ -110,16 +126,28 @@ def log(line):
 # ------------------------------------------------------------- the transcript
 
 
+def parse_row(line):
+    """The row a line holds — a JSON object with a string uuid (the engine's
+    bookkeeping records, which have none, are not rows) — or None. A line
+    without the bytes `"uuid"` holds no such key at any depth (the engine
+    writes keys unescaped) and is not parsed: records of that kind can be
+    most of a transcript's bytes (129 of 178 MB in one measured on
+    2026-10-17, most of them `api-request` bodies)."""
+    if ROW_KEY not in line:
+        return None
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) and isinstance(row.get("uuid"), str) and row["uuid"] else None
+
+
 def parse_rows(lines):
-    """(uuid, row) for each line that is a row: a JSON object with a string
-    uuid (the engine's bookkeeping records, which have none, are not rows)."""
+    """(uuid, row) for each line that is a row."""
     out = []
     for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and isinstance(row.get("uuid"), str) and row["uuid"]:
+        row = parse_row(line)
+        if row is not None:
             out.append((row["uuid"], row))
     return out
 
@@ -162,28 +190,221 @@ class Tail:
         return parse_rows(data[:end].split(b"\n"))
 
 
-def newest_first(rows, limit=None):
-    """The newest rows of `rows` (oldest first), newest first, as many as fit
-    ROWS_BUDGET (at least one) and `limit`; and whether older ones are left."""
-    out, used = [], 0
-    for _, row in reversed(rows):
-        size = len(json.dumps(row, ensure_ascii=False))
-        if out and (used + size > ROWS_BUDGET or (limit is not None and len(out) >= limit)):
-            break
-        out.append(row)
-        used += size
-    return out, len(out) < len(rows)
+class Index:
+    """One transcript file's rows in file order — each one's uuid, the byte
+    offset of its line and the line's length — read forward from where it
+    stopped, so a page reads its own rows' bytes and nothing else. Used on
+    its transcript's worker alone. Once it has read the file, `extend` and
+    `rows` raise Reset when the file was replaced, shrank, or is gone."""
+
+    def __init__(self, path):
+        self.path = path
+        self.ino = None
+        self.end = 0           # just past the last whole line read
+        self.uuids, self.offsets, self.lengths = [], [], []
+        self.at = {}           # uuid → its first position
+        self.parsed = 0        # bytes handed to the parser, all told: what building it cost
+
+    def check(self, st, through):
+        if self.ino is not None and (st.st_ino != self.ino or st.st_size < through):
+            raise Reset("the transcript was replaced or shrank")
+        self.ino = st.st_ino
+
+    def extend(self, on_row=None):
+        """Reads what was flushed past `end`, in blocks; a line not yet ended
+        waits. `on_row`, if given, sees each new row as it is parsed."""
+        try:
+            f = open(self.path, "rb")
+        except FileNotFoundError:
+            if self.ino is not None:
+                raise Reset("the transcript is gone") from None
+            return
+        with f:
+            self.check(os.fstat(f.fileno()), self.end)
+            f.seek(self.end)
+            carry, at = b"", self.end
+            while True:
+                block = f.read(READ_BLOCK)
+                if not block:
+                    break
+                lines = (carry + block).split(b"\n")
+                carry = lines.pop()
+                for line in lines:
+                    if ROW_KEY in line:
+                        self.parsed += len(line)
+                        row = parse_row(line)
+                        if row is not None:
+                            self.at.setdefault(row["uuid"], len(self.uuids))
+                            self.uuids.append(row["uuid"])
+                            self.offsets.append(at)
+                            self.lengths.append(len(line))
+                            if on_row is not None:
+                                on_row(row)
+                    at += len(line) + 1
+            self.end = at
+
+    def rows(self, lo, hi):
+        """The rows at positions lo … hi-1, oldest first: one seek and one
+        read of the span from the first one's line through the last's."""
+        if lo >= hi:
+            return []
+        start, stop = self.offsets[lo], self.offsets[hi - 1] + self.lengths[hi - 1]
+        try:
+            with open(self.path, "rb") as f:
+                self.check(os.fstat(f.fileno()), self.end)
+                f.seek(start)
+                data = f.read(stop - start)
+        except FileNotFoundError:
+            raise Reset("the transcript is gone") from None
+        if len(data) < stop - start:
+            raise Reset("the transcript shrank")
+        out = []
+        for i in range(lo, hi):
+            row = parse_row(data[self.offsets[i] - start:self.offsets[i] - start + self.lengths[i]])
+            if row is not None:
+                out.append(row)
+        return out
+
+    def older(self, hi, limit):
+        """Where a page of the rows before position `hi` starts: the newest of
+        them that fit ROWS_BUDGET (at least one) and `limit` (None: no limit).
+        A row counts its line's bytes as the engine wrote it."""
+        lo, used = hi, 0
+        while lo > 0:
+            size = self.lengths[lo - 1]
+            if lo < hi and (used + size > ROWS_BUDGET or (limit is not None and hi - lo >= limit)):
+                break
+            used += size
+            lo -= 1
+        return lo
 
 
-def rows_of(path):
-    """Every row of a transcript, oldest first."""
+class Transcript:
+    """One transcript file's index and the worker that reads it: every read
+    of the file's bulk — an open's build, a page (and the reads DC8's M4
+    adds) — is a job run here, one at a time, in the order submitted. A job
+    is `job(transcript)` and hands its own result over; the index is touched
+    by jobs alone."""
+
+    def __init__(self, path):
+        self.path = path
+        self.index = Index(path)
+        self.users = 0         # the subscriptions holding it (under Transcripts' lock)
+        self.lock = threading.Lock()
+        self.jobs = collections.deque()
+        self.working = False
+
+    def submit(self, job):
+        with self.lock:
+            self.jobs.append(job)
+            if self.working:
+                return
+            self.working = True
+        threading.Thread(target=self.work, name="plane-transcript", daemon=True).start()
+
+    def work(self):
+        while True:
+            with self.lock:
+                if not self.jobs:
+                    self.working = False
+                    return
+                job = self.jobs.popleft()
+            job(self)
+
+    def extended(self):
+        """The index, brought up to the file's end. A file replaced or shrunk
+        since leaves a fresh index for whoever reads next, and the Reset says
+        so to the reader holding rows of the old one."""
+        try:
+            self.index.extend()
+        except Reset:
+            self.index = Index(self.path)
+            raise
+        return self.index
+
+
+class Transcripts:
+    """The transcripts the subscriptions read, by path: one Transcript per
+    file, shared by every subscription on it, and kept after the last one
+    goes — the `keep` released last — so a second subscription, or the same
+    browser subscribing again, builds nothing. One per process
+    (TRANSCRIPTS), kept across the uplink's streams."""
+
+    def __init__(self, keep=INDEX_KEEP):
+        self.keep = keep
+        self.lock = threading.Lock()
+        self.held = collections.OrderedDict()   # path → Transcript, the least recently used first
+
+    def acquire(self, path):
+        with self.lock:
+            t = self.held.pop(path, None) or Transcript(path)
+            t.users += 1
+            self.held[path] = t
+            return t
+
+    def release(self, t):
+        with self.lock:
+            t.users -= 1
+            if self.held.get(t.path) is t:
+                self.held.move_to_end(t.path)
+            idle = [p for p, held in self.held.items() if held.users <= 0]
+            for p in idle[:max(0, len(idle) - self.keep)]:
+                del self.held[p]
+
+
+TRANSCRIPTS = Transcripts()
+
+
+class Built:
+    """An open's build, read on the transcript's worker: what a subscription
+    starts from. `ino` and `offset` are where its Tail picks up (`ino` None:
+    no file yet); `emitted` the history's uuids; `shown` the history's newest
+    rows that fit, newest first, `more` whether older ones are left; `past`
+    the rows past the cut, (uuid, row) oldest first, which go out live."""
+
+    def __init__(self, ino, offset, emitted, shown, more, past):
+        self.ino, self.offset = ino, offset
+        self.emitted, self.shown, self.more, self.past = emitted, shown, more, past
+
+
+def build(t, cut, bridged):
+    """An open's build on the worker: the index brought up to the file's end
+    (a file replaced since an earlier subscription read it starts over: this
+    one holds nothing of the old), the history to the cut, the newest of it
+    that fits read back, and the rows past the cut. ("waiting", None) while
+    the cut's row is not on disk."""
     try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return []
-    end = data.rfind(b"\n")
-    return parse_rows(data[:end].split(b"\n")) if end >= 0 else []
+        index = t.extended()
+    except Reset:
+        index = t.extended()
+    n = len(index.uuids)
+    if cut is not None:
+        at = index.at.get(cut)
+        if at is None:
+            return "waiting", None
+        split = at + 1
+    else:
+        # No cut: a bridged loop had no rows when the module loaded (all are
+        # live); without a bridge every row is history.
+        split = 0 if bridged else n
+    lo = index.older(split, None)
+    return "built", Built(index.ino, index.end, dict.fromkeys(index.uuids[:split], "history"),
+                          index.rows(lo, split)[::-1], lo > 0, [(r["uuid"], r) for r in index.rows(split, n)])
+
+
+def page_of(t, ino, before, limit):
+    """A `rows` page on the worker: the index extended first, so rows flushed
+    since the open are pageable; then the rows before `before` that fit,
+    newest first, read off their own span. A file not the one the
+    subscription read (`ino`) is a Reset."""
+    index = t.extended()
+    if index.ino != ino:
+        raise Reset("the transcript was replaced")
+    at = index.at.get(before)
+    if not at:
+        return "page", {"rows": [], "before": before, "more": False}
+    lo = index.older(at, limit)
+    return "page", {"rows": index.rows(lo, at)[::-1], "before": before, "more": lo > 0}
 
 
 def agent_path(main, agent):
@@ -306,13 +527,15 @@ class Subscription:
     without a bridge). `pump` returns the DX4 messages now due, in order."""
 
     def __init__(self, project, machine, session, agent, sub, locate, reader, presence, alive,
-                 clock=time.monotonic):
+                 clock=time.monotonic, transcripts=None, wake=lambda: None):
         self.project, self.machine, self.session, self.agent, self.sub = project, machine, session, agent, sub
         self.locate = locate          # () → the session's main transcript path, "" while there is none
         self.reader = reader
         self.presence = presence      # () → DX4 presence body
         self.alive = alive            # () → whether the session's process runs
         self.clock = clock
+        self.transcripts = transcripts or TRANSCRIPTS
+        self.wake = wake              # () → the uplink ticks soon: a worker answered
         self.loop = agent or "main"   # the cut's key for this transcript's loop
         self.n = None                 # the next message's n, once the snapshot is out
         self.ended = False
@@ -322,7 +545,10 @@ class Subscription:
         self.main = ""
         self.next_locate = 0.0
         self.tail = Tail()
-        self.rows = []                # read while the snapshot waits for its cut
+        self.source = None            # the Transcript whose worker reads this one's bulk, once asked
+        self.answers = queue.Queue()  # the worker's answers, in the order asked
+        self.building = False         # an open's build is asked and not answered yet
+        self.over = False             # the session ended and what it flushed is drawn: transcript-only, idle
         self.emitted = {}             # uuid → "history" | "named" | "unnamed"
         self.pool = collections.OrderedDict()  # uuid → [row, first seen]: past the cut, not yet emitted, disk order
         self.noticed = {}             # uuid → when: notices whose row is not emitted yet
@@ -364,6 +590,31 @@ class Subscription:
     def close(self):
         if self.reader is not None:
             self.reader.close()
+        if self.source is not None:
+            self.transcripts.release(self.source)
+            self.source = None
+
+    def ask(self, path, read):
+        """`read(transcript)` on the transcript's worker; its answer, (kind,
+        value), comes back through `answers`. Any answer but "waiting" wakes
+        the uplink; a Reset is ("reset", why), any other failure ("failed",
+        why)."""
+        if self.source is None:
+            self.source = self.transcripts.acquire(path)
+        answers, wake = self.answers, self.wake
+
+        def job(t):
+            try:
+                answer = read(t)
+            except Reset as e:
+                answer = ("reset", str(e))
+            except Exception as e:  # noqa: BLE001 — the subscription ends with it, not the worker
+                answer = ("failed", "reading the transcript failed: %r" % e)
+            answers.put(answer)
+            if answer[0] != "waiting":
+                wake()
+
+        self.source.submit(job)
 
     def end(self, reason, message=None):
         if self.ended:
@@ -386,6 +637,8 @@ class Subscription:
             if not self.ended:
                 self.read(now)
                 self.release(now, out)
+            if not self.ended:
+                self.answer(out)
             if not self.ended:
                 self.subagents(now, out)
                 self.finish(now, out)
@@ -416,28 +669,59 @@ class Subscription:
                 if now - self.opened > OPEN_WAIT:
                     out += self.end("discontinuity", "the bridge sent no snapshot")
                 return False
-        self.rows += self.tail.read(self.path(now))
+        # The history is read on the transcript's worker (build): asked once,
+        # and again while the cut's row is not on disk. A null cut (or one
+        # that does not name this loop) with a bridge: the loop had no rows
+        # when the module loaded, and none was noticed since — the seed
+        # covers every older row. Empty history; all rows live.
         cut = self.cut()
+        path = self.path(now)
+        if not self.building:
+            if not path:
+                return self.unlocated(now, cut, out)
+            self.building = True
+            bridged = self.bridged
+            self.ask(path, lambda t: build(t, cut, bridged))
+            return False
+        try:
+            kind, built = self.answers.get_nowait()
+        except queue.Empty:
+            return False
+        self.building = False
+        if kind == "waiting":
+            if now - self.snapped_at > NOTICE_WAIT:
+                out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
+            return False
+        if kind != "built":
+            out += self.end("discontinuity" if kind == "reset" else "error", built)
+            return False
+        if built.ino is None and not self.alive():
+            out += self.end("session-ended", "no transcript of the session on this machine")
+            return False
+        self.tail.path, self.tail.offset, self.tail.ino = self.source.path, built.offset, built.ino
+        self.emitted = built.emitted
+        for u, row in built.past:
+            if u not in self.emitted and u not in self.pool:
+                self.pool[u] = [row, now]
+        return self.snapshot(now, built.shown, built.more, out)
+
+    def unlocated(self, now, cut, out):
+        """The open while the session's transcript is not found: with no
+        process, `session-ended` (the machine does not hold it); a cut to
+        wait for, as long as a cut row may take; else an empty snapshot,
+        and its rows as they come."""
+        if not self.alive():
+            out += self.end("session-ended", "no transcript of the session on this machine")
+            return False
         if cut is not None:
-            at = next((i for i, (u, _) in enumerate(self.rows) if u == cut), None)
-            if at is None:
-                if now - self.snapped_at > NOTICE_WAIT:
-                    out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
-                return False
-            history, past = self.rows[:at + 1], self.rows[at + 1:]
-        elif self.bridged:
-            # A null cut (or one that does not name this loop): the loop had
-            # no rows when the module loaded, and none was noticed since —
-            # the seed covers every older row. Empty history; all rows live.
-            history, past = [], self.rows
-        else:
-            history, past = self.rows, []
-        self.rows = []
-        for u, _ in history:
-            self.emitted[u] = "history"
-        for u, row in past:
-            self.pool[u] = [row, now]
-        shown, more = newest_first(history)
+            if now - self.snapped_at > NOTICE_WAIT:
+                out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
+            return False
+        return self.snapshot(now, [], False, out)
+
+    def snapshot(self, now, shown, more, out):
+        """The snapshot message, history's newest rows `shown` (newest
+        first); True: the subscription is open."""
         streaming = []
         if self.bridged:
             for e in self.snap.get("streaming") or []:
@@ -589,7 +873,12 @@ class Subscription:
 
     def finish(self, now, out):
         """Once the session is not running: what it still flushes is drawn for
-        END_GRACE, then the subscription ends."""
+        END_GRACE, then the subscription goes on transcript-only and idle, no
+        `end` sent: it answers pages until it is unsubscribed, the stream
+        ends, or a discontinuity ends it (a bridge answering for the session
+        again: Plane.tick). The bridge's notices bind no more."""
+        if self.over:
+            return
         if self.ending_at is None:
             if self.stream_over or not self.alive():
                 self.ending_at = now + END_GRACE
@@ -598,19 +887,39 @@ class Subscription:
             return
         for u in list(self.pool):
             out.append(self.release_row(u))
-        out += self.end("session-ended")
+        self.over = True
+        self.noticed.clear()
+        if self.reader is not None:
+            self.reader.close()
+            self.reader = None
 
     # ---------------------------------------------------- on request
 
     def page(self, before, limit):
         """DX4 `rows`: the rows of this transcript older than `before`, newest
-        first, as many as fit and at most `limit`."""
+        first, as many as fit and at most `limit` — read on the transcript's
+        worker, answered on a later pump (`answer`). Nothing read here yet:
+        no older rows."""
         if self.ended or self.n is None:
             return []
-        rows = rows_of(self.path(self.clock()))
-        at = next((i for i, (u, _) in enumerate(rows) if u == before), None)
-        older, more = newest_first(rows[:at], limit) if at else ([], False)
-        return [self.message("rows", {"rows": older, "before": before, "more": more})]
+        if self.tail.ino is None:
+            return [self.message("rows", {"rows": [], "before": before, "more": False})]
+        ino = self.tail.ino
+        self.ask(self.tail.path, lambda t: page_of(t, ino, before, limit))
+        return []
+
+    def answer(self, out):
+        """The pages the worker answered, in the order asked; a transcript
+        replaced under one is a discontinuity."""
+        while not self.ended:
+            try:
+                kind, value = self.answers.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "page":
+                out.append(self.message("rows", value))
+            else:
+                out += self.end("discontinuity" if kind == "reset" else "error", value)
 
     def diffed(self, body):
         if self.ended or self.n is None:
@@ -802,11 +1111,12 @@ class Plane:
     subscriptions it serves. Made anew with every stream; `close` lets the
     readers go."""
 
-    def __init__(self, machine, wake, bridges=None):
+    def __init__(self, machine, wake, bridges=None, transcripts=None):
         self.machine = machine
         self.wake = wake
         self.bridges = bridges or Bridges()   # kept across streams by the uplink: no answer is relearned
         self.bridges.wake = wake
+        self.transcripts = transcripts or TRANSCRIPTS   # the process's: no index is rebuilt across streams
         self.records = Records()
         self.live = {}            # session → its engine record, as last scanned
         self.next_scan = 0.0
@@ -938,7 +1248,8 @@ class Plane:
             reader.start()
         self.subs[sub] = Subscription(
             project.id, self.machine, sid, agent, sub, locate=lambda: sminos.transcript_path(sid), reader=reader,
-            presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid))
+            presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
+            transcripts=self.transcripts, wake=self.wake)
         return out + self.pump_one(sub)
 
     def running(self, sid):

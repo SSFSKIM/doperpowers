@@ -92,6 +92,11 @@ The test's own hands (the stand-in plays a hub that may lie):
   — `machines` without their secrets, `redemptions` every body
   `/machine/enroll` received, `projects` each project's name, vector,
   events per writer, the machines that opened it, and its audit record.
+- `GET /control/since?sessions=N&hb_acks=M`: `{"sessions", "hb_acks"}`, each
+  list from that index on (a reader that polls takes only what is new).
+
+The heartbeat goes on a timer, as the hub's alarm writes it, whether or not
+frames are flowing down, its `at` to the millisecond.
 """
 
 import json
@@ -102,6 +107,7 @@ import secrets
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT_FILE, CLIENT_ID, CLIENT_SECRET = sys.argv[1:4]
@@ -252,7 +258,8 @@ def apply(machine, s, frame, replies):
             lease.update(expires=time.time() + LEASE, lapsed=False)
         return
     if t == "session":
-        state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message")})
+        state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message"),
+                                  "received": time.time()})
         return
     pid = frame.get("project")
     if not (isinstance(pid, str) and PROJECT_ID.fullmatch(pid)):
@@ -409,6 +416,10 @@ class Handler(BaseHTTPRequestHandler):
                     "machines": [{k: v for k, v in m.items() if k != "client_secret"}
                                  for m in state["machines"].values()],
                     "enrollments": [{k: v for k, v in e.items()} for e in state["enrollments"].values()]})
+        elif self.path.startswith("/control/since?"):
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            with lock:
+                self.reply(200, {k: state[k][int(q.get(k, ["0"])[0]):] for k in ("sessions", "hb_acks")})
         else:
             self.reply(404, {"error": "not-found"})
 
@@ -625,15 +636,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        period = HEARTBEAT_MS / 1000
+        beat = time.monotonic() + period
         try:
             while not mine.ended.is_set():
-                try:
-                    frames, done = mine.queue.get(timeout=HEARTBEAT_MS / 1000)
-                except queue.Empty:
+                # On a timer, as the hub's alarm writes it: frames flowing
+                # down do not put the heartbeat off.
+                if time.monotonic() >= beat:
+                    beat = time.monotonic() + period
                     if not mine.muted:
-                        self.wfile.write(sse({"t": "hb", "at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z",
-                                                                              time.gmtime())}))
+                        now = time.time()
+                        at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + ".%03dZ" % (now % 1 * 1000)
+                        self.wfile.write(sse({"t": "hb", "at": at}))
                         self.wfile.flush()
+                try:
+                    frames, done = mine.queue.get(timeout=max(0.0, beat - time.monotonic()))
+                except queue.Empty:
                     continue
                 if frames is None:
                     break

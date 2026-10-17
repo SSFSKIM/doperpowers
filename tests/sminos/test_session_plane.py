@@ -176,21 +176,23 @@ class Engine(unittest.TestCase):
         self.clock = Clock()
         self.alive = True
         self.subs = []
+        self.transcripts = plane.Transcripts()  # this test's own: what it builds is counted here
 
     def tearDown(self):
         for s in self.subs:
             s.close()
         self.fake.stop_bridge()
 
-    def subscribe(self, agent=None, bridge=True):
-        reader = plane.BridgeReader(os.path.join(os.environ["SMINOS_HOME"], "bridge", self.sid + ".sock"),
+    def subscribe(self, agent=None, bridge=True, fake=None):
+        fake = fake or self.fake
+        reader = plane.BridgeReader(os.path.join(os.environ["SMINOS_HOME"], "bridge", fake.session + ".sock"),
                                     lambda: None) if bridge else None
         if reader is not None:
             reader.start()
-        sub = plane.Subscription(project=PROJECT, machine="testhost", session=self.sid, agent=agent,
-                                 sub="sub-%d" % len(self.subs), locate=lambda: self.fake.path(None), reader=reader,
+        sub = plane.Subscription(project=PROJECT, machine="testhost", session=fake.session, agent=agent,
+                                 sub="sub-%d" % len(self.subs), locate=lambda: fake.path(None), reader=reader,
                                  presence=lambda: {"record": {"status": "busy"}, "bridge": bridge},
-                                 alive=lambda: self.alive, clock=self.clock)
+                                 alive=lambda: self.alive, clock=self.clock, transcripts=self.transcripts)
         self.subs.append(sub)
         b = Browser()
         b.agent = agent
@@ -202,7 +204,7 @@ class Engine(unittest.TestCase):
         while time.time() < deadline:
             for env in sub.pump():
                 self.assertEqual(env["project"], PROJECT)
-                self.assertEqual(env["session"], self.sid)
+                self.assertEqual(env["session"], sub.session)
                 b.take(env)
             if until():
                 return True
@@ -211,6 +213,26 @@ class Engine(unittest.TestCase):
 
     def settle(self, sub, b, seconds=0.3):
         self.pump(sub, b, wait=seconds)
+
+    def page(self, sub, b, before, limit):
+        """A `rows` request: answered off the thread, on a later pump."""
+        count = len(b.pages)
+        self.assertEqual(sub.page(before, limit), [], "nothing at once: the page is read on the transcript's worker")
+        self.assertTrue(self.pump(sub, b, lambda: len(b.pages) > count or b.end is not None), "the page came")
+        self.assertIsNone(b.end)
+        return b.pages[-1]
+
+    def page_to_first(self, sub, b, limit=1000):
+        """Pages from the snapshot's oldest row back to the first line: every
+        row the snapshot did not hold, newest first."""
+        older, before = [], b.snapshot["rows"][-1]["uuid"]
+        while True:
+            page = self.page(sub, b, before, limit)
+            older += page["rows"]
+            if not page["more"]:
+                return older
+            self.assertTrue(page["rows"], "a page that says more holds rows")
+            before = page["rows"][-1]["uuid"]
 
     def assertClean(self, b, agent=None):
         self.assertEqual(b.errors, [])
@@ -252,25 +274,126 @@ class Engine(unittest.TestCase):
         self.assertEqual(got, list(reversed(ids))[:len(got)], "the newest")
         self.assertTrue(b.snapshot["more"])
         oldest = got[-1]
-        b.take(sub.page(oldest, 2)[0])
-        page = b.pages[-1]
+        page = self.page(sub, b, oldest, 2)
         self.assertEqual(page["before"], oldest)
         self.assertEqual([r["uuid"] for r in page["rows"]], [ids[ids.index(oldest) - 1], ids[ids.index(oldest) - 2]])
         self.assertTrue(page["more"])
-        b.take(sub.page(ids[1], 50)[0])
-        self.assertEqual([r["uuid"] for r in b.pages[-1]["rows"]], [ids[0]])
-        self.assertFalse(b.pages[-1]["more"])
+        page = self.page(sub, b, ids[1], 50)
+        self.assertEqual([r["uuid"] for r in page["rows"]], [ids[0]])
+        self.assertFalse(page["more"])
+        self.assertEqual(self.page(sub, b, ids[0], 50), {"rows": [], "before": ids[0], "more": False},
+                         "nothing before the first row")
+        self.assertEqual(self.page(sub, b, "no-such-row", 50), {"rows": [], "before": "no-such-row", "more": False})
         self.assertEqual(b.errors, [])
 
-    def test_bridgeless_session_that_ended(self):
-        self.fake.user_row("the last word", post=False)
+    def test_pages_reach_the_first_row_on_a_live_session(self):
+        """Paging from the newest row to the first line while the session
+        runs, rows flushed after the open included: each page reads its own
+        rows' bytes off the index."""
+        pad = "x" * 100000
+        ids = [self.fake.user_row("%d %s" % (i, pad), post=False) for i in range(15)]
+        self.fake.write_row(None, {"type": "api-request", "body": {"messages": [{"uuid": "nested, no row"}]}})
+        sub, b = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        held = [r["uuid"] for r in b.snapshot["rows"]]
+        later = [self.fake.user_row("later %d" % i, post=False) for i in range(3)]
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == len(held) + 3), "flushed after the open: live rows")
+        page = self.page(sub, b, later[2], 2)
+        self.assertEqual([r["uuid"] for r in page["rows"]], [later[1], later[0]],
+                         "a row flushed after the open is pageable")
+        self.assertTrue(page["more"])
+        page = self.page(sub, b, later[0], 1)
+        self.assertEqual([r["uuid"] for r in page["rows"]], [ids[-1]], "and pages go on into what the open read")
+        older = self.page_to_first(sub, b)
+        self.assertEqual(list(reversed(held + [r["uuid"] for r in older])), ids, "every row, back to the first line")
+        self.assertIsNone(b.end)
+        self.assertEqual(b.errors, [])
+
+    def test_a_second_subscription_builds_nothing(self):
+        """One index per transcript file, shared: a second subscription on
+        it, and one after both went (kept a while), parse nothing the first
+        did not."""
+        for i in range(40):
+            self.fake.user_row("row %d" % i, post=False)
+        first, b1 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(first, b1, lambda: b1.snapshot is not None))
+        index = self.transcripts.held[self.fake.path(None)].index
+        parsed = index.parsed
+        self.assertGreater(parsed, 0)
+        second, b2 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(second, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(b2.snapshot["rows"], b1.snapshot["rows"])
+        self.assertEqual(index.parsed, parsed, "the second subscription built nothing")
+        first.close()
+        second.close()
+        again, b3 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(again, b3, lambda: b3.snapshot is not None))
+        self.assertIs(self.transcripts.held[self.fake.path(None)].index, index, "kept after the last one went")
+        self.assertEqual(index.parsed, parsed)
+        self.fake.user_row("one more", post=False)
+        self.assertTrue(self.pump(again, b3, lambda: len(b3.rows) == 41))
+        self.page(again, b3, b3.rows[-1]["uuid"], 1)
+        self.assertGreater(index.parsed, parsed, "extended by what was flushed since, only")
+        self.assertLess(index.parsed, parsed + 1000)
+
+    def test_a_replaced_or_shrunk_transcript_ends_its_subscriptions(self):
+        for how in ("replaced", "shrunk"):
+            with self.subTest(how=how):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                for i in range(4):
+                    fake.user_row("%s %d" % (how, i), post=False)
+                tailing, b1 = self.subscribe(bridge=False, fake=fake)
+                paging, b2 = self.subscribe(bridge=False, fake=fake)
+                for sub, b in ((tailing, b1), (paging, b2)):
+                    self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+                path = fake.path(None)
+                if how == "replaced":
+                    with open(path + ".new", "w") as f:
+                        f.write(json.dumps({"type": "user", "uuid": "fresh", "message": {"content": "fresh"}}) + "\n")
+                    os.replace(path + ".new", path)
+                else:
+                    with open(path, "r+") as f:
+                        f.truncate(os.path.getsize(path) // 2)
+                self.assertEqual(paging.page(b2.snapshot["rows"][0]["uuid"], 5), [])
+                for sub, b in ((paging, b2), (tailing, b1)):
+                    self.assertTrue(self.pump(sub, b, lambda b=b: b.end is not None))
+                    self.assertEqual(b.end["reason"], "discontinuity")
+                fresh, b3 = self.subscribe(bridge=False, fake=fake)
+                self.assertTrue(self.pump(fresh, b3, lambda: b3.snapshot is not None))
+                self.assertEqual([r["uuid"] for r in b3.snapshot["rows"]],
+                                 [r["uuid"] for r in reversed(fake.rows())], "the file as it is now")
+
+    def test_a_session_with_no_process_is_served_from_disk_and_pages(self):
+        pad = "x" * 100000
+        ids = [self.fake.user_row("%d %s" % (i, pad), post=False) for i in range(12)]
         self.alive = False
         sub, b = self.subscribe(bridge=False)
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual(len(b.rows), 1)
         self.clock.advance(plane.END_GRACE + 0.1)
+        self.settle(sub, b)
+        self.assertIsNone(b.end, "no end: the subscription stays, idle")
+        older = self.page_to_first(sub, b)
+        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), ids)
+        b.take(sub.end("unsubscribed")[0])
+        self.assertEqual(b.end["reason"], "unsubscribed")
+        self.assertEqual(b.errors, [])
+
+    def test_session_ended_only_for_a_transcript_not_held_here(self):
+        self.alive = False
+        sub, b = self.subscribe(bridge=False)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual(b.end["reason"], "session-ended")
+        self.assertEqual((b.end["reason"], b.n, b.snapshot), ("session-ended", 0, None),
+                         "no process and no transcript: session-ended at n 0")
+        self.fake.user_row("the main loop's", post=False)
+        agent, b = self.subscribe(agent="a-none", bridge=False)
+        self.assertTrue(self.pump(agent, b, lambda: b.end is not None))
+        self.assertEqual((b.end["reason"], b.n), ("session-ended", 0), "the same for a subagent's transcript")
+        self.alive = True
+        sub, b = self.subscribe(agent="a-new", bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual(b.snapshot["rows"], [], "a running session's transcript not written yet: an empty snapshot")
+        self.fake.user_row("first", agent="a-new", post=False)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 1), "and its rows as they come")
         self.assertEqual(b.errors, [])
 
     # ---------------------------------------------------- with the bridge
@@ -488,18 +611,23 @@ class Engine(unittest.TestCase):
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None, wait=6), "a 503 is retried, as watch does")
         self.assertIsNone(b.end)
 
-    def test_session_ending_ends_the_subscription(self):
+    def test_a_session_that_ends_while_subscribed_stays_pageable(self):
+        early = [self.fake.user_row("early %d %s" % (i, "x" * 100000), post=False) for i in range(8)]
         self.fake.start_bridge()
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.fake.user_row("last", post=False)
+        last = self.fake.user_row("last", post=False)
         self.alive = False
         self.fake.stop_bridge()
         self.settle(sub, b)
         self.clock.advance(plane.END_GRACE + 0.1)
-        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual(b.end["reason"], "session-ended")
-        self.assertEqual(len(b.rows), 1, "what flushed before the end is drawn")
+        self.assertTrue(self.pump(sub, b, lambda: last in b.uuids()), "what flushed before the end is drawn")
+        self.settle(sub, b)
+        self.assertIsNone(b.end, "no end: the subscription stays, idle")
+        self.assertFalse(sub.bridged, "transcript-only once the session is over")
+        older = self.page_to_first(sub, b)
+        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), early + [last])
+        self.assertEqual(b.errors, [])
 
     def test_a_null_cut_has_empty_history(self):
         self.fake.start_bridge()  # no rows on disk: the seed names no loop
@@ -674,6 +802,93 @@ class RealChild(Engine):
                 self.fake.stop_bridge()
                 sub.close()
                 again.close()
+
+
+class TranscriptIndex(unittest.TestCase):
+    """The offset index (DC8 M2): each row's uuid, byte offset and length in
+    file order, extended from where it stopped; the transcripts kept a while
+    after their last subscription."""
+
+    def setUp(self):
+        self.path = os.path.join(tempfile.mkdtemp(dir=T), "t.jsonl")
+
+    def append(self, text):
+        with open(self.path, "ab") as f:
+            f.write(text.encode())
+
+    def test_rows_in_file_order_with_their_spans(self):
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "message": {"content": "é one"}}),
+            json.dumps({"type": "api-request", "body": {"messages": [{"uuid": "nested, no row"}]}}),
+            json.dumps({"toolUseResult": {"uuid": "nested-first"}, "type": "user", "uuid": "u2"}),
+            json.dumps({"type": "cost-state", "uuid": 5}),
+            "not json at all \"uuid\"",
+            json.dumps({"type": "assistant", "uuid": "u3"}, ensure_ascii=False),
+        ]
+        self.append("\n".join(lines) + "\n" + '{"type": "user", "uuid": "u4", ')
+        index = plane.Index(self.path)
+        index.extend()
+        self.assertEqual(index.uuids, ["u1", "u2", "u3"], "rows only, by their top-level uuid")
+        with open(self.path, "rb") as f:
+            data = f.read()
+        self.assertEqual(index.end, data.rfind(b"\n") + 1, "through the last whole line")
+        for i, u in enumerate(index.uuids):
+            line = data[index.offsets[i]:index.offsets[i] + index.lengths[i]]
+            self.assertEqual(json.loads(line)["uuid"], u, "the span is the row's line")
+        self.assertEqual([r["uuid"] for r in index.rows(0, 3)], ["u1", "u2", "u3"])
+        self.assertEqual([r["uuid"] for r in index.rows(1, 2)], ["u2"])
+        parsed = index.parsed
+        self.append('"message": {}}\n' + json.dumps({"type": "user", "uuid": "u5"}) + "\n")
+        index.extend()
+        self.assertEqual(index.uuids, ["u1", "u2", "u3", "u4", "u5"], "extended from where it stopped")
+        self.assertEqual(index.at["u4"], 3)
+        self.assertLess(index.parsed - parsed, 200, "only the new lines were parsed")
+
+    def test_a_page_fits_the_budget_and_the_limit(self):
+        pad = "x" * (plane.ROWS_BUDGET // 3)
+        self.append("".join(json.dumps({"uuid": "r%d" % i, "pad": pad}) + "\n" for i in range(6)))
+        index = plane.Index(self.path)
+        index.extend()
+        self.assertEqual(index.older(6, None), 4, "as many as fit the budget: two")
+        self.assertEqual(index.older(6, 1), 5, "at most the limit")
+        self.assertEqual(index.older(1, None), 0)
+        self.append(json.dumps({"uuid": "huge", "pad": "y" * plane.ROWS_BUDGET}) + "\n")
+        index.extend()
+        self.assertEqual(index.older(7, None), 6, "at least one, however large")
+
+    def test_replaced_shrunk_or_gone_resets(self):
+        for how in ("replaced", "shrunk", "gone"):
+            with self.subTest(how=how):
+                self.append(json.dumps({"uuid": "a"}) + "\n" + json.dumps({"uuid": "b"}) + "\n")
+                index = plane.Index(self.path)
+                index.extend()
+                if how == "replaced":
+                    with open(self.path + ".new", "w") as f:
+                        f.write(json.dumps({"uuid": "c"}) + "\n" * 40)
+                    os.replace(self.path + ".new", self.path)
+                elif how == "shrunk":
+                    with open(self.path, "r+") as f:
+                        f.truncate(3)
+                else:
+                    os.unlink(self.path)
+                with self.assertRaises(plane.Reset):
+                    index.extend()
+                if os.path.exists(self.path):
+                    os.unlink(self.path)
+        index = plane.Index(self.path)
+        index.extend()
+        self.assertEqual((index.uuids, index.end), ([], 0), "a file not written yet is no reset")
+
+    def test_kept_a_while_after_the_last_subscription(self):
+        transcripts = plane.Transcripts(keep=2)
+        held = [transcripts.acquire("/t/%d" % i) for i in range(4)]
+        self.assertIs(transcripts.acquire("/t/0"), held[0], "shared while held")
+        transcripts.release(held[0])
+        for t in held:
+            transcripts.release(t)
+        self.assertEqual(list(transcripts.held), ["/t/2", "/t/3"], "the two released last are kept")
+        self.assertIs(transcripts.acquire("/t/3"), held[3])
+        self.assertIsNot(transcripts.acquire("/t/0"), held[0], "one evicted builds again")
 
 
 class Lifecycle(unittest.TestCase):
@@ -1163,12 +1378,14 @@ class Uplink(unittest.TestCase):
             m["kind"] == "presence" and m["session"] == self.sid for m in ms[count:]), timeout=15)
         self.assertIsNotNone(ok, "the uplink reconnected and said presence again")
 
-    def subscribe(self, agent=None):
+    def subscribe(self, agent=None, session=None):
         sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()  # DX3: 128 bits, base64url
-        self.hub.send({"t": "subscribe", "project": self.project, "session": self.sid, "agentId": agent, "sub": sub})
+        session = session or self.sid
+        self.hub.send({"t": "subscribe", "project": self.project, "session": session, "agentId": agent, "sub": sub})
         b = Browser()
         b.agent = agent
         b.sub = sub
+        b.session = session
         b.seen = 0
         return b
 
@@ -1178,7 +1395,8 @@ class Uplink(unittest.TestCase):
         while time.time() < deadline:
             mine = [m for m in self.hub.messages() if m.get("sub") == b.sub]
             for m in mine[b.seen:]:
-                self.assertEqual((m["project"], m["machine"], m["session"]), (self.project, self.hub.machine, self.sid))
+                self.assertEqual((m["project"], m["machine"], m["session"]),
+                                 (self.project, self.hub.machine, b.session))
                 b.take(m)
             b.seen = len(mine)
             if until():
@@ -1353,6 +1571,69 @@ class Uplink(unittest.TestCase):
         m.row(0)
         self.assertTrue(self.feed(b, lambda: len(b.rows) == len(self.fake.rows())))
         self.assertClean(b)
+
+    def test_f_an_ended_session_stays_pageable_until_resume(self):
+        """G2 through the hub: a session that ends while subscribed sends no
+        `end`, is said not running within a second, pages back to its first
+        line; Resume brings its bridge back, which ends the transcript-only
+        subscription `discontinuity`, and a fresh one streams."""
+        home, sh = os.environ["HOME"], os.environ["SMINOS_HOME"]
+        sid = new_session()
+        fake = fake_session.FakeSession(home, sh, sid)
+        ids = [fake.user_row("%d %s" % (i, "x" * 100000), post=False) for i in range(12)]
+
+        def run(status):
+            holder = self.spawn(["sleep", "3600"])
+            with open(os.path.join(home, ".claude", "sessions", "%d.json" % holder.pid), "w") as f:
+                json.dump({"pid": holder.pid, "sessionId": sid, "cwd": self.root, "kind": "interactive",
+                           "status": status}, f)
+            return holder
+
+        def said(ms):
+            return [m["body"] for m in ms if m["kind"] == "presence" and m["session"] == sid]
+
+        holder = run("busy")
+        self.assertIsNotNone(self.hub.wait(lambda ms: said(ms), timeout=5), "the session is a member")
+        b = self.subscribe(session=sid)
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
+        last = fake.user_row("the last word", post=False)
+        self.assertTrue(self.feed(b, lambda: last in b.uuids()))
+        count = len(self.hub.messages())
+        t0 = time.time()
+        holder.terminate()
+        holder.wait(5)
+        self.assertIsNotNone(self.hub.wait(lambda ms: {"record": None, "bridge": False} in said(ms[count:]), timeout=5))
+        self.assertLess(time.time() - t0, 1.0, "said not running within a second")
+        self.feed(b, lambda: False, timeout=plane.END_GRACE + 1.0)
+        self.assertIsNone(b.end, "no end once the session is over")
+        older, before = [], b.snapshot["rows"][-1]["uuid"]
+        while True:
+            self.hub.send({"t": "rows", "project": self.project, "session": sid, "agentId": None, "sub": b.sub,
+                           "before": before, "limit": 1000})
+            count = len(b.pages)
+            self.assertTrue(self.feed(b, lambda: len(b.pages) > count))
+            older += b.pages[-1]["rows"]
+            if not b.pages[-1]["more"]:
+                break
+            before = older[-1]["uuid"]
+        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), ids + [last], "back to the first line")
+        resumed = run("idle")
+        try:
+            fake.start_bridge()
+            self.assertTrue(self.feed(b, lambda: b.end is not None))
+            self.assertEqual(b.end["reason"], "discontinuity", "Resume ends the transcript-only subscription")
+            b2 = self.subscribe(session=sid)
+            self.assertTrue(self.feed(b2, lambda: b2.snapshot is not None))
+            m = fake.message()
+            m.text(0, "after the resume")
+            u = m.row(0)
+            self.assertTrue(self.feed(b2, lambda: u in b2.uuids()), "the fresh one streams")
+            self.assertEqual(b2.errors, [])
+        finally:
+            fake.stop_bridge()
+            resumed.terminate()
+            resumed.wait(5)
+        self.assertEqual(b.errors, [])
 
     def test_e_reconnect_mid_response_while_rows_flush(self):
         """A response streams in the main loop and in a subagent while rows
