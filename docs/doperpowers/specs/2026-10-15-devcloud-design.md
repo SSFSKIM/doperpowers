@@ -577,6 +577,10 @@ stop accidents, which arrive as plain text or a common encoding.
   the existing `repo-checks` gate stays green with a second plugin in the marketplace. The ci-kit
   session (sminos `@doperpowers/CI-opt`) is told when doperpowers' gates change; ci-kit owns the
   schema, doperpowers owns its own file.
+- `cua` vendors devcloud's guard (`devcloud/hooks/mods/secrets*.tsx` and their tests). A change to
+  those files that should reach `cua` files a `cua` resync ticket naming the doperpowers commit; a
+  change to I9 reaches `cua` as a ticket before it ships. `cua`'s copy reads the I9 marker and never
+  writes it.
 
 ### Plan of Work
 
@@ -631,7 +635,9 @@ value's encoded spelling before devcloud's, which then reads `[secret:KEY]` rath
 `[secret:KEY~b64]` — the one restoration the interim can get wrong, limited to encoded stored
 values. So M1 proves acceptance 1–2 in fresh sessions with `cua` disabled; the run with both
 plugins enabled is repeated when the ticket lands (an open item in Progress until then), together
-with one session with devcloud disabled, where `cua` alone scrubs a stored value without refusing.
+with one session with devcloud disabled, where `cua` alone runs its vendored copy of this guard:
+the full acceptance 1–2 cases there too — encoded spellings, tiers, restore-on-write, the
+unrestored Bash notice — not only scrubbing without refusing.
 
 Does not touch: `cua`. Proves acceptance 1–2 (with `cua` disabled until its ticket lands); tests also pin: no redaction of a 40-hex commit hash or a sha256 checksum; a
 known value split across a tool result and the next row is still caught in each row it appears
@@ -991,7 +997,7 @@ clears a plugin's state when it unloads is unverified).
   encoding a handle names). Supersedes the staged-cutover entry: nothing is removed from `cua`, so
   either release order is safe.
   Date/Author: 2026-10-16, the person's correction.
-- Decision: `cua` installed alone drops its refusals and keeps scrubbing stored values.
+- Decision (superseded 2026-10-17, below): `cua` installed alone drops its refusals and keeps scrubbing stored values.
   Rationale: the refusals were the strictness that prompted this work (they refuse even a command
   that only writes the store's path as text), and scrubbing at the output already catches a
   printed value. Rejected: keeping `cua` alone strict as today.
@@ -1182,6 +1188,15 @@ clears a plugin's state when it unloads is unverified).
   Rationale: each follows a review finding or a contract the spec left open. Residue: an entry
   removed from `secrets.toml` leaves its files on the host.
   Date/Author: 2026-10-17, M2 executor; folded by the plan executor.
+
+- Decision: `cua` vendors devcloud's guard — `devcloud/hooks/mods/secrets*.tsx` and their tests,
+  copied from ce6edfda in place of its own scrubber — so `cua` installed alone gets the same guard
+  (redaction, handles, restore-on-write); `/secret` and its GUI and browser typing stay `cua`'s, and
+  `cua`'s copy stands down on the exact I9 marker, which it reads and never writes. One guard runs
+  per session, through I9. Supersedes the 2026-10-16 entry that `cua` alone keeps its own scrubbing.
+  Rationale: one guard implementation instead of two that drift. Cost: devcloud's guard changes
+  reach `cua` only through a resync ticket (Constraints).
+  Date/Author: 2026-10-17, the person's re-scope of cua#154, through the design session.
 
 ## Outcomes & Retrospective
 
