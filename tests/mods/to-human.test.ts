@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import { isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
+import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -661,6 +661,27 @@ describe('surfaces', () => {
     expect(await ui.find({ type: 'Button' })).toBeUndefined()
   })
 
+  test('on the terminal a plain click on a span\'s file link opens VS Code at its line', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    const runs: string[][] = []
+    on('process.run', async (_, e) => {
+      runs.push([...e.argv])
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const text = '<message>Read [the plan](/repo/plan.md#L12).</message>'
+    const terminal = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text, isFirstOfReply: true } })
+
+    expect(await terminal.find({ type: 'Markdown', text: 'Read [\uea7b the plan](file:///repo/plan.md#L12).' })).toBeDefined()
+    await terminal.press({ key: 'to-human-links:0:0', link: { href: 'file:///repo/plan.md#L12' } })
+    expect(runs).toContainEqual(['open', 'vscode://file/repo/plan.md:12'])
+
+    // A remote surface opens nothing on this machine: the link stays as written.
+    const desktop = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage', requestId: 'm2', props: { text, isFirstOfReply: true } })
+    expect(await desktop.find({ type: 'Markdown', text: 'Read [the plan](/repo/plan.md#L12).' })).toBeDefined()
+  })
+
   test('the report\'s rows stand a line apart, as the engine\'s rows do', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
@@ -721,6 +742,23 @@ describe('surfaces', () => {
 
     const long = markdownBlocks('y'.repeat(25000))
     expect(long.map((block) => block.length)).toEqual([10000, 10000, 5000])
+  })
+})
+
+describe('file links', () => {
+  test('fileLinks draws local file links as file URLs behind an icon, and leaves web links and code alone', async () => {
+    const { text, targets } = fileLinks('See [plan](/repo/plan.md#L12), [노트](/repo/노트.md), [site](https://x.dev), `[raw](/repo/a.md)`.')
+
+    expect(targets).toEqual(['file:///repo/plan.md#L12', 'file:///repo/%EB%85%B8%ED%8A%B8.md'])
+    expect(text).toBe('See [\uea7b plan](file:///repo/plan.md#L12), [\uea7b 노트](file:///repo/%EB%85%B8%ED%8A%B8.md), [site](https://x.dev), `[raw](/repo/a.md)`.')
+    expect(fileLinks('```\n[raw](/repo/a.md)\n```').targets).toEqual([])
+  })
+
+  test('editorUrl opens the file at the line its target names', async () => {
+    expect(editorUrl('file:///repo/plan.md#L12')).toBe('vscode://file/repo/plan.md:12')
+    expect(editorUrl('file:///repo/plan.md#L3-L9')).toBe('vscode://file/repo/plan.md:3')
+    expect(editorUrl('/repo/plan.md')).toBe('vscode://file/repo/plan.md')
+    expect(editorUrl('https://x.dev/plan.md')).toBeUndefined()
   })
 })
 

@@ -453,6 +453,40 @@ export function markdownBlocks(text: string): string[] {
   return blocks
 }
 
+/**
+ * A link to a local file, as the human's CLAUDE.md asks it written:
+ * `[name](/absolute/path)`, a line as GitHub writes one on the end of the
+ * target (`#L42`, `#L42-L60`). On the terminal the view draws it as an
+ * explicit `file:` link behind a file icon and answers a plain click on it
+ * (`ui.press` below), opening VS Code at the line; a cmd click stays the
+ * terminal's, which hands the `file:` URL to the file's default app. A link
+ * inside code stays literal.
+ */
+const FILE_LINK = /\[([^\]\n]*)\]\(((?:\/|file:\/\/\/)[^)\s]*)\)/g
+/** nf-cod-file, VS Code's own file glyph, from the terminal's Nerd Font. */
+const FILE_ICON = ''
+const LINKS = 'to-human-links:'
+
+/** A block with its file links drawn as the view answers them, and their targets as drawn. */
+export function fileLinks(block: string): { text: string; targets: string[] } {
+  const inCode = insideCode(codeRegions(block))
+  const targets: string[] = []
+  const text = block.replace(FILE_LINK, (link, name: string, target: string, offset: number) => {
+    if (inCode(offset)) return link
+    const href = target.startsWith('/') ? `file://${target.replace(/[^\x21-\x7e]/gu, encodeURIComponent)}` : target
+    targets.push(href)
+    return `[${FILE_ICON} ${name}](${href})`
+  })
+  return { text, targets }
+}
+
+/** What opens a pressed file link in VS Code: the file, at the line its target names. */
+export function editorUrl(href: string): string | undefined {
+  const match = /^(?:file:\/\/)?(\/[^?#]*)[^#]*(?:#L(\d+))?/.exec(href)
+  if (match === null) return undefined
+  return `vscode://file${match[1]}${match[2] === undefined ? '' : `:${match[2]}`}`
+}
+
 const STYLE: Record<Kind, { label: string; color: string }> = {
   message: { label: 'message', color: 'claude' },
 }
@@ -866,11 +900,18 @@ export function registerToHuman(on: On) {
     // two-column gutter, so the body is padded by as much to sit where the
     // transcript's text does. The row stands one line below the row above,
     // as the engine's rows do.
-    const bodies = parsed.spans.map((span) => (
+    // On the terminal its file links open in VS Code (see `fileLinks`).
+    const bodies = parsed.spans.map((span, i) => (
       <Box flexDirection="column">
-        {markdownBlocks(span.text).map((block) => (
-          <Markdown text={block} />
-        ))}
+        {markdownBlocks(span.text).map((block, j) => {
+          if (e.surface !== 'terminal') return <Markdown text={block} />
+          const { text, targets } = fileLinks(block)
+          return targets.length === 0 ? (
+            <Markdown text={text} />
+          ) : (
+            <Markdown key={`${LINKS}${i}:${j}`} text={text} onLinkPress={() => {}} pressableLinks={targets.slice(0, 256)} />
+          )
+        })}
       </Box>
     ))
 
@@ -1013,5 +1054,15 @@ export function registerToHuman(on: On) {
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result
+  })
+
+  // A plain click on a span's file link opens it in VS Code, at its line.
+  on('ui.press', { element: /^to-human-links:/ }, async ($, e, next) => {
+    const url = e.link === undefined ? undefined : editorUrl(e.link.href)
+    if (url !== undefined) {
+      const opened = await $.process.run(['open', url]).catch(() => undefined)
+      if (opened?.exitCode !== 0) $.ui.toast(`could not open ${url} in VS Code`)
+    }
+    return next(e)
   })
 }
