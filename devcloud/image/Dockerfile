@@ -13,4 +13,6 @@ ARG DEVCLOUD_UID
 ARG DEVCLOUD_HOME
 RUN --mount=type=bind,source=devcloud,target=/tmp/devcloud bash /tmp/devcloud/image/setup.sh
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/bin/sh", "-c", "devcloud-boot && exec devcloud-services"]
+# The services start after a boot that made the host: exit 0, or 3 when only
+# step 12 (projects) failed.
+ENTRYPOINT ["/bin/sh", "-c", "devcloud-boot; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 3 ] || exit $rc; exec devcloud-services"]

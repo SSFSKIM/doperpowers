@@ -493,13 +493,29 @@ def projects_set_up():
     check(validated.startswith("rc=0"), f"doperpowers' devenv/validate.sh after its setup.sh:\n{validated[-2000:]}")
 
 
-@case("a project that fails is recorded failed; the boot itself succeeds")
+@case("a project that fails is recorded failed; the boot exits 3 and the container's services start")
 def project_fails():
     rc, got, _, _ = boot_once("sbx-noproj", descriptor("sbx-noproj", projects="example/app example/missing"))
     projects = got.get("projects", {})
-    check(rc == 0 and projects.get("state") == "failed", f"rc={rc} projects={projects}")
+    check(rc == 3 and projects.get("state") == "failed", f"rc={rc} projects={projects}")
     check(projects["detail"].startswith("example/app ok; example/missing failed (devenv up exited"), projects["detail"])
     check(all(s["state"] == "ok" for name, s in got.items() if name != "projects"), str(got))
+    # Through the image's own entrypoint: the supervisor runs after a boot that exited 3.
+    name = f"{TAG}-noproj"
+    docker("run", "-d", "--name", name, "--hostname", "sbx-noproj2", "--network", NET, *ENV,
+           "-v", f"{descriptor('sbx-noproj2', projects='example/missing')}:/etc/devcloud/boot.env:ro", IMAGE)
+    try:
+        end = time.monotonic() + 300
+        while sh(name, "test -s /run/devcloud/services.pid", check_rc=False).returncode != 0:
+            state = docker("inspect", "-f", "{{.State.Running}}", name).stdout.strip()
+            check(state == "true", "the container exited after a boot whose only failure was a project:\n"
+                  + docker("logs", name, check_rc=False).stdout[-1500:])
+            check(time.monotonic() < end, "devcloud-services never started")
+            time.sleep(2)
+        check(out(name, "cat /run/devcloud/services.pid").strip() == "1", "the supervisor is not PID 1")
+        check(steps(name)["projects"]["state"] == "failed", "the status does not name the failed project")
+    finally:
+        docker("rm", "-f", name, check_rc=False)
 
 
 # --- under systemd ---------------------------------------------------------------------
@@ -557,6 +573,8 @@ def under_systemd():
            "-v", f"{desc}:/etc/devcloud/boot.env:ro", SYSTEMD_IMAGE)
     wait_systemd_boot()
     check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
+    check("3" in out(VM, "systemctl show -p SuccessExitStatus devcloud-boot.service"),
+          "the boot unit does not count exit 3 (only projects failed) as success")
     for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer",
                  "devcloud-refresh-mirrors.timer"):
         wait_active(unit)

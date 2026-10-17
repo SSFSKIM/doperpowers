@@ -181,9 +181,10 @@ snapshots, and its `devcloud-boot.service` runs the boot at every start.
       -v "$DESC":/etc/devcloud/boot.env:ro -v "$SEED":/run/devcloud/seed.json:ro devcloud
 
 A container cannot set its own host name, so the driver passes
-`--hostname` and the boot only checks it. Its entrypoint is
-`devcloud-boot && exec devcloud-services`: a failed boot ends the container,
-and `docker run --restart on-failure` retries it from the top.
+`--hostname` and the boot only checks it. Its entrypoint runs
+`devcloud-boot`, then `exec devcloud-services` when the boot exited 0 or 3
+(below): any other failure ends the container, and
+`docker run --restart on-failure` retries it from the top.
 
 **The boot descriptor**, `/etc/devcloud/boot.env`, the only per-host input
 (unknown keys are refused):
@@ -226,8 +227,11 @@ boot with the step named, and the next run starts again from the top:
 | 11 | `services` | installs or starts the services; restarts one whose unit or environment changed |
 | 12 | `projects` | `devenv up` per `DEVCLOUD_PROJECTS` entry, as the user; `skipped` when none (see "Projects") |
 
-Step 12 is the one step whose failure does not fail the boot: the host works
-without a project, so its services still start, the step records which
+`devcloud-boot` exits 0 when every step is `ok`, 1 when a step of 1–11
+failed, and 3 when the host is made and only step 12 failed: the host works
+without a project, so the container entrypoint starts its services on 3 as on
+0, and the boot unit counts 3 as success (`SuccessExitStatus=3`) so the units
+ordered after it start. A driver sees a non-zero exit, the step records which
 project failed, and `devcloud status` exits 1.
 
 **Projects.** A repository describes its own environment in `devenv/` at its
