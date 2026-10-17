@@ -516,21 +516,64 @@ gates and wait scripts. By 2.1.300 the engine's summary says `is waiting on
 its own background work` rather than `finished`; the wake is the same. The
 engine marks them, writing "This agent stopped with background work of its
 own still running" into the notification's `<note>` (the final one carries
-the other note), so a `prompt.submit` hook matched on `origin.kind:
-'task-notification'` drops those before they enter the session, but only
-when the status is `completed`, the `<note>` element carries that marker, and
-the whole `<result>` is one of the engine's placeholders (the report is still
-to come through SubagentHandback, or was already delivered as a message). A
-result holding anything else, the agent's words where hand-back is off or an
-engine warning beside the placeholder, passes, as do the final notification
-and a report that merely quotes the marker. Replayed over those sessions
-(engine 2.1.283 to 2.1.301), the filter drops 745 of 749 interim
-notifications; the four it keeps carry the safety classifier's warning. What
-it gives up: the parent no longer sees that the agent parked. An agent killed
-while parked gets no notification either way, since the engine counts the
-interim one as its notice when it queues it, before any hook runs, so the
-parent hears of the kill only if it did the killing or looks. A hook that
-fails lets the notification through.
+the other note), and a `prompt.submit` hook matched on `origin.kind:
+'task-notification'` drops one before it enters the session only when all
+three of these hold.
+
+- The text is the engine's envelope alone, status `completed`, that note,
+  and a `<result>` that is wholly the waiting placeholder ("This agent has not
+  reported yet: ... through SubagentHandback when that finishes."). The
+  pointer placeholder ("This agent's report was delivered to you as a
+  message ...") passes: when the agent the report went to has ended, the
+  engine moves the notification to the main session but not the report, so
+  the pointer can name a message the session never got, and a pointer routed
+  to the main session the engine already queues without waking it.
+- The placeholder is the engine's. The engine writes it only for a run under
+  the hand-back contract; outside it (a fork, a run not in auto mode) the
+  agent's own words stand, and they could be that very sentence. So the
+  agent's transcript, `<session>/subagents/agent-<task-id>.jsonl` from
+  SessionStart's `transcript_path`, is searched with `grep` (it runs far past
+  the 4 MiB `$.fs.read` takes) and read as the engine reads it at each run's
+  start: the latest meta user record that opens with the hand-back reminder
+  or with its countermand must be the reminder. A compaction after both ends
+  the reading unanswered, since the engine's own view of the run starts
+  there.
+- It tells the session nothing new. The session knows the agent, because its
+  own loop spawned it (`$.agent.list()` gives no `parentId`) or an earlier
+  notification of it entered: an orphan's, fallen back to the main session
+  when the agent that spawned it ended, is the session's first sign of it.
+  And any `<worktree>` it carries came in an earlier one, since the launch
+  never says where an isolated agent's work lives.
+
+Every check fails open: a lookup that errs or cannot tell (no SessionStart
+seen since the module loaded, an agent the list no longer names, `grep`
+missing, failing, past 10 s or cut at 4 MiB, a line that does not parse)
+lets the notification through, and so does a hook that throws. Replayed over
+those sessions (engine 2.1.283 to 2.1.301, the agent list taken from each
+agent's meta file), the filter drops 553 of 749 interim notifications, where
+the text alone dropped 745: 20 pointers, 139 first notices of a worktree and
+33 first notices of an orphan pass, and 4 carry the safety classifier's
+warning. Every parked agent's transcript held the reminder, so telling the
+engine's placeholder from an agent's cost no drops; dropping for the main
+loop's own agents alone would have dropped 362.
+
+What it gives up: the parent no longer sees that the agent parked again. An
+agent killed while parked gets no notification either way, since the engine
+counts the interim one as its notice when it queues it, before any hook
+runs, so the parent hears of the kill only if it did the killing or looks.
+What the session was told is kept in the module, so after a reload the first
+notice of each agent and worktree passes again, and until the next
+SessionStart (a resume, a clear, a compaction) a reloaded module knows no
+transcripts and passes everything. Each drop still leaves a line in the
+transcript, "Prompt dropped by a hook: interim agent notification: its work
+is still running": the engine writes a `system` notice at level `warning`
+for every `prompt.submit` that ends without entering (a hook's answer without
+`next` reads "Prompt not submitted"), and draws it through a component no
+render hook reaches, so neither the engine's view nor the to-human view can
+fold it. `session.append` can rewrite a stored row's text but refuses only a
+plugin's own append, and `session.receive`, which can take a delivery
+without a trace, sees deliveries from outside the process, never an agent's
+notification.
 
 ## secrets
 
