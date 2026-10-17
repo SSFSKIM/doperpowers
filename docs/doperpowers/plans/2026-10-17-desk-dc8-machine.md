@@ -4,7 +4,10 @@
 > (branch `smns-erb`; on this machine
 > `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
 > **DC8** (The machine — history and jobs — plan). **Parent pin:** commit
-> `62bd81840`, blob `f24db648ce8db120fa1ba93fb8f82f11ed7faba6` of that file
+> `34defe9f6`, blob `3732888683a260b0feed15d0513080e0c3be5dad` of that file
+> (2026-10-17: M3's shapes folded into DX5, `delivered.uuid` deferred at
+> the bridge, both task-notification forms named in DX4; earlier pins
+> below)
 > (re-pinned 2026-10-17 from `77e82d832` to `f60dd668b` — the review's
 > round 2, DX4's precedence and `output`'s `missing` with `path: null` —
 > and then to `896f04acc`, which records this document's two pre-flight
@@ -416,6 +419,15 @@ rung for DC8); the PR opened, not merged; the report at
   transcripts arrive so); it stops at the bridge's stream — where it rides
   to the web is a contract question put to the design session.
   Date/Author: 2026-10-17, M3 executor (report `task-3-report.md`).
+
+- Decision: **A task-notification is read in both of the engine's forms**
+  — the `queued_command` attachment and the plain user row whose text is
+  the notification (written when the engine starts a turn on one; 76 of
+  the last 300 transcripts here hold it, per DC9) — for agents, jobs and
+  monitor expiry, as MAWS's backfill reads both. Built as an M1 follow-up
+  with fixture cases. `delivered.uuid` stays on the bridge's stream (the
+  design session's option (c); carrying it to the web is residue).
+  Date/Author: 2026-10-17, design session (DX4 at `34defe9f6`).
 
 ## Surprises & Discoveries
 
