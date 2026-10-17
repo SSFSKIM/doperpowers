@@ -5,22 +5,26 @@ import {
   APPEAL_SCHEMA,
   JUDGE_SYSTEM,
   REPORT_DAYS,
+  RESERVED,
   SUGGEST_SYSTEM,
   TRUSTED_SOURCES,
   type Block,
   type EvidenceParts,
   type Ledger,
   type LogEvent,
+  type Relay,
   aggregate,
   appealCheck,
   applyRuling,
   blockNotice,
   blockReason,
   bumpEpoch,
+  canRelay,
   isAppealable,
   judgePrompt,
   logLine,
   newLedger,
+  nonTextBlocks,
   parseRuling,
   recordBlock,
   recordFailure,
@@ -38,8 +42,6 @@ import { asyncAsks, observeAsks } from './ask'
  * manifest name; written out so the engine's scan reads the matchers.
  */
 export const APPEAL = 'mcp__doperpowers__appeal'
-
-const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta', '$shadowed'])
 
 /**
  * A tool call's own arguments, as the engine reconstructs them: the envelope
@@ -194,7 +196,7 @@ async function evidence($: EngineInterface, block: Block, argument: string): Pro
 }
 
 /** An appeal: the checks, the judge, the ruling, in the tool's own result. */
-export async function appeal($: EngineInterface, e: { agentId?: string; block?: unknown; argument?: unknown }): Promise<{ result: string }> {
+export async function appeal($: EngineInterface, e: { agentId?: string; block?: unknown; argument?: unknown }): Promise<{ result: unknown }> {
   // Read before the first await: a prompt from here on makes the evidence stale.
   const epoch = ledger.epoch
   // Inside the hook, the loop's own directory (a subagent's, in its loop).
@@ -243,7 +245,35 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
     usage: reply.usage,
   })
   $.ui.toast(`appeal ${block.id} ${ruling.verdict === 'grant' ? 'granted' : 'upheld'}: ${block.tool}`)
-  return { result: rulingText(block, ruling.verdict, ruling.response) }
+  if (ruling.verdict !== 'grant' || !canRelay(block)) {
+    return { result: rulingText(block, ruling.verdict, ruling.response) }
+  }
+  // A main-loop grant: the call runs now, by the plugin, in the session's
+  // loop — the same shell and directory the judge read — and its result is
+  // the appeal's. A plugin's own call passes the classifier by the engine's
+  // plugin-origin fast path; the deny and ask rules still apply to it. After
+  // the log's await, the epoch once more: a prompt or an answer that arrived
+  // since the ruling leaves the call unrun.
+  let relay: Relay
+  if (ledger.epoch !== epoch) {
+    relay = { kind: 'stale' }
+  } else {
+    try {
+      const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) })
+      relay = ran.deny !== undefined ? { kind: 'refused', deny: ran.deny } : { kind: 'ran', text: ran.text ?? '', isError: ran.isError === true, result: ran.result }
+    } catch (error) {
+      relay = { kind: 'refused', deny: message(error) }
+    }
+  }
+  if (relay.kind === 'ran') {
+    await record($, { event: 'relayed', block: block.id, isError: relay.isError, text: relay.text })
+  } else {
+    await record($, { event: 'no-relay', block: block.id, reason: relay.kind === 'stale' ? 'a prompt or an answer arrived after the ruling' : relay.deny })
+  }
+  const text = rulingText(block, ruling.verdict, ruling.response, relay)
+  // What the tool answered beyond text (an image) rides along as content blocks.
+  const blocks = relay.kind === 'ran' ? nonTextBlocks(relay.result) : []
+  return { result: blocks.length === 0 ? text : [{ type: 'text', text }, ...blocks] }
 }
 
 /**
