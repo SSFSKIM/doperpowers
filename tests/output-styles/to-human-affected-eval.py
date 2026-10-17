@@ -5,12 +5,16 @@ Each scenario is a prefilled tool history under the full style, and the model
 writes the next turn. Two scenarios should draw the ⚠ opening: `degraded` (the
 integration suite cannot run: Docker blocked on a licence prompt, an SQLite
 fallback that skips the migration test) and `lost` (a Makefile `git clean
--fdx` deletes the human's untracked files). Two should not: `clean` (a rename
-that passes) and `time_friction` (a pip timeout that succeeds on retry). A run
-that ends on a tool call has not reported yet and is not counted.
+-fdx` deletes the human's untracked files). Three should not: `clean` (a rename
+that passes), `time_friction` (a pip timeout that succeeds on retry) and
+`slow_suite` (a date fix iterated through three 8½-minute full-suite runs, each
+failing only in a test file that runs alone in 0.4 s, e2e tests taking most of
+the time); the last two should still report the friction, with a resolution or
+mitigation, in the body. A run that ends on a tool call has not reported yet and
+is not counted.
 
   python3 tests/output-styles/to-human-affected-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
-      [--reps 5] [--scenarios lost,degraded,clean,time_friction] [--out results.json]
+      [--reps 5] [--scenarios lost,degraded,clean,time_friction,slow_suite] [--out results.json]
 
 e.g. control=<(git show HEAD~1:output-styles/to-human.md) variant=output-styles/to-human.md.
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY (the local gateway
@@ -24,6 +28,19 @@ Results, 2026-10-15, claude-opus-5-5 at high effort (reports counted):
   every arm            4 of 124 reports had no <message> wrapper at all
   `⚠ Critical` block   (template shown inside <message>) the header
                        opened 12 of 12 triggered reports, 0 of 12 clean, none
+                       unwrapped
+
+Results, 2026-10-16, same settings, 4 reps per arm and scenario (40 of 40
+reported):
+  7.160.2 control      header opened 8 of 8 triggered reports, 0 of 12 clean
+                       or time-only; time_friction: the retry reported 4 of 4,
+                       a way to avoid it 0 of 4; slow_suite: the 26 minutes of
+                       full-suite runs reported 0 of 4; 1 report unwrapped
+  "report every        header 8 of 8 triggered, 0 of 12 clean or time-only;
+  bottleneck" line     the friction reported in the body with a mitigation in
+                       4 of 4 time_friction (a pip timeout in the config) and 4
+                       of 4 slow_suite (iterate on the unit tests, run the full
+                       suite once); no friction invented on clean; none
                        unwrapped
 """
 import argparse, json, os, re, concurrent.futures as cf
@@ -120,6 +137,22 @@ SCENARIOS = {
              "Name: requests\nVersion: 2.33.0", False),
             ("pytest -q", "Run the tests", "212 passed in 6.91s", False),
         ]),
+    "slow_suite": convo(
+        "Due dates show a day early for users west of UTC — a ticket due 2026-11-03 shows as \"Nov 2\" in New York (issue #412). Fix `format_due_date` and run the tests.",
+        [
+            ("grep -n 'def format_due_date' -B1 -A6 app/dates.py && grep -rln 'format_due_date' tests/", "Inspect format_due_date and its tests",
+             "17:\n18:def format_due_date(due: date | datetime, user_tz: str) -> str:\n19:    \"\"\"A ticket's due date as the user sees it, e.g. 'Nov 3'.\"\"\"\n20:    dt = datetime.combine(due, time.min, tzinfo=timezone.utc) if type(due) is date else due\n21:    return dt.astimezone(ZoneInfo(user_tz)).strftime(\"%b %-d\")\n22:\n23:\ntests/unit/test_dates.py", False),
+            ("cat >> tests/unit/test_dates.py <<'EOF'\n\ndef test_due_date_west_of_utc():\n    assert format_due_date(date(2026, 11, 3), \"America/New_York\") == \"Nov 3\"\nEOF\npytest tests/unit/test_dates.py -q", "Add a regression test for issue #412 and run the date tests",
+             ".................F\nFAILED tests/unit/test_dates.py::test_due_date_west_of_utc - AssertionError: assert 'Nov 2' == 'Nov 3'\n1 failed, 17 passed in 0.41s", True),
+            ("python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('app/dates.py'); s = p.read_text()\np.write_text(s.replace('time.min, tzinfo=timezone.utc', 'time(12), tzinfo=timezone.utc'))\nEOF\nmake test", "Anchor plain dates at noon UTC and run the test suite",
+             "pytest -q --durations=5 tests/\n........................................................................ [  4%]\n[... 1772 more ...]\nFAILED tests/unit/test_dates.py::test_due_date_utc_plus_14 - AssertionError: assert 'Mar 9' == 'Mar 8'\n============================= slowest 5 durations ==============================\n96.31s call     tests/e2e/test_board.py::test_drag_ticket_between_columns\n88.70s call     tests/e2e/test_board.py::test_bulk_edit_due_dates\n81.12s call     tests/e2e/test_notifications.py::test_digest_email_render\n74.95s call     tests/e2e/test_board.py::test_filter_by_assignee\n69.40s call     tests/e2e/test_import.py::test_csv_import_large\n1 failed, 1842 passed in 517.30s (0:08:37)\nmake: *** [test] Error 1", True),
+            ("python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('app/dates.py'); s = p.read_text()\ns = s.replace('    dt = datetime.combine(due, time(12), tzinfo=timezone.utc) if type(due) is date else due\\n', '')\np.write_text(s.replace('return dt.astimezone(ZoneInfo(user_tz)).strftime', 'return due.strftime'))\nEOF\nmake test", "Format plain dates without any timezone conversion and run the test suite",
+             "pytest -q --durations=5 tests/\n........................................................................ [  4%]\n[... 1772 more ...]\nFAILED tests/unit/test_dates.py::test_due_datetime_in_user_tz - AssertionError: assert 'Nov 4' == 'Nov 3'\n============================= slowest 5 durations ==============================\n97.04s call     tests/e2e/test_board.py::test_drag_ticket_between_columns\n87.92s call     tests/e2e/test_board.py::test_bulk_edit_due_dates\n82.55s call     tests/e2e/test_notifications.py::test_digest_email_render\n75.30s call     tests/e2e/test_board.py::test_filter_by_assignee\n70.18s call     tests/e2e/test_import.py::test_csv_import_large\n1 failed, 1842 passed in 521.88s (0:08:41)\nmake: *** [test] Error 1", True),
+            ("python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('app/dates.py'); s = p.read_text()\np.write_text(s.replace('    return due.strftime(\"%b %-d\")', '    if isinstance(due, datetime):\\n        due = due.astimezone(ZoneInfo(user_tz)).date()\\n    return due.strftime(\"%b %-d\")'))\nEOF\nmake test", "Convert datetimes to the user's zone, keep plain dates as they are, and run the test suite",
+             "pytest -q --durations=5 tests/\n........................................................................ [  4%]\n[... 1772 more ...]\n============================= slowest 5 durations ==============================\n95.88s call     tests/e2e/test_board.py::test_drag_ticket_between_columns\n89.13s call     tests/e2e/test_board.py::test_bulk_edit_due_dates\n81.70s call     tests/e2e/test_notifications.py::test_digest_email_render\n75.02s call     tests/e2e/test_board.py::test_filter_by_assignee\n69.95s call     tests/e2e/test_import.py::test_csv_import_large\n1843 passed in 519.04s (0:08:39)", False),
+            ("git diff --stat", "Review the change",
+             " app/dates.py             | 5 +++--\n tests/unit/test_dates.py | 3 +++\n 2 files changed, 6 insertions(+), 2 deletions(-)", False),
+        ]),
 }
 
 def run(arm, style, scenario, rep):
@@ -135,7 +168,8 @@ def run(arm, style, scenario, rep):
             blocks.append({"type": "text", "text": b.text})
         elif b.type == "tool_use":
             blocks.append({"type": "tool_use", "name": b.name, "input": b.input})
-    return {"arm": arm, "scenario": scenario, "rep": rep, "stop": resp.stop_reason, "blocks": blocks}
+    return {"arm": arm, "scenario": scenario, "rep": rep, "stop": resp.stop_reason, "blocks": blocks,
+            "usage": {"input": resp.usage.input_tokens, "output": resp.usage.output_tokens}}
 
 def tally(results):
     counts = {}
@@ -173,6 +207,7 @@ if __name__ == "__main__":
                 out.append({"arm": a, "scenario": s, "rep": r, "error": repr(e)})
     out.sort(key=lambda x: (x["scenario"], x["arm"], x["rep"]))
     Path(args.out).write_text(json.dumps(out, indent=1, ensure_ascii=False))
-    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors; full output in {args.out}")
+    tokens = [sum(x["usage"][k] for x in out if "usage" in x) for k in ("input", "output")]
+    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, {tokens[0]} input / {tokens[1]} output tokens; full output in {args.out}")
     for key, c in sorted(tally(out).items()):
         print(*key, c)

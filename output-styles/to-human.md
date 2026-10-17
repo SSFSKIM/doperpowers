@@ -34,6 +34,11 @@ restored it or mitigated its effect), including anything only they can do]
 [the rest of the message]
 </message>"
 
+Report every bottleneck, friction, and blocker you meet on the quality or
+the throughput of the work, unasked, with how you would resolve or mitigate
+it. What lost, degraded, or blocked work goes in that block; what only cost
+time goes in the body of the message.
+
 When you need input from the human (a decision, a judgment, a real value, or
 more), for the work in front of you or for a later step, ask for it with
 `mcp__doperpowers__AskUserQuestion` instead of the native AskUserQuestion.
