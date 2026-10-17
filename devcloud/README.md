@@ -20,8 +20,9 @@ in its output.
 
 - the values stored through `cua`'s `/secret` (`~/.config/claude-secrets/KEY`
   for every project, `~/.config/claude-secrets/projects/<slug>/KEY` for one;
-  one trailing newline dropped), the project being the main checkout of the
-  git repository around the session;
+  one trailing newline dropped), the session's project being the main checkout
+  of the git repository around it; every other project's tier is read too, as
+  a command can print any of them;
 - the secret fields of well-known credential files under `$HOME`: gh's
   `hosts.yml`, `~/.pgpass`, gcloud's service-account and authorized-user key
   files under `~/.config/gcloud/`, `~/.codex/auth.json`,
@@ -36,26 +37,37 @@ in its output.
   `PRIVATE_KEY`, `BEARER`, `CREDENTIAL`, any case, as a whole part of the
   name split at `_`, `-`, `.` or a camelCase boundary; `Bearer <value>` too)
   whose value is at least 16 characters of at least 3.5 bits of entropy per
-  character. Bare hex or base64 is never a token: commit hashes and checksums
+  character and, unquoted, is no code reference (a dotted name such as
+  `process.env.API_KEY`, a digit-free identifier, a call or an index). Bare hex or base64 is never a token: commit hashes and checksums
   stay readable.
 
 **Handles.** Each distinct redacted byte string gets its own:
 
     [secret:KEY]                  a stored value (the project's, where both tiers hold KEY)
     [secret:KEY@global]           a global value a project key of the same name shadows
+    [secret:KEY@<slug>]           another project's value (<slug>: its folder under projects/)
     [secret:<file>:<field>]       a credential file's value (the file's basename, or its
                                   path from $HOME where two files share one)
     ...~<enc>]                    an encoded spelling of any of those: ~b64, ~b64np (no
-                                  padding), ~b64u, ~b64up, ~hex, ~HEX, ~url, ~json
+                                  padding), ~b64u, ~b64up, ~hex, ~HEX, ~url, ~json,
+                                  ~pgpass (`\` and `:` backslash-escaped)
     [superseded:<label>]          a value a label held earlier in this process
     [redacted:<kind>#<ns>.<n>]    a pattern detection; <ns> is drawn when the module loads
+
+In a label, whitespace, `[`, `]`, `~` and `%` are written `%XX`, so every label
+round-trips; a second distinct value under a label already taken (two
+credentials one parser names alike) is `<label>#2`, `#3`, ..., never dropped.
 
 Before a Write, Edit, MultiEdit, NotebookEdit or Bash call runs, each handle
 in its input is replaced by its bytes: a known handle by the credential's
 current value in the named spelling, a pattern handle by exactly the bytes
 it replaced, if this process issued it. So a file edited through a handle
 keeps its secret, and `Authorization: Bearer [secret:KEY]` in a command works
-like `"$(cat ~/.config/claude-secrets/KEY)"`. A handle that cannot be
+like `"$(cat ~/.config/claude-secrets/KEY)"`. In a Bash command the value goes
+in quoted for where its handle stands (single or double quotes, `$'…'`,
+unquoted, a heredoc body), so the shell receives its bytes as data, never as
+code; a value of plain characters is written as it is. File tools get the
+bytes raw. A handle that cannot be
 restored — `[superseded:…]`, a key no longer stored, another process's (or a
 resumed session's earlier) pattern handle — is written as is, and the tool's
 result carries a line naming it. The transcript keeps the call as the model

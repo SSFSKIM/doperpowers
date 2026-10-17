@@ -431,7 +431,8 @@ The guard differs from `cua`'s in four ways:
    - where an organization manages Claude Code: a plugin a person installs gets no
      `prompt.compose`, `prompt.context`, `prompt.attachment` or `session.compact` hook there
      (`claude plugin validate`), so those four paths are then not covered.
-2. **Known values from three sources**: values stored through `/secret`; values in well-known
+2. **Known values from three sources**: values stored through `/secret` (every project's tier, not
+   only the session's: a command can print any of them); values in well-known
    credential files (gh `hosts.yml`, `~/.pgpass`, service-account JSON keys under
    `~/.config/gcloud/`, `~/.codex/auth.json`, `~/.claude/.credentials.json`, hcloud `cli.toml`,
    `~/.docker/config.json` auths, `~/.netrc`, `~/.git-credentials`, `~/.npmrc`), re-read when their
@@ -459,6 +460,11 @@ The guard differs from `cua`'s in four ways:
    Before a Write, Edit, MultiEdit, NotebookEdit, or Bash call runs, every known-value handle and
    every pattern handle this process issued is replaced by its bytes, so a model editing a file it saw redacted leaves
    the secret intact, and `Authorization: Bearer [secret:KEY]` in a command works like `$(cat …)`.
+   In a Bash command a value goes in quoted for the context its handle stands in (single or
+   double quotes, `$'…'`, unquoted, a heredoc body), so the shell receives its exact bytes as
+   data, never as code; a value of characters no context treats specially is written as it is.
+   File tools get the bytes raw: their content is not parsed by a shell. A handle-like text that
+   does not parse (a space inside it) is named as not restored too.
    The tool call as the transcript records it keeps the handle. A handle that cannot be restored —
    a pattern handle another process issued (another session's, or this session's from before a
    resume), a `[superseded:…]` handle, a key no longer stored — is left as written and the tool's
