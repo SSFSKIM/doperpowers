@@ -47,13 +47,27 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-17 13:40) M1 — The devcloud plugin and its secrets guard, reviewed clean after four fix
   waves (the Bash restoration rule narrowed each time; Decision Log). Release to both Macs and the
   `cua` ticket follow the M1 pull request's merge.
-- [ ] `cua`'s ticket landed; acceptance 1–2 rerun with both plugins enabled, and once with `cua` alone.
-- [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
+- [x] (2026-10-17 17:30) `cua`'s ticket landed (cua 0.14.0, which vendors this guard and stands down on
+  I9); acceptance 1–2 rerun with both plugins enabled and with `cua` alone: 22/22 checks each, no
+  refusal; raw values in transcripts 0 and in the session store's copy 0, in recorded requests only
+  the auto-mode classifier's (not covered, Decision Log).
+- [x] (2026-10-17 15:20) M2 — devcloud core: image, boot program, secrets materializer, pull-only config,
+  services (devcloud 0.2.0), reviewed clean after three fix waves; container tests on ci-kit's hosted
+  runner (no Docker on the Macs).
 - [x] (2026-10-17 10:30) M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository
   (config repo, reviewed clean after two fix waves). Secret Manager: seven entries created by the person;
   one application key's entry waits on that key's rotation (`optional = true`, reports `missing`).
-- [ ] M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its commands, an authoring skill.
-- [ ] M5 — sminos on persistent hosts, and acceptance on a container and a throwaway VM.
+- [x] (2026-10-17 21:45) M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its
+  commands, an authoring skill (devcloud 0.3.0), reviewed clean after three fix waves; the runner
+  scrubs every resolved project secret from what it prints and logs, as a stream.
+- [x] (2026-10-17 22:40) M5 — sminos on persistent hosts, and acceptance on a container and a throwaway VM
+  (devcloud 0.4.0). Throwaway VM `devcloud-m5` in the person's provider (4 vCPU / 8 GB; the planned
+  type is retired in EU locations) created 21:05:48 UTC and **deleted 22:34 UTC** (server and
+  throwaway SSH key; `tailscale logout` run). Acceptance 3–8 passed on the VM and on a sandbox
+  container on it, including 7's enrolled half: after the person's enrollment, `devcloud reconcile`
+  enabled and restarted the sminos daemon with lingering, and it came back after a reboot. Left to
+  the person: removing the machine from the sminos hub and its node from the tailnet. CI-opt never
+  answered about mac-lane windows; the light acceptance traffic ran anyway, per the design session.
 
 ## Terms
 
@@ -174,9 +188,11 @@ A container cannot change its own hostname without `CAP_SYS_ADMIN`, which Docker
 by default; so the container driver passes `--hostname <DEVCLOUD_NAME>` and the boot program only
 verifies it, where on a VM or microVM it sets it.
 
-Tailscale also varies: a VM or microVM joins the tailnet itself (`DEVCLOUD_TAILSCALE=join`, with a
-one-time, short-lived, tagged auth key the driver supplies in a file that the boot program
-deletes after use); a container uses its host's tailnet through the host's routing
+Tailscale also varies: a VM or microVM joins the tailnet itself (`DEVCLOUD_TAILSCALE=join`), with
+the person's one Tailscale OAuth client, scoped to `tag:devcloud` and kept in Secret Manager
+(`DEVCLOUD_TS_SECRET` names it; the boot fetches it with the seed and joins the node tagged,
+non-ephemeral and pre-authorized), or, as the fallback, a one-time tagged auth key the driver
+supplies in a file the boot program deletes after use; a container uses its host's tailnet through the host's routing
 (`DEVCLOUD_TAILSCALE=host`). A sandbox never joins the tailnet as its own node: the free
 Tailscale plan bounds short-lived tagged nodes to 1,000 node-minutes a month (enforcement
 announced), which per-sandbox joins would exhaust in days.
@@ -225,20 +241,25 @@ Secret Manager project, and the name of the secret holding the GitHub token used
 
 `devcloud-boot` runs these steps in order, each recorded in `/var/lib/devcloud/status.json`
 (`devcloud status` prints it). A step's failure stops the boot with the step named; the next run
-retries from the top. Nothing reaches the tailnet's services before step 6, because only the
-profile (step 5) names them.
+retries from the top. Steps 2–5 use only the public internet (Google's APIs, GitHub); nothing
+reaches the tailnet's services before step 6, because only the profile (step 5) names them.
 
 1. **Identity.** Refuse `DEVCLOUD_ROLE=persistent` without systemd as PID 1. Set the hostname to
    `DEVCLOUD_NAME` (VM, microVM) or verify it equals it (container). Write `SESSION_MIRROR_HOST`
    and, for a container (which sees its host's boot id), a fresh `DAEMON_BOOT_ID` into
    `/etc/devcloud/env`. Sandbox names must be unique; drivers use `sbx-<random>`.
-2. **Tailnet attach.** When `DEVCLOUD_TAILSCALE=join`, join with the auth key from the file, then
-   delete the file. Otherwise nothing to do here.
-3. **Seed.** `DEVCLOUD_SEED=file:<path>`: activate the key in a root-private gcloud configuration
+2. **Seed.** `DEVCLOUD_SEED=file:<path>`: activate the key in a root-private gcloud configuration
    directory (`CLOUDSDK_CONFIG=/var/lib/devcloud/gcloud`), from which every later step takes an
    access token (`gcloud auth print-access-token`); `gce-metadata`: tokens come from the metadata
    server. The token then calls the Secret Manager REST API from the standard library.
-4. **Bootstrap secret.** Fetch the GitHub token named by `DEVCLOUD_CONFIG_TOKEN_SECRET`.
+3. **Bootstrap secrets.** Fetch the GitHub token named by `DEVCLOUD_CONFIG_TOKEN_SECRET`, and, when
+   the descriptor names `DEVCLOUD_TS_SECRET`, the Tailscale OAuth client secret.
+4. **Tailnet attach.** When `DEVCLOUD_TAILSCALE=join`: with the OAuth client, `tailscale up
+   --advertise-tags=tag:devcloud` with the client secret as its auth key
+   (`<secret>?ephemeral=false&preauthorized=true`), handed over as `--auth-key=file:<root-only
+   temporary file>` so it never stands in an argument list another process can read; with the
+   fallback, the auth key from `DEVCLOUD_TS_AUTHKEY_FILE`, then delete the file. Already joined:
+   nothing to do. `host` or `none`: nothing to do.
 5. **Configuration.** As the user, clone (or fetch and reset) the config repository into
    `~/.claude` (Design §5), passing the token through a credential helper that reads it from a
    root-owned temporary file — never in a URL or in `.git/config`; then read the profile.
@@ -535,6 +556,16 @@ stop accidents, which arrive as plain text or a common encoding.
 - A keyless seed (workload identity federation against an issuer the person runs) — the right
   move when hosts multiply or one is less trusted than the Macs (Decision Log).
 - A credential proxy or broker (decided against: friction first; Decision Log).
+- Tailscale for VMs beyond the boot's join: the boot already joins with the one OAuth client in
+  Secret Manager (Design §1, step 4). A driver may instead mint a per-VM one-off key from that
+  client, and on GCE a join through workload identity federation needs no stored secret. Never a
+  reusable auth key in the vault; sandboxes never join.
+- Driver note, for the drivers that follow: secrets never ride cloud-init user-data. A provider keeps
+  user-data for the server's life, readable through its API by any holder of the project's token
+  and from inside the VM — sandbox containers included — through the metadata address unless it is
+  blocked. User-data carries only the non-secret descriptor and the bootstrap; the seed and the
+  Tailscale key file are copied over SSH into root-only paths once the VM answers, and the boot
+  runs after.
 
 ## Execution
 
@@ -564,6 +595,10 @@ stop accidents, which arrive as plain text or a common encoding.
   the existing `repo-checks` gate stays green with a second plugin in the marketplace. The ci-kit
   session (sminos `@doperpowers/CI-opt`) is told when doperpowers' gates change; ci-kit owns the
   schema, doperpowers owns its own file.
+- `cua` vendors devcloud's guard (`devcloud/hooks/mods/secrets*.tsx` and their tests). A change to
+  those files that should reach `cua` files a `cua` resync ticket naming the doperpowers commit; a
+  change to I9 reaches `cua` as a ticket before it ships. `cua`'s copy reads the I9 marker and never
+  writes it.
 
 ### Plan of Work
 
@@ -618,7 +653,9 @@ value's encoded spelling before devcloud's, which then reads `[secret:KEY]` rath
 `[secret:KEY~b64]` — the one restoration the interim can get wrong, limited to encoded stored
 values. So M1 proves acceptance 1–2 in fresh sessions with `cua` disabled; the run with both
 plugins enabled is repeated when the ticket lands (an open item in Progress until then), together
-with one session with devcloud disabled, where `cua` alone scrubs a stored value without refusing.
+with one session with devcloud disabled, where `cua` alone runs its vendored copy of this guard:
+the full acceptance 1–2 cases there too — encoded spellings, tiers, restore-on-write, the
+unrestored Bash notice — not only scrubbing without refusing.
 
 Does not touch: `cua`. Proves acceptance 1–2 (with `cua` disabled until its ticket lands); tests also pin: no redaction of a 40-hex commit hash or a sha256 checksum; a
 known value split across a tool result and the next row is still caught in each row it appears
@@ -821,7 +858,8 @@ the foreground; `devenv start` runs it in tmux session `<name>`), `devenv/valida
     DEVCLOUD_KIND=vm|microvm|container
     DEVCLOUD_ROLE=persistent|sandbox           # persistent requires systemd as PID 1
     DEVCLOUD_TAILSCALE=join|host|none
-    DEVCLOUD_TS_AUTHKEY_FILE=<path>            # join only; deleted after use
+    DEVCLOUD_TS_SECRET=<Secret Manager id>     # join: the Tailscale OAuth client (tag:devcloud)
+    DEVCLOUD_TS_AUTHKEY_FILE=<path>            # join, fallback: a one-time key; deleted after use
     DEVCLOUD_SEED=file:<path>|gce-metadata
     DEVCLOUD_SM_PROJECT=<GCP project id>
     DEVCLOUD_CONFIG_REPO=<https clone URL>
@@ -856,6 +894,8 @@ read `undefined` from another plugin's module at hook time, while `$.state` read
 `$.state` is the narrowest shared channel that stays out of child processes, and the ticket names
 it. Limit: a session in which devcloud is disabled mid-way may keep the value (whether the engine
 clears a plugin's state when it unloads is unverified).
+`cua` stands down only on an exact match with `{ owner: "devcloud", version: 1 }` (its #154, cua
+0.14.0), so a change to this value's shape or version reaches `cua` as a ticket before it ships.
 
 ## Surprises & Discoveries
 
@@ -976,7 +1016,7 @@ clears a plugin's state when it unloads is unverified).
   encoding a handle names). Supersedes the staged-cutover entry: nothing is removed from `cua`, so
   either release order is safe.
   Date/Author: 2026-10-16, the person's correction.
-- Decision: `cua` installed alone drops its refusals and keeps scrubbing stored values.
+- Decision (superseded 2026-10-17, below): `cua` installed alone drops its refusals and keeps scrubbing stored values.
   Rationale: the refusals were the strictness that prompted this work (they refuse even a command
   that only writes the store's path as text), and scrubbing at the output already catches a
   printed value. Rejected: keeping `cua` alone strict as today.
@@ -1145,13 +1185,95 @@ clears a plugin's state when it unloads is unverified).
   user-writable directories on root's `PATH`.
   Date/Author: 2026-10-17, the design session on the plan executor's proposal.
 
+- Decision: M2's host core as built. Boot steps are named `identity`, `tailnet-attach`, `seed`,
+  `bootstrap-secret`, `configuration`, `tailnet-check`, `secrets`, `home`, `apply`,
+  `settings-and-env`, `services`, `projects`; `missing` is also a step state (only optional entries
+  absent). The materializer lives in a package (`boot/devcloudlib/`) so it never shadows Python's
+  `secrets`. Test seams are environment variables (`DEVCLOUD_SM_ENDPOINT`, `GCE_METADATA_HOST`,
+  `DEVCLOUD_ALLOW_HTTP`, `DEVCLOUD_JOB_INTERVAL`), not descriptor keys, so I5 is unchanged. The
+  bootstrap token reaches git through a root-owned 0440 file read by a credential helper passed with
+  `-c` and deleted after the fetch. `/etc/devcloud/env` double-quotes and escapes every value so sh,
+  bash, zsh and systemd read it alike, expanding `$HOME`/`$PATH` in `profile.env` once at write
+  time. Store entries and template-less files get the value's exact bytes; `env` and template
+  targets drop one trailing newline; writes into the home run as the user. A container's
+  `DAEMON_BOOT_ID` derives from the host boot id and the container's start time (fresh per start,
+  stable across reruns). Under systemd the boot queues service starts rather than waiting (the
+  units are ordered after the boot; waiting deadlocked). Every child's and service's output is
+  scrubbed of every value the host knows — the set only grows, refreshed inside the one drain path
+  after bytes are read and before they are emitted — and bounded before it is logged.
+  `devcloud-services` follows a desired-state file (`/run/devcloud/services.json`) that step 11
+  writes, so a reconcile adds and removes services. Acceptance 6's check fails closed on any tool
+  error, scans every byte for known values, and verifies dpkg results one tool at a time.
+  Rationale: each follows a review finding or a contract the spec left open. Residue: an entry
+  removed from `secrets.toml` leaves its files on the host.
+  Date/Author: 2026-10-17, M2 executor; folded by the plan executor.
+
+- Decision: `cua` vendors devcloud's guard — `devcloud/hooks/mods/secrets*.tsx` and their tests,
+  copied from ce6edfda in place of its own scrubber — so `cua` installed alone gets the same guard
+  (redaction, handles, restore-on-write); `/secret` and its GUI and browser typing stay `cua`'s, and
+  `cua`'s copy stands down on the exact I9 marker, which it reads and never writes. One guard runs
+  per session, through I9. Supersedes the 2026-10-16 entry that `cua` alone keeps its own scrubbing.
+  Rationale: one guard implementation instead of two that drift. Cost: devcloud's guard changes
+  reach `cua` only through a resync ticket (Constraints).
+  Date/Author: 2026-10-17, the person's re-scope of cua#154, through the design session.
+
+- Decision: VMs join the tailnet with one Tailscale OAuth client kept in Secret Manager, scoped to
+  `tag:devcloud` (descriptor `DEVCLOUD_TS_SECRET`), not a per-VM key the person mints. The tailnet
+  attach moves after the seed and the bootstrap secrets (steps 2–4; steps 5–12 keep their numbers),
+  since the client secret is fetched with the seed. The secret reaches `tailscale up` as
+  `--auth-key=file:<root-only temporary file>`; where the installed tailscale lacks `file:`, the
+  brief argument-list exposure is recorded as a deviation. The per-VM key file stays the fallback.
+  Rationale: no human step per VM, and the client is revocable and audited in one place. Rejected:
+  a reusable auth key in the vault (unscoped in time, no audit of its use).
+  Date/Author: 2026-10-17, the person's choice, through the design session.
+
+- Decision: A failed step 12 (projects) is recorded `failed` and `devcloud-boot` exits 3, a code
+  meaning only "projects failed"; the container entrypoint starts `devcloud-services` on 0 or 3, and
+  the systemd boot unit counts 3 as success for ordering, so a broken project never stops the host's
+  services, while a driver still sees a non-zero exit and `devcloud status` names the failure.
+  Rationale: steps 1–11 make the host; step 12 prepares work on it, which `devenv up` can redo.
+  Rejected: exiting 0 (a caller would believe the environment was prepared); stopping services.
+  Date/Author: 2026-10-17, plan executor, on M4's review.
+
+- Decision: The `devenv` runner hands each resolved secret to itself over a framed pipe (a count,
+  then `name\0value\0`) and scrubs everything the project's scripts print as a stream, holding back
+  the longest value's length so a value spanning lines or reads is still caught; a reader or sink
+  failure fails the command and setup is not stamped. The host scrubber is not taught project
+  values (exporting them would write a new copy). A failing setup still prints its scrubbed tail.
+  Rationale: a project's own secrets are known only to the runner; fixing at the source covers the
+  Macs and hosts alike.
+  Date/Author: 2026-10-17, M4 executor on review; folded by the plan executor.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish. Interim, at M1's pull request (2026-10-17): the guard's hardest
-part was not detection but restoring handles into shell commands. Four review rounds each found a
-shell construct (here-strings, heredoc delimiters, backticks, arithmetic, zsh modifiers and equals
-expansion) where substituted bytes stopped being data; the design converged only when restoration
-was narrowed to inert values in whole words or quoted strings the guard can classify, with every
-other handle left in place and its notice naming an exact read. Two reviewers on the gateway's
-frontier model were stopped by provider safety filters while probing shell injection; the last
-verification ran their reproduction set and a plausible-shapes matrix directly.
+**Outcome (2026-10-17).** The purpose holds as stated. A throwaway Ubuntu VM booted from the devcloud image with a descriptor and the seed. A sandbox container on it booted the same way. Both became hosts without a step typed by hand:
+
+- `claude -p` answered through the gateway on the tailnet.
+- `gh`, `gcloud` and an ADC consumer were authenticated.
+- The person's git identity and zsh were in place.
+- Runs appeared in the session store under each host's name.
+- The project's `devenv/setup.sh` ran, and a second boot skipped it.
+- Receive-only configuration reconciled a managed-settings change committed on a Mac, with no reboot.
+- The image held none of the person's 34 known values.
+- On the persistent VM, the person's enrollment turned on the sminos daemon, and it survived a reboot.
+
+The guard ships on both Macs as devcloud 0.1.0. cua 0.14.0 vendors it and stands down on I9. Acceptance 1–2 passed 22/22 with both plugins and with cua alone. Acceptance 1–8 all passed; the not-covered paths are listed in §9.
+
+**What took the work.**
+
+- **Restoring handles into shell commands, not detecting secrets.** Four review rounds each found a shell construct where substituted bytes stopped being data: here-strings, heredoc delimiters, backticks, arithmetic, and zsh's modifiers and `=` expansion. The design converged only once restoration was narrowed to inert values in words or quoted strings the guard can classify. Every other handle stays in place, and its notice names an exact read.
+- **Every redacting boundary leaked the same way.** The lesson repeated in the supervisor, the boot's logs, the devenv runner and the journal: a scrubber must see the stream before it is split, prefixed or cut, and must carry the longest value across reads. A value spanning a line or a read was the most common leak the reviewers found.
+- **Lifecycle convergence.** An owed restart has to survive a failed attempt. A service must not start on a half-booted host. A stop needs a bound. Each fix exposed the next ordering case, ending with a boot run by hand rather than by its unit.
+
+**What the environment taught.**
+
+- The auto-mode classifier can refuse a Write that restores a secret, and it reads restored values. Both are now stated limits.
+- The provider's safety filter stopped two frontier-model reviewers mid-probe.
+- A container on a tailnet host needs the tailnet's DNS, not only its route.
+- An enrollment command typed from root expanded `~` before switching users.
+- A spec line named a secret's id, and the name reached GitHub through CI's temporary refs before history was rewritten. The repository's public-values rule needs to cover the spec as much as the code.
+
+**What would be done differently.**
+
+- Run a fresh-host acceptance earlier, in M2 rather than M5. The first real boot found a config-repository defect, a sparse marketplace that `apply.py` could not add, which no stand-in profile could show.
+- Give every scrubber one shared stream primitive from the start.

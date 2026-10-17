@@ -1,0 +1,60 @@
+#!/usr/bin/python3 -P
+"""devcloud: a host's status and its jobs.
+
+  devcloud status            one line per boot step: name, state, when, detail
+  devcloud reconcile         boot steps 5-11 against the configuration as fetched now
+  devcloud pull-config       fetch and reset ~/.claude; reconcile when the commit moved
+  devcloud refresh-secrets   materialize secrets.toml again (steps 7, 10, 11)
+  devcloud refresh-mirrors   fetch the mirrors a persistent host keeps for its sandboxes
+  devcloud run-scrubbed -- <command>...
+                             run a command with its output scrubbed of the host's values
+                             (a systemd unit's ExecStart; runs as any user)
+
+Every command but status runs as root. Exit 1 when a step failed (status:
+when the last boot did not finish, or a step failed)."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+# The caller's PATH, for a command run-scrubbed runs as the unit gave it.
+CALLER_PATH = os.environ.get("PATH", "")
+# Root runs only system binaries: the user can write to their own PATH entries.
+os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+from devcloudlib import status, steps  # noqa: E402
+
+JOBS = {"reconcile": steps.reconcile, "pull-config": steps.pull_config, "refresh-secrets": steps.refresh_secrets,
+        "refresh-mirrors": steps.refresh_mirrors}
+
+
+def run_scrubbed(command):
+    from devcloudlib import redact, services
+    from devcloudlib.proc import User
+    user = User.from_image()
+    env = dict(os.environ, PATH=CALLER_PATH)
+    return services.run_scrubbed(command, known=lambda: redact.host_values(user, env_path=services.ENV_PATH),
+                                 signature=lambda: redact.host_signature(user, env_path=services.ENV_PATH), env=env)
+
+
+def main(argv):
+    if argv[:1] == ["run-scrubbed"]:
+        if argv[1:2] != ["--"] or len(argv) < 3:
+            print("usage: devcloud run-scrubbed -- <command>...", file=sys.stderr)
+            return 2
+        return run_scrubbed(argv[2:])
+    if len(argv) != 1 or argv[0] not in ("status", *JOBS):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    if argv[0] == "status":
+        data = status.load()
+        if not data["steps"]:
+            print("devcloud: no boot recorded", file=sys.stderr)
+            return 1
+        sys.stdout.write(status.render(data))
+        return 0 if status.healthy(data) else 1
+    if os.geteuid() != 0:
+        print(f"devcloud {argv[0]}: run as root", file=sys.stderr)
+        return 1
+    return JOBS[argv[0]]()
+
+
+sys.exit(main(sys.argv[1:]))
