@@ -4,8 +4,10 @@
 > (branch `smns-erb`; on this machine
 > `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
 > **DC8** (The machine — history and jobs — plan). **Parent pin:** commit
-> `f5df1687d`, blob `48a289c06e5a70873da4a5072539bdc408da0537` of that file
-> (2026-10-17: the plain-row notification's origin gate and the subagent
+> `a87d7fa04`, blob `8a4e35025a432633967869bee060d37dd7b2bc3a` of that file
+> (2026-10-17: `adoptShellOutputRoot` struck from DX4's roots, an adopted
+> shell's output a known refusal; before it `f5df1687d` — the plain-row
+> notification's origin gate and the subagent
 > preamble form in §9.4 and DX4; before it `34defe9f6` — M3's shapes in
 > DX5, `delivered.uuid` deferred at the bridge, both notification forms;
 > earlier pins below)
@@ -303,8 +305,8 @@ rung for DC8); the PR opened, not merged; the report at
   200 characters cut with the base-36 hash of the original path) of the
   cwd the session joined the project with (the log's `joined`, the plane's
   `here`); and the slug of the cwd in the session's engine record when it
-  runs. Plus `<adoptShellOutputRoot>/S/tasks/` when the engine's settings
-  name one. The suffix check (`S/tasks/<taskId>.output`) and the realpath
+  runs. (`<adoptShellOutputRoot>/S/tasks/` was dropped: see M4's
+  decision; DX4 at `a87d7fa04`.) The suffix check (`S/tasks/<taskId>.output`) and the realpath
   containment are unchanged.
   Rationale: DX4 derives one root from the transcript's project directory,
   but the engine's temp root is per *original* cwd (`QP() = ynn(ke())`,
