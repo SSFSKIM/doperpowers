@@ -21,16 +21,24 @@ UNIT_TEXT = "[Service]\nExecStart=/usr/bin/python3 sminos.py daemon run\n"
 class Recorder:
     """Stands in for proc.run: records each call; `daemon install` writes the unit."""
 
-    def __init__(self, unit_path, unit_text=UNIT_TEXT):
+    def __init__(self, unit_path, unit_text=UNIT_TEXT, fail=None):
         self.calls = []
         self.unit_path = unit_path
         self.unit_text = unit_text
+        self.fail = fail          # the first word of a command that fails, once
 
     def __call__(self, argv, *, user=None, env=None, log=None, timeout=None, **_):
-        self.calls.append({"argv": list(argv), "as": user.name if user else "root", "env": dict(env or {})})
+        env = dict(env or {})
+        self.calls.append({"argv": list(argv), "as": user.name if user else "root", "env": env})
+        if argv[0] == self.fail:
+            self.fail = None
+            raise StepError(f"{argv[0]} exited 1")
         if argv[-2:] == ["daemon", "install"]:
-            self.unit_path.parent.mkdir(parents=True, exist_ok=True)
-            self.unit_path.write_text(self.unit_text)
+            # As sminos does: the unit goes under $XDG_CONFIG_HOME when it is set.
+            config = env.get("XDG_CONFIG_HOME")
+            path = pathlib.Path(config) / "systemd/user/sminos-daemon.service" if config else self.unit_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(self.unit_text)
 
     def commands(self):
         return [(c["as"], c["argv"]) for c in self.calls]
@@ -44,6 +52,7 @@ class SminosHostTest(unittest.TestCase):
         self.unit = self.home / ".config/systemd/user/sminos-daemon.service"
         self.dropin = self.home / ".config/systemd/user/sminos-daemon.service.d/devcloud.conf"
         self.env = {"SESSION_MIRROR_HOST": "devbox-a", "PATH": f"{self.home}/bin:/usr/bin:/bin"}
+        self.pending = self.home / "state/sminos-restart-pending"
 
     def enroll(self, home=None):
         daemon = (home or self.home / ".claude/sminos") / "daemon"
@@ -62,7 +71,7 @@ class SminosHostTest(unittest.TestCase):
 
     def converge(self, role="persistent", env_changed=False, recorder=None):
         recorder = recorder or Recorder(self.unit)
-        detail = sminos_host.converge(self.user, role, self.env, env_changed, run=recorder)
+        detail = sminos_host.converge(self.user, role, self.env, env_changed, run=recorder, pending=self.pending)
         return detail, recorder
 
     # --- a sandbox -----------------------------------------------------------------
@@ -147,6 +156,41 @@ class SminosHostTest(unittest.TestCase):
         self.assertEqual(recorder.calls[-1]["argv"], ["systemctl", "--user", "restart", "sminos-daemon.service"])
         _, recorder = self.converge(recorder=Recorder(self.unit, UNIT_TEXT + "Environment=\"PATH=/new\"\n"))
         self.assertEqual(recorder.calls[-1]["argv"], ["systemctl", "--user", "restart", "sminos-daemon.service"])
+
+
+    def test_a_restart_owed_by_a_failed_attempt_is_made_by_the_next(self):
+        # The first attempt rewrites the unit, then lingering fails; the retry
+        # finds the unit unchanged, and still owes the running daemon a restart.
+        self.enroll()
+        self.marketplace()
+        with self.assertRaises(StepError):
+            self.converge(recorder=Recorder(self.unit, fail="loginctl"))
+        _, recorder = self.converge()
+        self.assertEqual(recorder.calls[-1]["argv"], ["systemctl", "--user", "restart", "sminos-daemon.service"])
+        _, recorder = self.converge()
+        self.assertEqual(recorder.calls[-1]["argv"], ["systemctl", "--user", "start", "sminos-daemon.service"])
+
+    def test_an_environment_change_survives_a_failed_attempt(self):
+        self.enroll()
+        self.marketplace()
+        self.converge()
+        with self.assertRaises(StepError):
+            self.converge(env_changed=True, recorder=Recorder(self.unit, fail="systemctl"))
+        _, recorder = self.converge(env_changed=False)
+        self.assertEqual(recorder.calls[-1]["argv"], ["systemctl", "--user", "restart", "sminos-daemon.service"])
+
+    def test_the_unit_goes_where_a_cold_started_user_manager_looks(self):
+        # The user manager does not read /etc/devcloud/env, so a profile's
+        # XDG_CONFIG_HOME would hide the unit from it on a cold boot.
+        self.enroll()
+        self.marketplace()
+        self.env["XDG_CONFIG_HOME"] = str(self.home / "elsewhere")
+        _, recorder = self.converge()
+        self.assertNotIn("XDG_CONFIG_HOME", recorder.calls[0]["env"])
+        self.assertTrue(self.unit.is_file() and self.dropin.is_file())
+        self.assertFalse((self.home / "elsewhere/systemd").exists())
+        for call in recorder.calls:
+            self.assertNotIn("XDG_CONFIG_HOME", call["env"])
 
 
 if __name__ == "__main__":

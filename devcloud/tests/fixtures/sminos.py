@@ -13,7 +13,8 @@ home = pathlib.Path.home()
 state = home / ".local/state/devcloud-test"
 
 if sys.argv[1:] == ["daemon", "install"]:
-    unit = home / ".config/systemd/user/sminos-daemon.service"
+    config = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
+    unit = pathlib.Path(config) / "systemd/user/sminos-daemon.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text("[Unit]\nDescription=stand-in sminos daemon\n\n[Service]\n"
                     f"ExecStart={sys.executable} {os.path.realpath(__file__)} daemon run\nRestart=always\n"
