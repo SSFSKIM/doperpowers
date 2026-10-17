@@ -94,6 +94,10 @@ export type Request = {
 export type TranscriptRecord = { type: 'assistant' | 'user'; uuid: string; message: { content: Record<string, unknown>[] } }
 /** A call the engine's check put to the dialog. */
 export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
+/** One agent of the session as `$.agent.list()` gives it (the fields the bridge reads). */
+export type ListedAgent = { id: string; description: string; type: string; status: string; parentId?: string; name?: string }
+/** A log event submitted as the human's words, whose row is still to be kept. */
+export type Submission = { key: { writer: string; seq: number }; text: string }
 
 export type BridgeState = {
   /**
@@ -113,6 +117,8 @@ export type BridgeState = {
   rowsAfter?: (loop: string, after: string) => Promise<string[] | undefined>
   /** Stops the child and starts one for this session. */
   restart?: (session: string) => void
+  /** The session's agents as the engine lists them now (`$.agent.list()`). */
+  listAgents?: () => Promise<readonly ListedAgent[]>
   /** What the session start said, sent to each child once it says hello. */
   info?: Record<string, unknown>
   /** The session the child serves, the socket it named, and the child itself. */
@@ -206,6 +212,24 @@ export type BridgeState = {
   settled: Record<string, unknown>[]
   /** Request ids minted for a prompt no check named. */
   minted: number
+  /** The agents `$.agent.list()` has named: only a finished agent leaves the list. */
+  listed: Set<string>
+  /** The agents of the conversation before a /clear: never the new session's. */
+  cleared: Set<string>
+  /** `agent.spawn` hooks between their `next` and their spawn event: the agent they report is theirs to report. */
+  spawning: number
+  /** A refresh of the list is due (while any agent runs). */
+  isAgentsWatched: boolean
+  /** Reads of the list, numbered as they begin: the last begun, and the latest applied. */
+  agentReads: { asked: number; applied: number }
+  /** Moves at each /clear: a read begun in an earlier conversation is not this one's. */
+  conversation: number
+  /** After a /clear, the answers that set the old conversation's agents aside; every later read waits for them. */
+  clearing?: Promise<void>
+  /** The reads of the list not answered yet: a /clear waits for each of them. */
+  agentListsInFlight: Set<Promise<readonly ListedAgent[]>>
+  /** Deliveries submitted whose prompt row has not been kept yet, oldest first (`delivered` `entered`). */
+  submissions: Submission[]
 }
 
 const fresh = (): BridgeState => ({
@@ -224,6 +248,14 @@ const fresh = (): BridgeState => ({
   requests: new Map(),
   settled: [],
   minted: 0,
+  listed: new Set(),
+  cleared: new Set(),
+  spawning: 0,
+  isAgentsWatched: false,
+  agentReads: { asked: 0, applied: 0 },
+  conversation: 0,
+  agentListsInFlight: new Set(),
+  submissions: [],
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,
   queue: [],

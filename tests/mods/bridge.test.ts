@@ -3,6 +3,7 @@ import type { EngineInterface, On } from 'claude-code'
 
 import { ASK_TOOL } from '../../hooks/mods/ask'
 import {
+  AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
@@ -107,6 +108,10 @@ function harness(
     abortFails?: boolean
     /** What `$.session.messages()` answers at load: none, a session the module starts with; some, a reload or a resume. */
     messages?: unknown[]
+    /** What `$.agent.list()` answers at load (setAgents changes it later). */
+    agents?: Record<string, unknown>[]
+    /** `$.prompt.submit` resolves dropped, with this reason. */
+    submitDrops?: string
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -151,6 +156,9 @@ function harness(
   const disk: Record<string, string[]> = {}
   const rowReads: { loop: string | null; after: string | null; socketPath?: string }[] = []
   let session = SID
+  let listedAgents = options.agents ?? []
+  /** How many times the mod read `$.agent.list()`. */
+  let agentLists = 0
   const $ = {
     plugin: { name: 'doperpowers', root: '/plug' },
     env: { get: async (name: string) => options.env?.[name] },
@@ -208,7 +216,13 @@ function harness(
     prompt: {
       submit: async (args: unknown) => {
         calls.push({ op: 'submit', args })
-        return { text: '' }
+        return options.submitDrops !== undefined ? { drop: options.submitDrops } : { text: String((args as { text?: unknown }).text) }
+      },
+    },
+    agent: {
+      list: async () => {
+        agentLists++
+        return listedAgents.map((a) => ({ ...a }))
       },
     },
     process: {
@@ -444,6 +458,8 @@ function harness(
     ready,
     step,
     setSession: (id: string) => (session = id),
+    setAgents: (agents: Record<string, unknown>[]) => (listedAgents = agents),
+    agentLists: () => agentLists,
   }
 }
 
@@ -1392,6 +1408,362 @@ describe('deliver', () => {
     expect(await h.command({ op: 'deliver', text: 'x' })).toMatchObject({ ok: false })
     expect(await h.command({ op: 'deliver', key: { writer: 'w', seq: 1 } })).toMatchObject({ ok: false })
     expect(h.calls.length).toBe(0)
+  })
+})
+
+describe("a delivered prompt's row (G6)", () => {
+  const ORIGIN = { kind: 'plugin', name: 'doperpowers', asUser: true }
+  const promptRow = (text: string, uuid: string, origin: Record<string, unknown> = ORIGIN, agentId?: string) => ({
+    door: 'prompt',
+    message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+    extra: { uuid, origin, ...(agentId !== undefined && { agentId }) },
+  })
+
+  test('the row this plugin submitted as the human words is named once it is kept: `entered` with its uuid', async () => {
+    const h = harness()
+    await h.ready()
+    const key = { writer: 'hub/m1', seq: 3 }
+    const text = '[sminos chat p hub/m1:3 from human → @you]\nship it'
+    await h.command({ op: 'deliver', key, text })
+    const r = promptRow(text, 'row-entered')
+    await h.append(r.door, r.message, r.extra)
+    expect(h.ofType('delivered').map((e) => [e.key, e.outcome, e.uuid])).toEqual([
+      [key, 'submitted', undefined],
+      [key, 'entered', 'row-entered'],
+    ])
+    // Named once: the same text kept again (a later row) names nothing.
+    const again = promptRow(text, 'row-later')
+    await h.append(again.door, again.message, again.extra)
+    expect(h.ofType('delivered').length).toBe(2)
+  })
+
+  test('a context block beside the prompt (the ask mod) does not hide it: the first text block is the prompt', async () => {
+    const h = harness()
+    await h.ready()
+    const key = { writer: 'hub/m1', seq: 4 }
+    await h.command({ op: 'deliver', key, text: 'frame\nhello' })
+    await h.append(
+      'prompt',
+      { type: 'user', role: 'user', content: [{ type: 'text', text: 'frame\nhello' }, { type: 'text', text: 'an answer the ask mod held' }] },
+      { uuid: 'row-c', origin: ORIGIN },
+    )
+    expect(h.ofType('delivered').at(-1)).toMatchObject({ key, outcome: 'entered', uuid: 'row-c' })
+  })
+
+  test('no guessing: a typed prompt of the same text, another origin, a subagent row, or a rewritten text names nothing', async () => {
+    const h = harness()
+    await h.ready()
+    await h.command({ op: 'deliver', key: { writer: 'hub/m1', seq: 5 }, text: 'continue' })
+    for (const r of [
+      promptRow('continue', 'typed', { kind: 'composer' }),
+      promptRow('continue', 'other-plugin', { kind: 'plugin', name: 'other', asUser: true }),
+      promptRow('continue', 'framed', { kind: 'plugin', name: 'doperpowers' }),
+      promptRow('continue', 'in-a-subagent', ORIGIN, 'a1'),
+      promptRow('continue, rewritten', 'rewritten'),
+    ]) {
+      await h.append(r.door, r.message, r.extra)
+    }
+    await h.append('note', { type: 'user', role: 'user', content: [{ type: 'text', text: 'continue' }] }, { uuid: 'a-note', origin: ORIGIN })
+    expect(h.ofType('delivered').map((e) => e.outcome)).toEqual(['submitted'])
+  })
+
+  test('two submissions still waiting with the same text: neither is named', async () => {
+    const h = harness()
+    await h.ready()
+    await h.command({ op: 'deliver', key: { writer: 'hub/m1', seq: 6 }, text: 'same' })
+    await h.command({ op: 'deliver', key: { writer: 'hub/m2', seq: 1 }, text: 'same' })
+    const r = promptRow('same', 'row-same')
+    await h.append(r.door, r.message, r.extra)
+    expect(h.ofType('delivered').map((e) => e.outcome)).toEqual(['submitted', 'submitted'])
+  })
+
+  test('a submission the engine dropped is refused with its reason, and no later row is taken for it', async () => {
+    const h = harness({ submitDrops: 'a Stop hook stands' })
+    await h.ready()
+    const key = { writer: 'hub/m1', seq: 7 }
+    await h.command({ op: 'deliver', key, text: 'dropped' })
+    await h.settle()
+    const r = promptRow('dropped', 'row-d')
+    await h.append(r.door, r.message, r.extra)
+    expect(h.ofType('delivered').map((e) => [e.outcome, e.reason])).toEqual([
+      ['submitted', undefined],
+      ['refused', 'a Stop hook stands'],
+    ])
+  })
+})
+
+describe('agents the module did not see spawn ($.agent.list())', () => {
+  const listed = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, description: `task ${id}`, type: 'general-purpose', status, ...extra })
+
+  test('at load the agent state is seeded from the list, so the first resync carries every agent with what the list gives and no more', async () => {
+    const h = harness({
+      messages: [{}],
+      agents: [
+        listed('a1', 'running', { name: 'scout' }),
+        listed('a2', 'completed'),
+        listed('a3', 'idle', { parentId: 'a1' }),
+        listed('a4', 'killed'),
+        listed('a5', 'waiting', { spawnedBy: 'other', teammateId: 'x@t' }),
+      ],
+    })
+    await h.ready()
+    expect(h.events().map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(h.events()[1]!.agents).toEqual([
+      { agentId: 'a1', parentAgentId: null, subagentType: 'general-purpose', description: 'task a1', name: 'scout', running: true },
+      { agentId: 'a2', parentAgentId: null, subagentType: 'general-purpose', description: 'task a2', agentType: 'general-purpose', running: false },
+      { agentId: 'a3', parentAgentId: 'a1', subagentType: 'general-purpose', description: 'task a3', running: true },
+      { agentId: 'a4', parentAgentId: null, subagentType: 'general-purpose', description: 'task a4', agentType: 'general-purpose', running: false },
+      { agentId: 'a5', parentAgentId: null, subagentType: 'general-purpose', description: 'task a5', running: true },
+    ])
+  })
+
+  test('refreshed while an agent runs, often enough for its status to reach the plane within a second: its end is a stop, a new one a spawn', async () => {
+    expect(AGENTS_REFRESH_MS).toBeLessThanOrEqual(500)
+    const h = harness({ messages: [{}], agents: [listed('a1', 'running')] })
+    await h.ready()
+    h.setAgents([listed('a1', 'running'), listed('fork1', 'running', { type: 'fork' })])
+    await h.fire(AGENTS_REFRESH_MS)
+    expect(h.ofType('agent')).toEqual([expect.objectContaining({ phase: 'spawn', agentId: 'fork1', subagentType: 'fork', parentAgentId: null, description: 'task fork1' })])
+    h.setAgents([listed('a1', 'completed'), listed('fork1', 'running', { type: 'fork' })])
+    await h.fire(AGENTS_REFRESH_MS)
+    expect(h.ofType('agent').slice(1)).toEqual([expect.objectContaining({ phase: 'stop', agentId: 'a1', agentType: 'general-purpose' })])
+    // Only a finished agent leaves the list.
+    h.setAgents([listed('a1', 'completed')])
+    await h.fire(AGENTS_REFRESH_MS)
+    expect(h.ofType('agent').slice(2)).toEqual([expect.objectContaining({ phase: 'stop', agentId: 'fork1' })])
+    // None runs now: the list is no longer read until one does.
+    const reads = h.agentLists()
+    await h.fire(AGENTS_REFRESH_MS)
+    expect(h.agentLists()).toBe(reads)
+    expect(h.timers.some((t) => t.kind === 'after' && t.ms === AGENTS_REFRESH_MS && !t.cancelled)).toBe(false)
+  })
+
+  test('an agent the spawn hook reported is not spawned twice, though the list names it while the hook still runs', async () => {
+    const h = harness()
+    await h.ready()
+    const spawn = { tool_use_id: 'tu1', prompt: 'p', description: 'scout', subagentType: 'Explore', background: false }
+    await h.hook('agent.spawn', spawn)(h.engine, spawn, async () => {
+      // The engine started it: the list names it before the hook has said so.
+      h.setAgents([listed('a9', 'running', { type: 'Explore', description: 'scout' })])
+      h.timers.find((t) => t.kind === 'every')!.fn()
+      await h.settle()
+      return { model: 'claude-haiku', agentId: 'a9' }
+    })
+    await h.settle()
+    await h.fire(AGENTS_REFRESH_MS)
+    expect(h.ofType('agent')).toEqual([expect.objectContaining({ phase: 'spawn', agentId: 'a9', background: false, model: 'claude-haiku', toolUseId: 'tu1' })])
+  })
+
+  test("the list's stop and the engine's SubagentStop say it once; an agent no list names (a workflow's) is not stopped by the refresh", async () => {
+    const h = harness()
+    await h.ready()
+    for (const [agentId, tu] of [
+      ['a9', 'tu1'],
+      ['wf1', 'tu2'],
+    ] as const) {
+      const spawn = { tool_use_id: tu, prompt: 'p', description: 'd', subagentType: 'Explore', background: true }
+      await h.hook('agent.spawn', spawn)(h.engine, spawn, async () => ({ model: 'm', agentId }))
+    }
+    h.setAgents([listed('a9', 'running')])
+    await h.fire(AGENTS_REFRESH_MS)
+    h.setAgents([listed('a9', 'failed')])
+    await h.fire(AGENTS_REFRESH_MS)
+    await h.hook('classic.SubagentStop', { hook_event_name: 'SubagentStop' })(h.engine, { hook_event_name: 'SubagentStop', agent_id: 'a9', agent_type: 'Explore' }, async () => ({}))
+    await h.settle()
+    expect(h.ofType('agent').map((e) => [e.phase, e.agentId])).toEqual([
+      ['spawn', 'a9'],
+      ['spawn', 'wf1'],
+      ['stop', 'a9'],
+    ])
+  })
+
+  test('an agent that starts while none runs is learned at the heartbeat, or at once when its loop starts a turn', async () => {
+    const h = harness()
+    await h.ready()
+    h.setAgents([listed('k1', 'running', { type: 'fork' })])
+    h.timers.find((t) => t.kind === 'every')!.fn()
+    await h.settle()
+    expect(h.ofType('agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'k1']])
+    h.setAgents([listed('k1', 'running', { type: 'fork' }), listed('k2', 'running', { type: 'fork' })])
+    await h.turn('t-k2', 'k2')
+    await h.settle()
+    expect(h.ofType('agent').map((e) => [e.phase, e.agentId])).toEqual([
+      ['spawn', 'k1'],
+      ['spawn', 'k2'],
+    ])
+  })
+
+  test("after a /clear, the agents of the conversation before it are not seeded into the new session's state", async () => {
+    const h = harness({ messages: [{}], agents: [listed('old1', 'completed'), listed('old2', 'running')] })
+    await h.ready()
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await h.settle()
+    const NEW = '6c000002-0000-4000-8000-00000000006c'
+    const NEWSOCK = `/tmp/s/bridge/${NEW}.sock`
+    h.setSession(NEW)
+    h.timers.filter((t) => t.kind === 'after' && t.ms !== AGENTS_REFRESH_MS && !t.cancelled).at(-1)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    h.timers.find((t) => t.kind === 'every' && !t.cancelled)!.fn()
+    await h.settle()
+    const toNew = h.posts.filter((p) => p.socketPath === NEWSOCK).flatMap((p) => p.events)
+    expect(toNew.find((e) => e.type === 'resync')!.agents).toEqual([])
+    expect(toNew.filter((e) => e.type === 'agent')).toEqual([])
+  })
+
+  test('a list that cannot be read changes nothing', async () => {
+    const h = harness({ messages: [{}] })
+    ;(h.engine as unknown as { agent: { list: () => Promise<unknown> } }).agent.list = async () => {
+      throw new Error('no list')
+    }
+    await h.ready()
+    expect(h.events()[1]!.agents).toEqual([])
+  })
+
+  /** From here, each read of the list waits until the test answers it (or fails it, `null`), in any order. */
+  const holdLists = (h: ReturnType<typeof harness>) => {
+    const reads: ((agents: Record<string, unknown>[] | null) => void)[] = []
+    ;(h.engine as unknown as { agent: { list: () => Promise<unknown> } }).agent.list = () =>
+      new Promise((resolve, reject) => reads.push((agents) => (agents === null ? reject(new Error('no list')) : resolve(agents))))
+    return reads
+  }
+
+  /**
+   * A /clear, with `before` answering the reads begun before it (the /clear's
+   * own among them); then the new session's child, and a read in the new
+   * conversation that lists `then`. What reached the new child.
+   */
+  const clearWith = async (
+    h: ReturnType<typeof harness>,
+    reads: ReturnType<typeof holdLists>,
+    before: () => Promise<void>,
+    then: Record<string, unknown>[],
+    after: () => Promise<void> = async () => undefined,
+  ) => {
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await h.settle()
+    await before()
+    const NEW = '6c000002-0000-4000-8000-00000000006c'
+    const NEWSOCK = `/tmp/s/bridge/${NEW}.sock`
+    h.setSession(NEW)
+    h.timers.filter((t) => t.kind === 'after' && t.ms !== AGENTS_REFRESH_MS && !t.cancelled).at(-1)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    h.timers.find((t) => t.kind === 'every' && !t.cancelled)!.fn()
+    await h.settle()
+    reads.at(-1)!(then)
+    await h.settle()
+    await after()
+    return h.posts.filter((p) => p.socketPath === NEWSOCK).flatMap((p) => p.events)
+  }
+
+  test('reads that overlap: an older list answered after a newer one changes nothing, so a running agent is not stopped', async () => {
+    const h = harness({ messages: [{}], agents: [listed('a1', 'running')] })
+    await h.ready()
+    const reads = holdLists(h)
+    h.timers.find((t) => t.kind === 'every')!.fn() // the heartbeat's read, begun first
+    await h.settle()
+    await h.fire(AGENTS_REFRESH_MS) // the timer's, begun after it
+    expect(reads.length).toBe(2)
+    reads[1]!([listed('a1', 'running')])
+    await h.settle()
+    reads[0]!([]) // older, and answered last: a1 gone from it
+    await h.settle()
+    expect(h.ofType('agent')).toEqual([])
+    const later = reads.length
+    await h.fire(AGENTS_REFRESH_MS)
+    reads[later]!([listed('a1', 'completed')])
+    await h.settle()
+    expect(h.ofType('agent').map((e) => [e.phase, e.agentId])).toEqual([['stop', 'a1']])
+  })
+
+  test("a read begun before a /clear and answered after it does not bring the old conversation's agents into the new one", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    h.timers.find((t) => t.kind === 'every')!.fn() // a read in flight, before the /clear
+    await h.settle()
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        expect(reads.length).toBe(2) // and the one the /clear makes, which fails here, and fails again
+        reads[0]!([listed('old9', 'running')]) // an agent of the old conversation nobody knew yet
+        reads[1]!(null)
+        await h.settle()
+        reads[2]!(null)
+        await h.settle()
+      },
+      // The engine's list goes on naming it: a read in the new conversation still does not take it.
+      [listed('old9', 'running'), listed('new1', 'running', { type: 'fork' })],
+    )
+    expect(toNew.find((e) => e.type === 'resync')!.agents).toEqual([])
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new1']])
+  })
+
+  test("at a /clear the list is read once more: an old agent nobody knew is not the new conversation's either", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        expect(reads.length).toBe(1)
+        reads[0]!([listed('old8', 'running')])
+        await h.settle()
+      },
+      [listed('old8', 'running'), listed('new2', 'running', { type: 'fork' })],
+    )
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new2']])
+  })
+
+  test('a read outstanding at a /clear and answered last, after a new read: the new read waits for it, so it seeds nothing it names', async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    h.timers.find((t) => t.kind === 'every')!.fn() // outstanding at the /clear
+    await h.settle()
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        // The /clear's own read fails, and so does its retry.
+        reads[1]!(null)
+        await h.settle()
+        reads[2]!(null)
+        await h.settle()
+      },
+      [listed('old9', 'running'), listed('new1', 'running', { type: 'fork' })],
+      async () => {
+        expect(h.posts.flatMap((p) => p.events).filter((e) => e.type === 'agent')).toEqual([]) // still waiting
+        reads[0]!([listed('old9', 'running')]) // the old conversation's answer, last of all
+        await h.settle()
+      },
+    )
+    expect(toNew.find((e) => e.type === 'resync')!.agents).toEqual([])
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new1']])
+  })
+
+  test("a /clear's own read that fails once is tried again", async () => {
+    const h = harness({ messages: [{}] })
+    await h.ready()
+    const reads = holdLists(h)
+    const toNew = await clearWith(
+      h,
+      reads,
+      async () => {
+        reads[0]!(null)
+        await h.settle()
+        expect(reads.length).toBe(2)
+        reads[1]!([listed('old7', 'running')])
+        await h.settle()
+      },
+      [listed('old7', 'running'), listed('new3', 'running', { type: 'fork' })],
+    )
+    expect(toNew.filter((e) => e.type === 'agent').map((e) => [e.phase, e.agentId])).toEqual([['spawn', 'new3']])
   })
 })
 

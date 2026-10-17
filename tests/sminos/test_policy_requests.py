@@ -536,6 +536,9 @@ class Bridge:
     def __init__(self, sid, ready=True):
         self.sid = sid
         self.delivered = []
+        # A reason here: each delivery is then dropped by the engine after
+        # it was submitted, as the mod reports a PromptSubmitResult.drop.
+        self.refusing = None
         self.proc = subprocess.Popen([CLI, "bridge", "--session", sid], stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True)
         hello = json.loads(self.proc.stdout.readline())
@@ -560,6 +563,9 @@ class Bridge:
                     self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"},
                               {"type": "result", "id": cmd["id"], "op": "deliver", "ok": True,
                                "result": {"submitted": True}})
+                    if self.refusing is not None:
+                        self.post({"type": "delivered", "key": cmd["key"], "outcome": "refused",
+                                   "reason": self.refusing})
 
     def texts(self):
         return "\n".join(self.delivered)
@@ -590,6 +596,162 @@ class Bridge:
 
 def messages(frames, kind=None):
     return [f["message"] for f in frames if f.get("t") == "session" and kind in (None, f["message"]["kind"])]
+
+
+# ---------------------------------------------------------------- a submission refused
+
+
+class Refusals(unittest.TestCase):
+    """A delivery the bridge answered `submitted` that the engine then
+    dropped (DC8.G5): the child keeps the bridge's `delivered {outcome:
+    "refused", reason}` with its key, and the delivery path's next pass
+    records a second outcome for the key and session, `failed` with that
+    reason, once. Against the real bridge child."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sminos_daemon as daemon
+        cls.daemon = daemon
+        cls.root, cls.pid = make_project("refus")
+        cls.live = Session(cls.root)
+        cls.sid = cls.live.sid
+        cls.bridge = Bridge(cls.sid)
+        cls.project = project_of(cls.root)
+        sminos.reconcile(cls.project)
+        cls.alias = member_of(cls.project, cls.sid).alias
+        cls.hub_seq = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.bridge.stop()
+        cls.live.end()
+
+    def tearDown(self):
+        self.bridge.refusing = None
+
+    def human_from_hub(self, text, sid=None, alias=None):
+        Refusals.hub_seq += 1
+        e = hub_human(KEY, self.pid, sid or self.sid, alias or self.alias, text, self.hub_seq)
+        with open(sminos.writer_path(self.project, e["writer"]), "a") as f:
+            f.write(json.dumps(e) + "\n")
+        return e
+
+    def kept_refused(self, sid=None):
+        import sminos_bridge as bridge
+        return bridge.load_kept(sid or self.sid).get("refused") or []
+
+    def outcomes_of(self, e, sid=None):
+        return [(o["outcome"], o["reason"]) for o in outcomes.Outbox(self.project).read()
+                if o["event"] == {"writer": e["writer"], "seq": e["seq"]} and o["session"] == (sid or self.sid)]
+
+    def deliver(self):
+        return sminos.deliver_next(self.project, member_of(self.project, self.sid))
+
+    def a_pass(self):
+        sminos.forget_caches()
+        return self.daemon.deliver_owed(self.project, sminos.view_of(self.project, titles=False))
+
+    def test_a_the_child_keeps_each_refusal_with_its_key_bounded(self):
+        import sminos_bridge as bridge
+        key = {"writer": "hub/" + MEMBER, "seq": 9001}
+        self.bridge.post({"type": "delivered", "key": key, "outcome": "submitted"},
+                         {"type": "delivered", "key": key, "outcome": "refused", "reason": "a Stop hook stands"})
+        self.assertEqual(self.kept_refused(), [{"key": key, "reason": "a Stop hook stands"}])
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                          "delivered": {"hub/" + MEMBER: 9001}, "t": 0})
+        self.assertEqual(self.kept_refused(), [{"key": key, "reason": "a Stop hook stands"}],
+                         "the mod's resync, which carries none, keeps them")
+        self.bridge.post({"type": "delivered", "key": key, "outcome": "refused", "reason": "again"})
+        self.assertEqual(len(self.kept_refused()), 1, "a key is kept once")
+        self.bridge.post(*[{"type": "delivered", "key": {"writer": "hub/" + MEMBER, "seq": 9100 + i},
+                            "outcome": "refused", "reason": "x" * 5000} for i in range(bridge.REFUSED_KEPT + 5)])
+        kept = self.kept_refused()
+        self.assertEqual(len(kept), bridge.REFUSED_KEPT, "bounded")
+        self.assertEqual(kept[-1]["key"]["seq"], 9100 + bridge.REFUSED_KEPT + 4, "the newest kept")
+        self.assertLessEqual(len(kept[-1]["reason"]), bridge.REASON_MAX)
+        self.assertEqual(outcomes.report_refused(self.project, sminos.view_of(self.project, titles=False)), 0,
+                         "keys no event of the log has are not reported")
+
+    def test_b_a_web_send_dropped_after_submitted_is_reported_failed_once(self):
+        self.bridge.refusing = "a Stop hook stands"
+        e = self.human_from_hub("dropped after it was taken")
+        self.deliver()
+        self.assertIn("dropped after it was taken", self.bridge.texts())
+        self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered"])
+        key = {"writer": e["writer"], "seq": e["seq"]}
+        self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]),
+                        "the child kept the refusal")
+        self.a_pass()
+        got = self.outcomes_of(e)
+        self.assertEqual([o for o, _ in got], ["delivered", "failed"], "a second outcome for the key, after the first")
+        self.assertIn("a Stop hook stands", got[-1][1], "with the bridge's reason")
+        self.a_pass()
+        self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered", "failed"], "recorded once")
+
+    def test_c_a_refusal_of_an_event_written_here_is_not_reported(self):
+        self.bridge.refusing = "a Stop hook stands"
+        e = sminos.log_append(self.project, sminos.writer_id(), "human",
+                              **{"from": "human", "to": [{"session": self.sid, "alias": self.alias}],
+                                 "text": "written here, dropped"})
+        self.deliver()
+        key = {"writer": e["writer"], "seq": e["seq"]}
+        self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]))
+        self.a_pass()
+        self.assertEqual(self.outcomes_of(e), [], "nothing from outside, nothing reported")
+
+    def test_e_a_marker_that_cannot_be_written_is_said_once_and_held_by_the_process(self):
+        """The record comes first, then the marker (at least once, as the
+        outbox is): a marker write that fails is said once in daemon.log,
+        and this process does not record the same `failed` again."""
+        self.bridge.refusing = "dropped, marker unwritable"
+        e = self.human_from_hub("its marker will not be kept")
+        self.deliver()
+        key = {"writer": e["writer"], "seq": e["seq"]}
+        self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]))
+        real = sminos.write_json
+
+        def refuse_markers(path, *a, **k):
+            if os.sep + "refused" + os.sep in path:
+                raise OSError("read-only file system")
+            return real(path, *a, **k)
+
+        with mock.patch.object(sminos, "write_json", side_effect=refuse_markers), \
+                mock.patch.object(sminos, "daemon_log") as log:
+            for _ in range(3):
+                self.a_pass()
+        self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered", "failed"], "recorded once")
+        said = [c.args[0] for c in log.call_args_list if "refusals could not be kept" in c.args[0]]
+        self.assertEqual(len(said), 1, "said once: %s" % said)
+        self.a_pass()
+        self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered", "failed"])
+        self.assertEqual(outcomes._UNWRITTEN, {}, "the marker is written once it can be")
+
+    def test_d_a_refusal_is_reported_only_once_its_first_outcome_is_recorded(self):
+        """The `failed` must follow the `delivered` (the hub keeps the
+        latest): a refusal naming an event still owed to the session waits
+        until delivery has recorded and settled it. Here the session has no
+        bridge running and its kept file is written as a child writes it."""
+        import sminos_bridge as bridge
+        other = Session(self.root)
+        try:
+            sminos.reconcile(self.project)
+            alias = member_of(self.project, other.sid).alias
+            e = self.human_from_hub("not delivered yet", other.sid, alias)
+            key = {"writer": e["writer"], "seq": e["seq"]}
+            with open(bridge.kept_path(other.sid), "w") as f:
+                json.dump({"override": None, "delivered": {}, "refused": [{"key": key, "reason": "dropped"}]}, f)
+            sminos.forget_caches()
+            self.assertEqual(outcomes.report_refused(self.project, sminos.view_of(self.project, titles=False)), 0)
+            self.assertEqual(self.outcomes_of(e, other.sid), [], "not before its delivery")
+            self.a_pass()
+            self.assertIn("not delivered yet", other.inbox.texts())
+            self.assertEqual([o for o, _ in self.outcomes_of(e, other.sid)], ["delivered", "failed"])
+        finally:
+            other.end()
+            try:
+                os.unlink(bridge.kept_path(other.sid))
+            except OSError:
+                pass
 
 
 class Requests(unittest.TestCase):
@@ -1007,6 +1169,32 @@ class Uplink(unittest.TestCase):
         self.assertTrue(codes.verifies(self.key, "delivery", self.project, d))
         self.assertNotIn("not on a read-only machine", self.bridge.texts() + self.session.inbox.texts(),
                          "nothing delivered")
+
+    def test_e_a_send_the_engine_dropped_after_submitted_reaches_the_hub_failed(self):
+        """DC8.G5 end to end: the bridge answered `submitted` (DX4
+        `delivered`), then reported the engine's drop; the next pass of the
+        delivery path sends a second `delivery` for the same key, `failed`
+        with the bridge's reason, under the machine's code."""
+        import sminos_bridge as bridge
+        self.bridge.refusing = "a Stop hook stands"
+        try:
+            count = len(self.hub.messages())
+            key = self.deliver_from_outside("taken, then dropped")
+            ofkey = lambda ms: [m["body"] for m in self.mine(ms[count:], "delivery") if m["body"]["event"] == key]  # noqa: E731
+            self.assertIsNotNone(self.hub.wait(ofkey, timeout=15), "delivered first")
+            self.assertTrue(wait_for(lambda: [r for r in bridge.load_kept(self.sid).get("refused") or []
+                                              if r["key"] == key]), "the child kept the refusal")
+            r = cli("daemon", "tick")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            ms = self.hub.wait(lambda ms: [d for d in ofkey(ms) if d["outcome"] == "failed"], timeout=15)
+            self.assertIsNotNone(ms, "a failed outcome for the same key reaches the hub")
+            got = ofkey(ms)
+            self.assertEqual([d["outcome"] for d in got], ["delivered", "failed"])
+            self.assertIn("a Stop hook stands", got[-1]["reason"])
+            self.assertEqual(got[-1]["session"], self.sid)
+            self.assertTrue(codes.verifies(self.key, "delivery", self.project, got[-1]), "with its code")
+        finally:
+            self.bridge.refusing = None
 
 
 if __name__ == "__main__":

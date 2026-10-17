@@ -167,7 +167,9 @@ export function resyncEvent(): BridgeEvent {
 export function forgetLive() {
   state.turns.clear()
   state.messages.clear()
+  // Its agents were set aside first (bridge-agents.tsx, forgetAgents).
   state.agents.clear()
+  state.submissions = []
   state.delivered.clear()
   state.loopTurns.clear()
   state.stepBlocks.clear()
