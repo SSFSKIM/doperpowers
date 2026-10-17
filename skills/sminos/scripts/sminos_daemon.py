@@ -506,6 +506,26 @@ def publish_renames(project, view):
     return n
 
 
+def publish_titles(project, view):
+    """Duty 3, for a project another machine reads (`shared`): a `titled`
+    when a local member's title (sminos.transcript_title: its /rename name,
+    else the harness's generated one) differs from the last one the log
+    holds for it, into the session's own file. The desk and every other
+    machine's views name the session by it, its ended sessions and an
+    offline machine's included. The harness re-appends title records
+    thousands of times a session, mostly unchanged; only a change is an
+    event. A title that cannot be read says nothing, so "" is never
+    published. Returns how many events it appended."""
+    n = 0
+    for m in view.members:
+        if not (m.local and m.session):
+            continue
+        title = sminos.transcript_title(m.session)
+        if title and title != sminos.published_title(view.info.get(m.session)):
+            n += len(sminos.lifecycle(project, m.session, "titled", required=False, title=title))
+    return n
+
+
 def deliver_owed(project, view):
     """Duty 4: for each local member with anything owed to it, deliver_next —
     the same operation the sender's fast path calls — in writer order from
@@ -556,7 +576,7 @@ def tick(project, all_seats=None):
     view = sminos.view_of(project, all_seats, titles=False)
     out["reconciled"] = view.reconciled
     if shared(project):
-        out["published"] = publish_state(project, view, record)
+        out["published"] = publish_state(project, view, record) + publish_titles(project, view)
     out["published"] += publish_renames(project, view)
     out["delivered"], out["to"] = deliver_owed(project, view)
     if out["integrated"]:

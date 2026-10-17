@@ -404,6 +404,47 @@ assert_contains "$(cat "$T/mb.received")" "ping from ma" "ma's say reaches mb on
 until_true 200 grep -q "pong from mb" "$T/ma.received" || true
 assert_contains "$(cat "$T/ma.received")" "pong from mb" "and mb's reaches ma on alpha"
 
+# ---- titles: a session named as its human knows it, published by its machine on a change
+echo "titles:"
+as a alpha
+TXA="$HOME/.claude/projects/-syncproj"
+mkdir -p "$TXA"
+title_rec() { # kind value: one title record into ma's transcript, as the harness appends (and re-appends) it
+  printf '{"type":"%s","%s":"%s","sessionId":"%s"}\n' "$1" "$([ "$1" = custom-title ] && echo customTitle || echo aiTitle)" \
+    "$2" "$MA" >> "$TXA/$MA.jsonl"
+}
+filler() { printf '{"type":"user","message":{"role":"user","content":"a turn"}}\n' >> "$TXA/$MA.jsonl"; }
+hub_titles() { ctl state "[e['title'] for e in d['projects']['$PID']['writers']['alpha/$MA'] if e['kind'] == 'titled']"; }
+hub_titles_are() { [ "$(hub_titles)" = "$1" ]; }
+tick_a() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tick", ""))' "$T/a/s/projects/$PID/daemon.json" 2>/dev/null || true; }
+tick_moved() { [ "$(tick_a)" != "$1" ]; }
+two_ticks() { local t; t="$(tick_a)"; until_true 100 tick_moved "$t" || true; t="$(tick_a)"; until_true 100 tick_moved "$t" || true; }
+ma_on_beta() { # → ma's in-charge line and its source as beta's list --json carries them
+  (as b beta && cd "$RB" && "$SMINOS" list --json) | python3 -c 'import json, sys
+print(" / ".join("%s (%s)" % (r["charge"], r["charge_source"]) for r in json.load(sys.stdin) if r["alias"] == "ma"))'
+}
+ma_on_beta_is() { [ "$(ma_on_beta)" = "$1" ]; }
+for _ in 1 2 3; do filler; title_rec ai-title "Codex native Computer Use internals"; done
+until_true 200 hub_titles_are '["Codex native Computer Use internals"]' || true
+assert_equals "$(hub_titles)" '["Codex native Computer Use internals"]' \
+  "alpha's daemon publishes ma's title once, as a titled in ma's own file, though the harness re-appended it"
+until_true 200 ma_on_beta_is "Codex native Computer Use internals (title)" || true
+assert_equals "$(ma_on_beta)" "Codex native Computer Use internals (title)" \
+  "beta, which holds no transcript of ma, names ma by the title alpha published"
+# /rename: the name the human gave it outranks the generated title, which the harness keeps re-appending.
+for _ in 1 2 3; do filler; title_rec custom-title "cua_repl"; title_rec ai-title "Codex native Computer Use internals"; done
+until_true 200 hub_titles_are '["Codex native Computer Use internals", "cua_repl"]' || true
+two_ticks
+for _ in 1 2 3; do filler; title_rec custom-title "cua_repl"; title_rec ai-title "Codex native Computer Use internals"; done
+two_ticks
+assert_equals "$(python3 -c 'import json, sys
+print([e["title"] for e in map(json.loads, open(sys.argv[1])) if e["kind"] == "titled"])' "$ALOG/alpha.$MA.jsonl")" \
+  "['Codex native Computer Use internals', 'cua_repl']" \
+  "a /rename is published as the new title, once: ticks over an unchanged title publish nothing"
+until_true 200 ma_on_beta_is "cua_repl (title)" || true
+assert_equals "$(ma_on_beta)" "cua_repl (title)" "and beta names ma by it"
+settle "after titles"
+
 # ---- a daemon restart
 echo "a daemon restart:"
 kill "$A_DAEMON"

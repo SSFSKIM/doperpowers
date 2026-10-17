@@ -268,6 +268,7 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | `status` | `session`, `text` | `sminos status` |
 | `renamed` | `session`, `alias`, `name_source` | the daemon, on a harness name change, into the session's file |
 | `state` | `session`, `state` word, `machine` | the daemon, on a liveness transition (§8), into the session's file |
+| `titled` | `session`, `title` (never empty) | the daemon, in a project another machine reads, when the session's title (§5, source 4) moves from the last one published, into the session's file |
 
 **Membership rule.** A session is a member while its latest `joined`/
 `retired` event is `joined`. A fresh fill of a seat appends `retired`
@@ -438,12 +439,17 @@ beside its state. Sources, in order; the first present wins:
    "현우진", "interactive learning". A name is a responsibility more often
    than not, and the human chose it.
 3. The latest `in-charge` event with `source` `derived` (below).
-4. On this machine only, the latest `ai-title` record in the session's
-   transcript — the harness rewrites it as the conversation moves, so it is
-   the current topic, not the responsibility: the "interactive learning"
-   session's latest title read "구글 테이크아웃 Gemini 대화 기록". A
-   fallback, never preferred, and a remote view lacks it (the title is not
-   published; it changes every turn).
+4. The session's title, as the harness names it ("Session name" in
+   `/status`): the latest `custom-title` record of its transcript (set by
+   `/rename`; an empty one clears it), else the latest `ai-title`, which
+   follows the conversation's topic rather than the responsibility — the
+   "interactive learning" session's read "구글 테이크아웃 Gemini 대화 기록".
+   A fallback, never preferred. On the session's machine it is read from the
+   transcript; elsewhere it is the last `titled` its machine published (§8).
+   The harness re-appends both records thousands of times a session, almost
+   always unchanged (two of the owner's sessions, 2026-10-17: 1 535 and
+   3 776 re-appends, one value each), so publishing only a change costs a
+   few events a session.
 5. Empty.
 
 `sminos derive [<alias> | --all]` asks a session what it is in charge of
@@ -567,9 +573,10 @@ invariant the executor chooses the git commands; `stash` is not among them
 top-level `*.jsonl` of `log/`, so `machines/` is invisible to it.
 
 `sminos daemon run [--interval 5]` loops `sminos daemon tick` over every
-project known locally — the sync duties and the publishing of `state`
-only for those with a remote (a local view reads liveness directly, so a
-published `state` in a local project would only grow its log), the rest —
+project known locally — the sync duties and the publishing of `state` and
+`titled` only for those with a remote or a hub (a local view reads liveness
+and titles directly, so publishing them in a local project would only grow
+its log), the rest —
 `renamed` included, the log's only record of a name change — for all, so a
 remote-less project's owed deliveries are retried too —
 `tick` being one iteration, used by tests;
@@ -591,7 +598,12 @@ per tick):
    differs from the last `state` published for that session and differed on
    the previous tick too, append `state` (one tick of persistence drops the
    flip inside a tool round). When the harness name differs from the last
-   known alias, append `renamed` with its `name_source`.
+   known alias, append `renamed` with its `name_source`. When the session's
+   title (§5, source 4) is not empty and differs from the last `titled`
+   published for it, append `titled`: a member is named by it on the desk
+   and on every other machine, its ended sessions and an offline machine's
+   included. A transcript scanned every tick is read backward from its end
+   and not again while it is unchanged.
 4. **Deliver.** For each local member, every event owed to it (§4), in
    writer order from its settled prefix: push a frame or resume, exactly as
    a local `say` would, and settle per §4.
@@ -1755,6 +1767,22 @@ Dispatch scripts: one `--brief` each.
   pre-attach stream reported honestly; two machines with one name is rare
   in the owner's fleet.
   Date/Author: 2026-10-14, the authoring session, from the high-rung re-review.
+
+- Decision: a session's title is published, as its own kind `titled` in
+  the session's file, and is the harness's "Session name" (`custom-title`,
+  else `ai-title`), not the `ai-title` alone (§3, §5, §8). This reverses
+  §5's "a remote view lacks it": the owner, working from the desk, could
+  not tell sessions apart by alias and machine ("maws-4d @macbook" is the
+  session they call "cua_repl"), and the desk's sidebar draws ended
+  sessions and offline machines' from the log, which session presence
+  cannot serve. "It changes every turn" was the record, not the value: the
+  harness re-appends it, and only a change is published. A kind of its own
+  rather than a field on `renamed` (which an older reader takes the alias
+  from) or an `in-charge` with a new source (which the desk's projection
+  draws as the in-charge line, whatever its source): every older reader,
+  sminos's projection and the desk's, passes over a kind it does not know,
+  and the hub verifies any kind.
+  Date/Author: 2026-10-17, the desk's session-title change.
 
 ## Outcomes & Retrospective
 
