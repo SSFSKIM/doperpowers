@@ -60,12 +60,18 @@ const disk = (on: On, initial: Record<string, string>) => {
   return { files, put }
 }
 
-/** A headless session in /work/repo/sub over `initial`, started as a session starts. */
-const start = async ($: Engine, on: On, initial: Record<string, string>) => {
+type Disk = ReturnType<typeof disk>
+type Run = (argv: readonly string[], fs: Disk) => ReturnType<typeof ok>
+
+/**
+ * A headless session in /work/repo/sub over `initial`, started as a session
+ * starts; `run` answers a process other than git.
+ */
+const start = async ($: Engine, on: On, initial: Record<string, string>, run: Run = () => ok()) => {
   mock.env(on, { HOME })
   const fs = disk(on, initial)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('process.run', (_, e) => (e.argv[0] === 'git' ? ok('/work/repo/.git\n/work/repo\n') : ok()))
+  on('process.run', (_, e) => (e.argv[0] === 'git' ? ok('/work/repo/.git\n/work/repo\n') : run(e.argv, fs)))
   await $.session.start({ cwd: '/work/repo/sub', surface: null, isInteractive: false })
   return fs
 }
@@ -274,5 +280,21 @@ describe('an oversized output', () => {
     expect(file).not.toContain(STORED)
     expect(file).not.toContain(githubPat(55))
     expect(file.startsWith('head [secret:API_KEY]\n')).toBe(true)
+  })
+
+  test('one larger than a single read is read in pieces and rewritten whole', async ($, on) => {
+    const saved = `${HOME}/.claude/projects/-work-repo/s1/tool-results/b2.txt`
+    const MIB = 1024 * 1024
+    const filler = 'y'.repeat(5 * MIB)
+    tool(on, () => bash('preview', { persistedOutputPath: saved, persistedOutputSize: 6 * MIB }))
+    // `dd … skip=<n> count=2 | base64`, answered from the file in memory.
+    const pieces: Run = (argv, disk) => {
+      const from = Number(argv[5]) * MIB
+      return ok(btoa(disk.files.get(argv[4]!)!.text.slice(from, from + 2 * MIB)))
+    }
+    const fs = await start($, on, { [`${STORE}/API_KEY`]: STORED, [saved]: `${STORED}\n${filler}\n${STORED}\n` }, pieces)
+    await $.tool.call({ tool: 'Bash', command: 'huge' })
+    const file = fs.files.get(saved)!.text
+    expect(file).toBe(`[secret:API_KEY]\n${filler}\n[secret:API_KEY]\n`)
   })
 })

@@ -22,8 +22,8 @@ import type { Format } from './secrets-sources'
  * before text leaves the process: a tool's result as the model reads it and
  * as the transcript keeps it (`toolUseResult`), every row appended to the
  * conversation, an oversized output's persisted file, the system prompt's
- * sections, the first message's context blocks, and each attachment as a
- * request carries it. No call is refused for touching the store: a command
+ * sections, the first message's context blocks, each attachment as a request
+ * carries it, and a compaction's instructions and summary. No call is refused for touching the store: a command
  * that prints a value is caught at its output. Handles in the input of a
  * Write, Edit, MultiEdit, NotebookEdit or Bash call are restored to their
  * bytes before it runs, so a file edited through a handle keeps its secret.
@@ -33,15 +33,6 @@ import type { Format } from './secrets-sources'
  * change, and token-shaped strings anywhere (secrets-detect).
  */
 
-/**
- * Interfaces I9: from session start the session carries the guard marker in
- * `$.state`, under this plugin's name, and `cua`'s scrubbing stands down so
- * one guard decides every handle. Every plugin reads it; only devcloud writes
- * it; a child process (a `claude` a tool call starts) has its own session and
- * decides for itself. Its type is the plugin's contract (types/devcloud.d.ts).
- * Not a `globalThis` symbol: the engine evaluates each
- * plugin's module in a realm of its own (probed 2026-10-17, 2.1.302).
- */
 // The tools whose input a handle is restored in before they run.
 const RESTORED = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash'])
 // `tool.call`'s own keys beside the tool's arguments: never rewritten.
@@ -217,7 +208,16 @@ const notRestored = (unrestored: readonly string[]) =>
   `secrets: not restored, so written as is: ${unrestored.join(', ')} ` +
   "(a superseded value, a key no longer stored, or another session's redaction)."
 
-// Taken with both matchers: an event is registered without one once per module.
+/**
+ * Interfaces I9: from its start the session carries the guard marker in
+ * `$.state`, under this plugin's name, and `cua`'s scrubbing stands down so
+ * one guard decides every handle. Every plugin reads it; only devcloud writes
+ * it; a child process (a `claude` a tool call starts) has its own session and
+ * decides for itself. Its type is the plugin's contract (types/devcloud.d.ts).
+ * Not a `globalThis` symbol: the engine evaluates each plugin's module in a
+ * realm of its own (probed 2026-10-17, 2.1.302). Taken with both matchers: an
+ * event is registered without one once per module.
+ */
 const secretsStart: Hook<'session.start'> = async ($, e, next) => {
   await $.state.set({ plugin: 'devcloud', key: 'secrets-guard' }, { owner: 'devcloud', version: 1 })
   project = undefined
@@ -231,10 +231,10 @@ export function registerSecrets(on: On) {
   on('session.start', { isInteractive: false }, secretsStart)
 
   on('tool.call', async ($, e, next) => {
-    await refresh($, true)
     let input = e
     let unrestored: string[] = []
     if (RESTORED.has(e.tool)) {
+      await refresh($, true)
       const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
       const restored = handles.restoreRecord(args)
       if (restored.value !== args) input = { ...e, ...restored.value }

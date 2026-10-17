@@ -105,11 +105,6 @@ export class Handles {
     this.knownPattern = texts.length ? new RegExp(texts.map(escape).join('|'), 'g') : undefined
   }
 
-  /** True when there is a value or a pattern to look for; patterns always are. */
-  get size() {
-    return this.known.size
-  }
-
   private patternHandle(kind: string, text: string): string {
     let handle = this.issued.get(text)
     if (handle === undefined) {
