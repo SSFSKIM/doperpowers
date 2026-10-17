@@ -32,8 +32,9 @@ file's lock, only while no event of this machine's holds it, and its
 appenders allocate past it (sminos._append): what this machine writes next
 never lands where nothing can upload or import it. What passes is appended
 verbatim, with its code, through the log's own locks: present already (the
-same content at its (writer, seq)) it is skipped; a different content there
-is refused; past a gap it waits for the hub to send what is missing. Then whatever was appended is delivered at
+same content at its (writer, seq)) it is skipped; a different content there,
+or a position spent before, is refused `conflict`; past a gap it waits for
+the hub to send what is missing. Then whatever was appended is delivered at
 once and the tick loop nudged.
 
 Its state between streams lives in the project's home, `uplink.json`: the
@@ -65,10 +66,9 @@ LEGACY = "legacy/"
 BATCH_BYTES = 256 * 1024
 MESSAGE_MAX = 2000  # a rejection's message, as the hub admits it
 # The reason an event that verifies is refused for its position (another event
-# holds it here, or it is spent): DX2's `conflict`, which DC3's module admits
-# only from its M3 — a reason it does not know yet would be refused, so until
-# then such an event is reported as `bad-code`, its position read as false.
-CONFLICT_REASON = "bad-code"
+# holds it here, or it is spent): DX2's `conflict`, which the hub admits since
+# DC3 M3.
+CONFLICT_REASON = "conflict"
 
 
 def log(line):

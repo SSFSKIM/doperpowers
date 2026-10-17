@@ -948,14 +948,14 @@ def service_env():
 
 
 def installed_cli():
-    """The CLI the service runs: a path that outlives plugin updates. A CLI
-    running from the plugin cache lives under a versioned directory an update
-    prunes, so the service runs the marketplace clone instead (its
-    `installLocation` in ~/.claude/plugins/known_marketplaces.json, kept up to
-    date by the harness), and with no usable clone the install is refused
-    rather than pointed at a path the next update deletes. Anything else — a
-    development checkout — is stable as it is, and runs itself."""
-    here = os.path.realpath(sminos.LAUNCHER)
+    """The CLI the service runs, its sminos.py: a path that outlives plugin
+    updates. A CLI running from the plugin cache lives under a versioned
+    directory an update prunes, so the service runs the marketplace clone
+    instead (its `installLocation` in ~/.claude/plugins/known_marketplaces.json,
+    kept up to date by the harness), and with no usable clone the install is
+    refused rather than pointed at a path the next update deletes. Anything
+    else — a development checkout — is stable as it is, and runs itself."""
+    here = os.path.join(sminos.SCRIPT_DIR, "sminos.py")
     plugins = os.path.join(sminos.home_dir(), ".claude", "plugins")
     if not here.startswith(os.path.realpath(os.path.join(plugins, "cache")) + os.sep):
         return here
@@ -965,13 +965,24 @@ def installed_cli():
             location = str(((json.load(f) or {}).get("doperpowers") or {}).get("installLocation") or "")
     except (OSError, ValueError, AttributeError):
         location = ""
-    stable = os.path.join(location, "skills", "sminos", "scripts", "sminos") if location else ""
+    stable = os.path.join(location, "skills", "sminos", "scripts", "sminos.py") if location else ""
     if stable and os.path.isfile(stable):
         return stable
     sminos.die("daemon install: this sminos runs from the versioned plugin cache (%s), which a plugin update "
                "deletes, and the doperpowers marketplace clone it would run instead is missing (%s) — restore it "
                "(claude plugin marketplace add, or update the doperpowers marketplace), or run the install "
                "from a checkout of doperpowers" % (here, stable or "no doperpowers entry in %s" % known), 1)
+
+
+def interpreter():
+    """The Python the service runs sminos on: the one running this install,
+    which imports sminos (sminos.MIN_PYTHON), pinned. Run through the
+    launcher, the service would take the first python3 its PATH finds, and
+    the PATH an install records can lead to one too old (macOS's own)."""
+    if not (sys.executable and os.path.isabs(sys.executable)):
+        sminos.die("daemon install: this Python does not say where it is (sys.executable is %r), so the service "
+                   "cannot be pointed at it — run the install with a python3 from PATH" % sys.executable, 1)
+    return sys.executable
 
 
 def cmd_install(_a):
@@ -998,7 +1009,8 @@ def install_launchd():
         text = f.read()
     entries = "\n".join("    <key>%s</key><string>%s</string>" % (escape(k), escape(v))
                         for k, v in sorted(service_env().items()))
-    for key, value in (("LABEL", escape(LABEL)), ("SMINOS_CLI", escape(installed_cli())),
+    python, cli = interpreter(), installed_cli()
+    for key, value in (("LABEL", escape(LABEL)), ("PYTHON", escape(python)), ("SMINOS_CLI", escape(cli)),
                        ("ENV", entries), ("LOG", escape(os.path.join(sminos.root(), "daemon.out")))):
         text = text.replace("{{%s}}" % key, value)
     # launchd opens daemon.out in the registry before the daemon runs: on a
@@ -1006,16 +1018,20 @@ def install_launchd():
     os.makedirs(sminos.root(), mode=0o700, exist_ok=True)
     path = plist_path()
     write_private(path, text)
-    print("wrote %s\nload it:   launchctl bootstrap gui/$(id -u) %s\nunload it: launchctl bootout gui/$(id -u)/%s"
-          % (path, path, LABEL))
+    print("wrote %s: it runs %s on %s (Python %d.%d)\nload it:   launchctl bootstrap gui/$(id -u) %s\n"
+          "unload it: launchctl bootout gui/$(id -u)/%s"
+          % ((path, cli, python) + tuple(sys.version_info[:2]) + (path, LABEL)))
 
 
-def unit_word(value):
+def unit_word(value, argument=False):
     """`value` as one double-quoted word of a unit file: quoted words are
     C-unescaped (the backslash, the quote, a line break escaped), and `%`
-    starts a specifier (`%%`). A `$` stays as it is: Environment= expands no
-    variables, nor does ExecStart in the program's path, the one word of it
-    install fills."""
+    starts a specifier (`%%`). A `$` stays as it is where nothing expands
+    variables, in Environment= and in ExecStart's program path; an
+    `argument` of ExecStart's has its variables expanded, so a `$` there is
+    written `$$`."""
+    if argument:
+        value = value.replace("$", "$$")
     return '"%s"' % value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("%", "%%")
 
 
@@ -1029,19 +1045,20 @@ def install_systemd():
         text = f.read()
     log = os.path.abspath(os.path.join(sminos.root(), "daemon.out"))
     entries = "\n".join("Environment=%s" % unit_word("%s=%s" % (k, v)) for k, v in sorted(service_env().items()))
-    for key, value in (("SMINOS_CLI", unit_word(installed_cli())), ("ENV", entries),
-                       ("LOG", log.replace("%", "%%"))):
+    python, cli = interpreter(), installed_cli()
+    for key, value in (("PYTHON", unit_word(python)), ("SMINOS_CLI", unit_word(cli, argument=True)),
+                       ("ENV", entries), ("LOG", log.replace("%", "%%"))):
         text = text.replace("{{%s}}" % key, value)
     # systemd opens daemon.out before the daemon runs: on a first install
     # nothing has made the registry yet.
     os.makedirs(sminos.root(), mode=0o700, exist_ok=True)
     path = unit_path()
     write_private(path, text)
-    print("wrote %s\n"
+    print("wrote %s: it runs %s on %s (Python %d.%d)\n"
           "load it:   systemctl --user daemon-reload && systemctl --user enable --now %s\n"
           "unload it: systemctl --user disable --now %s\n"
           "to keep it running with nobody logged in (and from boot), lingering, once per user:\n"
-          "           loginctl enable-linger" % (path, UNIT, UNIT))
+          "           loginctl enable-linger" % ((path, cli, python) + tuple(sys.version_info[:2]) + (UNIT, UNIT)))
 
 
 def age(ts):

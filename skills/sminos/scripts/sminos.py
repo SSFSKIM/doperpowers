@@ -126,6 +126,19 @@ import uuid as uuidlib
 from contextlib import contextmanager
 from typing import NamedTuple, NoReturn, Optional
 
+# The oldest Python sminos runs on (its annotations are evaluated: `float |
+# None`). The launcher runs the first python3 on PATH, which on a Mac whose
+# PATH leads to /usr/bin is macOS's own 3.9: say what fixes it rather than
+# fail mid-import. Everything above this line runs on 3.9.
+MIN_PYTHON = (3, 10)
+if sys.version_info < MIN_PYTHON:
+    sys.stderr.write(
+        "sminos needs Python %d.%d or newer, and %s is %d.%d. Install a newer one (brew install python, or "
+        "python.org) and put it first on PATH, or run sminos with it: <that python3> %s ...\n"
+        % (MIN_PYTHON[0], MIN_PYTHON[1], sys.executable or "python3", sys.version_info[0], sys.version_info[1],
+           os.path.realpath(__file__)))
+    sys.exit(1)
+
 # Fleet state is private to the agent fleet: everything this CLI creates is
 # 700/600. All agents run as the same OS user, so nothing needs group/other.
 os.umask(0o077)
@@ -2454,19 +2467,25 @@ def _member_alias(project, session, seat, peer):
     return alias
 
 
-def export_live(project, session, records):
+def export_live(cwd, session, records):
     """The bridge's export (DC2 G4, desk §3): the host events of transcript
     records the session just wrote, as the bridge's child received them, in
-    the shape host_events reads. They are appended as the Stop hook's export
-    appends them: the same writer, the same (kind, src), one batch that drops
-    what the file already holds, so whichever of the two comes second adds
-    nothing. Membership on sight as the hook decides it; the export position
-    is the hook's and is not moved. The child is long-lived, so the harness's
-    records and this machine's identity (an enrollment renames the writer)
-    are read afresh each time. Returns the events appended."""
-    global _PEERS, _SELF
-    _PEERS = None
-    _SELF = None
+    the shape host_events reads, into the project of the session's working
+    directory. They are appended as the Stop hook's export appends them: the
+    same writer, the same (kind, src), one batch that drops what the file
+    already holds, so whichever of the two comes second adds nothing.
+    Membership on sight as the hook decides it; the export position is the
+    hook's and is not moved. The child lives as long as its session, so each
+    export starts from nothing cached, as each hook run does: the project is
+    resolved again (a .smns added, or one that came to name a hub, moves it),
+    and so are this machine's identity (an enrollment renames the writer) and
+    the harness's records. That costs a few stats and small reads beside the
+    writer file the append reads whole, a few times a turn. Returns the
+    events appended."""
+    forget_caches()
+    project = resolve_project(cwd)
+    if project is None:
+        return []
     seen = _on_sight(project, session)
     if seen is None or not joinable(*seen):
         return []

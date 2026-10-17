@@ -665,7 +665,8 @@ ctl send beta "{\"t\": \"events\", \"project\": \"$PID\", \"events\": $SURROGATE
 rejected_beta() { [ "$(rejections)" -ge 18 ]; }
 until_true 200 rejected_beta || true
 ctl save "$T/state.json"
-assert_equals "$(reported beta "hub/$MEMBER" 9 bad-code)" 2 "beta refuses both events at 9: the forgery, then the valid one at its tombstone"
+assert_equals "$(reported beta "hub/$MEMBER" 9 bad-code) $(reported beta "hub/$MEMBER" 9 conflict)" "1 1" \
+  "beta refuses both events at 9: the forgery as bad-code, then the valid one at its tombstone as conflict"
 assert_not_contains "$(cat "$BLOG/hub.$MEMBER.jsonl")" "valid, at a spent position" "nothing is appended at a spent position"
 assert_contains "$(ctl state "[a['message'] for a in d['projects']['$PID']['audit'] if a['kind'] == 'rejected' and a['event'] == dict(writer='hub/$MEMBER', seq=9)]")" \
   "was refused here before" "saying it was refused there before"

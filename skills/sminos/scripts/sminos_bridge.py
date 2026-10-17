@@ -704,16 +704,15 @@ class Bridge:
         lock that serves the stream: the log's locks may be held a while (the
         daemon's sync), and a slow append must not hold up the session's events.
         A failure is the Stop hook's to make good: its export appends whatever
-        of the same rows the log does not hold."""
+        of the same rows the log does not hold. This thread is the only one in
+        the child that reads sminos's caches, which each export clears."""
         while not self.closing.is_set():
             try:
                 cwd, records = self.exports.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                project = S.resolve_project(cwd)
-                if project is not None:
-                    S.export_live(project, self.session, records)
+                S.export_live(cwd, self.session, records)
             except (Exception, SystemExit) as err:  # noqa: BLE001 — the next export must still run
                 sys.stderr.write("sminos bridge: export to the log failed: %s: %s\n" % (type(err).__name__, err))
 

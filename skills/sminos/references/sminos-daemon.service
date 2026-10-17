@@ -7,10 +7,12 @@
 # `systemctl --user daemon-reload` and `systemctl --user enable --now
 # sminos-daemon.service`; with nobody logged in, the user's service manager
 # runs only once `loginctl enable-linger` is on for the user.
-# The program is the marketplace clone's CLI when the installing one ran
-# from the versioned plugin cache, so a plugin update does not strand it;
-# the daemon exits when its scripts change and Restart=always starts it on
-# the new code. KillMode=process does what launchd does with the job's
+# The program is the Python that ran the install, pinned (the PATH below
+# may find an older python3 first, which cannot import sminos), running the
+# marketplace clone's sminos.py when the installing one ran from the
+# versioned plugin cache, so a plugin update does not strand it; the
+# daemon exits when its scripts change and Restart=always starts it on the
+# new code. KillMode=process does what launchd does with the job's
 # process group: a stop or a restart signals the daemon alone, which stops
 # its uplink itself, and what it started in a session of its own (a
 # derivation, a `claude --bg` and the engine supervisor that may come up
@@ -21,7 +23,7 @@
 Description=sminos daemon (doperpowers): mirror, delivery, and the uplink to a desk hub
 
 [Service]
-ExecStart={{SMINOS_CLI}} daemon run
+ExecStart={{PYTHON}} {{SMINOS_CLI}} daemon run
 Restart=always
 RestartSec=10
 KillMode=process

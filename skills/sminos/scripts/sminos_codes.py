@@ -26,7 +26,8 @@ never raises: whatever the canonical form refuses, a code value that is not
 the canonical spelling of 32 bytes, or a nonce not that of 16, fails; the code
 is compared in constant time.
 
-Stdlib only: the daemon runs on the system's Python.
+Stdlib only: sminos installs nothing beside itself, and runs on any Python of
+sminos.MIN_PYTHON or newer (macOS's own /usr/bin/python3 is older).
 """
 
 import base64
