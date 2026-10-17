@@ -564,4 +564,46 @@ rung for DC8); the PR opened, not merged; the report at
 
 ## Outcomes & Retrospective
 
-(Written at the end.)
+**2026-10-17, after M4 (before the whole-branch panel).** All four
+milestones reviewed clean; the branch merged with `origin/main` at
+`17a5ab0c` and bumped to 7.165.0.
+
+- **G1 (pages).** Each transcript has an offset index, built once per file
+  on a worker thread and shared; a page reads only its own rows' bytes.
+  The build is faster than the full parse it replaces (coordinator copy
+  0.76 s against 2.80 s; MAWS's 256 MB copy 1.98 s against 3.77 s),
+  mostly by not parsing records with no `uuid`. Timed daemon-side at
+  machine load 300+, pages run at a median of 11–15 ms. A few percent
+  exceed 200 ms. The same pages re-run in process in 1.5–5 ms, so the
+  design session judged the bound on the page's own work. Heartbeat
+  answers, presence and deliveries keep their bounds while a large
+  subscribe builds.
+- **G2 (ended sessions).** An ended subscription stays open and pageable,
+  transcript-only. `session-ended` is sent only at `n` 0.
+- **G3 / G4 (status, jobs, `output`).** These are built as one pure
+  derivation (`sminos_jobs.py`). The shared fixture `dx4-jobs.json` pins
+  it for MAWS's fake machine: 71 vectors, mutation-tested. The plane feeds
+  it rows, the bridge's agent state, and disk facts that are re-read only
+  when a file's size or mtime changed. `output` is contained to the
+  opened file itself, under roots derived from machine state. The bridge
+  seeds agents that predate the module from `$.agent.list()`.
+- **G5.** A delivery the engine dropped after `submitted` is reported as a
+  second `failed` delivery. This is at-least-once, like the rest of the
+  outbox.
+- **G6.** Built at the bridge. Carrying `delivered.uuid` to the web is
+  deferred by the design session.
+
+What the evidence changed: the design assumed one canonical root for
+`output`, one form of task-notification, and a settings-level
+`adoptShellOutputRoot`. Real transcripts showed two slugs per moved
+session, a plain-row notification form (in main and subagent transcripts),
+a recognizable monitor-expiry notice, and that `adoptShellOutputRoot` is
+in-process state. Each finding went to the design session and is
+recorded in DX4. The review loops paid for themselves on concurrency
+twice: the seed's refresh races across a `/clear`, and the snapshot/live
+seam once the open moved off the thread. The measurement loop found a
+424 MB read hidden in the first status look.
+
+Left: the whole-branch xhigh panel, run by the design session. The M4
+review's Minor finding (the measurement's unanswered-probe cutoff) was
+fixed at `4afee326`.
