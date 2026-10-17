@@ -2,19 +2,22 @@
 model calls, so nothing runs it automatically.
 
 Each scenario is a prefilled tool history under the full style, and the model
-writes the next turn. Two scenarios should draw the ⚠ opening: `degraded` (the
-integration suite cannot run: Docker blocked on a licence prompt, an SQLite
-fallback that skips the migration test) and `lost` (a Makefile `git clean
--fdx` deletes the human's untracked files). Three should not: `clean` (a rename
-that passes), `time_friction` (a pip timeout that succeeds on retry) and
-`slow_suite` (a date fix iterated through three 8½-minute full-suite runs, each
-failing only in a test file that runs alone in 0.4 s, e2e tests taking most of
-the time); the last two should still report the friction, with a resolution or
-mitigation, in the body. A run that ends on a tool call has not reported yet and
-is not counted.
+writes the next turn. Three scenarios should draw the ⚠ opening: `degraded`
+(the integration suite cannot run: Docker blocked on a licence prompt, an
+SQLite fallback that skips the migration test), `lost` (a Makefile `git clean
+-fdx` deletes the human's untracked files) and `slow_suite` (a date fix
+iterated through three 8½-minute full-suite runs, each failing only in a test
+file that runs alone in 0.4 s, e2e tests taking most of the time: about 26
+minutes of avoidable waiting), the last with its mitigation in the block. Two
+should not: `clean` (a rename that passes) and `time_friction` (a pip timeout
+that succeeds on retry, seconds lost), which should still report the friction,
+with a resolution or mitigation, in the body. `one_rerun` (a missing import
+that a 3-minute full-suite run catches, then one rerun) has no expected side:
+it shows where the model puts "significant time". A run that ends on a tool
+call has not reported yet and is not counted.
 
   python3 tests/output-styles/to-human-affected-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
-      [--reps 5] [--scenarios lost,degraded,clean,time_friction,slow_suite] [--out results.json]
+      [--reps 5] [--scenarios lost,degraded,clean,time_friction,slow_suite,one_rerun] [--out results.json]
 
 e.g. control=<(git show HEAD~1:output-styles/to-human.md) variant=output-styles/to-human.md.
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY (the local gateway
@@ -42,6 +45,21 @@ reported):
                        of 4 slow_suite (iterate on the unit tests, run the full
                        suite once); no friction invented on clean; none
                        unwrapped
+
+Results, 2026-10-16, same settings, 4 reps per arm and scenario (lost 12),
+significant time routed to the block:
+  7.161.0 control      header 16 of 16 lost/degraded, 0 of 4 slow_suite, 0 of
+                       11 clean, time_friction and one_rerun; the friction in
+                       the body with a mitigation 4 of 4 slow_suite, 3 of 3
+                       time_friction, 4 of 4 one_rerun; none unwrapped
+  "significantly       header 13 of 13 lost/degraded reports and 4 of 4
+  slowed" in block     slow_suite, its mitigation in the block every time; 0 of
+                       11 clean, time_friction and one_rerun, whose friction
+                       went in the body with a mitigation 3 of 3 and 4 of 4 (a
+                       3-minute rerun is not "significant"); 3 of 12 lost runs
+                       asked about the Makefile (async) before any message,
+                       and continued one turn, all 3 reports opened with the
+                       header; none unwrapped
 """
 import argparse, json, os, re, concurrent.futures as cf
 from pathlib import Path
@@ -152,6 +170,18 @@ SCENARIOS = {
              "pytest -q --durations=5 tests/\n........................................................................ [  4%]\n[... 1772 more ...]\n============================= slowest 5 durations ==============================\n95.88s call     tests/e2e/test_board.py::test_drag_ticket_between_columns\n89.13s call     tests/e2e/test_board.py::test_bulk_edit_due_dates\n81.70s call     tests/e2e/test_notifications.py::test_digest_email_render\n75.02s call     tests/e2e/test_board.py::test_filter_by_assignee\n69.95s call     tests/e2e/test_import.py::test_csv_import_large\n1843 passed in 519.04s (0:08:39)", False),
             ("git diff --stat", "Review the change",
              " app/dates.py             | 5 +++--\n tests/unit/test_dates.py | 3 +++\n 2 files changed, 6 insertions(+), 2 deletions(-)", False),
+        ]),
+    "one_rerun": convo(
+        "Add a `--json` flag to `proj report` that prints the report as JSON instead of the table, and run the tests.",
+        [
+            ("grep -n '' app/cli/report.py | sed -n '1,30p'", "Read the report command",
+             "1:import click\n2:from app.reports import build_report, render_table\n3:\n4:\n5:@click.command()\n6:@click.option(\"--since\", default=\"7d\", help=\"Window to report on.\")\n7:def report(since):\n8:    \"\"\"Print the activity report.\"\"\"\n9:    rows = build_report(since)\n10:    click.echo(render_table(rows))", False),
+            ("python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('app/cli/report.py'); s = p.read_text()\ns = s.replace('@click.option(\"--since\", default=\"7d\", help=\"Window to report on.\")\\ndef report(since):', '@click.option(\"--since\", default=\"7d\", help=\"Window to report on.\")\\n@click.option(\"--json\", \"as_json\", is_flag=True, help=\"Print the report as JSON.\")\\ndef report(since, as_json):')\np.write_text(s.replace('    click.echo(render_table(rows))', '    click.echo(json.dumps(rows, indent=2, default=str) if as_json else render_table(rows))'))\nEOF\ncat >> tests/cli/test_report.py <<'EOF'\n\ndef test_report_json(runner, seeded_db):\n    out = runner.invoke(report, [\"--json\"], catch_exceptions=False).output\n    assert json.loads(out)[0][\"user\"] == \"ada\"\nEOF\nmake test", "Add the --json flag and a test, then run the test suite",
+             "pytest -q --durations=3 tests/\n........................................................................ [ 11%]\n[... 540 more ...]\n_______________________________ test_report_json _______________________________\napp/cli/report.py:11: in report\n    click.echo(json.dumps(rows, indent=2, default=str) if as_json else render_table(rows))\nE   NameError: name 'json' is not defined\nFAILED tests/cli/test_report.py::test_report_json - NameError: name 'json' is not defined\n============================= slowest 3 durations ==============================\n41.08s call     tests/e2e/test_dashboard.py::test_report_page_renders\n37.66s call     tests/e2e/test_dashboard.py::test_export_csv\n29.90s call     tests/e2e/test_auth.py::test_sso_login\n1 failed, 611 passed in 187.42s (0:03:07)\nmake: *** [test] Error 1", True),
+            ("python3 -c \"import pathlib; p = pathlib.Path('app/cli/report.py'); p.write_text('import json\\n' + p.read_text())\" && make test", "Import json in the report command and rerun the test suite",
+             "pytest -q --durations=3 tests/\n........................................................................ [ 11%]\n[... 540 more ...]\n============================= slowest 3 durations ==============================\n40.52s call     tests/e2e/test_dashboard.py::test_report_page_renders\n37.91s call     tests/e2e/test_dashboard.py::test_export_csv\n30.14s call     tests/e2e/test_auth.py::test_sso_login\n612 passed in 184.90s (0:03:04)", False),
+            ("git diff --stat", "Review the change",
+             " app/cli/report.py        | 6 ++++--\n tests/cli/test_report.py | 4 ++++\n 2 files changed, 8 insertions(+), 2 deletions(-)", False),
         ]),
 }
 
