@@ -212,12 +212,15 @@ class Ledger:
         call = self.calls.pop(tid, None) if isinstance(tid, str) else None
         if call is None:
             return
+        # A launch's text names it only on a row with no toolUseResult: where there is one, its status decides (an
+        # agent's own answer may begin as a launch does).
+        by_text = tur is None
         tur = tur if isinstance(tur, dict) else {}
         is_error = block.get("is_error") is True
         name = call["name"]
         if name in ("Agent", "Task"):
             status = tur.get("status")
-            launch = status == LAUNCHED or not is_error and _launch_text(_text(block.get("content")))
+            launch = status == LAUNCHED or by_text and not is_error and _launch_text(_text(block.get("content")))
             raw = LAUNCHED if launch else "error" if is_error else status if isinstance(status, str) else "completed"
             ev = {"raw": raw, "at": at, "result": True}
             if raw == LAUNCHED and _str(tur.get("outputFile")):
