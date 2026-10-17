@@ -1,0 +1,134 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import { Handles, spellings } from '../../hooks/mods/secrets-handles'
+import { chars, githubPat, pem } from './fake'
+
+const STORED = `sk-live-${chars(20, 41)}`
+const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)))
+
+const withStored = (known: Record<string, string> = { API_KEY: STORED }) => {
+  const handles = new Handles('abcd')
+  handles.setKnown(Object.entries(known).map(([label, value]) => ({ label, value })))
+  return handles
+}
+
+describe('known values', () => {
+  test('a stored value and each of its encodings get their own handle', () => {
+    const h = withStored()
+    const hex = Array.from(new TextEncoder().encode(STORED), (b) => b.toString(16).padStart(2, '0')).join('')
+    expect(h.scrub(`a ${STORED} b`)).toBe('a [secret:API_KEY] b')
+    expect(h.scrub(b64(STORED))).toBe('[secret:API_KEY~b64]')
+    expect(h.scrub(hex)).toBe('[secret:API_KEY~hex]')
+    expect(h.scrub(hex.toUpperCase())).toBe('[secret:API_KEY~HEX]')
+    expect(h.scrub(encodeURIComponent(`${STORED}/x y`))).toBe(encodeURIComponent(`${STORED}/x y`).replace(encodeURIComponent(STORED), '[secret:API_KEY]'))
+  })
+
+  test('every spelling names a distinct byte string', () => {
+    for (const value of [STORED, 'a/b+c=?d e&f', 'line one\nline "two"']) {
+      const all = spellings(value)
+      expect(new Set(all.map((s) => s.text)).size).toBe(all.length)
+      expect(new Set(all.map((s) => s.enc)).size).toBe(all.length)
+    }
+  })
+
+  test('a value under six characters is not scrubbed', () => {
+    expect(withStored({ SHORT: 'abc12' }).scrub('abc12 abc12')).toBe('abc12 abc12')
+  })
+
+  test('a value is replaced in one pass: a handle is never scrubbed again', () => {
+    const h = withStored({ WORD: 'secret', API_KEY: STORED })
+    expect(h.scrub(`${STORED} secret`)).toBe('[secret:API_KEY] [secret:WORD]')
+  })
+
+  test('a shadowed global value and a credential-file value keep their own label', () => {
+    const h = withStored({ API_KEY: STORED, 'API_KEY@global': `${STORED}-global`, 'hosts.yml:github.com.oauth_token': githubPat() })
+    expect(h.scrub(`${STORED}-global ${STORED} ${githubPat()}`)).toBe('[secret:API_KEY@global] [secret:API_KEY] [secret:hosts.yml:github.com.oauth_token]')
+  })
+
+  test('a known value is a known handle, not a pattern one', () => {
+    const h = withStored({ 'hosts.yml:github.com.oauth_token': githubPat() })
+    expect(h.scrub(`TOKEN=${githubPat()}`)).toBe('TOKEN=[secret:hosts.yml:github.com.oauth_token]')
+  })
+
+  test("a known value's JSON spelling is its own encoding", () => {
+    const key = pem(3)
+    const h = withStored({ 'key.json:private_key': key })
+    expect(h.scrub(JSON.stringify({ private_key: key }))).toBe('{"private_key":"[secret:key.json:private_key~json]"}')
+    expect(h.restore('[secret:key.json:private_key~json]').text).toBe(JSON.stringify(key).slice(1, -1))
+  })
+})
+
+describe('restoring', () => {
+  test('a known handle restores to the current value in the named spelling', () => {
+    const h = withStored()
+    expect(h.restore('Authorization: Bearer [secret:API_KEY]')).toEqual({ text: `Authorization: Bearer ${STORED}`, unrestored: [] })
+    expect(h.restore('[secret:API_KEY~b64]').text).toBe(b64(STORED))
+  })
+
+  test('after a rotation a known handle restores to the new value, and the old one reads superseded', () => {
+    const h = withStored()
+    h.setKnown([{ label: 'API_KEY', value: `${STORED}-rotated` }])
+    expect(h.restore('[secret:API_KEY]').text).toBe(`${STORED}-rotated`)
+    expect(h.scrub(`${STORED}-rotated / ${STORED} / ${b64(STORED)}`)).toBe('[secret:API_KEY] / [superseded:API_KEY] / [superseded:API_KEY~b64]')
+    expect(h.restore('[superseded:API_KEY]')).toEqual({ text: '[superseded:API_KEY]', unrestored: ['[superseded:API_KEY]'] })
+  })
+
+  test('a removed key reads superseded and its handle is not restored', () => {
+    const h = withStored()
+    h.setKnown([])
+    expect(h.scrub(STORED)).toBe('[superseded:API_KEY]')
+    expect(h.restore('x [secret:API_KEY] y')).toEqual({ text: 'x [secret:API_KEY] y', unrestored: ['[secret:API_KEY]'] })
+  })
+
+  test('a value moved to another label is current, not superseded', () => {
+    const h = withStored()
+    h.setKnown([
+      { label: 'API_KEY', value: `${STORED}-project` },
+      { label: 'API_KEY@global', value: STORED },
+    ])
+    expect(h.scrub(STORED)).toBe('[secret:API_KEY@global]')
+  })
+
+  test('a pattern handle restores to exactly its bytes in the process that issued it', () => {
+    const h = withStored({})
+    const pat = githubPat(7)
+    const scrubbed = h.scrub(`token ${pat} and again ${pat}, another ${githubPat(8)}`)
+    expect(scrubbed).toBe('token [redacted:github-pat#abcd.1] and again [redacted:github-pat#abcd.1], another [redacted:github-pat#abcd.2]')
+    expect(h.restore(scrubbed).text).toBe(`token ${pat} and again ${pat}, another ${githubPat(8)}`)
+  })
+
+  test("another process's pattern handle is left as written and named", () => {
+    const earlier = withStored({})
+    const old = earlier.scrub(githubPat(9))
+    const resumed = new Handles('wxyz')
+    resumed.scrub(githubPat(10))
+    expect(resumed.restore(`echo ${old}`)).toEqual({ text: `echo ${old}`, unrestored: [old] })
+  })
+
+  test('text with no handle is returned as it is', () => {
+    expect(withStored().restore('plain [not a handle] text')).toEqual({ text: 'plain [not a handle] text', unrestored: [] })
+  })
+})
+
+describe('scrubbing whole records', () => {
+  test('every string of a record is scrubbed, an unchanged record kept as the same object', () => {
+    const h = withStored()
+    const record = { stdout: `key ${STORED}`, nested: [{ text: githubPat(11) }], n: 3 }
+    expect(h.scrubRecord(record)).toEqual({ stdout: 'key [secret:API_KEY]', nested: [{ text: '[redacted:github-pat#abcd.1]' }], n: 3 })
+    const clean = { stdout: 'nothing here' }
+    expect(h.scrubRecord(clean)).toBe(clean)
+  })
+
+  test("an image's base64 is left alone", () => {
+    const h = withStored()
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: `AKIA${'A'.repeat(16)}${STORED}` } }
+    expect(h.scrubRecord(image)).toBe(image)
+  })
+
+  test('restoring a record restores each string and gathers what was not restored', () => {
+    const h = withStored()
+    const { value, unrestored } = h.restoreRecord({ file_path: '/x', old_string: '[secret:API_KEY]', new_string: '[superseded:OLD]' })
+    expect(value).toEqual({ file_path: '/x', old_string: STORED, new_string: '[superseded:OLD]' })
+    expect(unrestored).toEqual(['[superseded:OLD]'])
+  })
+})
