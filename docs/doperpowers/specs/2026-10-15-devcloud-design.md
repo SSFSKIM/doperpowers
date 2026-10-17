@@ -92,7 +92,8 @@ made-up value written for the test, never a real one.
    for a stored key runs (no refusal) and the model sees `[secret:K]`. Printing a scratch file that
    holds a made-up `ghp_…` token shows a `[redacted:github-pat#<ns>.1]` handle, in a subagent as in
    the main loop. With the session's model traffic recorded through a local proxy, no recorded
-   request holds a raw value; the session's transcript file holds none in any surface Design §9
+   request holds a raw value, outside the paths §9 lists as not covered (the auto-mode
+   classifier's request for a call a restored handle runs in); the session's transcript file holds none in any surface Design §9
    lists as covered (`grep -c <value> <transcript>` is 0), nor does the session store's copy of the
    session (its rows and its tool-result files, an oversized command output among them); every
    surface §9 lists as not covered was observed in M1's boundary probe.
