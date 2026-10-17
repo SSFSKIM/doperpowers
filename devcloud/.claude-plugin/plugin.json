@@ -1,0 +1,18 @@
+{
+  "name": "devcloud",
+  "description": "Secrets stay out of what the model reads and what the transcript keeps: stored values, credential files and token-shaped strings are redacted to handles that restore to their exact bytes on write",
+  "version": "0.1.0",
+  "author": {
+    "name": "SSFSKIM",
+    "email": "supremekim17@gmail.com"
+  },
+  "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/devcloud",
+  "repository": "https://github.com/SSFSKIM/doperpowers",
+  "license": "MIT",
+  "types": "./types/devcloud.d.ts",
+  "keywords": [
+    "secrets",
+    "redaction",
+    "mods"
+  ]
+}

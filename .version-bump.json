@@ -1,33 +1,56 @@
 {
-  "files": [
+  "plugins": [
     {
-      "path": "package.json",
-      "field": "version"
+      "name": "doperpowers",
+      "files": [
+        {
+          "path": "package.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".codex-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/marketplace.json",
+          "field": "plugins[name=doperpowers].version"
+        }
+      ],
+      "audit": {
+        "exclude": [
+          "CHANGELOG.md",
+          "RELEASE-NOTES.md",
+          "docs/doperpowers/execplans",
+          "node_modules",
+          ".git",
+          ".version-bump.json",
+          "scripts/bump-version.sh",
+          ".claude",
+          ".worktrees",
+          "devcloud"
+        ]
+      }
     },
     {
-      "path": ".claude-plugin/plugin.json",
-      "field": "version"
-    },
-    {
-      "path": ".codex-plugin/plugin.json",
-      "field": "version"
-    },
-    {
-      "path": ".claude-plugin/marketplace.json",
-      "field": "plugins.0.version"
+      "name": "devcloud",
+      "files": [
+        {
+          "path": "devcloud/.claude-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/marketplace.json",
+          "field": "plugins[name=devcloud].version"
+        }
+      ],
+      "audit": {
+        "root": "devcloud",
+        "exclude": []
+      }
     }
-  ],
-  "audit": {
-    "exclude": [
-      "CHANGELOG.md",
-      "RELEASE-NOTES.md",
-      "docs/doperpowers/execplans",
-      "node_modules",
-      ".git",
-      ".version-bump.json",
-      "scripts/bump-version.sh",
-      ".claude",
-      ".worktrees"
-    ]
-  }
+  ]
 }

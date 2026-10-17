@@ -1,0 +1,6 @@
+{
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the secrets guard — stored values, credential-file values and token-shaped strings are replaced by handles in every tool result, transcript row, attachment and system-prompt section the model reads, and handles in Write, Edit, MultiEdit, NotebookEdit and Bash input are restored to their exact bytes before the call runs",
+  "modules": [
+    "./mods/register.tsx"
+  ]
+}

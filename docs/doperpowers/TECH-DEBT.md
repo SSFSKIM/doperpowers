@@ -403,3 +403,13 @@ the spec's Decision Log entry "the branch review round"
 - **`ask.tsx` type errors against the 2.1.302 typings** (lines 1462, 1504),
   seen by `tsc` during this work; the mods tests pass. Trigger: next
   `ask.tsx` change.
+
+## devcloud secrets mod (2026-10-16, spec 2026-10-15-devcloud-design.md)
+
+- **An oversized output can ship raw if the process dies mid-call.** The
+  engine persists a large tool output to `tool-results/` before the mod's
+  `tool.call` hook rewrites it scrubbed; a kill in that instant leaves the raw
+  file, which the person's session store ships after its settle interval.
+  Accepted at design (Decision Log, round 3). Trigger: a raw value found in
+  the session store's copy of a `tool-results/` file, or the store gaining a
+  reader other than the person.
