@@ -1,8 +1,9 @@
 """The boot steps (Design §4) and the runs made of them: a boot (1-12), a
-reconcile (5-11), the config pull job (5, then 6-11 when the commit moved)
-and the secrets refresh (7, 10, 11). Each step is recorded in the status
-file; a failed step stops the run, and the next run retries from its top.
-Runs hold one lock, so a job never interleaves with a boot."""
+reconcile (5-11), the config pull job (5, then 6-11 when the commit moved),
+the secrets refresh (7, 10, 11) and the mirror refresh (no step of its own).
+Each step is recorded in the status file; a failed step stops the run, and the
+next run retries from its top. Runs hold one lock, so a job never interleaves
+with a boot."""
 
 import contextlib
 import fcntl
@@ -16,7 +17,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import descriptor, envfile, proc, profile as profile_mod, redact, secrets, services, status
+from . import descriptor, envfile, proc, profile as profile_mod, projects as projects_mod, redact, secrets, \
+    services, status
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
@@ -392,9 +394,7 @@ def services_step(r):
 
 
 def projects(r):
-    if not r.desc.projects:
-        return ("skipped", "no projects named")
-    return ("skipped", f"{len(r.desc.projects)} named; this devcloud version does not set up projects yet")
+    return projects_mod.set_up(r.user, r.desc, r.user.env(_read_env(ENV_PATH)))
 
 
 # --- runs ----------------------------------------------------------------------
@@ -442,7 +442,10 @@ def boot():
                  RECONCILE[0], RECONCILE[1], RECONCILE[2], RECONCILE[3], RECONCILE[4], RECONCILE[5])
         code = _run(steps, r, done=lambda: _mark_applied(r))
         if code == 0:
-            step(r, "projects", projects)
+            # The host works without a project: a failed project is recorded
+            # (`devcloud status` reports it) but does not fail the boot, so a
+            # container's services still start and its checkout can be examined.
+            _run((("projects", projects),), r)
         return code
 
 
@@ -461,6 +464,25 @@ def pull_config():
             _say(f"configuration unchanged at {r.commit[:12]}; nothing to reconcile")
             return 0
         return _run(RECONCILE, r, done=lambda: _mark_applied(r))
+
+
+def refresh_mirrors():
+    """Fetches the mirrors a persistent host keeps for its sandboxes; nothing
+    on a sandbox. Exit 1 when a mirror's fetch failed (its log: projects)."""
+    with _locked():
+        r = Run("refresh-mirrors")
+        try:
+            r.load()
+        except (StepError, DescriptorError) as error:
+            _say(f"refresh-mirrors: {proc.KNOWN.scrub(str(error))}")
+            return 1
+        if r.desc.role != "persistent":
+            return 0
+        done, failed = projects_mod.refresh(r.user, r.user.env(_read_env(ENV_PATH)))
+        if done or failed:
+            _say(f"mirrors refreshed: {', '.join(done) or 'none'}"
+                 + (f"; failed: {', '.join(failed)}" if failed else ""))
+        return 1 if failed else 0
 
 
 def refresh_secrets():

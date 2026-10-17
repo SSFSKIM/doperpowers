@@ -92,12 +92,16 @@ def parse(text, allow_http=False):
         if not _PROJECT.match(entry):
             raise DescriptorError(f"DEVCLOUD_PROJECTS entry {entry!r} is not <name>[@ref] or <owner>/<repo>[@ref]")
 
+    mirror_dir = values.get("DEVCLOUD_MIRROR_DIR") or None
+    if mirror_dir and not mirror_dir.startswith("/"):
+        raise DescriptorError("DEVCLOUD_MIRROR_DIR must be an absolute path")
+
     return Descriptor(
         name=name, kind=kind, role=role, tailscale=tailscale, ts_authkey_file=authkey,
         seed_kind=seed_kind, seed_path=seed_path, sm_project=values["DEVCLOUD_SM_PROJECT"],
         config_repo=repo, config_branch=values.get("DEVCLOUD_CONFIG_BRANCH") or "main",
         config_token_secret=token_secret, projects=projects,
-        mirror_dir=values.get("DEVCLOUD_MIRROR_DIR") or None,
+        mirror_dir=mirror_dir,
     )
 
 

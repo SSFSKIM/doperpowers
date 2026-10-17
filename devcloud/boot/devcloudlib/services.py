@@ -41,6 +41,8 @@ def service_list(user, interval=INTERVAL):
                 "devcloud: receive the configuration repository; reconcile on a new commit"),
         Service("refresh-secrets", (DEVCLOUD, "refresh-secrets"), False, interval,
                 "devcloud: materialize the profile's secrets again"),
+        Service("refresh-mirrors", (DEVCLOUD, "refresh-mirrors"), False, interval,
+                "devcloud: fetch the repository mirrors sandboxes clone from (persistent hosts)"),
         Service("session-mirror", (f"{user.home}/.claude/tools/session-mirror", "ship"), True, None,
                 "devcloud: ship this host's sessions to the session store"),
     ]

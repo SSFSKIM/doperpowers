@@ -1,6 +1,7 @@
 """Stand-ins for everything a devcloud host reaches, for the integration
 tests: Secret Manager (:8081), the GCE metadata server (:8082), the
-configuration repository over git's smart HTTP behind basic auth (:8083), and
+configuration repository over git's smart HTTP behind basic auth (:8083, with
+the public project repositories make-repo.sh adds beside it), and
 the gateway (:8084), an Anthropic Messages API that runs one Bash call and
 then answers "ok".
 
@@ -81,7 +82,7 @@ class Metadata(Handler):
 
 
 class Git(Handler):
-    """git http-backend behind basic auth whose password is the bootstrap secret."""
+    """git http-backend; the configuration repository behind basic auth whose password is the bootstrap secret."""
 
     def authorized(self):
         header = self.headers.get("Authorization", "")
@@ -91,7 +92,9 @@ class Git(Handler):
         return password == json.loads((STATE / "secrets.json").read_text()).get("config-token")
 
     def handle_git(self):
-        if not self.authorized():
+        # The configuration repository is private; the project repositories
+        # beside it (example/*, standing in for GitHub's) are public.
+        if self.path.startswith("/config.git") and not self.authorized():
             return self.send(401, b"auth required", "text/plain", [("WWW-Authenticate", 'Basic realm="config"')])
         path, _, query = self.path.partition("?")
         env = dict(os.environ, GIT_PROJECT_ROOT=GIT_ROOT, GIT_HTTP_EXPORT_ALL="1", PATH_INFO=path,

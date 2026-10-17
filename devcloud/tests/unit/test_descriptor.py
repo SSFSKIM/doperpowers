@@ -55,6 +55,7 @@ class DescriptorTest(unittest.TestCase):
             "DEVCLOUD_NAME": text(DEVCLOUD_NAME="bad_name!"),
             "DEVCLOUD_PROJECTS": text(DEVCLOUD_PROJECTS='"a/b/c"'),
             "DEVCLOUD_TYPO": text() + "DEVCLOUD_TYPO=1\n",
+            "DEVCLOUD_MIRROR_DIR": text(DEVCLOUD_MIRROR_DIR="relative/mirrors"),
         }
         for key, body in cases.items():
             with self.subTest(key=key), self.assertRaisesRegex(descriptor.DescriptorError, key):
