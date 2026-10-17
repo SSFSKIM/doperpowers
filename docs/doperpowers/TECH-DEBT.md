@@ -350,3 +350,36 @@ the spec's Decision Log entry "the branch review round"
   taken from each `session.append` after, and drawn rows sort by it. In the
   resumed-session repro, PageUp through the whole report found two
   back-to-back `[ working record ]` sites before and none after.
+
+## interim-notification filter (2026-10-17, 7.165.0, PR #218)
+
+- **Every drop leaves an engine row, "Prompt dropped by a hook: …".** The
+  filter stops the wake, but the human still sees one row per dropped notice
+  in the engine view and the to-human view. The row is the engine's own
+  `system`/`informational` notice for any `prompt.submit` that ends without
+  entering, drawn by a component that raises no render hook, so no mod can
+  fold or hide it. Fix belongs in the engine: a render hook for system
+  notices, a silent consume at `prompt.submit`, or the drop row at level
+  `info`. Trigger: an engine release that adds any of those.
+- **A queued notice is missed when its agent has already left the agent
+  list.** If main reaches a queued interim notice after the agent finished
+  (main in one long tool call meanwhile), `$.agent.list()` no longer names it
+  and the notice passes as an unknown agent's (live round 2, R6r). Costs one
+  stale notice beside the report, never a report. Trigger: stale notices
+  showing up often enough to matter.
+- **Collision residual.** The filter cannot tell an agent whose whole answer
+  is byte for byte the engine's waiting sentence from the engine's
+  placeholder in two cases: a fork that inherits its parent's hand-back
+  reminder with its own contract off, and a queued notice checked against a
+  later run's reminder after a permission-mode change. Only that exact
+  sentence can be lost. Trigger: any observed agent-authored answer equal to
+  the placeholder.
+- **Engine loss, with or without the filter.** An auto-mode subagent that
+  writes its report as plain text while its own background shell runs, and
+  is then killed while parked, loses the report: the engine withholds the
+  text behind the placeholder, and the kill sends no notice because the
+  interim notice already claimed `notified` (live S8, both arms). Trigger:
+  report upstream, or an engine release that changes `dT`'s `notified` guard.
+- **`ask.tsx` type errors against the 2.1.302 typings** (lines 1462, 1504),
+  seen by `tsc` during this work; the mods tests pass. Trigger: next
+  `ask.tsx` change.
