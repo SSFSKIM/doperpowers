@@ -58,7 +58,15 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
   (config repo, reviewed clean after two fix waves). Secret Manager: seven entries created by the person;
   one application key's entry waits on that key's rotation (`optional = true`, reports `missing`).
 - [ ] M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its commands, an authoring skill.
+  (2026-10-17, in progress: built, devcloud 0.3.0; review fix waves 1–2 landed, the second awaits
+  re-review.)
 - [ ] M5 — sminos on persistent hosts, and acceptance on a container and a throwaway VM.
+  (2026-10-17, in progress: code merged, devcloud 0.4.0. Throwaway VM `devcloud-m5` created
+  21:05 UTC in the person's provider (4 vCPU / 8 GB; the planned type is retired in EU locations).
+  Acceptance 3–6, 8 and 7's unenrolled and sandbox halves passed on the VM and on a sandbox
+  container on it. Waiting on the person's enrollment for 7's enrolled half, then deletion.
+  CI-opt never answered about mac-lane windows; the light acceptance traffic ran anyway, per the
+  design session.)
 
 ## Terms
 
