@@ -75,6 +75,17 @@ gates:
     timeout: 15
     paths: ["hooks/**", "tests/mods/**", ".github/**"]
 
+  # The devcloud plugin's mods (its secrets guard), installed as the mods gate is.
+  - name: devcloud-mods
+    run: |
+      for i in 1 2 3; do
+        timeout 300 npm i -g @anthropic-ai/claude-code bun && break
+        [ "$i" = 3 ] && exit 1; sleep 10
+      done
+      bash devcloud/tests/mods/run.sh
+    timeout: 15
+    paths: ["devcloud/**", ".github/**"]
+
   - name: triaging-feedback
     run: cd application-agents/triaging-feedback && npm ci && npm test
     timeout: 10
@@ -82,7 +93,8 @@ gates:
 
   - name: repo-checks
     # Fast checks of the repo as a whole: the lint script's own test, doc
-    # cross-references, the version bump, the review engine, the Codex manifests.
+    # cross-references, the version bump (per plugin), the review engine, the
+    # Codex manifests and the Claude marketplace's plugins.
     run: |
       bash tests/shell-lint/test-lint-shell.sh
       bash tests/skill-links/test-cross-doc-refs.sh
