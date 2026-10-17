@@ -4,9 +4,11 @@
 > (branch `smns-erb`; on this machine
 > `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
 > **DC8** (The machine — history and jobs — plan). **Parent pin:** commit
-> `f60dd668b`, blob `fa007609c3cd3caf19d34ea84c6757ebd1743046` of that file
-> (re-pinned from `77e82d832` the same day: the review's round 2 —
-> DX4's precedence and `output`'s `missing` with `path: null`).
+> `896f04acc`, blob `78412d366bf324c073a794dec5b96a9a7df06331` of that file
+> (re-pinned 2026-10-17 from `77e82d832` to `f60dd668b` — the review's
+> round 2, DX4's precedence and `output`'s `missing` with `path: null` —
+> and then to `896f04acc`, which records this document's two pre-flight
+> decisions and adds their fixture cases).
 > The child's section there is its design; this document carries only the
 > constraints and the milestones. Read before M1: the composite's §9 (all
 > of it), the DC8 child section, DX4's 2026-10-17 rows and its three
@@ -122,7 +124,9 @@ the wire.
   seed); a nested agent whose parent still runs; a nested agent under an
   ended parent (`exited`); a cold open of an ended session holding an
   agent with a `running` status and no completion notification (`exited`);
-  a background agent's launch result that does not end it;
+  a background agent's launch result that does not end it (a bridgeless
+  running session's agent with only its `async_launched` result →
+  `running`; the same in a cold open of the ended session → `exited`);
   each raw word of DX4's table, and an unrecognized word that changes
   nothing (kept in `outcome.raw`); each of the three `unknown` cases §9.3
   names; a background Bash and a Monitor started before the subscription
@@ -133,7 +137,9 @@ the wire.
   hold an unknown task, a deleted file (`missing` with its path), the
   just-started monitor (`missing` with `path: null`) and the same request
   once a `task_status` names its file (`ok`), a symlink whose target keeps all
-  three suffix components elsewhere, an ordinary symlink to a file of
+  three suffix components elsewhere, a path under the original cwd's slug
+  for a session whose transcript lives under another slug (`ok`, the roots
+  given as the case's input), an ordinary symlink to a file of
   another name, an agent task's `.output` symlink into a transcript, a path
   other than the one the rows named, a window inside a file (cut at a line
   break, `truncated`) and a whole small file. The fixture states its rule
