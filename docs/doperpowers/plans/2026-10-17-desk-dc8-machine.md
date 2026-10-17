@@ -4,10 +4,11 @@
 > (branch `smns-erb`; on this machine
 > `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
 > **DC8** (The machine — history and jobs — plan). **Parent pin:** commit
-> `34defe9f6`, blob `3732888683a260b0feed15d0513080e0c3be5dad` of that file
-> (2026-10-17: M3's shapes folded into DX5, `delivered.uuid` deferred at
-> the bridge, both task-notification forms named in DX4; earlier pins
-> below)
+> `f5df1687d`, blob `48a289c06e5a70873da4a5072539bdc408da0537` of that file
+> (2026-10-17: the plain-row notification's origin gate and the subagent
+> preamble form in §9.4 and DX4; before it `34defe9f6` — M3's shapes in
+> DX5, `delivered.uuid` deferred at the bridge, both notification forms;
+> earlier pins below)
 > (re-pinned 2026-10-17 from `77e82d832` to `f60dd668b` — the review's
 > round 2, DX4's precedence and `output`'s `missing` with `path: null` —
 > and then to `896f04acc`, which records this document's two pre-flight
@@ -428,6 +429,15 @@ rung for DC8); the PR opened, not merged; the report at
   with fixture cases. `delivered.uuid` stays on the bridge's stream (the
   design session's option (c); carrying it to the web is residue).
   Date/Author: 2026-10-17, design session (DX4 at `34defe9f6`).
+
+- Decision: **The refusal journal is at-least-once**, as the rest of the
+  outbox: the `failed` is appended before `refused/<session>.json` is
+  written, so a crash between them records it again; a repeated identical
+  outcome changes nothing at the hub, which keeps the latest per event and
+  recipient. Writing the marker first would risk losing the `failed`. The
+  M3 review's finding on it was dismissed on that ground (agreed by the
+  design session).
+  Date/Author: 2026-10-17, controller.
 
 ## Surprises & Discoveries
 
