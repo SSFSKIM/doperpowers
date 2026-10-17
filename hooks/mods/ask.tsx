@@ -1261,11 +1261,15 @@ export function registerAsk(on: On) {
   }).catch((_, e, next) => next(e))
 
   // Every turn (compact holds the unmatched registration; a turn's id is
-  // never empty; a subagent's run raises none): a new turn starts unlatched,
-  // and an answer given while it runs is held.
+  // never empty): a new main turn starts unlatched, and an answer given while
+  // it runs is held. A subagent's run raises its own, with its agentId, and
+  // may start after the main turn ended; taken for the main turn's, it would
+  // hold an answer given while the session idles until the next prompt.
   on('turn.start', { turnId: /./ }, (_, e, next) => {
-    isLatched = false
-    isTurnRunning = true
+    if (e.agentId === undefined) {
+      isLatched = false
+      isTurnRunning = true
+    }
     return next(e)
   })
 

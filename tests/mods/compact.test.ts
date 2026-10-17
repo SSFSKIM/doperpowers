@@ -187,10 +187,19 @@ describe('registerCompact', () => {
   test('a request left by a turn that did not end in an answer is dropped when the next turn starts', async () => {
     const h = harness()
     await h.call({ tool: COMPACT, tool_use_id: 't1' })
-    h.mod.turnStart()
+    h.mod.turnStart({})
     await h.mod.turnComplete(h.engine, turnEnd())
     await h.settle()
     expect(h.calls.some((c) => c.op === 'session.compact' || c.op === 'prompt.submit')).toBe(false)
+  })
+
+  test("a subagent's turn starting before the main turn ends keeps the request", async () => {
+    const h = harness()
+    await h.call({ tool: COMPACT, tool_use_id: 't1' })
+    h.mod.turnStart({ agentId: 'a1' })
+    await h.mod.turnComplete(h.engine, turnEnd())
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'session.compact').length).toBe(1)
   })
 
   test('context_usage from a subagent is refused, not answered with the parent figures', async () => {
