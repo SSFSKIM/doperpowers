@@ -183,5 +183,40 @@ class SupervisorTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: len(self.lines("job.log")) >= 2, timeout=5))
 
 
+
+class DrainFreshnessTest(unittest.TestCase):
+    """A credential rotated between the supervisor's freshness check and its
+    read of a pipe must still be scrubbed: the drain checks again after it
+    has the bytes and before it emits them."""
+
+    def test_a_value_rotated_between_check_and_read_is_scrubbed(self):
+        import io
+        import os
+        import selectors
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        cred = tmp / "cred"
+        cred.write_text("made-up-before-rotation-61")
+        out = io.BytesIO()
+        supervisor = services.Supervisor(
+            [], env_path=str(tmp / "env"), log=lambda message: None, out=out,
+            known=lambda: {cred.read_text()},
+            known_signature=lambda: (cred.stat().st_ino, cred.stat().st_mtime_ns, cred.stat().st_size))
+        slot = services._Slot(services.Service("ship", ("true",), True, None, "ship"), time.monotonic())
+        read, write = os.pipe()
+        os.set_blocking(read, False)
+        slot.pipe = read
+        supervisor.selector.register(read, selectors.EVENT_READ, slot)
+        os.write(write, b"using made-up-before-rotation-61\n")         # output queued
+        supervisor._follow_sources()                                    # the freshness check
+        rotated = tmp / ".cred.new"                                     # the rotation
+        rotated.write_text("made-up-after-rotation-62")
+        rotated.replace(cred)
+        os.write(write, b"using made-up-after-rotation-62\n")          # the new value appended
+        os.close(write)
+        supervisor._drain(slot)                                         # the read and the emit
+        text = out.getvalue().decode()
+        self.assertEqual(text, "ship: using [secret]\nship: using [secret]\n")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -265,7 +265,10 @@ class Supervisor:
 
     def _drain(self, slot, final=False):
         """Forwards what the slot's pipe holds, line by line; at EOF (or
-        `final`) the rest, and the pipe is closed."""
+        `final`) the rest, and the pipe is closed. The one path every
+        forwarded byte takes: the known values are brought up to date after
+        the bytes are read and before any is emitted, so a credential rotated
+        while they waited in the pipe is already known."""
         eof = False
         while True:
             try:
@@ -283,6 +286,8 @@ class Supervisor:
         if (eof or final) and slot.pending:
             lines.append(slot.pending)
             slot.pending = b""
+        if lines:
+            self._follow_sources()
         prefix = slot.service.name.encode() + b": "
         for line in lines:
             self._emit(prefix + line[:self.LINE_MAX] + b"\n")
@@ -330,7 +335,6 @@ class Supervisor:
             code = os.waitstatus_to_exitcode(wait_status)
             slot.proc.returncode = code
             if slot.pipe is not None:
-                self._follow_sources()
                 self._drain(slot, final=True)
             if self.stopping or slot.removed:
                 slot.proc = None
@@ -397,8 +401,6 @@ class Supervisor:
                 if slot.proc is None and not slot.removed and now >= slot.due and not self.stopping:
                     self._start(slot, now)
             ready = self.selector.select(timeout=self.poll) if self.selector.get_map() else ()
-            if ready:
-                self._follow_sources()
             for key, _ in ready:
                 if key.data.pipe is not None:
                     self._drain(key.data)
@@ -411,8 +413,6 @@ class Supervisor:
         while any(slot.proc for slot in slots) and time.monotonic() < deadline:
             self._reap(slots, time.monotonic())
             ready = self.selector.select(timeout=0.05) if self.selector.get_map() else ()
-            if ready:
-                self._follow_sources()
             for key, _ in ready:
                 if key.data.pipe is not None:
                     self._drain(key.data)
@@ -423,7 +423,6 @@ class Supervisor:
                 self.log(f"{slot.service.name} ignored SIGTERM for {self.grace:.0f}s; killing it")
                 self._signal(slot, signal.SIGKILL)
         self._reap(slots, time.monotonic())
-        self._follow_sources()
         for slot in slots:
             if slot.pipe is not None:
                 self._drain(slot, final=True)
