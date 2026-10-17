@@ -63,11 +63,15 @@ in its input is replaced by its bytes: a known handle by the credential's
 current value in the named spelling, a pattern handle by exactly the bytes
 it replaced, if this process issued it. So a file edited through a handle
 keeps its secret, and `Authorization: Bearer [secret:KEY]` in a command works
-like `"$(cat ~/.config/claude-secrets/KEY)"`. In a Bash command the value goes
-in quoted for where its handle stands (single or double quotes, `$'…'`,
-unquoted, a heredoc body), so the shell receives its bytes as data, never as
-code; a value of plain characters is written as it is. File tools get the
-bytes raw. A handle that cannot be
+like `"$(cat ~/.config/claude-secrets/KEY)"`. In a Bash command (its `command`
+only) the rule is safe by construction: an inert value (`[A-Za-z0-9_./+:@-]`,
+with `=` and `%` past the first character: most tokens and base64) goes in as
+it is; any other value goes in only inside a plain single- or double-quoted
+string or an unquoted word, in a command with no backtick, heredoc or
+here-string, `$(`, `${`, `$'`, `$"`, comment or line continuation, quoted for
+that context; anywhere else the handle stays and the result says so, with the
+`"$(cat …)"` read to use for a store key. `tests/mods/shell-exec.ts` proves it by
+running the restored commands under bash and zsh. File tools get the bytes raw. A handle that cannot be
 restored — `[superseded:…]`, a key no longer stored, another process's (or a
 resumed session's earlier) pattern handle — is written as is, and the tool's
 result carries a line naming it. The transcript keeps the call as the model

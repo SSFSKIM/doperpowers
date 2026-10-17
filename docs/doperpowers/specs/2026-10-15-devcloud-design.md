@@ -460,11 +460,20 @@ The guard differs from `cua`'s in four ways:
    Before a Write, Edit, MultiEdit, NotebookEdit, or Bash call runs, every known-value handle and
    every pattern handle this process issued is replaced by its bytes, so a model editing a file it saw redacted leaves
    the secret intact, and `Authorization: Bearer [secret:KEY]` in a command works like `$(cat …)`.
-   In a Bash command a value goes in quoted for the context its handle stands in (single or
-   double quotes, `$'…'`, unquoted, a heredoc body), so the shell receives its exact bytes as
-   data, never as code; a value of characters no context treats specially is written as it is.
-   File tools get the bytes raw: their content is not parsed by a shell. A handle-like text that
-   does not parse (a space inside it) is named as not restored too.
+   In a Bash command (its `command` alone) restoration follows a rule safe by construction. An
+   inert value — non-empty, of `[A-Za-z0-9_./+:@-]` with `=` and `%` past the first character,
+   none of which bash or zsh treats specially anywhere — goes in as it is, in any command. Any
+   other value goes in only where the command's quoting is proved: a plain single-quoted string, a
+   plain double-quoted string (and only without `!`), or an unquoted word, in a command with no
+   backtick, no `<<` of any kind, no `$(`, `${`, `$'` or `$"`, no comment and no line
+   continuation; it is quoted for that one context. A handle right after `$` or a `$name` is never
+   restored. Everywhere else the handle stays as written and the tool's result says, in one line,
+   that its value needs shell quoting in a context the guard cannot prove, with
+   `"$(cat <the key's store file>)"` as the read to use for a store key; the command still runs.
+   Executing the restored commands under bash and zsh over a matrix of values and command shapes
+   proves it (`devcloud/tests/mods/shell-exec.ts`). File tools get the bytes raw: their content
+   is not parsed by a shell. A handle-like text that does not parse (a space inside it) is named
+   as not restored too.
    The tool call as the transcript records it keeps the handle. A handle that cannot be restored —
    a pattern handle another process issued (another session's, or this session's from before a
    resume), a `[superseded:…]` handle, a key no longer stored — is left as written and the tool's
@@ -750,8 +759,9 @@ Restored in the inputs of Write, Edit, MultiEdit, NotebookEdit, and Bash: a know
 the credential's current value in the named spelling; a pattern handle only when this process
 issued it. Anything else is left as written and named in the result. A label component writes
 whitespace, `[`, `]`, `~`, `%`, and non-ASCII bytes as `%XX` (UTF-8), so every label round-trips.
-In Bash only `command` is restored, each value quoted for the shell context its handle stands in
-(§9.3); file tools get raw bytes.
+In Bash only `command` is restored: an inert value as it is, any other only in a context the
+guard proves (a plain quoted string or an unquoted word, in a command with none of the forms it
+does not read), and otherwise not at all, the result naming it (§9.3); file tools get raw bytes.
 
 **I3 — `secrets.toml`** (the materializer's input, in the profile):
 
