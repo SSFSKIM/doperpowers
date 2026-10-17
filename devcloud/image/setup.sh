@@ -66,7 +66,11 @@ fi
 chsh -s /usr/bin/zsh "$DEVCLOUD_USER"
 
 # Claude Code, the native installer, as the user; on every PATH through a link.
-runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+# Its own temporary directory, removed after: the installer leaves a socket behind.
+scratch="$(runuser -u "$DEVCLOUD_USER" -- mktemp -d)"
+runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
+  bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+rm -rf "$scratch"
 ln -sfn "$DEVCLOUD_HOME/.local/bin/claude" /usr/local/bin/claude
 
 # devcloud itself: the boot program, the service runner, the CLI.
