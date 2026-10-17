@@ -3761,6 +3761,52 @@ PY_CLEAR
 assert_equals "$(json_row keeper charge_source)" "" "and a line it clears is cleared, the old one not read again"
 rm -f "$HOME/.claude/sessions/pf-keeperjob.json"
 "$SMINOS" remove pf-repo/keeper >/dev/null
+# A seat resolved directly (no list between) when the hand-off is only now
+# readable: the target is the job, by its alias and by the old session id
+# alike, the id binding the job.
+bound_pair() { # alias old new query — a seat whose hand-off is readable but not yet read
+  run "$SMINOS" seat add pf-repo "$1" --session "$2"
+  pf_peer "$1" "$2" idle user
+  run "$SMINOS" list
+  bg_peer "$1job" "$3" auto
+  run "$SMINOS" list
+  handoff_tx "$2" "$3"
+  rm -f "$HOME/.claude/sessions/pf-$1.json"
+}
+BO=8a00002c-0000-4000-8000-00000000008a
+BN=8b00002d-0000-4000-8000-00000000008b
+bound_pair binder "$BO" "$BN"
+BOUND="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$BN" <<'PY_BOUND'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos_bridge
+print(sminos_bridge.watch_session("pf-repo/binder") == sys.argv[2])
+PY_BOUND
+)"
+assert_equals "$BOUND" "True" "a seat named by its alias, before any reading reconciled it, is watched as the job"
+rm -f "$HOME/.claude/sessions/pf-binderjob.json"
+"$SMINOS" remove pf-repo/binder >/dev/null
+CO=7a00002a-0000-4000-8000-00000000007a
+CN=7b00002b-0000-4000-8000-00000000007b
+CP=7c00002e-0000-4000-8000-00000000007c
+bound_pair clasp "$CO" "$CN"
+run "$SMINOS" list
+assert_equals "$(field "$CO" current)" "$CN" "a seat moves to the job it went on in"
+bg_peer claspjob2 "$CP" auto
+run "$SMINOS" list
+handoff_tx "$CN" "$CP"   # and the job is sent on in turn, unread yet
+rm -f "$HOME/.claude/sessions/pf-claspjob.json"
+BOUND="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$CN" "$CP" <<'PY_BOUND2'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+t = sminos.find_target(sys.argv[2])
+print(t[0] == "seat" and t[1]["current"] == sys.argv[3] and t[2] == sys.argv[3])
+PY_BOUND2
+)"
+assert_equals "$BOUND" "True" "a name bound to the session a seat holds binds the job it went on in, once the seat is moved"
+rm -f "$HOME/.claude/sessions/pf-claspjob2.json"
+"$SMINOS" remove pf-repo/clasp >/dev/null
 # A hand-off whose seat another command holds locked is left whole, not half
 # done: nothing retired and the seat unmoved, and the next reading finishes it.
 GO=6c000026-0000-4000-8000-00000000006c

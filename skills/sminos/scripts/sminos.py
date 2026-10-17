@@ -3325,7 +3325,9 @@ def find_target(q):
     and "" when the name named the seat: a verb that re-reads the seat under
     its lifecycle lock refuses when the seat no longer holds that session
     (locked_fresh), so a refill in between cannot take the bound session's
-    place.
+    place. The seat and its session are read after the reconcile: a name of
+    the session the seat held binds the job it went on in, when the
+    reconcile handed the seat off to one.
 
     A full id — a seat id or session id — names its seat directly, and so
     does `group/alias` when the qualifier is a group and no project. Any other
@@ -3342,8 +3344,13 @@ def find_target(q):
         if kind == "ambiguous":
             die(ambiguous_seat(q, res), EXIT_UNKNOWN)
         if kind == "ok":
+            # The reconcile can hand the seat off to the job its session went on
+            # in, so the record is read again after it, and a name that bound the
+            # session the seat held binds the session it holds now.
+            bound = res["current"] == q and res["seat_id"] != q
             reconcile(seat_project(res))  # the verb reads the project; no liveness probe needed
-            return ("seat", res, q if res["current"] == q and res["seat_id"] != q else "")
+            res = reload_seat(res["seat_id"]) or res
+            return ("seat", res, res["current"] if bound else "")
         return None
 
     def group_seat(group, alias):
