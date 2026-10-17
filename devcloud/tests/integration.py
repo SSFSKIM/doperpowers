@@ -142,13 +142,30 @@ def boot_once(name, desc, hostname=None):
     return int(rc_line.split("=")[1]), {s["name"]: s for s in status["steps"]}, store.strip()
 
 
-# Detector findings the image carries from software it installs, not from
-# devcloud or the person: published example keys in vendored libraries' tests.
-THIRD_PARTY = ()
+# The detector's secret-named-assignment rule matches ordinary code in the
+# software the image installs (`token = this.readToken(...)`), and npm's
+# documentation carries an example PEM block. A finding is accepted only in a
+# file a Debian package installed and `dpkg --verify` finds unchanged: bytes
+# the package's publisher shipped to everyone, which the build did not touch.
+PRISTINE = r"""
+import subprocess, sys
+paths = sys.stdin.read().splitlines()
+modified = {line.split()[-1] for line in subprocess.run(["dpkg", "--verify"], capture_output=True,
+                                                        text=True).stdout.splitlines() if line.strip()}
+owned = set()
+for i in range(0, len(paths), 200):
+    out = subprocess.run(["dpkg-query", "-S", *paths[i:i + 200]], capture_output=True, text=True).stdout
+    owned.update(line.split(": ", 1)[1] for line in out.splitlines() if ": " in line)
+print("\n".join(p for p in paths if p in owned and p not in modified))
+"""
 
 
-def _third_party(path):
-    return any(path.startswith(prefix) for prefix in THIRD_PARTY)
+def _package_pristine(paths):
+    if not paths:
+        return set()
+    result = docker("run", "--rm", "-i", "--entrypoint", "python3", IMAGE, "-c", PRISTINE,
+                    input="\n".join(sorted(paths)), timeout=900)
+    return set(result.stdout.splitlines())
 
 
 # --- acceptance 6 ------------------------------------------------------------------
@@ -174,12 +191,12 @@ def image_is_clean():
     scan = HERE / "scan-secrets.ts"
     found = subprocess.run(["bun", str(scan), str(root)], capture_output=True, text=True).stdout.splitlines()
     found += subprocess.run(["bun", str(scan), "-"], input=history, capture_output=True, text=True).stdout.splitlines()
-    allowed = [line for line in found if _third_party(line.split("\t")[0][len(str(root)):])]
-    findings = [line[len(str(root)):] if line.startswith(str(root)) else line for line in found
-                if line not in allowed]
-    if allowed:
-        print(f"  ({len(allowed)} detector findings in vendored third-party test material, listed as allowed)")
-    check(findings == [], "the detector found, outside vendored test material:\n  " + "\n  ".join(findings[:40]))
+    found = [line[len(str(root)):] if line.startswith(str(root)) else line for line in found]
+    pristine = _package_pristine({line.split("\t")[0] for line in found if line.startswith("/")})
+    findings = [line for line in found if line.split("\t")[0] not in pristine]
+    print(f"  ({len(found) - len(findings)} detector findings in {len(pristine)} files installed unchanged "
+          "from Ubuntu or vendor packages: their code and documentation, not credentials)")
+    check(findings == [], "the detector found, outside unchanged package files:\n  " + "\n  ".join(findings[:60]))
     for value in SECRETS.values():
         hit = subprocess.run(["grep", "-rlF", value.strip(), str(root)], capture_output=True, text=True).stdout
         check(not hit, "a test value is in the image")
@@ -418,11 +435,15 @@ def wait_systemd_boot(timeout=300):
         if state == "active":
             return
         if state == "failed":
-            raise Fail("devcloud-boot.service failed:\n" + sh(VM, "devcloud status; journalctl -u devcloud-boot "
-                                                              "--no-pager | tail -40", check_rc=False).stdout)
+            raise Fail("devcloud-boot.service failed:\n" + _systemd_diagnostics())
         time.sleep(2)
-    raise Fail("devcloud-boot.service never finished: " + sh(VM, "systemctl status devcloud-boot --no-pager",
-                                                            check_rc=False).stdout[-1500:])
+    raise Fail("devcloud-boot.service never finished:\n" + _systemd_diagnostics())
+
+
+def _systemd_diagnostics():
+    return sh(VM, "cat /var/lib/devcloud/status.json; systemctl status devcloud-boot --no-pager -l; "
+                  "journalctl -u devcloud-boot --no-pager -n 60; systemctl --failed --no-pager", check_rc=False,
+              timeout=60).stdout[-4000:]
 
 
 @case("with systemd as PID 1, a persistent host boots from its unit and runs the services as units")
