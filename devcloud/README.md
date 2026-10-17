@@ -332,7 +332,10 @@ the services without a reboot. Untracked files are left alone.
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |
 | `sminos-daemon` | `sminos daemon run`, on an enrolled persistent host only | the user (a systemd user unit) |
 
-Under systemd they are units `devcloud-<service>` (the jobs as timers).
+Under systemd they are units `devcloud-<service>` (the jobs as timers), except
+the sminos daemon, which is the user's own unit `sminos-daemon.service` in
+`~/.config/systemd/user/` (the default directory, which the user manager reads
+whatever the profile sets `XDG_CONFIG_HOME` to).
 Elsewhere `devcloud-services` runs them as the container's PID 1: it runs
 the services `/run/devcloud/services.json` names — step 11 rewrites it at
 every boot and reconcile, so a service whose program a pull brings starts
@@ -353,7 +356,9 @@ install` as the user (the doperpowers marketplace clone's `sminos.py`, which
 `sync/apply.py` installs), adds a drop-in naming `/etc/devcloud/env` as the
 unit's environment file, turns lingering on, reloads the user manager, and
 enables and starts `sminos-daemon.service`, restarting it when its unit or
-the environment changed; lingering starts it again after a reboot.
+the environment changed (an owed restart is kept in
+`/var/lib/devcloud/sminos-restart-pending` until one succeeds, so a failed
+attempt's retry still makes it); lingering starts it again after a reboot.
 Unenrolled, nothing is installed and the host's projects run local-only.
 A sandbox is never a sminos machine: one whose `$SMINOS_HOME/daemon/` holds
 `hub.json` or `machine.json` (an enrollment, or the instance claim a daemon

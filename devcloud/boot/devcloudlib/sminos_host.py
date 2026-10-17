@@ -15,7 +15,6 @@ it came from, whose streams and writers then collide. Step 11 refuses it
 rather than delete it, since the directory may be a mount of the original's."""
 
 import json
-import os
 import pathlib
 
 from . import proc
@@ -28,6 +27,9 @@ IDENTITY = ("hub.json", "machine.json")
 # The interpreter the unit pins (`daemon install` records its own).
 PYTHON = "/usr/bin/python3"
 ENV_PATH = "/etc/devcloud/env"
+# Set when the unit, its drop-in or the host environment changed and cleared
+# only once the daemon is restarted: a failed attempt leaves it for the next.
+PENDING = pathlib.Path("/var/lib/devcloud/sminos-restart-pending")
 DROPIN = ("# Written by devcloud (boot step 11): the host environment, as every devcloud\n"
           "# service has it (Design §6).\n"
           "[Service]\n"
@@ -70,11 +72,6 @@ def cli(user):
     return path if path.is_file() else None
 
 
-def _unit_dir(user, env):
-    config = env.get("XDG_CONFIG_HOME", "")
-    return (pathlib.Path(config) if os.path.isabs(config) else user.home / ".config") / "systemd/user"
-
-
 def _read(path):
     try:
         return path.read_bytes()
@@ -82,9 +79,10 @@ def _read(path):
         return None
 
 
-def converge(user, role, env, env_changed, run=proc.run):
+def converge(user, role, env, env_changed, run=proc.run, pending=PENDING):
     """Step 11's sminos part; returns its status detail. `env` is the host
-    environment (/etc/devcloud/env); `env_changed`, whether this run changed it."""
+    environment (/etc/devcloud/env); `env_changed`, whether this run changed it;
+    `pending`, the root-owned flag that carries an owed restart across runs."""
     if role == "sandbox":
         return "sminos: a sandbox, not a sminos machine"
     if "hub.json" not in _identity(user, env):
@@ -93,25 +91,31 @@ def converge(user, role, env, env_changed, run=proc.run):
     if program is None:
         raise StepError("this host is enrolled at a sminos hub, but the doperpowers marketplace clone that holds "
                         "sminos is absent (~/.claude/plugins/known_marketplaces.json)")
-    units = _unit_dir(user, env)
+    # The default user unit directory: the user manager does not read
+    # /etc/devcloud/env, so a profile's XDG_CONFIG_HOME would hide the unit from it.
+    install_env = {k: v for k, v in user.env(env).items() if k != "XDG_CONFIG_HOME"}
+    units = user.home / ".config/systemd/user"
     unit, dropin = units / UNIT, units / f"{UNIT}.d" / "devcloud.conf"
     before = (_read(unit), _read(dropin))
-    run([PYTHON, str(program), "daemon", "install"], user=user, env=user.env(env), log="services", timeout=120)
+    run([PYTHON, str(program), "daemon", "install"], user=user, env=install_env, log="services", timeout=120)
     as_user(user, lambda: write_file(dropin, DROPIN, mode=0o644, dir_mode=0o755))
-    changed = (_read(unit), _read(dropin)) != before
     if _read(unit) is None:
         raise StepError(f"sminos daemon install wrote no {unit}")
+    pending = pathlib.Path(pending)
+    if (_read(unit), _read(dropin)) != before or env_changed:
+        write_file(pending, "", mode=0o644, dir_mode=0o755)
 
     run(["loginctl", "enable-linger", user.name], log="services", timeout=60)
     # Started (and waited for) here: lingering starts the user manager, but
     # not necessarily before the next call needs it.
     run(["systemctl", "start", f"user@{user.uid}.service"], log="services", timeout=120)
-    user_env = user.env({"XDG_RUNTIME_DIR": f"/run/user/{user.uid}"})
+    user_env = dict(install_env, XDG_RUNTIME_DIR=f"/run/user/{user.uid}")
 
     def systemctl(*args):
         run(["systemctl", "--user", *args], user=user, env=user_env, log="services", timeout=60)
     systemctl("daemon-reload")
     systemctl("enable", UNIT)
-    verb = "restart" if changed or env_changed else "start"
+    verb = "restart" if pending.exists() else "start"
     systemctl(verb, UNIT)
+    pending.unlink(missing_ok=True)
     return f"sminos daemon: {UNIT} enabled and {'restarted' if verb == 'restart' else 'running'}, lingering"
