@@ -858,6 +858,8 @@ read `undefined` from another plugin's module at hook time, while `$.state` read
 `$.state` is the narrowest shared channel that stays out of child processes, and the ticket names
 it. Limit: a session in which devcloud is disabled mid-way may keep the value (whether the engine
 clears a plugin's state when it unloads is unverified).
+`cua` stands down only on an exact match with `{ owner: "devcloud", version: 1 }` (its #154, cua
+0.14.0), so a change to this value's shape or version reaches `cua` as a ticket before it ships.
 
 ## Surprises & Discoveries
 
