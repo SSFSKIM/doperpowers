@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.parse
 import uuid as uuidlib
@@ -38,7 +39,8 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(HERE)), "skills", "sminos", "scripts")
 T = tempfile.mkdtemp(prefix="smp.", dir="/tmp")
-os.environ.update(HOME=os.path.join(T, "home"), SMINOS_HOME=os.path.join(T, "s"), DAEMON_HOST="testhost")
+os.environ.update(HOME=os.path.join(T, "home"), SMINOS_HOME=os.path.join(T, "s"), DAEMON_HOST="testhost",
+                  CLAUDE_CODE_TMPDIR=os.path.join(T, "tmp"))   # the engine's temp root: `output` reads under it
 for k in ("CLAUDE_CODE_SESSION_ID", "SMNS_INTERNAL", "DAEMON_HOME", "AGORA_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(k, None)
 os.makedirs(os.path.join(os.environ["HOME"], ".claude", "sessions"))
@@ -80,6 +82,9 @@ class Browser:
         self.end = None
         self.snapshot = None
         self.subagents = None
+        self.body = None      # the last widened `subagents` body: {subagents, jobs, mcp}
+        self.changes = []     # (when it came, body) per `subagents` message
+        self.outputs = []
         self.usage = []
         self.pages = []
         self.diff = None
@@ -105,6 +110,7 @@ class Browser:
                 for b in e["blocks"]:
                     self.blocks[key + (b["index"],)] = b["text"]
             self.subagents = body["subagents"]
+            self.body = {k: body[k] for k in ("subagents", "jobs", "mcp")}
         elif kind == "chunk":
             key = (body["turnId"], body["agentId"], body["step"])
             if body["chunkIndex"] <= self.upto.get(key, -1):
@@ -131,6 +137,10 @@ class Browser:
             self.end = body
         elif kind == "subagents":
             self.subagents = body["subagents"]
+            self.body = body
+            self.changes.append((time.monotonic(), body))
+        elif kind == "output":
+            self.outputs.append(body)
         elif kind == "usage":
             self.usage.append(body)
         elif kind == "rows":
@@ -167,8 +177,64 @@ def new_session():
     return str(uuidlib.uuid4())
 
 
-class Engine(unittest.TestCase):
-    """The Subscription, with the scripted endpoint and a clock the test moves."""
+FIXTURE = json.load(open(os.path.join(HERE, "dx4-jobs.json"), encoding="utf-8"))
+
+
+class Rows:
+    """Transcript rows shaped as the engine writes them (2.1.300), cut down;
+    each gets a uuid and the next second as its timestamp."""
+
+    def __init__(self):
+        self.i = 0
+
+    def row(self, **fields):
+        self.i += 1
+        return {"uuid": str(uuidlib.uuid4()), "timestamp": "2026-10-17T10:%02d:%02d.000Z" % divmod(self.i, 60),
+                **fields}
+
+    def at(self):
+        return "2026-10-17T10:%02d:%02d.000Z" % divmod(self.i, 60)
+
+    def call(self, name, tid, **inp):
+        return self.row(type="assistant", message={"role": "assistant", "content": [
+            {"type": "tool_use", "id": tid, "name": name, "input": inp}]})
+
+    def result(self, tid, tur=None, text="", is_error=False):
+        block = {"type": "tool_result", "tool_use_id": tid, "content": [{"type": "text", "text": text}]}
+        if is_error:
+            block["is_error"] = True
+        return self.row(type="user", message={"role": "user", "content": [block]}, toolUseResult=tur or {})
+
+    def notification(self, task=None, tool=None, status=None, summary=None, output=None):
+        parts = [("task-id", task), ("tool-use-id", tool), ("output-file", output), ("status", status),
+                 ("summary", summary)]
+        prompt = "<task-notification>\n%s\n</task-notification>" % "\n".join(
+            "<%s>%s</%s>" % (k, v, k) for k, v in parts if v is not None)
+        return self.row(type="attachment", attachment={"type": "queued_command", "prompt": prompt,
+                                                       "commandMode": "task-notification"})
+
+    def task_status(self, task, status, path=None, kind="local_bash"):
+        return self.row(type="attachment", attachment={"type": "task_status", "taskId": task, "taskType": kind,
+                                                       "description": "", "status": status, "deltaSummary": None,
+                                                       "outputFilePath": path})
+
+    def mcp(self, added=(), removed=()):
+        return self.row(type="attachment", attachment={"type": "mcp_instructions_delta", "addedNames": list(added),
+                                                       "removedNames": list(removed)})
+
+
+def by_agent(body):
+    """agentId → (status, evidence) of a widened `subagents` body."""
+    return {e["agentId"]: (e["status"], e["evidence"]) for e in body["subagents"]}
+
+
+def by_task(body):
+    return {j["taskId"]: j for j in body["jobs"]}
+
+
+class Session(unittest.TestCase):
+    """What a Subscription test stands on: the scripted endpoint, a transcript
+    the test writes, and a clock the test moves."""
 
     def setUp(self):
         self.sid = new_session()
@@ -176,21 +242,25 @@ class Engine(unittest.TestCase):
         self.clock = Clock()
         self.alive = True
         self.subs = []
+        self.transcripts = plane.Transcripts()  # this test's own: what it builds is counted here
+        self.disk = plane.Disk()                # and what its disk facts open
 
     def tearDown(self):
         for s in self.subs:
             s.close()
         self.fake.stop_bridge()
 
-    def subscribe(self, agent=None, bridge=True):
-        reader = plane.BridgeReader(os.path.join(os.environ["SMINOS_HOME"], "bridge", self.sid + ".sock"),
+    def subscribe(self, agent=None, bridge=True, fake=None, clock=None):
+        fake = fake or self.fake
+        reader = plane.BridgeReader(os.path.join(os.environ["SMINOS_HOME"], "bridge", fake.session + ".sock"),
                                     lambda: None) if bridge else None
         if reader is not None:
             reader.start()
-        sub = plane.Subscription(project=PROJECT, machine="testhost", session=self.sid, agent=agent,
-                                 sub="sub-%d" % len(self.subs), locate=lambda: self.fake.path(None), reader=reader,
+        sub = plane.Subscription(project=PROJECT, machine="testhost", session=fake.session, agent=agent,
+                                 sub="sub-%d" % len(self.subs), locate=lambda: fake.path(None), reader=reader,
                                  presence=lambda: {"record": {"status": "busy"}, "bridge": bridge},
-                                 alive=lambda: self.alive, clock=self.clock)
+                                 alive=lambda: self.alive, clock=clock or self.clock, transcripts=self.transcripts,
+                                 disk=self.disk)
         self.subs.append(sub)
         b = Browser()
         b.agent = agent
@@ -202,7 +272,7 @@ class Engine(unittest.TestCase):
         while time.time() < deadline:
             for env in sub.pump():
                 self.assertEqual(env["project"], PROJECT)
-                self.assertEqual(env["session"], self.sid)
+                self.assertEqual(env["session"], sub.session)
                 b.take(env)
             if until():
                 return True
@@ -212,11 +282,35 @@ class Engine(unittest.TestCase):
     def settle(self, sub, b, seconds=0.3):
         self.pump(sub, b, wait=seconds)
 
+    def page(self, sub, b, before, limit):
+        """A `rows` request: answered off the thread, on a later pump."""
+        count = len(b.pages)
+        self.assertEqual(sub.page(before, limit), [], "nothing at once: the page is read on the transcript's worker")
+        self.assertTrue(self.pump(sub, b, lambda: len(b.pages) > count or b.end is not None), "the page came")
+        self.assertIsNone(b.end)
+        return b.pages[-1]
+
+    def page_to_first(self, sub, b, limit=1000):
+        """Pages from the snapshot's oldest row back to the first line: every
+        row the snapshot did not hold, newest first."""
+        older, before = [], b.snapshot["rows"][-1]["uuid"]
+        while True:
+            page = self.page(sub, b, before, limit)
+            older += page["rows"]
+            if not page["more"]:
+                return older
+            self.assertTrue(page["rows"], "a page that says more holds rows")
+            before = page["rows"][-1]["uuid"]
+
     def assertClean(self, b, agent=None):
         self.assertEqual(b.errors, [])
         self.assertEqual(b.uuids(), [r["uuid"] for r in self.fake.rows(agent)], "every row once, in order")
         mine = {k: v for k, v in b.blocks.items() if k[1] == agent}
         self.assertEqual(mine, {}, "no partial text left beside its row")
+
+
+class Engine(Session):
+    """The Subscription, with the scripted endpoint and a clock the test moves."""
 
     # ---------------------------------------------------- without a bridge
 
@@ -235,7 +329,10 @@ class Engine(unittest.TestCase):
         self.assertEqual(s["streaming"], [])
         self.assertIsNone(s["usage"], "no bridge: usage null")
         self.assertEqual(s["presence"], {"record": {"status": "busy"}, "bridge": False})
-        self.assertEqual(s["subagents"], [{"agentId": "a1", "meta": {"agentType": "x"}}])
+        self.assertEqual(s["subagents"], [{"agentId": "a1", "meta": {"agentType": "x"}, "status": "unknown",
+                                           "evidence": "none"}],
+                         "a meta with no toolUseId and no spawn record: unknown, one of §9.3's named cases")
+        self.assertEqual((s["jobs"], s["mcp"]), ([], []))
         self.fake.write_partial(None, '-row", "message": {"role": "user", "content": "finished"}}\n')
         self.fake.user_row("after", post=False)
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 5), "new rows follow at once")
@@ -252,25 +349,126 @@ class Engine(unittest.TestCase):
         self.assertEqual(got, list(reversed(ids))[:len(got)], "the newest")
         self.assertTrue(b.snapshot["more"])
         oldest = got[-1]
-        b.take(sub.page(oldest, 2)[0])
-        page = b.pages[-1]
+        page = self.page(sub, b, oldest, 2)
         self.assertEqual(page["before"], oldest)
         self.assertEqual([r["uuid"] for r in page["rows"]], [ids[ids.index(oldest) - 1], ids[ids.index(oldest) - 2]])
         self.assertTrue(page["more"])
-        b.take(sub.page(ids[1], 50)[0])
-        self.assertEqual([r["uuid"] for r in b.pages[-1]["rows"]], [ids[0]])
-        self.assertFalse(b.pages[-1]["more"])
+        page = self.page(sub, b, ids[1], 50)
+        self.assertEqual([r["uuid"] for r in page["rows"]], [ids[0]])
+        self.assertFalse(page["more"])
+        self.assertEqual(self.page(sub, b, ids[0], 50), {"rows": [], "before": ids[0], "more": False},
+                         "nothing before the first row")
+        self.assertEqual(self.page(sub, b, "no-such-row", 50), {"rows": [], "before": "no-such-row", "more": False})
         self.assertEqual(b.errors, [])
 
-    def test_bridgeless_session_that_ended(self):
-        self.fake.user_row("the last word", post=False)
+    def test_pages_reach_the_first_row_on_a_live_session(self):
+        """Paging from the newest row to the first line while the session
+        runs, rows flushed after the open included: each page reads its own
+        rows' bytes off the index."""
+        pad = "x" * 100000
+        ids = [self.fake.user_row("%d %s" % (i, pad), post=False) for i in range(15)]
+        self.fake.write_row(None, {"type": "api-request", "body": {"messages": [{"uuid": "nested, no row"}]}})
+        sub, b = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        held = [r["uuid"] for r in b.snapshot["rows"]]
+        later = [self.fake.user_row("later %d" % i, post=False) for i in range(3)]
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == len(held) + 3), "flushed after the open: live rows")
+        page = self.page(sub, b, later[2], 2)
+        self.assertEqual([r["uuid"] for r in page["rows"]], [later[1], later[0]],
+                         "a row flushed after the open is pageable")
+        self.assertTrue(page["more"])
+        page = self.page(sub, b, later[0], 1)
+        self.assertEqual([r["uuid"] for r in page["rows"]], [ids[-1]], "and pages go on into what the open read")
+        older = self.page_to_first(sub, b)
+        self.assertEqual(list(reversed(held + [r["uuid"] for r in older])), ids, "every row, back to the first line")
+        self.assertIsNone(b.end)
+        self.assertEqual(b.errors, [])
+
+    def test_a_second_subscription_builds_nothing(self):
+        """One index per transcript file, shared: a second subscription on
+        it, and one after both went (kept a while), parse nothing the first
+        did not."""
+        for i in range(40):
+            self.fake.user_row("row %d" % i, post=False)
+        first, b1 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(first, b1, lambda: b1.snapshot is not None))
+        index = self.transcripts.held[self.fake.path(None)].index
+        parsed = index.parsed
+        self.assertGreater(parsed, 0)
+        second, b2 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(second, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(b2.snapshot["rows"], b1.snapshot["rows"])
+        self.assertEqual(index.parsed, parsed, "the second subscription built nothing")
+        first.close()
+        second.close()
+        again, b3 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(again, b3, lambda: b3.snapshot is not None))
+        self.assertIs(self.transcripts.held[self.fake.path(None)].index, index, "kept after the last one went")
+        self.assertEqual(index.parsed, parsed)
+        self.fake.user_row("one more", post=False)
+        self.assertTrue(self.pump(again, b3, lambda: len(b3.rows) == 41))
+        self.page(again, b3, b3.rows[-1]["uuid"], 1)
+        self.assertGreater(index.parsed, parsed, "extended by what was flushed since, only")
+        self.assertLess(index.parsed, parsed + 1000)
+
+    def test_a_replaced_or_shrunk_transcript_ends_its_subscriptions(self):
+        for how in ("replaced", "shrunk"):
+            with self.subTest(how=how):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                for i in range(4):
+                    fake.user_row("%s %d" % (how, i), post=False)
+                tailing, b1 = self.subscribe(bridge=False, fake=fake)
+                paging, b2 = self.subscribe(bridge=False, fake=fake)
+                for sub, b in ((tailing, b1), (paging, b2)):
+                    self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+                path = fake.path(None)
+                if how == "replaced":
+                    with open(path + ".new", "w") as f:
+                        f.write(json.dumps({"type": "user", "uuid": "fresh", "message": {"content": "fresh"}}) + "\n")
+                    os.replace(path + ".new", path)
+                else:
+                    with open(path, "r+") as f:
+                        f.truncate(os.path.getsize(path) // 2)
+                self.assertEqual(paging.page(b2.snapshot["rows"][0]["uuid"], 5), [])
+                for sub, b in ((paging, b2), (tailing, b1)):
+                    self.assertTrue(self.pump(sub, b, lambda b=b: b.end is not None))
+                    self.assertEqual(b.end["reason"], "discontinuity")
+                fresh, b3 = self.subscribe(bridge=False, fake=fake)
+                self.assertTrue(self.pump(fresh, b3, lambda: b3.snapshot is not None))
+                self.assertEqual([r["uuid"] for r in b3.snapshot["rows"]],
+                                 [r["uuid"] for r in reversed(fake.rows())], "the file as it is now")
+
+    def test_a_session_with_no_process_is_served_from_disk_and_pages(self):
+        pad = "x" * 100000
+        ids = [self.fake.user_row("%d %s" % (i, pad), post=False) for i in range(12)]
         self.alive = False
         sub, b = self.subscribe(bridge=False)
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual(len(b.rows), 1)
         self.clock.advance(plane.END_GRACE + 0.1)
+        self.settle(sub, b)
+        self.assertIsNone(b.end, "no end: the subscription stays, idle")
+        older = self.page_to_first(sub, b)
+        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), ids)
+        b.take(sub.end("unsubscribed")[0])
+        self.assertEqual(b.end["reason"], "unsubscribed")
+        self.assertEqual(b.errors, [])
+
+    def test_session_ended_only_for_a_transcript_not_held_here(self):
+        self.alive = False
+        sub, b = self.subscribe(bridge=False)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual(b.end["reason"], "session-ended")
+        self.assertEqual((b.end["reason"], b.n, b.snapshot), ("session-ended", 0, None),
+                         "no process and no transcript: session-ended at n 0")
+        self.fake.user_row("the main loop's", post=False)
+        agent, b = self.subscribe(agent="a-none", bridge=False)
+        self.assertTrue(self.pump(agent, b, lambda: b.end is not None))
+        self.assertEqual((b.end["reason"], b.n), ("session-ended", 0), "the same for a subagent's transcript")
+        self.alive = True
+        sub, b = self.subscribe(agent="a-new", bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual(b.snapshot["rows"], [], "a running session's transcript not written yet: an empty snapshot")
+        self.fake.user_row("first", agent="a-new", post=False)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 1), "and its rows as they come")
         self.assertEqual(b.errors, [])
 
     # ---------------------------------------------------- with the bridge
@@ -488,18 +686,23 @@ class Engine(unittest.TestCase):
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None, wait=6), "a 503 is retried, as watch does")
         self.assertIsNone(b.end)
 
-    def test_session_ending_ends_the_subscription(self):
+    def test_a_session_that_ends_while_subscribed_stays_pageable(self):
+        early = [self.fake.user_row("early %d %s" % (i, "x" * 100000), post=False) for i in range(8)]
         self.fake.start_bridge()
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.fake.user_row("last", post=False)
+        last = self.fake.user_row("last", post=False)
         self.alive = False
         self.fake.stop_bridge()
         self.settle(sub, b)
         self.clock.advance(plane.END_GRACE + 0.1)
-        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual(b.end["reason"], "session-ended")
-        self.assertEqual(len(b.rows), 1, "what flushed before the end is drawn")
+        self.assertTrue(self.pump(sub, b, lambda: last in b.uuids()), "what flushed before the end is drawn")
+        self.settle(sub, b)
+        self.assertIsNone(b.end, "no end: the subscription stays, idle")
+        self.assertFalse(sub.bridged, "transcript-only once the session is over")
+        older = self.page_to_first(sub, b)
+        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), early + [last])
+        self.assertEqual(b.errors, [])
 
     def test_a_null_cut_has_empty_history(self):
         self.fake.start_bridge()  # no rows on disk: the seed names no loop
@@ -544,7 +747,11 @@ class Engine(unittest.TestCase):
         sa = self.fake.message(agent="a1", turn="t-a1")
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
         self.assertNotIn("usage", b.snapshot)
-        self.assertEqual(b.snapshot["subagents"], [{"agentId": "a1", "meta": {"agentType": "worker"}}])
+        [entry] = b.snapshot["subagents"]
+        self.assertEqual({k: entry[k] for k in ("agentId", "meta", "status", "evidence")},
+                         {"agentId": "a1", "meta": {"agentType": "worker"}, "status": "unknown", "evidence": "none"},
+                         "that agent's own entry alone")
+        self.assertEqual(entry["file"]["size"], os.path.getsize(self.fake.path("a1")))
         sa.text(0, "sub ")
         sa.text(0, "text")
         sa.row(0)
@@ -627,6 +834,123 @@ class Engine(unittest.TestCase):
         self.assertEqual(b.rows, [], "its rows stay in its own transcript")
         self.assertEqual(b.errors, [])
 
+    # ---------------------------------------------------- the worker, held
+
+    def test_rows_flushed_during_the_build_and_after_its_offset(self):
+        """The build held on its worker before it reads, while a response
+        streams and its first block's row flushes (past the cut: read by the
+        build, released live by its notice); then held after it read, while
+        the next block's row and a user row flush past the offset it reached
+        (read by the Tail). Every row once, in disk order, every block
+        settled by its own row."""
+        self.fake.start_bridge()
+        self.fake.user_row("before")
+        held = Held()
+        with mock.patch.object(plane, "build", held):
+            sub, b = self.subscribe()
+            self.assertTrue(self.pump(sub, b, held.entered.is_set), "the build is asked once the bridge snapped")
+            m = self.fake.message()
+            m.text(0, "during ")
+            m.text(0, "the build")
+            during = m.row(0)
+            m.text(1, "after ")
+            held.go.set()
+            self.assertTrue(held.built.wait(10))
+            m.text(1, "the offset")
+            after = m.row(1)
+            tail = self.fake.user_row("past the offset")
+            self.settle(sub, b)
+            self.assertIsNone(b.snapshot, "nothing until the build's answer")
+            held.deliver.set()
+            self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == len(self.fake.rows())))
+        self.assertIn(during, held.read, "the build read the row flushed while it waited")
+        self.assertNotIn(after, held.read)
+        self.assertEqual(b.uuids()[-3:], [during, after, tail])
+        self.assertEqual(b.settled, {(m.turn, None, 0, 0), (m.turn, None, 0, 1)}, "both blocks settled by their rows")
+        self.assertClean(b)
+
+    def test_a_reset_between_the_build_and_its_answer(self):
+        for how in ("replaced", "shrunk"):
+            with self.subTest(how=how):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                old = [fake.user_row("%s %d" % (how, i), post=False) for i in range(5)]
+                held = Held(go=True)
+                with mock.patch.object(plane, "build", held):
+                    sub, b = self.subscribe(bridge=False, fake=fake)
+                    self.pump(sub, b, held.built.is_set)
+                    self.assertTrue(held.built.is_set())
+                    path = fake.path(None)
+                    if how == "replaced":
+                        with open(path + ".new", "w") as f:
+                            for i in range(9):
+                                f.write(json.dumps({"type": "user", "uuid": "new-%d" % i,
+                                                    "message": {"content": "x" * 50}}) + "\n")
+                        os.replace(path + ".new", path)
+                    else:
+                        with open(path, "r+") as f:
+                            f.truncate(os.path.getsize(path) // 3)
+                    held.deliver.set()
+                    self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+                self.assertEqual(b.end["reason"], "discontinuity")
+                self.assertEqual(b.uuids(), old, "the snapshot is the file the build read, and nothing of the new")
+                self.assertEqual(b.errors, [])
+                fresh, b2 = self.subscribe(bridge=False, fake=fake)
+                self.assertTrue(self.pump(fresh, b2, lambda: b2.snapshot is not None))
+                self.assertEqual(b2.uuids(), [r["uuid"] for r in fake.rows()], "a fresh one reads the file as it is")
+
+    def test_a_second_subscription_extends_the_index_before_the_first_answer_is_taken(self):
+        """The first subscription's build answered and not taken yet; a
+        second one, on the same index, extends it past rows flushed since; the
+        first then starts from its own build's offset: its Tail reads what
+        the second's build already indexed, once."""
+        first_rows = [self.fake.user_row("first %d" % i, post=False) for i in range(5)]
+        first, b1 = self.subscribe(bridge=False)
+        self.assertEqual(first.pump(), [], "asked, not answered")
+        deadline = time.time() + 10
+        while first.answers.empty() and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(first.answers.empty(), "the first build answered, untaken")
+        between = [self.fake.user_row("between %d" % i, post=False) for i in range(4)]
+        index = self.transcripts.held[self.fake.path(None)].index
+        second, b2 = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(second, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(index.uuids, first_rows + between, "the second extended the shared index")
+        later = self.fake.user_row("later", post=False)
+        tailed = []
+        real = plane.parse_rows
+        with mock.patch.object(plane, "parse_rows", lambda lines: tailed.extend(lines) or real(lines)):
+            self.assertTrue(self.pump(first, b1, lambda: len(b1.rows) == 10))
+        self.assertEqual(len(tailed), 5, "the uplink's thread parsed only what flushed after its build's offset")
+        self.assertEqual([r["uuid"] for r in reversed(b1.snapshot["rows"])], first_rows, "its own build's history")
+        self.assertEqual(b1.uuids(), first_rows + between + [later], "then the rest, live, once each")
+        self.assertTrue(self.pump(second, b2, lambda: len(b2.rows) == 10))
+        self.assertEqual(b2.uuids(), first_rows + between + [later])
+        for b in (b1, b2):
+            self.assertEqual(b.errors, [])
+
+
+class Held:
+    """`plane.build` on the worker, held where a test opens it: before it
+    reads (`entered`, released by `go`) and after (`built`, then `read`: the
+    uuids it read; released by `deliver`)."""
+
+    real = staticmethod(plane.build)
+
+    def __init__(self, go=False):
+        self.entered, self.go, self.built, self.deliver = (threading.Event() for _ in range(4))
+        if go:
+            self.go.set()
+        self.read = []
+
+    def __call__(self, t, cut, bridged):
+        self.entered.set()
+        assert self.go.wait(10), "never let go"
+        answer = self.real(t, cut, bridged)
+        self.read = list(t.index.uuids)
+        self.built.set()
+        assert self.deliver.wait(10), "never delivered"
+        return answer
+
 
 class RealChild(Engine):
     """Every engine case again, the bridge being the real child (`sminos
@@ -674,6 +998,699 @@ class RealChild(Engine):
                 self.fake.stop_bridge()
                 sub.close()
                 again.close()
+
+
+class Jobs(Session):
+    """What the session runs (DC8 M4; DX4 "Jobs and agent status" and
+    `output`): the widened `subagents` body derived from the rows the
+    subscription parses, the bridge's agent state and the disk facts, sent
+    in the snapshot and whenever it changes; `output` answered off the
+    uplink's thread."""
+
+    def write(self, *rows, agent=None, fake=None):
+        for row in rows:
+            (fake or self.fake).write_row(agent, row)
+        return rows[-1]["uuid"]
+
+    def meta_path(self, agent, fake=None):
+        fake = fake or self.fake
+        return os.path.join(fake.dir, fake.session, "subagents", "agent-%s.meta.json" % agent)
+
+    def look(self, sub, b, until, wait=3.0):
+        """Pumps with the clock moved past METAS_EVERY each time, so the disk
+        facts are looked at again, until `until()` holds."""
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            self.clock.advance(plane.METAS_EVERY)
+            for env in sub.pump():
+                b.take(env)
+            if until():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def quiet(self, sub, b):
+        """Pumps, the clock still, until no look at the disk is in flight."""
+        self.assertTrue(self.pump(sub, b, lambda: not sub.looking))
+
+    def opened(self, sub, b):
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None or b.end is not None))
+        self.assertIsNone(b.end)
+        return b.snapshot
+
+    def entry(self, body, agent):
+        return next(e for e in body["subagents"] if e["agentId"] == agent)
+
+    # ---------------------------------------------------- the shared fixture
+
+    def test_the_shared_fixtures_bodies_through_the_plane(self):
+        """Every body case of dx4-jobs.json, its files written where the
+        engine writes them and its bridge state served by the endpoint, comes
+        out of the plane's own snapshot as the fixture says."""
+        for i, case in enumerate(FIXTURE["cases"]):
+            with self.subTest(case=case["name"]):
+                inp, want = case["input"], json.loads(json.dumps(case["expect"]))
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], inp["session"]["id"],
+                                                project_dir="fixture-%d" % i)
+                fake.real, fake.child_env = self.fake.real, self.fake.child_env
+                self.write(*inp["main"], fake=fake)
+                for k, m in enumerate(inp["metas"]):
+                    fake.meta(m["agentId"], m["meta"])
+                    ns = (1700000000 + k) * 10 ** 9   # the metas' order is their files' mtime order
+                    os.utime(self.meta_path(m["agentId"], fake), ns=(ns, ns))
+                for agent, f in inp["agentFiles"].items():
+                    if f is None:
+                        continue
+                    self.write(*f["rows"], agent=agent, fake=fake)
+                    path = fake.path(agent)
+                    pad = f["size"] - os.path.getsize(path) - len('{"pad": ""}\n')
+                    if pad >= 0:   # a record that is no row, to the fixture's size
+                        with open(path, "a") as out:
+                            out.write('{"pad": "%s"}\n' % ("x" * pad))
+                    else:
+                        for e in want["subagents"]:
+                            if e["agentId"] == agent and "file" in e:
+                                e["file"]["size"] = os.path.getsize(path)
+                    ns = int(f["mtimeMs"] * 10 ** 6)
+                    os.utime(path, ns=(ns, ns))
+                bridged = inp["bridge"] is not None
+                if bridged:
+                    fake.agents = inp["bridge"]["agents"]
+                    fake.start_bridge()
+                self.alive = inp["session"]["running"]
+                try:
+                    sub, b = self.subscribe(bridge=bridged, fake=fake)
+                    snap = self.opened(sub, b)
+                    for part in ("subagents", "jobs", "mcp"):
+                        self.assertEqual(snap[part], want[part], part)
+                finally:
+                    fake.stop_bridge()
+
+    # ---------------------------------------------------- agents
+
+    def test_agents_that_ran_before_the_bridge_loaded(self):
+        """The module reloaded mid-session: no `agent` event for what ran
+        before, the snapshot's agents seeded from $.agent.list(); then a spawn
+        and a stop the module sees."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_done", description="done before", run_in_background=True),
+                   r.result("toolu_done", {"status": "async_launched", "agentId": "adone"}),
+                   r.notification(task="adone", tool="toolu_done", status="completed", summary="finished"),
+                   r.call("Agent", "toolu_fg", description="still running"),
+                   r.call("Agent", "toolu_gone", description="stopped without a word"))
+        for agent, tid in (("adone", "toolu_done"), ("afg", "toolu_fg"), ("agone", "toolu_gone")):
+            self.fake.meta(agent, {"agentType": "general-purpose", "toolUseId": tid})
+
+        def seed(agent, running):
+            return {"agentId": agent, "parentAgentId": None, "subagentType": "general-purpose",
+                    "description": agent, "running": running}
+
+        self.fake.agents = [seed("adone", False), seed("afg", True), seed("agone", False)]
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        snap = self.opened(sub, b)
+        self.assertEqual(by_agent(snap), {"adone": ("completed", "rows"), "afg": ("running", "bridge"),
+                                          "agone": ("exited", "bridge")})
+        afg = self.entry(snap, "afg")
+        self.assertEqual((afg["running"], afg["spawn"]), (True, {"parentAgentId": None,
+                                                                 "subagentType": "general-purpose",
+                                                                 "description": "afg"}),
+                         "a seeded spawn carries what the list gives")
+        self.assertEqual(self.entry(snap, "adone")["outcome"]["summary"], "finished")
+
+        self.fake.meta("anew", {"agentType": "x", "toolUseId": "toolu_new"})
+        self.fake.agent("spawn", "anew", parentAgentId=None, subagentType="x", description="new", name="n",
+                        background=False, model="m", toolUseId="toolu_new")
+        self.assertTrue(self.look(sub, b, lambda: by_agent(b.body).get("anew") == ("running", "bridge")))
+        self.assertEqual(self.entry(b.body, "anew")["spawn"],
+                         {"parentAgentId": None, "subagentType": "x", "description": "new", "name": "n",
+                          "background": False, "model": "m", "toolUseId": "toolu_new"})
+        count = len(b.changes)
+        self.fake.agent("stop", "afg", agentType="general-purpose")
+        self.assertTrue(self.pump(sub, b, lambda: by_agent(b.body)["afg"] == ("exited", "bridge")))
+        self.assertEqual(len(b.changes), count + 1, "one `subagents` message for the change")
+        self.settle(sub, b)
+        self.assertEqual(len(b.changes), count + 1, "nothing more while nothing changes")
+        self.assertEqual(b.errors, [])
+
+    def test_nested_agents_from_their_parents_transcript(self):
+        """A nested agent's outcome is in its parent's file, read as a disk
+        fact; its parent ending ends it."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_P", description="parent"))
+        self.write(r.row(type="user", message={"role": "user", "content": "the brief"}),
+                   r.call("Agent", "toolu_N1", description="one"), r.call("Agent", "toolu_N2", description="two"),
+                   agent="aP")
+        self.fake.meta("aP", {"toolUseId": "toolu_P"})
+        self.fake.meta("aN1", {"toolUseId": "toolu_N1", "parentAgentId": "aP"})
+        self.fake.meta("aN2", {"toolUseId": "toolu_N2", "parentAgentId": "aP"})
+        self.fake.agents = [{"agentId": a, "parentAgentId": p, "subagentType": "x", "description": a, "running": True}
+                            for a, p in (("aP", None), ("aN1", "aP"), ("aN2", "aP"))]
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        snap = self.opened(sub, b)
+        self.assertEqual(by_agent(snap), {a: ("running", "bridge") for a in ("aP", "aN1", "aN2")})
+        self.assertEqual(self.entry(snap, "aP")["file"]["firstAt"], "2026-10-17T10:00:02.000Z")
+
+        self.write(r.result("toolu_N1", {"status": "completed"}, "done"), agent="aP")
+        self.assertTrue(self.look(sub, b, lambda: by_agent(b.body)["aN1"] == ("completed", "rows")),
+                        "the nested agent's result, from its parent's transcript")
+        self.assertEqual(self.entry(b.body, "aN1")["outcome"], {"status": "completed", "raw": "completed",
+                                                               "at": r.at()})
+        self.assertEqual(self.entry(b.body, "aP")["file"]["lastAt"], r.at())
+
+        self.write(r.result("toolu_P", {"status": "completed"}, "parent done"))
+        self.assertTrue(self.pump(sub, b, lambda: by_agent(b.body)["aP"] == ("completed", "rows")))
+        self.assertEqual(by_agent(b.body)["aN2"], ("exited", "parent"),
+                         "a nested agent with no word of its own ends with its parent, over the bridge's running")
+        self.assertEqual(b.errors, [])
+
+    # ---------------------------------------------------- jobs and MCP
+
+    def test_background_jobs_started_before_the_subscription(self):
+        r = Rows()
+        tasks = os.path.join(T, "tmp", "claude-0", "x", self.fake.session, "tasks")
+        calls = {}
+
+        def started(name, tid, tur, text="", **inp):
+            call = r.call(name, tid, **inp)
+            calls[tid] = call["timestamp"]
+            return [call, r.result(tid, tur, text)]
+
+        self.write(*started("Bash", "toolu_b1", {"backgroundTaskId": "b1"},
+                            "Command running in background with ID: b1. Output is being written to: %s/b1.output"
+                            % tasks, command="make watch", description="Watch the build", run_in_background=True),
+                   *started("Monitor", "toolu_m1", {"taskId": "m1", "timeoutMs": 1800000, "persistent": False},
+                            "Monitor started", description="Watch the log", command="tail -f log"),
+                   *started("Bash", "toolu_b2", {"backgroundTaskId": "b2"},
+                            "Output is being written to: %s/b2.output" % tasks, command="sleep 600",
+                            run_in_background=True),
+                   *started("Bash", "toolu_b3", {"backgroundTaskId": "b3"},
+                            "Output is being written to: %s/b3.output" % tasks, command="sleep 900",
+                            run_in_background=True),
+                   r.mcp(added=["github", "linear"]))
+        sub, b = self.subscribe(bridge=False)
+        snap = self.opened(sub, b)
+        self.assertEqual(by_task(snap)["b1"], {"taskId": "b1", "kind": "shell", "toolUseId": "toolu_b1",
+                                               "startedAt": calls["toolu_b1"], "description": "Watch the build",
+                                               "command": "make watch", "outputFile": tasks + "/b1.output",
+                                               "status": "running"})
+        self.assertEqual(by_task(snap)["m1"], {"taskId": "m1", "kind": "monitor", "toolUseId": "toolu_m1",
+                                               "startedAt": calls["toolu_m1"], "description": "Watch the log",
+                                               "command": "tail -f log", "outputFile": None, "status": "running"},
+                         "a monitor names no file at its start")
+        self.assertEqual(snap["mcp"], [{"name": "github"}, {"name": "linear"}])
+
+        def after(*rows, until):
+            count = len(b.changes)
+            self.write(*rows)
+            self.assertTrue(self.pump(sub, b, lambda: until(by_task(b.body))))
+            self.assertEqual(len(b.changes), count + 1)
+
+        after(r.notification(task="b1", tool="toolu_b1", status="completed", summary="exit 0",
+                             output=tasks + "/b1.output"),
+              until=lambda j: j["b1"]["status"] == "completed")
+        self.assertEqual((by_task(b.body)["b1"]["endedAt"], by_task(b.body)["b1"]["summary"]), (r.at(), "exit 0"))
+        after(r.task_status("m1", "running", tasks + "/m1.output", kind="monitor"),
+              until=lambda j: j["m1"]["outputFile"] == tasks + "/m1.output")
+        self.assertEqual(by_task(b.body)["m1"]["status"], "running")
+        after(r.call("TaskStop", "toolu_stop", task_id="m1"),
+              r.result("toolu_stop", {"message": "Successfully stopped task: m1"}, "stopped"),
+              until=lambda j: j["m1"]["status"] == "stopped")
+        self.assertEqual(by_task(b.body)["m1"]["summary"], "Successfully stopped task: m1")
+        after(r.task_status("b2", "failed"), until=lambda j: j["b2"]["status"] == "failed")
+        count = len(b.changes)
+        self.write(r.mcp(removed=["github"]))
+        self.assertTrue(self.pump(sub, b, lambda: b.body["mcp"] == [{"name": "linear"}]))
+        self.assertEqual(by_task(b.body)["b3"]["status"], "running")
+        self.alive = False
+        self.assertTrue(self.pump(sub, b, lambda: by_task(b.body)["b3"]["status"] == "exited"),
+                        "a job still running when the process goes has exited")
+        self.assertEqual(len(b.changes), count + 2)
+        self.assertEqual(b.errors, [])
+
+    # ---------------------------------------------------- timing and liveness
+
+    def test_a_status_reaches_subagents_within_a_second_of_its_evidence(self):
+        """DC8.G3's bound, on the clock: evidence on the bridge's stream, in
+        the main transcript, in a parent's transcript (a disk fact), and the
+        process gone."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_A", description="a"),
+                   r.call("Agent", "toolu_B", description="b", run_in_background=True),
+                   r.result("toolu_B", {"status": "async_launched"}),
+                   r.call("Agent", "toolu_P", description="p"), r.call("Agent", "toolu_C", description="c"))
+        self.write(r.call("Agent", "toolu_N", description="n"), agent="aP")
+        metas = (("aA", "toolu_A", None), ("aB", "toolu_B", None), ("aP", "toolu_P", None), ("aN", "toolu_N", "aP"),
+                 ("aC", "toolu_C", None))
+        for agent, tid, parent in metas:
+            self.fake.meta(agent, {"toolUseId": tid, **({"parentAgentId": parent} if parent else {})})
+        self.fake.agents = [{"agentId": a, "parentAgentId": p, "running": True} for a, _, p in metas]
+        self.fake.start_bridge()
+        sub, b = self.subscribe(clock=time.monotonic)
+        self.assertEqual(set(by_agent(self.opened(sub, b)).values()), {("running", "bridge")})
+
+        def timed(evidence, agent, want):
+            t0 = time.monotonic()
+            evidence()
+            self.assertTrue(self.pump(sub, b, lambda: by_agent(b.body)[agent] == want, wait=3.0), agent)
+            self.assertLess(time.monotonic() - t0, 1.0, "%s reached `subagents` within a second" % agent)
+
+        timed(lambda: self.fake.agent("stop", "aA"), "aA", ("exited", "bridge"))
+        timed(lambda: self.write(r.notification(task="aB", tool="toolu_B", status="completed")), "aB",
+              ("completed", "rows"))
+        timed(lambda: self.write(r.result("toolu_N", {"status": "completed"}), agent="aP"), "aN", ("completed", "rows"))
+        timed(lambda: setattr(self, "alive", False), "aC", ("exited", "session"))
+        self.assertEqual(b.errors, [])
+
+    def test_a_cold_open_and_a_live_one_reach_the_same_statuses(self):
+        """Cold (a subscribe to the ended session) and live (open while it
+        ended) agree: every entry is derived again when the process goes."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_A", description="a"),
+                   r.call("Agent", "toolu_B", description="b", run_in_background=True),
+                   r.result("toolu_B", {"status": "async_launched"}),
+                   r.call("Agent", "toolu_C", description="c", run_in_background=True),
+                   r.result("toolu_C", {"status": "async_launched"}),
+                   r.notification(task="aC", tool="toolu_C", status="completed"),
+                   r.call("Agent", "toolu_P", description="p"), r.call("Agent", "toolu_D", description="d"))
+        self.write(r.call("Agent", "toolu_N", description="n"), agent="aP")
+        metas = (("aA", "toolu_A", None), ("aB", "toolu_B", None), ("aC", "toolu_C", None), ("aP", "toolu_P", None),
+                 ("aN", "toolu_N", "aP"), ("aD", "toolu_D", None))
+        for agent, tid, parent in metas:
+            self.fake.meta(agent, {"toolUseId": tid, **({"parentAgentId": parent} if parent else {})})
+        self.fake.agents = [{"agentId": a, "parentAgentId": p, "running": a != "aD"} for a, _, p in metas]
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.opened(sub, b)
+        self.assertEqual(by_agent(b.body)["aA"], ("running", "bridge"))
+        self.alive = False
+        self.fake.stop_bridge()
+        self.assertTrue(self.pump(sub, b, lambda: "running" not in {s for s, _ in by_agent(b.body).values()}))
+        self.clock.advance(plane.END_GRACE + 0.1)
+        self.settle(sub, b)
+        live = by_agent(b.body)
+        self.assertEqual(live, {"aA": ("exited", "session"), "aB": ("exited", "session"),
+                                "aC": ("completed", "rows"), "aP": ("exited", "session"),
+                                "aN": ("exited", "session"), "aD": ("exited", "session")})
+        self.assertNotIn("running", self.entry(b.body, "aA"), "the bridge's running stops counting")
+        cold, cb = self.subscribe(bridge=False)
+        self.assertEqual(by_agent(self.opened(cold, cb)), live)
+        self.assertEqual(b.errors + cb.errors, [])
+
+    # ---------------------------------------------------- an agent's subscription
+
+    def test_an_agents_subscription_carries_its_own_entry_and_jobs(self):
+        """Two derivations: its entry from its parent loop's rows, its jobs and
+        MCP names from its own."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_A", description="a", run_in_background=True),
+                   r.result("toolu_A", {"status": "async_launched"}),
+                   r.call("Bash", "toolu_bm", command="main's", run_in_background=True),
+                   r.result("toolu_bm", {"backgroundTaskId": "bm"}))
+        self.write(r.row(type="user", message={"role": "user", "content": "the brief"}),
+                   r.call("Bash", "toolu_ba", command="agent's", run_in_background=True),
+                   r.result("toolu_ba", {"backgroundTaskId": "ba"}), r.mcp(added=["sentry"]),
+                   r.call("Agent", "toolu_N", description="n"), r.call("Agent", "toolu_N2", description="n2"),
+                   agent="aA")
+        self.write(r.row(type="user", message={"role": "user", "content": "n's brief"}), agent="aN")
+        self.write(r.row(type="user", message={"role": "user", "content": "n2's brief"}), agent="aN2")
+        self.fake.meta("aA", {"toolUseId": "toolu_A", "requestShape": "background"})
+        self.fake.meta("aN", {"toolUseId": "toolu_N", "parentAgentId": "aA"})
+        self.fake.meta("aN2", {"toolUseId": "toolu_N2", "parentAgentId": "aA"})
+        main, mb = self.subscribe(bridge=False)
+        self.assertEqual([j["taskId"] for j in self.opened(main, mb)["jobs"]], ["bm"], "the main loop's jobs alone")
+        self.assertEqual(mb.snapshot["mcp"], [])
+
+        sa, ab = self.subscribe(agent="aA", bridge=False)
+        snap = self.opened(sa, ab)
+        [entry] = snap["subagents"]
+        self.assertEqual({k: entry[k] for k in ("agentId", "status", "evidence", "outcome")},
+                         {"agentId": "aA", "status": "running", "evidence": "rows",
+                          "outcome": {"status": "running", "raw": "async_launched", "at": "2026-10-17T10:00:02.000Z"}},
+                         "its entry from the main loop's rows")
+        self.assertEqual(entry["file"]["size"], os.path.getsize(self.fake.path("aA")))
+        self.assertEqual([j["taskId"] for j in snap["jobs"]], ["ba"], "its own loop's jobs")
+        self.assertEqual(snap["mcp"], [{"name": "sentry"}])
+
+        sn, nb = self.subscribe(agent="aN", bridge=False)
+        sn2, n2b = self.subscribe(agent="aN2", bridge=False)
+        self.assertEqual(by_agent(self.opened(sn, nb)), {"aN": ("unknown", "none")},
+                         "no bridge and no outcome yet in its parent's rows")
+        self.assertEqual(by_agent(self.opened(sn2, n2b)), {"aN2": ("unknown", "none")})
+        self.write(r.result("toolu_N", {"status": "completed"}, "n done"), agent="aA")
+        self.assertTrue(self.look(sn, nb, lambda: by_agent(nb.body) == {"aN": ("completed", "rows")}),
+                        "a nested agent's entry from its parent's transcript")
+        self.write(r.notification(task="aA", tool="toolu_A", status="completed"))
+        self.assertTrue(self.look(sa, ab, lambda: by_agent(ab.body) == {"aA": ("completed", "rows")}))
+        self.assertTrue(self.look(sn2, n2b, lambda: by_agent(n2b.body) == {"aN2": ("exited", "parent")}),
+                        "its parent ended: the chain is derived")
+        self.assertEqual(ab.errors + nb.errors + n2b.errors, [])
+
+    # ---------------------------------------------------- the disk, looked at
+
+    def test_an_unchanged_check_stats_the_agent_files_and_reads_none(self):
+        r = Rows()
+        self.write(r.row(type="user", message={"role": "user", "content": "go"}))
+        agents = ["a%03d" % k for k in range(150)]
+        for agent in agents:
+            self.write(r.row(type="user", message={"role": "user", "content": "brief"}),
+                       r.row(type="assistant", message={"role": "assistant", "content": [{"type": "text",
+                                                                                          "text": "x" * 2000}]}),
+                       agent=agent)
+            self.fake.meta(agent, {"agentType": "worker", "toolUseId": "toolu_" + agent})
+        sub, b = self.subscribe(bridge=False)
+        snap = self.opened(sub, b)
+        self.assertEqual(len(snap["subagents"]), 150)
+        self.assertTrue(all("file" in e for e in snap["subagents"]))
+        self.quiet(sub, b)
+        opened, looks = self.disk.opened, sub.looks
+        self.assertEqual(opened, 300, "the open read each meta and each agent file once")
+        self.assertTrue(self.look(sub, b, lambda: sub.looks >= looks + 3))
+        self.quiet(sub, b)
+        self.assertEqual(self.disk.opened, opened, "an unchanged check opens nothing: each file is stat'ed")
+
+        self.write(r.row(type="user", message={"role": "user", "content": "more"}), agent="a007")
+        self.fake.meta("a042", {"agentType": "reviewer", "toolUseId": "toolu_a042"})
+        looks = sub.looks
+        self.assertTrue(self.look(sub, b, lambda: sub.looks >= looks + 3))
+        self.quiet(sub, b)
+        self.assertEqual(self.disk.opened, opened + 2, "a changed file is read again, nothing else")
+        self.assertEqual(self.entry(b.body, "a007")["file"]["lastAt"], r.at())
+        self.assertEqual(self.entry(b.body, "a042")["meta"]["agentType"], "reviewer")
+
+    # ---------------------------------------------------- output
+
+    def test_output_on_a_live_and_an_ended_subscription(self):
+        r = Rows()
+        sid = self.fake.session
+        root = os.path.join(os.path.realpath(os.environ["CLAUDE_CODE_TMPDIR"]), "claude-%d" % os.getuid(), "proj", sid,
+                            "tasks")
+        elsewhere = os.path.join(T, "elsewhere", sid, "tasks")
+        for d, name, text in ((root, "b1.output", "line one\nline two\n"), (elsewhere, "b3.output", "not this\n")):
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        for task, d in (("b1", root), ("b2", root), ("b3", elsewhere)):
+            self.write(r.call("Bash", "toolu_" + task, command="run " + task, run_in_background=True),
+                       r.result("toolu_" + task, {"backgroundTaskId": task},
+                                "Output is being written to: %s/%s.output" % (d, task)))
+        self.write(r.call("Monitor", "toolu_m1", description="watch"), r.result("toolu_m1", {"taskId": "m1"}))
+        sub, b = self.subscribe(bridge=False)
+        self.opened(sub, b)
+
+        def ask(task, tail=65536):
+            count = len(b.outputs)
+            self.assertEqual(sub.output(task, tail, []), [], "nothing at once: read on the transcript's worker")
+            self.assertTrue(self.pump(sub, b, lambda: len(b.outputs) > count))
+            return b.outputs[-1]
+
+        self.assertEqual(ask("b1"), {"taskId": "b1", "result": "ok", "path": root + "/b1.output", "size": 18,
+                                     "from": 0, "text": "line one\nline two\n", "truncated": False},
+                         "under the root of the transcript's project directory")
+        self.assertEqual(ask("b1", tail=10), {"taskId": "b1", "result": "ok", "path": root + "/b1.output",
+                                              "size": 18, "from": 9, "text": "line two\n", "truncated": True})
+        self.assertEqual(ask("m1"), {"taskId": "m1", "result": "missing", "path": None})
+        self.assertEqual(ask("b2"), {"taskId": "b2", "result": "missing", "path": root + "/b2.output"})
+        refused = ask("b3")
+        self.assertEqual((refused["result"], refused["path"]), ("refused", elsewhere + "/b3.output"))
+        self.assertTrue(refused["reason"].strip())
+        self.assertEqual(ask("nope"), {"taskId": "nope", "result": "unknown-task"})
+
+        self.alive = False
+        self.settle(sub, b)
+        self.clock.advance(plane.END_GRACE + 0.1)
+        self.assertTrue(self.pump(sub, b, lambda: sub.over))
+        with open(os.path.join(root, "m1.output"), "w") as f:
+            f.write("event\n")
+        self.write(r.task_status("m1", "running", root + "/m1.output", kind="monitor"))
+        self.assertTrue(self.pump(sub, b, lambda: by_task(b.body)["m1"]["outputFile"] == root + "/m1.output"))
+        self.assertEqual(ask("m1"), {"taskId": "m1", "result": "ok", "path": root + "/m1.output", "size": 6,
+                                     "from": 0, "text": "event\n", "truncated": False},
+                         "an idle subscription answers too, once a row names the file")
+        self.assertIsNone(b.end)
+        self.assertEqual(b.errors, [])
+
+    def test_an_output_frame_out_of_form_is_passed_by(self):
+        r = Rows()
+        self.write(r.call("Monitor", "toolu_m1", description="watch"), r.result("toolu_m1", {"taskId": "m1"}))
+        sub, b = self.subscribe(bridge=False)
+        self.opened(sub, b)
+        p = plane.Plane("testhost", lambda: None, transcripts=self.transcripts, disk=self.disk)
+        p.subs[sub.sub] = sub
+        for task, tail in (("m 1", 10), ("x" * 65, 10), (7, 10), ("m1", 0), ("m1", 524289), ("m1", True),
+                           ("m1", "10")):
+            self.assertEqual(p.output({"sub": sub.sub, "taskId": task, "tail": tail}), [])
+        self.assertEqual(p.output({"sub": "another", "taskId": "m1", "tail": 10}), [])
+        self.settle(sub, b)
+        self.assertEqual(b.outputs, [], "nothing answered a frame out of form")
+        self.assertEqual(p.output({"sub": sub.sub, "taskId": "m1", "tail": 524288}), [])
+        self.assertTrue(self.pump(sub, b, lambda: b.outputs))
+        self.assertEqual(b.outputs, [{"taskId": "m1", "result": "missing", "path": None}])
+        p.subs.clear()
+
+
+class RealChildJobs(Jobs):
+    """Every jobs case again, the bridge being the real child: its snapshot's
+    `agents` as the mod's resync gave them, its `agent` events folded as it
+    folds them (DC8 M3)."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake.real = True
+        self.fake.child_env = {"SMINOS_BRIDGE_READY_WAIT": str(fake_session.READY_HOLD)}
+
+
+class Roots(unittest.TestCase):
+    """`output`'s canonical roots, derived from the machine's own state (DC8's
+    Decision Log): one per slug, under the engine's per-uid temp root."""
+
+    def test_the_engines_slug(self):
+        self.assertEqual(plane.engine_slug("/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/sminos-family"),
+                         "-Users-new-Developer-GitHub-doperpowers--claude-worktrees-sminos-family")
+        # Past 200 characters (UTF-16 units), cut and the original's base-36 hash added (node, the engine's j0):
+        self.assertEqual(plane.engine_slug("/Users/new/" + "x" * 210 + "/é😀"),
+                         "-Users-new-" + "x" * 189 + "-xnssi")
+
+    def test_one_root_per_slug(self):
+        sid = new_session()
+        base = os.path.join(os.path.realpath(os.environ["CLAUDE_CODE_TMPDIR"]), "claude-%d" % os.getuid())
+        main = "/h/.claude/projects/-w-repo--claude-worktrees-x/%s.jsonl" % sid
+        self.assertEqual(plane.output_roots(sid, main, ["/w/repo", "/w/repo/.claude/worktrees/x", "", None]),
+                         [os.path.join(base, slug, sid, "tasks")
+                          for slug in ("-w-repo--claude-worktrees-x", "-w-repo")],
+                         "the transcript's project directory, then each working directory's slug, once each")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_TMPDIR": ""}):
+            self.assertEqual(plane.output_roots(sid, main, []),
+                             [os.path.join(os.path.realpath("/tmp"), "claude-%d" % os.getuid(),
+                                           "-w-repo--claude-worktrees-x", sid, "tasks")])
+
+
+class ParentLoop(unittest.TestCase):
+    """A parent loop's ledger read off disk (Loop) parses only what an agent's
+    outcome reads, and gives every agent the outcome the whole ledger gives."""
+
+    def test_its_views_agree_with_the_whole_ledger(self):
+        r, path = Rows(), os.path.join(tempfile.mkdtemp(dir=T), "agent-p.jsonl")
+        rows = [r.call("Bash", "toolu_sh", command="make", run_in_background=True),
+                r.result("toolu_sh", {"backgroundTaskId": "b1"}, "Output is being written to: /x/b1.output"),
+                r.call("Read", "toolu_read", file_path="/x"), r.result("toolu_read", {}, "x" * 5000),
+                r.call("Agent", "toolu_a", description="done"), r.result("toolu_a", {"status": "completed"}, "ok"),
+                r.call("Agent", "toolu_b", description="bg", run_in_background=True),
+                r.result("toolu_b", {"status": "async_launched"}),
+                r.call("TaskStop", "toolu_stop", task_id="ab"),
+                r.result("toolu_stop", {"message": "Successfully stopped task: ab"}, "stopped"),
+                r.call("Agent", "toolu_c", description="c", run_in_background=True),
+                r.result("toolu_c", {"status": "async_launched"}),
+                r.task_status("ac", "failed", kind="local_agent"),
+                r.call("Agent", "toolu_d", description="d", run_in_background=True),
+                r.result("toolu_d", {"status": "async_launched"}),
+                r.row(type="user", origin={"kind": "task-notification"}, message={"role": "user", "content":
+                      "<task-notification>\n<task-id>ad</task-id>\n<status>killed</status>\n</task-notification>"}),
+                r.call("Agent", "toolu_e", description="e")]
+        with open(path, "w") as f:
+            f.writelines(json.dumps(row) + "\n" for row in rows)
+        whole = plane.jobs.Ledger()
+        whole.feed(rows)
+        cases = list(zip(["aa", "ab", "ac", "ad", "ae"], ["toolu_a", "toolu_b", "toolu_c", "toolu_d", "toolu_e"],
+                         (False, True, True, True, False)))
+        disk = plane.Disk()
+        view = disk.view(path, [c[0] for c in cases], [c[1] for c in cases])
+        for agent, tool, background in cases:
+            self.assertEqual(view.agent_outcome(agent, tool, background),
+                             whole.agent_outcome(agent, tool, background), agent)
+        self.assertEqual([(view.agent_outcome(*c) or {}).get("status") for c in cases],
+                         ["completed", "stopped", "failed", "stopped", None])
+        loop = disk.get(("loop", path))
+        self.assertNotIn("toolu_read", loop.ledger.calls, "a call no agent's outcome reads is not parsed")
+        self.assertEqual(loop.ledger.jobs, {}, "nor are the loop's jobs kept")
+
+
+class FixtureOutput(unittest.TestCase):
+    """Every `output` case of dx4-jobs.json through the plane's own path. The
+    case's roots are never handed to anything: the plane derives them from
+    this machine's state, set up so they come out as the case's. The session's
+    transcript sits in the worktree's project directory, it joined from the
+    launch directory (`here`), its engine record's cwd is the worktree, and
+    CLAUDE_CODE_TMPDIR is `<ROOT>/tmp`. The frame goes through Plane.output,
+    the read runs on the transcript's worker, and the DX4 `output` message is
+    what is checked."""
+
+    SID = "d0c8a000-0000-4000-8000-00000000c0de"   # the fixture's session
+    LAUNCH = "/Users/me/work/proj"                     # engine slug -Users-me-work-proj
+    WORKTREE = "/Users/me/work/proj/.claude/worktrees/dc8"   # engine slug -Users-me-work-proj--claude-worktrees-dc8
+
+    @classmethod
+    def setUpClass(cls):
+        home = os.environ["HOME"]
+        cls.holder = subprocess.Popen(["sleep", "3600"])
+        cls.record = os.path.join(home, ".claude", "sessions", "%d.json" % cls.holder.pid)
+        with open(cls.record, "w") as f:
+            json.dump({"pid": cls.holder.pid, "sessionId": cls.SID, "cwd": cls.WORKTREE, "kind": "interactive",
+                       "status": "busy"}, f)
+        cls.transcript = os.path.join(home, ".claude", "projects", plane.engine_slug(cls.WORKTREE), cls.SID + ".jsonl")
+        os.makedirs(os.path.dirname(cls.transcript), exist_ok=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.holder.terminate()
+        cls.holder.wait(5)
+        for path in (cls.record, cls.transcript):
+            os.unlink(path)
+
+    def pump(self, p, until):
+        out, deadline = [], time.time() + 5
+        while time.time() < deadline:
+            out += p.pump_one("fx")
+            if until(out):
+                return out
+            time.sleep(0.01)
+        self.fail("nothing came: %r" % [m["kind"] for m in out])
+
+    def test_every_output_case_through_the_plane(self):
+        for case in FIXTURE["outputCases"]:
+            with self.subTest(case=case["name"]):
+                root = os.path.realpath(tempfile.mkdtemp(dir=T))
+                # The fixture spells the engine's per-uid directory for uid 501, this machine's; the plane
+                # derives it from its own uid.
+                c = json.loads(json.dumps(case).replace("<ROOT>", root).replace("/claude-501/",
+                                                                               "/claude-%d/" % os.getuid()))
+                inp, want = c["input"], c["expect"]
+                self.assertEqual(inp["session"], self.SID)
+                for item in inp["layout"]:
+                    path = item["path"]
+                    os.makedirs(path if item.get("dir") else os.path.dirname(path), exist_ok=True)
+                    if "file" in item:
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(item["file"])
+                    elif "symlink" in item:
+                        os.symlink(item["symlink"], path)
+                with open(self.transcript + ".tmp", "w") as f:
+                    f.writelines(json.dumps(row) + "\n" for row in inp["main"])
+                os.replace(self.transcript + ".tmp", self.transcript)
+                with mock.patch.dict(os.environ, {"CLAUDE_CODE_TMPDIR": os.path.join(root, "tmp")}):
+                    p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
+                    try:
+                        p.here = {PROJECT: {self.SID: self.LAUNCH}}
+                        out = p.subscribe(types.SimpleNamespace(id=PROJECT, name="fixture"),
+                                          {"session": self.SID, "agentId": None, "sub": "fx"})
+                        self.pump(p, lambda ms: any(m["kind"] == "snapshot" for m in out + ms))
+                        self.assertEqual(p.live[self.SID]["cwd"], self.WORKTREE, "the engine record is read")
+                        self.assertEqual(p.output({"sub": "fx", **inp["request"]}), [], "read on the worker")
+                        got = [m for m in self.pump(p, lambda ms: any(m["kind"] == "output" for m in ms))
+                               if m["kind"] == "output"][0]["body"]
+                    finally:
+                        p.close()
+                if want["result"] == "refused":
+                    self.assertTrue(str(got.pop("reason", "")).strip(), "a refusal gives its reason")
+                self.assertEqual(got, want)
+
+
+class TranscriptIndex(unittest.TestCase):
+    """The offset index (DC8 M2): each row's uuid, byte offset and length in
+    file order, extended from where it stopped; the transcripts kept a while
+    after their last subscription."""
+
+    def setUp(self):
+        self.path = os.path.join(tempfile.mkdtemp(dir=T), "t.jsonl")
+
+    def append(self, text):
+        with open(self.path, "ab") as f:
+            f.write(text.encode())
+
+    def test_rows_in_file_order_with_their_spans(self):
+        lines = [
+            json.dumps({"type": "user", "uuid": "u1", "message": {"content": "é one"}}),
+            json.dumps({"type": "api-request", "body": {"messages": [{"uuid": "nested, no row"}]}}),
+            json.dumps({"toolUseResult": {"uuid": "nested-first"}, "type": "user", "uuid": "u2"}),
+            json.dumps({"type": "cost-state", "uuid": 5}),
+            "not json at all \"uuid\"",
+            json.dumps({"type": "assistant", "uuid": "u3"}, ensure_ascii=False),
+        ]
+        self.append("\n".join(lines) + "\n" + '{"type": "user", "uuid": "u4", ')
+        index = plane.Index(self.path)
+        index.extend()
+        self.assertEqual(index.uuids, ["u1", "u2", "u3"], "rows only, by their top-level uuid")
+        with open(self.path, "rb") as f:
+            data = f.read()
+        self.assertEqual(index.end, data.rfind(b"\n") + 1, "through the last whole line")
+        for i, u in enumerate(index.uuids):
+            line = data[index.offsets[i]:index.offsets[i] + index.lengths[i]]
+            self.assertEqual(json.loads(line)["uuid"], u, "the span is the row's line")
+        self.assertEqual([r["uuid"] for r in index.rows(0, 3)], ["u1", "u2", "u3"])
+        self.assertEqual([r["uuid"] for r in index.rows(1, 2)], ["u2"])
+        parsed = index.parsed
+        self.append('"message": {}}\n' + json.dumps({"type": "user", "uuid": "u5"}) + "\n")
+        index.extend()
+        self.assertEqual(index.uuids, ["u1", "u2", "u3", "u4", "u5"], "extended from where it stopped")
+        self.assertEqual(index.at["u4"], 3)
+        self.assertLess(index.parsed - parsed, 200, "only the new lines were parsed")
+
+    def test_a_page_fits_the_budget_and_the_limit(self):
+        pad = "x" * (plane.ROWS_BUDGET // 3)
+        self.append("".join(json.dumps({"uuid": "r%d" % i, "pad": pad}) + "\n" for i in range(6)))
+        index = plane.Index(self.path)
+        index.extend()
+        self.assertEqual(index.older(6, None), 4, "as many as fit the budget: two")
+        self.assertEqual(index.older(6, 1), 5, "at most the limit")
+        self.assertEqual(index.older(1, None), 0)
+        self.append(json.dumps({"uuid": "huge", "pad": "y" * plane.ROWS_BUDGET}) + "\n")
+        index.extend()
+        self.assertEqual(index.older(7, None), 6, "at least one, however large")
+
+    def test_replaced_shrunk_or_gone_resets(self):
+        for how in ("replaced", "shrunk", "gone"):
+            with self.subTest(how=how):
+                self.append(json.dumps({"uuid": "a"}) + "\n" + json.dumps({"uuid": "b"}) + "\n")
+                index = plane.Index(self.path)
+                index.extend()
+                if how == "replaced":
+                    with open(self.path + ".new", "w") as f:
+                        f.write(json.dumps({"uuid": "c"}) + "\n" * 40)
+                    os.replace(self.path + ".new", self.path)
+                elif how == "shrunk":
+                    with open(self.path, "r+") as f:
+                        f.truncate(3)
+                else:
+                    os.unlink(self.path)
+                with self.assertRaises(plane.Reset):
+                    index.extend()
+                if os.path.exists(self.path):
+                    os.unlink(self.path)
+        index = plane.Index(self.path)
+        index.extend()
+        self.assertEqual((index.uuids, index.end), ([], 0), "a file not written yet is no reset")
+
+    def test_kept_a_while_after_the_last_subscription(self):
+        transcripts = plane.Transcripts(keep=2)
+        held = [transcripts.acquire("/t/%d" % i) for i in range(4)]
+        self.assertIs(transcripts.acquire("/t/0"), held[0], "shared while held")
+        transcripts.release(held[0])
+        for t in held:
+            transcripts.release(t)
+        self.assertEqual(list(transcripts.held), ["/t/2", "/t/3"], "the two released last are kept")
+        self.assertIs(transcripts.acquire("/t/3"), held[3])
+        self.assertIsNot(transcripts.acquire("/t/0"), held[0], "one evicted builds again")
 
 
 class Lifecycle(unittest.TestCase):
@@ -1186,12 +2203,14 @@ class Uplink(unittest.TestCase):
             m["kind"] == "presence" and m["session"] == self.sid for m in ms[count:]), timeout=15)
         self.assertIsNotNone(ok, "the uplink reconnected and said presence again")
 
-    def subscribe(self, agent=None):
+    def subscribe(self, agent=None, session=None):
         sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()  # DX3: 128 bits, base64url
-        self.hub.send({"t": "subscribe", "project": self.project, "session": self.sid, "agentId": agent, "sub": sub})
+        session = session or self.sid
+        self.hub.send({"t": "subscribe", "project": self.project, "session": session, "agentId": agent, "sub": sub})
         b = Browser()
         b.agent = agent
         b.sub = sub
+        b.session = session
         b.seen = 0
         return b
 
@@ -1201,7 +2220,8 @@ class Uplink(unittest.TestCase):
         while time.time() < deadline:
             mine = [m for m in self.hub.messages() if m.get("sub") == b.sub]
             for m in mine[b.seen:]:
-                self.assertEqual((m["project"], m["machine"], m["session"]), (self.project, self.hub.machine, self.sid))
+                self.assertEqual((m["project"], m["machine"], m["session"]),
+                                 (self.project, self.hub.machine, b.session))
                 b.take(m)
             b.seen = len(mine)
             if until():
@@ -1377,6 +2397,69 @@ class Uplink(unittest.TestCase):
         self.assertTrue(self.feed(b, lambda: len(b.rows) == len(self.fake.rows())))
         self.assertClean(b)
 
+    def test_f_an_ended_session_stays_pageable_until_resume(self):
+        """G2 through the hub: a session that ends while subscribed sends no
+        `end`, is said not running within a second, pages back to its first
+        line; Resume brings its bridge back, which ends the transcript-only
+        subscription `discontinuity`, and a fresh one streams."""
+        home, sh = os.environ["HOME"], os.environ["SMINOS_HOME"]
+        sid = new_session()
+        fake = fake_session.FakeSession(home, sh, sid)
+        ids = [fake.user_row("%d %s" % (i, "x" * 100000), post=False) for i in range(12)]
+
+        def run(status):
+            holder = self.spawn(["sleep", "3600"])
+            with open(os.path.join(home, ".claude", "sessions", "%d.json" % holder.pid), "w") as f:
+                json.dump({"pid": holder.pid, "sessionId": sid, "cwd": self.root, "kind": "interactive",
+                           "status": status}, f)
+            return holder
+
+        def said(ms):
+            return [m["body"] for m in ms if m["kind"] == "presence" and m["session"] == sid]
+
+        holder = run("busy")
+        self.assertIsNotNone(self.hub.wait(lambda ms: said(ms), timeout=5), "the session is a member")
+        b = self.subscribe(session=sid)
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
+        last = fake.user_row("the last word", post=False)
+        self.assertTrue(self.feed(b, lambda: last in b.uuids()))
+        count = len(self.hub.messages())
+        t0 = time.time()
+        holder.terminate()
+        holder.wait(5)
+        self.assertIsNotNone(self.hub.wait(lambda ms: {"record": None, "bridge": False} in said(ms[count:]), timeout=5))
+        self.assertLess(time.time() - t0, 1.0, "said not running within a second")
+        self.feed(b, lambda: False, timeout=plane.END_GRACE + 1.0)
+        self.assertIsNone(b.end, "no end once the session is over")
+        older, before = [], b.snapshot["rows"][-1]["uuid"]
+        while True:
+            self.hub.send({"t": "rows", "project": self.project, "session": sid, "agentId": None, "sub": b.sub,
+                           "before": before, "limit": 1000})
+            count = len(b.pages)
+            self.assertTrue(self.feed(b, lambda: len(b.pages) > count))
+            older += b.pages[-1]["rows"]
+            if not b.pages[-1]["more"]:
+                break
+            before = older[-1]["uuid"]
+        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), ids + [last], "back to the first line")
+        resumed = run("idle")
+        try:
+            fake.start_bridge()
+            self.assertTrue(self.feed(b, lambda: b.end is not None))
+            self.assertEqual(b.end["reason"], "discontinuity", "Resume ends the transcript-only subscription")
+            b2 = self.subscribe(session=sid)
+            self.assertTrue(self.feed(b2, lambda: b2.snapshot is not None))
+            m = fake.message()
+            m.text(0, "after the resume")
+            u = m.row(0)
+            self.assertTrue(self.feed(b2, lambda: u in b2.uuids()), "the fresh one streams")
+            self.assertEqual(b2.errors, [])
+        finally:
+            fake.stop_bridge()
+            resumed.terminate()
+            resumed.wait(5)
+        self.assertEqual(b.errors, [])
+
     def test_e_reconnect_mid_response_while_rows_flush(self):
         """A response streams in the main loop and in a subagent while rows
         keep flushing; the stream drops in the middle (a Worker restart); a
@@ -1452,6 +2535,66 @@ class Uplink(unittest.TestCase):
         self.assertEqual(after[1].step_ends, [(sa.turn, "a7", 0)], "an agent sub its own")
         for b in after:
             self.assertEqual(b.errors, [])
+
+    def test_g_output_through_the_hub(self):
+        """DX2's `output` frame down, DX4 `output` up, its four variants: a
+        session whose transcript lives under one slug ("proj") and whose
+        outputs are under its working directory's; then the session ends and
+        the idle subscription answers still."""
+        home, sh = os.environ["HOME"], os.environ["SMINOS_HOME"]
+        sid = new_session()
+        fake = fake_session.FakeSession(home, sh, sid)
+        base = os.path.join(os.path.realpath(os.environ["CLAUDE_CODE_TMPDIR"]), "claude-%d" % os.getuid())
+        root = os.path.join(base, plane.engine_slug(self.root), sid, "tasks")
+        elsewhere = os.path.join(T, "elsewhere", sid, "tasks")
+        for d, name in ((root, "bo1.output"), (elsewhere, "bo3.output")):
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, name), "w") as f:
+                f.write("built\nok\n")
+        r = Rows()
+        for task, d in (("bo1", root), ("bo2", root), ("bo3", elsewhere)):
+            for row in (r.call("Bash", "toolu_" + task, command="make " + task, run_in_background=True),
+                        r.result("toolu_" + task, {"backgroundTaskId": task},
+                                 "Output is being written to: %s/%s.output" % (d, task))):
+                fake.write_row(None, row)
+        for row in (r.call("Monitor", "toolu_mo1", description="watch"), r.result("toolu_mo1", {"taskId": "mo1"})):
+            fake.write_row(None, row)
+        holder = self.spawn(["sleep", "3600"])
+        with open(os.path.join(home, ".claude", "sessions", "%d.json" % holder.pid), "w") as f:
+            json.dump({"pid": holder.pid, "sessionId": sid, "cwd": self.root, "kind": "interactive",
+                       "status": "busy"}, f)
+        self.assertIsNotNone(self.hub.wait(lambda ms: any(m["kind"] == "presence" and m["session"] == sid
+                                                          for m in ms), timeout=5), "the session is a member")
+        b = self.subscribe(session=sid)
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
+        self.assertEqual(sorted(by_task(b.snapshot)), ["bo1", "bo2", "bo3", "mo1"])
+
+        def ask(*tasks):
+            count = len(b.outputs)
+            for task in tasks:
+                self.hub.send({"t": "output", "project": self.project, "session": sid, "agentId": None, "sub": b.sub,
+                               "taskId": task, "tail": 4096})
+            self.assertTrue(self.feed(b, lambda: len(b.outputs) == count + len(tasks)))
+            return {o["taskId"]: o for o in b.outputs[count:]}
+
+        got = ask("bo1", "mo1", "bo2", "bo3", "nope")
+        self.assertEqual(got["bo1"], {"taskId": "bo1", "result": "ok", "path": root + "/bo1.output", "size": 9,
+                                      "from": 0, "text": "built\nok\n", "truncated": False})
+        self.assertEqual(got["mo1"], {"taskId": "mo1", "result": "missing", "path": None})
+        self.assertEqual(got["bo2"], {"taskId": "bo2", "result": "missing", "path": root + "/bo2.output"})
+        self.assertEqual((got["bo3"]["result"], got["bo3"]["path"]), ("refused", elsewhere + "/bo3.output"))
+        self.assertTrue(got["bo3"]["reason"].strip())
+        self.assertEqual(got["nope"], {"taskId": "nope", "result": "unknown-task"})
+
+        holder.terminate()
+        holder.wait(5)
+        self.feed(b, lambda: by_task(b.body)["mo1"]["status"] == "exited", timeout=plane.END_GRACE + 2.0)
+        self.assertEqual({j["status"] for j in b.body["jobs"]}, {"exited"}, "the jobs ended with the process")
+        self.feed(b, lambda: False, timeout=plane.END_GRACE + 0.5)
+        self.assertEqual(ask("bo1")["bo1"]["result"], "ok", "the idle subscription answers `output` too")
+        self.assertIsNone(b.end)
+        self.assertEqual(b.errors, [])
+        self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
 
 
 if __name__ == "__main__":

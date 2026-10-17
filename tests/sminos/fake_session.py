@@ -97,6 +97,7 @@ class Endpoint:
             self.resyncs += 1
             self.ready = True
             self.cut = {k: v for k, v in (e.get("cut") or {}).items() if v}
+            self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
             # The mod's own copy of what streams replaces this one, as the
             # child's resync does: a block the mod settled is gone, whatever
             # this copy still held of it.
@@ -140,7 +141,10 @@ class Endpoint:
         elif kind == "usage":
             self.usage = dict(e)
         elif kind == "agent":
-            self.agents[e["agentId"]] = {"agentId": e["agentId"], "running": e["phase"] != "stop"}
+            # As the child keeps it: what the spawn said, and whether it runs.
+            a = self.agents.setdefault(e["agentId"], {"agentId": e["agentId"]})
+            a.update({k: v for k, v in e.items() if k not in ("type", "phase", "n")})
+            a["running"] = e["phase"] != "stop"
         self.sent += 1
         for q in list(self.subscribers):
             if q.qsize() >= BACKLOG:
@@ -356,6 +360,7 @@ class FakeSession:
         self.module = None    # the module instance now loaded: what a Message streams under
         self.cut = {}         # the mod's own copy of each loop's cut, which its resyncs carry
         self.messages = []    # every request begun: the ones still streaming are in a resync
+        self.agents = []      # the mod's agent state (the $.agent.list() seed included), which its resyncs carry
         self.turns = 0
 
     # -------------------------------------------------- the transcript
@@ -493,8 +498,12 @@ class FakeSession:
         """The mod's whole state again (a gap's sequel, or a child's first
         post): what still streams under this module, and its cut."""
         streaming = [m.entry() for m in self.messages if m.live()]
-        self.post([{"type": "resync", "turns": [], "streaming": streaming, "agents": [], "cut": dict(self.cut),
-                    "t": 0}])
+        self.post([{"type": "resync", "turns": [], "streaming": streaming, "agents": [dict(a) for a in self.agents],
+                    "cut": dict(self.cut), "t": 0}])
+
+    def agent(self, phase, agent_id, **fields):
+        """An `agent` spawn or stop event (DX5), as the mod posts it."""
+        self.post([{"type": "agent", "phase": phase, "agentId": agent_id, "t": 0, **fields}])
 
     def gap(self):
         self.post([{"type": "gap", "dropped": 3, "t": 0}])

@@ -18,12 +18,14 @@ import {
   settle,
   withdrawAll,
 } from './bridge-requests'
-import { announceRow, compacted, exportRow, noticeRow, observeRow } from './bridge-rows'
+import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
+import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 
 export { TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
 export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
+export { AGENTS_REFRESH_MS } from './bridge-agents'
 
 /**
  * The bridge (DC2): this session's live events go out, and commands come in,
@@ -59,7 +61,10 @@ export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
  *   every resync carries, and the poster;
  * - bridge-requests.tsx: requests from outside, and their settlement;
  * - bridge-rows.tsx: row order (each kept row's notice, a compaction's rows
- *   read from the transcript), and the rows exported as messages to the host.
+ *   read from the transcript), the rows exported as messages to the host,
+ *   and the row a delivered prompt became;
+ * - bridge-agents.tsx: the agents the module did not see spawn, learned from
+ *   the engine's list.
  */
 
 export const HEARTBEAT_MS = 5_000
@@ -77,6 +82,8 @@ const DRAIN_TRIES = 10
  * it rather than repeating it.
  */
 export const STEER_WAKE = 'I added a note to the conversation while you were finishing your answer. Read it and act on it.'
+/** Deliveries whose prompt row is awaited, at most (the oldest is let go). */
+const SUBMISSIONS_KEPT = 100
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
 /** How long a Bash call of an interrupted turn waits for the interrupt's record, at most (a TaskStop that never answers). */
@@ -460,7 +467,14 @@ function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
   }
   state.delivered.set(writer, delivery.seq)
   emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
+  // Its row, once kept, is named `entered` (bridge-rows.tsx, enteredRow).
+  const submission = { key: delivery, text }
+  state.submissions.push(submission)
+  if (state.submissions.length > SUBMISSIONS_KEPT) {
+    state.submissions.shift()
+  }
   const refused = (reason: string) => {
+    state.submissions = state.submissions.filter((s) => s !== submission)
     $.ui.log(`bridge: the delivery ${writer}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
     emit({ type: 'delivered', key: delivery, outcome: 'refused', reason })
   }
@@ -643,6 +657,7 @@ function switchSession(session: string, tries = 0) {
   }
   if (!state.isEnding) {
     // Found by the heartbeat, with no session.end before it.
+    forgetAgents()
     forgetLive()
   }
   state.isEnding = false
@@ -691,6 +706,7 @@ async function beat($: EngineInterface) {
   }
   await isTurnStillUnknown()
   emit({ type: 'heartbeat', state: turnState() })
+  await refreshAgents()
 }
 
 export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
@@ -722,6 +738,7 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
     stopChild()
     startChild($, session)
   }
+  state.listAgents = () => $.agent.list()
   // A session with no message yet when the module loads (a start, not a
   // reload or a resume): its main loop is seen from its first row.
   if (!state.isSeeded && (await $.session.messages().then((m) => Array.isArray(m) && m.length === 0, () => false))) {
@@ -739,6 +756,8 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
     model: await $.session.model(),
     version: (await $.session.version()).version,
   }
+  // The agents running already, or over, learned before the first hello: its resync carries them.
+  await refreshAgents()
   stopChild()
   startChild($, await $.session.id())
   if (!state.isPosterRunning) {
@@ -783,6 +802,7 @@ export function registerBridge(on: On) {
     emit({ type: 'session', phase: 'end', reason: e.reason })
     if (e.reason === 'clear' && state.post !== undefined) {
       state.isEnding = true
+      forgetAgents()
       forgetLive()
       awaitNextSession()
     }
@@ -795,6 +815,11 @@ export function registerBridge(on: On) {
       state.isTurnUnknown = false
     }
     state.loopTurns.set(loopKey(e.agentId), e.turnId)
+    // A loop whose spawn the bridge did not see (a forked skill): the list names it.
+    if (e.agentId !== undefined && !state.agents.has(e.agentId)) {
+      claimAgent(e.agentId)
+      void refreshAgents()
+    }
     const text = capped(e.text)
     emit({ type: 'turn', phase: 'start', turnId: e.turnId, agentId: e.agentId ?? null, text: text.value, ...(text.cut && { truncated: true }) })
     return next(e)
@@ -1036,6 +1061,7 @@ export function registerBridge(on: On) {
       observeRow(e.door, e.message, stored.uuid)
       if (agentId === null) {
         exportRow(e.door, stored.message, stored.uuid, e.origin)
+        enteredRow(e.door, stored.message, stored.uuid, e.origin)
       }
     }
     return stored
@@ -1057,8 +1083,16 @@ export function registerBridge(on: On) {
   }).catch((_, e, next) => next(e))
 
   on('agent.spawn', { tool_use_id: /^/ }, async (_, e, next) => {
-    const result = await next(e)
+    // The list may name the agent before this hook has said so: it is this hook's.
+    state.spawning++
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next(e)
+    } finally {
+      state.spawning--
+    }
     if (result.agentId !== undefined) {
+      claimAgent(result.agentId)
       state.freshLoops.add(result.agentId)
       // A foreground subagent's calls belong to the main turn it runs in (an
       // interrupt of that turn ends it); a nested one's, to its parent's.
@@ -1078,13 +1112,17 @@ export function registerBridge(on: On) {
         model: result.model,
         toolUseId: e.tool_use_id || null,
       })
+      watchAgents()
     }
     return result
   })
 
   on('classic.SubagentStop', { hook_event_name: 'SubagentStop' }, async (_, e, next) => {
     state.foreground.delete(e.agent_id)
-    emit({ type: 'agent', phase: 'stop', agentId: e.agent_id, agentType: e.agent_type })
+    // Said already when the engine's list showed it over.
+    if (state.agents.get(e.agent_id)?.running !== false) {
+      emit({ type: 'agent', phase: 'stop', agentId: e.agent_id, agentType: e.agent_type })
+    }
     return next(e)
   })
 }

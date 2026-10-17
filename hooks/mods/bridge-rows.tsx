@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 
-import { ASK_TOOL } from './ask'
+import { ASK_TOOL, PLUGIN } from './ask'
 import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
 import type { BridgeEvent, TranscriptRecord } from './bridge-state'
 import { emit, hold, isHold, releaseStepEnd } from './bridge-stream'
@@ -38,6 +38,9 @@ import { callEnded } from './bridge-requests'
  * they are kept (`export`), and the child appends them to the project's log
  * through the Stop hook's own writer and keys, so they reach the log as they
  * complete and the Stop hook's export finds them already there.
+ *
+ * A delivery's row (DC8.G6): the prompt row a delivery submitted becomes is
+ * named once it is kept (`delivered` `entered`, enteredRow).
  */
 
 /** A response row's block, as its chunks name its kind. */
@@ -243,6 +246,31 @@ export function exportRow(door: string, message: { content?: unknown }, uuid: st
       }
     }
   }
+}
+
+/**
+ * The row a delivery became (DC8.G6): a main-loop prompt row this plugin
+ * submitted as the human's words (origin `plugin`, this plugin, `asUser`)
+ * whose prompt — its first text block, the text as submitted; context blocks
+ * follow it — is exactly the text of one delivery still awaiting its row,
+ * named `delivered` `entered` with the row's uuid. A delivery's text opens
+ * with its frame, which names its key, so two waiting with one text do not
+ * happen; if they ever do, neither is named. A text a hook rewrote on its way
+ * in matches none, and is not named: no row is guessed.
+ */
+export function enteredRow(door: string, message: { content?: unknown }, uuid: string, origin: unknown) {
+  if (door !== 'prompt' || state.submissions.length === 0 || !isRecord(origin) || origin.kind !== 'plugin' || origin.name !== PLUGIN || origin.asUser !== true) {
+    return
+  }
+  const first = Array.isArray(message.content) ? message.content.filter(isRecord).find((b) => b.type === 'text') : undefined
+  const text = typeof message.content === 'string' ? message.content : first?.text
+  const matching = state.submissions.filter((s) => s.text === text)
+  if (matching.length !== 1) {
+    return
+  }
+  const [submission] = matching
+  state.submissions = state.submissions.filter((s) => s !== submission)
+  emit({ type: 'delivered', key: submission!.key, outcome: 'entered', uuid })
 }
 
 /** One row of an ask call; once its call and its result are both kept, the pair is exported. */

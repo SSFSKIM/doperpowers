@@ -1,5 +1,5 @@
 import { isEffort, isRecord, loopKey, message, state } from './bridge-state'
-import type { BridgeEvent, Override, Request, Streaming } from './bridge-state'
+import type { BridgeEvent, Override, Refusal, Request, Streaming } from './bridge-state'
 
 /**
  * The stream: the mod's copy of the session's live state, and the poster that
@@ -40,6 +40,8 @@ const QUEUE_MAX = 10_000
 const RETRY_MS = 500
 /** A step's end waits this long at most for the rows of its blocks the engine appends after the request's result. */
 export const STEP_END_WAIT_MS = 1_000
+/** Refusals held for the child at most (as many as it keeps). */
+const REFUSALS_HELD = 100
 /** A chunk's block kind: an `input` chunk is a tool call's arguments. */
 const BLOCK_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', tool: 'tool', input: 'tool' }
 
@@ -112,7 +114,20 @@ function track(e: BridgeEvent) {
       // A hold already placed for it keeps its own copy.
       state.named.delete(String(e.agentId))
     }
+  } else if (e.type === 'delivered' && e.outcome === 'refused') {
+    state.refusals = [...state.refusals, { key: e.key as Refusal['key'], reason: String(e.reason) }].slice(-REFUSALS_HELD)
   }
+}
+
+/** The refusals a post the child answered carried, in its own events or a resync's: the child keeps them. */
+function acknowledge(batch: BridgeEvent[]) {
+  const name = (k: Refusal['key']) => `${k.writer}:${k.seq}`
+  const carried = new Set(
+    batch.flatMap((e) =>
+      e.type === 'resync' ? (e.refused as Refusal[]).map((r) => name(r.key)) : e.type === 'delivered' && e.outcome === 'refused' ? [name(e.key as Refusal['key'])] : [],
+    ),
+  )
+  state.refusals = state.refusals.filter((r) => !carried.has(name(r.key)))
 }
 
 /** A streaming message as the snapshot shows it: the blocks without a row yet, by index. */
@@ -150,6 +165,8 @@ export function resyncEvent(): BridgeEvent {
     settled: state.settled.map((s) => ({ ...s })),
     override: state.override ?? null,
     delivered: Object.fromEntries(state.delivered),
+    // Refusals whose post may have been lost: the child merges them into what it keeps.
+    refused: state.refusals.map((r) => ({ key: { ...r.key }, reason: r.reason })),
     // Each loop's last row notice: every row up to it has been named.
     cut: { main: null, ...Object.fromEntries(state.cut) },
     // What the session started as: a child whose session start was lost (the
@@ -167,7 +184,10 @@ export function resyncEvent(): BridgeEvent {
 export function forgetLive() {
   state.turns.clear()
   state.messages.clear()
+  // Its agents were set aside first (bridge-agents.tsx, forgetAgents).
   state.agents.clear()
+  state.submissions = []
+  state.refusals = []
   state.delivered.clear()
   state.loopTurns.clear()
   state.stepBlocks.clear()
@@ -323,6 +343,8 @@ export async function poster() {
           isFenced = true
         } else if (!res.ok) {
           lost(`status ${res.status}`)
+        } else {
+          acknowledge(batch)
         }
       },
       (error: unknown) => lost(message(error)),
