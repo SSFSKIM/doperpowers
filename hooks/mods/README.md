@@ -504,6 +504,34 @@ named by none, and a reader emits them unnamed, on the next notice of their
 loop or after 2 seconds; a hook's success with nothing to say is raised to
 the hook but never written, so it is named by none.
 
+## interim (`interim.ts`)
+
+A subagent that ends its turn while its own background shell, monitor or
+workflow still runs makes the engine send its parent a completion
+notification anyway, and again each time that work wakes it and it stops to
+wait once more. Each one is a parent turn spent on "still running, nothing to
+do": in two sessions read on 2026-10-17 they were 597 of the turns, about
+190M tokens of cached context re-read, from subagents parked on test suites, CI
+gates and wait scripts. By 2.1.300 the engine's summary says `is waiting on
+its own background work` rather than `finished`; the wake is the same. The
+engine marks them, writing "This agent stopped with background work of its
+own still running" into the notification's `<note>` (the final one carries
+the other note), so a `prompt.submit` hook matched on `origin.kind:
+'task-notification'` drops those before they enter the session, but only
+when the status is `completed`, the `<note>` element carries that marker, and
+the whole `<result>` is one of the engine's placeholders (the report is still
+to come through SubagentHandback, or was already delivered as a message). A
+result holding anything else, the agent's words where hand-back is off or an
+engine warning beside the placeholder, passes, as do the final notification
+and a report that merely quotes the marker. Replayed over those sessions
+(engine 2.1.283 to 2.1.301), the filter drops 745 of 749 interim
+notifications; the four it keeps carry the safety classifier's warning. What
+it gives up: the parent no longer sees that the agent parked. An agent killed
+while parked gets no notification either way, since the engine counts the
+interim one as its notice when it queues it, before any hook runs, so the
+parent hears of the kill only if it did the killing or looks. A hook that
+fails lets the notification through.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
