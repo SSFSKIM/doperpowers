@@ -385,6 +385,12 @@ run_suites() {
     fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
   if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
     fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
+  # What a session runs, from its rows: DX4's shared vectors pin the derivation (jobs_parity.py, vendored by DC9).
+  while IFS= read -r line; do
+    case "$line" in "ok "*) pass "jobs parity: ${line#ok }" ;; *) fail "jobs parity: ${line#FAIL }" ;; esac
+  done < <(python3 "$SCRIPT_DIR/jobs_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx4-jobs.json" 2>&1)
+  if python3 "$SCRIPT_DIR/test_jobs.py"; then pass "the jobs ledger: rows in any batches, copies (test_jobs.py)"; else
+    fail "the jobs ledger: rows in any batches, copies (test_jobs.py)"; fi
 }
 summary() {
   echo
