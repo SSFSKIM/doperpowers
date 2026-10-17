@@ -17,6 +17,7 @@ import {
   blockNotice,
   blockReason,
   bumpEpoch,
+  hasPass,
   isAppealable,
   judgePrompt,
   logLine,
@@ -29,8 +30,9 @@ import {
   settingsEvidence,
   suggestPrompt,
   takePass,
+  voidBashPasses,
 } from './appeal-judge'
-import { asyncAsks } from './ask'
+import { asyncAsks, observeAsks } from './ask'
 
 /**
  * The tool as the model names it, `mcp__<plugin>__<name>` with the plugin's
@@ -38,10 +40,18 @@ import { asyncAsks } from './ask'
  */
 export const APPEAL = 'mcp__doperpowers__appeal'
 
-const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta'])
+const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta', '$shadowed'])
 
-/** A tool call's own arguments. */
-const toolInput = (e: Record<string, unknown>) => Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
+/**
+ * A tool call's own arguments, as the engine reconstructs them: the envelope
+ * fields off, and an argument whose name collided with one of them, which
+ * the engine moved under `$shadowed`, put back.
+ */
+function toolInput(e: Record<string, unknown>): Record<string, unknown> {
+  const own = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
+  const shadowed = e.$shadowed
+  return shadowed !== null && typeof shadowed === 'object' && !Array.isArray(shadowed) ? { ...own, ...(shadowed as Record<string, unknown>) } : own
+}
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -159,11 +169,13 @@ async function instructions($: EngineInterface): Promise<{ name: string; text: s
       $.ui.log(`appeal: ${path} could not be read: ${message(error)}`)
     }
   }
+  // A trusted source that cannot be read may hold a deny rule the judge must
+  // see: no evidence, no ruling (the caller fails the appeal on the throw).
   for (const source of TRUSTED_SOURCES) {
     try {
       found.push(...settingsEvidence(source, (await $.settings.read({ source })) as Record<string, unknown>))
     } catch (error) {
-      $.ui.log(`appeal: the ${source} settings could not be read: ${message(error)}`)
+      throw new Error(`the ${source} settings could not be read: ${message(error)}`)
     }
   }
   return found
@@ -209,10 +221,13 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
   if (ruling === undefined) {
     return failed('the judge gave no verdict')
   }
-  if (ledger.epoch !== epoch) {
-    return failed('a prompt arrived while the judge was reading, so its evidence is stale')
-  }
   const now = await $.clock.now()
+  // After the last await before the pass is installed: a prompt, or an
+  // answer to a question, that arrived since the appeal began makes the
+  // evidence stale.
+  if (ledger.epoch !== epoch) {
+    return failed('a prompt or an answer arrived while the judge was reading, so its evidence is stale')
+  }
   applyRuling(ledger, block, ruling.verdict, now)
   await record($, {
     event: 'ruling',
@@ -244,8 +259,14 @@ export function registerAppeal(on: On) {
 
   on('command.run', { command: 'appeals' }, async ($) => ({ text: await appealsReport($) }))
 
-  // Every call: a result that is a classifier block is given its id.
+  // Every call: a Bash call other than a passed one voids the loop's Bash
+  // passes before it runs (its shell may change directory); a result that is
+  // a classifier block is given its id.
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
+    const input = toolInput(e as Record<string, unknown>)
+    if (e.tool === 'Bash' && !hasPass(ledger, e.agentId, e.tool, input)) {
+      voidBashPasses(ledger, e.agentId)
+    }
     const result = await next(e)
     if (result.isError !== true || typeof result.text !== 'string') {
       return result
@@ -254,8 +275,9 @@ export function registerAppeal(on: On) {
     if (reason === undefined || !isAppealable(reason)) {
       return result
     }
-    const block = recordBlock(ledger, { agentId: e.agentId, tool: e.tool, input: toolInput(e as Record<string, unknown>), reason }, await $.clock.now())
-    await record($, { event: 'block', block: block.id, agentId: e.agentId ?? null, tool: e.tool, input: block.input, reason, cwd: await $.session.cwd() })
+    const cwd = await $.session.cwd()
+    const block = recordBlock(ledger, { agentId: e.agentId, tool: e.tool, input, reason, cwd }, await $.clock.now())
+    await record($, { event: 'block', block: block.id, agentId: e.agentId ?? null, tool: e.tool, input: block.input, reason, cwd })
     return { ...result, context: [...(result.context ?? []), blockNotice(block.id)] }
   }).catch((_, e, next) => next(e))
 
@@ -276,12 +298,15 @@ export function registerAppeal(on: On) {
     ) {
       return verdict
     }
+    const epoch = ledger.epoch
     const pass = takePass(ledger, e.agentId, e.tool, e.input, await $.clock.now())
     if (pass === undefined) {
       return verdict
     }
     await record($, { event: 'used', block: pass.block })
-    return { decision: 'allow', reason: `appeal ${pass.block} granted` }
+    // After the last await: a prompt or an answer that arrived meanwhile
+    // leaves the call to the classifier (the pass is spent either way).
+    return ledger.epoch === epoch ? { decision: 'allow', reason: `appeal ${pass.block} granted` } : verdict
   }).catch((_, e, next) => next(e))
 
   // Any prompt — the user's words, or anything that starts a turn in their
@@ -290,4 +315,14 @@ export function registerAppeal(on: On) {
     bumpEpoch(ledger)
     return next(e)
   }).catch((_, e, next) => next(e))
+
+  // So does an answer to an async question, which reaches the model beside
+  // a tool result, through no prompt. The bridge observes the asks too:
+  // chained, not replaced.
+  const previous = observeAsks((note) => {
+    previous?.(note)
+    if (note.kind === 'answered') {
+      bumpEpoch(ledger)
+    }
+  })
 }

@@ -457,9 +457,14 @@ export type AskNote =
 
 let observer: ((note: AskNote) => void) | undefined
 
-/** Sets the one observer of the session's asks. */
-export function observeAsks(fn: (note: AskNote) => void) {
+/**
+ * Sets the one observer of the session's asks and returns the one it
+ * replaces, so a later mod chains to it rather than silencing it.
+ */
+export function observeAsks(fn: (note: AskNote) => void): ((note: AskNote) => void) | undefined {
+  const previous = observer
   observer = fn
+  return previous
 }
 
 function note(n: AskNote) {
