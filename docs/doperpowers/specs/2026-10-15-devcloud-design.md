@@ -1045,6 +1045,18 @@ clears a plugin's state when it unloads is unverified).
   alphanumerics) is missed by the assignment rule; quoted values and prefixed tokens are still
   caught.
   Date/Author: 2026-10-17, M1 fix wave 1 (task and high-rung reviews).
+- Decision: M3's profile. The gateway URL in `managed-settings.json` is the gateway machine's
+  tailnet HTTPS name (the relay listens on loopback and is published to the tailnet by
+  `tailscale serve`); `profile.env` sets `LANG=C.UTF-8` (Ubuntu ships no other UTF-8 locale until
+  one is generated). `apply.py` refuses a shared MCP server that carries a literal credential,
+  counting it as a failed operation, and skips a plugin whose directory marketplace the machine
+  lacks rather than failing. `${VAR}` expansion at user scope was verified (2.1.302) for HTTP
+  headers and stdio env; no shared server needs it yet. The profile's `home/` is nested
+  (`.config/…`), so boot copies it recursively; its `.gitconfig` requires git-lfs, so the image
+  installs it. Secret Manager uploads are run by the person: the auto-mode classifier refuses an
+  agent's script that reads credential sources and writes a secret store, and that refusal is
+  not routed around.
+  Date/Author: 2026-10-17, M3 executor and plan executor.
 
 ## Outcomes & Retrospective
 
