@@ -502,7 +502,11 @@ rung for DC8); the PR opened, not merged; the report at
   engine's launch text (`Async agent launched successfully.` then a line
   `agentId: …`) or a fork's (`Fork started — processing in background`;
   all 272 fork launches here lack a `toolUseResult`) is `async_launched`
-  running evidence; such a launch names no `outputFile`. The shared
+  running evidence — only on a result row with no `toolUseResult` that is
+  not `is_error`; a row with a `toolUseResult` is decided by it, whatever
+  its text (reviewer-high on the fix delta: a foreground answer can begin
+  with the launch text; `48f254aa`, the fixture commit DC9 vendors); such
+  a launch names no `outputFile`. The shared
   fixture's legacy case became three (cold open, list-seeded reload,
   background known only from the spawn) (`c81b77fc`, the fixture commit;
   DX4). (3) A `/clear`'s retried list read never hides the new
@@ -632,6 +636,11 @@ twice: the seed's refresh races across a `/clear`, and the snapshot/live
 seam once the open moved off the thread. The measurement loop found a
 424 MB read hidden in the first status look.
 
-Left: the whole-branch xhigh panel, run by the design session. The M4
-review's Minor finding (the measurement's unanswered-probe cutoff) was
-fixed at `4afee326`.
+The whole-branch xhigh panel (wf_23f926ab-0cc, run by the design session)
+confirmed three P2s: a refusal lost across a resync, legacy background
+launches derived `completed` when rebuilt cold, and a `/clear` retry that
+could hide a new agent. All three were fixed in one wave. reviewer-high's
+read of that wave found that the launch text could override an explicit
+`toolUseResult`. That was fixed at `48f254aa`, and reviewer-high then
+found it correct. The M4 review's Minor finding (the measurement's
+unanswered-probe cutoff) was fixed at `4afee326`.
