@@ -1,0 +1,10 @@
+# What Claude Code writes under ~/.claude stays out of the configuration.
+*
+!.gitignore
+!settings.json
+!devcloud/
+!devcloud/**
+!sync/
+!sync/**
+!tools/
+!tools/**

@@ -1,0 +1,17 @@
+#!/usr/bin/python3 -P
+"""devcloud-services: the service runner where PID 1 is not systemd — the
+container entrypoint's foreground after boot (`devcloud-boot && exec
+devcloud-services`). Runs the services of Interfaces I7 until SIGTERM, which
+it forwards to every child."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+# Root runs only system binaries: the user can write to their own PATH entries.
+os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+from devcloudlib import services  # noqa: E402
+from devcloudlib.proc import User  # noqa: E402
+
+if os.geteuid() != 0:
+    sys.exit("devcloud-services: run as root")
+sys.exit(services.main(User.from_image()))
