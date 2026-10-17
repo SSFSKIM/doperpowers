@@ -1246,11 +1246,34 @@ clears a plugin's state when it unloads is unverified).
 
 ## Outcomes & Retrospective
 
-Pending — written at finish. Interim, at M1's pull request (2026-10-17): the guard's hardest
-part was not detection but restoring handles into shell commands. Four review rounds each found a
-shell construct (here-strings, heredoc delimiters, backticks, arithmetic, zsh modifiers and equals
-expansion) where substituted bytes stopped being data; the design converged only when restoration
-was narrowed to inert values in whole words or quoted strings the guard can classify, with every
-other handle left in place and its notice naming an exact read. Two reviewers on the gateway's
-frontier model were stopped by provider safety filters while probing shell injection; the last
-verification ran their reproduction set and a plausible-shapes matrix directly.
+**Outcome (2026-10-17).** The purpose holds as stated. A throwaway Ubuntu VM booted from the devcloud image with a descriptor and the seed. A sandbox container on it booted the same way. Both became hosts without a step typed by hand:
+
+- `claude -p` answered through the gateway on the tailnet.
+- `gh`, `gcloud` and an ADC consumer were authenticated.
+- The person's git identity and zsh were in place.
+- Runs appeared in the session store under each host's name.
+- The project's `devenv/setup.sh` ran, and a second boot skipped it.
+- Receive-only configuration reconciled a managed-settings change committed on a Mac, with no reboot.
+- The image held none of the person's 34 known values.
+- On the persistent VM, the person's enrollment turned on the sminos daemon, and it survived a reboot.
+
+The guard ships on both Macs as devcloud 0.1.0. cua 0.14.0 vendors it and stands down on I9. Acceptance 1–2 passed 22/22 with both plugins and with cua alone. Acceptance 1–8 all passed; the not-covered paths are listed in §9.
+
+**What took the work.**
+
+- **Restoring handles into shell commands, not detecting secrets.** Four review rounds each found a shell construct where substituted bytes stopped being data: here-strings, heredoc delimiters, backticks, arithmetic, and zsh's modifiers and `=` expansion. The design converged only once restoration was narrowed to inert values in words or quoted strings the guard can classify. Every other handle stays in place, and its notice names an exact read.
+- **Every redacting boundary leaked the same way.** The lesson repeated in the supervisor, the boot's logs, the devenv runner and the journal: a scrubber must see the stream before it is split, prefixed or cut, and must carry the longest value across reads. A value spanning a line or a read was the most common leak the reviewers found.
+- **Lifecycle convergence.** An owed restart has to survive a failed attempt. A service must not start on a half-booted host. A stop needs a bound. Each fix exposed the next ordering case, ending with a boot run by hand rather than by its unit.
+
+**What the environment taught.**
+
+- The auto-mode classifier can refuse a Write that restores a secret, and it reads restored values. Both are now stated limits.
+- The provider's safety filter stopped two frontier-model reviewers mid-probe.
+- A container on a tailnet host needs the tailnet's DNS, not only its route.
+- An enrollment command typed from root expanded `~` before switching users.
+- A spec line named a secret's id, and the name reached GitHub through CI's temporary refs before history was rewritten. The repository's public-values rule needs to cover the spec as much as the code.
+
+**What would be done differently.**
+
+- Run a fresh-host acceptance earlier, in M2 rather than M5. The first real boot found a config-repository defect, a sparse marketplace that `apply.py` could not add, which no stand-in profile could show.
+- Give every scrubber one shared stream primitive from the start.
