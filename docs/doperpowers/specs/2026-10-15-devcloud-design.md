@@ -43,11 +43,13 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-15) Review round 1 (design review and buildability review) folded.
 - [x] (2026-10-16) Review round 2 folded; home files and the login shell added from the person's question.
 - [x] (2026-10-16) Review round 3 (the round-2 diff) folded; review converged.
-- [ ] The person's read of the reviewed spec.
+- [x] (2026-10-17) The person's read of the reviewed spec: approved as it stands.
 - [ ] M1 — The devcloud plugin and its secrets guard; the `cua` ticket filed.
 - [ ] `cua`'s ticket landed; acceptance 1–2 rerun with both plugins enabled, and once with `cua` alone.
 - [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
-- [ ] M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository.
+- [x] (2026-10-17 10:30) M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository
+  (config repo, reviewed clean after two fix waves). Secret Manager: seven entries created by the person;
+  one application key's entry waits on that key's rotation (`optional = true`, reports `missing`).
 - [ ] M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its commands, an authoring skill.
 - [ ] M5 — sminos on persistent hosts, and acceptance on a container and a throwaway VM.
 
