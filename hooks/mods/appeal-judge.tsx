@@ -446,3 +446,122 @@ export function logLine(at: number, event: LogEvent): string {
   const input = event.event === 'block' ? { ...event, input: capStrings(event.input, 2000) } : event
   return JSON.stringify({ at: new Date(at).toISOString(), ...input })
 }
+
+/** What `/appeals` reads back: the last 30 days of every session's log. */
+export const REPORT_DAYS = 30
+
+export type Report = {
+  blocks: number
+  appeals: number
+  granted: number
+  upheld: number
+  noRuling: number
+  used: number
+  /** Each grant with its block, newest first. */
+  grants: { at: string; tool: string; input: unknown; reason: string; response: string; argument: string }[]
+  /** Each uphold with its block, newest first: what a suggestion must not cover. */
+  upholds: { at: string; tool: string; input: unknown; reason: string; response: string }[]
+}
+
+type Logged = { at?: string; event?: string; block?: string; [k: string]: unknown }
+
+/**
+ * The counts and the rulings over the log files given, each as its lines; a
+ * line that is not a JSON object is skipped. Rulings are paired with their
+ * block within the same file.
+ */
+export function aggregate(files: readonly { text: string }[]): Report {
+  const report: Report = { blocks: 0, appeals: 0, granted: 0, upheld: 0, noRuling: 0, used: 0, grants: [], upholds: [] }
+  for (const file of files) {
+    const blocks = new Map<string, Logged>()
+    for (const line of file.text.split('\n')) {
+      let e: Logged
+      try {
+        e = JSON.parse(line) as Logged
+      } catch {
+        continue
+      }
+      if (e === null || typeof e !== 'object' || typeof e.event !== 'string') {
+        continue
+      }
+      if (e.event === 'block') {
+        report.blocks += 1
+        if (typeof e.block === 'string') {
+          blocks.set(e.block, e)
+        }
+      } else if (e.event === 'ruling') {
+        report.appeals += 1
+        const block = typeof e.block === 'string' ? blocks.get(e.block) : undefined
+        const row = {
+          at: String(e.at ?? ''),
+          tool: String(block?.tool ?? '?'),
+          input: block?.input,
+          reason: String(block?.reason ?? ''),
+          response: String(e.response ?? ''),
+        }
+        if (e.verdict === 'grant') {
+          report.granted += 1
+          report.grants.push({ ...row, argument: String(e.argument ?? '') })
+        } else {
+          report.upheld += 1
+          report.upholds.push(row)
+        }
+      } else if (e.event === 'no-ruling') {
+        report.appeals += 1
+        report.noRuling += 1
+      } else if (e.event === 'used') {
+        report.used += 1
+      }
+    }
+  }
+  const newest = (a: { at: string }, b: { at: string }) => b.at.localeCompare(a.at)
+  report.grants.sort(newest)
+  report.upholds.sort(newest)
+  return report
+}
+
+/** One line for a call's input: the command, the path, else the JSON's head. */
+export function inputLine(tool: string, input: unknown): string {
+  const o = input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  const pick = tool === 'Bash' ? o.command : (o.file_path ?? o.url ?? o.command)
+  return cut((typeof pick === 'string' ? pick : JSON.stringify(input ?? null)).replace(/\s+/g, ' '), 120)
+}
+
+/** The report as `/appeals` prints it; `suggestions` is the model's text, when there were grants. */
+export function reportText(report: Report, suggestions: string | undefined): string {
+  const lines = [
+    `Appeals, last ${REPORT_DAYS} days: blocks ${report.blocks} · appeals ${report.appeals} · granted ${report.granted} · upheld ${report.upheld} · no ruling ${report.noRuling} · passes used ${report.used}`,
+  ]
+  if (report.grants.length > 0) {
+    lines.push('', 'Granted:')
+    for (const g of report.grants) {
+      lines.push(`- ${g.at.slice(0, 10)} ${g.tool} — ${inputLine(g.tool, g.input)} — ${g.reason} — ${cut(g.response.replace(/\s+/g, ' '), 300)}`)
+    }
+  }
+  if (suggestions !== undefined) {
+    lines.push('', 'Suggested autoMode entries (yours to apply, in ~/.claude/settings.json):', suggestions.trim())
+  }
+  return lines.join('\n')
+}
+
+export const SUGGEST_SYSTEM = `You tune the auto-mode classifier of Claude Code for one user, from the appeals an independent judge granted against its blocks. Each grant is a call the classifier blocked that should have run: a false positive. Propose entries for the user's autoMode settings — \`environment\` lines (facts about the user's setup: trusted repositories, hosts, scratch locations, what is the user's own) or \`allow\` rules — that would have kept the classifier from blocking those calls. Each entry: general enough to cover the pattern behind its grants, never so broad that it covers any of the upheld calls, which were blocked rightly. The user applies what they choose by hand; you write nothing.
+
+Answer with the entries alone, one per line in this form, nothing before or after:
+- environment: **<slot name>**: <text>   (covers: the grants, by date and tool)
+- allow: <rule text>   (covers: …)`
+
+/** The suggestion prompt: the grants, the upholds, and the settings as they stand. */
+export function suggestPrompt(report: Report, autoMode: unknown): string {
+  const row = (r: { at: string; tool: string; input: unknown; reason: string; response: string }) =>
+    `- ${r.at.slice(0, 16)} ${r.tool} ${JSON.stringify(capStrings(r.input, 800))} — blocked as ${r.reason} — the judge: ${cut(r.response.replace(/\s+/g, ' '), 400)}`
+  return [
+    '# Granted (false positives to prevent)',
+    ...report.grants.map(row),
+    '',
+    '# Upheld (rightly blocked; no entry may cover these)',
+    ...(report.upholds.length === 0 ? ['(none)'] : report.upholds.map(row)),
+    '',
+    "# The user's autoMode settings now (user source)",
+    JSON.stringify(autoMode ?? null, null, 1),
+  ].join('\n')
+}

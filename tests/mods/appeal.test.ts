@@ -24,7 +24,8 @@ import {
   takePass,
   withoutReminders,
 } from '../../hooks/mods/appeal-judge'
-import { APPEAL, registerAppeal, resetAppeal } from '../../hooks/mods/appeal'
+import { aggregate, inputLine, reportText, suggestPrompt } from '../../hooks/mods/appeal-judge'
+import { APPEAL, appealsReport, registerAppeal, resetAppeal } from '../../hooks/mods/appeal'
 
 tier('user')
 
@@ -250,6 +251,50 @@ describe('the evidence', () => {
   })
 })
 
+const LOG_A = [
+  '{"at":"2026-10-15T10:00:00.000Z","event":"block","block":"b1","agentId":null,"tool":"Write","input":{"file_path":"/tmp/x/run.sh","content":"c"},"reason":"[Modify Shared Resources]","cwd":"/w"}',
+  '{"at":"2026-10-15T10:01:00.000Z","event":"ruling","block":"b1","verdict":"grant","response":"The agent made /tmp/x itself.","argument":"mine","model":"opus","durationMs":1}',
+  '{"at":"2026-10-15T10:01:05.000Z","event":"used","block":"b1"}',
+  'not json',
+  '{"at":"2026-10-15T11:00:00.000Z","event":"block","block":"b2","agentId":"a1","tool":"Bash","input":{"command":"rm -rf ~/x"},"reason":"[Irreversible Local Destruction]","cwd":"/w"}',
+  '{"at":"2026-10-15T11:01:00.000Z","event":"ruling","block":"b2","verdict":"uphold","response":"No user message names ~/x.","argument":"needed","model":"opus","durationMs":1}',
+].join('\n')
+const LOG_B = [
+  '{"at":"2026-10-16T09:00:00.000Z","event":"block","block":"b1","agentId":null,"tool":"Bash","input":{"command":"git push --force origin main"},"reason":"[Git Destructive]","cwd":"/w"}',
+  '{"at":"2026-10-16T09:02:00.000Z","event":"ruling","block":"b1","verdict":"grant","response":"The user asked for it.","argument":"user said","model":"opus","durationMs":1}',
+  '{"at":"2026-10-16T09:03:00.000Z","event":"block","block":"b2","agentId":null,"tool":"Bash","input":{"command":"x"},"reason":"Blocked by classifier","cwd":"/w"}',
+  '{"at":"2026-10-16T09:04:00.000Z","event":"no-ruling","block":"b2","reason":"timeout"}',
+].join('\n')
+
+describe('/appeals', () => {
+  test('aggregates the counts, the grants newest first, skipping a malformed line', async () => {
+    const report = aggregate([{ text: LOG_A }, { text: LOG_B }])
+    expect([report.blocks, report.appeals, report.granted, report.upheld, report.noRuling, report.used]).toEqual([4, 4, 2, 1, 1, 1])
+    expect(report.grants.map((g) => [g.at.slice(0, 10), g.tool, g.reason])).toEqual([
+      ['2026-10-16', 'Bash', '[Git Destructive]'],
+      ['2026-10-15', 'Write', '[Modify Shared Resources]'],
+    ])
+    expect(report.upholds.map((u) => u.tool)).toEqual(['Bash'])
+  })
+
+  test('the report text and the suggestion prompt', async () => {
+    const report = aggregate([{ text: LOG_A }, { text: LOG_B }])
+    const text = reportText(report, '- environment: **Host containment**: /tmp is scratch   (covers: 2026-10-15 Write)')
+    expect(text).toContain('Appeals, last 30 days: blocks 4 · appeals 4 · granted 2 · upheld 1 · no ruling 1 · passes used 1')
+    expect(text).toContain('- 2026-10-16 Bash — git push --force origin main — [Git Destructive] — The user asked for it.')
+    expect(text).toContain('- 2026-10-15 Write — /tmp/x/run.sh — [Modify Shared Resources]')
+    expect(text).toContain('Suggested autoMode entries (yours to apply, in ~/.claude/settings.json):\n- environment: **Host containment**')
+    expect(reportText(aggregate([]), undefined)).toBe('Appeals, last 30 days: blocks 0 · appeals 0 · granted 0 · upheld 0 · no ruling 0 · passes used 0')
+    const prompt = suggestPrompt(report, { allow: ['$defaults'] })
+    expect(prompt).toContain('# Granted (false positives to prevent)\n- 2026-10-16T09:02 Bash {"command":"git push --force origin main"} — blocked as [Git Destructive]')
+    expect(prompt).toContain('# Upheld (rightly blocked; no entry may cover these)\n- 2026-10-15T11:01 Bash {"command":"rm -rf ~/x"}')
+    expect(prompt).toContain('"allow": [\n  "$defaults"')
+    expect(inputLine('Read', { file_path: '/a' })).toBe('/a')
+    expect(inputLine('WebFetch', { url: 'https://x', prompt: 'p' })).toBe('https://x')
+    expect(inputLine('Agent', { prompt: 'do\nthis' })).toBe('{"prompt":"do\\nthis"}')
+  })
+})
+
 type Handler = (...args: unknown[]) => unknown
 type Matcher = Record<string, unknown> | undefined
 
@@ -282,13 +327,18 @@ function harness(options: { judge?: string | { reason: string }; messages?: Sess
       messages: async (args?: { agentId?: string }) => (args?.agentId === undefined ? (options.messages ?? []) : (options.agentMessages ?? { deny: `no agent ${args.agentId}` })),
     },
     fs: {
-      exists: async (path: string) => files.has(path),
+      exists: async (path: string) => files.has(path) || [...files.keys()].some((k) => k.startsWith(`${path}/`)),
       read: async (path: string) => files.get(path) ?? '',
       write: async (path: string, text: string) => {
         files.set(path, text)
         calls.push({ op: 'fs.write', args: path })
       },
+      list: async (path: string) =>
+        [...files.keys()]
+          .filter((k) => k.startsWith(`${path}/`))
+          .map((k) => ({ name: k.slice(path.length + 1), kind: 'file' as const, size: 1, mtimeMs: now, isLink: false })),
     },
+    command: { register: async (spec: { name: string }) => (calls.push({ op: 'command.register', args: spec }), { command: spec.name }) },
     settings: {
       read: async (args?: { source?: string }) => {
         calls.push({ op: 'settings.read', args })
@@ -341,18 +391,35 @@ function harness(options: { judge?: string | { reason: string }; messages?: Sess
   const tick = (ms: number) => {
     now += ms
   }
-  return { calls, start, call, appealCall, check, prompt, logged, tick, files, hooks }
+  return { calls, start, call, appealCall, check, prompt, logged, tick, files, hooks, engine }
 }
 
 const blocked = (reason: string) => ({ isError: true as const, result: denial(reason), text: denial(reason) })
 const ask = { decision: 'ask' as const }
 
 describe('registerAppeal', () => {
-  test('registers the tool at session start, in any session', async () => {
+  test('registers the tool and the command at session start, in any session', async () => {
     const h = harness()
     await h.start()
     expect(h.calls.filter((c) => c.op === 'tool.register').map((c) => (c.args as { name: string }).name)).toEqual(['appeal'])
+    expect(h.calls.filter((c) => c.op === 'command.register').map((c) => (c.args as { name: string }).name)).toEqual(['appeals'])
     expect(h.hooks.find((x) => x.event === 'session.start')?.matcher).toEqual({ cwd: /^/ })
+  })
+
+  test('/appeals reads the last 30 days of logs and asks for suggestions only when there are grants', async () => {
+    const h = harness({ judge: '- environment: **Host containment**: /tmp is scratch   (covers: 2026-10-15 Write)' })
+    h.files.set('/home/t/.claude/appeals/old.jsonl', LOG_A)
+    h.files.set('/home/t/.claude/appeals/new.jsonl', LOG_B)
+    const text = await appealsReport(h.engine)
+    expect(text).toContain('blocks 4 · appeals 4 · granted 2')
+    expect(text).toContain('- environment: **Host containment**')
+    const request = h.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string; system: string }
+    expect(request.prompt).toContain('# Granted (false positives to prevent)')
+    expect(h.calls.filter((c) => c.op === 'settings.read').map((c) => (c.args as { source: string }).source)).toEqual(['user'])
+
+    const none = harness()
+    expect(await appealsReport(none.engine)).toBe('Appeals, last 30 days: blocks 0 · appeals 0 · granted 0 · upheld 0 · no ruling 0 · passes used 0')
+    expect(none.calls.some((c) => c.op === 'model.complete')).toBe(false)
   })
 
   test('a classifier block gets an id and a note; other errors and unappealable blocks do not', async () => {

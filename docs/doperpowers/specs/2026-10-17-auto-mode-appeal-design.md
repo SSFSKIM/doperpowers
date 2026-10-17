@@ -43,8 +43,9 @@ and escalating every challenge to the human.
 - [x] (2026-10-17) Engine facts read from the 2.1.300 source and SPEC (Why an own judge); the human's last two months of blocks mined (Surprises & Discoveries).
 - [x] (2026-10-17) Design chosen by the human (own appeals judge); spec written.
 - [x] (2026-10-17) Independent spec review and buildability review: round one's seven findings taken (Decision Log).
-- [ ] M1 — Block, appeal, ruling, pass (completed: the mod, its tests, the review-round fixes, 357 mod tests pass; remaining: the live check).
-- [ ] M2 — `/appeals`, the documentation, the release.
+- [ ] M1 — Block, appeal, ruling, pass (completed: the mod, its tests, the review-round fixes; remaining: the live check, whose script the classifier blocked as `[Auto-Mode Bypass]` pending the human's word — Surprises & Discoveries).
+- [x] (2026-10-17) M2 — `/appeals`, the README section, the CLAUDE.md row, version 7.165.0; 360 mod tests pass.
+- [ ] Whole-branch review at the `high` rung; retrospective; merge.
 
 ## Terms
 
@@ -561,6 +562,15 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   should be able to write it now" cleared it. Why an own judge, fact 4, and
   evidence part 4 follow from it.
   Evidence: the Write's error result in the authoring session, 2026-10-17.
+- Observation: the classifier blocked the live check's script
+  (`tests/mods/live-appeal-check.py`) as `[Auto-Mode Bypass]` after the
+  human's authorization had cleared the spec, the mod and its tests: the
+  script's prompts tell an agent to appeal a block and re-run, and the
+  classifier reads a script that drives agents past auto mode as the thing
+  itself, whatever the feature it tests. Asked the human for that write by
+  name rather than writing it another way.
+  Evidence: the Write's error result in the authoring session, 2026-10-17,
+  after the mod's own writes had gone through.
 
 ## Decision Log
 

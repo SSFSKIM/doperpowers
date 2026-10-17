@@ -4,11 +4,14 @@ import {
   APPEAL_DESCRIPTION,
   APPEAL_SCHEMA,
   JUDGE_SYSTEM,
+  REPORT_DAYS,
+  SUGGEST_SYSTEM,
   TRUSTED_SOURCES,
   type Block,
   type EvidenceParts,
   type Ledger,
   type LogEvent,
+  aggregate,
   appealCheck,
   applyRuling,
   blockNotice,
@@ -21,8 +24,10 @@ import {
   parseRuling,
   recordBlock,
   recordFailure,
+  reportText,
   rulingText,
   settingsEvidence,
+  suggestPrompt,
   takePass,
 } from './appeal-judge'
 import { asyncAsks } from './ask'
@@ -91,6 +96,44 @@ export async function appealStart($: EngineInterface) {
     log = { path, lines, writing: Promise.resolve() }
   }
   await $.tool.register({ name: 'appeal', description: APPEAL_DESCRIPTION, inputSchema: APPEAL_SCHEMA })
+  await $.command.register({ name: 'appeals', description: 'The auto-mode blocks appealed in the last 30 days, and the autoMode entries the grants suggest.' })
+}
+
+/**
+ * `/appeals`: every session's log from the last 30 days, the counts and the
+ * grants, and — when there are grants — the entries the judge model would
+ * add to the user's autoMode settings, printed for the person to apply.
+ */
+export async function appealsReport($: EngineInterface): Promise<string> {
+  const home = await $.env.get('HOME')
+  if (home === undefined) {
+    return 'No appeal log: HOME is not set.'
+  }
+  const dir = `${home}/.claude/appeals`
+  const since = (await $.clock.now()) - REPORT_DAYS * 24 * 60 * 60 * 1000
+  const files: { text: string }[] = []
+  if (await $.fs.exists(dir)) {
+    for (const entry of await $.fs.list(dir)) {
+      if (entry.kind === 'file' && entry.name.endsWith('.jsonl') && entry.mtimeMs >= since) {
+        files.push({ text: await $.fs.read(`${dir}/${entry.name}`) })
+      }
+    }
+  }
+  const report = aggregate(files)
+  let suggestions: string | undefined
+  if (report.grants.length > 0) {
+    const user = (await $.settings.read({ source: 'user' })) as { autoMode?: unknown }
+    const reply = await $.model.complete({
+      model: (await $.env.get('DOPERPOWERS_APPEAL_MODEL')) ?? 'opus',
+      system: SUGGEST_SYSTEM,
+      prompt: suggestPrompt(report, user.autoMode),
+      effort: 'high',
+      maxTokens: 4000,
+      timeoutMs: 120_000,
+    })
+    suggestions = reply.isAnswered ? reply.text : `(no suggestions: the model gave no answer — ${reply.reason})`
+  }
+  return reportText(report, suggestions)
 }
 
 /**
@@ -198,6 +241,8 @@ export function registerAppeal(on: On) {
   })
 
   on('tool.describe', { tool: 'mcp__doperpowers__appeal' }, async (_, e, next) => inline(await next(e)))
+
+  on('command.run', { command: 'appeals' }, async ($) => ({ text: await appealsReport($) }))
 
   // Every call: a result that is a classifier block is given its id.
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
