@@ -44,7 +44,9 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-16) Review round 2 folded; home files and the login shell added from the person's question.
 - [x] (2026-10-16) Review round 3 (the round-2 diff) folded; review converged.
 - [x] (2026-10-17) The person's read of the reviewed spec: approved as it stands.
-- [ ] M1 — The devcloud plugin and its secrets guard; the `cua` ticket filed.
+- [x] (2026-10-17 13:40) M1 — The devcloud plugin and its secrets guard, reviewed clean after four fix
+  waves (the Bash restoration rule narrowed each time; Decision Log). Release to both Macs and the
+  `cua` ticket follow the M1 pull request's merge.
 - [ ] `cua`'s ticket landed; acceptance 1–2 rerun with both plugins enabled, and once with `cua` alone.
 - [ ] M2 — devcloud core: image, boot program, secrets materializer, pull-only config, services.
 - [x] (2026-10-17 10:30) M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository
@@ -1137,4 +1139,11 @@ clears a plugin's state when it unloads is unverified).
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Pending — written at finish. Interim, at M1's pull request (2026-10-17): the guard's hardest
+part was not detection but restoring handles into shell commands. Four review rounds each found a
+shell construct (here-strings, heredoc delimiters, backticks, arithmetic, zsh modifiers and equals
+expansion) where substituted bytes stopped being data; the design converged only when restoration
+was narrowed to inert values in whole words or quoted strings the guard can classify, with every
+other handle left in place and its notice naming an exact read. Two reviewers on the gateway's
+frontier model were stopped by provider safety filters while probing shell injection; the last
+verification ran their reproduction set and a plausible-shapes matrix directly.
