@@ -607,9 +607,12 @@ def deliver_owed(project, view):
     the same operation the sender's fast path calls — in writer order from
     its settled prefix. Returns (events delivered, the aliases reached).
     An event from outside owed to a closed terminal session is reported
-    `recorded` once and stays owed (sminos_outcomes.report_closed)."""
+    `recorded` once and stays owed (sminos_outcomes.report_closed); one a
+    session's engine dropped after its bridge took it is reported `failed`
+    once, after its delivery (sminos_outcomes.report_refused)."""
+    outcomes = sminos.sibling_module("sminos_outcomes")
     try:
-        sminos.sibling_module("sminos_outcomes").report_closed(project, view)
+        outcomes.report_closed(project, view)
     except OSError as e:
         sminos.daemon_log("delivery: what is owed to closed sessions of %s could not be reported: %s" % (
             project.name, e))
@@ -623,6 +626,10 @@ def deliver_owed(project, view):
         if got:
             total += got
             reached.append(m.alias)
+    try:
+        outcomes.report_refused(project, view)
+    except OSError as e:
+        sminos.daemon_log("delivery: what the sessions of %s dropped could not be reported: %s" % (project.name, e))
     return total, reached
 
 

@@ -167,7 +167,13 @@ export function resyncEvent(): BridgeEvent {
 export function forgetLive() {
   state.turns.clear()
   state.messages.clear()
+  // The engine's list still names them for a while: they are not the new session's.
+  for (const id of [...state.agents.keys(), ...state.listed]) {
+    state.cleared.add(id)
+  }
+  state.listed.clear()
   state.agents.clear()
+  state.submissions = []
   state.delivered.clear()
   state.loopTurns.clear()
   state.stepBlocks.clear()

@@ -30,6 +30,13 @@ undelivered as `refused-read-only`, as deliver_next would. What was reported
 is kept per session in the project's `recorded/<session>.json` ({writer: the
 last seq reported}).
 
+A second outcome comes for a delivery the session's engine dropped after its
+bridge answered `submitted` (DC8.G5): `delivered` says the text entered the
+session's queue, not that it was taken in, and the bridge reports the drop
+later, which its child keeps (`refused` in its kept file). The daemon's
+delivery pass reports each once as `failed` with the bridge's reason
+(report_refused), after the first outcome for the same key and session.
+
 The uplink drains the file: it seals each record with the org key (DX1,
 `smns-hub-delivery-v1`) as it posts it, and drops what a POST answered 200
 carried. Nothing leaves this machine without its code.
@@ -248,6 +255,79 @@ def report_closed(project, view):
         # prefix then covers the event) or after this record, never between.
         with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
             n += report_one(project, box, sid, events)
+    return n
+
+
+REFUSED = "the session dropped it after taking it, so it never entered the conversation: %s"
+
+
+def report_refused(project, view):
+    """A second outcome for a delivery the engine dropped after its bridge
+    answered `submitted` (DC8.G5): for each session of a hub project whose
+    bridge kept such a refusal (sminos_bridge, `refused` in its kept file),
+    `failed` with the bridge's reason, recorded once per key and session,
+    for an outside-origin event of the project's log addressed to the
+    session. Only once delivery has settled the event for the session, under
+    the session's delivery lock as deliver_next holds it: its first outcome
+    (`delivered`) is then recorded ahead of this one, and the hub keeps the
+    latest. How many were recorded."""
+    if not project.hub:
+        return 0
+    bridge = sminos.sibling_module("sminos_bridge")
+    try:
+        names = os.listdir(bridge.bridge_dir())
+    except OSError:
+        return 0
+    found = {}
+    for name in names:
+        sid, ext = os.path.splitext(name)
+        if ext == ".json" and sid in view.info:
+            refused = bridge.load_kept(sid).get("refused")
+            if refused:
+                found[sid] = refused
+    if not found:
+        return 0
+    events = {(e["writer"], e["seq"]): e for e in view.events}
+    box, n = Outbox(project), 0
+    for sid, refused in found.items():
+        with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
+            n += report_refusals(project, box, sid, refused, events)
+    return n
+
+
+def report_refusals(project, box, sid, refused, events):
+    """report_refused for one session; its caller holds the session's
+    delivery lock. What was reported is kept in the project's
+    `refused/<session>.json` ([[writer, seq], …]), as long as the bridge
+    keeps the refusal."""
+    policy = sminos.sibling_module("sminos_policy")
+    path = sminos.project_path(project, "refused", sminos.reader_key(sid) + ".json")
+    try:
+        with open(path) as f:
+            reported = json.load(f)
+    except (OSError, ValueError):
+        reported = []
+    reported = {(w, s) for w, s in (r for r in reported if isinstance(r, list) and len(r) == 2)} \
+        if isinstance(reported, list) else set()
+    settled = sminos.delivered_load(project, sid)
+    n = 0
+    for r in refused:
+        k = (r["key"]["writer"], r["key"]["seq"])
+        e = events.get(k)
+        if k in reported or e is None or not sminos.addressed_to(e, sid) or not policy.outside_origin(e) \
+                or k[1] > sminos._delivery(settled, k[0])["settled"]:
+            continue
+        try:
+            box.record(e, sid, "failed", REFUSED % r["reason"])
+        except OSError as err:
+            sminos.daemon_log("delivery: the refusal of %s by %s could not be recorded (%s): reported later" % (
+                sminos.event_ref(e), sid, err))
+            break
+        reported.add(k)
+        n += 1
+    keep = sorted(k for k in reported if any((r["key"]["writer"], r["key"]["seq"]) == k for r in refused))
+    if n or len(keep) != len(reported):
+        sminos.write_json(path, [list(k) for k in keep])
     return n
 
 

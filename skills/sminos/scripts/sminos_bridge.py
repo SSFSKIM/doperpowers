@@ -37,7 +37,10 @@ hello. The file outlives the process too, so a session resumed under its id
 (a seat's `--resume`) goes on with both. A command that carries a desk RPC's
 nonce (`rpc`) has the mod's answer kept there under it (`rpcs`, the last
 RPCS_KEPT): what the daemon reads after a stop between sending the command
-and reading its answer (sminos_rpc's trace).
+and reading its answer (sminos_rpc's trace). A delivery the engine dropped
+after the mod answered `submitted` is kept there with its key and reason
+(`refused`, the last REFUSED_KEPT), which the daemon's delivery pass reports
+as a `failed` outcome (sminos_outcomes.report_refused).
 
 Requests from outside (DC2 M3): the mod raises a permission prompt or a
 question as `raised` and settles it as `settled`; the child keeps the pending
@@ -79,6 +82,8 @@ SUBSCRIBER_BACKLOG = 10000     # a subscriber this far behind is cut off and res
 COMMAND_WAIT_MAX = 25000       # ms: under the 30 s an engine fetch waits
 AGENTS_KEPT = 200
 RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
+REFUSED_KEPT = 100             # deliveries the engine dropped after `submitted`, kept for the daemon to report
+REASON_MAX = 1000              # characters of a refusal's reason kept
 WATCHDOG_EVERY = 0.5
 POLL_HOLD_MAX = 20000          # ms: the mod's poll is held this long at most, under its 30 s fetch bound
 SETTLED_KEPT = 100             # recent settlements a late subscriber still sees
@@ -128,8 +133,11 @@ def _no_kept():
 def load_kept(session):
     """What a child kept for the session: {"override": {model, effort} | None,
     "delivered": {writer: seq}}, and, once a command sent for a desk RPC was
-    answered, "rpcs": {nonce: the answer's op, ok, result, error}; nothing
-    kept reads as none."""
+    answered, "rpcs": {nonce: the answer's op, ok, result, error}; once the
+    engine dropped a delivery the mod had submitted, "refused": [{"key":
+    {writer, seq}, "reason"}], oldest first, the last REFUSED_KEPT, which the
+    daemon reports (sminos_outcomes.report_refused); nothing kept reads as
+    none."""
     try:
         with open(kept_path(session)) as f:
             d = json.load(f)
@@ -145,7 +153,17 @@ def load_kept(session):
     rpcs = d.get("rpcs")
     if isinstance(rpcs, dict) and rpcs:
         out["rpcs"] = {str(n): a for n, a in rpcs.items() if isinstance(a, dict)}
+    refused = [r for r in d.get("refused") or [] if _refusal(r)] if isinstance(d.get("refused"), list) else []
+    if refused:
+        out["refused"] = refused
     return out
+
+
+def _refusal(r):
+    """Whether `r` is a refusal as the child keeps it."""
+    key = r.get("key") if isinstance(r, dict) else None
+    return isinstance(key, dict) and isinstance(key.get("writer"), str) and type(key.get("seq")) is int \
+        and isinstance(r.get("reason"), str)
 
 
 # ------------------------------------------------------------------ the client
@@ -644,6 +662,16 @@ class Bridge:
             writer, seq = key.get("writer"), key.get("seq")
             if isinstance(writer, str) and type(seq) is int and seq > self.kept["delivered"].get(writer, 0):
                 self._keep({**self.kept, "delivered": {**self.kept["delivered"], writer: seq}})
+        elif kind == "delivered" and e.get("outcome") == "refused":
+            # The engine dropped what the mod submitted: kept with its key,
+            # for the daemon's next delivery pass to report `failed` (DC8.G5).
+            key = e.get("key") if isinstance(e.get("key"), dict) else {}
+            writer, seq = key.get("writer"), key.get("seq")
+            refused = self.kept.get("refused") or []
+            if isinstance(writer, str) and type(seq) is int \
+                    and not any(r["key"] == {"writer": writer, "seq": seq} for r in refused):
+                entry = {"key": {"writer": writer, "seq": seq}, "reason": str(e.get("reason") or "")[:REASON_MAX]}
+                self._keep({**self.kept, "refused": (refused + [entry])[-REFUSED_KEPT:]})
         elif kind == "step" and phase == "start":
             self.broken.discard(_key(e))
             self.streaming[_key(e)] = _message({k: v for k, v in e.items() if k in ("turnId", "agentId", "step", "model")})
