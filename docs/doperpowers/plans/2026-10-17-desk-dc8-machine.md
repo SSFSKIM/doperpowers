@@ -32,7 +32,7 @@
 - [x] M1 — The jobs ledger, the normalization table, `output`'s containment, and the shared fixture (DC8.G3's and G4's derivations) — reviewed clean 2026-10-17 (`38a45f6b`, fix `8b34237b`)
 - [x] M2 — The offset index, pages and the open off the uplink's thread, ended sessions pageable (DC8.G1, G2) — reviewed clean 2026-10-17 (`545a8b17`, fix `e0d22d10`)
 - [x] M3 — The bridge: the `$.agent.list()` seed and refresh; a refused submission reported as a `failed` delivery (DC8.G3's seed, G5; G6 optional) — reviewed clean 2026-10-17 (`60e58b42`, fixes `9765fa83`, `f19e3c8f`; merged `5de16866`)
-- [ ] M4 — The plane carries status, jobs and MCP names, the bridge's agent state forwarded, and answers `output` (DC8.G3, G4)
+- [x] M4 — The plane carries status, jobs and MCP names, the bridge's agent state forwarded, and answers `output` (DC8.G3, G4) — reviewed clean 2026-10-17 (`21577369`, fix `ff18df3f`)
 
 ## Constraints that bind every milestone
 
