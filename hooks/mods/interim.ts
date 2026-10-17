@@ -120,27 +120,62 @@ export function handsBack(lines: string): boolean {
   return false
 }
 
+const NOTICE = /<task-notification>\n<task-id>([^<\n]*)<\/task-id>\n[\s\S]*?<\/task-notification>/g
+
 /**
- * Whether the notification tells the session nothing it has not been told:
- * any worktree it carries came in an earlier one; the session knows the
- * agent, because its own loop spawned it or an earlier notification of it
- * entered (an orphan's, fallen back from a parent that ended, is the
- * session's first sign of it); and the agent's transcript, which its
- * `<output-file>` links to, shows the hand-back contract on, so the
- * placeholder is the engine's. `told` holds what notifications that entered
- * told the session: agents by task-id, worktrees by `task-id\n<worktree>`.
- * Any lookup that fails or cannot tell answers false.
+ * Whether the conversation as the model reads it holds an earlier
+ * notification of the task, carrying the worktree when one is named: in a
+ * user message's text, where a notification that started a turn and one
+ * that came in mid-turn (rendered under the engine's system-notification
+ * frame) both land. A tool result or an assistant message quoting one does
+ * not count.
  */
-async function isRepeat($: EngineInterface, told: ReadonlySet<string>, { taskId, outputFile, worktree }: Interim): Promise<boolean> {
-  if (worktree !== undefined && !told.has(`${taskId}\n${worktree}`)) {
-    return false
+export function holds(messages: readonly { role: string; content: unknown }[], taskId: string, worktree?: string): boolean {
+  for (const { role, content } of messages) {
+    if (role !== 'user') {
+      continue
+    }
+    const texts = typeof content === 'string'
+      ? [content]
+      : Array.isArray(content)
+        ? content.flatMap((block) => (block?.type === 'text' && typeof block.text === 'string' ? [block.text as string] : []))
+        : []
+    for (const text of texts) {
+      for (const [notice, id] of text.matchAll(NOTICE)) {
+        if (id === taskId && (worktree === undefined || notice.includes(worktree))) {
+          return true
+        }
+      }
+    }
   }
+  return false
+}
+
+/**
+ * Whether the notification tells the session nothing its conversation does
+ * not already hold, and its placeholder is the engine's. The session knows
+ * the agent when its own loop spawned it; an orphan's notification, fallen
+ * back from a parent that ended, is the session's first sign of it, so an
+ * orphan's repeats need an earlier notification of it in the conversation,
+ * and a worktree's need one carrying that worktree. The conversation is read
+ * as it stands (`$.session.messages({ as: "api" })`, past a rewind and from
+ * the last compaction on), so a notice rewound or summarized away, or one a
+ * hook beneath answered for or rewrote, is not there. The placeholder is the
+ * engine's when the agent's transcript, which its `<output-file>` links to,
+ * shows the hand-back contract on. Any lookup that fails or cannot tell
+ * answers false.
+ */
+async function isRepeat($: EngineInterface, { taskId, outputFile, worktree }: Interim): Promise<boolean> {
   if (outputFile === undefined) {
     return false
   }
-  if (!told.has(taskId)) {
-    const agent = (await $.agent.list()).find((listed) => listed.id === taskId)
-    if (agent === undefined || agent.parentId !== undefined) {
+  const agent = (await $.agent.list()).find((listed) => listed.id === taskId)
+  if (agent === undefined) {
+    return false
+  }
+  if (worktree !== undefined || agent.parentId !== undefined) {
+    const conversation = await $.session.messages({ as: 'api' })
+    if (!Array.isArray(conversation) || !holds(conversation, taskId, worktree)) {
       return false
     }
   }
@@ -154,16 +189,14 @@ async function isRepeat($: EngineInterface, told: ReadonlySet<string>, { taskId,
 
 /**
  * Drops, before it enters the session, an interim notification whose result
- * is the engine's waiting placeholder and that tells the session nothing new:
- * otherwise each one wakes the session for a turn with nothing to act on.
- * The first notification to carry a worktree passes, since the launch never
- * said where an isolated agent's work lives, and so does an orphan's first.
- * Everything else passes as it came, and so does any notification a check
- * errs on.
+ * is the engine's waiting placeholder and that tells the session nothing its
+ * conversation does not hold: otherwise each one wakes the session for a
+ * turn with nothing to act on. The first notification to carry a worktree
+ * passes, since the launch never said where an isolated agent's work lives,
+ * and so does an orphan's first. Everything else passes as it came, and so
+ * does any notification a check errs on.
  */
 export function registerInterim(on: On) {
-  const told = new Set<string>()
-
   on('prompt.submit', { origin: { kind: 'task-notification' } }, async ($, e, next) => {
     const interim = readInterim(e.text)
     if (interim === undefined) {
@@ -171,20 +204,10 @@ export function registerInterim(on: On) {
     }
     let isDropped = false
     try {
-      isDropped = await isRepeat($, told, interim)
+      isDropped = await isRepeat($, interim)
     } catch (error) {
       $.ui.log(`interim: a check failed (${String(error)}); the notification passes`, { to: 'debug' })
     }
-    if (isDropped) {
-      return { drop: 'interim agent notification: its work is still running' }
-    }
-    const passed = await next(e)
-    if (passed.drop === undefined) {
-      told.add(interim.taskId)
-      if (interim.worktree !== undefined) {
-        told.add(`${interim.taskId}\n${interim.worktree}`)
-      }
-    }
-    return passed
+    return isDropped ? { drop: 'interim agent notification: its work is still running' } : next(e)
   })
 }

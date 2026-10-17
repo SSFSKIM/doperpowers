@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { INTERIM_NOTE, WAITING, handsBack, readInterim, registerInterim, searchArgs } from '../../hooks/mods/interim'
+import { INTERIM_NOTE, WAITING, handsBack, holds, readInterim, registerInterim, searchArgs } from '../../hooks/mods/interim'
 
 tier('user')
 
@@ -141,20 +141,29 @@ type Hook = { event: string; matcher: unknown; handler: (...args: unknown[]) => 
 type Run = { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean; isStderrTruncated: boolean }
 type Submitted = { text?: string; drop?: string }
 type Stat = { kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number; isLink: boolean; realPath?: string }
+type Api = { role: 'user' | 'assistant'; content: unknown[] }
 
 /** Where an agent's `.output` link lands: its transcript, as the engine lays them out. */
 const transcriptOf = (task: string) => `/Users/u/.claude/projects/p/s/subagents/agent-${task}.jsonl`
 const linked = (realPath: string | undefined) => async (): Promise<Stat> => ({ kind: realPath === undefined ? 'other' : 'file', size: 0, mtimeMs: 0, isLink: true, ...(realPath !== undefined && { realPath }) })
+const said = (text: string, role: Api['role'] = 'user'): Api => ({ role, content: [{ type: 'text', text }] })
+// How the engine renders a notification that came in mid-turn: under its frame, in a reminder.
+const midTurn = (text: string) => said(`<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\n\n${text}\n</system-reminder>`)
 
 /**
- * The mod's hooks over a fake engine: the agents `$.agent.list()` names,
- * where each `.output` link lands, and what the transcript search answers.
+ * The mod's hook over a fake engine: the agents `$.agent.list()` names,
+ * where each `.output` link lands, what the transcript search answers, and
+ * the conversation `$.session.messages({ as: "api" })` reads, which what
+ * enters beneath the hook joins (`beneath` stands for the hooks and core
+ * below it).
  */
 function harness({
   agents = [{ id: TASK }] as { id: string; parentId?: string }[] | (() => never),
   stat = (async (path: string): Promise<Stat> => linked(transcriptOf(/\/tasks\/([^/]+)\.output$/.exec(path)![1]!))()) as (path: string) => Promise<Stat>,
   search = (async () => ({ exitCode: 0, stdout: lines(REMINDER), stderr: '', isStdoutTruncated: false, isStderrTruncated: false })) as (argv: string[]) => Promise<Run>,
-  beneath = async (e: { text: string }): Promise<Submitted> => ({ text: e.text }),
+  conversation = [] as Api[],
+  read = (held: Api[]): Api[] => held,
+  beneath = async (e: { text: string }, held: Api[]): Promise<Submitted> => (held.push(said(e.text)), { text: e.text }),
 } = {}) {
   const hooks: Hook[] = []
   registerInterim(((event: string, matcher: unknown, handler: Hook['handler']) => {
@@ -163,19 +172,42 @@ function harness({
   const searched: string[][] = []
   const $ = {
     agent: { list: async () => (typeof agents === 'function' ? agents() : agents) },
+    session: { messages: async (args: unknown) => (expect(args).toEqual({ as: 'api' }), read(conversation)) },
     fs: { stat: async (path: string, options: { resolve: boolean }) => (expect(options).toEqual({ resolve: true }), stat(path)) },
     process: { run: async (argv: string[]) => (searched.push(argv), search(argv)) },
     ui: { log: () => {} },
   }
   const promptSubmit = hooks.find((hook) => hook.event === 'prompt.submit')!
   let entered = 0
-  const submit = async (text: string) => {
-    return promptSubmit.handler($, { text, origin: { kind: 'task-notification' } }, async (e: { text: string }) => (entered++, beneath(e))) as Promise<Submitted>
-  }
-  return { hooks, submit, searched, entered: () => entered }
+  const submit = async (text: string) =>
+    promptSubmit.handler($, { text, origin: { kind: 'task-notification' } }, async (e: { text: string }) => (entered++, beneath(e, conversation))) as Promise<Submitted>
+  return { hooks, submit, searched, conversation, entered: () => entered }
 }
 
 const failing = (stdout: string, exitCode = 0, isStdoutTruncated = false) => async (): Promise<Run> => ({ exitCode, stdout, stderr: '', isStdoutTruncated, isStderrTruncated: false })
+const ORPHAN = [{ id: TASK, parentId: 'a0parent' }]
+const isDrop = (submitted: Submitted) => typeof submitted.drop === 'string' && submitted.text === undefined
+
+describe('holds', () => {
+  test('finds an earlier notification of the task in a user message, framed mid-turn or not', async () => {
+    const tracked = withWorktree(INTERIM)
+    expect(holds([said(tracked)], TASK, WORKTREE)).toBe(true)
+    expect(holds([midTurn(tracked)], TASK, WORKTREE)).toBe(true)
+    expect(holds([{ role: 'user', content: tracked }], TASK)).toBe(true)
+    expect(holds([said(`${FINAL}\n\n${tracked}`)], TASK, WORKTREE)).toBe(true)
+  })
+
+  test('needs the worktree in that same notification, and the same task', async () => {
+    expect(holds([said(INTERIM)], TASK, WORKTREE)).toBe(false)
+    expect(holds([said(`${INTERIM}\n${WORKTREE}`)], TASK, WORKTREE)).toBe(false)
+    expect(holds([said(withWorktree(notification(INTERIM_TEXT, WAITING, 'completed', 'b1')))], TASK)).toBe(false)
+  })
+
+  test('a tool result or an assistant message quoting one does not count', async () => {
+    expect(holds([said(INTERIM, 'assistant')], TASK)).toBe(false)
+    expect(holds([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: INTERIM }] }] }], TASK)).toBe(false)
+  })
+})
 
 describe('registerInterim', () => {
   test('hooks task notifications alone: no session state, so a module loaded mid-session filters from its first notice', async () => {
@@ -185,8 +217,7 @@ describe('registerInterim', () => {
 
   test('drops the main loop\'s parked agent whose transcript shows the reminder, searching where its .output lands', async () => {
     const h = harness()
-    const dropped = await h.submit(INTERIM)
-    expect(typeof dropped.drop).toBe('string')
+    expect(isDrop(await h.submit(INTERIM))).toBe(true)
     expect(h.entered()).toBe(0)
     expect(h.searched).toEqual([searchArgs(transcriptOf(TASK))])
   })
@@ -228,20 +259,80 @@ describe('registerInterim', () => {
     const h = harness({ agents: [{ id: TASK }, { id: 'b1' }] })
     const first = withWorktree(INTERIM)
     expect(await h.submit(first)).toEqual({ text: first })
-    expect(typeof (await h.submit(first)).drop).toBe('string')
+    expect(isDrop(await h.submit(first))).toBe(true)
     const moved = withWorktree(INTERIM, WORKTREE.replace('worktree-agent-a6f9399af416f127b</worktreeBranch>', 'other</worktreeBranch>'))
     expect(await h.submit(moved)).toEqual({ text: moved })
     const other = withWorktree(notification(INTERIM_TEXT, WAITING, 'completed', 'b1'))
     expect(await h.submit(other)).toEqual({ text: other })
   })
 
-  test('a worktree notice that did not enter is not counted as seen', async () => {
-    let refuse = true
-    const h = harness({ beneath: async (e) => (refuse ? { drop: 'a settings hook said no' } : { text: e.text }) })
+  test('a worktree first seen mid-turn counts once the conversation holds it', async () => {
     const first = withWorktree(INTERIM)
-    expect((await h.submit(first)).drop).toBe('a settings hook said no')
-    refuse = false
+    const h = harness({ conversation: [midTurn(first)] })
+    expect(isDrop(await h.submit(first))).toBe(true)
+  })
+
+  test('an orphan\'s first notice passes, the session\'s first sign of it; its repeats drop', async () => {
+    const h = harness({ agents: ORPHAN })
+    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
+    expect(h.searched).toEqual([])
+    expect(isDrop(await h.submit(INTERIM))).toBe(true)
+  })
+
+  test('a known agent\'s repeat still needs the reminder', async () => {
+    let stdout = ''
+    const h = harness({ agents: ORPHAN, search: async () => ({ exitCode: stdout === '' ? 1 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }) })
+    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
+    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
+    stdout = lines(REMINDER, COUNTERMAND)
+    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
+    stdout = lines(REMINDER)
+    expect(isDrop(await h.submit(INTERIM))).toBe(true)
+  })
+
+  test('a first notice that never entered leaves the next to pass: refused, or answered beneath without core', async () => {
+    for (const answer of [
+      async (): Promise<Submitted> => ({ drop: 'a settings hook said no' }),
+      async (e: { text: string }): Promise<Submitted> => ({ text: e.text }), // a hook beneath answered; nothing entered
+    ]) {
+      for (const [agents, text] of [[[{ id: TASK }], withWorktree(INTERIM)], [ORPHAN, INTERIM]] as const) {
+        let isAnswering = true
+        const h = harness({ agents: [...agents], beneath: async (e, held) => (isAnswering ? answer(e) : (held.push(said(e.text)), { text: e.text })) })
+        await h.submit(text)
+        isAnswering = false
+        expect(await h.submit(text)).toEqual({ text })
+      }
+    }
+  })
+
+  test('a first notice a hook beneath rewrote without the worktree leaves the next to pass', async () => {
+    const first = withWorktree(INTERIM)
+    let isRewriting = true
+    const h = harness({
+      beneath: async (e, held) => {
+        const text = isRewriting ? e.text.replace(`\n${WORKTREE}`, '') : e.text
+        held.push(said(text))
+        return { text }
+      },
+    })
+    await h.submit(first)
+    isRewriting = false
     expect(await h.submit(first)).toEqual({ text: first })
+  })
+
+  test('a first notice rewound or compacted out of the conversation leaves the next to pass', async () => {
+    for (const forget of [
+      (held: Api[]) => held.splice(0), // a rewind to before it
+      (held: Api[]) => held.splice(0, held.length, said('This session is being continued from a previous conversation. The agent a6f9399af416f127b is parked in its worktree.')), // a compaction
+    ]) {
+      for (const [agents, text] of [[[{ id: TASK }], withWorktree(INTERIM)], [ORPHAN, INTERIM]] as const) {
+        const h = harness({ agents: [...agents] })
+        expect(await h.submit(text)).toEqual({ text })
+        forget(h.conversation)
+        expect(await h.submit(text)).toEqual({ text })
+        expect(isDrop(await h.submit(text))).toBe(true)
+      }
+    }
   })
 
   test('passes a pointer to a delivered report', async () => {
@@ -250,36 +341,12 @@ describe('registerInterim', () => {
     expect(await h.submit(pointer)).toEqual({ text: pointer })
   })
 
-  test('an orphan\'s first notice passes, the session\'s first sign of it; its repeats drop', async () => {
-    const h = harness({ agents: [{ id: TASK, parentId: 'a0parent' }] })
-    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
-    expect(h.searched).toEqual([])
-    expect(typeof (await h.submit(INTERIM)).drop).toBe('string')
-  })
-
-  test('an orphan\'s notice that did not enter leaves the next one to pass', async () => {
-    let refuse = true
-    const h = harness({ agents: [{ id: TASK, parentId: 'a0parent' }], beneath: async (e) => (refuse ? { drop: 'a settings hook said no' } : { text: e.text }) })
-    expect((await h.submit(INTERIM)).drop).toBe('a settings hook said no')
-    refuse = false
-    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
-  })
-
-  test('a known agent\'s repeat still needs the reminder', async () => {
-    let stdout = ''
-    const h = harness({ agents: [{ id: TASK, parentId: 'a0parent' }], search: async () => ({ exitCode: stdout === '' ? 1 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }) })
-    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
-    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
-    stdout = lines(REMINDER, COUNTERMAND)
-    expect(await h.submit(INTERIM)).toEqual({ text: INTERIM })
-    stdout = lines(REMINDER)
-    expect(typeof (await h.submit(INTERIM)).drop).toBe('string')
-  })
-
   test('every lookup that fails or cannot tell lets the notification through', async () => {
     const cases = [
       harness({ agents: [] }),
       harness({ agents: () => { throw new Error('list refused') } }),
+      harness({ agents: ORPHAN, conversation: [said(INTERIM)], read: () => { throw new Error('no session bound') } }),
+      harness({ agents: ORPHAN, conversation: [said(INTERIM)], read: () => ({ deny: 'no' }) as unknown as Api[] }),
       harness({ search: async () => { throw new Error('grep did not start') } }),
       harness({ search: failing('', 2) }),
       harness({ search: failing(lines(REMINDER), 0, true) }),
