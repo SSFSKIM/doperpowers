@@ -73,8 +73,9 @@ def scanner_output(args, values_json, scanner=None):
     return result.stdout.decode().splitlines()
 
 
-# `dpkg --verify` lines: nine check characters, an optional `c` (a conffile), the path.
-VERIFY_LINE = re.compile(r"^[?.0-9A-Za-z]{9} +(?:c +)?(/.*)$")
+# `dpkg --verify` lines: nine check characters or `missing` (a file the
+# image's path-exclude rules left out), an optional `c` (a conffile), the path.
+VERIFY_LINE = re.compile(r"^(?:[?.0-9A-Za-z]{9}|missing) +(?:c +)?(/.*)$")
 NOT_OWNED = re.compile(r"^dpkg-query: no path found matching pattern ")
 BATCH = 300
 
@@ -96,6 +97,15 @@ def _package_pristine(image, paths):
         raise CheckError(f"cannot start {image} for dpkg: {container.stderr.strip()[-300:]}")
     name = container.stdout.strip()
     try:
+        # The packages dpkg holds as installed: with its status database gone
+        # or empty, --verify checks nothing and says nothing, which is no answer.
+        listed = _in(name, ["dpkg-query", "-W", "-f", "${binary:Package}\t${db:Status-Abbrev}\n"])
+        if listed.returncode != 0:
+            raise CheckError(f"dpkg-query -W exited {listed.returncode}: {listed.stderr.strip()[-300:]}")
+        installed = {line.split("\t")[0].split(":")[0] for line in listed.stdout.splitlines()
+                     if line.split("\t")[-1].startswith("ii")}
+        if not installed:
+            raise CheckError("dpkg holds no installed package: its database is missing or empty")
         verify = _in(name, ["dpkg", "--verify"])
         if verify.returncode not in (0, 1):
             raise CheckError(f"dpkg --verify exited {verify.returncode}: {verify.stderr.strip()[-300:]}")
@@ -123,7 +133,8 @@ def _package_pristine(image, paths):
                 packages, sep, path = line.partition(": /")
                 if not sep:
                     raise CheckError(f"dpkg-query -S printed a line it should not: {line[:200]!r}")
-                owned.add("/" + path)
+                if any(pkg.strip().split(":")[0] in installed for pkg in packages.split(",")):
+                    owned.add("/" + path)
         return (owned - modified) & set(paths)
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
