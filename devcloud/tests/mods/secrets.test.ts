@@ -31,7 +31,9 @@ const disk = (on: On, initial: Record<string, string>) => {
     if (!file) return missing(e.path)
     return { value: file.text }
   })
+  // As the engine: a write past 4 MiB is refused.
   on('fs.write', (_, e) => {
+    if (e.text.length > 4 * 1024 * 1024) return { deny: `${e.text.length} bytes is over the 4194304-byte limit` }
     put(e.path, e.text)
     return { value: undefined }
   })
@@ -61,7 +63,7 @@ const disk = (on: On, initial: Record<string, string>) => {
 }
 
 type Disk = ReturnType<typeof disk>
-type Run = (argv: readonly string[], fs: Disk) => ReturnType<typeof ok>
+type Run = (argv: readonly string[], fs: Disk, stdin?: string) => ReturnType<typeof ok>
 
 /**
  * A headless session in /work/repo/sub over `initial`, started as a session
@@ -71,7 +73,7 @@ const start = async ($: Engine, on: On, initial: Record<string, string>, run: Ru
   mock.env(on, { HOME })
   const fs = disk(on, initial)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('process.run', (_, e) => (e.argv[0] === 'git' ? ok('/work/repo/.git\n/work/repo\n') : run(e.argv, fs)))
+  on('process.run', (_, e) => (e.argv[0] === 'git' ? ok('/work/repo/.git\n/work/repo\n') : run(e.argv, fs, e.init?.stdin)))
   await $.session.start({ cwd: '/work/repo/sub', surface: null, isInteractive: false })
   return fs
 }
@@ -287,8 +289,13 @@ describe('an oversized output', () => {
     const MIB = 1024 * 1024
     const filler = 'y'.repeat(5 * MIB)
     tool(on, () => bash('preview', { persistedOutputPath: saved, persistedOutputSize: 6 * MIB }))
-    // `dd … skip=<n> count=2 | base64`, answered from the file in memory.
-    const pieces: Run = (argv, disk) => {
+    // `dd … skip=<n> count=2 | base64` answered from the file in memory, and
+    // `cat > <path>.scrub.tmp && mv …` writing it back from the child's input.
+    const pieces: Run = (argv, disk, stdin) => {
+      if (stdin !== undefined) {
+        disk.put(argv[4]!, stdin)
+        return ok()
+      }
       const from = Number(argv[5]) * MIB
       return ok(btoa(disk.files.get(argv[4]!)!.text.slice(from, from + 2 * MIB)))
     }

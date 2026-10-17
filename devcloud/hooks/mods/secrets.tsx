@@ -190,9 +190,19 @@ async function readLarge($: EngineInterface, path: string, size: number): Promis
  */
 async function scrubPersisted($: EngineInterface, path: string) {
   const stat = await $.fs.stat(path)
-  const text = stat.size <= READ_MAX ? await $.fs.read(path) : await readLarge($, path, stat.size)
+  if (stat.size <= READ_MAX) {
+    const text = await $.fs.read(path)
+    const scrubbed = handles.scrub(text)
+    if (scrubbed !== text) await $.fs.write(path, scrubbed)
+    return
+  }
+  // Past what `$.fs.write` takes too: through a child's input, into a file
+  // beside it (`.tmp`, which the session store skips) renamed over it.
+  const text = await readLarge($, path, stat.size)
   const scrubbed = handles.scrub(text)
-  if (scrubbed !== text) await $.fs.write(path, scrubbed)
+  if (scrubbed === text) return
+  const r = await $.process.run(['/bin/sh', '-c', 'umask 077 && cat > "$1.scrub.tmp" && mv -f "$1.scrub.tmp" "$1"', 'sh', path], { stdin: scrubbed, timeoutMs: 60_000 })
+  if (r.exitCode !== 0) throw new Error('secrets: a persisted output could not be rewritten')
 }
 
 const persistedPath = (result: unknown): string | undefined => {
@@ -262,7 +272,8 @@ export function registerSecrets(on: On) {
     }
   }).catch((_, e, next) => (next.called ? { deny: WITHHELD } : { deny: 'secrets: the guard failed before the call ran, so it did not run.' }))
 
-  // Every row the conversation keeps, whatever door it came in by.
+  // Every row the conversation keeps, whatever door it came in by. An engine
+  // row cannot be refused: one the guard failed on is kept as it came.
   on('session.append', async ($, e, next) => {
     await refresh($, false)
     let isChanged = false
@@ -282,7 +293,6 @@ export function registerSecrets(on: On) {
       return block
     })
     return isChanged ? next({ ...e, message: { ...e.message, content } }) : next(e)
-    // An engine row cannot be refused: one the guard failed on is kept as it came.
   }).catch((_, e, next) => next(e))
 
   // A compaction's instructions (the text after `/compact`) go to the

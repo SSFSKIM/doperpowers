@@ -1,4 +1,4 @@
-import { detect } from './secrets-detect'
+import { detect, keepFirst } from './secrets-detect'
 
 /**
  * Handles: the text that stands where a secret was, one per distinct byte
@@ -62,7 +62,6 @@ export function spellings(value: string): Spelling[] {
   return out
 }
 
-const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const handleOf = (kind: 'secret' | 'superseded', label: string, enc: string) => `[${kind}:${label}${enc ? `~${enc}` : ''}]`
 
 type Candidate = { start: number; end: number; rank: number; replace?: string; kind?: string }
@@ -73,7 +72,6 @@ export class Handles {
   private current = new Map<string, string>()
   private former = new Map<string, string>()
   private known = new Map<string, string>()
-  private knownPattern: RegExp | undefined
   private issued = new Map<string, string>()
   private bytes = new Map<string, string>()
 
@@ -101,8 +99,6 @@ export class Handles {
       if (current.has(value) || value.length < SCRUB_MIN) continue
       for (const { enc, text } of spellings(value)) if (!this.known.has(text)) this.known.set(text, handleOf('superseded', label, enc))
     }
-    const texts = [...this.known.keys()].sort((a, b) => b.length - a.length)
-    this.knownPattern = texts.length ? new RegExp(texts.map(escape).join('|'), 'g') : undefined
   }
 
   private patternHandle(kind: string, text: string): string {
@@ -123,18 +119,20 @@ export class Handles {
   scrub(text: string): string {
     const candidates: Candidate[] = []
     for (const m of text.matchAll(HANDLE)) candidates.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, rank: 0 })
-    if (this.knownPattern) {
-      for (const m of text.matchAll(this.knownPattern)) {
-        candidates.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, rank: 1, replace: this.known.get(m[0]) })
+    // `indexOf` per spelling: far quicker over a long output than one
+    // alternation of every spelling, tried at each position.
+    for (const [spelling, handle] of this.known) {
+      for (let at = text.indexOf(spelling); at !== -1; at = text.indexOf(spelling, at + spelling.length)) {
+        candidates.push({ start: at, end: at + spelling.length, rank: 1, replace: handle })
       }
     }
     for (const span of detect(text)) candidates.push({ ...span, rank: 2 })
     if (candidates.every((c) => c.rank === 0)) return text
 
-    candidates.sort((a, b) => a.rank - b.rank || a.start - b.start)
-    const kept: Candidate[] = []
-    for (const c of candidates) if (!kept.some((k) => c.start < k.end && k.start < c.end)) kept.push(c)
-    kept.sort((a, b) => a.start - b.start)
+    // A handle in the text first, then known values (the longest where two
+    // start together), then patterns; each kept unless it overlaps one kept.
+    candidates.sort((a, b) => a.rank - b.rank || a.start - b.start || b.end - a.end)
+    const kept = keepFirst(candidates, text.length)
 
     let out = ''
     let at = 0

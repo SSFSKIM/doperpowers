@@ -132,3 +132,12 @@ describe('scrubbing whole records', () => {
     expect(unrestored).toEqual(['[superseded:OLD]'])
   })
 })
+
+test("a 6 MB output is scrubbed well within a hook's 10 s budget", () => {
+  const h = withStored(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`KEY_${i}`, chars(i % 2 ? 64 : 1900, 60 + i)])))
+  const text = `${'filler line '.padEnd(76, '.')}\n`.repeat(80_000) + `KEY_1 ${chars(64, 61)} and ${githubPat(62)}\n`
+  const started = Date.now()
+  const scrubbed = h.scrub(text)
+  expect(Date.now() - started < 2_000).toBe(true)
+  expect(scrubbed.endsWith('KEY_1 [secret:KEY_1] and [redacted:github-pat#abcd.1]\n')).toBe(true)
+})

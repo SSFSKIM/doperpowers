@@ -8,31 +8,51 @@
 
 export type Span = { start: number; end: number; kind: string }
 
-// Not inside a longer word: `risk-…` holds no `sk-` token.
-const LEAD = '(?<![A-Za-z0-9_])'
+/**
+ * The spans, taken in the order given, each kept unless it overlaps one
+ * already kept; returned in text order. Linear in the spans' total length.
+ */
+export function keepFirst<T extends { start: number; end: number }>(spans: readonly T[], length: number): T[] {
+  if (spans.length === 0) return []
+  const taken = new Uint8Array(length)
+  const kept: T[] = []
+  for (const span of spans) {
+    let isFree = true
+    for (let i = span.start; i < span.end && isFree; i++) isFree = taken[i] === 0
+    if (!isFree) continue
+    taken.fill(1, span.start, span.end)
+    kept.push(span)
+  }
+  return kept.sort((a, b) => a.start - b.start)
+}
 
-// In order: the first rule to claim a character keeps it.
+// In order: the first rule to claim a character keeps it. Each pattern opens
+// with its literal prefix, which lets the engine skip ahead to it; that the
+// token does not start inside a longer word (`risk-…` holds no `sk-` token) is
+// checked after a match (NOT_LEAD), as a lookbehind would cost a test at every
+// position of the text.
 const RULES: readonly { kind: string; pattern: RegExp }[] = [
   // PEM blocks, raw or JSON-escaped (`\n` as two characters, as a key file prints).
   {
     kind: 'pem',
     pattern: /-----BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY( BLOCK)?-----[\s\S]*?-----END \1PRIVATE KEY\2-----/g,
   },
-  { kind: 'anthropic', pattern: new RegExp(`${LEAD}sk-ant-[A-Za-z0-9_-]{20,}`, 'g') },
-  { kind: 'openrouter', pattern: new RegExp(`${LEAD}sk-or-v1-[A-Za-z0-9]{20,}`, 'g') },
-  { kind: 'openai', pattern: new RegExp(`${LEAD}sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}`, 'g') },
-  { kind: 'github-pat', pattern: new RegExp(`${LEAD}ghp_[A-Za-z0-9]{30,}`, 'g') },
-  { kind: 'github-oauth', pattern: new RegExp(`${LEAD}gho_[A-Za-z0-9]{30,}`, 'g') },
-  { kind: 'github-app-token', pattern: new RegExp(`${LEAD}gh[us]_[A-Za-z0-9]{30,}`, 'g') },
-  { kind: 'github-refresh-token', pattern: new RegExp(`${LEAD}ghr_[A-Za-z0-9]{30,}`, 'g') },
-  { kind: 'github-fine-grained-pat', pattern: new RegExp(`${LEAD}github_pat_[A-Za-z0-9_]{22,}`, 'g') },
-  { kind: 'tailscale', pattern: new RegExp(`${LEAD}tskey-[A-Za-z0-9-]{16,}`, 'g') },
-  { kind: 'slack', pattern: new RegExp(`${LEAD}xox[abprs]-[A-Za-z0-9-]{10,}`, 'g') },
-  { kind: 'aws-access-key', pattern: new RegExp(`${LEAD}(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])`, 'g') },
-  { kind: 'gitlab-pat', pattern: new RegExp(`${LEAD}glpat-[A-Za-z0-9_-]{20,}`, 'g') },
-  { kind: 'huggingface', pattern: new RegExp(`${LEAD}hf_[A-Za-z0-9]{30,}`, 'g') },
-  { kind: 'gcp-api-key', pattern: new RegExp(`${LEAD}AIza[0-9A-Za-z_-]{35}`, 'g') },
+  { kind: 'anthropic', pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g },
+  { kind: 'openrouter', pattern: /sk-or-v1-[A-Za-z0-9]{20,}/g },
+  { kind: 'openai', pattern: /sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}/g },
+  { kind: 'github-pat', pattern: /ghp_[A-Za-z0-9]{30,}/g },
+  { kind: 'github-oauth', pattern: /gho_[A-Za-z0-9]{30,}/g },
+  { kind: 'github-app-token', pattern: /gh[us]_[A-Za-z0-9]{30,}/g },
+  { kind: 'github-refresh-token', pattern: /ghr_[A-Za-z0-9]{30,}/g },
+  { kind: 'github-fine-grained-pat', pattern: /github_pat_[A-Za-z0-9_]{22,}/g },
+  { kind: 'tailscale', pattern: /tskey-[A-Za-z0-9-]{16,}/g },
+  { kind: 'slack', pattern: /xox[abprs]-[A-Za-z0-9-]{10,}/g },
+  { kind: 'aws-access-key', pattern: /A(?:KIA|SIA)[0-9A-Z]{16}(?![0-9A-Za-z])/g },
+  { kind: 'gitlab-pat', pattern: /glpat-[A-Za-z0-9_-]{20,}/g },
+  { kind: 'huggingface', pattern: /hf_[A-Za-z0-9]{30,}/g },
+  { kind: 'gcp-api-key', pattern: /AIza[0-9A-Za-z_-]{35}/g },
 ]
+const NOT_LEAD = /[A-Za-z0-9_]/
 
 // A name that says secret: one of these words as a whole part of the name,
 // parts split at `_`, `-`, `.` and a camelCase boundary (`apiKey`).
@@ -72,16 +92,26 @@ export function entropy(text: string): number {
   return bits
 }
 
+// A line that may hold a secret-named assignment: only these are searched for
+// one, so a long output of ordinary lines costs one quick test each.
+const MAY_ASSIGN = /token|secret|passw|api_?key|apikey|private_?key|bearer|credential/i
+
 function assignments(text: string): Span[] {
   const spans: Span[] = []
-  for (const [pattern, nameAt, valueAt] of [[ASSIGNMENT, 2, 4], [BEARER, 1, 3]] as const) {
-    for (const m of text.matchAll(pattern)) {
-      const value = m[valueAt] ?? ''
-      if (!isSecretName(m[nameAt] ?? '')) continue
-      if (value.length < VALUE_MIN || NOT_A_VALUE.test(value) || entropy(value) < ENTROPY_MIN) continue
-      const end = (m.index ?? 0) + m[0].length
-      spans.push({ start: end - value.length, end, kind: 'assignment' })
+  let at = 0
+  for (const line of text.split('\n')) {
+    if (MAY_ASSIGN.test(line)) {
+      for (const [pattern, nameAt, valueAt] of [[ASSIGNMENT, 2, 4], [BEARER, 1, 3]] as const) {
+        for (const m of line.matchAll(pattern)) {
+          const value = m[valueAt] ?? ''
+          if (!isSecretName(m[nameAt] ?? '')) continue
+          if (value.length < VALUE_MIN || NOT_A_VALUE.test(value) || entropy(value) < ENTROPY_MIN) continue
+          const end = at + (m.index ?? 0) + m[0].length
+          spans.push({ start: end - value.length, end, kind: 'assignment' })
+        }
+      }
     }
+    at += line.length + 1
   }
   return spans
 }
@@ -91,14 +121,14 @@ function assignments(text: string): Span[] {
  * span the bytes a handle stands for, `kind` the rule that found it.
  */
 export function detect(text: string): Span[] {
-  const claimed: Span[] = []
-  const overlaps = (s: Span) => claimed.some((c) => s.start < c.end && c.start < s.end)
+  const found: Span[] = []
   for (const { kind, pattern } of RULES) {
     for (const m of text.matchAll(pattern)) {
-      const span = { start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, kind }
-      if (!overlaps(span)) claimed.push(span)
+      const start = m.index ?? 0
+      if (start > 0 && NOT_LEAD.test(text[start - 1]!)) continue
+      found.push({ start, end: start + m[0].length, kind })
     }
   }
-  for (const span of assignments(text)) if (!overlaps(span)) claimed.push(span)
-  return claimed.sort((a, b) => a.start - b.start)
+  found.push(...assignments(text))
+  return keepFirst(found, text.length)
 }
