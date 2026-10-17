@@ -374,6 +374,14 @@ the spec's Decision Log entry "the branch review round"
   later run's reminder after a permission-mode change. Only that exact
   sentence can be lost. Trigger: any observed agent-authored answer equal to
   the placeholder.
+- **A first notice that entered mid-turn is not seen.** The engine folds a
+  notice that arrives during a tool call into that call's `tool_result`
+  (under its system-notification frame), and the conversation check reads
+  only user text, so the next repeat passes once more; the one after drops
+  (live round 3, W-mid). Counting a notice inside a `tool_result` under the
+  engine's frame would close it, at the cost of trusting a frame a tool's
+  output could imitate. Costs one extra notice per agent, never a report.
+  Trigger: extra worktree or orphan notices showing up often.
 - **A quoted notice counts as delivered.** The worktree and orphan rules ask
   the conversation (`$.session.messages({ as: 'api' })`) for an earlier
   notice of the task, and that view keeps only role and text, so a user-role
