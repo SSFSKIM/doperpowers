@@ -4,8 +4,9 @@
 > (branch `smns-erb`; on this machine
 > `/Users/new/Developer/GitHub/MAWS/.claude/worktrees/smns-erb/`), child
 > **DC8** (The machine — history and jobs — plan). **Parent pin:** commit
-> `d447cfe97`, blob `8a85c64238d4b989353826419477b8f142b19751` of that file
-> (2026-10-17: the panel's fixes — DX4's background sources, DX5's
+> `6edd9d037`, blob `d52bad56fa80c229f1352d3b5128ca8096a3a726` of that file
+> (2026-10-17: the launch texts read only on a result row with no
+> `toolUseResult`; before it `d447cfe97` — the panel's fixes — DX4's background sources, DX5's
 > `resync.refused`; before it `a87d7fa04` — `adoptShellOutputRoot` struck from DX4's roots, an adopted
 > shell's output a known refusal; before it `f5df1687d` — the plain-row
 > notification's origin gate and the subagent
