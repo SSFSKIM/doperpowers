@@ -65,8 +65,8 @@ wrote it, handles and all. One system-prompt section tells the model this.
 and as the transcript keeps it (`toolUseResult`), in the main loop and in
 subagents; every row appended to the conversation (the person's prompt, a
 background command's notification, a subagent's result); an oversized
-output's file in the session's `tool-results/`, rewritten in place before
-the call returns (the session store ships such a file only once it has held
+output's file in the session's `tool-results/`, rewritten before the call
+returns (in place, or past 4 MiB through a `.tmp` file renamed over it) (the session store ships such a file only once it has held
 still for 3 s); the system prompt's composed sections; the first message's
 context blocks (`CLAUDE.md`); each attachment's text as a request carries
 it; a compaction's instructions and its summary.
