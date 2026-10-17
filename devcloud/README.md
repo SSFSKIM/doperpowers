@@ -193,7 +193,8 @@ A container cannot set its own host name, so the driver passes
     DEVCLOUD_KIND=vm|microvm|container
     DEVCLOUD_ROLE=persistent|sandbox           # persistent requires systemd as PID 1
     DEVCLOUD_TAILSCALE=join|host|none          # a sandbox never joins
-    DEVCLOUD_TS_AUTHKEY_FILE=<path>            # join only; deleted after use
+    DEVCLOUD_TS_SECRET=<Secret Manager id>     # join: the Tailscale OAuth client (tag:devcloud)
+    DEVCLOUD_TS_AUTHKEY_FILE=<path>            # join, the fallback: a one-time key; deleted after use
     DEVCLOUD_SEED=file:<path>|gce-metadata
     DEVCLOUD_SM_PROJECT=<GCP project id>
     DEVCLOUD_CONFIG_REPO=<https clone URL>
@@ -215,16 +216,16 @@ boot with the step named, and the next run starts again from the top:
 | # | step | what it does |
 |---|---|---|
 | 1 | `identity` | refuses `persistent` without systemd as PID 1; sets the host name (VM) or checks it (container); writes `SESSION_MIRROR_HOST`, and for a container a `DAEMON_BOOT_ID` of its own, fresh at each container start |
-| 2 | `tailnet-attach` | `join`: `tailscale up` with the auth key file, then deletes it |
-| 3 | `seed` | activates the seed and takes an access token |
-| 4 | `bootstrap-secret` | reads the GitHub token `DEVCLOUD_CONFIG_TOKEN_SECRET` names |
+| 2 | `seed` | activates the seed and takes an access token |
+| 3 | `bootstrap-secrets` | reads the GitHub token `DEVCLOUD_CONFIG_TOKEN_SECRET` names, and the Tailscale OAuth client `DEVCLOUD_TS_SECRET` names |
+| 4 | `tailnet-attach` | `join`, unless the node is already joined: `tailscale up --advertise-tags=tag:devcloud` with the OAuth client as its auth key (tagged, non-ephemeral, pre-authorized), handed over as `--auth-key=file:<root-only file>` and deleted after, never in an argument list; or, the fallback, with the auth key file, which is deleted |
 | 5 | `configuration` | as the user, clones or fetches and resets `~/.claude`; the token reaches git through a credential helper reading a root-owned file the user's group can read, deleted after the fetch — never a URL or `.git/config`; then reads the profile |
 | 6 | `tailnet-check` | the gateway named in the profile's managed settings answers |
 | 7 | `secrets` | materializes `secrets.toml` |
 | 8 | `home` | as the user: copies the profile's `home/`; the seed as gcloud's account and ADC, the Secret Manager project as gcloud's default; `gh auth setup-git` when gh has a `hosts.yml` |
 | 9 | `apply` | runs the configuration's `sync/apply.py` as the user |
 | 10 | `settings-and-env` | writes `/etc/claude-code/managed-settings.json` and `/etc/devcloud/env`; `TZ` sets the system time zone |
-| 11 | `services` | installs or starts the services; restarts one whose unit or environment changed |
+| 11 | `services` | installs or starts the services; restarts one whose unit or environment changed; on an enrolled persistent host, the sminos daemon (below); refuses a sandbox that carries a sminos machine identity |
 | 12 | `projects` | `devenv up` per `DEVCLOUD_PROJECTS` entry, as the user; `skipped` when none (see "Projects") |
 
 `devcloud-boot` exits 0 when every step is `ok`, 1 when a step of 1–11
@@ -265,6 +266,9 @@ mount as `DEVCLOUD_MIRROR_DIR`; the sandbox's `devenv up` then clones with
 `--reference` to it, so a checkout takes seconds. A sandbox lives hours; its
 clone reads objects from the mount for that long.
 
+Steps 2–4 reach only the public internet (Google's APIs, Tailscale's control
+plane); nothing reaches the tailnet's services before the profile names them.
+
 **The profile** is `~/.claude/devcloud/` in the configuration repository.
 Only `managed-settings.json` is required.
 
@@ -276,6 +280,9 @@ Only `managed-settings.json` is required.
   `#` comments skipped; `$NAME` and `${NAME}` expand from earlier lines, then
   the user's login environment — `HOME`, `USER`, `PATH` — and the host's
   identity, so `PATH="$HOME/bin:$PATH"` resolves once for every reader).
+  The profile is every host's, so it never sets a per-host identity:
+  `SESSION_MIRROR_HOST`, `DAEMON_HOST` and `DAEMON_BOOT_ID` from `profile.env`
+  or a `secrets.toml` env target are dropped, and step 10's detail names them.
 - `secrets.toml` — what to fetch from Secret Manager and where to put it:
 
       [[secret]]
@@ -323,6 +330,7 @@ the services without a reboot. Untracked files are left alone.
 | `refresh-secrets` | `devcloud refresh-secrets` (steps 7, 10, 11), every 30 min | root |
 | `refresh-mirrors` | `devcloud refresh-mirrors`: fetches the mirror cache, every 30 min; nothing on a sandbox | root (git as the user) |
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |
+| `sminos-daemon` | `sminos daemon run`, on an enrolled persistent host only | the user (a systemd user unit) |
 
 Under systemd they are units `devcloud-<service>` (the jobs as timers).
 Elsewhere `devcloud-services` runs them as the container's PID 1: it runs
@@ -336,6 +344,22 @@ the supervisor ran, scrubbed out (it rereads them whenever their files change,
 before it forwards another line),
 and on SIGTERM forwards the signal to every child and waits up to 8 s (the
 shipper's final pass) before it exits.
+
+**sminos.** A persistent host is a sminos machine once the person enrolls it
+(`sminos hub enroll`, a human step: its code carries the organization's key),
+which leaves `$SMINOS_HOME/daemon/hub.json`. From then on step 11 — at the
+next boot, or at once with `devcloud reconcile` — runs `sminos daemon
+install` as the user (the doperpowers marketplace clone's `sminos.py`, which
+`sync/apply.py` installs), adds a drop-in naming `/etc/devcloud/env` as the
+unit's environment file, turns lingering on, reloads the user manager, and
+enables and starts `sminos-daemon.service`, restarting it when its unit or
+the environment changed; lingering starts it again after a reboot.
+Unenrolled, nothing is installed and the host's projects run local-only.
+A sandbox is never a sminos machine: one whose `$SMINOS_HOME/daemon/` holds
+`hub.json` or `machine.json` (an enrollment, or the instance claim a daemon
+writes) fails step 11 — it shares the identity of the machine it was copied
+from — and is left as it is, since the directory may be that machine's own,
+mounted. A container's `DAEMON_BOOT_ID` is its own (step 1), never its host's.
 
 **Status.** `devcloud status` prints `/var/lib/devcloud/status.json` one line
 per step — name, state (`ok`, `failed`, `skipped`, `missing`), when, detail —

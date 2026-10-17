@@ -8,7 +8,7 @@ from unittest import mock
 import _path  # noqa: F401
 from devcloudlib import status, steps
 
-HOST_STEPS = ("identity", "tailnet_attach", "seed", "bootstrap_secret", "configuration", "tailnet_check",
+HOST_STEPS = ("identity", "seed", "bootstrap_secrets", "tailnet_attach", "configuration", "tailnet_check",
               "secrets_step", "home", "apply", "settings_and_env", "services_step")
 
 
@@ -24,10 +24,9 @@ class BootExitTest(unittest.TestCase):
             for name in HOST_STEPS:
                 result = ("failed", "made up") if name == failing else "fine"
                 stack.enter_context(mock.patch.object(steps, name, lambda r, result=result: result))
-            # RECONCILE holds the step functions themselves, bound at import.
-            stack.enter_context(mock.patch.object(steps, "RECONCILE", tuple(
-                (label, getattr(steps, fn)) for label, fn in zip(
-                    ("tailnet-check", "secrets", "home", "apply", "settings-and-env", "services"), HOST_STEPS[5:]))))
+            # BOOT holds the step functions themselves, bound at import.
+            stack.enter_context(mock.patch.object(steps, "BOOT", tuple(
+                (label, getattr(steps, fn)) for (label, _), fn in zip(steps.BOOT, HOST_STEPS))))
             stack.enter_context(mock.patch.object(steps, "projects", lambda r: (projects_state, "made up")))
             with contextlib.redirect_stdout(None):
                 code = steps.boot()

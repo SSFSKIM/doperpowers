@@ -12,18 +12,18 @@ import tempfile
 PATH = pathlib.Path("/var/lib/devcloud/status.json")
 
 STEPS = (
-    "identity",          # 1
-    "tailnet-attach",    # 2
-    "seed",              # 3
-    "bootstrap-secret",  # 4
-    "configuration",     # 5
-    "tailnet-check",     # 6
-    "secrets",           # 7
-    "home",              # 8
-    "apply",             # 9
-    "settings-and-env",  # 10
-    "services",          # 11
-    "projects",          # 12
+    "identity",           # 1
+    "seed",               # 2
+    "bootstrap-secrets",  # 3
+    "tailnet-attach",     # 4
+    "configuration",      # 5
+    "tailnet-check",      # 6
+    "secrets",            # 7
+    "home",               # 8
+    "apply",              # 9
+    "settings-and-env",   # 10
+    "services",           # 11
+    "projects",           # 12
 )
 STATES = ("ok", "failed", "skipped", "missing")
 

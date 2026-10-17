@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 
 from . import descriptor, envfile, proc, profile as profile_mod, projects as projects_mod, redact, secrets, \
-    services, status
+    services, sminos_host, status
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
@@ -50,6 +50,7 @@ class Run:
         self.user = None
         self.tokens = None
         self.bootstrap = None
+        self.ts_secret = None
         self.profile = None
         self.commit = None
         self.secret_env = {}
@@ -176,28 +177,11 @@ def _hosts_entry(name):
         path.write_text("\n".join(wanted) + "\n")
 
 
-# --- 2-4. tailnet, seed, bootstrap secret --------------------------------------
+# --- 2-4. seed, bootstrap secrets, tailnet ---------------------------------------
 
-def tailnet_attach(r):
-    d = r.desc
-    if d.tailscale != "join":
-        return "through the host's tailnet" if d.tailscale == "host" else "no tailnet"
-    if services.systemd_is_init():
-        run(["systemctl", "enable", "--now", "tailscaled"], log="tailnet", timeout=120)
-    key = pathlib.Path(d.ts_authkey_file)
-    if key.exists():
-        try:
-            run(["tailscale", "up", f"--auth-key=file:{key}", f"--hostname={d.name}"], log="tailnet", timeout=180)
-        finally:
-            key.unlink(missing_ok=True)
-        return "joined; the auth key file is deleted"
-    try:
-        out = run(["tailscale", "status", "--json"], log="tailnet", capture=True, timeout=30)
-    except StepError:
-        out = ""
-    if '"BackendState": "Running"' in out or '"BackendState":"Running"' in out:
-        return "already joined"
-    raise StepError(f"not joined, and no auth key at {key}")
+TS_TAG = "tag:devcloud"
+# The OAuth client's node: tagged, kept across reboots, admitted at once.
+TS_CLIENT_ATTRIBUTES = "?ephemeral=false&preauthorized=true"
 
 
 def seed(r):
@@ -207,8 +191,9 @@ def seed(r):
         else "GCE metadata server"
 
 
-def _fetch_bootstrap(r):
-    name = r.desc.config_token_secret
+def _fetch_text(r, name):
+    """Secret `name`'s latest value as text, one trailing newline dropped,
+    known to every log from here on."""
     try:
         value = r.tokens.access(name)
     except AccessError as error:
@@ -222,31 +207,82 @@ def _fetch_bootstrap(r):
     if not text:
         raise StepError(f"{name} is empty")
     proc.KNOWN.add(text)
-    r.bootstrap = text
+    return text
 
 
-def bootstrap_secret(r):
+def _fetch_bootstrap(r):
+    r.bootstrap = _fetch_text(r, r.desc.config_token_secret)
+
+
+def bootstrap_secrets(r):
     _fetch_bootstrap(r)
-    return r.desc.config_token_secret
+    names = [r.desc.config_token_secret]
+    if r.desc.ts_secret:
+        r.ts_secret = _fetch_text(r, r.desc.ts_secret)
+        names.append(r.desc.ts_secret)
+    return ", ".join(names)
 
 
-# --- 5. configuration ----------------------------------------------------------
+def _joined():
+    try:
+        out = run(["tailscale", "status", "--json"], log="tailnet", capture=True, timeout=30)
+        return json.loads(out).get("BackendState") == "Running"
+    except (StepError, ValueError, AttributeError):
+        return False
+
+
+def tailnet_attach(r):
+    d = r.desc
+    if d.tailscale != "join":
+        return "through the host's tailnet" if d.tailscale == "host" else "no tailnet"
+    if services.systemd_is_init():
+        run(["systemctl", "enable", "--now", "tailscaled"], log="tailnet", timeout=120)
+    key = pathlib.Path(d.ts_authkey_file) if d.ts_authkey_file else None
+    if _joined():
+        if key:
+            key.unlink(missing_ok=True)
+        return "already joined"
+    up = ["tailscale", "up", f"--hostname={d.name}"]
+    if d.ts_secret:
+        # The client secret reaches tailscale as a file's path, never in an
+        # argument list another process can read.
+        with _secret_file("tailscale-auth", r.ts_secret + TS_CLIENT_ATTRIBUTES) as path:
+            run(up + [f"--auth-key=file:{path}", f"--advertise-tags={TS_TAG}"], log="tailnet", timeout=180)
+        return f"joined with the OAuth client {d.ts_secret} as {TS_TAG}"
+    if not key.exists():
+        raise StepError(f"not joined, and no auth key at {key}")
+    try:
+        run(up + [f"--auth-key=file:{key}"], log="tailnet", timeout=180)
+    finally:
+        key.unlink(missing_ok=True)
+    return "joined with the auth key file; the file is deleted"
+
 
 @contextlib.contextmanager
-def _token_file(r):
-    """The GitHub token in a root-owned file only the user's group can read,
-    for the length of the git calls."""
+def _secret_file(name, value, gid=None):
+    """`value` in a root-owned file under /run/devcloud for the length of the
+    block: readable by root alone, or also by group `gid` when given."""
     RUN_DIR.mkdir(mode=0o711, parents=True, exist_ok=True)
-    path = RUN_DIR / f"git-token-{os.getpid()}"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
+    path = RUN_DIR / f"{name}-{os.getpid()}"
+    mode = 0o600 if gid is None else 0o440
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
     try:
-        os.fchown(fd, 0, r.user.gid)
-        os.fchmod(fd, 0o440)
-        os.write(fd, r.bootstrap.encode())
+        if gid is not None:
+            os.fchown(fd, 0, gid)
+        os.fchmod(fd, mode)
+        os.write(fd, value.encode())
         os.close(fd)
         yield path
     finally:
         path.unlink(missing_ok=True)
+
+
+# --- 5. configuration ----------------------------------------------------------
+
+def _token_file(r):
+    """The GitHub token in a root-owned file only the user's group can read,
+    for the length of the git calls."""
+    return _secret_file("git-token", r.bootstrap, gid=r.user.gid)
 
 
 def _git(r, *args, capture=False, helper=None):
@@ -359,12 +395,30 @@ def apply(r):
     return "sync/apply.py ran"
 
 
+# Per-host identity: the session store's host name, sminos's machine name
+# and boot id. Only boot step 1 sets them; the profile is every host's.
+IDENTITY_KEYS = ("SESSION_MIRROR_HOST", "DAEMON_HOST", "DAEMON_BOOT_ID")
+
+
+def host_env(identity, profile_env, secret_env):
+    """/etc/devcloud/env's pairs: the identity, then profile.env, then
+    secrets.toml's env targets; and the identity keys the latter two tried to
+    set, which are dropped (hosts would share a name or a boot id)."""
+    pairs = dict(identity)
+    ignored = set()
+    for source in (profile_env, secret_env):
+        for key, value in source.items():
+            if key in IDENTITY_KEYS:
+                ignored.add(key)
+            else:
+                pairs[key] = value
+    return pairs, sorted(ignored)
+
+
 def settings_and_env(r):
     p = r.profile
     settings_changed = write_file(MANAGED_SETTINGS, p.managed_settings, mode=0o644, dir_mode=0o755)
-    pairs = dict(_read_env(IDENTITY_ENV))
-    pairs.update(p.env)
-    pairs.update(r.secret_env)
+    pairs, ignored = host_env(_read_env(IDENTITY_ENV), p.env, r.secret_env)
     r.env_changed = _write_env_file(pairs.items(), r.user.gid)
     tz = p.env.get("TZ")
     if tz:
@@ -378,11 +432,19 @@ def settings_and_env(r):
             tmp.symlink_to(zone)
             os.replace(tmp, localtime)
         write_file("/etc/timezone", tz + "\n", mode=0o644)
+    note = f"; the profile's {', '.join(ignored)} ignored (a per-host identity)" if ignored else ""
     return (f"managed settings {'updated' if settings_changed else 'unchanged'}; "
-            f"{len(pairs)} variables in {ENV_PATH} ({'changed' if r.env_changed else 'unchanged'})")
+            f"{len(pairs)} variables in {ENV_PATH} ({'changed' if r.env_changed else 'unchanged'}){note}")
 
 
 def services_step(r):
+    env = _read_env(ENV_PATH)
+    sminos_host.check_role(r.user, r.desc.role, env)
+    detail = _devcloud_services(r)
+    return f"{detail}; {sminos_host.converge(r.user, r.desc.role, env, r.env_changed)}"
+
+
+def _devcloud_services(r):
     if services.systemd_is_init():
         return services.apply_systemd(r.user, r.env_changed)
     names = services.desired_names(r.user)
@@ -436,14 +498,17 @@ def _mark_applied(r):
     write_file(APPLIED, r.commit + "\n", mode=0o644, dir_mode=0o755)
 
 
+# Steps 2-4 reach only the public internet (Google's APIs, then the tailnet's
+# control plane); the tailnet's own services wait for the profile (5) to name them.
+BOOT = (("identity", identity), ("seed", seed), ("bootstrap-secrets", bootstrap_secrets),
+        ("tailnet-attach", tailnet_attach), ("configuration", configuration)) + RECONCILE
+
+
 def boot():
     with _locked():
         status.reset()
         r = Run("boot")
-        steps = (("identity", identity), ("tailnet-attach", tailnet_attach), ("seed", seed),
-                 ("bootstrap-secret", bootstrap_secret), ("configuration", configuration),
-                 RECONCILE[0], RECONCILE[1], RECONCILE[2], RECONCILE[3], RECONCILE[4], RECONCILE[5])
-        code = _run(steps, r, done=lambda: _mark_applied(r))
+        code = _run(BOOT, r, done=lambda: _mark_applied(r))
         if code == 0 and _run((("projects", projects),), r):
             # The host works without a project: the failure is recorded, and
             # its own exit status lets the services start all the same.
