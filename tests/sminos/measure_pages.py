@@ -67,6 +67,9 @@ import sminos_plane as plane  # noqa: E402
 T = tsp.T
 SMINOS = os.path.join(tsp.SCRIPTS, "sminos")
 PROBE_EVERY = 0.3
+DRAIN = 2.0   # s: waited once the probes stop, for the answers still on their way
+GRACE = 1.0   # s: a probe sent this close to the stop is not counted unanswered (one overwritten unread is
+              # coalesced, and the last ones may still be in flight)
 KEY = bytes(range(32))                   # the org key the credential below names
 MEMBER = "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"  # the web member whose sends are probed
 
@@ -359,6 +362,8 @@ def through_uplink(rig, sid, record_path, holder, postbox, inbox, agent=None):
     stop.set()
     for p in probers:
         p.join()
+    stopped = time.time()   # the last probe was sent before this; what still answers comes within DRAIN
+    time.sleep(DRAIN)
     load.append(os.getloadavg()[0])
     rig.poll()
     for s in subs:
@@ -391,7 +396,7 @@ def through_uplink(rig, sid, record_path, holder, postbox, inbox, agent=None):
     for k, at in humans.items():
         if k in inbox.came:
             deliveries.setdefault(phase_of(at), []).append(inbox.came[k] - at)
-        elif at < phases[-2][1] - 1:
+        elif at < stopped - GRACE:
             undelivered += 1
     shown = ("idle", "subscribe", "pages", "agent")
     return {"load_average_1m": [round(x) for x in load], "rows_reached": total,
@@ -403,7 +408,7 @@ def through_uplink(rig, sid, record_path, holder, postbox, inbox, agent=None):
             "pages_end_to_end": spread(ends),
             "heartbeat_answers": {k: spread(v) for k, v in hb.items() if k in shown},
             "presence": {k: spread(v) for k, v in presence.items() if k in shown},
-            "presence_probes_unanswered": len([k for k, t in probes.items() if t < phases[-2][1] - 1]),
+            "presence_probes_unanswered": len([k for k, t in probes.items() if t < stopped - GRACE]),
             "deliveries": {k: spread(v) for k, v in deliveries.items() if k in shown},
             "deliveries_unanswered": undelivered}
 
