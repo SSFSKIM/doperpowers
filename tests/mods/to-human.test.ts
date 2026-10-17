@@ -754,6 +754,29 @@ describe('file links', () => {
     expect(fileLinks('```\n[raw](/repo/a.md)\n```').targets).toEqual([])
   })
 
+  test('fileLinks takes a path with parentheses whole', async () => {
+    const { text, targets } = fileLinks('Open [page](/repo/app/(auth)/page.tsx#L42).')
+
+    expect(targets).toEqual(['file:///repo/app/(auth)/page.tsx#L42'])
+    expect(text).toBe('Open [\uea7b page](file:///repo/app/(auth)/page.tsx#L42).')
+  })
+
+  test('fileLinks leaves a link whose href the engine would refuse as written', async () => {
+    const long = `[long](/repo/${'노'.repeat(300)}.md) and [short](/repo/a.md)`
+    const { text, targets } = fileLinks(long)
+
+    expect(targets).toEqual(['file:///repo/a.md'])
+    expect(text).toBe(`[long](/repo/${'노'.repeat(300)}.md) and [\uea7b short](file:///repo/a.md)`)
+  })
+
+  test('fileLinks leaves a link reaching into code, and an escaped opener, as written', async () => {
+    const reaching = 'Write [For example, `[raw](/repo/a.md)`] and \\[raw](/repo/b.md), then [real](/repo/c.md).'
+    const { text, targets } = fileLinks(reaching)
+
+    expect(targets).toEqual(['file:///repo/c.md'])
+    expect(text).toBe('Write [For example, `[raw](/repo/a.md)`] and \\[raw](/repo/b.md), then [\uea7b real](file:///repo/c.md).')
+  })
+
   test('editorUrl opens the file at the line its target names', async () => {
     expect(editorUrl('file:///repo/plan.md#L12')).toBe('vscode://file/repo/plan.md:12')
     expect(editorUrl('file:///repo/plan.md#L3-L9')).toBe('vscode://file/repo/plan.md:3')

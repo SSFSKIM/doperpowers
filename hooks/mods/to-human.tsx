@@ -460,9 +460,12 @@ export function markdownBlocks(text: string): string[] {
  * explicit `file:` link behind a file icon and answers a plain click on it
  * (`ui.press` below), opening VS Code at the line; a cmd click stays the
  * terminal's, which hands the `file:` URL to the file's default app. A link
- * inside code stays literal.
+ * with any part in code, an escaped opener, or an href the engine would refuse
+ * (`pressableLinks` entries past 2048 characters refuse the whole row) stays
+ * as written. The target takes one level of parentheses (`app/(auth)/page.tsx`).
  */
-const FILE_LINK = /\[([^\]\n]*)\]\(((?:\/|file:\/\/\/)[^)\s]*)\)/g
+const FILE_LINK = /(?<!\\)\[([^[\]\n]*)\]\(((?:\/|file:\/\/\/)(?:[^()\s]|\([^()\s]*\))*)\)/g
+const HREF_MAX = 2048
 /** nf-cod-file, VS Code's own file glyph, from the terminal's Nerd Font. */
 const FILE_ICON = ''
 const LINKS = 'to-human-links:'
@@ -472,8 +475,9 @@ export function fileLinks(block: string): { text: string; targets: string[] } {
   const inCode = insideCode(codeRegions(block))
   const targets: string[] = []
   const text = block.replace(FILE_LINK, (link, name: string, target: string, offset: number) => {
-    if (inCode(offset)) return link
+    if (inCode(offset) || inCode(offset + link.length - 1)) return link
     const href = target.startsWith('/') ? `file://${target.replace(/[^\x21-\x7e]/gu, encodeURIComponent)}` : target
+    if (href.length > HREF_MAX) return link
     targets.push(href)
     return `[${FILE_ICON} ${name}](${href})`
   })
