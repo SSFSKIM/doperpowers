@@ -175,6 +175,24 @@ describe('rows the conversation keeps', () => {
   })
 })
 
+describe('a manual compaction', () => {
+  test('its instructions reach the summarizer scrubbed, and its summary is kept scrubbed', async ($, on) => {
+    let told: string | undefined
+    on('session.compact', (_, e) => {
+      told = e.instructions
+      return { messages: [{ role: 'user' as const, text: `Summary: the key is ${STORED}.`, toolUses: [], handle: 'h1' }, { role: 'user' as const, text: 'clean', toolUses: [], handle: 'h2' }] }
+    })
+    await start($, on, { [`${STORE}/API_KEY`]: STORED })
+    const conversation = [{ role: 'user' as const, text: 'earlier', toolUses: [], handle: 'h0' }]
+    const compacted = await $.session.compact({ trigger: 'manual', instructions: `remember ${STORED}`, messages: conversation } as never)
+    expect(told).toBe('remember [secret:API_KEY]')
+    expect('messages' in compacted && compacted.messages?.map((m) => [m.text, m.handle])).toEqual([
+      ['Summary: the key is [secret:API_KEY].', undefined],
+      ['clean', 'h2'],
+    ])
+  })
+})
+
 describe('handles restore exact bytes on write', () => {
   test('an Edit whose strings carry a handle runs with the value, and its record is kept with the handle', async ($, on) => {
     const ran = tool(on, (e) => ({ filePath: e.file_path, oldString: e.old_string, newString: e.new_string, originalFile: `A=${STORED}\n`, structuredPatch: [], userModified: false, replaceAll: false }))

@@ -285,6 +285,25 @@ export function registerSecrets(on: On) {
     // An engine row cannot be refused: one the guard failed on is kept as it came.
   }).catch((_, e, next) => next(e))
 
+  // A compaction's instructions (the text after `/compact`) go to the
+  // summarizer, and its summary rows are kept without passing `session.append`.
+  on('session.compact', async ($, e, next) => {
+    await refresh($, false)
+    const instructions = e.instructions === undefined ? undefined : handles.scrub(e.instructions)
+    const compacted = await next(instructions === e.instructions ? e : { ...e, instructions })
+    if (!('messages' in compacted) || compacted.messages === undefined) return compacted
+    let isChanged = false
+    const messages = compacted.messages.map((m) => {
+      const text = handles.scrub(m.text)
+      if (text === m.text) return m
+      isChanged = true
+      // Without its handle: a message the engine reads as built, not its own.
+      const { handle: _, ...rest } = m
+      return { ...rest, text }
+    })
+    return isChanged ? { ...compacted, messages } : compacted
+  }).catch((_, e, next) => next(e))
+
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     await refresh($, false)
