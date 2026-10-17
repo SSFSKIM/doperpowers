@@ -29,7 +29,7 @@
 
 - [x] M1 — The jobs ledger, the normalization table, `output`'s containment, and the shared fixture (DC8.G3's and G4's derivations) — reviewed clean 2026-10-17 (`38a45f6b`, fix `8b34237b`)
 - [x] M2 — The offset index, pages and the open off the uplink's thread, ended sessions pageable (DC8.G1, G2) — reviewed clean 2026-10-17 (`545a8b17`, fix `e0d22d10`)
-- [ ] M3 — The bridge: the `$.agent.list()` seed and refresh; a refused submission reported as a `failed` delivery (DC8.G3's seed, G5; G6 optional)
+- [x] M3 — The bridge: the `$.agent.list()` seed and refresh; a refused submission reported as a `failed` delivery (DC8.G3's seed, G5; G6 optional) — reviewed clean 2026-10-17 (`60e58b42`, fixes `9765fa83`, `f19e3c8f`; merged `5de16866`)
 - [ ] M4 — The plane carries status, jobs and MCP names, the bridge's agent state forwarded, and answers `output` (DC8.G3, G4)
 
 ## Constraints that bind every milestone
@@ -438,6 +438,20 @@ rung for DC8); the PR opened, not merged; the report at
   M3 review's finding on it was dismissed on that ground (agreed by the
   design session).
   Date/Author: 2026-10-17, controller.
+
+- Decision: **M3's fix waves.** List reads are numbered at their start and
+  a result older than one already applied is dropped (an older empty list
+  can no longer stop a live agent). A `/clear` raises a conversation
+  counter (`forgetAgents()`, before `forgetLive()`), reads the list once
+  (retried once) and waits, with every read outstanding at the clear,
+  before any new read applies; the agents those answers name are set
+  aside. If both clear-time reads fail, an old agent no read had named can
+  still be seeded later — accepted, since `subagents` is built per meta of
+  the session's own directory and such an entry never reaches the web. A
+  refusal marker that cannot be written is said once in `daemon.log` and
+  held in the process, so no second `failed` is recorded meanwhile.
+  Date/Author: 2026-10-17, M3 executor and controller (the M3 review's
+  three rounds).
 
 ## Surprises & Discoveries
 
