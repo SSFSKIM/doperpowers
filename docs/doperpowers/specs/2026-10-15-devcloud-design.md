@@ -57,9 +57,9 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
 - [x] (2026-10-17 10:30) M3 — The person's profile, Linux compatibility, and a hardened apply step in their config repository
   (config repo, reviewed clean after two fix waves). Secret Manager: seven entries created by the person;
   one application key's entry waits on that key's rotation (`optional = true`, reports `missing`).
-- [ ] M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its commands, an authoring skill.
-  (2026-10-17, in progress: built, devcloud 0.3.0; review fix waves 1–2 landed, the second awaits
-  re-review.)
+- [x] (2026-10-17 21:45) M4 — Project environments: `devenv/` replaces the manifest, the runner keeps its
+  commands, an authoring skill (devcloud 0.3.0), reviewed clean after three fix waves; the runner
+  scrubs every resolved project secret from what it prints and logs, as a stream.
 - [ ] M5 — sminos on persistent hosts, and acceptance on a container and a throwaway VM.
   (2026-10-17, in progress: code merged, devcloud 0.4.0. Throwaway VM `devcloud-m5` created
   21:05 UTC in the person's provider (4 vCPU / 8 GB; the planned type is retired in EU locations).
@@ -1233,6 +1233,15 @@ clears a plugin's state when it unloads is unverified).
   Rationale: steps 1–11 make the host; step 12 prepares work on it, which `devenv up` can redo.
   Rejected: exiting 0 (a caller would believe the environment was prepared); stopping services.
   Date/Author: 2026-10-17, plan executor, on M4's review.
+
+- Decision: The `devenv` runner hands each resolved secret to itself over a framed pipe (a count,
+  then `name\0value\0`) and scrubs everything the project's scripts print as a stream, holding back
+  the longest value's length so a value spanning lines or reads is still caught; a reader or sink
+  failure fails the command and setup is not stamped. The host scrubber is not taught project
+  values (exporting them would write a new copy). A failing setup still prints its scrubbed tail.
+  Rationale: a project's own secrets are known only to the runner; fixing at the source covers the
+  Macs and hosts alike.
+  Date/Author: 2026-10-17, M4 executor on review; folded by the plan executor.
 
 ## Outcomes & Retrospective
 
