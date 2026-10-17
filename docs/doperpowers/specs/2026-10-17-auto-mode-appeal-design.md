@@ -825,10 +825,14 @@ trusts and every free text as a JSON string.
 
 **Remains:** the live check's grant scenario found no classifier block to
 appeal in four candidates (a subagent acting on a throwaway target with the
-user's request in its prompt is allowed by this classifier), so the pass path
-is proven by the unit tests and the engine facts, not live; the first real
-grant in daily use, visible in `/appeals`, is that proof. The residual from
-round four is in `docs/doperpowers/TECH-DEBT.md`.
+user's request in its prompt is allowed by this classifier), so the check
+proves the uphold side only. The grant side was proven in daily use the same
+evening (2026-10-17, the human's own sessions, `~/.claude/appeals/`): an
+Edit blocked `[Self-Modification]` was granted on the user's own words and
+re-run on its pass (`used`); after 7.169.0 a Bash call blocked the same way
+was granted and run by the appeal itself (`relayed`); and a block the user
+had not named the action for was upheld. The residual from round four is in
+`docs/doperpowers/TECH-DEBT.md`.
 
 **Lessons:** the classifier's consent rules are the spec for the judge's —
 reading SPEC §26.10.5 first saved every round from re-deriving them; the
