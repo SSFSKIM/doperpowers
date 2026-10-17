@@ -7,10 +7,10 @@ loudly, in a terminal session and in `--bg` jobs:
   at its next request; the terminal shows the mirror line; a steer given
   during the final answer wakes the session once, without repeating it;
 - an interrupt ends the turn within 2 s and stops the Bash call the abort
-  moved to the background, and the turn's end leaves the model a record of
-  both (from the desk, as the daemon's RPC sends it, in the terminal session;
-  through `sminos interrupt` in the --bg job), which the model reads at its
-  next request, and no notification for the stopped task follows;
+  moved to the background, and leaves the model a record of both (from the
+  desk, as the daemon's RPC sends it, in the terminal session; through
+  `sminos interrupt` in the --bg job), which the next request carries after
+  the moved call's result, and no notification for the stopped task follows;
 - a model change takes the next request, survives a module reload, and leaves
   the config's settings.json untouched;
 - a compact asked during a turn runs after it;
@@ -258,31 +258,35 @@ class Control(LB.Live):
                    before and not after and "stopped" in said,
                    "python running before %s, after %s" % (before, after))
 
+        moved = re.compile(r"running in background with ID: ([A-Za-z0-9_-]+)")
+
         def record():
             rows = self.transcript_rows(sid)
-            at = [i for i, row in enumerate(rows) if row.get("type") == "user" and row.get("isMeta")
+            at = [row for row in rows if row.get("type") == "user" and row.get("isMeta")
                   and "[Request interrupted by user" in json.dumps(row.get("message"))]
-            return (rows, at[-1]) if at else None
-        rows, at = wait_for("the interrupt's record", 15, record)
-        text = "\n".join(b.get("text", "") for b in rows[at]["message"]["content"])
-        # The moved call's result: the task it names, which the interrupt said it stopped.
-        moved = [(i, re.search(r"running in background with ID: ([A-Za-z0-9_-]+)", json.dumps(row.get("message"))))
-                 for i, row in enumerate(rows) if row.get("type") == "user"]
-        moved = [(i, found.group(1)) for i, found in moved if found]
-        task = moved[-1][1] if moved else None
+            found = [moved.search(json.dumps(row.get("message"))) for row in rows if row.get("type") == "user"]
+            found = [f.group(1) for f in found if f]
+            return ("\n".join(b.get("text", "") for b in at[-1]["message"]["content"]), found[-1]) if at and found else None
+        text, task = wait_for("the interrupt's record and the moved call's result", 15, record)
         where = "the desk" if desk else "outside the terminal"
-        self.check("%s: the turn's end leaves the model a record after the moved call's result: from %s, its task stopped"
-                   % (label, where),
-                   text.startswith("[Request interrupted by user from %s]" % where) and task is not None
-                   and task in said and task in text and "is not running" in text and at > moved[-1][0],
-                   repr(text))
+        self.check("%s: the interrupt leaves the model a record: from %s, the task it stopped not running" % (label, where),
+                   text.startswith("[Request interrupted by user from %s]" % where)
+                   and task in said and task in text and "is not running" in text, repr(text))
         self.idle(endpoint)
         t = time.time()
         prompt("Without running any tool, answer with one word: is the python sleep command from your last "
                "turn still running? Reply RUNNING or STOPPED.")
         self.turn_end(stream, t)
         answer = main_text(stream, t)
-        self.check("%s: the model reads it at its next request: the command is stopped" % label,
+        # What the next request carried after the moved call's result, as the transcript keeps the request's messages.
+        carried = []
+        for row in self.transcript_rows(sid):
+            content = (row.get("message") or {}).get("content") if row.get("type") == "api-request-blob" else None
+            if isinstance(content, list) and any(b.get("type") == "tool_result" and task in json.dumps(b) for b in content):
+                carried = [b.get("type") if b.get("type") != "text" else b.get("text", "").split("\n")[0] for b in content]
+        self.check("%s: the next request carries it after the moved call's result" % label,
+                   carried[:2] == ["tool_result", "[Request interrupted by user from %s]" % where], repr(carried))
+        self.check("%s: and the model, reading it, knows the command is stopped" % label,
                    "STOPPED" in answer and "RUNNING" not in answer, repr(answer[-120:]))
         notes = [row for row in self.transcript_rows(sid) if "<task-notification>" in json.dumps(row)
                  and task is not None and task in json.dumps(row)]

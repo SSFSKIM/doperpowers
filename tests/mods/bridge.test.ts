@@ -5,6 +5,7 @@ import { ASK_TOOL } from '../../hooks/mods/ask'
 import {
   BACKGROUND_WINDOW_MS,
   HEARTBEAT_MS,
+  INTERRUPT_HOLD_MS,
   RECORD_WAIT_MS,
   ROWS_POLLS,
   ROWS_POLL_MS,
@@ -99,6 +100,8 @@ function harness(
     failAt?: number[]
     holdAppend?: boolean
     taskStopFails?: string[]
+    /** TaskStop never answers. */
+    taskStopHangs?: boolean
     denyAppend?: string
     /** `$.turn.abort` rejects, as it does when the turn is no longer running. */
     abortFails?: boolean
@@ -140,6 +143,8 @@ function harness(
   /** The rows the mod's appends put in the main conversation, in order; and what each model request carried of them. */
   const conversation: { type: string; content: { type: string; text: string }[] }[] = []
   const requests: (typeof conversation)[] = []
+  /** The turns `$.turn.abort` cancelled. */
+  const aborted = new Set<string>()
   /** Files `$.fs.read` reads (the session's transcripts). */
   const files: Record<string, string> = {}
   /** Each loop's rows on disk, as the child's GET /rows reads them; and the reads made. */
@@ -176,16 +181,24 @@ function harness(
       },
     },
     turn: {
-      abort: async (args: unknown) => {
+      abort: async (args: { turnId: string }) => {
         calls.push({ op: 'abort', args })
         if (options.abortFails) {
           throw new Error('$.turn.abort: no turn is running')
         }
+        // As the engine: a turn already cancelled is refused.
+        if (aborted.has(args.turnId)) {
+          throw new Error(`$.turn.abort: ${args.turnId} is already ending`)
+        }
+        aborted.add(args.turnId)
       },
     },
     tool: {
       call: async (args: Record<string, unknown>) => {
         calls.push({ op: 'tool', args })
+        if (options.taskStopHangs) {
+          return new Promise(() => undefined)
+        }
         if (options.taskStopFails?.includes(String(args.task_id))) {
           return { text: `No task found with ID: ${String(args.task_id)}`, isError: true }
         }
@@ -1038,7 +1051,7 @@ describe('interrupt', () => {
     expect(record).not.toContain('is not running')
   })
 
-  test("the turn's end leaves the model the interrupt's record, read at the next request: interrupted from the desk, and the Bash call it moved to the background stopped, not running", async () => {
+  test('the interrupt leaves the model its record, read at the next request: interrupted from the desk, and the Bash call it moved to the background stopped, not running', async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
@@ -1048,11 +1061,12 @@ describe('interrupt', () => {
     const answered = h.command({ op: 'interrupt', from: 'desk' })
     await h.settle()
     finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /tmp/o. You will be notified when it completes.')
-    await running
+    // The moved call's result goes back to the engine (which ends the turn on it) only once the record is in:
+    // a turn queued behind this one takes its messages before it waits for any hook.
+    const rowsWhenBack = Promise.resolve(running).then(() => h.conversation.length)
+    expect(await rowsWhenBack).toBe(1)
     // What `sminos interrupt` and the desk read is unchanged.
     expect(await answered).toEqual(expect.objectContaining({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } }))
-    // Not before the turn's end: the turn's own rows come first.
-    expect(h.conversation).toEqual([])
     await h.complete('t1', 'aborted')
     await h.turn('t2')
     await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 4 }, [])
@@ -1063,8 +1077,8 @@ describe('interrupt', () => {
     expect(record.split('\n')[0]).toBe('[Request interrupted by user from the desk]')
     expect(record).toContain('b5y6zo7fe')
     expect(record).toContain('not running')
-    // The terminal draws no appended row: a transcript line mirrors it.
-    expect(h.logs).toContain(`interrupt: ${record}`)
+    // The terminal draws no appended row: a transcript line mirrors it, on one line.
+    expect(h.logs).toContain(`interrupt: ${record.split('\n').join(' ')}`)
     // Its row is named on the stream, as every row the session keeps is.
     expect(h.ofType('row-seen').map((e) => e.door)).toContain('note')
   })
@@ -1101,6 +1115,46 @@ describe('interrupt', () => {
     expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: false })
     await h.complete('t1')
     expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
+  })
+
+  test("a second interrupt of the same turn, which the engine refuses, leaves the first's record whole", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    let finish: (text: string) => void = () => undefined
+    const running = h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'sleep' }, () => new Promise((resolve) => (finish = (text) => resolve({ text }))))
+    await h.settle()
+    const first = h.command({ op: 'interrupt', from: 'desk' })
+    await h.settle()
+    expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: false, error: expect.stringContaining('already ending') })
+    finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /o')
+    expect(await Promise.resolve(running).then(() => h.conversation.length)).toBe(1)
+    expect(await first).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } })
+    await h.complete('t1', 'aborted')
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(1)
+    const record = said(h.conversation)
+    expect(record).toContain('[Request interrupted by user from the desk]')
+    expect(record).toContain('b5y6zo7fe')
+  })
+
+  test('a moved Bash call waits for the record at most INTERRUPT_HOLD_MS (a TaskStop that never answers)', async () => {
+    const h = harness({ taskStopHangs: true })
+    await h.ready()
+    await h.turn('t1')
+    let finish: (text: string) => void = () => undefined
+    let isBack = false
+    const running = Promise.resolve(
+      h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'sleep' }, () => new Promise((resolve) => (finish = (text) => resolve({ text })))),
+    ).then(() => (isBack = true))
+    await h.settle()
+    void h.command({ op: 'interrupt', from: 'desk' }).catch(() => undefined)
+    await h.settle()
+    finish('Command running in background with ID: stuck01. Output is being written to: /o')
+    await h.settle()
+    expect(isBack).toBe(false)
+    await h.fire(INTERRUPT_HOLD_MS)
+    await running
+    expect(isBack).toBe(true)
   })
 })
 

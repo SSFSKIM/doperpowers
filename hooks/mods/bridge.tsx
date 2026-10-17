@@ -79,6 +79,8 @@ const DRAIN_TRIES = 10
 export const STEER_WAKE = 'I added a note to the conversation while you were finishing your answer. Read it and act on it.'
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
+/** How long a Bash call of an interrupted turn waits for the interrupt's record, at most (a TaskStop that never answers). */
+export const INTERRUPT_HOLD_MS = 10_000
 /**
  * A family alias's model as the engine resolves it first, before its own
  * table: ANTHROPIC_DEFAULT_<FAMILY>_MODEL. Each name is spelled out, as the
@@ -271,9 +273,14 @@ function wakeForSteer($: EngineInterface) {
  * stopped with TaskStop. Only that turn's calls count: the main loop's, and
  * those of a foreground subagent spawned in it, which the abort ends with it;
  * a background subagent's calls are its own. Each says where it went in its
- * result. A task TaskStop could not stop is named in `running`. The turn's
- * end records the interrupt for the model (recordInterrupt); `from` says
- * where it came from (`desk`: the desk's RPC).
+ * result. A task TaskStop could not stop is named in `running`.
+ *
+ * Then the model is told (recordInterrupt) before the turn can end: the
+ * turn's Bash calls, whose results the engine waits for after an abort, are
+ * held in their hook until the record is in, since the next turn takes its
+ * messages before it waits for any hook. `from` says where the interrupt came
+ * from (`desk`: the desk's RPC). A second interrupt of the same turn leaves
+ * the first's in place; the engine refuses its abort.
  */
 async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   const turnId = state.mainTurn
@@ -287,18 +294,22 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
       r.isAborted = true
     }
   }
-  // Kept before the abort, which may end the turn before it resolves.
-  let settle: (stops: Stops | undefined) => void = () => undefined
-  state.interrupts.set(turnId, { from, stops: new Promise((resolve) => (settle = resolve)) })
-  try {
-    await $.turn.abort({ turnId })
-  } catch (error) {
-    state.interrupts.delete(turnId)
-    settle(undefined)
-    throw error
+  // Kept before the abort: the calls it ends return as it resolves.
+  let recorded: () => void = () => undefined
+  const pending = { recorded: new Promise<void>((resolve) => (recorded = resolve)) }
+  if (!state.interrupts.has(turnId)) {
+    state.interrupts.set(turnId, pending)
   }
-  const stops: Stops = { stopped: [], running: [] }
   try {
+    try {
+      await $.turn.abort({ turnId })
+    } catch (error) {
+      if (state.interrupts.get(turnId) === pending) {
+        state.interrupts.delete(turnId)
+      }
+      throw error
+    }
+    const stops: Stops = { stopped: [], running: [] }
     const bound = new Promise<undefined>((resolve) => void $.clock.after(INTERRUPT_WAIT_MS, () => resolve(undefined)))
     const texts = await Promise.all(ours.map((c) => Promise.race([c.done, bound])))
     for (const text of texts) {
@@ -320,10 +331,11 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
         stops.running.push(task)
       }
     }
+    await recordInterrupt($, from, stops)
+    return { ok: true, result: { turnId, ...stops } }
   } finally {
-    settle(stops)
+    recorded()
   }
-  return { ok: true, result: { turnId, ...stops } }
 }
 
 /**
@@ -340,20 +352,13 @@ function interruptText(from: unknown, stops: Stops): string {
 }
 
 /**
- * The record of the interrupt that aborted this turn, at the turn's end, so
- * it follows the turn's own rows and precedes the next turn: Esc leaves the
- * model `[Request interrupted by user]`, a plugin's abort no marker at all, so
- * a user row says it, read at the next request. The terminal does not draw
- * an appended row, so a transcript line mirrors it.
+ * The interrupt's record: Esc leaves the model `[Request interrupted by
+ * user]`, a plugin's abort no marker at all, so a user row says it, read at
+ * the next request. The terminal does not draw an appended row, so a
+ * transcript line mirrors it.
  */
-async function recordInterrupt($: EngineInterface, turnId: string) {
-  const interrupted = state.interrupts.get(turnId)
-  state.interrupts.delete(turnId)
-  const stops = await interrupted?.stops
-  if (interrupted === undefined || stops === undefined) {
-    return
-  }
-  const text = interruptText(interrupted.from, stops)
+async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops) {
+  const text = interruptText(from, stops)
   try {
     const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
     if (stored.deny !== undefined) {
@@ -362,7 +367,8 @@ async function recordInterrupt($: EngineInterface, turnId: string) {
     }
     // The hook does not see the plugin's own append: named once it is in.
     noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
-    $.ui.log(`interrupt: ${text}`)
+    // One line: the transcript line draws a newline as U+FFFD (live, 2.1.302).
+    $.ui.log(`interrupt: ${text.replaceAll('\n', ' ')}`)
   } catch (error) {
     $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
   }
@@ -512,20 +518,19 @@ async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal
 }
 
 /**
- * The end of the main turn: the record of an interrupt that aborted it, then
- * a compaction held for it, then the turn's steers settled (settleSteers):
- * when it answered before any request read one, one wake (the row is in the
- * conversation already), as a prompt typed mid-turn would start the next
- * turn — at once, or once the last of its pending appends settles. An
- * interrupted or failed turn wakes nothing.
+ * The end of the main turn: a compaction held for it, then the turn's steers
+ * settled (settleSteers): when it answered before any request read one, one
+ * wake (the row is in the conversation already), as a prompt typed mid-turn
+ * would start the next turn — at once, or once the last of its pending
+ * appends settles. An interrupted or failed turn wakes nothing.
  */
 async function mainTurnEnded($: EngineInterface, turnId: string, reason: string) {
+  state.interrupts.delete(turnId)
   for (const s of state.steers) {
     if (s.turnId === turnId) {
       s.ended = reason
     }
   }
-  await recordInterrupt($, turnId)
   const request = state.compact
   state.compact = undefined
   if (request !== undefined) {
@@ -881,7 +886,7 @@ export function registerBridge(on: On) {
     }
   })
 
-  on('tool.call', { tool: /^/ }, async (_, e, next) => {
+  on('tool.call', { tool: /^/ }, async ($, e, next) => {
     const call = `${e.tool_use_id ?? ''}#${++state.toolCalls}`
     const base = { toolUseId: e.tool_use_id || null, tool: e.tool, agentId: e.agentId ?? null }
     const input = toolInput(e as Record<string, unknown>)
@@ -912,6 +917,15 @@ export function registerBridge(on: On) {
     try {
       const result = await next(e)
       resultText = typeof result.text === 'string' ? result.text : undefined
+      // A Bash call of a turn being interrupted: its result, which the record
+      // names, goes back once the record is in, so the turn ends after it.
+      const interrupted = e.tool === 'Bash' && owner !== undefined ? state.interrupts.get(owner) : undefined
+      if (interrupted !== undefined) {
+        state.calls.get(call)?.settle(resultText)
+        let held: { cancel: () => void } | undefined
+        await Promise.race([interrupted.recorded, new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
+        held?.cancel()
+      }
       const text = capped(result.text)
       const denied = capped(result.deny)
       if (isDialog) {
