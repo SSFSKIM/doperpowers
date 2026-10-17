@@ -1237,9 +1237,10 @@ def cmd_bridge(a):
 
 def watch_session(q):
     """The session a member name names here, or exit 4 saying why not. A full
-    session id is taken as given."""
+    session id is taken as given, or, when the harness sent it to the
+    background and it no longer runs, as the session it continues in."""
     if S.UUID_RE.match(q):
-        return q
+        return successor(q)
     target = S.find_target(q)
     if target[0] == "none":
         S.die("no member matching '%s'" % q, S.EXIT_UNKNOWN)
@@ -1253,6 +1254,16 @@ def watch_session(q):
     if not m.local:
         S.die("%s runs on %s; its bridge is that machine's" % (q, m.machine or "another machine"), S.EXIT_UNKNOWN)
     return m.session
+
+
+def successor(session):
+    """The session that goes on for `session`: itself while it runs or was
+    never handed off, else the end of its chain of hand-offs (continued_in)."""
+    seen = {session}
+    while not S.session_running(session) and (nxt := S.continued_in(session)) and nxt not in seen:
+        seen.add(nxt)
+        session = nxt
+    return session
 
 
 def _first_line(text, width=160):
@@ -1407,6 +1418,15 @@ def _reconnect_window():
         return 5.0
 
 
+def _follow_window():
+    """How long a watch waits for the bridge of the session its session was
+    handed to: that process starts, loads its plugins, and only then serves."""
+    try:
+        return float(os.environ.get("SMINOS_BRIDGE_FOLLOW") or 60)
+    except ValueError:
+        return 60.0
+
+
 def cmd_watch(a):
     session = watch_session(a.member)
     path = endpoint(session)
@@ -1447,6 +1467,16 @@ def cmd_watch(a):
             except (OSError, http.client.HTTPException, ValueError):
                 pass
             if ended:
+                # Sent to the background: the conversation goes on in another
+                # session, whose bridge answers once its process is up.
+                nxt = S.continued_in(session)
+                deadline = time.time() + _follow_window()
+                while nxt and time.time() < deadline and probe(endpoint(nxt)) is None:
+                    time.sleep(0.2)
+                if nxt and probe(endpoint(nxt)) is not None:
+                    say("· sent to the background, continued in %s; following" % nxt[:8])
+                    session, path, ended, pid = nxt, endpoint(nxt), False, None
+                    continue
                 say("· the session ended")
                 return
             if lost and probe(path) is not None:

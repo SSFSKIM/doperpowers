@@ -508,6 +508,11 @@ JOINABLE_KINDS = ("interactive", "bg")
 # `interactive` too (harness 2.1.299: `kind: "interactive", entrypoint:
 # "sdk-cli"`); its entrypoint is what tells it apart, and it is no member.
 HEADLESS_ENTRYPOINT = "sdk"
+# The name sources the harness makes up itself (harness 2.1.300): `derived`,
+# the directory's name and one random byte drawn again by every process;
+# `auto`, a title it wrote; `collision`, a given name it suffixed because
+# another live session held it. Any other source is a name someone gave.
+GENERATED_NAMES = ("derived", "auto", "collision")
 _PROJECTS = {}
 _HOMES = set()
 _VIEWS = {}  # project id → View, per invocation; a lifecycle append drops it
@@ -1059,6 +1064,7 @@ class Member(NamedTuple):
     by: str
     worktree: str
     seat: dict | None     # the seat record this session fills, when it is a seat on this machine
+    former: tuple = ()    # the sessions it continues (lineage), newest first
 
 
 def member_json(m, project=None):
@@ -1066,7 +1072,7 @@ def member_json(m, project=None):
     d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
          "machine": m.machine, "local": m.local, "state": m.state, "state_age": m.state_age,
          "charge": m.charge, "charge_source": m.charge_source, "by": m.by, "status": m.status,
-         "worktree": m.worktree, "seat": public_seat(m.seat) if m.seat else None}
+         "worktree": m.worktree, "seat": public_seat(m.seat) if m.seat else None, "former": list(m.former)}
     if project is not None:
         d = {"project": project.name, "project_id": project.id, **d}
     return d
@@ -1212,8 +1218,9 @@ def _reconcile(project, events, local, by_session):
     `interactive` or `bg`: another tool's headless run is no member. And the
     absence of the process ends what its presence began: a seat-less member
     of this machine whose session no longer runs is retired, reason `ended`,
-    and re-joins if it runs again. A seat's lifecycle stays with retire, fill,
-    and resume."""
+    and re-joins if it runs again — unless the harness handed it to a
+    background job, which it continues (hand_off). A seat's lifecycle stays
+    with retire, fill, and resume."""
     latest, joined = {}, {}
     for e in events:
         if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
@@ -1224,6 +1231,10 @@ def _reconcile(project, events, local, by_session):
     for sid, e in joined.items():
         if (latest[sid] != "joined" or sid in by_session or sid in local
                 or not is_self(str(e.get("machine") or ""), sid) or session_running(sid)):
+            continue
+        successor = continued_in(sid)
+        if successor:
+            out += hand_off(project, sid, successor)
             continue
 
         def ended(evs, sid=sid):
@@ -1281,11 +1292,13 @@ def retirement_holds(events, peer):
     re-joining it on sight would undo the retire at the next reading verb.
     The record shows a different process when its pid differs from the one
     the retirement recorded, or when it started after the retirement (a
-    resume opens a new process, so a resumed session re-joins, §2). A
-    retirement for any other reason (`ended`: its process was not seen) does
-    not hold against a running process."""
+    resume opens a new process, so a resumed session re-joins, §2). So does
+    a hand-off (`continued`): the process that handed its session to a
+    background job runs on for a while as it exits. A retirement for any
+    other reason (`ended`: its process was not seen) does not hold against a
+    running process."""
     last = next((e for e in reversed(events) if e["kind"] in MEMBERSHIP), None)
-    if not last or last["kind"] != "retired" or last.get("reason") != "retire":
+    if not last or last["kind"] != "retired" or last.get("reason") not in ("retire", "continued"):
         return False
     peer = peer or {}
     if last.get("pid") not in (None, "") and str(last["pid"]) != str(peer.get("pid")):
@@ -1302,7 +1315,12 @@ def join_on_sight(project, sid, seat, peer, running):
     event at all; a seat-less session retired by `retire` only once a new
     process runs it (retirement_holds). Checked again under the session
     file's lock, the seat record re-read there, so a concurrent retire cannot
-    be undone. Shared by reconciliation and the hook (§2, §4)."""
+    be undone. Shared by reconciliation and the hook (§2, §4).
+
+    A seat-less session joins under the alias it already holds (held_alias);
+    a background job the harness forked from an interactive session that is
+    still exiting joins as that member's continuation (hand_off), under its
+    alias."""
     if not joinable(seat, peer):
         return []
 
@@ -1315,12 +1333,186 @@ def join_on_sight(project, sid, seat, peer, running):
         fresh = reload_seat(seat["seat_id"]) if seat else None
         return not (seat and (fresh is None or fresh["status"] == "retired"))
 
+    out = []
     if seat:
         fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"])
     else:
-        fields = joined_fields(str(peer.get("name") or sid[:8]), str(peer.get("nameSource") or "derived"),
-                               str(peer.get("cwd") or ""))
-    return lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+        held = own_alias(_own_events(project, sid), sid)
+        if str(peer.get("kind") or "") == "bg" and not held[0]:
+            old, old_peer = predecessor(project, sid)
+            if old:
+                out += hand_off(project, old, sid, old_peer)
+                held = own_alias(_own_events(project, old), old)
+        alias, source = held_alias(*held, peer, sid)
+        fields = joined_fields(alias or sid[:8], source or "derived", str(peer.get("cwd") or ""))
+    return out + lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+
+
+def held_alias(logged, logged_source, peer, session):
+    """(alias, name_source) a seat-less session goes by: its harness name
+    when someone gave it, else the alias the log already holds for it
+    (`logged`, own_alias: its own, or the one of the session it continues),
+    else its harness name; ("", "") for none. A name the harness made up
+    (GENERATED_NAMES) changes with each process — a resume draws a new
+    suffix, a background job gets a title — so it never replaces an alias
+    already held: the address stays the one its peers know."""
+    name = str((peer or {}).get("name") or "")
+    source = str((peer or {}).get("nameSource") or "derived")
+    if logged == session[:8]:   # the placeholder a nameless session joined under
+        logged = ""
+    if name and (source not in GENERATED_NAMES or not logged):
+        return name, source
+    return (logged, logged_source) if logged else ("", "")
+
+
+def own_alias(events, session):
+    """(alias, name_source) of the latest joined or renamed among a session's
+    own events; ("", "") for none, or the placeholder (its short id)."""
+    named = [e for e in events if e["kind"] in ("joined", "renamed") and e.get("alias")]
+    if not named or str(named[-1]["alias"]) == session[:8]:
+        return "", ""
+    return str(named[-1]["alias"]), str(named[-1].get("name_source") or "")
+
+
+# How much of a transcript's end is read for its hand-off record: the harness
+# appends it as the session leaves (a few KiB of bookkeeping follow), and
+# reads 1 MiB back for it itself.
+HANDOFF_REACH = 1 << 20
+_HANDOFFS = {}  # session -> ((path, size, mtime_ns), successor): valid while the file is unchanged
+
+
+def continued_in(session):
+    """The session `session` continues in, when the harness sent it to the
+    background (`/background`, the agents view's ←): that starts a job as a
+    fork, a new session id and process, lets the old process exit, and
+    appends `{"type": "continued-in", "continuedInSessionId": <new>}` to the
+    old transcript — the record its own /resume reads to hide the old
+    session (harness 2.1.300). Read as the harness reads it: the latest such
+    record with no turn after it, so an old session resumed and worked in
+    again is its own again. "" when there is none."""
+    path = transcript_path(session)
+    try:
+        st = os.stat(path) if path else None
+    except OSError:
+        st = None
+    if st is None:
+        return ""
+    key = (path, st.st_size, st.st_mtime_ns)
+    hit = _HANDOFFS.get(session)
+    if hit and hit[0] == key:
+        return hit[1]
+    found = ""
+    try:
+        with open(path, "rb") as f:
+            for _, line in _lines_backward(f, _complete_end(f), HANDOFF_REACH):
+                if b'"continued-in"' not in line and b'"user"' not in line and b'"assistant"' not in line:
+                    continue
+                r = _record(line) or {}
+                if r.get("type") == "continued-in":
+                    to = str(r.get("continuedInSessionId") or "")
+                    found = to if UUID_RE.match(to) and to != session else ""
+                    break
+                if is_turn_record(r):
+                    break
+    except OSError:
+        return ""
+    _HANDOFFS[session] = (key, found)
+    return found
+
+
+def is_turn_record(r):
+    """Whether a transcript record is part of a turn, as the harness tells
+    one after a hand-off: a finished assistant message (not an API error), or
+    a prompt the human typed."""
+    if r.get("type") == "assistant":
+        msg = r.get("message") if isinstance(r.get("message"), dict) else {}
+        return r.get("isApiErrorMessage") is not True and isinstance(msg.get("stop_reason"), str)
+    if r.get("type") != "user" or r.get("isMeta"):
+        return False
+    content = (r.get("message") or {}).get("content") if isinstance(r.get("message"), dict) else None
+    return (isinstance(content, str) and bool(content.strip())) or (
+        isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "text" for b in content))
+
+
+def predecessor(project, session):
+    """(session, harness record) of the session `session` continues: a
+    running interactive session of this machine in the project (only one can
+    be sent to the background), still exiting, whose transcript names
+    `session` (continued_in); else a session a seat of the project holds that
+    no longer runs, with no record; (None, None) for none. A seat-less one
+    that has exited already is reconciliation's to find, as its membership
+    ends."""
+    for rec in peer_records():
+        old = rec.get("sessionId")
+        if (isinstance(old, str) and old != session and UUID_RE.match(old) and rec.get("kind") == "interactive"
+                and peer_running(rec) and (p := resolve_project(str(rec.get("cwd") or ""))) is not None
+                and p.id == project.id and continued_in(old) == session):
+            return old, rec
+    for s in project_seats(project):
+        old = s["current"]
+        if old and old != session and s["status"] != "retired" and not session_running(old) \
+                and continued_in(old) == session:
+            return old, None
+    return None, None
+
+
+def hand_off(project, old, new, old_peer=None):
+    """Record that the member `old` stood for continues in session `new`
+    (continued_in): `old` retired, reason `continued`, naming `new` (and the
+    process it saw, which may still be exiting: retirement_holds); its chat
+    cursor carried to `new`; a seat that held `old` moved to `new`; and `new`,
+    if it already joined under a name the harness made up, renamed to the
+    alias `old` held. The projection (lineage) carries the rest: by, the
+    in-charge line, status, worktree. Returns the events appended."""
+    def still_joined(evs):
+        return latest_membership(evs) == "joined"
+
+    fields = {"pid": old_peer.get("pid")} if old_peer else {}
+    out = lifecycle(project, old, "retired", guard=still_joined, required=False, by="", reason="continued",
+                    to=new, **fields)
+    if not out:
+        return out
+    try:
+        carried = cursor_load(project, old)
+        mine = writer_id(old)
+        seqs = [e["seq"] for e in _own_events(project, old) if e["writer"] == mine]
+        if seqs:
+            carried[mine] = max(carried.get(mine, 0), max(seqs))
+        if carried:
+            cursor_save(project, new, carried)
+    except OSError as e:
+        warn("carrying %s's chat cursor to %s failed: %s" % (old[:8], new[:8], e))
+    seat = next((s for s in seats() if s["current"] == old and (p := seat_project(s)) and p.id == project.id), None)
+    if seat:
+        out += follow_seat(seat, old, new)
+    alias, source = own_alias(_own_events(project, old), old)
+    own = _own_events(project, new)
+    if alias and latest_membership(own) == "joined":
+        mine_alias, mine_source = own_alias(own, new)
+        if (not mine_alias or mine_source in GENERATED_NAMES) and (mine_alias, mine_source) != (alias, source):
+            out += lifecycle(project, new, "renamed", guard=still_joined, required=False,
+                             alias=alias, name_source=source)
+    return out
+
+
+def follow_seat(seat, old, new):
+    """Move a seat from `old` to the session it continues in, under the
+    seat's lock: the same occupant goes on, so nothing else of the record
+    changes. A seat whose lock is held, or that no longer holds `old`, is
+    left for the next reconciliation. Returns the events appended."""
+    try:
+        locks = lock_seat(seat, refusal=ResumeRefused)
+    except ResumeRefused:
+        return []
+    try:
+        fresh = reload_seat(seat["seat_id"])
+        if fresh is None or fresh["current"] != old:
+            return []
+        row = agent_row(session_id=new)
+        meta_set(seat["seat_id"], {"current": new, "short": str((row or {}).get("id") or ""), "updated": now()})
+        return join_seat(reload_seat(seat["seat_id"]))
+    finally:
+        unlock(locks)
 
 
 def latest_across_writers(events):
@@ -1339,15 +1531,21 @@ def _projection(events):
     latest joined (by seq, in its own file), the first non-empty `by`, its
     latest rename, published state, and published title (its own file), its
     in-charge events (for charge_of), and its status: each writer's latest by
-    seq, the later ts between writers (§3)."""
+    seq, the later ts between writers (§3). And its hand-offs: `to`, the
+    session it continues in (the latest `retired` reason `continued` of its
+    own), and `continues`, the session that names it so (lineage)."""
     info = {}
+
+    def row(sid):
+        return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
+                                     "titled": None, "in_charge": [], "status": [], "to": "", "continues": ""})
+
     for e in events:
         sid, kind = e.get("session"), e["kind"]
         if kind not in LIFECYCLE or not isinstance(sid, str) or not sid:
             continue
         own = writer_session(e["writer"]) == sid
-        r = info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
-                                  "titled": None, "in_charge": [], "status": []})
+        r = row(sid)
         if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
             if not own:
                 continue
@@ -1357,15 +1555,48 @@ def _projection(events):
                     r["joined"] = e
                     if not r["by"] and e.get("by"):
                         r["by"] = str(e["by"])
+                elif e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
+                    r["to"] = str(e["to"])
             else:
                 r[kind] = e
         elif kind == "in-charge":
             r["in_charge"].append(e)
         else:
             r["status"].append(e)
+    for sid, r in list(info.items()):
+        if r["to"] and r["to"] != sid:
+            row(r["to"])["continues"] = sid
     for r in info.values():
         r["status"] = latest_across_writers(r["status"])
     return info
+
+
+def lineage(sid, info):
+    """The sessions `sid` continues (hand_off), newest first: the one it was
+    forked from, that one's, and so on."""
+    out, cur = [], (info.get(sid) or {}).get("continues")
+    while cur and cur != sid and cur not in out:
+        out.append(cur)
+        cur = (info.get(cur) or {}).get("continues")
+    return out
+
+
+def logged_alias(sid, info):
+    """(alias, name_source) the log holds for a session (own_alias, read off
+    the projection): its own latest name when someone gave it, else the
+    oldest alias along the sessions it continues, a given name there first.
+    ("", "") for none."""
+    held = ("", "")
+    for s in [sid] + lineage(sid, info):
+        r = info.get(s)
+        named = (r["renamed"] or r["joined"] or {}) if r else {}
+        alias, source = str(named.get("alias") or ""), str(named.get("name_source") or "")
+        if not alias or alias == s[:8]:
+            continue
+        if source not in GENERATED_NAMES:
+            return alias, source
+        held = alias, source
+    return held
 
 
 def charge_of(member, events, title=True, published=""):
@@ -1376,8 +1607,10 @@ def charge_of(member, events, title=True, published=""):
     none is. A set or derived line written empty is no line. `events` is the
     log, or any part of it holding the member's in-charge events, each
     writer's in seq order. With title=False the transcript is not read (the
-    daemon's tick has no use for the line)."""
-    mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") == member.session]
+    daemon's tick has no use for the line). A line set for a session the
+    member continues (`former`) is the member's."""
+    sessions = (member.session,) + tuple(member.former)
+    mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") in sessions]
     for source in ("set", "name", "derived", "title"):
         if source == "name":
             line = member.alias if member.name_source == "user" else ""
@@ -1407,17 +1640,20 @@ def ts_age(ts):
     return max(0.0, time.time() - then)
 
 
-def _member(sid, r, seat, peer, local, title=True):
+def _member(sid, r, seat, peer, local, title=True, info=None):
     """One row of the projection: what the log says of the session, and, on
-    this machine, its seat record and its process."""
+    this machine, its seat record and its process. A session that continues
+    others (lineage, in `info`) is the member they stood for: what it has
+    not set of its own — its alias (held_alias), its spawner, its status,
+    its worktree, its in-charge line — it carries on from them."""
+    info = info if info is not None else ({sid: r} if r else {})
+    former = tuple(lineage(sid, info))
+    chain = [info[s] for s in (sid,) + former if info.get(s)]
     j = (r or {}).get("joined") or {}
-    alias, name_source = str(j.get("alias") or ""), str(j.get("name_source") or "")
-    if r and r["renamed"]:
-        alias, name_source = str(r["renamed"].get("alias") or alias), str(r["renamed"].get("name_source") or name_source)
     if seat:
         alias, name_source = seat["alias"], "seat"
-    elif peer and peer.get("name"):
-        alias, name_source = str(peer["name"]), str(peer.get("nameSource") or name_source or "derived")
+    else:
+        alias, name_source = held_alias(*logged_alias(sid, info), peer, sid)
     machine = str(j.get("machine") or "")
     local = local or bool(seat) or not machine or is_self(machine, sid)
     age = None
@@ -1431,15 +1667,17 @@ def _member(sid, r, seat, peer, local, title=True):
         state_word = peer_state(peer)
     else:
         state_word = "stopped" if transcript_path(sid) else "gone"
-    status = (r or {}).get("status")
+    status = max((x["status"] for x in chain if x["status"]), key=lambda e: e["ts"], default=None)
+    worktree = next((str((x["joined"] or {}).get("worktree") or "") for x in chain
+                     if (x["joined"] or {}).get("worktree")), "")
     m = Member(
         session=sid, short=sid[:8], alias=alias or sid[:8], name_source=name_source,
         machine=host_name() if local else machine, local=local, state=state_word, state_age=age,
         charge="", charge_source="",
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
-        by=(r or {}).get("by") or "", worktree=seat["worktree"] if seat else str(j.get("worktree") or ""),
-        seat=seat)
-    charge, source = charge_of(m, (r or {}).get("in_charge") or [], title, published_title(r))
+        by=next((x["by"] for x in chain if x["by"]), ""), worktree=seat["worktree"] if seat else worktree,
+        seat=seat, former=former)
+    charge, source = charge_of(m, [e for x in chain for e in x["in_charge"]], title, published_title(r))
     return m._replace(charge=charge, charge_source=source)
 
 
@@ -1480,6 +1718,10 @@ def view_of(project, all_seats=None, titles=True):
     local = _local_sessions(project, all_seats)
     events = log_read(project)
     appended = _reconcile(project, events, local, by_session)
+    if appended:   # a hand-off may have moved a seat to the session it continues in
+        all_seats = seats()
+        by_session = seats_by_session(project, all_seats)
+        local = _local_sessions(project, all_seats)
     events = events + appended
     info = _projection(events)
     internal = internal_pids()
@@ -1487,21 +1729,23 @@ def view_of(project, all_seats=None, titles=True):
     joined = [(sid, r) for sid, r in info.items()
               if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks]
     joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
-    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles)
+    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles, info)
            for sid, r in joined]
     sessions = {m.session for m in out}
     rest = sorted((s for s in all_seats if (not s["current"] or s["current"] not in sessions)
                    and (p := seat_project(s)) and p.id == project.id), key=lambda s: s["updated"], reverse=True)
-    rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles) if s["current"] else
+    rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles, info) if s["current"] else
             Member(session="", short="", alias=s["alias"], name_source="seat", machine=host_name(), local=True,
                    state=state(s), state_age=None, charge="", charge_source="", status=s["now"], by="",
                    worktree=s["worktree"], seat=s)
             for s in rest]
     # Seat-less sessions the log holds as retired, by alias: what a tag that
-    # names one is told.
+    # names one is told. One that continues in another session is not: its
+    # name is the continuation's now.
     retired = [(str((r["renamed"] or r["joined"]).get("alias") or sid[:8]), sid[:8], str(r["latest"].get("reason") or ""))
                for sid, r in info.items()
-               if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session]
+               if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session
+               and r["latest"].get("reason") != "continued"]
     view = View(out, rows, retired, events, info, len(appended))
     if titles:
         _VIEWS[project.id] = view
@@ -1687,16 +1931,18 @@ def is_all(tag):
 def match_members(name, short, projects):
     """The (project, member) pairs a tag's name answers to among the projects'
     members: their alias (with `short`, an alias whose short starts so), their
-    short (`@short`), or their session id. A retired member answers to nothing."""
+    short (`@short`), or their session id — a session they continue (`former`)
+    answering as theirs does. A retired member answers to nothing."""
     found = []
     for p in projects:
         for m in members(p):
             if m.state == "retired":
                 continue
+            ids = (m.session,) + m.former
             if short:
-                hit = m.alias == name and m.short.startswith(short)
+                hit = m.alias == name and any(s[:8].startswith(short) for s in ids)
             else:
-                hit = name in (m.alias, m.short, m.session)
+                hit = name == m.alias or any(name in (s, s[:8]) for s in ids)
             if hit:
                 found.append((p, m))
     return found
@@ -2494,19 +2740,15 @@ def _on_sight(project, session):
 def _member_alias(project, session, seat, peer):
     """Joins a joinable session the log does not hold as a member yet (a live
     process is evidence of activation), and returns the alias its messages to
-    the host carry: its seat's, else its harness name, else the last name the
-    log gave it. None when it is no member."""
+    the host carry: its seat's, else the one it goes by (held_alias over the
+    last name the log gave it). None when it is no member."""
     own = _own_events(project, session)
     if latest_membership(own) != "joined":
         join_on_sight(project, session, seat, peer, True)
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
-    alias = (seat or {}).get("alias") or str((peer or {}).get("name") or "")
-    if not alias:
-        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
-        alias = str(named[-1]["alias"]) if named else session[:8]
-    return alias
+    return (seat or {}).get("alias") or held_alias(*own_alias(own, session), peer, session)[0] or session[:8]
 
 
 def export_live(cwd, session, records):
@@ -3098,10 +3340,11 @@ def find_target(q):
     for p in projects:
         ms, rows = project_view(p)
         for m in ms + rows:
+            ids = (m.session,) + m.former if m.session else ()
             if short:
-                hit = bool(m.short) and m.alias == name and m.short.startswith(short)
+                hit = m.alias == name and any(s[:8].startswith(short) for s in ids)
             else:
-                hit = name == m.alias or (bool(m.session) and name == m.session)
+                hit = name == m.alias or name in ids
             # One seat is one target, though its session joined one project
             # and its record now resolves to another (a cwd that moved).
             key = m.seat["seat_id"] if m.seat else m.session
@@ -3118,7 +3361,7 @@ def find_target(q):
     if not found:
         return (proj and not short and group_seat(proj, name)) or ("none",)
     project, m = found[0]
-    return ("seat", m.seat, m.session if short or name == m.session else "") if m.seat else ("member", project, m)
+    return ("seat", m.seat, m.session if short or name in (m.session,) + m.former else "") if m.seat else ("member", project, m)
 
 
 def ambiguous_seat(q, hits):
@@ -5036,7 +5279,9 @@ def default_from(explicit):
 
     The harness exports CLAUDE_CODE_SESSION_ID to Bash tools, so an AGENT is
     identified by it: the alias of the seat whose `current` is that session,
-    else the harness session name from the peer registry, else `session:<id8>`.
+    else the alias it goes by in the working directory's project (held_alias:
+    its harness name unless that is a made-up one the log already holds
+    another alias for), else `session:<id8>`.
     An agent may not claim to be the operator: `--from human` with a session id
     in the environment is refused. Without a session id (a real terminal) the
     default stays `human`."""
@@ -5051,10 +5296,10 @@ def default_from(explicit):
     for s in seats():
         if s["current"] == sid:
             return s["alias"]
-    for r in peer_records():
-        if r.get("sessionId") == sid and r.get("name"):
-            return str(r["name"])
-    return "session:%s" % sid[:8]
+    peer = next((r for r in peer_records() if r.get("sessionId") == sid), None)
+    project = resolve_project(os.getcwd())
+    held = own_alias(_own_events(project, sid), sid) if project is not None else ("", "")
+    return held_alias(*held, peer, sid)[0] or "session:%s" % sid[:8]
 
 
 def wait_socket_turn(s, marker, was_idle, guard):
