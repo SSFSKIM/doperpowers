@@ -331,6 +331,33 @@ rung for DC8); the PR opened, not merged; the report at
   known process death. Reported to the design session.
   Date/Author: 2026-10-17, controller (pre-flight).
 
+- Decision: **`output` containment is exact** — the opened target's
+  realpath must equal `<realpath of a root>/<taskId>.output` (a strict
+  subset of DX4's component-prefix rule; every engine-written path
+  passes), so a symlink to another task's file in the same root is
+  refused. Sent to the design session as a DX4 correction.
+  Rationale: the prefix rule admits a sibling task's file, which is "a
+  path other than the one the rows named" in G4's sense.
+  Date/Author: 2026-10-17, M1 executor; adopted by the controller.
+- Decision: **What M1 settled where DX4 is silent** (each pinned in
+  `tests/sminos/dx4-jobs.json`'s `about`, which DC9 follows): an
+  unrecognized word replaces only `outcome.raw` and is dropped with no
+  outcome yet; a notification with no `<status>` (monitor events, expiry,
+  resumes) is no evidence; an Agent result's raw word is `async_launched`,
+  else `error` on `is_error`, else `toolUseResult.status`, else
+  `completed`, and a non-error TaskStop's is `stopped`; once the process
+  is gone `running` is dropped and `spawn` kept; within precedence (2)
+  session death, then parent ended, then bridge stopped, within (3) the
+  bridge before the rows; a job starts at its call row's time, `endedAt`
+  only on a terminal word, `summary` from the deciding row; an MCP
+  delta's removals before its additions; an output window with no line
+  break is not cut; an open error other than `ELOOP` is `missing`. The
+  fixture carries the bridge's agent *state* (with `running`), not its
+  events; folding `agent` events into it is M4's. An agent-scope
+  subscription needs two derivations (its own entry from its parent loop's
+  ledger, its jobs and MCP names from its own).
+  Date/Author: 2026-10-17, M1 executor (report `task-1-report.md`).
+
 ## Surprises & Discoveries
 
 - Observation: a session's task output paths name more than one project
@@ -340,6 +367,18 @@ rung for DC8); the PR opened, not merged; the report at
   `sminos-family` worktree's project directory), read with `python3 -I`
   2026-10-17: 387 paths under the launch cwd's slug, 137 under the
   worktree's, 43 under `cd5fc75d…`. See the Decision Log on the roots.
+
+- Observation: `$.agent.list()` has no `name`; DX5's seed shape lists one.
+  Evidence: `hooks/mods/agents.tsx:331-345` reads `{id, description, type,
+  status, parentId}`. The derivation passes through whatever spawn fields
+  the bridge entry has. Told to the design session.
+- Observation: about 5,089 of 12,077 metas on this machine are of the
+  older form with no `requestShape`; a background agent there is known as
+  such only from `spawn.background` or its launch result.
+  Evidence: read-only count, 2026-10-17 (M1 report).
+- Observation: an expired monitor's notice carries no `<status>`, so it
+  stays `running` until the session ends (accepted; DX4 has no word for
+  expiry).
 
 ## Outcomes & Retrospective
 
