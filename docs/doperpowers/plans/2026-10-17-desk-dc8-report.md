@@ -4,7 +4,7 @@ Execution of child DC8 of MAWS's composite `docs/doperpowers/specs/2026-10-15-de
 `smns-erb`, last pinned at `a87d7fa04`), from its execution document
 `docs/doperpowers/plans/2026-10-17-desk-dc8-machine.md` (Progress, Decision Log, Surprises & Discoveries,
 Outcomes & Retrospective there are the record; this file is the run's account). Branch `desk-dc8`, version
-7.165.0, merged with `origin/main` at `17a5ab0c`.
+7.166.0, merged with `origin/main` at `b8f7d197` (#218 took 7.165.0).
 
 ## Status
 

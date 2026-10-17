@@ -566,7 +566,7 @@ rung for DC8); the PR opened, not merged; the report at
 
 **2026-10-17, after M4 (before the whole-branch panel).** All four
 milestones reviewed clean; the branch merged with `origin/main` at
-`17a5ab0c` and bumped to 7.165.0.
+`b8f7d197` (after #218 took 7.165.0) and bumped to 7.166.0.
 
 - **G1 (pages).** Each transcript has an offset index, built once per file
   on a worker thread and shared; a page reads only its own rows' bytes.
