@@ -45,7 +45,8 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  *
  * Control (DC2 M2): `steer` appends a user row the loop reads at its next
  * request; `interrupt` aborts the main turn and stops each Bash call the abort
- * moved to the background, and the turn's end appends a user row saying so;
+ * moved to the background, and before the turn ends appends Esc's marker and
+ * a note saying so;
  * `model` rewrites the main loop's requests;
  * `compact` runs between turns; `deliver` submits a log event as the human's
  * words, once per key. What must outlive a module reload (the model chosen,
@@ -218,6 +219,10 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   if (typeof text !== 'string' || text.trim() === '') {
     return { ok: false, error: 'steer needs text' }
   }
+  // Kept as the interrupt's marker row is (isMeta, from this plugin), it would be one.
+  if (isInterruptText(text)) {
+    return { ok: false, error: 'that text is the interrupt marker, which would read as an interrupt: interrupt the session instead' }
+  }
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
   }
@@ -345,14 +350,27 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   }
 }
 
+/** Esc's own marker, whole: the one text a transcript's reader knows a turn's interrupt by. */
+const INTERRUPT_MARKER = '[Request interrupted by user]'
+
 /**
- * What an interrupt tells the model: the engine's own marker for Esc, with
- * where it came from, and each Bash call it moved to the background, whose
- * result says the command runs on there.
+ * A text a transcript's reader takes for an interrupt: either of the engine's
+ * markers whole (Esc's, and its tool-use form), or the bridge's earlier
+ * record, `[Request interrupted by user from …]`.
  */
-function interruptText(from: unknown, stops: Stops): string {
+function isInterruptText(text: string): boolean {
+  const t = text.trim()
+  return t === INTERRUPT_MARKER || t === '[Request interrupted by user for tool use]' || t.startsWith('[Request interrupted by user from ')
+}
+
+/**
+ * What an interrupt tells the model beyond Esc's marker: where it came from,
+ * and each Bash call it moved to the background, whose result says the
+ * command runs on there.
+ */
+function interruptNote(from: unknown, stops: Stops): string {
   return [
-    `[Request interrupted by user from ${from === 'desk' ? 'the desk' : 'outside the terminal'}]`,
+    `The interrupt came from ${from === 'desk' ? 'the desk' : 'outside the terminal'}.`,
     ...stops.stopped.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`),
     ...stops.running.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`),
   ].join('\n')
@@ -360,24 +378,33 @@ function interruptText(from: unknown, stops: Stops): string {
 
 /**
  * The interrupt's record: Esc leaves the model `[Request interrupted by
- * user]`, a plugin's abort no marker at all, so a user row says it, read at
- * the next request. The terminal does not draw an appended row, so a
- * transcript line mirrors it.
+ * user]`, a plugin's abort no marker at all, so user rows say it, read at the
+ * next request. Two rows: the marker alone, since a transcript's reader knows
+ * an interrupt only by a row whose whole text is the marker, then the note. A
+ * plugin's user row is kept `isMeta` (2.1.300 `m6r`): the model reads both,
+ * and no reader takes the note for a prompt. The terminal does not draw an
+ * appended row, so a transcript line mirrors them.
  */
 async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops) {
-  const text = interruptText(from, stops)
-  try {
-    const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-    if (stored.deny !== undefined) {
-      $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
-      return
+  const kept: string[] = []
+  for (const text of [INTERRUPT_MARKER, interruptNote(from, stops)]) {
+    try {
+      const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+      if (stored.deny !== undefined) {
+        $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
+        break
+      }
+      // The hook does not see the plugin's own append: named once it is in.
+      noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+      kept.push(text)
+    } catch (error) {
+      $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
+      break
     }
-    // The hook does not see the plugin's own append: named once it is in.
-    noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+  }
+  if (kept.length > 0) {
     // One line: the transcript line draws a newline as U+FFFD (live, 2.1.302).
-    $.ui.log(`interrupt: ${text.replaceAll('\n', ' ')}`)
-  } catch (error) {
-    $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
+    $.ui.log(`interrupt: ${kept.join(' ').replaceAll('\n', ' ')}`)
   }
 }
 
