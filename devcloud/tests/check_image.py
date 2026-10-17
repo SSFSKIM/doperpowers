@@ -74,10 +74,12 @@ def scanner_output(args, values_json, scanner=None):
 
 
 # Shell only, so the check runs on any Debian-based image: owned paths, less
-# those `dpkg --verify` reports changed.
+# those `dpkg --verify` reports changed. dpkg-query prints `<packages>: <path>`,
+# a package often arch-qualified (`libpython3.12-stdlib:amd64`), so the path
+# is what follows the last `: ` before its leading slash.
 PRISTINE = r"""
 dpkg --verify 2>/dev/null | awk '{print $NF}' | sort -u > /tmp/modified
-tr '\n' '\0' | xargs -0 -r dpkg-query -S 2>/dev/null | sed -n 's/^[^:]*: //p' | sort -u > /tmp/owned
+tr '\n' '\0' | xargs -0 -r dpkg-query -S 2>/dev/null | sed -n 's#^[^/]*: /#/#p' | sort -u > /tmp/owned
 comm -23 /tmp/owned /tmp/modified
 """
 
