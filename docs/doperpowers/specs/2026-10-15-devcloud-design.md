@@ -516,7 +516,10 @@ The guard differs from `cua`'s in four ways:
 What it cannot catch, stated so no one relies on it: a value the model deliberately slices,
 reverses, or transforms; a secret inside an image; an oversized output whose process is killed in
 the moment between the engine persisting it and the mod rewriting it (the file then stays raw and
-ships after the settle interval); and the paths the boundary probe lists as not covered. The person judged prompt-injection risk negligible for their setup; the mod exists to
+ships after the settle interval); and the paths the boundary probe lists as not covered. Under
+auto mode, a call that restores a secret — editing a redacted file, writing a handle back — can be
+refused by the mode's classifier by its own judgment; the guard does not retry it or route around
+it, and the model sees the refusal as it would any other. The person judged prompt-injection risk negligible for their setup; the mod exists to
 stop accidents, which arrive as plain text or a common encoding.
 
 ## Out of scope
@@ -895,6 +898,11 @@ clears a plugin's state when it unloads is unverified).
   input ("the tool, its input and the call are the question and are pinned"). In the probe's
   sessions no classifier request appeared for `nc` or `python3 -c` commands, so which calls the
   mode sends to it is not settled (acceptance run, 2026-10-17).
+- (2026-10-17) Under auto mode the classifier refused, as "Credential Leakage", a Write that
+  restored a made-up rotated store value (acceptance rerun 4, step 6); the same step had passed in
+  an earlier run. The refusal is the classifier's judgment, not noise: editing a redacted file can
+  be refused in auto mode, and a refused action is reported, never rerun for a different verdict
+  (a rerun that passed was voided).
 
 ## Decision Log
 
