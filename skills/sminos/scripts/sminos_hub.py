@@ -135,9 +135,9 @@ def redeem_once(hub, token, machine):
     may have made, whose secret this end never read)."""
     url = urllib.parse.urlsplit(hub)
     if url.scheme == "https":
-        conn = http.client.HTTPSConnection(url.hostname, url.port, timeout=TIMEOUT)
+        conn = uplink.HTTPSConnection(url.hostname, url.port, timeout=TIMEOUT)
     else:
-        conn = http.client.HTTPConnection(url.hostname, url.port, timeout=TIMEOUT)
+        conn = uplink.HTTPConnection(url.hostname, url.port, timeout=TIMEOUT)
     try:
         conn.request("POST", url.path.rstrip("/") + REDEEM_PATH, body=json.dumps({"token": token, "machine": machine}),
                      headers={"Content-Type": "application/json", "Accept": "application/json"})
