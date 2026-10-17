@@ -112,7 +112,9 @@ def apply_systemd(user, env_changed):
         else:
             verb = "restart" if env_changed or f"{unit}.service" in changed else "start"
             run(["systemctl", "enable", f"{unit}.service"], log="services", timeout=60)
-            run(["systemctl", verb, f"{unit}.service"], log="services", timeout=60)
+            # Queued, not awaited: the unit is ordered after devcloud-boot.service
+            # (so a reboot starts it after the boot), and the boot is the caller.
+            run(["systemctl", "--no-block", verb, f"{unit}.service"], log="services", timeout=60)
         started.append(s.name)
     detail = "systemd: " + ", ".join(started)
     if gone:
