@@ -34,8 +34,9 @@ never lands where nothing can upload or import it. What passes is appended
 verbatim, with its code, through the log's own locks: present already (the
 same content at its (writer, seq)) it is skipped; a different content there,
 or a position spent before, is refused `conflict`; past a gap it waits for
-the hub to send what is missing. Then whatever was appended is delivered at
-once and the tick loop nudged.
+the hub to send what is missing. Then whatever was appended is delivered —
+by the uplink, once per batch of the frames already queued with it
+(`deliver`) — and the tick loop nudged.
 
 Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST

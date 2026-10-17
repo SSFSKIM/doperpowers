@@ -16,7 +16,9 @@ call) into a queue, so the stream is drained whatever the rest is doing; and
 the process's main thread, which does every sminos call and every POST.
 sminos's per-invocation caches are module globals no second thread may
 share, and a git phase of the tick loop, a derivation, or this process's own
-delivery never holds the reader up.
+delivery never holds the reader up. The main thread takes whatever is queued
+as one batch, then ticks once: what the batch imported is delivered once per
+project, so a burst from the hub costs a tick, not a tick a frame.
 
 On every stream, for every hub project of this machine's org known here, the
 uplink sends `hello` with its vector and its machine's presence (DX4
@@ -77,6 +79,8 @@ HEARTBEAT_MS = 15000      # DX2's, until the stream's welcome says otherwise
 SILENT_PERIODS = 3        # a stream silent this many heartbeats is dead
 BACKOFF_MAX = 60
 POLL = 0.25               # how often the main thread looks up from an idle stream
+DRAIN_FRAMES = 1000       # what is queued is handled as one batch, then one tick: at most this many items
+DRAIN_FOR = 1.0           # or this long of handling, so a burst neither starves the tick nor holds delivery
 LINE_MAX = 2 << 20        # a frame is at most 1 MiB (DX2); its SSE line, a little more
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
 FRAME_LIMIT = 1 << 20     # every frame, either way, at most 1 MiB of UTF-8 (DX2); a larger one goes as parts
@@ -554,6 +558,7 @@ class Link:
         self.rpcs.wake = wake
         self.machine_sent = {}    # project id → the `machine` body last posted on this stream
         self.next_checkouts = 0.0
+        self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -571,6 +576,10 @@ class Link:
 
     def dispatch(self, frame, stream):
         t = frame.get("t") if isinstance(frame, dict) else None
+        if t not in ("events", "hb", "part"):
+            # Whatever this frame does comes after what the events before it
+            # imported reached their members, as the frames came.
+            self.deliver_imports()
         handler = self.handlers.get(t)
         if handler is None:
             if t not in self.passed:
@@ -629,8 +638,7 @@ class Link:
             return
         appended, rejections = hl.take(frame.get("events"))
         if appended:
-            hl.deliver()
-            sminos.nudge_daemon()
+            self.imported[hl.project.id] = hl
         if rejections and hl.project.id in self.opened:
             self.post(rejections)
             hl.reported(rejections)
@@ -687,6 +695,29 @@ class Link:
 
     def on_rpc_ack(self, frame, _stream):
         self.rpcs.ack(frame)
+
+    def deliver_imports(self):
+        """What the frames handled since the last call imported, delivered
+        once per project (sminos_hublog's `deliver`: a fresh read of the
+        whole log), then the tick loop nudged once. The nudge is the tick
+        loop's and every sender's: this uplink takes its own as seen, so
+        what it imported costs its next tick no project scan, only the upload
+        pass that sends what delivery made of it (`deliveries`)."""
+        if not self.imported:
+            return
+        imported, self.imported = self.imported, {}
+        for hl in imported.values():
+            try:
+                hl.deliver()
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — the daemon's tick delivers what is still owed
+                log("delivering what was imported into %s failed: %r" % (hl.project.name, e))
+        seen = daemon.nudged_at() == self.nudge
+        sminos.nudge_daemon()
+        if seen:
+            # Only when no sender's nudge was waiting: that one is still this
+            # uplink's to answer with a scan.
+            self.nudge = daemon.nudged_at()
+        self.next_upload = 0.0
 
     # ---------------------------------------------------- frames up
 
@@ -837,7 +868,7 @@ class Link:
 def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it. A wake (the session
-    plane's readers) is a tick now, between frames; at most one waits."""
+    plane's readers) is a tick after the batch in hand; at most one waits."""
     woken = threading.Event()
 
     def wake():
@@ -853,7 +884,11 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
 
 
 def serve_link(link, stream, ended, woken):
-    """serve's loop, the stream's frames and the wakes in arrival order."""
+    """serve's loop, the stream's frames and the wakes in arrival order. What
+    is queued when the main thread looks up is one batch (DRAIN_FRAMES,
+    DRAIN_FOR), its imports delivered once, then one tick: a tick can be
+    slow (its POSTs, its reads of the fleet), and one a frame would let a
+    burst from the hub queue for minutes."""
     welcomed = False
     while True:
         # Before every frame, not only when the stream is quiet: a hub that
@@ -865,22 +900,35 @@ def serve_link(link, stream, ended, woken):
         except queue.Empty:
             item = None
         try:
-            if item is not None and item[0] == "closed":
-                log("the stream closed: %s" % item[1])
-                return welcomed
-            if item is not None and item[0] == "wake":
-                woken.clear()
-                item = None
-            if item is not None:
-                try:
-                    frame = codes.loads(item[2])
-                except ValueError as e:
-                    log("a frame that is not JSON (%s): ignored" % e)
-                    frame = None
-                if isinstance(frame, dict) and frame.get("t") == "welcome":
-                    welcomed = True
-                if frame is not None:
-                    link.dispatch(frame, stream)
+            try:
+                taken, until = 0, time.monotonic() + DRAIN_FOR
+                while item is not None:
+                    if item[0] == "closed":
+                        log("the stream closed: %s" % item[1])
+                        return welcomed
+                    if item[0] == "wake":
+                        woken.clear()
+                    else:
+                        try:
+                            frame = codes.loads(item[2])
+                        except ValueError as e:
+                            log("a frame that is not JSON (%s): ignored" % e)
+                            frame = None
+                        if isinstance(frame, dict) and frame.get("t") == "welcome":
+                            welcomed = True
+                        if frame is not None:
+                            link.dispatch(frame, stream)
+                    taken += 1
+                    if taken >= DRAIN_FRAMES or time.monotonic() >= until or ended():
+                        break
+                    try:
+                        item = stream.items.get_nowait()
+                    except queue.Empty:
+                        item = None
+            finally:
+                # What the batch imported reaches its members whatever ended
+                # it: a POST that failed, the stream's close, the uplink's end.
+                link.deliver_imports()
             link.tick()
         except NotDelivered as e:
             log("a POST was not delivered (%s): reconnecting, to redo the handshake" % e)

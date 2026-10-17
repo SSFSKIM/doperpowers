@@ -66,6 +66,9 @@ The test's own hands (the stand-in plays a hub that may lie):
   one of them, then the connection closed); with `machine`, only that machine's POSTs meet it, with
   `has`, only a POST carrying a frame of that `t`. `posted` records each
   POST's machine, generation, status, and body.
+- `POST /control/post-delay` `{"seconds"}`: every frame POST from then on
+  waits this long before it is looked at (a slow link, a fresh TLS
+  connection each); 0 ends it.
 - `POST /control/archive` `{"project", "machine"}` designates the project's
   archive machine (DX2's `have.archive`).
 - `POST /control/enrollment` `{"ttl_s"?}`: a one-time token, as an admin's
@@ -109,7 +112,7 @@ TOO_LARGE = "an event is at most 1 MiB"
 
 lock = threading.Condition()
 state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults": [], "post_faults": [],
-         "release": threading.Event(),
+         "release": threading.Event(), "post_delay": 0.0,
          "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [],
          # name_key → {name, client_id, client_secret, state, enrollment}
          "machines": {"testhost": {"name": "testhost", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
@@ -416,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 state["post_faults"] = list(json.loads(self.body()).get("faults", []))
             self.reply(200, {"faults": state["post_faults"]})
+        elif self.path == "/control/post-delay":
+            with lock:
+                state["post_delay"] = float(json.loads(self.body()).get("seconds") or 0)
+            self.reply(200, {"seconds": state["post_delay"]})
         elif self.path == "/control/archive":
             req = json.loads(self.body())
             with lock:
@@ -440,6 +447,9 @@ class Handler(BaseHTTPRequestHandler):
         """DX2's POST: refused whole, or applied frame by frame, answered once
         its replies are on the stream."""
         text = self.body().decode("utf-8", "replace")
+        with lock:
+            delay = state["post_delay"]
+        time.sleep(delay)
         done = threading.Event()
         with lock:
             s = state["streams"].get(machine)
