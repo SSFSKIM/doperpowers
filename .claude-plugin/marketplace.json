@@ -22,8 +22,8 @@
       "name": "ci-kit",
       "description": "Gates off the MacBook: ci-gate on the Bash PATH, a SessionStart note in repos that use ci-kit, and the adopt skill that sets a repo up",
       "source": {
-        "source": "github",
-        "repo": "SSFSKIM/ci-kit"
+        "source": "url",
+        "url": "https://github.com/SSFSKIM/ci-kit.git"
       },
       "author": {
         "name": "SSFSKIM",
