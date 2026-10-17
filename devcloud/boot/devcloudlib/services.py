@@ -3,7 +3,10 @@ as PID 1 the boot program writes units `devcloud-<service>`; otherwise
 `devcloud-services`, the container entrypoint's foreground, supervises the
 same list: it restarts a crashed service with backoff, restarts a continuous
 service when `/etc/devcloud/env` changes, reaps every orphan (it is PID 1
-there), and forwards SIGTERM to every child before it exits."""
+there), and forwards SIGTERM to every child before it exits. Either way a
+service's output is scrubbed of every value the host holds before it is passed
+on: the supervisor scrubs what it forwards, and every unit runs its command
+through `devcloud run-scrubbed`, so journald gets the same."""
 
 import dataclasses
 import hashlib
@@ -24,6 +27,14 @@ UNIT_DIR = pathlib.Path("/etc/systemd/system")
 PIDFILE = pathlib.Path("/run/devcloud/services.pid")
 DEVCLOUD = "/usr/local/bin/devcloud"
 INTERVAL = 1800
+# Written by a boot that made the host (exit 0, or 3 when only projects
+# failed), removed when a boot starts: a continuous unit runs only on a host
+# a boot made. Under /run, so a reboot starts without it.
+BOOTED = pathlib.Path("/run/devcloud/booted")
+# One flag per owed systemctl action (a unit to restart, a reload), written
+# before the run that owes it tries and removed once it succeeded, so a failed
+# run leaves it for the next.
+PENDING_DIR = pathlib.Path("/var/lib/devcloud/pending")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -63,13 +74,22 @@ def units(listed, user):
     for s in listed:
         unit = f"devcloud-{s.name}"
         lines = ["[Unit]", f"Description={s.description}", "Wants=network-online.target",
-                 "After=network-online.target devcloud-boot.service", "", "[Service]"]
+                 "After=network-online.target devcloud-boot.service"]
+        if s.every is None:
+            # Ordered after the boot and run only when it made the host: a
+            # condition, not Requires=, so starting the unit from the boot's own
+            # step 11 queues behind the boot rather than deadlocking on it.
+            lines.append(f"ConditionPathExists={BOOTED}")
+        lines += ["", "[Service]"]
         if s.as_user:
             lines += [f"User={user.name}", f"Group={user.gid}",
                       f"Environment=HOME={user.home} USER={user.name} LOGNAME={user.name} "
                       f"SHELL=/usr/bin/zsh PATH={user.home}/.local/bin:{SYSTEM_PATH}",
                       f"EnvironmentFile={ENV_PATH}", f"WorkingDirectory={user.home}"]
-        lines.append("ExecStart=" + " ".join(s.argv))
+        lines.append(f"ExecStart={DEVCLOUD} run-scrubbed -- " + " ".join(s.argv))
+        # SIGTERM to the wrapper alone, which passes it on once: the command's
+        # final pass then runs under it, its output still scrubbed.
+        lines.append("KillMode=mixed")
         if s.every is None:
             lines += ["Restart=always", "RestartSec=2", "RestartSteps=6", "RestartMaxDelaySec=120",
                       "TimeoutStopSec=30", "", "[Install]", "WantedBy=multi-user.target"]
@@ -84,46 +104,120 @@ def units(listed, user):
     return out
 
 
-def apply_systemd(user, env_changed):
+def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PENDING_DIR):
     """Writes the units, reloads systemd when one changed, enables and starts
     them, and restarts a continuous service whose unit or environment changed.
+    What a changed file owes — the reload, a restart — is recorded before the
+    first systemctl call and cleared only once done, so a run that fails
+    leaves it for the next one, which would otherwise see nothing changed.
     Returns a status detail."""
+    unit_dir, pending_dir = pathlib.Path(unit_dir), pathlib.Path(pending_dir)
     listed = [s for s in service_list(user) if s.every is not None or available(s)]
     wanted = units(listed, user)
-    changed = set()
+    owed = set()
     for name, text in wanted.items():
-        path = UNIT_DIR / name
+        path = unit_dir / name
         if not path.exists() or path.read_text() != text:
             path.write_text(text)
-            changed.add(name)
+            owed |= {"daemon-reload", name}
     gone = [s for s in service_list(user) if s not in listed]
-    removed = False
     for s in gone:
-        unit = UNIT_DIR / f"devcloud-{s.name}.service"
+        if (unit_dir / f"devcloud-{s.name}.service").exists():
+            owed.add("daemon-reload")
+    if env_changed:
+        owed |= {f"devcloud-{s.name}.service" for s in listed if s.every is None}
+    pending_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    for name in owed:
+        (pending_dir / name).touch()
+
+    def due(name):
+        return (pending_dir / name).exists()
+
+    def done(name):
+        (pending_dir / name).unlink(missing_ok=True)
+
+    for s in gone:
+        unit = unit_dir / f"devcloud-{s.name}.service"
         if unit.exists():
             run(["systemctl", "disable", "--now", unit.name], log="services", timeout=60)
             unit.unlink()
-            removed = True
-    if changed or removed:
+        done(unit.name)
+    if due("daemon-reload"):
         run(["systemctl", "daemon-reload"], log="services", timeout=60)
+        done("daemon-reload")
     started = []
     for s in listed:
         unit = f"devcloud-{s.name}"
         if s.every is not None:
             run(["systemctl", "enable", "--now", f"{unit}.timer"], log="services", timeout=60)
-            if f"{unit}.timer" in changed:
+            if due(f"{unit}.timer"):
                 run(["systemctl", "restart", f"{unit}.timer"], log="services", timeout=60)
+            done(f"{unit}.timer")
+            done(f"{unit}.service")    # a oneshot job's next run reads its new unit
         else:
-            verb = "restart" if env_changed or f"{unit}.service" in changed else "start"
+            verb = "restart" if due(f"{unit}.service") else "start"
             run(["systemctl", "enable", f"{unit}.service"], log="services", timeout=60)
             # Queued, not awaited: the unit is ordered after devcloud-boot.service
             # (so a reboot starts it after the boot), and the boot is the caller.
             run(["systemctl", "--no-block", verb, f"{unit}.service"], log="services", timeout=60)
+            done(f"{unit}.service")
         started.append(s.name)
     detail = "systemd: " + ", ".join(started)
     if gone:
         detail += "; not installed: " + ", ".join(f"{s.name} ({s.argv[0]} absent)" for s in gone)
     return detail
+
+
+def mark_booted(ok):
+    """The boot's word to the continuous units: set when it made the host."""
+    if ok:
+        BOOTED.parent.mkdir(mode=0o711, parents=True, exist_ok=True)
+        BOOTED.write_text("")
+    else:
+        BOOTED.unlink(missing_ok=True)
+
+
+# --- run-scrubbed ------------------------------------------------------------
+
+def run_scrubbed(argv, known, signature=None, out=None, env=None):
+    """Runs `argv`, passing its output (stdout and stderr, joined) on to `out`
+    scrubbed as a stream of every value `known()` returns, the set refreshed
+    whenever `signature()` changes and before any byte read is passed on.
+    SIGTERM, SIGINT and SIGHUP go to the command. Returns its exit status
+    (128 + the signal when a signal ended it). A systemd unit's ExecStart."""
+    out = out or sys.stdout.buffer
+    following = redact.Following(known, signature)
+    following.refresh()
+    try:
+        child = subprocess.Popen(list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, env=env)
+    except OSError as error:
+        out.write(f"devcloud run-scrubbed: cannot start {argv[0]} ({error.strerror})\n".encode())
+        out.flush()
+        return 127
+
+    def forward(sig, _frame):
+        try:
+            child.send_signal(sig)
+        except ProcessLookupError:
+            pass
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, forward)
+    raw = b""
+    fd = child.stdout.fileno()
+    while True:
+        chunk = os.read(fd, 65536)
+        raw += chunk
+        if raw:
+            following.follow()
+            passed, raw = following.known.scrub_stream(raw, final=not chunk)
+            if passed:
+                out.write(passed)
+                out.flush()
+        if not chunk:
+            break
+    code = child.wait()
+    return code if code >= 0 else 128 - code
 
 
 # --- the supervisor --------------------------------------------------------
@@ -168,7 +262,9 @@ class _Slot:
         self.service = service
         self.proc = None
         self.pipe = None
-        self.pending = b""
+        self.raw = b""        # read, not yet scrubbed (may begin a value)
+        self.pending = b""    # scrubbed, not yet a whole line
+        self.kill_at = None   # when a stop a reconcile asked for turns to SIGKILL
         self.started = 0.0
         self.failures = 0
         self.restart_now = False
@@ -180,9 +276,11 @@ class Supervisor:
     """Runs the services of `listed` that the desired-state file names (all of
     them without one) until SIGTERM or SIGINT. A user service runs as `user`
     (when the supervisor is root) with the user's clean environment plus the
-    env file; a root service inherits the supervisor's environment. Every
-    line a service prints is forwarded as `<service>: <line>`, each value
-    `known()` returns scrubbed out first."""
+    env file; a root service inherits the supervisor's environment. What a
+    service prints is scrubbed as a stream of each value `known()` returns,
+    then forwarded line by line as `<service>: <line>`. A service a reconcile
+    stops (removed, or restarted for a new environment) gets SIGTERM, then
+    SIGKILL after `grace` seconds."""
 
     REFRESH = 30.0
     LINE_MAX = 4096
@@ -194,40 +292,26 @@ class Supervisor:
         self.user = user
         self.poll = poll
         self.grace = grace
-        self.known_source = known or (lambda: ())
-        self.known_signature = known_signature
-        self.signature = None
-        self.known = redact.Known()
         self.desired_path = desired_path
         self.out = out or sys.stdout.buffer
         self.stopping = False
         self.selector = selectors.DefaultSelector()
         self.log = log or (lambda message: self._emit(b"devcloud-services: " + message.encode() + b"\n"))
+        self.following = redact.Following(known or (lambda: ()), known_signature, log=lambda m: self.log(m))
+
+    @property
+    def known(self):
+        return self.following.known
 
     def _emit(self, data):
         self.out.write(self.known.scrub(data))
         self.out.flush()
 
     def _refresh_known(self):
-        """Adds the host's current values to every value known before: a
-        credential rotated away is still what an old process may print."""
-        try:
-            self.known.update(self.known_source())
-        except Exception as error:  # noqa: BLE001 — keep the set rather than stop supervising
-            self.log(f"cannot read the host's values ({type(error).__name__}); keeping the set known so far")
+        self.following.refresh()
 
     def _follow_sources(self):
-        """Refreshes the known values when their sources changed on disk, so a
-        just-rotated credential is known before the next line is forwarded."""
-        if self.known_signature is None:
-            return
-        try:
-            signature = self.known_signature()
-        except Exception:  # noqa: BLE001 — refresh rather than trust a signature we cannot read
-            signature = object()
-        if signature != self.signature:
-            self.signature = signature
-            self._refresh_known()
+        self.following.follow()
 
     def _env(self, service):
         if not service.as_user:
@@ -253,6 +337,7 @@ class Supervisor:
             slot.proc = subprocess.Popen(list(s.argv), env=self._env(s), start_new_session=True,
                                          stdin=subprocess.DEVNULL, stdout=write, stderr=write, **kwargs)
             slot.started = now
+            slot.kill_at = None
         except OSError as error:
             os.close(read)
             self.log(f"{s.name}: cannot start ({type(error).__name__}: {error.strerror})")
@@ -269,8 +354,9 @@ class Supervisor:
         """Forwards what the slot's pipe holds, line by line; at EOF (or
         `final`) the rest, and the pipe is closed. The one path every
         forwarded byte takes: the known values are brought up to date after
-        the bytes are read and before any is emitted, so a credential rotated
-        while they waited in the pipe is already known."""
+        the bytes are read, and the bytes are scrubbed as a stream — before
+        they are split into lines, prefixed or cut — so a value spanning
+        lines, reads or the line limit is caught whole."""
         eof = False
         while True:
             try:
@@ -280,7 +366,11 @@ class Supervisor:
             if not chunk:
                 eof = True
                 break
-            slot.pending += chunk
+            slot.raw += chunk
+        if slot.raw:
+            self._follow_sources()
+            scrubbed, slot.raw = self.known.scrub_stream(slot.raw, final=eof or final)
+            slot.pending += scrubbed
         *lines, slot.pending = slot.pending.split(b"\n")
         if len(slot.pending) > self.LINE_MAX:
             lines.append(slot.pending)
@@ -288,8 +378,6 @@ class Supervisor:
         if (eof or final) and slot.pending:
             lines.append(slot.pending)
             slot.pending = b""
-        if lines:
-            self._follow_sources()
         prefix = slot.service.name.encode() + b": "
         for line in lines:
             self._emit(prefix + line[:self.LINE_MAX] + b"\n")
@@ -356,7 +444,7 @@ class Supervisor:
                 slot.removed = True
                 if slot.proc:
                     self.log(f"{slot.service.name} is no longer wanted; stopping it")
-                    self._signal(slot, signal.SIGTERM)
+                    self._terminate(slot, now)
         have = {slot.service.name for slot in slots if not slot.removed}
         for name in self.listed:
             if name in wanted and name not in have:
@@ -364,6 +452,19 @@ class Supervisor:
                     continue   # still stopping; started again once it is gone
                 slots.append(_Slot(self.listed[name], now))
         slots[:] = [slot for slot in slots if not (slot.removed and slot.proc is None and slot.pipe is None)]
+
+    def _terminate(self, slot, now):
+        """SIGTERM now, SIGKILL once the grace has passed (see _enforce)."""
+        self._signal(slot, signal.SIGTERM)
+        if slot.kill_at is None:
+            slot.kill_at = now + self.grace
+
+    def _enforce(self, slots, now):
+        for slot in slots:
+            if slot.proc and slot.kill_at is not None and now >= slot.kill_at:
+                self.log(f"{slot.service.name} ignored SIGTERM for {self.grace:.0f}s; killing it")
+                self._signal(slot, signal.SIGKILL)
+                slot.kill_at = None
 
     def _stop(self, *_):
         self.stopping = True
@@ -395,7 +496,8 @@ class Supervisor:
                     if slot.service.every is None and slot.proc and not slot.removed:
                         self.log(f"{self.env_path} changed; restarting {slot.service.name}")
                         slot.restart_now = True
-                        self._signal(slot, signal.SIGTERM)
+                        self._terminate(slot, now)
+            self._enforce(slots, now)
             if now - refreshed > self.REFRESH:
                 self._refresh_known()
                 refreshed = now

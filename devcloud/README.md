@@ -335,18 +335,28 @@ the services without a reboot. Untracked files are left alone.
 Under systemd they are units `devcloud-<service>` (the jobs as timers), except
 the sminos daemon, which is the user's own unit `sminos-daemon.service` in
 `~/.config/systemd/user/` (the default directory, which the user manager reads
-whatever the profile sets `XDG_CONFIG_HOME` to).
+whatever the profile sets `XDG_CONFIG_HOME` to). Each unit runs its command
+through `devcloud run-scrubbed --`, which passes the command's output to
+journald scrubbed of every value the host holds. The shipper runs only on a
+host a boot made: the boot writes `/run/devcloud/booted` when it exits 0 or 3
+and removes it when it starts, and the unit is ordered after the boot and
+conditioned on that file, so after a boot that failed it stays down. A
+restart or reload a run owes is recorded under `/var/lib/devcloud/pending/`
+before the first systemctl call and cleared once made, so a run that fails
+leaves it for the next.
 Elsewhere `devcloud-services` runs them as the container's PID 1: it runs
 the services `/run/devcloud/services.json` names — step 11 rewrites it at
 every boot and reconcile, so a service whose program a pull brings starts
 and one whose program a pull removes stops — reaps orphans, restarts a
 crashed service after 1, 2, 4 … 60 s, restarts a continuous service when
-`/etc/devcloud/env` changes, forwards each line a service prints to its own
-output as `<service>: <line>` with every value the host holds, or held while
-the supervisor ran, scrubbed out (it rereads them whenever their files change,
-before it forwards another line),
-and on SIGTERM forwards the signal to every child and waits up to 8 s (the
-shipper's final pass) before it exits.
+`/etc/devcloud/env` changes, and forwards what a service prints to its own
+output as `<service>: <line>`, scrubbed as a stream before it is split into
+lines or cut to 4 KiB, of every value the host holds, or held while the
+supervisor ran (it rereads them whenever their files change, before it
+forwards another byte). A service it stops for a reconcile — removed, or
+restarted for a new environment — gets SIGTERM and, 8 s later, SIGKILL. On
+its own SIGTERM it forwards the signal to every child and waits up to 8 s
+(the shipper's final pass) before it exits.
 
 **sminos.** A persistent host is a sminos machine once the person enrolls it
 (`sminos hub enroll`, a human step: its code carries the organization's key),

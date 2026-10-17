@@ -599,6 +599,14 @@ def under_systemd():
     for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer",
                  "devcloud-refresh-mirrors.timer"):
         wait_active(unit)
+    end = time.monotonic() + 30
+    while "shipping with key [secret]" not in out(VM, "journalctl -u devcloud-session-mirror -o cat --no-pager"):
+        check(time.monotonic() < end, "the shipper's output never reached the journal, scrubbed: "
+              + out(VM, "journalctl -u devcloud-session-mirror -o cat --no-pager | tail -5"))
+        time.sleep(1)
+    journal = out(VM, "journalctl -o cat --no-pager")
+    for name, value in SECRETS.items():
+        check(value.strip() not in journal, f"{name}'s value is in the journal")
     ship = json.loads(out(VM, f"cat {STATE}/ship.json"))
     check(ship["uid"] == int(UID) and ship["SESSION_MIRROR_HOST"] == "sbx-vm" and ship["EXAMPLE_API_KEY set"],
           f"the shipper's unit environment {ship}")
@@ -672,6 +680,34 @@ def systemd_restart():
     while not user_unit_active("sminos-daemon.service"):
         check(time.monotonic() < end, "the sminos daemon did not come back after the restart (acceptance 7)")
         time.sleep(1)
+
+
+FAIL_BOOT = "/etc/systemd/system/devcloud-boot.service.d/zz-fail.conf"
+
+
+def wait_boot_state(wanted, timeout=300):
+    end = time.monotonic() + timeout
+    while (state := sh(VM, "systemctl is-active devcloud-boot.service", check_rc=False).stdout.strip()) != wanted:
+        check(time.monotonic() < end, f"devcloud-boot.service is {state}, not {wanted}:\n" + _systemd_diagnostics())
+        time.sleep(2)
+
+
+@case("after a boot that failed, the shipper does not start; a boot that succeeds starts it again")
+def failed_boot_keeps_services_down():
+    # Secret Manager unreachable from the boot's unit: bootstrap-secrets fails, so step 11 never runs.
+    sh(VM, f"printf '[Service]\\nEnvironment=DEVCLOUD_SM_ENDPOINT=http://fixtures:9\\n' > {FAIL_BOOT}")
+    docker("restart", "-t", "30", VM)
+    time.sleep(3)
+    wait_boot_state("failed")
+    time.sleep(5)
+    state = out(VM, "systemctl is-active devcloud-session-mirror.service || true").strip()
+    check(state == "inactive", f"the shipper is {state} after a failed boot")
+    check(sh(VM, "test -e /run/devcloud/booted", check_rc=False).returncode != 0, "a failed boot left the marker")
+    sh(VM, f"rm {FAIL_BOOT}")
+    docker("restart", "-t", "30", VM)
+    time.sleep(3)
+    wait_systemd_boot()
+    wait_active("devcloud-session-mirror.service")
 
 
 @case("a sandbox carrying a sminos machine identity fails services (acceptance 7)")

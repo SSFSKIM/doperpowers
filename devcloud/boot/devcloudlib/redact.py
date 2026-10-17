@@ -36,6 +36,8 @@ class Known:
     def __init__(self, values=()):
         self._values = set()
         self._pattern = None
+        self._longest = 0
+        self._forms = ()
         self.update(values)
 
     def add(self, value):
@@ -51,16 +53,84 @@ class Known:
         for value in values:
             self.add(value)
 
+    def _compiled(self):
+        if self._pattern is None:
+            forms = sorted({s for v in self._values for s in spellings(v)}, key=len, reverse=True)
+            self._pattern = re.compile(b"|".join(re.escape(f) for f in forms))
+            self._forms = forms
+            self._longest = len(forms[0])
+        return self._pattern
+
     def scrub(self, data):
         """`data` (bytes or str, returned in kind) with every known spelling replaced."""
         if not self._values:
             return data
-        if self._pattern is None:
-            forms = sorted({s for v in self._values for s in spellings(v)}, key=len, reverse=True)
-            self._pattern = re.compile(b"|".join(re.escape(f) for f in forms))
         if isinstance(data, str):
-            return self._pattern.sub(MARK, data.encode()).decode(errors="replace")
-        return self._pattern.sub(MARK, data)
+            return self._compiled().sub(MARK, data.encode()).decode(errors="replace")
+        return self._compiled().sub(MARK, data)
+
+    def _open(self, data, i):
+        """Whether data[i:] is the start of a spelling the rest of the stream may complete."""
+        tail = data[i:]
+        return any(len(form) > len(tail) and form.startswith(tail) for form in self._forms)
+
+    def scrub_stream(self, data, final=False):
+        """Scrubs a stream read in pieces: returns the scrubbed bytes that are
+        safe to pass on, and the raw rest to hold until the next piece — the
+        stream's end from the first point that may begin a value the next
+        piece completes (never more than the longest spelling less a byte).
+        `final` passes everything on."""
+        if not self._values:
+            return data, b""
+        pattern = self._compiled()
+        n = len(data)
+        out, pos, stop = [], 0, n
+        for match in pattern.finditer(data):
+            # A shorter value matched where a longer one may be on its way.
+            if not final and n - match.start() < self._longest and self._open(data, match.start()):
+                stop = match.start()
+                break
+            out += [data[pos:match.start()], MARK]
+            pos = match.end()
+        cut = n
+        if not final:
+            for i in range(max(pos, n - self._longest + 1), min(stop + 1, n)):
+                if self._open(data, i):
+                    cut = i
+                    break
+        out.append(data[pos:cut])
+        return b"".join(out), data[cut:]
+
+
+class Following:
+    """A Known fed from `source()` that only grows — a credential rotated away
+    is still what an old process may print — and is refreshed whenever
+    `signature()` (what changes when the source would) changes. `follow()` is
+    called after output is read and before any of it is passed on."""
+
+    def __init__(self, source, signature=None, log=lambda message: None):
+        self.known = Known()
+        self.source = source
+        self.signature = signature
+        self.log = log
+        self._seen = None
+
+    def refresh(self):
+        try:
+            self.known.update(self.source())
+        except Exception as error:  # noqa: BLE001 — keep the set rather than stop forwarding
+            self.log(f"cannot read the host's values ({type(error).__name__}); keeping the set known so far")
+
+    def follow(self):
+        if self.signature is None:
+            return
+        try:
+            seen = self.signature()
+        except Exception:  # noqa: BLE001 — refresh rather than trust a signature we cannot read
+            seen = object()
+        if seen != self._seen:
+            self._seen = seen
+            self.refresh()
 
 
 def _read(path):

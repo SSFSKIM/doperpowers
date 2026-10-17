@@ -438,10 +438,21 @@ def settings_and_env(r):
 
 
 def services_step(r):
+    """The devcloud services, then sminos's part — each tried even when the
+    other failed, so a failure in one never costs the other a restart it owes
+    (each records its own, to be made by a later run)."""
     env = _read_env(ENV_PATH)
     sminos_host.check_role(r.user, r.desc.role, env)
-    detail = _devcloud_services(r)
-    return f"{detail}; {sminos_host.converge(r.user, r.desc.role, env, r.env_changed)}"
+    parts, failures = [], []
+    for part in (lambda: _devcloud_services(r),
+                 lambda: sminos_host.converge(r.user, r.desc.role, env, r.env_changed)):
+        try:
+            parts.append(part())
+        except StepError as error:
+            failures.append(str(error))
+    if failures:
+        raise StepError("; ".join(failures))
+    return "; ".join(parts)
 
 
 def _devcloud_services(r):
@@ -507,12 +518,14 @@ BOOT = (("identity", identity), ("seed", seed), ("bootstrap-secrets", bootstrap_
 def boot():
     with _locked():
         status.reset()
+        services.mark_booted(False)
         r = Run("boot")
         code = _run(BOOT, r, done=lambda: _mark_applied(r))
         if code == 0 and _run((("projects", projects),), r):
             # The host works without a project: the failure is recorded, and
             # its own exit status lets the services start all the same.
-            return PROJECTS_FAILED
+            code = PROJECTS_FAILED
+        services.mark_booted(code in (0, PROJECTS_FAILED))
         return code
 
 

@@ -38,7 +38,7 @@ class ListTest(unittest.TestCase):
         ])
         ship = units["devcloud-session-mirror.service"]
         for line in ("User=dev", "EnvironmentFile=/etc/devcloud/env", "Restart=always",
-                     "ExecStart=/Users/dev/.claude/tools/session-mirror ship", "WantedBy=multi-user.target"):
+                     "ExecStart=/usr/local/bin/devcloud run-scrubbed -- /Users/dev/.claude/tools/session-mirror ship", "WantedBy=multi-user.target"):
             self.assertIn(line + "\n", ship)
         self.assertIn("OnUnitActiveSec=1800s\n", units["devcloud-pull-config.timer"])
         self.assertIn("Type=oneshot\n", units["devcloud-pull-config.service"])

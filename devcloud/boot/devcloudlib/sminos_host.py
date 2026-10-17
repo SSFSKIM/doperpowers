@@ -96,13 +96,17 @@ def converge(user, role, env, env_changed, run=proc.run, pending=PENDING):
     install_env = {k: v for k, v in user.env(env).items() if k != "XDG_CONFIG_HOME"}
     units = user.home / ".config/systemd/user"
     unit, dropin = units / UNIT, units / f"{UNIT}.d" / "devcloud.conf"
+    pending = pathlib.Path(pending)
+    if env_changed:
+        # Recorded before anything here can fail: the next run sees the
+        # environment unchanged and would owe nothing.
+        write_file(pending, "", mode=0o644, dir_mode=0o755)
     before = (_read(unit), _read(dropin))
     run([PYTHON, str(program), "daemon", "install"], user=user, env=install_env, log="services", timeout=120)
     as_user(user, lambda: write_file(dropin, DROPIN, mode=0o644, dir_mode=0o755))
     if _read(unit) is None:
         raise StepError(f"sminos daemon install wrote no {unit}")
-    pending = pathlib.Path(pending)
-    if (_read(unit), _read(dropin)) != before or env_changed:
+    if (_read(unit), _read(dropin)) != before:
         write_file(pending, "", mode=0o644, dir_mode=0o755)
 
     run(["loginctl", "enable-linger", user.name], log="services", timeout=60)
