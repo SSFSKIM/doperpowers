@@ -91,6 +91,7 @@ class Browser:
         self.step_ends = []   # (turnId, agentId, step), in order
         self.dropped = {}     # a block a step-end dropped (no block-row came): its partial text
         self.kinds = []
+        self.stamps = []      # each `chunk`'s `t`, the bridge's stamp, in order
         self.off = set()      # the rows marked off the live chain, as the marks stand in message order
         self.marked = {}      # a `row` that carried marks: its uuid → (offChain, onChain)
 
@@ -115,6 +116,7 @@ class Browser:
             self.subagents = body["subagents"]
             self.body = {k: body[k] for k in ("subagents", "jobs", "mcp")}
         elif kind == "chunk":
+            self.stamps.append(body.get("t"))
             key = (body["turnId"], body["agentId"], body["step"])
             if body["chunkIndex"] <= self.upto.get(key, -1):
                 self.errors.append("chunk %s %d at or below its watermark" % (key, body["chunkIndex"]))
@@ -561,6 +563,8 @@ class Engine(Session):
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 4 and b.usage))
         self.assertClean(b)
         self.assertLess(b.kinds.index("block-row"), b.kinds.index("row"), "a block-row before its row")
+        # Each live chunk carries the bridge's stamp through, for the web's chunk-to-drawn latency.
+        self.assertEqual(b.stamps, [1760000000000 + i for i in (1, 2, 3)], "the bridge's stamps, passed through")
         self.assertEqual(b.usage, [{"context": {"tokens": 1234, "window": 200000, "percent": 0.617},
                                     "cost": {"usd": 0.01}}])
 
