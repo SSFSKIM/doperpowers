@@ -4979,6 +4979,46 @@ SMNS_MEMBER="$PPID" hook_run Stop "$HSX" "$R3" "$TXD/$HSX.jsonl"
 SMNS_MEMBER="$PPID" CLAUDE_CODE_SESSION_ID="$HSX" run "$SMINOS" list --all
 rm -f "$SMINOS_HOME/internal/$$" "$HOME/.claude/sessions/hp-other.json.bak"
 assert_file_absent "$HPLOG/testhost.$HSX.jsonl" "nor does a marked session whose pid derive marked internal, by hook or by verb"
+HI=6e00000e-0000-4000-8000-00000000006e
+sdk_peer mawsi "$HI"
+SMNS_MEMBER="$MARK" SMNS_INTERNAL=1 CLAUDE_CODE_SESSION_ID="$HI" run "$SMINOS" list --all
+assert_not_contains "$OUT" "mawsi" "a verb an internal fork runs, with the mark and its session id inherited, joins nothing"
+assert_file_absent "$HPLOG/testhost.$HI.jsonl" "and writes nothing for it"
+# MAWS resumed a marked session whose engine crashed: the dead engine's record
+# lingers beside the running one's, and the hook reads the running one. The
+# registry lists records in the filesystem's order, so the dead one is written
+# under new names (and the running one again, for an order by creation) until
+# it is listed first.
+HR=6e00000f-0000-4000-8000-00000000006e
+( exit 0 ) & GONE_PID=$!
+wait "$GONE_PID" || true
+first_pid() { # session → the pid of the first record peer_records reads for it
+  python3 -c 'import glob, json, os, sys
+for p in glob.glob(os.path.join(os.environ["HOME"], ".claude", "sessions", "*.json")):
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    if isinstance(d, dict) and d.get("sessionId") == sys.argv[1]:
+        print(d.get("pid"))
+        break' "$1"
+}
+sdk_peer mawsr "$HR"
+for i in $(seq 1 32); do
+  printf '{"pid":%s,"sessionId":"%s","name":"mawsr","nameSource":"user","kind":"interactive","entrypoint":"sdk-ts","status":"busy","cwd":"%s"}\n' \
+    "$GONE_PID" "$HR" "$R3" > "$HOME/.claude/sessions/hp-crashed$i.json"
+  [ "$(first_pid "$HR")" = "$GONE_PID" ] && break
+  rm -f "$HOME/.claude/sessions/hp-mawsr.json"; sdk_peer mawsr "$HR"
+  [ "$(first_pid "$HR")" = "$GONE_PID" ] && break
+  rm -f "$HOME/.claude/sessions/hp-crashed$i.json"
+done
+assert_equals "$(first_pid "$HR")" "$GONE_PID" "(the dead engine's record is the one the registry lists first)"
+tx "$TXD/$HR.jsonl" asst r1000001 '<message>before the crash</message>'
+SMNS_MEMBER="$MARK" hook_run SessionStart "$HR" "$R3" "$TXD/$HR.jsonl" resume
+assert_equals "$(hp_events "$HR")" "joined " "a resumed marked session whose dead engine's record lingers joins at its SessionStart"
+tx "$TXD/$HR.jsonl" asst r1000002 '<message>after the resume</message>'
+SMNS_MEMBER="$MARK" hook_run Stop "$HR" "$R3" "$TXD/$HR.jsonl"
+assert_equals "$(hp_events "$HR")" "joined message:r1000002#0 " "and its Stop exports what it sent its human since"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/hp-"*.json
 

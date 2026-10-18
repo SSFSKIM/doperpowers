@@ -1290,8 +1290,10 @@ def _reconcile(project, events, local, by_session):
                     and not any(s["current"] == sid for s in seats()))
 
         out += lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
-    # A verb a marked session's tools run speaks for that session alone.
-    own = os.environ.get("CLAUDE_CODE_SESSION_ID") if os.environ.get(MEMBER_MARK) else None
+    # A verb a marked session's tools run speaks for that session alone; an
+    # internal fork's, for none.
+    own = (os.environ.get("CLAUDE_CODE_SESSION_ID")
+           if os.environ.get(MEMBER_MARK) and not os.environ.get("SMNS_INTERNAL") else None)
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
         if (latest.get(sid) == "joined") if peer else (sid in latest):
@@ -2917,9 +2919,13 @@ def record_session(project, session, tpath, event, last_message=""):
 def _on_sight(project, session):
     """(seat, peer): the seat that binds a session of this machine in the
     project, and the harness's record of it, either None when there is none;
-    None for derive's internal fork, which is never a member."""
+    None for derive's internal fork, which is never a member. The record is
+    the running one when there is one: an engine that crashed leaves its
+    record beside the one its resume writes, and the mark, a retirement and
+    the name are the running process's."""
     seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
-    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    recs = [r for r in peer_records() if r.get("sessionId") == session]
+    peer = next((r for r in recs if peer_running(r)), recs[0] if recs else None)
     if peer is not None and str(peer.get("pid")) in internal_pids():
         return None
     return seat, peer
