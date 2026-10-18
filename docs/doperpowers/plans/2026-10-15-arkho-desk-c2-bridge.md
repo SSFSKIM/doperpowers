@@ -532,8 +532,9 @@ session has a bridge, so the engine delivers it as a message from another Claude
    For a session's event the body closes with one fixed line saying how, runnable by a
    model that knows nothing of sminos (the CLI is not on PATH):
    `[To reply, run in Bash: <this install's sminos path> say "@<project id>/<sender short> <your reply>"]`.
-   The tag names the sender in the project whose log holds the message, so the reply
-   reaches it from any project and machine. The owner's fallback frames and the steer's
+   The tag names the sender in its own project: a session's `say` or `send` into another
+   project's log records that project as the event's `from_project`; otherwise it is the
+   log's own. So the reply reaches the sender from any project and machine. The owner's fallback frames and the steer's
    carry no such line. Surfaces that draw the body drop this last line. No
    `from-mode`: sminos does not know the sender's permission mode, so a receiver that
    bypasses permission prompts holds the message for its user's approval

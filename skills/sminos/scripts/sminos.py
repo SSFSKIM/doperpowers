@@ -2221,6 +2221,8 @@ def cmd_say(a):
     fields = {"from": sender, "to": recipients if (recipients or wake) else "*", "text": a.text}
     if wake:
         fields["wake"] = True
+    if sid and home is not None and home.id != dest.id:
+        fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
         e = log_append(dest, writer, kind, **fields)
     except OSError as err:
@@ -3874,10 +3876,10 @@ def reply_line(session, project=""):
     that sent it, as a command a model that knows nothing of sminos can run
     (the CLI is not on PATH, so it is named by this install's path, which the
     recipient shares: delivery is always on its own machine). The tag names
-    the sender by its short in the project whose log holds the message
-    (`@<project id>/<short>`), so a reply reaches it from any project and on
-    any machine; the envelope carries no `from` address, so SendMessage has
-    none to answer."""
+    the sender by its short in its own project (`@<project id>/<short>`: the
+    event's `from_project` when it spoke into another project's log, else the log's
+    own), so a reply reaches it from any project and on any machine; the
+    envelope carries no `from` address, so SendMessage has none to answer."""
     return '[To reply, run in Bash: %s say "@%s%s <your reply>"]' % (
         shlex.quote(os.path.join(SCRIPT_DIR, "sminos")), "%s/" % project if project else "", session[:8])
 
@@ -5731,6 +5733,9 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
     fields = {"from": sender, "to": [{"session": session, "alias": alias}], "text": text, "msg_id": msg_id}
     if via and via != sender:
         fields["via"] = via
+    home = caller_scope() if sid else None
+    if home is not None and home.id != project.id:
+        fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
         event = log_append(project, writer, "say" if sid else "human", **fields)
         return SendDelivery(project, session, writer, event) if deliver else event

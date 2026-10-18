@@ -501,18 +501,26 @@ assert_equals "$(field_of "$(cat "$KEPT")" "delivered.$P2/testhost/human")" "$(f
   "and it was submitted: the child keeps the second project's mark"
 assert_not_contains "$OUT" "already delivered" "with no duplicate said"
 assert_equals "$([ -s "$T/rover-inbox" ] && echo framed || echo none)" "none" "and nothing went to the inbox socket"
-# The peer's reply line, run as written by the member from the second
-# project's directory, reaches the peer in the first project's log.
+printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$$" "$SID" "$R" "$INBOX" > "$HOME/.claude/sessions/rover.json"
+# A peer of the second project speaking into the first: its frame's reply line
+# names the peer in its own project, and runs as written from the recipient's.
+printf '{"pid":%s,"sessionId":"%s","name":"peerone","nameSource":"user","kind":"interactive","status":"busy","cwd":"%s"}\n' \
+  "$$" "$PEER_SID" "$R2" > "$HOME/.claude/sessions/peerone.json"
+set +e; OUT="$(cd "$R2" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" say "@ctldemo/rover across projects" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a peer's say into another project exits 0"
+until_true 100 grep -q "across projects" "$T/rover-inbox" || true
+CONTENT="$(field_of "$(grep "across projects" "$T/rover-inbox" | tail -1)" message.content)"
+REPLY_LINE="$(tail -2 <<<"$CONTENT" | head -1)"
+assert_contains "$REPLY_LINE" "say \"@$P2/5f000005 <your reply>\"]" "its reply line names the sender's own project"
 REPLY_CMD="${REPLY_LINE#\[To reply, run in Bash: }"
 REPLY_CMD="${REPLY_CMD%\]}"
 REPLY_CMD="${REPLY_CMD/<your reply>/the answer}"
-set +e; OUT="$(cd "$R2" && CLAUDE_CODE_SESSION_ID="$SID" bash -c "$REPLY_CMD" 2>&1)"; RC=$?; set -e
-assert_rc 0 "$RC" "a peer frame's reply line runs as written, from another project"
-assert_contains "$OUT" "in ctldemo" "recorded in the sender's project"
+set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$SID" bash -c "$REPLY_CMD" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "the reply line runs as written from the recipient's project"
+assert_contains "$OUT" "in ctlsecond" "recorded in the sender's project"
 assert_contains "$OUT" "peerone: recorded" "addressed to the sender"
 rm -f "$HOME/.claude/sessions/peerone.json"
-printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
-  "$$" "$SID" "$R" "$INBOX" > "$HOME/.claude/sessions/rover.json"
 
 # A --bg job with no bridge: a human's event goes through the engine
 # supervisor's control socket (`reply`, human-origin), else the inbox frame.
