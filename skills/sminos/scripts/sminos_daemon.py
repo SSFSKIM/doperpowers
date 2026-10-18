@@ -588,7 +588,8 @@ def rejoin_former(project, view=None):
 
         got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,
                                **sminos.joined_fields(m.alias, m.name_source, *(
-                                   j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by"))))
+                                   j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by")),
+                                   session_kind=str(j.get("session_kind") or m.kind)))
         if got:
             n += 1
             if m.state:

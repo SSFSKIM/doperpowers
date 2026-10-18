@@ -63,9 +63,16 @@ member too, seat-less, from the first call that reads its project.
     sminos status   <member> <one line>                   # the member's own "now" line
     sminos retire   <member> [--purge]                    # stop; keep (or purge) a seat's record
     sminos remove   <seat>                                # stop and delete the record
-    sminos list     [project] [--state W] [--json] [--all]  # the working directory's project; every project
-                   from none or with --all. W: busy idle waiting stopped gone vacant retired;
-                   retired and gone fold into a "+N hidden" tail until --all or --state names them
+    sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--all] [--json]
+                   [words..]  # the working directory's project (every project from none); any filter
+                   widens to every project known here, then narrows: --machine by prefix, words (all of
+                   them) in the alias, short, project, repo, branch, in-charge, now line or title; --org
+                   every project; --here this machine, plus every running session in no project.
+                   W: busy idle waiting stopped gone vacant retired; retired and gone fold into a
+                   "+N hidden" tail until --all or --state names them. A row: alias [short], kind, state,
+                   @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
+                   it ends with the session's subagents (the ids SendMessage takes; --all: finished too)
+    sminos find     <words..>                             # list --org <words>: every session they match
     sminos chart    [project] [--all] [--width N]        # the members as boxes, grouped by project
     sminos tui      [project] [--all] [--no-tmux]        # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -115,6 +122,7 @@ import functools
 import glob
 import hashlib
 import heapq
+import http.client
 import importlib
 import json
 import os
@@ -1100,16 +1108,29 @@ class Member(NamedTuple):
     worktree: str
     seat: dict | None     # the seat record this session fills, when it is a seat on this machine
     former: tuple = ()    # the sessions it continues (lineage), newest first
+    kind: str = ""        # interactive | bg | seat (a joined's session_kind); "" when nothing says
+    cwd: str = ""         # where it works: its latest joined's cwd, else its seat's, else its record's
+    repo: str = ""        # the owning repository's basename ("" outside one)
+    branch: str = ""      # the branch checked out there ("" when detached or none)
+    charge_age: float | None = None   # seconds since its in-charge line's event; None for a line with none
+    active_age: float | None = None   # seconds since its engine record's updatedAt here, its last state remotely
+
+
+def project_kind(project):
+    """hub | local: whether the project syncs through a desk hub."""
+    return "hub" if project.hub else "local"
 
 
 def member_json(m, project=None):
     """A member as list --json carries it: no task body, no credential."""
     d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
-         "machine": m.machine, "local": m.local, "state": m.state, "state_age": m.state_age,
-         "charge": m.charge, "charge_source": m.charge_source, "by": m.by, "status": m.status,
-         "worktree": m.worktree, "seat": public_seat(m.seat) if m.seat else None, "former": list(m.former)}
+         "kind": m.kind or None, "machine": m.machine, "local": m.local, "state": m.state,
+         "state_age": m.state_age, "active_age": m.active_age, "charge": m.charge,
+         "charge_source": m.charge_source, "charge_age": m.charge_age, "by": m.by, "status": m.status,
+         "cwd": m.cwd, "repo": m.repo, "branch": m.branch, "worktree": m.worktree,
+         "seat": public_seat(m.seat) if m.seat else None, "former": list(m.former)}
     if project is not None:
-        d = {"project": project.name, "project_id": project.id, **d}
+        d = {"project": project.name, "project_id": project.id, "project_kind": project_kind(project), **d}
     return d
 
 
@@ -1149,9 +1170,23 @@ def caller_alias():
     return caller["alias"] if caller else default_from("")
 
 
-def joined_fields(alias, name_source, cwd, worktree="", role="", seat="", by=""):
+def repo_branch(cwd):
+    """(the owning repository's basename, the branch checked out at `cwd`),
+    each "" when there is none: what a row shows as repo@branch."""
+    if not cwd:
+        return "", ""
+    return os.path.basename(owning_repo(cwd)), sibling_module("sminos_policy").git_branch(cwd)
+
+
+def joined_fields(alias, name_source, cwd, worktree="", role="", seat="", by="", session_kind=""):
+    """A joined event's fields. `session_kind` is the session's kind
+    (interactive, bg, seat) — never `kind`, every event's own discriminator;
+    `repo` and `branch` are read where it works as it joins, and are not
+    published again when they change."""
+    repo, branch = repo_branch(cwd)
     return {"alias": alias, "name_source": name_source, "machine": host_name(), "cwd": cwd,
-            "worktree": worktree, "role": role, "seat": seat, "by": by}
+            "worktree": worktree, "role": role, "seat": seat, "by": by, "session_kind": session_kind,
+            "repo": repo, "branch": branch}
 
 
 def latest_membership(events):
@@ -1195,7 +1230,7 @@ def join_seat(seat, by=""):
     return lifecycle(seat_project(seat), seat["current"], "joined",
                      guard=lambda evs: latest_membership(evs) != "joined",
                      **joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"],
-                                     seat["seat_id"], by))
+                                     seat["seat_id"], by, "seat"))
 
 
 def seats_by_session(project, all_seats):
@@ -1378,7 +1413,8 @@ def join_on_sight(project, sid, seat, peer, running):
 
     out = []
     if seat:
-        fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"])
+        fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"],
+                               session_kind="seat")
     else:
         held = own_alias(_own_events(project, sid), sid)
         if str(peer.get("kind") or "") == "bg" and not held[0]:
@@ -1387,7 +1423,8 @@ def join_on_sight(project, sid, seat, peer, running):
                 out += hand_off(project, old, sid, old_peer)
                 held = own_alias(_own_events(project, old), old)
         alias, source = held_alias(*held, peer, sid)
-        fields = joined_fields(alias or sid[:8], source or "derived", str(peer.get("cwd") or ""))
+        fields = joined_fields(alias or sid[:8], source or "derived", str(peer.get("cwd") or ""),
+                               session_kind=str(peer.get("kind") or ""))
     return out + lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
 
 
@@ -1656,18 +1693,20 @@ def logged_alias(sid, info):
 
 
 def charge_of(member, events, title=True, published=""):
-    """(line, source): what a member is in charge of, the first present of
+    """(line, source, ts): what a member is in charge of, the first present of
     (§5) the latest `set` in-charge line, the name the human gave it, the
     latest `derived` line, and its title — read from its transcript on this
-    machine, else the one its machine `published` (`titled`); ("", "") when
-    none is. A set or derived line written empty is no line. `events` is the
-    log, or any part of it holding the member's in-charge events, each
+    machine, else the one its machine `published` (`titled`); ("", "", "")
+    when none is. `ts` is the line's event's, "" for a line no event wrote (a
+    name, a title). A set or derived line written empty is no line. `events`
+    is the log, or any part of it holding the member's in-charge events, each
     writer's in seq order. With title=False the transcript is not read (the
     daemon's tick has no use for the line). A line set for a session the
     member continues (`former`) is the member's."""
     sessions = (member.session,) + tuple(member.former)
     mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") in sessions]
     for source in ("set", "name", "derived", "title"):
+        ts = ""
         if source == "name":
             line = member.alias if member.name_source == "user" else ""
         elif source == "title":
@@ -1677,10 +1716,10 @@ def charge_of(member, events, title=True, published=""):
                 line = published
         else:
             e = latest_across_writers([x for x in mine if x.get("source") == source])
-            line = str(e.get("text") or "").strip() if e else ""
+            line, ts = (str(e.get("text") or "").strip(), str(e.get("ts") or "")) if e else ("", "")
         if line:
-            return line, source
-    return "", ""
+            return line, source, ts
+    return "", "", ""
 
 
 def charge_shown(m):
@@ -1712,17 +1751,32 @@ def _member(sid, r, seat, peer, local, title=True, info=None):
         alias, name_source = held_alias(*logged_alias(sid, info), peer, sid)
     machine = str(j.get("machine") or "")
     local = local or bool(seat) or not machine or is_self(machine, sid)
-    age = None
+    age = active = None
+    # Here, the engine's record of the session decides whether it runs and
+    # its word, for a seat as for a seat-less member, whatever directory the
+    # record names (the session may have joined where a turn of it ran); the
+    # inbox socket is delivery's question, never the word's (board:646).
+    rec = (peer or session_running(sid)) if local else None
     if not local:
         published = (r or {}).get("state") or {}
         state_word, age = str(published.get("state") or ""), (ts_age(published["ts"]) if published else None)
+        active = age
     elif seat:
-        # A seat's word is the one its route reads: the inbox must answer.
-        state_word = state(seat)
-    elif peer:
-        state_word = peer_state(peer)
+        state_word = seat_state(seat, rec)
+    elif rec:
+        state_word = peer_state(rec)
     else:
         state_word = "stopped" if transcript_path(sid) else "gone"
+    if rec and isinstance(rec.get("updatedAt"), (int, float)) and not isinstance(rec["updatedAt"], bool):
+        active = max(0.0, time.time() - rec["updatedAt"] / 1000.0)
+    if seat:
+        kind = "seat"
+    elif rec and rec.get("kind"):
+        kind = str(rec["kind"])
+    else:
+        kind = str(j.get("session_kind") or "")
+    cwd = str(j.get("cwd") or "") or (seat or {}).get("cwd") or str((rec or {}).get("cwd") or "")
+    repo, branch = repo_branch(cwd) if local else (str(j.get("repo") or ""), str(j.get("branch") or ""))
     status = max((x["status"] for x in chain if x["status"]), key=lambda e: e["ts"], default=None)
     worktree = next((str((x["joined"] or {}).get("worktree") or "") for x in chain
                      if (x["joined"] or {}).get("worktree")), "")
@@ -1732,12 +1786,20 @@ def _member(sid, r, seat, peer, local, title=True, info=None):
         charge="", charge_source="",
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
         by=next((x["by"] for x in chain if x["by"]), ""), worktree=seat["worktree"] if seat else worktree,
-        seat=seat, former=former)
+        seat=seat, former=former, kind=kind, cwd=cwd, repo=repo, branch=branch, active_age=active)
     # charge_of reads each writer's events in seq order, and one writer (a
     # remote operator) may have set a line for each session of the chain.
-    charge, source = charge_of(m, sorted((e for x in chain for e in x["in_charge"]),
-                                         key=lambda e: (e["writer"], e["seq"])), title, published_title(r))
-    return m._replace(charge=charge, charge_source=source)
+    charge, source, ts = charge_of(m, sorted((e for x in chain for e in x["in_charge"]),
+                                             key=lambda e: (e["writer"], e["seq"])), title, published_title(r))
+    return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None)
+
+
+def vacant_member(s):
+    """The row of a seat that holds no session."""
+    repo, branch = repo_branch(s["cwd"])
+    return Member(session="", short="", alias=s["alias"], name_source="seat", machine=host_name(), local=True,
+                  state=state(s), state_age=None, charge="", charge_source="", status=s["now"], by="",
+                  worktree=s["worktree"], seat=s, kind="seat", cwd=s["cwd"], repo=repo, branch=branch)
 
 
 def published_title(r):
@@ -1794,10 +1856,7 @@ def view_of(project, all_seats=None, titles=True):
     rest = sorted((s for s in all_seats if (not s["current"] or s["current"] not in sessions)
                    and (p := seat_project(s)) and p.id == project.id), key=lambda s: s["updated"], reverse=True)
     rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles, info) if s["current"] else
-            Member(session="", short="", alias=s["alias"], name_source="seat", machine=host_name(), local=True,
-                   state=state(s), state_age=None, charge="", charge_source="", status=s["now"], by="",
-                   worktree=s["worktree"], seat=s)
-            for s in rest]
+            vacant_member(s) for s in rest]
     # Seat-less sessions the log holds as retired, by alias: what a tag that
     # names one is told. One that continues in another session is not: its
     # name is the continuation's now.
@@ -3997,27 +4056,30 @@ def needs_probe(seat):
 
 
 def seat_state(seat, peer):
-    """A seat's one state word, one of STATES, given the result of ONE
-    liveness probe of its `current` session (`peer_for_session`, or None when
-    it found no live peer or `needs_probe` said not to probe). Read in this
-    order: retired (the recorded status), vacant (no `current`), then the
-    live peer — the session record the harness's own ListAgents reads —
-    then stopped when the session's transcript is on this machine (what a
-    `claude --bg --resume` needs), else gone. The harness listing is never
-    asked. A caller that probes once and routes on the same probe passes it
-    here, so the word and the route cannot disagree."""
+    """A seat's one state word, one of STATES. `peer` is a running record of
+    its `current` session a caller already holds (a delivery's probe,
+    `peer_for_session`, whose inbox answered), or None. Read in this order:
+    retired (the recorded status), vacant (no `current`), then the record —
+    `peer`, else the session record the harness's own ListAgents reads whose
+    process runs (session_running), whether or not its inbox answers — then
+    stopped when the session's transcript is on this machine (what a
+    `claude --bg --resume` needs), else gone. So a running process is never
+    `stopped`, and a delivery that found no inbox never resumes it: its
+    inbox's silence is the route's question, not the word's. The harness
+    listing is never asked."""
     if seat.get("status") == "retired":
         return "retired"
     if not seat.get("current"):
         return "vacant"
-    if peer:
-        return peer_state(peer)
+    rec = peer or session_running(seat["current"])
+    if rec:
+        return peer_state(rec)
     return "stopped" if transcript_path(seat["current"]) else "gone"
 
 
 def state(seat):
-    """A seat's one state word — seat_state after one probe of its session."""
-    return seat_state(seat, peer_for_session(seat["current"]) if needs_probe(seat) else None)
+    """A seat's one state word (seat_state)."""
+    return seat_state(seat, None)
 
 
 _SELF = None  # (this machine's name, {former name: its sessions}), per invocation
@@ -5104,7 +5166,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
                % prev["current"][:8], seat_project(prev), prev["current"], "retired", by=by, reason="replaced")
     record("the seat re-joins its project on the next reading verb, but its spawner (by %s) is not recorded"
            % (by or "the operator"), project, uuid, "joined",
-           **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "", rec_id, by))
+           **joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "", rec_id, by, "seat"))
     if brief:
         record("its in-charge line (%s) is not recorded" % brief, project, uuid, "in-charge", text=brief, source="set")
     status = "working"
@@ -5551,6 +5613,11 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     if st == "gone":
         die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
             "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
+    if not peer and st in FILLED:
+        # Its process runs (the engine's record): a resume would start a copy
+        # of the running session, so nothing is sent.
+        die('seat %s runs, but its inbox does not answer — nothing was sent; try again, or sminos resume %s '
+            '"<msg>" stops its turn and resumes it' % (ref, ref), EXIT_UNKNOWN)
     delivery = record(s) if record else None
     if delivery and not delivery.queue:
         # A concurrent deliverer pushed it between the append and our lock: no
@@ -6170,51 +6237,243 @@ def state_column(m):
                                 short_age(m.state_age) if m.state_age is not None else "") if x)
 
 
-def list_row(m, label, width, state_width):
-    rest = [charge_shown(m)] if charge_shown(m) else []
+LABEL_WIDTH = 36   # a row's `alias [short]` pads to at most this many cells, and is never cut
+
+
+def comma_list(value):
+    return [w for w in (x.strip() for x in str(value).split(",")) if w]
+
+
+def state_words(value):
+    """--state's comma list: each one of STATES."""
+    words = comma_list(value)
+    bad = [w for w in words if w not in STATES]
+    if bad or not words:
+        raise argparse.ArgumentTypeError("invalid state %r (each of: %s)" % (",".join(bad) or value, ", ".join(STATES)))
+    return words
+
+
+def list_scope(a):
+    """(projects, words): the projects a list reads and the words its rows
+    must match. With no filter, the caller's project (view_projects). Any
+    filter widens to every project known here before it narrows: a project
+    named first (as before), or with --project; --machine, --state, --here,
+    --org and words narrow the rows. Under --org or --project every
+    argument is a word."""
+    args = list(a.args)
+    if a.org or a.projects:
+        named, words = "", args
+    else:
+        named, words = (args[0], args[1:]) if args else ("", [])
+    if not (named or a.projects or a.machine or a.state or a.org or a.here or words):
+        return view_projects("")[0], []
+    if named:
+        return [find_project(named)], words
+    if a.projects:
+        picked = {}
+        for q in a.projects:
+            p = find_project(q)
+            picked.setdefault(p.id, p)
+        return list(picked.values()), words
+    return sorted(known_projects(), key=lambda p: (p.name, p.id)), words
+
+
+def row_matches(m, project, a, words):
+    """Whether a row passes list's filters: its machine by prefix (--machine,
+    --here), its word (--state), and every word, case-insensitively, in its
+    alias, short, project, repository, branch, in-charge line, status line
+    or title."""
+    prefixes = [x.lower() for x in a.machine] + ([host_name().lower()] if a.here else [])
+    if prefixes and not any(m.machine.lower().startswith(x) for x in prefixes):
+        return False
+    if a.state and m.state not in a.state:
+        return False
+    if not words:
+        return True
+    title = m.charge if m.charge_source == "title" else (transcript_title(m.session) if m.local and m.session else "")
+    hay = " ".join((m.alias, m.short, project.name if project else "", m.repo, m.branch, m.charge, m.status,
+                    title)).lower()
+    return all(w.lower() in hay for w in words)
+
+
+def unprojected_rows(members_known):
+    """--here's `(no project)`: a row for every running engine session on
+    this machine whose directory resolves to no project and that no project
+    holds as a member — what the harness's ListAgents shows and no project
+    does. A member's record may name a directory of no project (it joined
+    where a turn of it ran), so membership is asked, not the directory
+    alone. Internal forks and headless runs are none (joinable)."""
+    out, seen, internal = [], set(members_known), internal_pids()
+    for rec in peer_records():
+        sid, cwd = rec.get("sessionId"), rec.get("cwd")
+        if not (isinstance(sid, str) and UUID_RE.match(sid) and isinstance(cwd, str) and cwd) or sid in seen:
+            continue
+        if str(rec.get("pid")) in internal or not joinable(None, rec) or not peer_running(rec):
+            continue
+        if resolve_project(cwd) is not None:
+            continue
+        seen.add(sid)
+        repo, branch = repo_branch(cwd)
+        updated = rec.get("updatedAt")
+        active = (max(0.0, time.time() - updated / 1000.0)
+                  if isinstance(updated, (int, float)) and not isinstance(updated, bool) else None)
+        title = transcript_title(sid)
+        out.append(Member(session=sid, short=sid[:8], alias=str(rec.get("name") or "") or sid[:8],
+                          name_source=str(rec.get("nameSource") or "derived"), machine=host_name(), local=True,
+                          state=peer_state(rec), state_age=None, charge=title, charge_source="title" if title else "",
+                          status="", by="", worktree="", seat=None, kind=str(rec.get("kind") or ""), cwd=cwd,
+                          repo=repo, branch=branch, active_age=active))
+    return out
+
+
+def row_cells(m, project=None):
+    """(columns, the rest) of a list row: `alias [short]`, kind, word,
+    @machine, the project (a flat list only), repo@branch; then the
+    in-charge line with its age, `· now:` the status, `· by` the spawner,
+    `· active` the age of its last activity."""
+    label = "%s [%s]" % (m.alias, m.short) if m.short else m.alias
+    where = (m.repo + ("@" + m.branch if m.branch else "")) if m.repo else ""
+    cells = [label, m.kind or "?", m.state or "?", "@" + m.machine] + ([project.name] if project else []) + [where]
+    rest = []
+    if charge_shown(m):
+        rest.append("in charge: %s%s" % (charge_shown(m), " (%s)" % short_age(m.charge_age)
+                                         if m.charge_age is not None else ""))
     if m.status:
         rest.append("· now: " + m.status)
     if m.by:
         rest.append("· by " + m.by)
-    return ("  %-*s   %-*s  %s" % (width, label, state_width, state_column(m), "  ".join(rest))).rstrip()
+    if m.active_age is not None:
+        rest.append("· active " + short_age(m.active_age))
+    return cells, rest
+
+
+def print_rows(rows):
+    """Rows (row_cells) as aligned columns; a column empty on every row is left out."""
+    widths = [max(len(cells[i]) for cells, _ in rows) for i in range(len(rows[0][0]))]
+    widths[0] = min(widths[0], LABEL_WIDTH)
+    for cells, rest in rows:
+        parts = [c.ljust(w) for c, w in zip(cells, widths) if w]
+        print(("  " + "  ".join(parts + rest)).rstrip())
+
+
+def subagent_entries(session):
+    """The session's subagents, [{id, parent, type, status, live}] in spawn
+    order: from its bridge when one answers (the child keeps each agent's
+    spawn and whether it runs), else from its transcripts
+    (sminos_jobs.transcript_agents); [] with neither. Live is running, or
+    waiting on its own work: anything not ended."""
+    bridge = bridge_module()
+    try:
+        code, body = bridge.request(bridge.endpoint(session), "GET", "/agents", timeout=3)
+    except (OSError, http.client.HTTPException):
+        code, body = None, None
+    if code == 200 and isinstance(body, dict) and body.get("ready") and isinstance(body.get("agents"), list):
+        return [{"id": str(x.get("agentId")), "parent": x.get("parentAgentId") or None,
+                 "type": str(x.get("subagentType") or x.get("agentType") or "?"),
+                 "status": "running" if x.get("running") else "finished", "live": bool(x.get("running"))}
+                for x in body["agents"] if isinstance(x, dict) and x.get("agentId")]
+    tpath = transcript_path(session)
+    if not tpath:
+        return []
+    jobs = sibling_module("sminos_jobs")
+    out = []
+    for x in jobs.transcript_agents(tpath, session_running(session) is not None):
+        # No word that it ended, while the session runs: running, as far as its rows can tell.
+        status = "running" if x["status"] == "unknown" else x["status"]
+        out.append({"id": x["agentId"], "parent": x["parentAgentId"], "type": x["type"], "status": status,
+                    "live": status not in jobs.ENDED})
+    return out
+
+
+def subagent_lines(entries, every):
+    """The tree `list` ends with inside a session: live agents nested under
+    their parents (under the nearest one shown, when a parent is folded),
+    the ids SendMessage takes; finished ones folded into `+N finished`,
+    shown by --all (SendMessage to a finished agent's id resumes it)."""
+    if not entries:
+        return []
+    shown = [e for e in entries if every or e["live"]]
+    ids, by_id = {e["id"] for e in shown}, {e["id"]: e for e in entries}
+
+    def anchor(e):
+        p, seen = e["parent"], set()
+        while p and p not in ids and p in by_id and p not in seen:
+            seen.add(p)
+            p = by_id[p]["parent"]
+        return p if p in ids else None
+
+    children = {}
+    for e in shown:
+        children.setdefault(anchor(e), []).append(e)
+    out = ["subagents:"]
+
+    def walk(parent, depth):
+        for e in children.get(parent, ()):
+            out.append("%s%s  %s  %s" % ("  " * depth, e["id"], e["type"], e["status"]))
+            walk(e["id"], depth + 1)
+
+    walk(None, 1)
+    if len(entries) > len(shown):
+        out.append("  +%d finished — sminos list --all" % (len(entries) - len(shown)))
+    return out
 
 
 def cmd_list(a):
-    """One heading per project, its members newest first: alias (with #short
-    when another member shares it), state word, in-charge line, `· now:` the
-    status, `· by` the spawner."""
-    projects, _fleet = view_projects(a.project, a.all)
-    unfold = a.all or bool(a.state)
-    sections, out, hidden = [], [], 0
+    """The members of the caller's project, or what the filters pick from
+    every project known here (list_scope): one row each (row_cells), under
+    the project's heading when one project shows, flat with the project
+    column when several do; --here adds `(no project)`. Retired and gone
+    fold into a tail line unless --all or --state names them. Inside a
+    session, the list ends with its subagents (subagent_lines)."""
+    projects, words = list_scope(a)
+    sections, out, hidden, members_known = [], [], 0, set()
     for p in projects:
         every = project_rows(p)
-        rows = [m for m in every if not a.state or m.state == a.state]
+        members_known |= {m.session for m in every if m.session}
+        rows = [m for m in every if row_matches(m, p, a, words)]
         if a.json:
             out += [member_json(m, p) for m in rows]
             continue
         # The text view folds what only a `fill` (or the human) can act on,
-        # as chart and tui do, unless --all or an explicit --state names the
-        # word; the tail line says how many it folded. --json keeps every row.
-        if not unfold:
-            hidden += sum(1 for m in rows if m.state in HIDDEN)
-            rows = [m for m in rows if m.state not in HIDDEN]
+        # as chart and tui do, unless --all or --state names the word; the
+        # tail line says how many it folded. --json keeps every row.
+        if not a.all:
+            hidden += sum(1 for m in rows if m.state in HIDDEN and m.state not in a.state)
+            rows = [m for m in rows if m.state not in HIDDEN or m.state in a.state]
         if rows:
-            sections.append((p, rows, every))
+            sections.append((p, rows))
+    loose = []
+    if a.here:
+        for p in known_projects():
+            if p.id not in {q.id for q in projects}:
+                members_known |= {m.session for m in project_rows(p) if m.session}
+        loose = [m for m in unprojected_rows(members_known) if row_matches(m, None, a, words)]
     if a.json:
+        out += [{"project": None, "project_id": None, "project_kind": None, **member_json(m)} for m in loose]
         print(json.dumps(out, indent=2))
         return
-    tail = ("+%d hidden (%s) — sminos list --all" % (hidden, ", ".join(HIDDEN))) if hidden else ""
-    if not sections:
+    if not sections and not loose:
         print("(no members)")
-    for p, rows, every in sections:
-        labels = [member_label(m, every) for m in rows]
-        width = min(max(len(x) for x in labels), 24)
-        state_width = max(len(state_column(m)) for m in rows)
-        print(p.name)
-        for m, label in zip(rows, labels):
-            print(list_row(m, label, width, state_width))
-    if tail:
-        print(tail)
+    if len(sections) == 1:
+        print(sections[0][0].name)
+        print_rows([row_cells(m) for m in sections[0][1]])
+    elif sections:
+        print_rows([row_cells(m, p) for p, rows in sections for m in rows])
+    if loose:
+        print("(no project)")
+        print_rows([row_cells(m) for m in loose])
+    if hidden:
+        print("+%d hidden (%s) — sminos list --all" % (hidden, ", ".join(HIDDEN)))
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if sid and not a.find:
+        for line in subagent_lines(subagent_entries(sid), a.all):
+            print(line)
+
+
+def cmd_find(a):
+    """`find <words>`: list --org <words>."""
+    a.org = True
+    cmd_list(a)
 
 
 def cmd_attach(a):
@@ -6578,12 +6837,24 @@ def build_parser():
     rm.add_argument("seat")
     rm.set_defaults(fn=cmd_remove)
 
+    def list_flags(sp):
+        sp.add_argument("--project", dest="projects", type=comma_list, default=[])
+        sp.add_argument("--machine", type=comma_list, default=[])
+        sp.add_argument("--state", type=state_words, default=[])
+        sp.add_argument("--org", action="store_true")
+        sp.add_argument("--here", action="store_true")
+        sp.add_argument("--json", action="store_true")
+        sp.add_argument("--all", action="store_true")
+
     ls = sub.add_parser("list", add_help=False)
-    ls.add_argument("project", nargs="?", default="")
-    ls.add_argument("--state", default="", choices=STATES)
-    ls.add_argument("--json", action="store_true")
-    ls.add_argument("--all", action="store_true")
-    ls.set_defaults(fn=cmd_list)
+    ls.add_argument("args", nargs="*")
+    list_flags(ls)
+    ls.set_defaults(fn=cmd_list, find=False)
+
+    fd = sub.add_parser("find", add_help=False)
+    fd.add_argument("args", nargs="+")
+    list_flags(fd)
+    fd.set_defaults(fn=cmd_find, find=True)
 
     ch = sub.add_parser("chart", add_help=False)
     ch.add_argument("project", nargs="?", default="")

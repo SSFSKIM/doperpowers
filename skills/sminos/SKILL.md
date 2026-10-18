@@ -105,7 +105,9 @@ script, the daemon's service — the caller is the operator, `human`, not a seat
 messages are recorded as from `human`, and it may name any project known
 on this machine.
 
-    sminos list [project] [--all] [--state W] [--json]   # the cwd's project; every project from no project, or with --all
+    sminos list [project] [--all] [--state W,..] [--json]  # the cwd's project; every project from no project
+    sminos list --org | --here | --machine M,.. | --project P,.. [words..]  # every project, filtered
+    sminos find <words..>                                  # every session the words match
     sminos chat [project] [-n N] [--since TS] [--json]   # the project chat
     sminos chat [project] --host [-n N] [--since TS]     # what the members sent their human
     sminos say [--in <project>] "…"                      # --in is the operator's; tags as above
