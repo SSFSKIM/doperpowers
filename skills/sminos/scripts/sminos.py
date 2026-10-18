@@ -1001,27 +1001,53 @@ def known_projects(all_seats=None):
     return list(out.values())
 
 
-def find_project(q, required=True):
-    """A project known locally, by id or by name; with required=False, None
-    when none is (an ambiguous name still exits). An id answers first; a name
-    among hub projects, then machine projects, then the rest (local-* and
-    git-mirrored ones), so a local project named after its repository never
-    shadows the repository's hub project."""
+def project_tiers(q):
+    """The projects `q` names, in the order a name is looked up in them: its
+    id alone; else, by name, the hub project, then the machine project; the
+    rest (local-* and git-mirrored ones) only when neither has the name, so a
+    local project named after its repository never shadows the repository's
+    hub project. [] when none has it; an ambiguous name exits. A verb takes
+    the first (find_project); a tag `@<q>/<alias>` reads the next only when
+    the first has no such member — a team names its project deliberately and
+    a machine is named after a host, so the project is the likelier meaning."""
     known = known_projects()
     hits = [p for p in known if p.id == q]
     if hits:
-        return hits[0]
+        return hits[:1]
     named = [p for p in known if p.name == q]
+    out = []
     for kind in ("hub", "machine", "local"):
         hits = [p for p in named if project_kind(p) == kind]
-        if len(hits) == 1:
-            return hits[0]
-        if hits:
+        if len(hits) > 1:
             die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in hits))),
                 EXIT_UNKNOWN)
+        if kind == "local" and out:
+            break
+        out += hits
+    return out
+
+
+def find_project(q, required=True):
+    """A project known locally, by id or by name (project_tiers' first);
+    with required=False, None when none is (an ambiguous name still exits)."""
+    tiers = project_tiers(q)
+    if tiers:
+        return tiers[0]
     if not required:
         return None
     die("no project '%s' is known on this machine" % q, EXIT_UNKNOWN)
+
+
+def org_scope():
+    """The projects an org-wide name (`@short`, `@alias#short`) is looked up
+    in: every project known here, the followed ones included, but one the
+    org's directory retires."""
+    return [p for p in known_projects() if not org_retired(p.id)]
+
+
+def project_label(pid):
+    """A project id as a reader names it: the project's name when it is known here."""
+    return next((p.name for p in known_projects() if p.id == pid), pid)
 
 
 def caller_project(caller=None):
@@ -1401,8 +1427,13 @@ def log_append_batch(project, writer, events, skip_src=True):
 
 
 def addressed_to(e, session):
+    """Whether the event is owed to the session. A `copy` — the sender's own
+    log's record of a message another project's log delivers (§6 of the org
+    directory design) — is owed to no one: its `to` names who the other
+    event reached."""
     to = e.get("to")
-    return isinstance(to, list) and any(isinstance(r, dict) and r.get("session") == session for r in to)
+    return (isinstance(to, list) and "copy" not in e
+            and any(isinstance(r, dict) and r.get("session") == session for r in to))
 
 
 def log_read(project, since=None, kinds=(), to_session=None):
@@ -2366,7 +2397,7 @@ def published_title(r):
 class View(NamedTuple):
     members: list         # the members, newest join first
     rows: list            # the seats no member stands for (vacant, retired, or replaced), newest first
-    retired: list         # (alias, short, reason) of seat-less sessions the log holds as retired
+    retired: list         # (alias, short, reason, project moved to) of seat-less sessions the log holds as retired
     events: list          # the log as read, with what reconciliation appended
     info: dict            # _projection(events)
     reconciled: int       # how many events reconciliation appended
@@ -2414,8 +2445,9 @@ def view_of(project, all_seats=None, titles=True):
             vacant_member(s) for s in rest]
     # Seat-less sessions the log holds as retired, by alias: what a tag that
     # names one is told. One that continues in another session is not: its
-    # name is the continuation's now.
-    retired = [(str((r["renamed"] or r["joined"]).get("alias") or sid[:8]), sid[:8], str(r["latest"].get("reason") or ""))
+    # name is the continuation's now. One that moved names where it went.
+    retired = [(str((r["renamed"] or r["joined"]).get("alias") or sid[:8]), sid[:8], str(r["latest"].get("reason") or ""),
+                str(r["latest"].get("project") or ""))
                for sid, r in info.items()
                if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session
                and r["latest"].get("reason") != "continued"]
@@ -2431,9 +2463,9 @@ def members(project):
 
 
 def retired_sessions(project):
-    """(alias, short, reason) of the project's seat-less sessions whose
-    membership the log holds as retired — `ended` with their process, or
-    retired by hand."""
+    """(alias, short, reason, project) of the project's seat-less sessions
+    whose membership the log holds as retired — `ended` with their process,
+    retired by hand, or `moved` to `project` (an id; "" for none)."""
     return view_of(project).retired
 
 
@@ -2446,7 +2478,9 @@ def reconcile(project):
 
 
 def _owed(events, session, record):
-    # Imported history was delivered by the old chat: it is never owed.
+    # Imported history was delivered by the old chat: it is never owed; nor
+    # is a copy, by its `copy` key alone (addressed_to), so a reader without
+    # that rule owes it to no one either — its recipients are another log's.
     return [e for e in events
             if not e["writer"].startswith("legacy/")
             and writer_session(e["writer"]) != session and addressed_to(e, session)
@@ -2547,10 +2581,12 @@ def deliver_next(project, member):
 def frame_of(project, e, events, session, cursor):
     """The frame an event is pushed as. A `send` keeps its own frame (its id
     is what `send --wait` looks for), its sender shown as the `--from`
-    override when it had one; anything else is a chat frame."""
+    override when it had one; anything else is a chat frame. Its unread
+    count leaves out copies: each is a record of a message another log
+    carries, not one spoken here."""
     if e.get("msg_id"):
         return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""))
-    unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and
+    unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
     return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
                               "@all" if e.get("wake") else "@you", unread, str(e.get("text") or ""))
@@ -2611,36 +2647,54 @@ def is_all(tag):
     return tag["name"] == "all" and not tag["project"] and not tag["short"]
 
 
-def match_members(name, short, projects):
+def match_members(name, short, projects, alias=True, ids=True):
     """The (project, member) pairs a tag's name answers to among the projects'
     members: their alias (with `short`, an alias whose short starts so), their
     short (`@short`), or their session id — a session they continue (`former`)
-    answering as theirs does. A retired member answers to nothing."""
+    answering as theirs does. With alias=False a bare name is matched against
+    shorts and ids alone, with ids=False against aliases alone. A retired
+    member answers to nothing."""
     found = []
     for p in projects:
         for m in members(p):
             if m.state == "retired":
                 continue
-            ids = (m.session,) + m.former
+            sessions = (m.session,) + m.former
             if short:
-                hit = m.alias == name and any(s[:8].startswith(short) for s in ids)
+                hit = m.alias == name and any(s[:8].startswith(short) for s in sessions)
             else:
-                hit = name == m.alias or any(name in (s, s[:8]) for s in ids)
+                hit = (alias and name == m.alias) or (ids and any(name in (s, s[:8]) for s in sessions))
             if hit:
                 found.append((p, m))
     return found
 
 
-def candidate_labels(found, qualify):
+def one_per_session(found, key=lambda m: m.session):
+    """`found` with each session (each `key`) once. A session two projects'
+    logs hold as a member at once — a move's dual membership of one tick
+    (§1a of the org directory design) — answers in the one it joined last."""
+    best = {}
+    for p, m in found:
+        k = key(m)
+        ts = str(((view_of(p).info.get(m.session) or {}).get("joined") or {}).get("ts") or "")
+        if k not in best or ts > best[k][0]:
+            best[k] = (ts, p, m)
+    return [(p, m) for _, p, m in best.values()]
+
+
+def candidate_labels(found, qualify, at=""):
     """The candidates a name was ambiguous between, each as the name that tells
-    it apart: alias#short, behind its project when several were searched."""
-    return ", ".join(sorted(("%s/" % p.name if qualify else "") + "%s#%s" % (m.alias, m.short) for p, m in found))
+    it apart: alias#short, behind its project when they span projects
+    (`<at><project>/alias#short`, `at` "@" for a tag)."""
+    return ", ".join(sorted(("%s%s/" % (at, p.name) if qualify else "") + "%s#%s" % (m.alias, m.short)
+                            for p, m in found))
 
 
-def unreachable_hint(raw, name, short, projects):
+def unreachable_hint(raw, name, short, projects, at="@"):
     """The refusal for a tag no member answers to that still names someone: a
-    retired or vacant seat, or a seat-less session whose membership ended
-    (it is never resumed, so an untagged line is how to leave it a note)."""
+    retired or vacant seat, a seat-less session whose membership ended (it is
+    never resumed, so an untagged line is how to leave it a note), or one that
+    moved to another project — where its short (`<at>short`) still reaches it."""
     for p in projects:
         for s in project_seats(p):
             if s["alias"] == name and s["current"][:8].startswith(short):
@@ -2648,31 +2702,92 @@ def unreachable_hint(raw, name, short, projects):
                     return "%s is retired; re-fill it to reach it" % raw
                 if not s["current"]:
                     return "%s is vacant — fill it to reach it" % raw
-        for alias, sh, reason in retired_sessions(p):
+        for alias, sh, reason, moved_to in retired_sessions(p):
             if alias == name and sh.startswith(short):
                 if reason == "ended":
                     return ("%s: %s's session ended; say it untagged to leave a note — it reads the chat when "
                             "it is resumed" % (raw, alias))
+                if reason == "moved" and moved_to:
+                    return "%s moved to %s; %s%s reaches it" % (raw, project_label(moved_to), at, sh)
                 return "%s is retired; it re-joins when its session runs again" % raw
     return ""
 
 
-def name_scope(project, explicit=""):
-    """The projects a name is looked up in: the one it names, else the
-    speaker's, else — from a directory that is no project — every project
-    known here."""
-    if explicit:
-        return [find_project(explicit)]
-    return [project] if project is not None else known_projects()
+BARE_NAME = "a bare name reaches only your project; %s reaches anyone"
+
+
+def no_member(raw, name, short, scope, elsewhere=(), at="@"):
+    """Exit 4 for a name no member of `scope` answers to: what the scope still
+    knows of it (unreachable_hint); else the members of other projects with
+    that alias (`elsewhere`), each as the name that reaches it; else plainly
+    none."""
+    hint = unreachable_hint(raw, name, short, scope, at)
+    if hint:
+        die(hint, EXIT_UNKNOWN)
+    names = sorted({p.name for p in scope})
+    where = "project %s" % names[0] if len(names) == 1 else "any project known here"
+    if elsewhere:
+        die("no member %s in %s; elsewhere: %s\n%s" % (raw, where, candidate_labels(elsewhere, True, at),
+                                                        BARE_NAME % ("@short" if at else "a session's short")),
+            EXIT_UNKNOWN)
+    die("no member %s in %s" % (raw, where), EXIT_UNKNOWN)
+
+
+def one_member(raw, found, qualify):
+    """The one (project, member) of `found`; exit 4 naming each when several."""
+    if len(found) > 1:
+        die("ambiguous %s matches: %s" % (raw, candidate_labels(found, qualify, "@")), EXIT_UNKNOWN)
+    return found[0]
+
+
+def resolve_tag(project, t):
+    """The (project, member) one tag reaches, `project` the sender's (§5 of
+    the org directory design), or exit 4 saying why not:
+
+    - `@<p>/<alias>`: in the projects `p` names (project_tiers), the next one
+      read only when the one before has no such member — so a project named
+      after a machine is read before that machine's project;
+    - `@alias#short`: in every project known here (org_scope);
+    - `@alias`: the sender's project; a name no alias there answers to is
+      read as a short or a session id, across every project known here. A
+      bare name never reaches another project's alias: the board spawns the
+      same seat names in every repository, so `@executor` would otherwise
+      wake another repository's executor. The refusal names those members.
+    - From no project (a machine not enrolled), every project known here."""
+    raw, name, short = t["raw"], t["name"], t["short"]
+    if t["project"]:
+        tiers = project_tiers(t["project"])
+        if not tiers:
+            die("no project '%s' is known on this machine" % t["project"], EXIT_UNKNOWN)
+        for p in tiers:
+            found = match_members(name, short, [p])
+            if found:
+                return one_member(raw, found, False)
+        no_member(raw, name, short, tiers)
+    if project is None:
+        scope = known_projects()
+        found = one_per_session(match_members(name, short, scope))
+        return one_member(raw, found, True) if found else no_member(raw, name, short, scope)
+    if short:
+        found = one_per_session(match_members(name, short, org_scope()))
+        return one_member(raw, found, True) if found else no_member(raw, name, short, org_scope())
+    found = match_members(name, "", [project], ids=False)
+    if found:
+        return one_member(raw, found, False)
+    found = one_per_session(match_members(name, "", org_scope(), alias=False))
+    if found:
+        return one_member(raw, found, True)
+    no_member(raw, name, short, [project],
+              [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id])
 
 
 def resolve_tags(project, text):
-    """Resolve a message's leading tags at submission. Returns (destination,
-    recipients [{session, alias}], text, wake). The destination is the
-    sender's project, or the one the tags name (from no project, the one the
-    names are found in); tags naming two projects are refused, as are a tag
-    matching no member and one matching several (named as alias#short).
-    `@all` is the members live at submission."""
+    """Resolve a message's leading tags at submission (resolve_tag). Returns
+    (destination, recipients [{session, alias}], text, wake). The destination
+    is the sender's project, or the one the tags reach; tags reaching two
+    projects are refused, as are a tag matching no member and one matching
+    several (named as alias#short). `@all` is the members of the sender's
+    project live at submission."""
     tags = leading_tags(text)
     if not tags:
         return project, [], text, False
@@ -2687,28 +2802,14 @@ def resolve_tags(project, text):
         live = [m for m in members(project) if m.state in FILLED]
         return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
 
-    def one_project(projects):
-        if len(projects) > 1:
-            die("one message, one project: the tags name %s" % ", ".join(sorted(p.name for p in projects.values())))
-
-    one_project({p.id: p for t in tags for p in [find_project(t["project"]) if t["project"] else project] if p})
     destinations, recipients = {}, []
     for t in tags:
-        scope = name_scope(project, t["project"])
-        found = match_members(t["name"], t["short"], scope)
-        if len(found) > 1:
-            die("ambiguous %s matches: %s" % (t["raw"], candidate_labels(found, len(scope) > 1)), EXIT_UNKNOWN)
-        if not found:
-            hint = unreachable_hint(t["raw"], t["name"], t["short"], scope)
-            if hint:
-                die(hint, EXIT_UNKNOWN)
-            die("no member %s in %s" % (t["raw"], "project %s" % scope[0].name if len(scope) == 1 else
-                                        "any project known here"), EXIT_UNKNOWN)
-        p, m = found[0]
+        p, m = resolve_tag(project, t)
         destinations[p.id] = p
         if all(r["session"] != m.session for r in recipients):
             recipients.append({"session": m.session, "alias": m.alias})
-    one_project(destinations)
+    if len(destinations) > 1:
+        die("one message, one project: the tags name %s" % ", ".join(sorted(p.name for p in destinations.values())))
     return next(iter(destinations.values())), recipients, text, False
 
 
@@ -2814,6 +2915,26 @@ def push_member(member, text, tagged, session=None, event=None, project=None):
 # ------------------------------------------------------------------ say / chat
 
 
+def record_copy(home, dest, e):
+    """A message a session spoke into another project (`e`, in `dest`'s log,
+    which delivers it), copied into the session's own project's log `home`
+    (§6 of the org directory design): the same event under the same writer,
+    its ts, `from` and text, `to` each recipient with its project, and
+    `copy` naming the delivering event as `<project id>:<writer>:<seq>` — no
+    one is owed it (addressed_to). Written after the delivering event; one
+    that cannot be written is a warning, since the message was delivered."""
+    fields = {k: v for k, v in e.items() if k not in ("writer", "seq", "kind", "from_project")}
+    fields["to"] = [dict(r, project=dest.id) for r in e["to"] if isinstance(r, dict)]
+    fields["copy"] = "%s:%s:%d" % (dest.id, e["writer"], e["seq"])
+    try:
+        c = log_append(home, e["writer"], e["kind"], **fields)
+    except OSError as err:
+        warn("delivered, but its copy could not be recorded in %s: %s" % (home.name, err))
+        return None
+    print("copy %s in %s" % (event_ref(c), home.name))
+    return c
+
+
 def cmd_say(a):
     """Record a message in a project's log, and deliver it to whom it tags."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
@@ -2845,6 +2966,8 @@ def cmd_say(a):
     except OSError as err:
         die("say could not be recorded: %s" % err, 1)
     print("recorded %s in %s" % (event_ref(e), dest.name))
+    if "from_project" in fields:
+        record_copy(home, dest, e)
     by_session = {m.session: m for m in members(dest)}
     for r in recipients:
         member = by_session.get(r["session"])
@@ -2882,7 +3005,7 @@ def moved_line(e, events):
                   if x["kind"] in ("joined", "renamed") and x.get("session") == e.get("session") and x.get("alias")),
                  "") or str(e.get("session") or "")[:8]
     pid = str(e.get("project") or "")
-    to = next((p.name for p in known_projects() if p.id == pid), pid) if pid else "no project"
+    to = project_label(pid) if pid else "no project"
     return "%s %s %s retired (moved to %s)" % (e["ts"][11:19], event_ref(e), alias, to)
 
 
@@ -2891,8 +3014,13 @@ def is_moved(e):
 
 
 def chat_line(e):
+    """`<ts> <ref> <from> → <target>  <text>`; a copy (record_copy) marked
+    `→ <project>` after its target, the project whose log delivered it."""
     lines = str(e.get("text") or "").split("\n")
-    out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target_label(e), lines[0])]
+    target = target_label(e)
+    if isinstance(e.get("copy"), str):
+        target += " → %s" % project_label(e["copy"].partition(":")[0])
+    out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target, lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
 
@@ -4026,12 +4154,13 @@ def find_target(q):
     A full id — a seat id or session id — names its seat directly, and so
     does `group/alias` when the qualifier is a group and no project. Any other
     name, `<project>/<alias>` by the project's name or id included, is
-    resolved as a tag is: its projects (the one it names, else the caller's,
-    else every project known here) are reconciled, and the name is matched
-    against every member and every seat no member stands for (vacant,
-    retired), so a seat and a seat-less session sharing an alias are refused
-    as ambiguous rather than the seat being taken. A qualifier that is both a
-    project and a group falls back to the group when the project has no match."""
+    resolved as a tag is (resolve_tag): its projects (those it names, else the
+    caller's, then for `alias#short` or a short every project known here) are
+    reconciled, and the name is matched against every member and every seat
+    no member stands for (vacant, retired), so a seat and a seat-less session
+    sharing an alias are refused as ambiguous rather than the seat being
+    taken. A qualifier that is both a project and a group falls back to the
+    group when the project has no match."""
     scope = caller_scope()
 
     def exact(kind, res):
@@ -4058,24 +4187,49 @@ def find_target(q):
             return hit
     proj, _, rest = q.rpartition("/")
     name, _, short = rest.partition("#")
-    if proj and not short and find_project(proj, required=False) is None:
+    tiers = project_tiers(proj) if proj else []
+    if proj and not short and not tiers:
         return group_seat(proj, name) or ("none",)
-    projects = known_projects() if UUID_RE.match(q) else name_scope(scope, proj)
-    found, seen = [], set()
-    for p in projects:
-        ms, rows = project_view(p)
-        for m in ms + rows:
-            ids = (m.session,) + m.former if m.session else ()
-            if short:
-                hit = m.alias == name and any(s[:8].startswith(short) for s in ids)
-            else:
-                hit = name == m.alias or name in ids
-            # One seat is one target, though its session joined one project
-            # and its record now resolves to another (a cwd that moved).
-            key = m.seat["seat_id"] if m.seat else m.session
-            if hit and key not in seen:
-                seen.add(key)
-                found.append((p, m))
+
+    def matches(projects, by_short):
+        found = []
+        for p in projects:
+            ms, rows = project_view(p)
+            for m in ms + rows:
+                ids = (m.session,) + m.former if m.session else ()
+                if short:
+                    hit = m.alias == name and any(s[:8].startswith(short) for s in ids)
+                elif by_short:
+                    hit = any(name == s[:8] for s in ids)
+                else:
+                    hit = name == m.alias or name in ids
+                if hit:
+                    found.append((p, m))
+        # One seat is one target, though its session joined one project and
+        # its record now resolves to another (a cwd that moved); one session
+        # two logs hold at once is the member where it joined last.
+        return one_per_session(found, lambda m: m.seat["seat_id"] if m.seat else m.session)
+
+    # Where the name is looked up, in order, the first pass with a match
+    # deciding (§5 of the org directory design, as a tag is resolved): a full
+    # id in every project known here; `<project>/<alias>` in the projects the
+    # qualifier names (an ordinary project before a machine's of its name);
+    # else the caller's project, then — `alias#short`, or a bare name as a
+    # short — every project known here. A bare alias never leaves the
+    # caller's project.
+    if UUID_RE.match(q):
+        passes = [(known_projects(), False)]
+    elif proj:
+        passes = [([p], False) for p in tiers]
+    elif scope is None:
+        passes = [(known_projects(), False)]
+    else:
+        passes = [([scope], False), (org_scope(), not short)]
+    found, projects = [], []
+    for projects, by_short in passes:
+        found = matches(projects, by_short)
+        if found:
+            break
     if len(found) > 1:
         if all(m.seat for _, m in found):
             die(ambiguous_seat(q, [m.seat for _, m in found]), EXIT_UNKNOWN)
@@ -6410,9 +6564,11 @@ def record_send(s, sender, via, text, msg_id):
 
 
 def record_message(project, session, alias, sender, via, text, msg_id, deliver=True):
-    """Append a `send` to the project's log, addressed to one session, and —
-    unless the recipient is another machine's to deliver — open its
-    SendDelivery. A message the log cannot hold is not sent: exit 1 first."""
+    """Append a `send` to the project's log, addressed to one session — from
+    a session of another project, copied into that project's log too
+    (record_copy) — and, unless the recipient is another machine's to
+    deliver, open its SendDelivery. A message the log cannot hold is not
+    sent: exit 1 first."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     writer = writer_id(sid or None)
     fields = {"from": sender, "to": [{"session": session, "alias": alias}], "text": text, "msg_id": msg_id}
@@ -6423,6 +6579,8 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
         fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
         event = log_append(project, writer, "say" if sid else "human", **fields)
+        if "from_project" in fields:
+            record_copy(home, project, event)
         return SendDelivery(project, session, writer, event) if deliver else event
     except OSError as e:
         die("send not delivered: it could not be recorded in %s's log (%s)" % (project.name, e), 1)
@@ -6501,18 +6659,26 @@ def _send(a):
         return
     if a.wait:
         refuse_wait(a.target)
-    # Nothing in the project answers. From inside a project a bare name never
-    # reaches past it: another project's member is <project>/<alias>, and a
-    # message to it is recorded in that project's log.
+    # Nothing answers. A name of projects known here is refused saying what
+    # they know of it; from inside a project a bare name never reaches past
+    # it: another project's member is <project>/<alias> (named in the
+    # refusal), and a message to it is recorded in that project's log.
     scope = caller_scope()
+    proj, _, rest = a.target.rpartition("/")
+    name, _, short = rest.partition("#")
+    tiers = project_tiers(proj) if proj else []
+    if tiers:
+        no_member(a.target, name, short, tiers, at="")
     if scope is not None and not UUID_RE.match(a.target.lower()):
-        die("no member '%s' in project %s — a member of another project is <project>/%s" % (
-            a.target, scope.name, a.target), EXIT_UNKNOWN)
-    # From no project, the one unrecorded route: a live session that is in no
-    # project either (any session in a project answered above, as a member),
-    # by its harness name. There is no log for it to be recorded in.
-    peers = [r for r in live_name_holders(a.target)
-             if not (isinstance(r.get("cwd"), str) and r["cwd"] and record_project(r))]
+        no_member(a.target, name, short, [scope], () if short else
+                  [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != scope.id], at="")
+    # From no project on a machine not enrolled, the one unrecorded route: a
+    # live session that is in no project either (any session in a project
+    # answered above, as a member), by its harness name. There is no log for
+    # it to be recorded in. On an enrolled machine every session is in a
+    # project (its machine's, at least), so the route is never taken there.
+    peers = [] if enrollment() is not None else [
+        r for r in live_name_holders(a.target) if not (isinstance(r.get("cwd"), str) and r["cwd"] and record_project(r))]
     if len(peers) == 1:
         try:
             send_frame(socket_path_of(peers[0]), text, frm)

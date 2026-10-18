@@ -381,6 +381,8 @@ run_suites() {
     fail "the org's directory: machine projects, follow-only hellos (test-org.sh)"; fi
   if "$SCRIPT_DIR/test-join.sh"; then pass "a session's project: its launch directory, join, moves (test-join.sh)"; else
     fail "a session's project: its launch directory, join, moves (test-join.sh)"; fi
+  if "$SCRIPT_DIR/test-address.sh"; then pass "addressing across the org and the sender's copy (test-address.sh)"; else
+    fail "addressing across the org and the sender's copy (test-address.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
@@ -2876,8 +2878,20 @@ CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x the shared plugin chang
 assert_rc 0 "$RC" "a tag into another project records"
 assert_contains "$OUT" "in other" "in the destination project"
 assert_contains "$(log_of "$OTHER")" "the shared plugin changed" "the message lands in the tagged project's log"
-assert_not_contains "$(log_of "$DEMO")" "the shared plugin changed" "and nowhere else"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" \
+  "\"copy\": \"$OTHER:testhost/$SA:$(last_seq "$SMINOS_HOME/projects/$OTHER/log/testhost.$SA.jsonl")\"" \
+  "and is copied into the sender's own project's log, naming the event that delivers it"
 assert_contains "$(inbox x)" "[sminos chat other " "the recipient's frame names its project"
+assert_equals "$(grep -c "the shared plugin changed" "$TEST_ROOT/in-x.received")" 1 "the recipient receives it once"
+# A copy is no message spoken in its project: b, having read the chat, is
+# told of nothing unread when a tag reaches it after one.
+CLAUDE_CODE_SESSION_ID="$SB" run "$SMINOS" chat
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x a second change"
+: > "$TEST_ROOT/in-b.received"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@b after the copy"
+assert_contains "$(inbox b)" "@b after the copy" "the next tag reaches b"
+assert_not_contains "$(inbox b)" "| unread" "a copy is not counted unread in its frame"
+assert_contains "$(log_of "$DEMO")" "\"text\": \"@other/x a second change\"" "though the log holds it"
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x @b both"
 assert_rc 2 "$RC" "tags naming two projects are refused"
 assert_contains "$OUT" "one message, one project" "with the reason"
@@ -3285,7 +3299,7 @@ print(sum(1 for e in mod.owed(p, next(m for m in mod.members(p) if m.session == 
 PY_OWED2
 )"
 assert_equals "$OWED_LEGACY" 0 "imported history is never delivered again"
-run "$SMINOS" chat -n 50
+run "$SMINOS" chat -n 100
 assert_contains "$OUT" "old tag" "imported lines read in the project chat"
 # The previous CLI appends to a chat under chats/<host-seat-id>.lock: an import
 # waits for it, so a line appended meanwhile is imported, never archived alone.
@@ -4020,7 +4034,7 @@ FA=3d000013-0000-4000-8000-00000000003d
 pf_peer faraway "$FA" idle user "$P4"
 run "$SMINOS" send faraway "across"
 assert_rc 4 "$RC" "a bare name of another project's live session is refused"
-assert_contains "$OUT" "<project>/faraway" "pointing at the qualified name"
+assert_contains "$OUT" "elsewhere: pf-second/faraway#${FA:0:8}" "pointing at the qualified name"
 assert_equals "$(inbox faraway)" "" "and nothing is sent"
 run "$SMINOS" send pf-second/faraway "across, qualified"
 assert_rc 0 "$RC" "the qualified name reaches it"

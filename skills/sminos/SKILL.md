@@ -60,11 +60,15 @@ text is text.
 is for what every member must act on now; status is untagged. A tag is
 `@name`, `@"two words"`, `@name#short` (the session's first eight hex
 digits tell two same-named members apart), or `@short`. A bare name
-resolves only in your project; another project's member is
-`@<project>/<alias>`, and a message lands in exactly one project's log.
-A name matching several members is refused with the candidates as
-`alias#short`. A closed interactive session cannot be tagged: say it
-untagged as a note, which it reads when it is resumed.
+resolves only in your project, and its refusal names the members of that
+alias elsewhere; `@short` and `@alias#short` reach a session in any
+project known here, and another project's member is `@<project>/<alias>`
+(a session no `.smns` claims is in its machine's project:
+`@<machine>/<alias>`). A message lands in the log of the project that
+delivers it; when that is not yours, a copy lands in yours, marked
+`→ <project>` in `chat`. A name matching several members is refused with
+the candidates as `alias#short`. A closed interactive session cannot be
+tagged: say it untagged as a note, which it reads when it is resumed.
 
 Messages reach you on their own as a frame:
 `[sminos chat <project> <writer>:<seq> from <alias> → @you | unread N]`.
@@ -131,8 +135,9 @@ on this machine.
     sminos migrate [--quiet]          # also runs on every verb
 
 A bare name resolves in the working directory's project, and only there;
-`<project>/<alias>` reaches another, and from a directory that is no
-project a name resolves across every project known here. `--group`,
+`<project>/<alias>` reaches another, and on a machine not enrolled, from
+a directory that is no project, a name resolves across every project
+known here. `--group`,
 `--parent`, `--team`, and `retire --cascade` are gone: the project is the
 group and there is no tree.
 
@@ -148,8 +153,8 @@ a live member reads it from its inbox socket, a stopped seat is resumed
 with it, and a seat-less session that is not live is refused (resuming
 the human's interactive session in the background would be wrong). It
 also reaches a Codex thread (`codex:<id|exact name>`, queued and read
-between turns), and, from a directory in no project, a live session in
-no project by its harness name.
+between turns), and, on a machine not enrolled, from a directory in no
+project, a live session in no project by its harness name.
 `send --wait` waits for the turn's end and prints the reply; it needs a
 seat. `resume` interrupts a live turn and inherits this process's
 environment (the board pipeline's credentials ride it), so prefer `send`
