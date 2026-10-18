@@ -179,8 +179,9 @@ branch, not merged; `retire` never deletes a worktree or branch.
 ## Seats and the board pipeline
 
 Pipeline workers are seats whose in-charge line names their ticket or PR.
-Do not hand-drive one: it escalates by parking its ticket
-(doperpowers:issue-tracker), the human answers there, and
+Do not hand-drive one: it escalates by parking its ticket (the
+who-unparks discriminant in doperpowers:issue-tracker), the human
+answers there, and
 `board-answer.sh` relays the answer with `sminos resume` — an answer
 that bypasses the ticket leaves the board unaware of it.
 
