@@ -336,9 +336,28 @@ const TYPED: ReadonlySet<string> = new Set(['composer', 'bridge'])
 /**
  * The line sminos opens every delivery with, whichever way it reaches the
  * session (the bridge's prompt, a background job's reply, the inbox), naming
- * who sent it: `human` for the person, else another session's alias.
+ * who sent it: `human` for the person, else another session's alias. A
+ * `send` opens `[sminos message from <sender> id=<id>]`; anything else (a
+ * `say`) opens `[sminos chat <project> <ref> from <sender> → @you|@all]`,
+ * with ` | unread N` before the bracket when messages are waiting. The
+ * project's name is free text in its `.smns` (spaces allowed), so the chat
+ * frame is read from its tail, where the sender sits, not from its head.
  */
-const SMINOS_FRAME = /^\[sminos message from (\S+) id=[0-9a-f]{8}\]/
+const SMINOS_FRAMES = [
+  /^\[sminos message from (\S+) id=[0-9a-f]{8}\]/,
+  /^\[sminos chat [^\n]* from (\S+) → @(?:you|all)(?: \| unread \d+)?\]/,
+]
+
+/** Who a sminos delivery's opening line names as its sender, if it opens with one. */
+function deliverySender(text: string): string | undefined {
+  for (const frame of SMINOS_FRAMES) {
+    const sender = frame.exec(text)?.[1]
+    if (sender !== undefined) {
+      return sender
+    }
+  }
+  return undefined
+}
 
 /** The props of a prompt row that say what it is. */
 export type PromptRowProps = {
@@ -369,7 +388,7 @@ export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = n
     return 'record'
   }
   const kind = props.origin?.kind
-  const sender = kind !== undefined && TYPED.has(kind) ? undefined : SMINOS_FRAME.exec(props.text ?? '')?.[1]
+  const sender = kind !== undefined && TYPED.has(kind) ? undefined : deliverySender(props.text ?? '')
   if (sender !== undefined) {
     return sender === 'human' ? 'user' : 'record'
   }

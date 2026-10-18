@@ -420,6 +420,14 @@ describe('promptRow', () => {
     // The bridge submits both as the person's words, under its own plugin's origin.
     expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos message from CI-opt id=2808a58d]\nCI-opt: the hold is granted.' })).toBe('record')
     expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos message from human id=86388163]\nstatus?' })).toBe('user')
+    // A `say` arrives in the chat frame; the project's name may hold spaces.
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos chat my project 86388163:7 from human → @you]\n@rover status?' })).toBe('user')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos chat doperpowers 2808a58d:12 from CI-opt → @you]\nthe hold is granted.' })).toBe('record')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos chat doperpowers 2808a58d:12 from CI-opt → @you | unread 3]\nthe hold is granted.' })).toBe('record')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos chat doperpowers 2808a58d:13 from CI-opt → @all]\nheads up' })).toBe('record')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos chat doperpowers 86388163:8 from human → @all | unread 2]\nstop' })).toBe('user')
+    // Typed at the prompt, a chat frame is still the person's.
+    expect(promptRow({ origin: { kind: 'composer' }, text: '[sminos chat doperpowers 2808a58d:12 from CI-opt → @you]\nquoted' })).toBe('user')
     // The inbox frame, where no bridge runs, comes with no stamp the engine can name.
     expect(promptRow({ origin: { kind: 'unclassified' }, text: '[sminos message from CI-opt id=2808a58d]\nhi' })).toBe('record')
     // What the person typed is theirs, whatever it opens with.
