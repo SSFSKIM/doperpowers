@@ -134,10 +134,12 @@ const FRAME = '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated back
  * into that call's result: a system-reminder of its own (`ul`) holding the
  * frame and one notification and nothing else, opening the text or a blank
  * line after what came before, and ending it or followed by a blank line
- * (`hlt` trims each part and joins them so). Anywhere else in a tool result
- * a notification is the tool's output quoting one.
+ * (`hlt` trims each part and joins them so). Its body crosses no other
+ * notification's tags, so an unfinished quote in the output cannot borrow
+ * the close of a fold after it. Anywhere else in a tool result a
+ * notification is the tool's output quoting one.
  */
-const FOLDED = new RegExp(`(?:^|\\n\\n)<system-reminder>\\n${escape(FRAME)}(<task-notification>\\n<task-id>([^<\\n]*)</task-id>\\n(?:(?!</task-notification>)[\\s\\S])*</task-notification>)\\n</system-reminder>(?=\\n\\n|$)`, 'g')
+const FOLDED = new RegExp(`(?:^|\\n\\n)<system-reminder>\\n${escape(FRAME)}(<task-notification>\\n<task-id>([^<\\n]*)</task-id>\\n(?:(?!</?task-notification>)[\\s\\S])*</task-notification>)\\n</system-reminder>(?=\\n\\n|$)`, 'g')
 
 const texts = (content: unknown): string[] => typeof content === 'string'
   ? [content]

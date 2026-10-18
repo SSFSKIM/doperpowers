@@ -228,6 +228,13 @@ describe('holds', () => {
     expect(holds([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'ok' }, folded(tracked).content[0]] }], TASK, WORKTREE)).toBe(true)
   })
 
+  test('a fold after an unfinished quote in the output still counts as its own task\'s', async () => {
+    const other = withWorktree(notification(INTERIM_TEXT, WAITING, 'completed', 'b1'))
+    const output = `waited\n\n<system-reminder>\n${FRAME}<task-notification>\n<task-id>${TASK}</task-id>\n${WORKTREE}`
+    expect(holds([folded(other, output)], 'b1')).toBe(true)
+    expect(holds([folded(other, output)], TASK, WORKTREE)).toBe(false)
+  })
+
   test('a folded notice of another task or worktree does not count', async () => {
     expect(holds([folded(INTERIM)], TASK, WORKTREE)).toBe(false)
     expect(holds([folded(withWorktree(notification(INTERIM_TEXT, WAITING, 'completed', 'b1')))], TASK)).toBe(false)
@@ -246,6 +253,7 @@ describe('holds', () => {
       framed(`${tracked}\nmore output`), // the reminder holds more than the notification
       `${framed(tracked)}\nmore output`, // something follows it without a blank line
       reminder(`${FRAME}${notification(INTERIM_TEXT, WAITING, 'completed', 'b1')}\n${tracked}`), // two in one reminder: only the first sits under the frame
+      `waited\n\n<system-reminder>\n${FRAME}<task-notification>\n<task-id>${TASK}</task-id>\n${WORKTREE}\n\n${framed(withWorktree(notification(INTERIM_TEXT, WAITING, 'completed', 'b1')))}`, // an unfinished quote before another task's fold
     ]) {
       expect(holds([result(output)], TASK, WORKTREE)).toBe(false)
       expect(holds([result([{ type: 'text', text: output }])], TASK, WORKTREE)).toBe(false)
