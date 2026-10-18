@@ -3096,7 +3096,7 @@ spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = impo
 project, seat_id, mode, record = mod.find_project(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
 member = next(m for m in mod.members(project) if m.session == seat_id)
 down = os.path.join(os.path.dirname(record), "push-down")
-def fake_push(member, text, tagged, session=None, event=None):
+def fake_push(member, text, tagged, session=None, event=None, project=None):
     body = text.split("\n", 1)[1]
     time.sleep(0.05)
     if body == "ten" and os.path.exists(down):
@@ -3633,6 +3633,274 @@ run "$SMINOS" list
 assert_not_contains "$OUT" "headless" "a session of another kind (a tool's headless run) is not a member on sight"
 assert_file_absent "$PFLOG/testhost.$HL.jsonl" "and is never joined"
 rm -f "$HOME/.claude/sessions/pf-headless.json"
+
+# A session sent to the background (/background, the agents view's ←) is
+# forked by the harness into a job under a new session id, the interactive
+# process exiting, and its old transcript ends in a `continued-in` record
+# naming the job. The member goes on in the job: under its alias, with its
+# in-charge line, status, chat position, and seat, and what named the old
+# session names the job.
+handoff_tx() { # old new — the old transcript as the harness leaves it at a hand-off
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"keep going"}}' \
+    '{"type":"assistant","uuid":"h0000001","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}' \
+    "{\"type\":\"continued-in\",\"timestamp\":\"2026-10-17T21:01:52.408Z\",\"sessionId\":\"$1\",\"continuedInSessionId\":\"$2\"}" \
+    '{"type":"last-prompt","lastPrompt":"keep going"}' > "$HOME/.claude/projects/pl-proj/$1.jsonl"
+}
+bg_peer() { # name session nameSource — a background job's harness record, with an inbox of its own
+  [ -S "$TEST_ROOT/in-$1.sock" ] || start_inbox "$1"
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "$R" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/pf-$1.json"
+}
+HO=4f00001d-0000-4000-8000-00000000004f
+HN=5a00001e-0000-4000-8000-00000000005a
+pf_peer handy "$HO" idle derived
+run "$SMINOS" list
+CLAUDE_CODE_SESSION_ID="$HO" run "$SMINOS" charge "owns the hand-off"
+run "$SMINOS" status handy "mid-flight"
+CLAUDE_CODE_SESSION_ID="$HO" run "$SMINOS" chat
+handoff_tx "$HO" "$HN"
+bg_peer handyjob "$HN" auto   # the job registers while the interactive process still exits
+: > "$HOME/.claude/projects/pl-proj/$HN.jsonl"
+hook_run SessionStart "$HN" "$R" "$HOME/.claude/projects/pl-proj/$HN.jsonl" startup
+assert_rc 0 "$HOOK_RC" "the job's SessionStart hook exits 0"
+assert_contains "$(events_of "$HO")" "status retired:continued " "the job's start retires the session it continues, reason continued"
+assert_contains "$(tail -1 "$PFLOG/testhost.$HO.jsonl")" "\"reason\": \"continued\", \"to\": \"$HN\"" "naming the job"
+assert_contains "$(cat "$PFLOG/testhost.$HN.jsonl")" '"alias": "handy", "name_source": "derived"' "which joins under the member's alias"
+run "$SMINOS" list
+assert_not_contains "$OUT" "handyjob" "the job does not list under the title the harness gave it"
+assert_equals "$(json_row handy session)" "$HN" "the member is the job now"
+assert_equals "$(json_row handy former)" "[\"$HO\"]" "continuing the session it was forked from"
+assert_equals "$(json_row handy charge)" "owns the hand-off" "with its in-charge line"
+assert_equals "$(json_row handy status)" "mid-flight" "and its status"
+CLAUDE_CODE_SESSION_ID="$HN" run "$SMINOS" chat
+assert_contains "$OUT" "(no new messages)" "and its place in the chat"
+run "$SMINOS" say "@handy over to you"
+assert_rc 0 "$RC" "a tag of the alias is accepted"
+assert_contains "$(inbox handyjob)" "over to you" "and reaches the job"
+assert_not_contains "$(inbox handy)" "over to you" "not the process still exiting"
+run "$SMINOS" say "@handy#${HO:0:6} by the old short"
+assert_rc 0 "$RC" "alias#short of the session it continues still names the member"
+assert_contains "$(inbox handyjob)" "by the old short" "and reaches the job"
+run "$SMINOS" daemon tick
+run "$SMINOS" list
+assert_not_contains "$(events_of "$HO")" "continued joined" "the exiting process does not re-join while it runs"
+rm -f "$HOME/.claude/sessions/pf-handy.json"   # it exits
+run "$SMINOS" list
+assert_not_contains "$(events_of "$HO")" "ended" "nor does its exit end anything"
+assert_equals "$(events_of "$HN")" "joined " "and the job holds the alias with no rename"
+FOLLOWED="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$HO" "$HN" <<'PY_FOLLOW'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_bridge
+old, new = sys.argv[2], sys.argv[3]
+print(sminos_bridge.watch_session(old) == new, end=" ")
+# An old session resumed and worked in again is its own: the record no longer ends it.
+with open(sminos.transcript_path(old), "a") as f:
+    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "one more thing"}}) + "\n")
+print(sminos.continued_in(old) == "")
+PY_FOLLOW
+)"
+assert_equals "$FOLLOWED" "True True" "a full id of a handed-off session names the job (watch, the controls); a resumed one is its own again"
+rm -f "$HOME/.claude/sessions/pf-handyjob.json"
+# A job seen before its predecessor's record: a member of its own until the
+# interactive process exits, when the hand-off is read as its membership ends.
+LO=5b00001f-0000-4000-8000-00000000005b
+LN=5c000020-0000-4000-8000-00000000005c
+pf_peer tardy "$LO" idle derived
+run "$SMINOS" list
+bg_peer tardyjob "$LN" auto
+run "$SMINOS" list
+assert_equals "$(json_row tardyjob session)" "$LN" "a job seen before any hand-off names it is a member of its own"
+handoff_tx "$LO" "$LN"
+rm -f "$HOME/.claude/sessions/pf-tardy.json"
+run "$SMINOS" list
+assert_equals "$(events_of "$LO")" "joined retired:continued " "the exit is read as the hand-off, not an end"
+assert_equals "$(events_of "$LN")" "joined renamed " "the job is renamed to the alias it carries on"
+assert_equals "$(json_row tardy session)" "$LN" "and is the member"
+assert_not_contains "$OUT" "tardyjob" "no longer listed under its title"
+rm -f "$HOME/.claude/sessions/pf-tardyjob.json"
+# A seat that held the session moves to the job.
+SO=5e000022-0000-4000-8000-00000000005e
+SN=5f000023-0000-4000-8000-00000000005f
+run "$SMINOS" seat add pf-repo warden --session "$SO"
+pf_peer warden "$SO" idle user
+run "$SMINOS" list
+handoff_tx "$SO" "$SN"
+bg_peer wardenjob "$SN" auto
+run "$SMINOS" list
+assert_equals "$(field "$SO" current)" "$SN" "a seat that held the session moves to the job"
+assert_equals "$(json_row warden session)" "$SN" "which stands for the seat"
+assert_not_contains "$OUT" "wardenjob" "under the seat's alias alone"
+assert_contains "$(events_of "$SO")" "retired:continued" "the session it held is retired, continued"
+rm -f "$HOME/.claude/sessions/pf-warden.json" "$HOME/.claude/sessions/pf-wardenjob.json"
+"$SMINOS" remove pf-repo/warden >/dev/null
+# A seat whose job joined before the harness wrote the record: the hand-off
+# is read once the record is there and the old process has exited.
+KO=6a000024-0000-4000-8000-00000000006a
+KN=6b000025-0000-4000-8000-00000000006b
+run "$SMINOS" seat add pf-repo keeper --session "$KO"
+pf_peer keeper "$KO" idle user
+run "$SMINOS" list
+bg_peer keeperjob "$KN" auto
+run "$SMINOS" list
+assert_equals "$(events_of "$KN")" "joined " "a seat's job seen before the record joins as a member of its own"
+handoff_tx "$KO" "$KN"
+rm -f "$HOME/.claude/sessions/pf-keeper.json"
+run "$SMINOS" list
+assert_equals "$(field "$KO" current)" "$KN" "once the record is there and the seat's process gone, the seat moves to the job"
+assert_contains "$(events_of "$KO")" "retired:continued" "and the session it held is retired, continued"
+assert_equals "$(json_row keeper session)" "$KN" "the seat's alias names the job"
+# One writer (a remote operator) that set a line for the old session, then for
+# the job: the job's is the later, and clearing it leaves neither.
+python3 - "$REPO_ROOT/skills/sminos/scripts" "$PF" "$KO" "$KN" <<'PY_CHARGES'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos as mod
+project = mod.find_project(sys.argv[2])
+for sid, text in ((sys.argv[3], "the old line"), (sys.argv[4], "the job's line")):
+    mod._append(project, mod.writer_id(), [{"kind": "in-charge", "session": sid, "text": text, "source": "set"}])
+PY_CHARGES
+assert_equals "$(json_row keeper charge)" "the job's line" "lines one writer set along the chain are read in its order"
+python3 - "$REPO_ROOT/skills/sminos/scripts" "$PF" "$KN" <<'PY_CLEAR'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos as mod
+mod._append(mod.find_project(sys.argv[2]), mod.writer_id(),
+            [{"kind": "in-charge", "session": sys.argv[3], "text": "", "source": "set"}])
+PY_CLEAR
+assert_equals "$(json_row keeper charge_source)" "" "and a line it clears is cleared, the old one not read again"
+rm -f "$HOME/.claude/sessions/pf-keeperjob.json"
+"$SMINOS" remove pf-repo/keeper >/dev/null
+# A seat resolved directly (no list between) when the hand-off is only now
+# readable: the target is the job, by its alias and by the old session id
+# alike, the id binding the job.
+bound_pair() { # alias old new query — a seat whose hand-off is readable but not yet read
+  run "$SMINOS" seat add pf-repo "$1" --session "$2"
+  pf_peer "$1" "$2" idle user
+  run "$SMINOS" list
+  bg_peer "$1job" "$3" auto
+  run "$SMINOS" list
+  handoff_tx "$2" "$3"
+  rm -f "$HOME/.claude/sessions/pf-$1.json"
+}
+BO=8a00002c-0000-4000-8000-00000000008a
+BN=8b00002d-0000-4000-8000-00000000008b
+bound_pair binder "$BO" "$BN"
+BOUND="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$BN" <<'PY_BOUND'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos_bridge
+print(sminos_bridge.watch_session("pf-repo/binder") == sys.argv[2])
+PY_BOUND
+)"
+assert_equals "$BOUND" "True" "a seat named by its alias, before any reading reconciled it, is watched as the job"
+rm -f "$HOME/.claude/sessions/pf-binderjob.json"
+"$SMINOS" remove pf-repo/binder >/dev/null
+CO=7a00002a-0000-4000-8000-00000000007a
+CN=7b00002b-0000-4000-8000-00000000007b
+CP=7c00002e-0000-4000-8000-00000000007c
+bound_pair clasp "$CO" "$CN"
+run "$SMINOS" list
+assert_equals "$(field "$CO" current)" "$CN" "a seat moves to the job it went on in"
+bg_peer claspjob2 "$CP" auto
+run "$SMINOS" list
+handoff_tx "$CN" "$CP"   # and the job is sent on in turn, unread yet
+rm -f "$HOME/.claude/sessions/pf-claspjob.json"
+BOUND="$(python3 - "$REPO_ROOT/skills/sminos/scripts" "$CN" "$CP" <<'PY_BOUND2'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+t = sminos.find_target(sys.argv[2])
+print(t[0] == "seat" and t[1]["current"] == sys.argv[3] and t[2] == sys.argv[3])
+PY_BOUND2
+)"
+assert_equals "$BOUND" "True" "a name bound to the session a seat holds binds the job it went on in, once the seat is moved"
+rm -f "$HOME/.claude/sessions/pf-claspjob2.json"
+"$SMINOS" remove pf-repo/clasp >/dev/null
+# A hand-off whose seat another command holds locked is left whole, not half
+# done: nothing retired and the seat unmoved, and the next reading finishes it.
+GO=6c000026-0000-4000-8000-00000000006c
+GN=6d000027-0000-4000-8000-00000000006d
+run "$SMINOS" seat add pf-repo gatekeeper --session "$GO"
+pf_peer gatekeeper "$GO" idle user
+run "$SMINOS" list
+handoff_tx "$GO" "$GN"
+rm -f "$HOME/.claude/sessions/pf-gatekeeper.json" "$TEST_ROOT/seat-held" "$TEST_ROOT/seat-release"
+python3 - "$(lock_file pf-repo/gatekeeper)" "$TEST_ROOT/seat-held" "$TEST_ROOT/seat-release" <<'PY_SEATLOCK' &
+import fcntl, os, sys, time
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+with open(sys.argv[1], "a+") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(sys.argv[2], "w").close()
+    while not os.path.exists(sys.argv[3]):
+        time.sleep(0.05)
+PY_SEATLOCK
+SEATHOLDER=$!
+for _ in $(seq 1 100); do [ -f "$TEST_ROOT/seat-held" ] && break; sleep .05; done
+bg_peer gatekeeperjob "$GN" auto
+run "$SMINOS" list
+assert_not_contains "$(events_of "$GO")" "retired" "with the seat's lock held, the session it holds is not retired"
+assert_equals "$(field "$GO" current)" "$GO" "nor the seat moved"
+touch "$TEST_ROOT/seat-release"; wait "$SEATHOLDER"
+run "$SMINOS" list
+assert_equals "$(field "$GO" current)" "$GN" "once the lock is free, the next reading moves the seat"
+assert_contains "$(events_of "$GO")" "retired:continued" "and retires the session it held, continued"
+rm -f "$HOME/.claude/sessions/pf-gatekeeperjob.json"
+"$SMINOS" remove pf-repo/gatekeeper >/dev/null
+# A handed-off session the human resumes is its own member again: its id and
+# short name it alone, and what it sets is not the job's.
+VO=6e000028-0000-4000-8000-00000000006e
+VN=6f000029-0000-4000-8000-00000000006f
+pf_peer rover "$VO" idle derived
+run "$SMINOS" list
+handoff_tx "$VO" "$VN"
+bg_peer roverjob "$VN" auto
+run "$SMINOS" list
+rm -f "$HOME/.claude/sessions/pf-rover.json"
+run "$SMINOS" list
+assert_contains "$(events_of "$VO")" "retired:continued" "a handed-off session is retired, continued"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"back to it"}}' >> "$HOME/.claude/projects/pl-proj/$VO.jsonl"
+printf '{"pid":%s,"sessionId":"%s","name":"rover-2a","nameSource":"derived","kind":"interactive","startedAt":%s,"status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$VO" "$(python3 -c 'import time; print(int(time.time() * 1000))')" "$R" "$TEST_ROOT/in-rover.sock" \
+  > "$HOME/.claude/sessions/pf-rover.json"
+run "$SMINOS" list
+assert_equals "$(events_of "$VO")" "joined retired:continued joined " "resumed, it re-joins"
+session_row() { # session field → that field of the session's row in list --json
+  "$SMINOS" list --json | python3 -c 'import json, sys
+rows = [d for d in json.load(sys.stdin) if d["session"] == sys.argv[1]]
+v = rows[0].get(sys.argv[2]) if rows else "<no row>"
+print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
+}
+assert_equals "$(session_row "$VN" former)" "[]" "and the job no longer continues it"
+run "$SMINOS" say "@${VO:0:8} to the resumed one"
+assert_rc 0 "$RC" "its short names one member"
+assert_contains "$(inbox rover)" "to the resumed one" "the resumed session"
+assert_not_contains "$(inbox roverjob)" "to the resumed one" "not the job"
+CLAUDE_CODE_SESSION_ID="$VO" run "$SMINOS" charge "the resumed line"
+assert_rc 0 "$RC" "the resumed session sets its line"
+assert_not_contains "$(session_row "$VN" charge)" "the resumed line" "which is not the job's"
+rm -f "$HOME/.claude/sessions/pf-rover.json" "$HOME/.claude/sessions/pf-roverjob.json"
+run "$SMINOS" list
+# A name the harness made up is drawn again by every process: a resume
+# keeps the member's alias. A name someone gives renames it.
+RS=5d000021-0000-4000-8000-00000000005d
+pf_peer drifter "$RS" idle derived
+run "$SMINOS" list
+rm -f "$HOME/.claude/sessions/pf-drifter.json"
+run "$SMINOS" list
+pf_peer drifter-3f "$RS" idle derived   # resumed: the harness drew its name again
+run "$SMINOS" list
+assert_equals "$(events_of "$RS")" "joined retired:ended joined " "a resumed session re-joins"
+assert_contains "$(tail -1 "$PFLOG/testhost.$RS.jsonl")" '"alias": "drifter"' "under the alias it held, not the name drawn again"
+assert_equals "$(json_row drifter session)" "$RS" "and lists under it"
+CLAUDE_CODE_SESSION_ID="$RS" run "$SMINOS" say "back again"
+assert_contains "$(tail -1 "$PFLOG/testhost.$RS.jsonl")" '"from": "drifter"' "and speaks under it"
+rm -f "$HOME/.claude/sessions/pf-drifter-3f.json"
+pf_peer anchor "$RS" idle user
+run "$SMINOS" list
+assert_equals "$(json_row anchor session)" "$RS" "a name someone gives the session renames it"
+rm -f "$HOME/.claude/sessions/pf-anchor.json"
+run "$SMINOS" list
 
 # A seat and a seat-less session that share an alias: every member verb
 # refuses the name as ambiguous, as a tag is refused, and #short picks one.

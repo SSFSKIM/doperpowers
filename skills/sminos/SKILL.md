@@ -23,7 +23,12 @@ Members are siblings. There is no host seat: the host is the human, and
 a session that spawns another is recorded as its spawner (`by`) and
 nothing more — it does not supervise or integrate the other's work, and
 retiring it leaves the other running. An interactive session the human
-closes leaves the family on its own and rejoins when it is resumed.
+closes leaves the family on its own and rejoins when it is resumed. One
+the human sends to the background (`/background`, ←) becomes a new
+session; it goes on as the same member — alias, in-charge line, status,
+chat position, seat — and a tag or id naming the old session reaches it.
+A name the harness makes up (a directory label with a random suffix, a
+title it writes) never renames a member; a name someone gives does.
 
 Everything that crosses sessions is an event in the project's
 append-only log: a message to a member, a session's `<message>` to its
@@ -179,7 +184,7 @@ in-charge line, then `· now:` the status and `· by` the spawner.
 `list` hides retired and gone seats behind a `+N hidden` tail; `--all` or
 `--state` shows them. `--json` carries every member with `session`,
 `short`, `machine`, `state`, `charge`, `charge_source`, `by`, `status`,
-`worktree`, and `seat`. `chart` and `tui` draw the same words (`●` busy,
+`worktree`, `seat`, and `former` (the sessions it continues). `chart` and `tui` draw the same words (`●` busy,
 `○` idle, `◐` waiting, `■` stopped, `✕` gone, `◌` vacant, `⊘` retired).
 
 ## Spawning siblings

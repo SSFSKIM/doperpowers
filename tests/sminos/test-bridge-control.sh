@@ -214,13 +214,15 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                     result = {"ok": True, "result": {"queued": True, "turnId": "t1"}}
             elif o == "deliver":
                 key = msg["key"]
+                # The mod's mark: per project, the bare writer for a key naming none.
+                mark = "%s/%s" % (key["project"], key["writer"]) if "project" in key else key["writer"]
                 if mode == "refuse":
-                    result = {"ok": False, "error": "deliver needs key {writer, seq} and text"}
-                elif key["seq"] <= delivered.get(key["writer"], 0):
+                    result = {"ok": False, "error": "deliver needs key {project?, writer, seq} and text"}
+                elif key["seq"] <= delivered.get(mark, 0):
                     events.append({"type": "delivered", "key": key, "outcome": "duplicate"})
                     result = {"ok": True, "result": {"duplicate": True}}
                 else:
-                    delivered[key["writer"]] = key["seq"]
+                    delivered[mark] = key["seq"]
                     events.append({"type": "delivered", "key": key, "outcome": "submitted"})
                     result = {"ok": True, "result": {"submitted": True}}
             else:
@@ -415,6 +417,21 @@ for p in glob.glob(sys.argv[1] + "/projects/*/log/testhost.human.jsonl"):
         if e.get("text") == "@rover read the plan":
             print(e["seq"])' "$SMINOS_HOME")"
 assert_equals "$SEQ" "$LOGSEQ" "and its seq"
+P1="$(field_of "$(cat "$R/.smns")" project)"
+assert_equals "$(field_of "$L" key.project)" "$P1" "and its project's id"
+# What the session kept holds the writer's bare mark, 3, from before keys
+# named their project (#229): a project's own count starts under it.
+assert_equals "$(( SEQ <= 3 ))" "1" "the event's seq is at or below the writer's bare mark the session kept"
+assert_contains "$(cat "$KEPT")" "\"$P1/testhost/human\": $SEQ" "yet it was submitted: the child keeps the project's own mark"
+assert_contains "$(cat "$KEPT")" '"testhost/human": 3' "beside the bare one, untouched"
+assert_not_contains "$OUT" "already delivered" "and the sender was told of no duplicate"
+# A duplicate is taken as delivered, but said, to the sender and in daemon.log.
+set +e; OUT="$(PYTHONPATH="$REPO_ROOT/skills/sminos/scripts" python3 -c 'import sys, sminos_control as C
+print(C.deliver(sys.argv[1], sys.argv[2], {"writer": "testhost/human", "seq": int(sys.argv[3])}, "again"))' "$SID" "$P1" "$SEQ" 2>&1)"; set -e
+assert_contains "$OUT" "True" "a key the bridge already submitted is taken as delivered"
+assert_contains "$OUT" "the bridge of session $SID took testhost/human:$SEQ as already delivered" "and said to the sender"
+assert_contains "$(cat "$SMINOS_HOME/daemon.log" 2>/dev/null)" "the bridge of session $SID took testhost/human:$SEQ as already delivered" \
+  "and in daemon.log, naming the event and the session"
 assert_contains "$(field_of "$L" text)" "[sminos chat ctldemo" "the text is the frame the inbox would carry"
 assert_contains "$(field_of "$L" text)" "read the plan" "with the message"
 assert_equals "$([ -s "$T/rover-inbox" ] && echo framed || echo none)" "none" "and nothing went to the inbox socket"
@@ -422,7 +439,8 @@ set +e; OUT="$(cd "$R" && "$SMINOS" send rover "check the tests" 2>&1)"; RC=$?; 
 assert_rc 0 "$RC" "send to a bridged member exits 0"
 L="$(last_op "$T/lines-b" deliver)"
 assert_contains "$(field_of "$L" text)" "[sminos message from human id=" "send's own frame went through the bridge"
-assert_equals "$(( $(field_of "$L" key.seq) > SEQ ))" "1" "keyed by its own event"
+SENDSEQ="$(field_of "$L" key.seq)"
+assert_equals "$(( SENDSEQ > SEQ ))" "1" "keyed by its own event"
 # A peer's say or send to a bridged member is a peer message: never the
 # bridge, but the inbox frame, in the engine's own peer envelope naming its
 # sender, so the engine delivers it as another session's.
@@ -457,6 +475,29 @@ until_true 100 test -s "$T/rover-inbox" || true
 assert_contains "$(cat "$T/rover-inbox" 2>/dev/null)" "second try" "through its inbox socket"
 assert_not_contains "$(grep "second try" "$T/rover-inbox")" "To reply" "with no reply line: the owner is answered in the session, not by say"
 mode busy
+# One writer delivering to one session from two projects (#229): every
+# project numbers the writer's events on its own, so the second project's
+# event is below what the first delivered, and arrives all the same.
+R2="$T/repo2"
+mkdir -p "$R2"
+git -c init.defaultBranch=main init -q "$R2"
+(cd "$R2" && "$SMINOS" project init --name ctlsecond >/dev/null)
+P2="$(field_of "$(cat "$R2/.smns")" project)"
+printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$$" "$SID" "$R2" "$INBOX" > "$HOME/.claude/sessions/rover.json"
+: > "$T/rover-inbox"
+set +e; OUT="$(cd "$R2" && "$SMINOS" say "@rover from the second project" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a say to the same member from a second project exits 0"
+L="$(last_op "$T/lines-b" deliver)"
+assert_contains "$(field_of "$L" text)" "from the second project" "it went through the bridge"
+assert_equals "$(field_of "$L" key.project)" "$P2" "keyed by the second project"
+assert_equals "$(( $(field_of "$L" key.seq) < SENDSEQ ))" "1" "its seq below what the first project delivered from the writer"
+assert_equals "$(field_of "$(cat "$KEPT")" "delivered.$P2/testhost/human")" "$(field_of "$L" key.seq)" \
+  "and it was submitted: the child keeps the second project's mark"
+assert_not_contains "$OUT" "already delivered" "with no duplicate said"
+assert_equals "$([ -s "$T/rover-inbox" ] && echo framed || echo none)" "none" "and nothing went to the inbox socket"
+printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$$" "$SID" "$R" "$INBOX" > "$HOME/.claude/sessions/rover.json"
 
 # A --bg job with no bridge: a human's event goes through the engine
 # supervisor's control socket (`reply`, human-origin), else the inbox frame.

@@ -11,10 +11,10 @@ and compact need the bridge and are refused, saying so.
 delivery and `send` alike. A peer's event (any but the owner's, S.owner_event)
 is the inbox frame: the engine delivers it as a message from another Claude
 session, never as its user's words. The owner's goes through the bridge,
-which submits the text as the human's words, keyed by the log event (a key it
-has already submitted is dropped); else, to a --bg job, the supervisor's
-`reply` (human-origin input); else the inbox frame. Each path carries the
-same frame text, so the model reads the same addressing.
+which submits the text as the human's words, keyed by the log event and its
+project (a key it has already submitted is dropped); else, to a --bg job, the
+supervisor's `reply` (human-origin input); else the inbox frame. Each path
+carries the same frame text, so the model reads the same addressing.
 """
 
 import hashlib
@@ -74,12 +74,16 @@ def post_command(path, body, wait_ms=COMMAND_WAIT_MS):
         c.close()
 
 
-def deliver(session, event, text):
-    """The bridge's submission of a log event: True once submitted (or found
-    already submitted), None when the session has no bridge, False when the
-    bridge refused it (nothing was submitted). Raises SendFailed("after")
-    when the bridge took it and gave no answer: it may have been submitted."""
-    body = {"op": "deliver", "key": {"writer": event["writer"], "seq": event["seq"]}, "text": text}
+def deliver(session, project, event, text):
+    """The bridge's submission of a log event of the project `project` (its
+    id): True once submitted (or found already submitted), None when the
+    session has no bridge, False when the bridge refused it (nothing was
+    submitted). Raises SendFailed("after") when the bridge took it and gave no
+    answer: it may have been submitted. The key names the project, since
+    every project numbers a writer's events on its own. A duplicate is taken
+    as delivered, since it was submitted before, but said: were it not, the
+    event would be lost with no other trace."""
+    body = {"op": "deliver", "key": {"project": project, "writer": event["writer"], "seq": event["seq"]}, "text": text}
     try:
         r = post_command(B.endpoint(session), body)
     except Unanswered as e:
@@ -88,6 +92,10 @@ def deliver(session, event, text):
         return None
     status, out = r
     if status == 200 and isinstance(out, dict) and out.get("ok"):
+        if (out.get("result") or {}).get("duplicate"):
+            line = "the bridge of session %s took %s as already delivered" % (session, S.event_ref(event))
+            S.warn(line)
+            S.daemon_log(line)
         return True
     if status == 504:
         raise S.SendFailed("after", "the bridge's session did not answer")
@@ -165,15 +173,17 @@ def supervisor_reply(short, text):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None):
+def push_live(peer, session, text, event=None, project=None):
     """A delivery's last hop to a live session, `event` the last log event the
     text carries (None for a frame no log holds; every event of one push is
-    one writer's, so one side's). Only the owner's events take the bridge or
-    the supervisor, the human's channels; a peer's is the inbox frame, named
-    by its sender and closed by how to answer it (S.reply_line). Raises SendFailed as send_frame does: "before" when nothing
-    reached the session, "after" when it may have."""
+    one writer's, so one side's) and `project` the id of the project whose
+    log holds it. Only the owner's events take the bridge or the supervisor,
+    the human's channels; a peer's is the inbox frame, named by its sender
+    and closed by how to answer it (S.reply_line). Raises SendFailed as
+    send_frame does: "before" when nothing reached the session, "after" when
+    it may have."""
     owner = event is not None and S.owner_event(event)
-    if owner and deliver(session, event, text):
+    if owner and deliver(session, project, event, text):
         return
     if owner and bg_job(peer):
         took = supervisor_reply(bg_job(peer), text)

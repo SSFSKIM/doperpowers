@@ -692,7 +692,7 @@ class Refusals(unittest.TestCase):
         self.deliver()
         self.assertIn("dropped after it was taken", self.bridge.texts())
         self.assertEqual([o for o, _ in self.outcomes_of(e)], ["delivered"])
-        key = {"writer": e["writer"], "seq": e["seq"]}
+        key = {"project": self.pid, "writer": e["writer"], "seq": e["seq"]}
         self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]),
                         "the child kept the refusal")
         self.a_pass()
@@ -713,7 +713,7 @@ class Refusals(unittest.TestCase):
         e = self.human_from_hub("dropped, and its refusal's post lost")
         self.deliver()
         self.assertIn("dropped, and its refusal's post lost", self.bridge.texts())
-        key = {"writer": e["writer"], "seq": e["seq"]}
+        key = {"project": self.pid, "writer": e["writer"], "seq": e["seq"]}
         self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]),
                         "the child kept the refusal from the resync")
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
@@ -736,7 +736,7 @@ class Refusals(unittest.TestCase):
                               **{"from": "human", "to": [{"session": self.sid, "alias": self.alias}],
                                  "text": "written here, dropped"})
         self.deliver()
-        key = {"writer": e["writer"], "seq": e["seq"]}
+        key = {"project": self.pid, "writer": e["writer"], "seq": e["seq"]}
         self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]))
         self.a_pass()
         self.assertEqual(self.outcomes_of(e), [], "nothing from outside, nothing reported")
@@ -748,7 +748,7 @@ class Refusals(unittest.TestCase):
         self.bridge.refusing = "dropped, marker unwritable"
         e = self.human_from_hub("its marker will not be kept")
         self.deliver()
-        key = {"writer": e["writer"], "seq": e["seq"]}
+        key = {"project": self.pid, "writer": e["writer"], "seq": e["seq"]}
         self.assertTrue(wait_for(lambda: [r for r in self.kept_refused() if r["key"] == key]))
         real = sminos.write_json
 
@@ -788,6 +788,30 @@ class Refusals(unittest.TestCase):
             self.a_pass()
             self.assertIn("not delivered yet", other.inbox.texts())
             self.assertEqual([o for o, _ in self.outcomes_of(e, other.sid)], ["delivered", "failed"])
+        finally:
+            other.end()
+            try:
+                os.unlink(bridge.kept_path(other.sid))
+            except OSError:
+                pass
+
+    def test_f_a_refusal_naming_another_project_is_not_reported_here(self):
+        """Each project numbers a writer's events on its own: a refusal the
+        bridge kept for another project's event of the same writer and seq
+        is that project's, and reports nothing for this one's."""
+        import sminos_bridge as bridge
+        other = Session(self.root)
+        try:
+            sminos.reconcile(self.project)
+            alias = member_of(self.project, other.sid).alias
+            e = self.human_from_hub("delivered, refused only elsewhere", other.sid, alias)
+            key = {"project": "elsewhere", "writer": e["writer"], "seq": e["seq"]}
+            with open(bridge.kept_path(other.sid), "w") as f:
+                json.dump({"override": None, "delivered": {}, "refused": [{"key": key, "reason": "dropped"}]}, f)
+            self.a_pass()
+            self.assertIn("delivered, refused only elsewhere", other.inbox.texts())
+            self.a_pass()
+            self.assertEqual([o for o, _ in self.outcomes_of(e, other.sid)], ["delivered"])
         finally:
             other.end()
             try:
@@ -1225,7 +1249,8 @@ class Uplink(unittest.TestCase):
             ofkey = lambda ms: [m["body"] for m in self.mine(ms[count:], "delivery") if m["body"]["event"] == key]  # noqa: E731
             self.assertIsNotNone(self.hub.wait(ofkey, timeout=15), "delivered first")
             self.assertTrue(wait_for(lambda: [r for r in bridge.load_kept(self.sid).get("refused") or []
-                                              if r["key"] == key]), "the child kept the refusal")
+                                              if r["key"] == {"project": self.project, **key}]),
+                            "the child kept the refusal, its key naming the project")
             r = cli("daemon", "tick")
             self.assertEqual(r.returncode, 0, r.stderr)
             ms = self.hub.wait(lambda ms: [d for d in ofkey(ms) if d["outcome"] == "failed"], timeout=15)
