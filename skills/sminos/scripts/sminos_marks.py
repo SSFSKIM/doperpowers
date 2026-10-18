@@ -1,5 +1,5 @@
 """The marks a session writes to its human, read the way the `to-human` mod
-reads them for display: a Python port of `parse` in hooks/mods/to-human.tsx.
+reads them for display: a Python port of `parse` in to-human/hooks/mods/to-human.tsx.
 
 `<message>` is the one mark; the old `<to-human>`, `<essential>`,
 `<need-input>` and `<insight>` read as its aliases. A tag inside inline code

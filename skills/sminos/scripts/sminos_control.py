@@ -14,7 +14,10 @@ session, never as its user's words. The owner's goes through the bridge,
 which submits the text as the human's words, keyed by the log event and its
 project (a key it has already submitted is dropped); else, to a --bg job, the
 supervisor's `reply` (human-origin input); else the inbox frame. Each path
-carries the same frame text, so the model reads the same addressing.
+carries the same frame text, so the model reads the same addressing. A
+session the human stopped (Esc) refuses the bridge's prompt, so its bridge
+answers not-ok and the inbox frame, which starts a turn, carries the owner's
+event (as a peer message: the only way left to wake it).
 """
 
 import hashlib
@@ -38,6 +41,9 @@ SUPERVISOR_TIMEOUT = 5      # the engine's own control client waits 5 s
 SHORT_RE = re.compile(r"^[a-f0-9]{8}$")
 KEY_RE = re.compile(r"^[0-9a-f]{32}$")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# How the mod's not-ok answer to a delivery begins when the engine refused its
+# prompt because the human stopped the session (bridge.tsx, STOPPED_ERROR).
+STOPPED_ERROR = "the session was stopped, so its prompt was refused"
 
 
 class Unanswered(Exception):
@@ -99,8 +105,12 @@ def deliver(session, project, event, text):
         return True
     if status == 504:
         raise S.SendFailed("after", "the bridge's session did not answer")
-    S.warn("the bridge of session %s refused a delivery (%s); it goes as an inbox frame" % (
-        session[:8], (out or {}).get("error") if isinstance(out, dict) else status))
+    error = out.get("error") if isinstance(out, dict) else None
+    if isinstance(error, str) and error.startswith(STOPPED_ERROR):
+        # Expected: after an Esc the engine refuses the bridge's prompt, not an inbox frame.
+        S.warn("session %s was stopped (Esc), so its bridge could not start a turn; the message goes as an inbox frame" % session[:8])
+        return False
+    S.warn("the bridge of session %s refused a delivery (%s); it goes as an inbox frame" % (session[:8], error or status))
     return False
 
 

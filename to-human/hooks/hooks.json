@@ -1,0 +1,6 @@
+{
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the to-human view of the transcript — from the first <message> mark on, assistant messages draw as their marked spans and the working record (unmarked messages, tool calls and their results, agent messages, notifications, and messages delivered from other sessions) folds behind [ working record ] buttons; the band above the prompt switches between the report and the full transcript",
+  "modules": [
+    "./mods/register.tsx"
+  ]
+}

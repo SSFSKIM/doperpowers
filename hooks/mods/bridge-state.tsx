@@ -33,11 +33,20 @@ export type Call = {
   question?: unknown
 }
 /**
- * A steer, bound to the main turn it was given in before its row is appended.
+ * A steer (or a delivery given into the turn), bound to the main turn it was
+ * given in before its row is appended.
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
- * `ended`: how its turn ended, while some append of that turn is still pending.
+ * `ended`: how its turn ended, while some append of that turn is still pending;
+ * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread.
  */
-export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string }
+export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean }
+/**
+ * The wake a turn owes for delivered rows it answered before reading, until
+ * its prompt settles: `isRead`, a main-loop request began since that carries
+ * them; `turnAt`, the main turn already running when it was given, whose
+ * first request was built before the rows went in.
+ */
+export type Wake = { isRead: boolean; turnAt?: string }
 /** What an interrupt did to the Bash calls it moved to the background: the tasks it stopped, and those it could not. */
 export type Stops = { stopped: string[]; running: string[] }
 /** An interrupt of a main turn: `recorded` settles once its record is in (or it failed); the turn's Bash calls wait for it. */
@@ -100,6 +109,11 @@ export type ListedAgent = { id: string; description: string; type: string; statu
 export type DeliveryKey = { project?: string; writer: string; seq: number }
 /** A log event submitted as the human's words, whose row is still to be kept. */
 export type Submission = { key: DeliveryKey; text: string }
+/**
+ * A delivery the bridge put in the conversation as a row, until the
+ * conversation is known to keep it: `turnId`, the main turn it was appended in.
+ */
+export type DeliveredRow = { key: DeliveryKey; text: string; turnId: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
 export type Refusal = { key: DeliveryKey; reason: string }
 
@@ -175,6 +189,8 @@ export type BridgeState = {
   isSeeded: boolean
   /** Steers given in the main turn, and those whose turn ended before their row was in. */
   steers: Steer[]
+  /** Wakes for unread delivered rows whose prompt has not settled (bridge.tsx, wakeForSteer). */
+  wakes: Wake[]
   /** The main turns the bridge's interrupt is ending, by turn, until each one ends. */
   interrupts: Map<string, Interrupt>
   /** For each running foreground subagent, the main turn it belongs to (its tool calls are that turn's). */
@@ -241,6 +257,8 @@ export type BridgeState = {
   agentListsInFlight: Set<Promise<readonly ListedAgent[]>>
   /** Deliveries submitted whose prompt row has not been kept yet, oldest first (`delivered` `entered`). */
   submissions: Submission[]
+  /** Delivered rows not yet known to stay in the conversation the next request reads (bridge.tsx, recheckDeliveries). */
+  deliveredRows: DeliveredRow[]
   /**
    * Refusals no post the child answered has carried yet, oldest first: every
    * resync carries them, so one whose post was lost still reaches the child.
@@ -273,6 +291,7 @@ const fresh = (): BridgeState => ({
   conversation: 0,
   agentListsInFlight: new Set(),
   submissions: [],
+  deliveredRows: [],
   refusals: [],
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,
@@ -290,6 +309,7 @@ const fresh = (): BridgeState => ({
   delivered: new Map(),
   isSeeded: false,
   steers: [],
+  wakes: [],
   interrupts: new Map(),
   foreground: new Map(),
 })

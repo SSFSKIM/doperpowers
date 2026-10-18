@@ -167,7 +167,8 @@ elif op == "supsock":       # home → where sminos looks for that config's supe
 elif op == "fakemod":       # sminos session lines-file mode-file
     # Spawns the child as the mod does, and answers its command lines as the
     # mod would; mode-file says whether a turn is running ("busy"), the
-    # session is idle ("idle"), or deliveries are refused ("refuse").
+    # session is idle ("idle"), deliveries are refused ("refuse"), or the
+    # human stopped the session, so the engine refuses the mod's prompt ("stopped").
     sminos, session, out, modefile = sys.argv[2:6]
     # The child's stderr is the mod's debug log: kept beside the lines.
     child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE,
@@ -218,6 +219,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                 mark = "%s/%s" % (key["project"], key["writer"]) if "project" in key else key["writer"]
                 if mode == "refuse":
                     result = {"ok": False, "error": "deliver needs key {project?, writer, seq} and text"}
+                elif mode == "stopped":
+                    result = {"ok": False, "error": "the session was stopped, so its prompt was refused: "
+                                                    "the session was stopped and nobody has sent input since"}
                 elif key["seq"] <= delivered.get(mark, 0):
                     events.append({"type": "delivered", "key": key, "outcome": "duplicate"})
                     result = {"ok": True, "result": {"duplicate": True}}
@@ -479,7 +483,57 @@ assert_contains "$OUT" "rover: sent" "a delivery the bridge refuses still reache
 until_true 100 test -s "$T/rover-inbox" || true
 assert_contains "$(cat "$T/rover-inbox" 2>/dev/null)" "second try" "through its inbox socket"
 assert_not_contains "$(grep "second try" "$T/rover-inbox")" "To reply" "with no reply line: the owner is answered in the session, not by say"
+# A session the human stopped (Esc): the engine refuses the mod's prompt, so
+# the bridge answers not-ok and the inbox frame, which starts a turn, carries it.
+mode stopped
+: > "$T/rover-inbox"
+set +e; OUT="$(cd "$R" && "$SMINOS" say "@rover after the Esc" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a say to a stopped bridged member exits 0"
+assert_contains "$OUT" "rover: sent" "reporting it sent"
+until_true 100 grep -q "after the Esc" "$T/rover-inbox" || true
+assert_contains "$(cat "$T/rover-inbox" 2>/dev/null)" "after the Esc" "the message went as the inbox frame"
+assert_contains "$OUT" "was stopped (Esc), so its bridge could not start a turn; the message goes as an inbox frame" \
+  "the sender is told the session was stopped, as the expected case it is"
+assert_not_contains "$OUT" "refused a delivery" "not as a refusal"
 mode busy
+# The mod's `inbox` event: the child writes the frame to the session's own
+# inbox socket (the wake for a delivered row a stopped turn left unread).
+: > "$T/rover-inbox"
+ctl post "$SOCK" '[{"type":"inbox","text":"[sminos bridge]\nA message for you was added"}]' >/dev/null
+until_true 100 test -s "$T/rover-inbox" || true
+FRAME="$(tail -1 "$T/rover-inbox" 2>/dev/null || true)"
+[ -n "$FRAME" ] || FRAME='{}'
+assert_equals "$(field_of "$FRAME" message.content)" "<cross-session-message from-name=\"sminos bridge\">
+[sminos bridge]
+A message for you was added
+</cross-session-message>" "the child sends the mod's inbox event as a frame to the session's own socket, the bridge's own"
+assert_equals "$(field_of "$FRAME" type)" "user" "as the inbox frame sminos sends"
+# With no socket of the session answering, a delivery the frame should have
+# carried is kept as a refusal, for the daemon to report `failed`.
+mv "$HOME/.claude/sessions/rover.json" "$T/rover.json.aside"
+ctl post "$SOCK" '[{"type":"inbox","text":"lost words","key":{"project":"p9","writer":"mac/s9","seq":4}}]' >/dev/null
+until_true 100 grep -q '"p9"' "$KEPT" || true
+assert_contains "$(cat "$KEPT")" '"refused": [{"key": {"project": "p9", "writer": "mac/s9", "seq": 4}, "reason": "no inbox socket of the session answers"}]' \
+  "an inbox frame for a delivery that no socket took is kept as a refusal"
+mv "$T/rover.json.aside" "$HOME/.claude/sessions/rover.json"
+# The same when the export thread's queue is full: the frame never goes, so a
+# keyed one is kept as a refusal (in process, its own session: a full queue).
+FULL="$(python3 - "$REPO_ROOT/skills/sminos/scripts" 2>"$T/full.err" <<'PY_FULL'
+import json, os, queue, sys
+sys.path.insert(0, sys.argv[1])
+import sminos_bridge as B
+b = B.Bridge("5b000009-0000-4000-8000-0000000000c9", "/nonexistent.sock")
+os.makedirs(os.path.dirname(B.kept_path(b.session)), mode=0o700, exist_ok=True)
+b.exports = queue.Queue(1)
+b.exports.put_nowait(None)
+b.ingest([{"type": "inbox", "text": "words", "key": {"project": "p8", "writer": "mac/s8", "seq": 7}},
+          {"type": "inbox", "text": "a wake, no key"}])
+with open(B.kept_path(b.session)) as f:
+    print(json.dumps(json.load(f).get("refused")))
+PY_FULL
+)" || FULL="python failed: $(cat "$T/full.err")"
+assert_equals "$FULL" '[{"key": {"project": "p8", "writer": "mac/s8", "seq": 7}, "reason": "the inbox frame was dropped: 1000 were waiting"}]' \
+  "a keyed inbox frame a full queue drops is kept as a refusal (a wake with no key is not)"
 # One writer delivering to one session from two projects (#229): every
 # project numbers the writer's events on its own, so the second project's
 # event is below what the first delivered, and arrives all the same.

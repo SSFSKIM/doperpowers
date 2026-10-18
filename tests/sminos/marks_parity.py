@@ -1,5 +1,5 @@
 """Parity fixtures for sminos_marks.parse: the `parse` cases of
-tests/mods/to-human.test.ts ("register" and "tags in code"), ported with
+to-human/tests/mods/to-human.test.ts ("register" and "tags in code"), ported with
 their expected values unchanged. Prints one `ok <name>` or `FAIL <name>`
 line per case, for run-sminos-tests.sh to count.
 
