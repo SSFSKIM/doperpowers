@@ -11,13 +11,16 @@ before the model answered hands the prompt back to the input box and the
 human's edited resend goes in where it stood, which leaves a row given after
 it on a branch no request reads (the bridge gives it again as the next turn
 starts); a delivery made after an Esc meets the engine's refusal of plugin
-prompts until the human speaks, so the bridge answers not-ok and sminos sends
-it as an inbox frame, which starts a turn; a row given mid-turn that an Esc
-left unread wakes the session through its inbox.
+prompts until the human speaks, so the bridge puts it in as a row and wakes
+the session through its inbox, which carries only the wake; a row given
+mid-turn that an Esc left unread wakes the session the same way.
 
 The two wake scenarios deliver through the CLI (`sminos send`, the path a
-human's message takes) and say ok or FAIL: a turn starts after the delivery
-and the model says the word, with no prompt from the human.
+human's message takes) and say ok or FAIL: the delivery entered as a row, a
+turn starts from the bridge's wake, no turn's prompt carries the human's
+words (they never went through the inbox), and the model says the word, with
+no prompt from the human. Each prints the delivery's row and the wake's as
+the transcript keeps them.
 
 It spends model calls (haiku, short prompts). Isolation is
 live-bridge-check.py's.
@@ -28,7 +31,8 @@ live-bridge-check.py's.
     bash-esc    delivered mid-Bash, then Esc; the human asks for the word
     restore     delivered as the turn starts, Esc before any answer, edit, resend
     after-esc   Esc before any answer, delivered while the prompt is back in the box, edit, resend
-    cli-after-esc  Esc mid-Bash; idle, delivered through the CLI: a turn starts and reads it
+    cli-after-esc  Esc mid-Bash; idle, delivered through the CLI: it goes in as a row, the inbox wakes the session, which reads it
+    esc-twice   Esc mid-Bash; two messages through the CLI, the second within 30 s of the first one's wake: each wakes the session
     esc-wake    delivered through the CLI mid-Bash, Esc before a request read it: the session wakes and reads it
 """
 
@@ -47,7 +51,7 @@ LB = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(LB)
 
 SCENARIOS = {"busy": "KIWI", "bash-esc": "MANGO", "restore": "PAPAYA", "after-esc": "PEAR",
-             "cli-after-esc": "LYCHEE", "esc-wake": "GUAVA"}
+             "cli-after-esc": "LYCHEE", "esc-twice": "MELON", "esc-wake": "GUAVA"}
 ASK = "If an earlier message asked you to include a word, reply with that word only; otherwise reply NONE."
 
 
@@ -69,7 +73,9 @@ class Probe(LB.Live):
     def deliver(self, word):
         Probe.seq += 1
         key = {"writer": "probe/w", "seq": Probe.seq}
-        s, body = self.command({"op": "deliver", "key": key, "text": "Include the word %s in your reply." % word})
+        # Framed as sminos frames every event it pushes: a wake names the row by its frame line.
+        text = "[sminos message from human id=probe%d]\nInclude the word %s in your reply." % (Probe.seq, word)
+        s, body = self.command({"op": "deliver", "key": key, "text": text})
         print("   deliver answered: %s %s" % (s, body and body.get("result")), flush=True)
         return key
 
@@ -123,7 +129,7 @@ class Probe(LB.Live):
                 continue
             c = r["message"]["content"]
             text = c if isinstance(c, str) else " ".join(b.get("text", b.get("type")) for b in c)
-            users.append((r.get("uuid", "")[:8], (r.get("parentUuid") or "")[:8], (r.get("origin") or {}).get("kind"), text[:60]))
+            users.append((r.get("uuid", "")[:8], (r.get("parentUuid") or "")[:8], (r.get("origin") or {}).get("kind"), text[:90]))
         said = self.text_since(t)
         print("== %s" % name)
         print("   delivered outcomes: %s" % outcomes)
@@ -198,23 +204,54 @@ class Probe(LB.Live):
         print("   sminos send exited %d: %s" % (r.returncode, (r.stdout + r.stderr).strip().replace("\n", " | ")), flush=True)
         return r
 
-    def woke(self, name, sent, word, cli):
-        """Waits for a main turn started after `sent` that says the word, and says ok or FAIL."""
+    def woke(self, name, sent, word, cli, before):
+        """Waits for a main turn started after `sent` that says the word, and
+        says ok or FAIL: the delivery entered as a row (`entered`, nothing
+        `refused`), the bridge's wake started a turn, the human's words were
+        in no turn's prompt (so in no inbox frame), and the model said the
+        word. Prints the rows the delivery and the wake left, whole."""
         try:
             LB.wait_for("a turn that says %s" % word, 120, lambda: word in self.text_since(sent))
         except TimeoutError:
             pass
         self.idle()
-        starts = [str(e.get("text"))[:90] for e in self.seen(lambda e: is_main(e, "turn", "start"), sent)]
+        time.sleep(2)
+        starts = [str(e.get("text")) for e in self.seen(lambda e: is_main(e, "turn", "start"), sent)]
         said = word in self.text_since(sent)
+        outcomes = [(e.get("outcome"), e.get("reason"), e.get("uuid")) for e in self.seen(
+            lambda e: e.get("type") == "delivered", sent)]
+        entered = [u for o, _, u in outcomes if o == "entered"]
+        refused = [o for o, _, _ in outcomes if o == "refused"]
+        woken = [s for s in starts if s.startswith("<cross-session-message") and "[sminos bridge]" in s]
+        carried = [s for s in starts if word in s]
+        # The request that answered with the word: its step, and how many messages it carried.
+        steps = {}
+        for e in self.seen(lambda e: e.get("type") == "chunk" and e.get("agentId") is None
+                           and e["chunk"].get("kind") == "text", sent):
+            steps.setdefault((e["turnId"], e["step"]), []).append(e["chunk"].get("text", ""))
+        answered = [k for k, v in steps.items() if word in "".join(v)]
         print("== %s" % name)
-        print("   main turns started after the delivery: %s" % starts)
-        print("   %s  a turn started after the delivery" % ("ok  " if starts else "FAIL"))
-        print("   %s  the model said %s, with no prompt from the human" % ("ok  " if said else "FAIL", word))
+        print("   delivered outcomes: %s" % outcomes)
+        print("   main turns started after the delivery: %s" % [s[:120] for s in starts])
+        print("   the word answered in (turn, step): %s" % answered)
+        checks = [
+            (bool(entered) and not refused, "the delivery entered as a row (`entered`), nothing refused"),
+            (bool(woken), "a turn started from the bridge's wake, through the inbox"),
+            (not carried, "no turn's prompt carried the human's words (none went through the inbox)"),
+            (said, "the model said %s, with no prompt from the human" % word),
+        ]
+        for ok, what in checks:
+            print("   %s  %s" % ("ok  " if ok else "FAIL", what))
         if cli is not None:
-            stopped = "was stopped (Esc)" in cli.stderr + cli.stdout
-            print("   the CLI said the session was stopped: %s" % stopped, flush=True)
-        self.results.append((name, bool(starts) and said, ""))
+            print("   the CLI said: %s" % (cli.stdout + cli.stderr).strip().replace("\n", " | "), flush=True)
+        for r in self.rows()[before:]:
+            is_delivery = r.get("uuid") in entered
+            is_wake = r.get("type") == "user" and "[sminos bridge]" in json.dumps(r.get("message"))
+            if is_delivery or is_wake:
+                shown = {k: r.get(k) for k in ("type", "uuid", "parentUuid", "isMeta", "origin", "promptId") if k in r}
+                shown["message"] = r.get("message")
+                print("   %s row: %s" % ("delivery" if is_delivery else "wake", json.dumps(shown, ensure_ascii=False)), flush=True)
+        self.results.append((name, all(ok for ok, _ in checks), ""))
 
     def cli_after_esc(self, word):
         t = time.time()
@@ -222,13 +259,36 @@ class Probe(LB.Live):
         self.keys("Escape")
         time.sleep(3)
         self.idle()
+        before = len(self.rows())
         sent = time.time()
         r = self.send(word)
-        self.woke("cli-after-esc", sent, word, r)
+        self.woke("cli-after-esc", sent, word, r, before)
+
+    def esc_twice(self, word):
+        """Two messages after one Esc, the second sent within 30 s of the
+        first one's wake: the engine drops a peer message identical to its
+        sender's last in that window, so each wake must differ."""
+        t = time.time()
+        self.bash_turn(t)
+        self.keys("Escape")
+        time.sleep(3)
+        self.idle()
+        first = time.time()
+        self.send("PLUM")
+        LB.wait_for("a turn that says PLUM", 120, lambda: "PLUM" in self.text_since(first))
+        with self.lock:
+            woke_at = next(w for w, e in self.events if w >= first and is_main(e, "turn", "start"))
+        self.idle(seconds=60)
+        before = len(self.rows())
+        sent = time.time()
+        print("   the second message goes %.1f s after the first one's wake" % (sent - woke_at), flush=True)
+        r = self.send(word)
+        self.woke("esc-twice", sent, word, r, before)
 
     def esc_wake(self, word):
         t = time.time()
         self.bash_turn(t)
+        before = len(self.rows())
         sent = time.time()
         r = self.send(word)
         LB.wait_for("the delivered row", 20, lambda: self.seen(
@@ -237,7 +297,7 @@ class Probe(LB.Live):
         read = self.seen(lambda e: is_main(e, "step", "start"), sent)
         print("   a request began between the delivery and the Esc: %s" % bool(read), flush=True)
         time.sleep(1)
-        self.woke("esc-wake", sent, word, r)
+        self.woke("esc-wake", sent, word, r, before)
 
     def run(self, scenarios):
         self.setup()

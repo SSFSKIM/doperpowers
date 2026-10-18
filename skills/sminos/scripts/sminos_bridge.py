@@ -45,9 +45,10 @@ as a `failed` outcome (sminos_outcomes.report_refused).
 The mod's `inbox` event asks the child for a frame on the session's own
 inbox socket (the engine's messaging socket): after an Esc the engine refuses
 the mod's prompts until the human sends input, not a message to the session,
-so this is how a delivered row a stopped turn left unread wakes it, and how a
-delivery whose prompt a stop dropped reaches it. One carrying a delivery's
-key that no frame carried is kept as a refusal, as above.
+so this is how a delivered row the session has not read while stopped wakes
+it. The frame is the bridge's own wake: the engine delivers whatever the
+inbox carries as another session's message, so a delivery's words go in as
+a row and never through it.
 
 Requests from outside (DC2 M3): the mod raises a permission prompt or a
 question as `raised` and settles it as `settled`; the child keeps the pending
@@ -284,25 +285,8 @@ def _key(e):
     return "%s|%s|%s" % (e.get("turnId"), e.get("agentId"), e.get("step"))
 
 
-def inbox_sender(key):
-    """Who an inbox frame the mod asks for is from, as its envelope names
-    them: a wake (no key) is the bridge's own; a delivery's is its log
-    event's sender (`via`, else `from`), read from the project's log. The
-    bridge takes only the owner's events, so one whose event cannot be read
-    is the human's."""
-    if key is None:
-        return "sminos bridge"
-    project = S.find_project(key["project"], required=False) if isinstance(key.get("project"), str) else None
-    if project is not None:
-        try:
-            with open(S.writer_path(project, str(key.get("writer"))), encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    e = S.parse_event(line)
-                    if e and e["seq"] == key.get("seq"):
-                        return str(e.get("via") or e.get("from") or "human")
-        except Exception:  # the lookup never costs the owner's delivery
-            pass
-    return "human"
+# Who the bridge's wake is from, as its inbox frame's envelope names it.
+WAKE_SENDER = "sminos bridge"
 
 
 def _refused(kept, key, reason):
@@ -778,47 +762,31 @@ class Bridge:
                              % EXPORTS_QUEUED)
 
     def _inbox(self, e):
-        """A frame the mod asks for on the session's own inbox socket (the
-        engine's messaging socket), which starts a turn where the engine
-        refuses the mod's prompt (after an Esc): the wake for a delivered row
-        a stopped turn left unread, or a delivery whose prompt a stop dropped
-        after the mod answered (`key`). Sent from the export thread, the one
-        that reads sminos's caches; never handed to subscribers."""
-        text, key = e.get("text"), e.get("key")
+        """The bridge's wake the mod asks for, as a frame on the session's own
+        inbox socket (the engine's messaging socket), which starts a turn
+        where the engine refuses the mod's prompt (after an Esc): it points
+        the session at a delivered row it has not read, which is already in
+        the conversation. Sent from the export thread, the one that reads
+        sminos's caches; never handed to subscribers."""
+        text = e.get("text")
         if not (isinstance(text, str) and text.strip()):
             return
         try:
-            self.exports.put_nowait((self._send_inbox, text, key if isinstance(key, dict) else None))
+            self.exports.put_nowait((self._send_inbox, text))
         except queue.Full:
             sys.stderr.write("sminos bridge: an inbox frame was dropped (%d waiting)\n" % EXPORTS_QUEUED)
-            if isinstance(key, dict):
-                # A delivery nothing will carry, kept as _send_inbox keeps one;
-                # the caller (ingest, under the lock) saves it.
-                self._keep(_refused(self.kept, key, "the inbox frame was dropped: %d were waiting" % EXPORTS_QUEUED))
 
-    def _send_inbox(self, text, key):
+    def _send_inbox(self, text):
         S.forget_caches()   # the registry as it is now: this child lives as long as its session
         peer = S.peer_for_session(self.session)
         if peer is None:
-            reason = "no inbox socket of the session answers"
-        else:
-            try:
-                S.send_frame(S.socket_path_of(peer), text, inbox_sender(key))
-                return
-            except S.SendFailed as err:
-                if err.phase == "after":
-                    sys.stderr.write("sminos bridge: an inbox frame may not have arrived: %s\n" % err)
-                    return
-                reason = "the inbox frame did not go: %s" % err
-        sys.stderr.write("sminos bridge: %s\n" % reason)
-        if key is None:
+            sys.stderr.write("sminos bridge: no inbox socket of the session answers: the wake did not go\n")
             return
-        # A delivery nothing carried: kept for the daemon to report `failed`.
-        with self.lock:
-            self._keep(_refused(self.kept, key, reason))
-            note = self._save()
-            if note is not None:
-                self._fan_out(note)
+        try:
+            S.send_frame(S.socket_path_of(peer), text, WAKE_SENDER)
+        except S.SendFailed as err:
+            sys.stderr.write("sminos bridge: the wake %s: %s\n" % (
+                "may not have arrived" if err.phase == "after" else "did not go", err))
 
     def run_exports(self):
         """Appends what the mod exports through the record path's own writer

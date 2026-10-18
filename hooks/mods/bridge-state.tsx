@@ -37,9 +37,10 @@ export type Call = {
  * given in before its row is appended.
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
  * `ended`: how its turn ended, while some append of that turn is still pending;
- * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread.
+ * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread;
+ * `frame`: a delivery's frame line, which an inbox wake names (bridge.tsx, inboxWake).
  */
-export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean }
+export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean; frame?: string }
 /**
  * The wake a turn owes for delivered rows it answered before reading, until
  * its prompt settles: `isRead`, a main-loop request began since that carries
@@ -111,9 +112,10 @@ export type DeliveryKey = { project?: string; writer: string; seq: number }
 export type Submission = { key: DeliveryKey; text: string }
 /**
  * A delivery the bridge put in the conversation as a row, until the
- * conversation is known to keep it: `turnId`, the main turn it was appended in.
+ * conversation is known to keep it: `turnId`, the main turn it was appended
+ * in, none for a row given while no turn ran (a stop refused its prompt).
  */
-export type DeliveredRow = { key: DeliveryKey; text: string; turnId: string }
+export type DeliveredRow = { key: DeliveryKey; text: string; turnId?: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
 export type Refusal = { key: DeliveryKey; reason: string }
 
