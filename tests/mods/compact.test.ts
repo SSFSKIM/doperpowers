@@ -51,6 +51,7 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('Prefer not to pass 600k')
     expect(describeCompact(967_000)).toContain('a backstop, not the plan')
     expect(describeCompact(967_000)).toContain('never as a percentage of the window')
+    expect(describeCompact(967_000)).toContain('Not during a design discussion, at any size')
   })
 
   test('the usage text carries the figures and the threshold', async () => {
