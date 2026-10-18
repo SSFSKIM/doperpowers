@@ -1017,12 +1017,12 @@ def project_tiers(q):
     named = [p for p in known if p.name == q]
     out = []
     for kind in ("hub", "machine", "local"):
+        if kind == "local" and out:
+            break   # a tier never consulted: its ambiguity is no one's
         hits = [p for p in named if project_kind(p) == kind]
         if len(hits) > 1:
             die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in hits))),
                 EXIT_UNKNOWN)
-        if kind == "local" and out:
-            break
         out += hits
     return out
 
@@ -4154,8 +4154,9 @@ def find_target(q):
     A full id — a seat id or session id — names its seat directly, and so
     does `group/alias` when the qualifier is a group and no project. Any other
     name, `<project>/<alias>` by the project's name or id included, is
-    resolved as a tag is (resolve_tag): its projects (those it names, else the
-    caller's, then for `alias#short` or a short every project known here) are
+    resolved as a tag is (resolve_tag): its projects (those it names; for
+    `alias#short` every project known here; else the caller's, then for a
+    short every project known here) are
     reconciled, and the name is matched against every member and every seat
     no member stands for (vacant, retired), so a seat and a seat-less session
     sharing an alias are refused as ambiguous rather than the seat being
@@ -4214,17 +4215,20 @@ def find_target(q):
     # deciding (§5 of the org directory design, as a tag is resolved): a full
     # id in every project known here; `<project>/<alias>` in the projects the
     # qualifier names (an ordinary project before a machine's of its name);
-    # else the caller's project, then — `alias#short`, or a bare name as a
-    # short — every project known here. A bare alias never leaves the
-    # caller's project.
+    # `alias#short` in every project known here at once, so a match in the
+    # caller's project never hides one elsewhere; else the caller's project,
+    # then a bare name as a short in every project known here. A bare alias
+    # never leaves the caller's project.
     if UUID_RE.match(q):
         passes = [(known_projects(), False)]
     elif proj:
         passes = [([p], False) for p in tiers]
     elif scope is None:
         passes = [(known_projects(), False)]
+    elif short:
+        passes = [(org_scope(), False)]
     else:
-        passes = [([scope], False), (org_scope(), not short)]
+        passes = [([scope], False), (org_scope(), True)]
     found, projects = [], []
     for projects, by_short in passes:
         found = matches(projects, by_short)

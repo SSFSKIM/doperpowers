@@ -374,6 +374,115 @@ as b beta
 until_true got rb "sent across" || true
 got rb "sent across" && pass "and beta delivers it" || fail "and beta delivers it"
 
+# ---- a member verb's alias#short: one org-wide pass, never the caller's project first
+echo "send alias#short:"
+as a alpha
+P1=dddd00e1-0000-4000-8000-000000000001
+P2=dddd00e1-0000-4000-8000-000000000002
+live_session peer "$P1" "$RA" cli peer-a
+live_session peer "$P2" "$ABARE" cli peer-b
+run_in "$ABARE" "$SMINOS" list
+run_in "$RA" "$SMINOS" list
+in_session "$SA" "$RA" "$SMINOS" send "peer#dddd00e1" "which peer"
+assert_rc 4 "$RC" "send alias#short two sessions answer to is refused, one of them in the caller's project"
+assert_contains "$OUT" "alpha/peer#dddd00e1" "naming the one in the machine project"
+assert_contains "$OUT" "projA/peer#dddd00e1" "and the one in the caller's"
+assert_equals "$(received peer-a)$(received peer-b)" "" "and sends nothing"
+in_session "$SA" "$RA" "$SMINOS" send "x1#5d0000dd" "x1 across"
+assert_rc 0 "$RC" "send alias#short reaches a session of another project when it is the only one"
+assert_contains "$(events_with "$AMP" "x1 across")" "\"session\": \"$X1\"" "in its project's log"
+
+# ---- a copy that cannot be written: a warning, the message delivered
+echo "a copy that cannot be written:"
+SAW="$SMINOS_HOME/projects/$AID/log/alpha.$SA.jsonl"
+chmod 400 "$SAW"
+in_session "$SA" "$RA" "$SMINOS" say "@projB/rb no copy of this"
+chmod 600 "$SAW"
+assert_rc 0 "$RC" "a say whose copy cannot be written still succeeds"
+assert_contains "$OUT" "delivered, but its copy could not be recorded in projA" "warning that the copy is missing"
+assert_equals "$(events_with "$AID" "no copy of this")" "" "no copy is in projA's log"
+assert_contains "$(events_with "$BID" "no copy of this")" "\"from_project\": \"$AID\"" "the delivering event is in projB's"
+as b beta
+until_true got rb "no copy of this" || true
+got rb "no copy of this" && pass "and rb receives it" || fail "and rb receives it"
+
+# ---- decisions pinned on one machine's logs alone, in a home of their own
+echo "the logs alone:"
+as c gamma
+reg() { # id name [hub] — a project registered here with no checkout
+  python3 - "$SMINOS_HOME/projects/$1" "$1" "$2" "${3:-}" <<'PY'
+import json, os, sys
+d, pid, name, hub = sys.argv[1:5]
+os.makedirs(d, exist_ok=True)
+info = {"project": pid, "name": name, "remote": "", "root": ""}
+if hub:
+    info["hub"] = {"url": "", "org": "org-1"}
+json.dump(info, open(os.path.join(d, "project.json"), "w"))
+PY
+}
+HUBSH=0c0c0c01-1111-4222-8333-444455556661
+reg "$HUBSH" shared hub
+reg 0c0c0c02-1111-4222-8333-444455556662 shared
+reg 0c0c0c03-1111-4222-8333-444455556663 shared
+assert_equals "$(python3 -c 'import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+print(sminos.find_project("shared").id)' 2>&1)" "$HUBSH" \
+  "a name a hub project has resolves to it, though two local projects share it"
+run_in "$T/x" "$SMINOS" chat shared -n 1
+assert_rc 0 "$RC" "and a verb naming it runs"
+# Remote sessions joined in two logs, as machine delta would have written them.
+PA=0c0c0c0a-1111-4222-8333-44445555666a
+PB=0c0c0c0b-1111-4222-8333-44445555666b
+PS=0c0c0c0f-1111-4222-8333-44445555666f
+PR=0c0c0c0e-1111-4222-8333-44445555666e
+reg "$PA" pa hub
+reg "$PB" pb hub
+reg "$PS" ps hub
+reg "$PR" pr hub
+mkdir -p "$SMINOS_HOME/daemon"
+printf '{"projects": [{"id": "%s", "name": "pr", "kind": "hub", "retired": true}], "machines": [], "at": ""}\n' "$PR" \
+  > "$SMINOS_HOME/daemon/org.json"
+resolve() { # sender-project text → the destination's name and the recipients, or the exit
+  python3 - "$@" <<'PY' 2>/dev/null
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+try:
+    dest, to, _, _ = sminos.resolve_tags(sminos.find_project(sys.argv[1]), sys.argv[2])
+    print(dest.name, " ".join(r["alias"] for r in to))
+except SystemExit as e:
+    print("exit", e.code)
+PY
+}
+joined() { # project session alias ts
+  python3 - "$@" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+p, sid, alias, ts = sys.argv[1:5]
+sminos.log_append(sminos.find_project(p), "delta/" + sid, "joined", ts=ts, session=sid, alias=alias,
+                  name_source="user", machine="delta", cwd="/d", worktree="", role="", seat="", by="")
+PY
+}
+D1=0d0d0d01-0000-4000-8000-000000000001
+D2=0d0d0d02-0000-4000-8000-000000000002
+joined pa "$D1" dual1 2026-10-18T01:00:00.000Z
+joined pb "$D1" dual1 2026-10-18T02:00:00.000Z
+joined pb "$D2" dual2 2026-10-18T01:00:00.000Z
+joined pa "$D2" dual2 2026-10-18T02:00:00.000Z
+assert_equals "$(resolve ps "@${D1:0:8} hi")" "pb dual1" "a session two logs hold resolves where it joined last (pb)"
+assert_equals "$(resolve ps "@${D2:0:8} hi")" "pa dual2" "whichever log that is (pa)"
+D3=0d0d0d03-0000-4000-8000-000000000003
+D4=0d0d0d04-0000-4000-8000-000000000004
+joined pa "$D3" stale3 2026-10-18T01:00:00.000Z
+joined pr "$D3" stale3 2026-10-18T02:00:00.000Z
+joined pr "$D4" stale4 2026-10-18T02:00:00.000Z
+assert_equals "$(resolve ps "@${D3:0:8} hi")" "pa stale3" \
+  "a newer membership in a project the org's directory retires is passed over"
+assert_equals "$(resolve ps "@stale3#${D3:0:8} hi")" "pa stale3" "for alias#short too"
+assert_equals "$(resolve ps "@${D4:0:8} hi")" "exit 4" "a session only a retired project holds is reached by no short"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test-address: all $PASSES assertions passed"
