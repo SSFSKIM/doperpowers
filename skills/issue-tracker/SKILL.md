@@ -8,12 +8,14 @@ description: Use when working with the board (a repo's ticket backlog, in GitHub
 The board is the state of future work: a backlog. A ticket is registered
 when work is deferred out of a session or named for later — a scope-out, a
 review's residue, something your human partner wants kept — and it waits
-there until they say which tickets go. The record of work done is the
+there until a session takes it. The record of work done is the
 commits and the PRs, not the board; work that will be built now needs no
 ticket.
 
-Taking a ticket is not a dispatch. The session your human partner names it
-to runs it like any other work, through the attended workflow: design where
+Taking a ticket is not a dispatch. A session takes a ticket because your
+human partner named it, or on its own initiative when the ticket is ready
+to build; either way it runs it like any other work, through the attended
+workflow: design where
 it needs design (doperpowers:brainstorming, doperpowers:execspec), a
 plan-executor or subagents to build, doperpowers:review-code to review, the
 session to merge. The ticket records where the work stands.
@@ -228,12 +230,21 @@ binding (or the checkout's own repo), the board's repo key on the api binding
 
 ## Taking a ticket
 
-Your human partner names the tickets that go ("#92 진행", "do 81 and 83").
-For each one:
+Your human partner names tickets ("#92 진행", "do 81 and 83"), and a
+ticket that is ready to build needs nobody's go-ahead: take one on your
+own initiative when your own work is done or it is the next valuable step.
+`board-list.sh ready-for-implementer` lists them in priority order (on the
+gh binding an `ELIGIBLE` tag says no unfinished blocker holds the row; on
+the api binding read `blocked_by` in `board-show.sh`). A
+`ready-for-architect` ticket is different: its design runs through
+doperpowers:brainstorming with your human partner, so bring it to them
+rather than design it alone. For each ticket you take:
 
 1. `board-show.sh <n>` — the body is the statement of work; the comments
    carry what was learned since.
-2. Move it as the work moves. A `ready-for-implementer` ticket goes
+2. Move it as the work moves; the first move is your claim, so make it
+   before the work starts — a refused transition means another session
+   took the ticket first. A `ready-for-implementer` ticket goes
    straight to `in-progress --branch <branch>`. A `ready-for-architect`
    ticket goes `in-design` while you design it, then crosses the build
    edge with a note, its pin and its branch:

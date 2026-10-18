@@ -69,9 +69,9 @@ Create a task per phase; complete them in order.
 7. **Materialize onto the board** — see Materialization below. Often a
    separate session: the spec's tracking-map section is the handoff
    contract.
-8. **Hand off, keep the spec alive** — show the board; your human partner
-   names the tickets that go, and each is taken per
-   doperpowers:issue-tracker. During the sprint the spec's Progress /
+8. **Hand off, keep the spec alive** — show the board; tickets are taken
+   per doperpowers:issue-tracker, named by your human partner or picked up
+   when ready to build. During the sprint the spec's Progress /
    Decision Log / Surprises stay current; the retrospective closes it; its
    Deferred section seeds the next organizing run.
 
