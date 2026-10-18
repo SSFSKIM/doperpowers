@@ -86,9 +86,11 @@ const DRAIN_TRIES = 10
 /**
  * The prompt that wakes a session whose turn answered before any model request
  * read a steer: the steer's row is already in the conversation, so this names
- * it rather than repeating it.
+ * it rather than repeating it. Its first line names who sends it, as
+ * DELIVERY_WAKE's does, so a reader of the transcript tells it from the
+ * human's own prompt.
  */
-export const STEER_WAKE = 'I added a note to the conversation while you were finishing your answer. Read it and act on it.'
+export const STEER_WAKE = '[sminos bridge]\nA note was added to the conversation while you were finishing your answer. Read it and act on it.'
 /**
  * The wake for a delivered row a stopped turn left unread, sent as an inbox
  * frame (the engine refuses a plugin's prompt after an Esc, not a message to
@@ -326,7 +328,7 @@ function wakeForSteer($: EngineInterface, isDelivery: boolean) {
       }
       $.ui.log(`bridge: the wake for an unread steer was dropped: ${entered.drop}`, { to: 'debug' })
       if (owed && STOPPED_DROPS.has(entered.drop)) {
-        emit({ type: 'inbox', text: `[sminos bridge]\n${STEER_WAKE}` })
+        emit({ type: 'inbox', text: STEER_WAKE })
       }
     },
     (error: unknown) => {

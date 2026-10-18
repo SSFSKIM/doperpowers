@@ -1746,7 +1746,7 @@ describe('deliver', () => {
     await h.complete('t2')
     await h.settle()
     expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE, STEER_WAKE])
-    expect(h.ofType('inbox').map((e) => e.text)).toEqual([`[sminos bridge]\n${STEER_WAKE}`])
+    expect(h.ofType('inbox').map((e) => e.text)).toEqual([STEER_WAKE])
   })
 
   test("a wake queued behind the human's prompt, whose turn read the delivered row before an Esc emptied the queue, sends no inbox frame; one no request read since still does", async () => {
