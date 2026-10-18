@@ -11,7 +11,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 - [x] (2026-10-18 18:25Z) M1 — Rows from the engine's records, the filter layer, `--here`, the subagent tree (60d7042f, fixes 68b27693, b59774da; review clean)
 - [x] (2026-10-18 18:33Z) M2 — Hub (MAWS): the `org` frame, follow-only hellos, machine projects at the Registry, machines' online state (MAWS `desk-org-hub` b982d762f, fixes 151c9957d, 3165ebafb; review clean; PR SSFSKIM/MAWS#54, gate run 39153008591)
 - [x] (2026-10-18 19:51Z) M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns` (715537cd, fix a607fccc; ci-kit 91492fd on `smns-org-directory`; review clean)
-- [ ] M4 — `sminos join`, `session_project`, moves when a resolved project changes
+- [x] (2026-10-18 21:26Z) M4 — `sminos join`, `session_project`, moves when a resolved project changes, the launch directory (§1c) (1197ad58, fix 8696668f; review clean)
 - [ ] M5 — Addressing across the org and the copy in the sender's log
 - [ ] M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid
 - [ ] M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release
@@ -303,7 +303,7 @@ Touches (MAWS, `apps/desk-web/src/`): `shell/layout.ts` (the `org` view), `views
 
 Interfaces: consumes `ProjectSummary.kind` (M2) and the `copy` event (M5). Produces nothing another milestone consumes.
 
-Decisions: the org view acquires every project's connection while it is mounted (`acquireProject`/`releaseProject`) and releases them on leave; a locked tab (no org key) shows the grid's counts and no rows, as the sidebar does. Sorting within a group is newest join first by the `joined` event's `ts` (`ProjectedSession` gains `joinedTs`): the sidebar's `joinedAt` is an offset in one project's log and means nothing across projects. A copy is told by its `copy` key and drawn in the sender's timeline with `→ <destination project name>` (from the grid's names); the destination's event is drawn with `from <origin project name>` when `from_project` names another project.
+Decisions: the org view acquires every project's connection while it is mounted (`acquireProject`/`releaseProject`) and releases them on leave; a locked tab (no org key) shows the grid's counts and no rows, as the sidebar does. Sorting within a group is newest join first by the `joined` event's `ts` (`ProjectedSession` gains `joinedTs`; a `joined` carrying `relocated: true` refreshes the session's directory and leaves `joinedTs` where the membership's first `joined` set it, M4): the sidebar's `joinedAt` is an offset in one project's log and means nothing across projects. A copy is told by its `copy` key and drawn in the sender's timeline with `→ <destination project name>` (from the grid's names); the destination's event is drawn with `from <origin project name>` when `from_project` names another project.
 
 Does not touch: the hub, sminos.
 
@@ -384,7 +384,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 
 | kind | new fields |
 | --- | --- |
-| `joined` | `cwd` is the session's launch directory (§1c); `session_kind` `interactive`/`bg`/`seat` (never `kind`, the event's own discriminator); `repo` the owning repository's basename (`""` outside one); `branch` (`""` when detached or none); `by` may be `join` or `move` |
+| `joined` | `cwd` is the session's launch directory (§1c); `relocated: true` marks a repeated `joined` that only refreshes `cwd`/`repo`/`branch` after the engine relocated the session within the same project (M4); `session_kind` `interactive`/`bg`/`seat` (never `kind`, the event's own discriminator); `repo` the owning repository's basename (`""` outside one); `branch` (`""` when detached or none); `by` may be `join` or `move` |
 | `retired` | `reason` `moved` with `project` the new project's id |
 | `say`, `human` | `to[]` entries may carry `project` (the recipient's project id); `copy` `"<project id>:<writer>:<seq>"` marks the sender's copy of a cross-project message; `from_project` as today |
 
@@ -492,6 +492,8 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M4 executor, accepted by the controller.
 - Decision (M4): the override is read afresh, never memoized, and both a `moved` retirement and an on-sight join re-resolve the session's project under the session file's lock before writing (a tick that read "no override" before `join` wrote one would otherwise retire the just-joined session back). Seats move too when a `.smns` changes under their `cwd` (§1a; before, the old project kept them joined forever); `join` stays refused for a seat. A join is `by: move` when the session's latest membership elsewhere here is `joined`, or a `moved` retirement naming this project. A running session whose project resolves to none stays where it is, except an explicit `join --cwd` to a launch directory in no project (unenrolled machines), which retires it `moved` with `project` "". `join` exits 2 outside a session, 1 for a seat or an ineligible target (with the reason), 4 for an unknown project, 0 alone or as a no-op. `chat` shows `<alias> retired (moved to <project>)`. The override sweep runs on its own hourly clock (a one-shot `daemon tick` sweeps), also removing overrides naming no known project and stale launch-directory cache entries. `--here`'s `(no project)` rows use the launch directory.
   Date/Author: 2026-10-18, M4 executor.
+- Decision (M4 review): the launch directory's reader reads each transcript row to its newline (a first row over 64 KiB is never cut and dropped; at most 1000 rows), and falls to the caller's cwd only when no complete row exists, uncached. A seat's directory is its session's launch directory, the recorded seat `cwd` only the fallback (`seat_cwd`, used by `seat_project`, the seat's joins and `resume_session`; a fresh `fill` still starts in the recorded `cwd`). A relocation within one project writes one more `joined` with `relocated: true`, `by` `""` and the new `cwd`/`repo`/`branch` — only when the launch directory differs from the latest `joined.cwd`, re-checked under the session's lock — so every reader of the latest `joined.cwd` (list, Resume, the plane) follows it. `tests/sminos/engine_relocated_shape.py` reads the installed engine binary (`~/.local/bin/claude` or `$SMINOS_ENGINE`) and fails when the `relocated` producer or the tail-then-head reader changes shape, printing SKIP where no engine is installed (CI); a format change otherwise degrades to the first row's `cwd`, never the current directory (the orchestrator's condition).
+  Date/Author: 2026-10-18, M4 executor from the task review.
 
 ## Outcomes & Retrospective
 
