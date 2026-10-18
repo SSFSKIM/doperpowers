@@ -170,7 +170,7 @@ def push_live(peer, session, text, event=None):
     text carries (None for a frame no log holds; every event of one push is
     one writer's, so one side's). Only the owner's events take the bridge or
     the supervisor, the human's channels; a peer's is the inbox frame, named
-    by its sender. Raises SendFailed as send_frame does: "before" when nothing
+    by its sender and closed by how to answer it (S.reply_line). Raises SendFailed as send_frame does: "before" when nothing
     reached the session, "after" when it may have."""
     owner = event is not None and S.owner_event(event)
     if owner and deliver(session, event, text):
@@ -180,7 +180,7 @@ def push_live(peer, session, text, event=None):
         if took is True:
             return
     sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
-    S.send_frame(S.socket_path_of(peer), text, sender)
+    S.send_frame(S.socket_path_of(peer), text, sender, S.writer_session(event["writer"]) if event is not None else "")
 
 
 # ------------------------------------------------------------------ the verbs

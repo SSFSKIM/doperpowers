@@ -7,7 +7,10 @@ What only a running engine shows, in a terminal session with the bridge mod:
   session starts a turn on it, its transcript keeps the row with origin
   `peer` named by the frame's sender (the engine read the peer envelope's
   `from-name`), wrapped as the engine wraps a peer message, and no row
-  carries it as the human's words;
+  carries it as the human's words; and the session, which has no sminos
+  skill to read (its SKILL.md is left out of the plugin copy), answers the
+  peer through the reply line the frame closes with (`sminos say @<short>`),
+  recorded in the project's log;
 - a peer's `sminos say` during a running turn is read in that turn, at its
   next tool round;
 - the owner's `sminos send` (sminos run with no session) still reaches the
@@ -57,9 +60,33 @@ def text_of(content):
 class Peer(LB.Live):
     def setup(self):
         super().setup()
-        # Bash runs without a dialog: the mid-turn check needs a tool round.
+        # Bash runs without a dialog: the reply and the mid-turn check need it.
         with open(os.path.join(self.cfg, "settings.json"), "w") as f:
             json.dump({"permissions": {"allow": ["Bash"]}}, f)
+        # No sminos context: the session reaches the CLI only through the frame.
+        os.unlink(os.path.join(self.plugin, "skills", "sminos", "SKILL.md"))
+        # The peer, a member of the project: a live process the engine's
+        # session registry names (as a session's record would), joined on sight.
+        os.makedirs(os.path.join(self.cfg, "sessions"), exist_ok=True)
+        holder = subprocess.Popen(["sleep", "3600"])
+        self.procs.append(holder)
+        with open(os.path.join(self.cfg, "sessions", "%d.json" % holder.pid), "w") as f:
+            json.dump({"pid": holder.pid, "sessionId": PEER_SID, "cwd": self.work, "kind": "interactive",
+                       "name": PEER, "nameSource": "user", "status": "idle"}, f)
+
+    def peer_log(self):
+        """The project log's events addressed to the peer."""
+        out = []
+        for p in glob.glob(os.path.join(self.smh, "projects", "*", "log", "*.jsonl")):
+            with open(p) as f:
+                for line in f:
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if any(isinstance(r, dict) and r.get("session") == PEER_SID for r in e.get("to") or []):
+                        out.append(e)
+        return out
 
     def cli(self, *args, peer=False):
         env = self.local_env()
@@ -146,6 +173,12 @@ class Peer(LB.Live):
                    and (users[0].get("origin") or {}).get("name") == PEER and ENVELOPE.search(texts[0] or "")
                    and not asuser,
                    "rows %s; text %r" % (self.describe(rows), (texts[0] if texts else "")[:200]))
+        replies = [e for e in self.peer_log() if e.get("kind") == "say"
+                   and str(e.get("writer", "")).endswith("/" + self.session)]
+        self.check("the session, with no sminos context, answers the peer through the frame's reply line",
+                   texts and ('say "@%s <your reply>"]' % PEER_SID[:8]) in texts[0]
+                   and any("PEACH" in str(e.get("text")) for e in replies),
+                   "replies %s" % [(e.get("from"), e.get("text")) for e in replies])
         self.check("the pane draws it as a message from another session, not as a prompt",
                    not re.search(r"❯ *\[sminos message from %s" % PEER, self.pane()),
                    "pane tail %r" % self.pane().rstrip().splitlines()[-6:])

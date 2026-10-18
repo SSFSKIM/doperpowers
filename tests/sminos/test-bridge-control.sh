@@ -438,6 +438,8 @@ CONTENT="$(field_of "$FRAME" message.content)"
 assert_equals "$(head -1 <<<"$CONTENT")" '<cross-session-message from-name="session:5f000005">' \
   "but its inbox, in the engine's peer envelope naming the sender"
 assert_contains "$(sed -n 2p <<<"$CONTENT")" "[sminos chat ctldemo 5f000005:" "around the frame the bridge would have carried"
+assert_equals "$(tail -2 <<<"$CONTENT" | head -1)" "[To reply, run in Bash: $(cd "$(dirname "$SMINOS")" && pwd -P)/sminos say \"@5f000005 <your reply>\"]" \
+  "its last line says how to answer the sending session, with the CLI's path"
 assert_equals "$(tail -1 <<<"$CONTENT")" "</cross-session-message>" "closed"
 set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" send rover "a peer's direct word" --from scout 2>&1)"; RC=$?; set -e
 assert_rc 0 "$RC" "a peer's send to a bridged member exits 0"
@@ -453,6 +455,7 @@ set +e; OUT="$(cd "$R" && "$SMINOS" say "@rover second try" 2>&1)"; RC=$?; set -
 assert_contains "$OUT" "rover: sent" "a delivery the bridge refuses still reaches the member"
 until_true 100 test -s "$T/rover-inbox" || true
 assert_contains "$(cat "$T/rover-inbox" 2>/dev/null)" "second try" "through its inbox socket"
+assert_not_contains "$(grep "second try" "$T/rover-inbox")" "To reply" "with no reply line: the owner is answered in the session, not by say"
 mode busy
 
 # A --bg job with no bridge: a human's event goes through the engine

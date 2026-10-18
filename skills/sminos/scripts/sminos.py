@@ -119,6 +119,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -127,6 +128,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid as uuidlib
 from contextlib import contextmanager
 from typing import NamedTuple, NoReturn, Optional
@@ -3554,10 +3556,54 @@ class SendFailed(OSError):
 
 
 PEER_TAG = "cross-session-message"
-NAME_DROP_RE = re.compile(r'["<>\x00-\x1f\x7f-\x9f\u2028\u2029]')
+# The engine's closing-tag escape for an envelope's body (2.1.300 `KXe`/`w`/`K`,
+# cli.pretty.js ≈ 941747-941780), rebuilt so the envelope round-trips its parser:
+# an opening angle or a lookalike, not already followed by a backslash, then a run
+# of filler (anything but a word character or an angle), a slash or a lookalike,
+# filler, and the tag name, invisible characters allowed between its letters and
+# each `-` any dash or connector, then no word character. The match's angle
+# becomes `<\\` (one backslash).
+_OPEN = "<\uff1c\ufe64\u2329\u27e8\u3008\u2039\u02c2\u1438\u276c\u276e\u2770\u29fc\u226e\u227a\u22d6"
+_CLOSE = ">\uff1e\ufe65\u232a\u27e9\u3009\u203a\u02c3\u1433\u276d\u276f\u2771\u29fd\u226f\u227b\u22d7"
+_SLASH = "/\uff0f\u2215\u2044"
+# \p{Pd}, \p{Pc} and the engine's extra dashes, as one class.
+_DASH = ("\u002d\u005f\u02cd\u02d7\u058a\u05be\u0640\u07fa\u1400\u1806\u2010\u2011\u2012\u2013\u2014\u2015"
+         "\u2017\u203f\u2040\u2043\u2054\u207b\u208b\u2212\u2796\u2e17\u2e1a\u2e3a\u2e3b\u2e40\u2e5d\u301c"
+         "\u3030\u30a0\u30fc\ufe31\ufe32\ufe33\ufe34\ufe4d\ufe4e\ufe4f\ufe58\ufe63\uff0d\uff3f\uff70\U00010ead")
+# Between the name's letters only invisible, combining and control characters
+# (the engine's `qXe`: its `t$t`, `du` and C0/C1 controls).
+_INVIS = ("\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u115f\u1160\u17b4\u17b5"
+          "\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+          "\ufff0-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3"
+          "\U0001d173-\U0001d17a\U00016fe4\U000e0000-\U000e0fff"
+          "\u0300-\u0344\u0346-\u036f\u0483-\u0489\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7"
+          "\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06dc\u06df-\u06e4\u06e7\u06e8\u06ea-\u06ed"
+          "\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\u3099\u309a\ufe20-\ufe2f"
+          "\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029")
+_LETTERS = "[%s]*" % _INVIS
+_FILL = "[^A-Za-z0-9_\\-%s%s]*" % (re.escape(_OPEN), re.escape(_CLOSE))
+_FILL_SLASH = "[^A-Za-z0-9_\\-%s%s%s]*" % (re.escape(_OPEN), re.escape(_CLOSE), re.escape(_SLASH))
+CLOSING_TAG_RE = re.compile("[%s](?!\\\\)(?=%s[%s]%s%s(?:[^A-Za-z0-9_\\-]|$))" % (
+    re.escape(_OPEN), _FILL_SLASH, re.escape(_SLASH), _FILL,
+    _LETTERS.join("[%s]" % re.escape(_DASH) if ch == "-" else re.escape(ch) for ch in PEER_TAG)),
+    re.IGNORECASE)
+# What the engine strips from `from-name`: quotes and angles, then control,
+# format, surrogate and line/paragraph-separator characters.
+NAME_DROP = ("Cc", "Cf", "Cs", "Zl", "Zp")
 
 
-def peer_envelope(text, sender=""):
+def reply_line(session):
+    """The body's closing line for a peer's frame: how to answer the session
+    that sent it, as a command a model that knows nothing of sminos can run
+    (the CLI is not on PATH, so it is named by this install's path, which the
+    recipient shares: delivery is always on its own machine). `@<short>`
+    names the sender in the project's log on any machine; the envelope
+    carries no `from` address, so SendMessage has none to answer."""
+    return '[To reply, run in Bash: %s say "@%s <your reply>"]' % (
+        shlex.quote(os.path.join(SCRIPT_DIR, "sminos")), session[:8])
+
+
+def peer_envelope(text, sender="", reply_to=""):
     """The text wrapped as the engine's own SendMessage wraps a peer message
     (2.1.300 SPEC §38.23.1): `<cross-session-message from-name="…">`, the
     body, the closing tag. The receiving engine reads `from-name` into the
@@ -3565,23 +3611,27 @@ def peer_envelope(text, sender=""):
     envelope round-trips its parser: the name stripped as it strips one, and
     a closing tag in the body escaped as it escapes one. No `from` address:
     there is no inbox a reply could reach through SendMessage — a member
-    answers with `sminos say`, which the frame's first line names."""
-    name = NAME_DROP_RE.sub("", sender).strip()
-    name = name[:64]  # the engine keeps 64 code points
-    body = re.sub(r"</(?=%s)" % PEER_TAG, "<\\\\/", text, flags=re.IGNORECASE)
+    answers with `sminos say`, which, given `reply_to` (the sending session),
+    the body's last line spells out (reply_line)."""
+    if reply_to:
+        text = "%s\n%s" % (text, reply_line(reply_to))
+    name = "".join(ch for ch in re.sub(r'["<>]', "", sender) if unicodedata.category(ch) not in NAME_DROP)
+    name = name.strip()[:64].strip()  # the engine keeps 64 code points, trimmed
+    body = CLOSING_TAG_RE.sub("<\\\\", text)
     return "<%s%s>\n%s\n</%s>" % (PEER_TAG, ' from-name="%s"' % name if name else "", body, PEER_TAG)
 
 
-def send_frame(path, text, sender=""):
+def send_frame(path, text, sender="", reply_to=""):
     """Write one message frame to a session's inbox socket.
 
     The frame is a plain user message whose content is the text in the peer
-    envelope (peer_envelope, naming `sender`); the harness delivers it as a
+    envelope (peer_envelope, naming `sender`, closed by how to answer the
+    session `reply_to` when a session sent it); the harness delivers it as a
     peer message ("Another Claude session sent a message"), never as its
     user's words. Callers also put identity in the text's first line.
     Raises SendFailed(phase) — see the class.
     """
-    frame = {"type": "user", "message": {"role": "user", "content": peer_envelope(text, sender)}}
+    frame = {"type": "user", "message": {"role": "user", "content": peer_envelope(text, sender, reply_to)}}
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:

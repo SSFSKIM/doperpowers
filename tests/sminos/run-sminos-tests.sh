@@ -2666,12 +2666,12 @@ live_peer() { # name session status
     "$SOCK_PID" "$2" "$1" "$3" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/pl-$1.json"
 }
 inbox() { cat "$TEST_ROOT/in-$1.received"; }
-# A frame's text inside the engine's peer envelope sminos wraps it in
-# (test-bridge-control.sh pins the envelope itself).
+# A frame's text inside the engine's peer envelope sminos wraps it in, less
+# a peer's reply line (test-bridge-control.sh pins both).
 UNWRAP='import re
 def unwrap(c):
     m = re.match(r"<cross-session-message[^>\n]*>\n([\s\S]*)\n</cross-session-message>$", c)
-    return m.group(1) if m else c
+    return re.sub(r"\n\[To reply, run in Bash: [^\n]*\]$", "", m.group(1)) if m else c
 '
 frames() { # name → each frame the inbox received, decoded, newlines shown as " / "
   python3 -c "$UNWRAP"'
@@ -3923,6 +3923,12 @@ while IFS= read -r line; do
     *) fail "mark parity: ${line#FAIL }" ;;
   esac
 done < <(python3 "$SCRIPT_DIR/marks_parity.py" "$REPO_ROOT/skills/sminos/scripts" 2>&1)
+# A peer frame's envelope round-trips the engine's parser (envelope_parity.py).
+if python3 "$SCRIPT_DIR/envelope_parity.py" >"$TEST_ROOT/envelope.out" 2>&1; then
+  pass "the peer envelope matches the engine's serializer ($(tail -1 "$TEST_ROOT/envelope.out"))"
+else
+  fail "the peer envelope matches the engine's serializer"; sed 's/^/    /' "$TEST_ROOT/envelope.out"
+fi
 # The desk's codes are the hub's: DX1's shared vectors pin them (codes_parity.py).
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "codes parity: ${line#ok }" ;; *) fail "codes parity: ${line#FAIL }" ;; esac
