@@ -357,15 +357,18 @@ class Chain:
         self.group = {}        # an assistant's uuid → its response's message id
         self.groups = {}       # message id → the assistants of that response
         self.waiting = {}      # uuid → the rows seen whose parent it is, while it is not placed
+        self.results = {}      # an assistant's uuid → the tool results that answer it
         self.line = []         # the chain, in the order its rows joined it
         self.pos = {}          # uuid → its index in `line`: the rows on the chain
         self.offs = set()      # the rows placed off it
         self.passed = set()    # the progress rows placed
+        self.moved = {}        # while a row is added: each row it moved → whether that row was off before
 
     def copy(self):
         c = Chain(self.main)
         c.parent, c.progress, c.source = dict(self.parent), set(self.progress), dict(self.source)
         c.group, c.groups = dict(self.group), {k: list(v) for k, v in self.groups.items()}
+        c.results = {k: list(v) for k, v in self.results.items()}
         c.waiting = {k: list(v) for k, v in self.waiting.items()}
         c.line, c.pos, c.offs, c.passed = list(self.line), dict(self.pos), set(self.offs), set(self.passed)
         return c
@@ -399,28 +402,41 @@ class Chain:
                 any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             src = row.get("sourceToolAssistantUUID")
             self.source[u] = src if isinstance(src, str) and src else p
+            self.results.setdefault(self.source[u], []).append(u)
         if p is not None and not self.placed(p):
             self.waiting.setdefault(p, []).append(u)
             return [], []
-        off, on = [], []
+        # A cascade of waiting rows can move one row more than once: what it
+        # reports is each row's net move, in the order it first moved.
+        self.moved = {}
         todo = collections.deque([u])
         while todo:
             x = todo.popleft()
-            self.place(x, off, on)
+            self.place(x)
             todo.extend(self.waiting.pop(x, ()))
-        return off, on
+        moved, self.moved = self.moved, {}
+        return ([r for r, was in moved.items() if not was and r in self.offs],
+                [r for r, was in moved.items() if was and r in self.pos])
 
     def through(self, p):
         while p in self.progress:
             p = self.parent[p]
         return p
 
+    def note(self, x):
+        self.moved.setdefault(x, x in self.offs)
+
     def join(self, x):
+        self.note(x)
         self.offs.discard(x)
         self.pos[x] = len(self.line)
         self.line.append(x)
 
-    def place(self, x, off, on):
+    def leave(self, x):
+        self.note(x)
+        self.offs.add(x)
+
+    def place(self, x):
         if x in self.progress:   # passes its parent through; never the leaf, never marked
             self.passed.add(x)
             return
@@ -431,38 +447,44 @@ class Chain:
             if p in self.pos or self.source[x] in self.pos:
                 self.join(x)
             else:
-                self.offs.add(x)
-                off.append(x)
+                self.leave(x)
         else:
-            self.branch(x, p, off, on)
+            self.branch(x, p)
 
     def kept(self, r):
-        """Whether a row the branch point passed stays on: a tool result whose
-        assistant is on the chain, or an assistant of a response that is."""
+        """Whether a row stays on, or comes back, with the chain: a tool
+        result whose assistant is on it, or an assistant of a response that
+        is (the engine's loader recovers both)."""
         return self.source.get(r) in self.pos or any(a in self.pos for a in self.groups.get(self.group.get(r), ()))
 
-    def branch(self, x, p, off, on):
+    def branch(self, x, p):
         """`x` starts a branch at `p`, a placed row other than the leaf: the
         rows after the last of p's ancestors on the chain leave it, and p's
-        rows back to that ancestor (if a branch had taken them off) rejoin."""
+        rows back to that ancestor (if a branch had taken them off) rejoin,
+        with the responses' other rows and results the loader recovers."""
         walk, y = [], p
         while y is not None and y not in self.pos:
             walk.append(y)
             y = self.through(self.parent[y])
         at = self.pos[y] + 1 if y is not None else 0
         left = self.line[at:]
-        del self.line[at:]
         for r in left:
+            self.note(r)
             del self.pos[r]
+        del self.line[at:]
         for r in left:
             if self.kept(r):
                 self.join(r)
             else:
-                self.offs.add(r)
-                off.append(r)
-        for r in reversed(walk):
+                self.leave(r)
+        back = collections.deque(reversed(walk))
+        while back:
+            r = back.popleft()
+            if r in self.pos:
+                continue
             self.join(r)
-            on.append(r)
+            back.extend(a for a in self.groups.get(self.group.get(r), ()) if a in self.offs)
+            back.extend(t for t in self.results.get(r, ()) if t in self.offs)
         self.join(x)
 
 

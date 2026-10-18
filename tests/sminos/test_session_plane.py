@@ -1948,6 +1948,36 @@ class ChainRules(unittest.TestCase):
         self.assertEqual(got[back["uuid"]], ([other["uuid"]], [r["uuid"] for r in first]))
         self.assertEqual(c.offs, {other["uuid"]})
 
+    def test_a_branch_back_into_a_parallel_response_brings_all_of_it_back(self):
+        """The loader recovers a response's other calls and their results with
+        any one of them: so does a branch that runs back through one."""
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        prompt = t.prompt("check both")
+        a, b = t.tool_call("toolu_a", "m1"), t.tool_call("toolu_b", "m1")
+        ra, rb = t.tool_result("toolu_a", a), t.tool_result("toolu_b", b)
+        other = t.prompt("never mind", parent=prompt["uuid"])
+        back = t.answer("a passed", "m2", parent=ra["uuid"])
+        got = self.feed(c, before + [prompt, a, b, ra, rb, other, back])
+        self.assertEqual(got[other["uuid"]], ([a["uuid"], b["uuid"], ra["uuid"], rb["uuid"]], []))
+        off, on = got[back["uuid"]]
+        self.assertEqual(off, [other["uuid"]])
+        self.assertEqual(sorted(on), sorted(r["uuid"] for r in (a, b, ra, rb)), "the whole response, both results")
+        self.assertEqual(c.offs, {other["uuid"]})
+
+    def test_a_cascade_reports_each_rows_net_move(self):
+        """Waiting rows placed in one cascade can move a row more than once;
+        what the row reports is where each ended up."""
+        c = plane.Chain()
+        x, cc, d, e, f = (str(uuidlib.uuid4()) for _ in range(5))
+        rows = [{"uuid": e, "parentUuid": cc}, {"uuid": f, "parentUuid": d}, {"uuid": cc, "parentUuid": x},
+                {"uuid": d, "parentUuid": x}, {"uuid": x, "parentUuid": None}]
+        got = self.feed(c, [dict(r, type="user") for r in rows])
+        off, on = got[x]
+        self.assertEqual(set(off), c.offs, "every row reported off is off, and every off row reported")
+        self.assertEqual(len(off), len(set(off)), "once each")
+        self.assertEqual(on, [], "nothing was off before the row came")
+
     def test_progress_and_sidechain_rows_are_never_marked(self):
         t, c = Thread(), plane.Chain()
         prompt = t.prompt("x")
