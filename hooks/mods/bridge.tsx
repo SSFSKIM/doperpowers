@@ -48,8 +48,9 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * moved to the background, and before the turn ends appends Esc's marker and
  * a note saying so;
  * `model` rewrites the main loop's requests;
- * `compact` runs between turns; `deliver` submits a log event as the human's
- * words, once per key. What must outlive a module reload (the model chosen,
+ * `compact` runs between turns; `deliver` submits the owner's log event as
+ * the human's words, once per key (a peer's goes to the session's inbox, and
+ * the bridge refuses one written by a session). What must outlive a module reload (the model chosen,
  * the keys delivered) the child keeps on disk: its hello hands it back.
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
@@ -558,16 +559,24 @@ async function runCompaction($: EngineInterface, request: { id: string; instruct
   }
 }
 
+/** A session's writer, `<machine>/<session id>`: its events are a peer's words. */
+const SESSION_WRITER = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 /**
- * A log event for this session, submitted as the human's words: queued until
- * the session is idle. Delivery is at least once and goes in seq order per
- * writer, so a key at or below the writer's last submitted is a repeat, and
- * dropped.
+ * The owner's log event for this session, submitted as the human's words:
+ * queued until the session is idle. Delivery is at least once and goes in seq
+ * order per writer, so a key at or below the writer's last submitted is a
+ * repeat, and dropped. sminos sends only the owner's events here; one a
+ * session wrote is refused whoever sends it, so its sender falls back to the
+ * session's inbox, where the engine delivers it as a peer's.
  */
 function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
   const { writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { writer?: unknown; seq?: unknown }
   if (typeof writer !== 'string' || writer === '' || !Number.isInteger(seq) || typeof text !== 'string') {
     return { ok: false, error: 'deliver needs key {writer, seq} and text' }
+  }
+  if (SESSION_WRITER.test(writer)) {
+    return { ok: false, error: "a session's event is a peer's, not the human's words: it goes to the session's inbox" }
   }
   const delivery = { writer, seq: seq as number }
   if (delivery.seq <= (state.delivered.get(writer) ?? 0)) {

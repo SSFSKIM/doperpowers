@@ -148,6 +148,8 @@ with `sminos send`/`say` to a bridged member arrives as the human's words.
   §38.11, §20.15.14a), falling back to the inbox frame if the supervisor
   refuses. The frame's text for a bridged delivery is the same text the
   inbox frame carries today, so the model reads the same addressing.
+  (**[peer]**, 2026-10-18: a peer's `say` no longer takes the bridge; it is
+  the inbox frame, as DX5's last hop below says.)
 
 **Touches:** `hooks/mods/bridge.tsx`, `skills/sminos/scripts/sminos.py`
 (new verbs; `push_member`, `send_frame`'s callers), tests.
@@ -463,7 +465,7 @@ M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
 | `interrupt` | M2 **[M2]** **[fw1]** **[record]** | `{from?}` | `{turnId, stopped: [<task ids>], running: [<task ids>]}`: `$.turn.abort` on the main turn, then `TaskStop` (`$.tool.call`) on each Bash call **attributable to that turn** and running at the abort whose result names the background task the abort moved it to (`running in background with ID: <id>`; their results awaited at most 3 s). **[fw1]** Attributable: a main-loop call made during that turn, or a call of a foreground subagent spawned in it (nested foreground subagents inherit their parent's turn); a background subagent's calls never are. **[fw1]** `running` names each task whose TaskStop failed (an `isError` result or a rejection): the interrupt is incomplete when it is not empty. Idle: `{turnId: null, stopped: [], running: []}`. **[record]** A plugin's abort leaves the model no marker (Esc leaves `[Request interrupted by user]`), and a Bash call it moved to the background reads as still running there: so once the stops settle the interrupt appends two user rows. **[marker]** The first is Esc's marker whole, `[Request interrupted by user]`, one text block: a transcript's reader knows a turn's interrupt by a row whose whole text is the marker and by nothing else (the engine's own readers, 2.1.300 `He`/`pQn`, and MAWS's `INTERRUPT_MARKERS`), so the earlier one-row shape, `[Request interrupted by user from the desk]` with the task lines after it, read as no interrupt. The second is the note: `The interrupt came from the desk.` (`from: "desk"`, which the daemon's RPC sends) or `The interrupt came from outside the terminal.`, then a line per task: stopped, `Task <id>, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`; in `running`, `… could not be stopped: it may still be running.` The engine keeps a plugin's user row `isMeta: true` with `origin: {kind: "plugin", name}` whatever the plugin asks (2.1.300 `m6r`; it refuses any other user row): the model reads both rows, and no reader takes the note for a prompt. A marker a hook refuses is followed by no note. Both must be in before the turn ends: a next turn already queued takes its messages before it waits for any hook (2.1.300 `ir`/`cn`), so an append in `turn.complete` would miss its first request. The engine waits for a Bash call's result after a turn abort, so each Bash call of the turn being interrupted is held in the `tool.call` hook, after its result, until both rows are in (at most 10 s, `INTERRUPT_HOLD_MS`): they are kept before the moved call's result row, and the next request carries them after that result, the marker then the note (live, 2.1.302). An interrupt with no Bash call running appends at once after the abort, racing only the turn's own unwinding. A second interrupt of a turn being interrupted leaves the first's record alone (the engine refuses its abort). Each row is named by a `row-seen` notice (door `note`). The transcript mirrors the rows on one line as `interrupt: [Request interrupted by user] <the note's text>` (a newline there draws as U+FFFD). Nothing for an idle interrupt or a refused abort |
 | `model` | M2 **[M2]** | `{model, effort?}` — `model` an id, a family alias, `"default"` or null; `effort` one of `low medium high xhigh max`, or null | `{model, effort}` now in force (null: the session's own). Rewritten on every **main-loop** `turn.step` request, subagents untouched; never `$.config.set`. A family alias (`haiku`, `sonnet`, `opus`, `fable`) is resolved through the session's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; one it does not map is refused, naming the id to use. Emits `model`; kept by the child |
 | `compact` | M2 **[M2]** | `{instructions?}` | During the main turn `{queued: true, turnId}`: held, and run inside that turn's `turn.complete` (a second while one is held keeps the first). Idle `{started: true}`: run at once. Either way the outcome follows on the stream as `compact` events carrying this command's `id` |
-| `deliver` | M2 **[M2]** **[fw1]** | `{key: {writer, seq}, text}` | `{submitted: true}` or `{duplicate: true}`. `text` is submitted with `$.prompt.submit({text, asUser: true})` (queued until the session is idle; not awaited). **The delivery key** is the log event's `(writer, seq)` — for a push carrying several events of one writer, the last. A key whose seq is at or below the highest already submitted for its writer is a duplicate and dropped (delivery goes per writer in seq order). The per-writer seqs are kept by the child across reloads; a /clear starts them anew (a new id is a new recipient). **[fw1]** The `delivered` event is emitted before the submission is made, so it is the next thing posted. Deduplication across a module reload is **best effort when the reload lands mid-submission**: a key submitted whose `delivered` had not reached the child is not kept, and a redelivery of it may submit again (a residual of at-least-once delivery, §3) |
+| `deliver` | M2 **[M2]** **[fw1]** **[peer]** | `{key: {writer, seq}, text}` | `{submitted: true}` or `{duplicate: true}`. **[peer]** Sent only for the owner's events (`sminos.owner_event`: a `human` by `<machine>/human` or `hub/<member>`); a peer's event never reaches this op (below). `text` is submitted with `$.prompt.submit({text, asUser: true})` (queued until the session is idle; not awaited). **The delivery key** is the log event's `(writer, seq)` — for a push carrying several events of one writer, the last. A key whose seq is at or below the highest already submitted for its writer is a duplicate and dropped (delivery goes per writer in seq order). The per-writer seqs are kept by the child across reloads; a /clear starts them anew (a new id is a new recipient). **[fw1]** The `delivered` event is emitted before the submission is made, so it is the next thing posted. Deduplication across a module reload is **best effort when the reload lands mid-submission**: a key submitted whose `delivered` had not reached the child is not kept, and a redelivery of it may submit again (a residual of at-least-once delivery, §3) |
 
 ##### Events (the mod's posts; the stream's lines)
 
@@ -495,25 +497,58 @@ for unknown, seatless, or another machine's).
 | `sminos model <member> <model\|default> [--effort E]` | op `model` | refused, exit 4 | 0; 1; 2 bad effort |
 | `sminos compact <member> [instructions]` | subscribes, then op `compact`; queued: says so and exits; started: waits (≤ 300 s from the command, **[fw1]** a monotonic deadline, not reset by other events) for its `compact` end and prints the counts | refused, exit 4 | 0; 1 error or no outcome |
 
-##### Delivery's last hop (`push_live`, built, M2) **[M2]**
+##### Delivery's last hop (`push_live`, built, M2) **[M2]** **[peer]**
 
 For a live recipient, `deliver_next` (through `push_member`) and `send` (through
-`send_to_seat` / `send_to_member`) push the frame text the inbox would carry, in this
-order:
+`send_to_seat` / `send_to_member`) push the frame text the inbox would carry.
+**[peer]** Which way turns on whose the event is (every event of one push is one writer's,
+so one side's). The owner's — `sminos.owner_event`: kind `human`, written by
+`<machine>/human` (sminos run with no session) or `hub/<member>` (a desk send, which the hub
+stores only as a `human`) — takes paths 1 to 3 in this order. A peer's — a session's `say` or
+`send`, and anything else — goes straight to path 3, the inbox frame, whether or not the
+session has a bridge, so the engine delivers it as a message from another Claude session
+(origin `peer`) and never as its user's words; the frame names its sender (below).
 
-1. **The bridge**, when the push carries a log event: op `deliver` keyed by the last event
+1. **The bridge**, when the push carries an owner's log event: op `deliver` keyed by the last event
    (wait 10 s). Answered `ok` (submitted or duplicate): delivered (`sent`). No bridge
    answering: next path. Refused (nothing submitted): a warning, next path. Taken and not
    answered: uncertain (`sent?`, settled, never pushed again).
-2. **The engine supervisor**, for a `human` event to a live `--bg` job (the engine record's
+2. **The engine supervisor**, for an owner's event to a live `--bg` job (the engine record's
    `kind: "bg"` and 8-hex `jobId`): `{"proto": 1, "op": "reply", "short", "text", "auth":
    <~/.claude/daemon/control.key>, "nextTurn": true}` on
    `/tmp/cc-daemon-<uid>/<sha256(abspath(~/.claude))[:8]>/control.sock`. `ok`: delivered;
    refused or unreachable: next path; written and unanswered: uncertain.
-3. **The inbox frame**, as before.
+3. **The inbox frame**, as before. **[peer]** Its content is the text inside the engine's own
+   peer envelope, as native SendMessage writes it (2.1.300 SPEC §38.23.1):
+   `<cross-session-message from-name="<sender>">\n<text>\n</cross-session-message>`, the
+   sender the event's `via` or `from` (`human` for a steer's fallback), stripped of `"<>` and
+   control characters and cut to 64 code points as the engine strips one, and a closing tag in
+   the text escaped as the engine escapes one (`<\/cross-session-message`), so the envelope
+   round-trips the engine's parser and `from-name` reaches the row's `origin.name`. No `from`
+   address: nothing could answer one, and a member replies with `sminos say`. No
+   `from-mode`: sminos does not know the sender's permission mode, so a receiver that
+   bypasses permission prompts holds the message for its user's approval
+   (`no-mode-asserted`, §38.22.2) and every other receiver accepts it.
 
 A push with no log event (a seat outside any project, the raw session-name route) goes
 straight to the inbox frame.
+
+**[peer]** What the inbox path guarantees. The inbox answers nothing a sender could key on
+(its receipts go to a `from` address, which the frame has none of), so the bridge's
+once-per-key drop does not apply. Delivery keeps a peer's event to one push in the ordinary
+retry cases: a write that fails before the frame is out (`SendFailed("before")`) left
+nothing in the session and is retried; one that fails after (`"after"`) is settled
+`sent?`/`uncertain` and never pushed again; and a push whose DX4 outcome could not be kept
+is noted in the delivery record (`pushed: [seq, outcome]`), so the pass that records the
+outcome settles it without pushing again. What remains at least once is a crash between
+the write and the settlement. Against that the engine's own ingress guard drops a body
+identical to the same sender's previous one within 30 s (the sender is the writing process
+when the frame names no `from`), which covers only a re-push by the same process. The same
+guard also limits each sender to a burst of 30 and 0.5 a second after, and a session to 50
+queued peer messages; a dropped frame is not reported to sminos, so a `delivered` outcome on
+this path means the frame was written to the inbox. Ordering: one writer's events keep seq
+order (the inbox processes frames in arrival order); the owner's and a peer's are different
+writers, delivered per writer as before, with no order between them.
 
 ##### Reserved for M3 (unchanged)
 
@@ -1283,6 +1318,29 @@ a full backlog refuses too). The child's listen backlog is 128.
   always) is named about 100 ms before the compaction's rows even reach
   disk. "A compaction's rows" in DX5 above is the rule.
   Date/Author: 2026-10-15, Arkho #78 builder.
+
+- Decision ([peer], 2026-10-18, the owner; the desk composite's Decision
+  Log, "a peer's message arrives as a peer's", MAWS e72b11443): only the
+  owner's events go through the bridge as the human's words. A peer's
+  event takes the session's inbox socket, the channel native SendMessage
+  rides, so the terminal, MAWS and the desk draw it as a message from
+  another session and the model reads it under the engine's peer preamble
+  (not typed by your user; never approval). Owner is decided by kind and
+  writer together (`sminos.owner_event`): only a session-less sminos run
+  writes `<machine>/human`, and the hub stores only `human` drafts under
+  `hub/<member>`; anything else, an unknown shape included, falls to the
+  peer side, which carries less authority. The frame carries the
+  engine's envelope with `from-name`, since without it the engine wraps a
+  bare text and MAWS's `parsePeerMessage` refuses it (no
+  `<cross-session-message>` opening), drawing the owner's bubble again.
+  Every inbox frame sminos writes takes the envelope, the bridgeless
+  owner's fallback and the steer's included. Rejected: asserting a
+  `from-mode` so a bypass-mode receiver accepts without approval — the
+  sender's mode is unknown here, and choosing the receiver's would launder
+  the engine's parity gate. The delivery record's `pushed` note replaces
+  the bridge key's protection for the one ordinary re-push a peer's event
+  could get (an outcome not kept).
+  Date/Author: 2026-10-18, smns-peer-inbox builder.
 
 ## Surprises & Discoveries
 

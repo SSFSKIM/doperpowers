@@ -8,11 +8,13 @@ terminal session as a cross-session frame on its inbox; interrupt, stop, model
 and compact need the bridge and are refused, saying so.
 
 `push_live` is a delivery's last hop to a live session, for the log's
-delivery and `send` alike: the bridge, which submits the text as the human's
-words, keyed by the log event (a key it has already submitted is dropped, so
-delivery stays at least once); else, for a human's event to a --bg job, the
-supervisor's `reply` (human-origin input); else the inbox frame. Each path
-carries the frame the inbox would, so the model reads the same addressing.
+delivery and `send` alike. A peer's event (any but the owner's, S.owner_event)
+is the inbox frame: the engine delivers it as a message from another Claude
+session, never as its user's words. The owner's goes through the bridge,
+which submits the text as the human's words, keyed by the log event (a key it
+has already submitted is dropped); else, to a --bg job, the supervisor's
+`reply` (human-origin input); else the inbox frame. Each path carries the
+same frame text, so the model reads the same addressing.
 """
 
 import hashlib
@@ -165,16 +167,20 @@ def supervisor_reply(short, text):
 
 def push_live(peer, session, text, event=None):
     """A delivery's last hop to a live session, `event` the last log event the
-    text carries (None for a frame no log holds). Raises SendFailed as
-    send_frame does: "before" when nothing reached the session, "after" when
-    it may have."""
-    if event is not None and deliver(session, event, text):
+    text carries (None for a frame no log holds; every event of one push is
+    one writer's, so one side's). Only the owner's events take the bridge or
+    the supervisor, the human's channels; a peer's is the inbox frame, named
+    by its sender. Raises SendFailed as send_frame does: "before" when nothing
+    reached the session, "after" when it may have."""
+    owner = event is not None and S.owner_event(event)
+    if owner and deliver(session, event, text):
         return
-    if event is not None and event.get("kind") == "human" and bg_job(peer):
+    if owner and bg_job(peer):
         took = supervisor_reply(bg_job(peer), text)
         if took is True:
             return
-    S.send_frame(S.socket_path_of(peer), text)
+    sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
+    S.send_frame(S.socket_path_of(peer), text, sender)
 
 
 # ------------------------------------------------------------------ the verbs
@@ -222,7 +228,7 @@ def cmd_steer(a):
                 print("steered %s through the engine supervisor (no bridge): read at its next step" % a.member)
                 return
             S.warn("the supervisor did not take the steer (%s); it goes as a cross-session frame" % took)
-        S.send_frame(S.socket_path_of(peer), "[sminos steer from human]\n%s" % a.text)
+        S.send_frame(S.socket_path_of(peer), "[sminos steer from human]\n%s" % a.text, "human")
     except S.SendFailed as e:
         if e.phase == "after":
             S.die("the steer to %s is UNCERTAIN (%s); do not blindly repeat it" % (a.member, e), 1)

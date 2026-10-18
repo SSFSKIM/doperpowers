@@ -1523,7 +1523,7 @@ for first_live in (True, False):
         probes.append(cur)
         return live if (len(probes) == 1) == first_live else None
     sminos.peer_for_session = probe
-    sminos.send_frame = lambda path, text: actions.append("socket")
+    sminos.send_frame = lambda path, text, sender="": actions.append("socket")
     sminos.resume_session = lambda *a, **k: actions.append("resume")
     sminos.harness_row = lambda s: None
     with contextlib.redirect_stdout(io.StringIO()):
@@ -1730,7 +1730,7 @@ sys.path.insert(0, sys.argv[1])
 import sminos
 codes = []
 for phase in ("before", "after"):
-    def boom(path, text, phase=phase):
+    def boom(path, text, sender="", phase=phase):
         raise sminos.SendFailed(phase, OSError("injected"))
     sminos.send_frame = boom
     try:
@@ -2666,17 +2666,26 @@ live_peer() { # name session status
     "$SOCK_PID" "$2" "$1" "$3" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/pl-$1.json"
 }
 inbox() { cat "$TEST_ROOT/in-$1.received"; }
+# A frame's text inside the engine's peer envelope sminos wraps it in
+# (test-bridge-control.sh pins the envelope itself).
+UNWRAP='import re
+def unwrap(c):
+    m = re.match(r"<cross-session-message[^>\n]*>\n([\s\S]*)\n</cross-session-message>$", c)
+    return m.group(1) if m else c
+'
 frames() { # name → each frame the inbox received, decoded, newlines shown as " / "
-  python3 -c 'import json, sys
+  python3 -c "$UNWRAP"'
+import json, sys
 for l in open(sys.argv[1]):
     if l.strip():
-        print(json.loads(l)["message"]["content"].replace("\n", " / "))' "$TEST_ROOT/in-$1.received" 2>/dev/null || true
+        print(unwrap(json.loads(l)["message"]["content"]).replace("\n", " / "))' "$TEST_ROOT/in-$1.received" 2>/dev/null || true
 }
 bodies() { # name → each received frame's text below its header line, one frame a line
-  python3 -c 'import json, sys
+  python3 -c "$UNWRAP"'
+import json, sys
 for l in open(sys.argv[1]):
     if l.strip():
-        print(json.loads(l)["message"]["content"].split("\n", 1)[-1])' "$TEST_ROOT/in-$1.received" 2>/dev/null || true
+        print(unwrap(json.loads(l)["message"]["content"]).split("\n", 1)[-1])' "$TEST_ROOT/in-$1.received" 2>/dev/null || true
 }
 run_in() { # dir cmd... — run, from another directory
   local dir="$1"; shift
@@ -2901,7 +2910,8 @@ p = mod.find_project(sys.argv[2])
 print(len(mod.owed(p, next(m for m in mod.members(p) if m.session == sys.argv[3]))))
 PY_OWEDN
 }
-last_frame() { python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["message"]["content"])' "$TEST_ROOT/in-$1.received"; }
+last_frame() { python3 -c "$UNWRAP"'
+import json,sys; print(unwrap(json.loads(open(sys.argv[1]).read().splitlines()[-1])["message"]["content"]))' "$TEST_ROOT/in-$1.received"; }
 DEMO_HUMAN="$SMINOS_HOME/projects/$DEMO/log/testhost.human.jsonl"
 # --from signs the frame; the log keeps who sent it.
 : > "$TEST_ROOT/in-b.received"

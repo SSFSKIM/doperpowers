@@ -14,10 +14,17 @@ the outcome here, in the project's `outcomes.jsonl`, before the settlement:
 session, or the stopped seat resumed with it), `uncertain` (the push was taken
 and its answer never came: settled, never pushed again), `recorded` (the
 recipient was not running and is pushed nothing), `refused-read-only` (the
-machine's policy), `failed` (given up after DELIVERY_ATTEMPTS). An outcome
-that cannot be written leaves the event unsettled, so it is pushed and
-recorded again later; a crash between the record and the settlement records
-it again too. The hub keeps the latest per event and recipient.
+machine's policy), `failed` (given up after DELIVERY_ATTEMPTS). An owner's
+event is pushed through the session's bridge, whose later refusal follows as
+below; a peer's is written to the session's inbox socket, which answers
+nothing more: its `delivered` says the frame was written, and the engine's
+own gate may still hold it for its user's approval (a session that bypasses
+permission prompts holds a peer message that asserts no permission mode, as
+sminos's frame does) or drop it (its per-sender rate limit), unreported. An
+outcome that cannot be written leaves the event unsettled, so it is recorded
+again later — a push made is noted, so not made twice (sminos.deliver_next);
+a crash between the push and the settlement pushes and records it again. The
+hub keeps the latest per event and recipient.
 
 One outcome comes without a settlement: an event owed to a closed terminal
 session (a seat-less session of this machine whose membership ended with its

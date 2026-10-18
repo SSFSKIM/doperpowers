@@ -370,8 +370,12 @@ class Delivery(unittest.TestCase):
         self.assertIn(e["seq"], [x["seq"] for x in sminos.owed(self.project, member_of(self.project, self.live.sid))
                                  if x["writer"] == e["writer"]], "not settled without its outcome")
         self.deliver()
-        self.assertEqual(self.outcome_of(e)["outcome"], "delivered", "the next pass delivers and records it")
+        self.assertEqual(self.outcome_of(e)["outcome"], "delivered", "the next pass records it")
         self.assertEqual(sminos.owed(self.project, member_of(self.project, self.live.sid)), [])
+        self.assertEqual(sum("its outcome first" in f for f in self.live.inbox.frames), 1,
+                         "pushed once: the first pass's push was noted, so the next does not push it again")
+        self.assertTrue(self.live.inbox.frames[-1].startswith("<cross-session-message from-name=\"far\">\n"),
+                        "a peer's frame, in the engine's peer envelope")
 
     def test_a_closed_terminal_session_is_reported_recorded_until_it_is_back(self):
         """A session whose process ended is no member: an event sent to it
