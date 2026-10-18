@@ -511,6 +511,15 @@ JOINABLE_KINDS = ("interactive", "bg")
 # `interactive` too (harness 2.1.299: `kind: "interactive", entrypoint:
 # "sdk-cli"`); its entrypoint is what tells it apart, and it is no member.
 HEADLESS_ENTRYPOINT = "sdk"
+# Unless the host that launched it marks it as one: an app whose sessions are
+# its human's work (MAWS) sets this in the environment of each engine it
+# spawns, to its own pid. The harness record carries no environment, so the
+# mark is read only inside the session's own process tree (its hooks, its
+# bridge's child, a verb its tools run), and it holds only for an engine the
+# process it names spawned itself: a run started from inside a marked
+# session inherits the variable, not that parent (member_mark). Internal
+# forks still never join: SMNS_INTERNAL and the pid marker are read first.
+MEMBER_MARK = "SMNS_MEMBER"
 # The name sources the harness makes up itself (harness 2.1.300): `derived`,
 # the directory's name and one random byte drawn again by every process;
 # `auto`, a title it wrote; `collision`, a given name it suffixed because
@@ -1281,11 +1290,13 @@ def _reconcile(project, events, local, by_session):
                     and not any(s["current"] == sid for s in seats()))
 
         out += lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
+    # A verb a marked session's tools run speaks for that session alone.
+    own = os.environ.get("CLAUDE_CODE_SESSION_ID") if os.environ.get(MEMBER_MARK) else None
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
         if (latest.get(sid) == "joined") if peer else (sid in latest):
             continue
-        out += join_on_sight(project, sid, seat, peer, bool(peer))
+        out += join_on_sight(project, sid, seat, peer, bool(peer), marked=sid == own and member_mark(peer))
     for sid, ev in local.items():
         seat = ev.get("seat")
         if seat and "peer" not in ev and seat["status"] != "retired" and (successor := continued_in(sid)):
@@ -1293,16 +1304,38 @@ def _reconcile(project, events, local, by_session):
     return out
 
 
-def joinable(seat, peer):
+def joinable(seat, peer, marked=False):
     """Whether a session of this machine is a member on sight: a seat whose
     record is not retired, or a seat-less session the harness records as
     `interactive` or `bg` whose entrypoint is no headless or SDK run (`sdk-*`:
-    another tool's `claude -p` is no member, whatever its kind)."""
+    another tool's `claude -p` is no member, whatever its kind) unless its
+    host marked it (`marked`, member_mark)."""
     if seat:
         return seat["status"] != "retired"
     peer = peer or {}
     return (str(peer.get("kind") or "") in JOINABLE_KINDS
-            and not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT))
+            and (marked or not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT)))
+
+
+def member_mark(peer):
+    """Whether the session `peer` records, the one this process runs for (the
+    hook's, the bridge child's, or the one a verb's caller is), was launched
+    by a host that marked it a member: MEMBER_MARK names the pid that spawned
+    its engine. A run started from inside a marked session inherits the
+    variable but has another parent, so it is no member; a /clear keeps the
+    engine, and the mark holds for the session it goes on as."""
+    mark = os.environ.get(MEMBER_MARK, "")
+    return mark.isdigit() and int(mark) > 1 and parent_pid((peer or {}).get("pid")) == int(mark)
+
+
+def parent_pid(pid):
+    """A live process's parent pid, or None when ps cannot tell."""
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+    except (TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return None
+    return int(out) if out.isdigit() else None
 
 
 def _ts_epoch(ts):
@@ -1350,7 +1383,7 @@ def retirement_holds(events, peer):
     return started is None or retired is None or started <= retired
 
 
-def join_on_sight(project, sid, seat, peer, running):
+def join_on_sight(project, sid, seat, peer, running, marked=False):
     """joined for a session seen on this machine, when it is joinable and
     the log does not already hold it as a member: a running session whose
     latest membership is absent or retired (a live process is evidence of
@@ -1363,8 +1396,8 @@ def join_on_sight(project, sid, seat, peer, running):
     A seat-less session joins under the alias it already holds (held_alias);
     a background job the harness forked from an interactive session that is
     still exiting joins as that member's continuation (hand_off), under its
-    alias."""
-    if not joinable(seat, peer):
+    alias. `marked`: its host marked it (member_mark)."""
+    if not joinable(seat, peer, marked):
         return []
 
     def guard(evs):
@@ -2847,8 +2880,9 @@ def _own_events(project, session):
 def record_session(project, session, tpath, event, last_message=""):
     """The hook's work for one session (§4). Membership on sight, as
     reconciliation decides it: a seat whose record is not retired, or a
-    session the harness records as `interactive` or `bg`, and never an
-    internal fork. SessionStart sets a member's export position, then joins
+    session the harness records as `interactive` or `bg` (an SDK run only
+    when its host marked it, member_mark), and never an internal fork.
+    SessionStart sets a member's export position, then joins
     it: the position first, so a join cut short by the hook's bound (a lock
     held elsewhere) still leaves the first Stop a position rather than the
     trailing-run fallback. Stop joins it if it is not yet (its harness record
@@ -2865,11 +2899,12 @@ def record_session(project, session, tpath, event, last_message=""):
         if event == "SessionStart":
             position_init(project, session, tpath)
         return
-    if not joinable(seat, peer):
+    marked = member_mark(peer)
+    if not joinable(seat, peer, marked):
         return
     if event == "SessionStart":
         position_init(project, session, tpath)
-    alias = _member_alias(project, session, seat, peer)
+    alias = _member_alias(project, session, seat, peer, marked)
     if event != "Stop" or alias is None:
         return
     until = time.time() + FLUSH_WAIT
@@ -2890,14 +2925,14 @@ def _on_sight(project, session):
     return seat, peer
 
 
-def _member_alias(project, session, seat, peer):
+def _member_alias(project, session, seat, peer, marked=False):
     """Joins a joinable session the log does not hold as a member yet (a live
     process is evidence of activation), and returns the alias its messages to
     the host carry: its seat's, else the one it goes by (held_alias over the
     last name the log gave it). None when it is no member."""
     own = _own_events(project, session)
     if latest_membership(own) != "joined":
-        join_on_sight(project, session, seat, peer, True)
+        join_on_sight(project, session, seat, peer, True, marked)
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
@@ -2924,9 +2959,10 @@ def export_live(cwd, session, records):
     if project is None:
         return []
     seen = _on_sight(project, session)
-    if seen is None or not joinable(*seen):
+    marked = seen is not None and member_mark(seen[1])
+    if seen is None or not joinable(*seen, marked):
         return []
-    alias = _member_alias(project, session, *seen)
+    alias = _member_alias(project, session, *seen, marked)
     events = host_events(records, alias) if alias is not None else []
     return log_append_batch(project, writer_id(session), events) if events else []
 
