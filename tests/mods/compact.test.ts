@@ -1,5 +1,5 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import type { EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On, SessionCompactTrigger } from 'claude-code'
 
 import {
   COMPACT,
@@ -43,11 +43,6 @@ describe('offerDue', () => {
   test('after an offer, the next waits for a step of growth', async () => {
     expect(offerDue(340_000, 312_400, OFFER_GATE)).toBe(false)
     expect(offerDue(362_400, 312_400, OFFER_GATE)).toBe(true)
-  })
-
-  test('a figure below the last offer is a compaction since, and growth counts from the reset', async () => {
-    expect(offerDue(60_000, 500_000, OFFER_GATE)).toBe(false)
-    expect(offerDue(320_000, 500_000, OFFER_GATE)).toBe(true)
   })
 
   test('a gate of zeros offers at every turn', async () => {
@@ -120,6 +115,7 @@ type Matcher = Record<string, unknown> | undefined
 
 const start = (isInteractive: boolean) => ({ cwd: '/', surface: isInteractive ? ('terminal' as const) : null, isInteractive })
 const turnEnd = (agentId?: string) => ({ ...(agentId !== undefined && { agentId }), turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer' as const })
+const compactAt = (trigger: SessionCompactTrigger = 'manual', agentId?: string) => ({ trigger, ...(agentId !== undefined && { agentId }), messages: [] })
 const stopAt = (fields: Record<string, unknown> = {}) => ({ hook_event_name: 'Stop', session_id: 's', transcript_path: '/t', cwd: '/', stop_hook_active: false, ...fields })
 
 /**
@@ -173,7 +169,9 @@ function harness(
   const engine = $ as unknown as EngineInterface
   const mod = { start: compactStart, stop: compactStop, turnStart: compactTurnStart, turnComplete: compactTurnComplete }
   const find = (event: string, e: Record<string, unknown>) => {
-    const hook = hooks.find((h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => e[k] === v))
+    const hook = hooks.find(
+      (h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? typeof e[k] === 'string' && v.test(e[k]) : e[k] === v)),
+    )
     if (hook === undefined) {
       throw new Error(`no ${event} hook for ${JSON.stringify(e)}`)
     }
@@ -183,6 +181,8 @@ function harness(
   // The Stop as the engine raises it, the settings hooks beneath answering `beneath`.
   const stop = (e: Record<string, unknown>, beneath: Record<string, unknown> = {}) =>
     find('classic.Stop', e).handler($, e, async () => beneath) as Promise<{ additionalContext?: string[] }>
+  const sessionCompact = (e: Record<string, unknown>, beneath: Record<string, unknown> = { messages: [], tokensBefore: 312_400, tokensAfter: 20_000 }) =>
+    find('session.compact', e).handler($, e, async () => beneath) as Promise<Record<string, unknown>>
   // Lets the detached submit settle: a few microtask turns, no timer.
   const settle = async () => {
     for (let i = 0; i < 8; i++) {
@@ -190,7 +190,7 @@ function harness(
     }
   }
   const registered = () => calls.filter((c) => c.op === 'tool.register').map((c) => (c.args as { name: string }).name)
-  return { calls, call, stop, mod, engine, settle, registered, state }
+  return { calls, call, stop, sessionCompact, mod, engine, settle, registered, state }
 }
 
 describe('registerCompact', () => {
@@ -247,14 +247,59 @@ describe('registerCompact', () => {
     expect((await headless.stop(stopAt())).additionalContext).toBeUndefined()
   })
 
-  test('after a compaction, the growth counts from the reset', async () => {
-    const h = harness({ tokens: 500_000 })
+  test('a below-floor Stop resets the baseline after a compaction', async () => {
+    const h = harness({ tokens: 312_400 })
     await h.mod.start(h.engine, start(true))
     expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
     h.state.tokens = 60_000
     expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
     h.state.tokens = 320_000
     expect((await h.stop(stopAt())).additionalContext?.[0]).toContain('Context: 320,000 tokens')
+  })
+
+  test('a Stop below the last offer resets the baseline even above the floor', async () => {
+    const h = harness({ tokens: 500_000 })
+    await h.mod.start(h.engine, start(true))
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
+    h.state.tokens = 320_000
+    expect((await h.stop(stopAt())).additionalContext?.[0]).toContain('Context: 320,000 tokens')
+  })
+
+  test('a main-conversation compaction resets the offer baseline once it stands', async () => {
+    for (const trigger of ['manual', 'auto', 'plugin'] as const) {
+      const h = harness({ tokens: OFFER_GATE.floor })
+      await h.mod.start(h.engine, start(true))
+      expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
+      const beneath = { messages: [], tokensBefore: OFFER_GATE.floor, tokensAfter: 20_000 }
+      expect(await h.sessionCompact(compactAt(trigger), beneath)).toBe(beneath)
+      // No Stop saw the shrink: equal figures cannot reset the baseline.
+      expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
+    }
+  })
+
+  test('a skipped compaction leaves the offer baseline intact', async () => {
+    const h = harness({ tokens: OFFER_GATE.floor })
+    await h.mod.start(h.engine, start(true))
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
+    const beneath = { skip: 'blocked by a hook' }
+    expect(await h.sessionCompact(compactAt(), beneath)).toBe(beneath)
+    expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
+  })
+
+  test("a subagent's compaction leaves the offer baseline intact", async () => {
+    const h = harness({ tokens: OFFER_GATE.floor })
+    await h.mod.start(h.engine, start(true))
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
+    await h.sessionCompact(compactAt('auto', 'a1'))
+    expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
+  })
+
+  test('a precompute leaves the offer baseline intact', async () => {
+    const h = harness({ tokens: OFFER_GATE.floor })
+    await h.mod.start(h.engine, start(true))
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
+    await h.sessionCompact(compactAt('precompute'))
+    expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
   })
 
   test('the environment overrides the gate, a figure at a time, and a bad one is ignored', async () => {
@@ -290,16 +335,24 @@ describe('registerCompact', () => {
   test("the settings hooks' answer stands beside the offer", async () => {
     const h = harness({ tokens: 500_000 })
     await h.mod.start(h.engine, start(true))
-    const answered = await h.stop(stopAt(), { additionalContext: ['from a shell hook'], preventContinuation: true })
+    const answered = await h.stop(stopAt(), { additionalContext: ['from a shell hook'] })
     expect(answered.additionalContext?.length).toBe(2)
     expect(answered.additionalContext?.[0]).toBe('from a shell hook')
     expect(answered.additionalContext?.[1]).toContain('Context: 500,000 tokens')
-    expect((answered as { preventContinuation?: true }).preventContinuation).toBe(true)
+  })
+
+  test('a hook preventing continuation passes through unchanged without spending an offer', async () => {
+    const h = harness({ tokens: OFFER_GATE.floor })
+    await h.mod.start(h.engine, start(true))
+    const beneath = { additionalContext: ['from a shell hook'], preventContinuation: true }
+    expect(await h.stop(stopAt(), beneath)).toBe(beneath)
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
   })
 
   test('a compact call is answered at once and compacted when the main turn ends, then the resume prompt enters', async () => {
-    const h = harness()
+    const h = harness({ tokens: OFFER_GATE.floor })
     await h.mod.start(h.engine, start(true))
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
     const answer = (await h.call({ tool: COMPACT, tool_use_id: 't1', instructions: 'keep the plan', resume: 'Resume M3.' })) as { result: string }
     expect(answer.result).toContain('End your turn now')
     expect(h.calls.some((c) => c.op === 'session.compact')).toBe(false)
@@ -315,6 +368,10 @@ describe('registerCompact', () => {
       { op: 'session.compact', args: { instructions: 'keep the plan' } },
       { op: 'prompt.submit', args: { text: 'Resume M3.' } },
     ])
+
+    // This plugin's compaction passes no hook of its own, so it resets the
+    // baseline itself, even when no Stop observes the shrink.
+    expect((await h.stop(stopAt())).additionalContext).toHaveLength(1)
 
     // The request is spent: the next turn end compacts nothing.
     await h.mod.turnComplete(h.engine, turnEnd())

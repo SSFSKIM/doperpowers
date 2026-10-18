@@ -35,16 +35,10 @@ export const OFFER_GATE: OfferGate = { floor: 300_000, step: 50_000 }
 
 /**
  * Whether a turn ending at `tokens` is offered a compaction. `last` is the
- * figure the previous offer carried, 0 before any; a figure below it means
- * the context was compacted since (by this tool, /compact, or the engine on
- * its own), and the growth counts from that reset.
+ * figure the previous offer carried, 0 before any or after a compaction.
  */
 export function offerDue(tokens: number | undefined, last: number, gate: OfferGate): boolean {
-  if (tokens === undefined || tokens < gate.floor) {
-    return false
-  }
-  const grown = tokens < last ? tokens : tokens - last
-  return grown >= gate.step
+  return tokens !== undefined && tokens >= gate.floor && tokens - last >= gate.step
 }
 
 export const RESUME_DEFAULT = 'Continue from the summary.'
@@ -276,6 +270,11 @@ export async function compactStop($: EngineInterface, e: { stop_hook_active: boo
     $.ui.log(`compact: the figures could not be read at the turn's end: ${message(error)}`)
     return undefined
   }
+  // A compaction on a path that raised no session.compact event is still
+  // observed here, even below the offer's floor.
+  if (context.tokens !== undefined && context.tokens < lastOffered) {
+    lastOffered = 0
+  }
   if (!offerDue(context.tokens, lastOffered, gate)) {
     return undefined
   }
@@ -302,6 +301,7 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
     if (outcome.skip !== undefined) {
       $.ui.toast(`compact: not compacted · ${outcome.skip}`)
     } else {
+      lastOffered = 0
       // Its rows pass no hook of this plugin's, the bridge's included: the
       // bridge names them, ahead of the resume prompt's.
       compacted(null, outcome.messages)
@@ -333,6 +333,15 @@ export function registerCompact(on: On) {
     return next(e)
   })
 
+  // precompute keeps a summary for later; it replaces no conversation.
+  on('session.compact', { trigger: /^/ }, async (_, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
+      lastOffered = 0
+    }
+    return result
+  })
+
   on('turn.start', (_, e, next) => {
     compactTurnStart(e)
     return next(e)
@@ -345,6 +354,9 @@ export function registerCompact(on: On) {
   // (smns-record.sh) run first and keep their say.
   on('classic.Stop', { hook_event_name: 'Stop' }, async ($, e, next) => {
     const result = await next(e)
+    if (result.preventContinuation) {
+      return result
+    }
     const offer = await compactStop($, e)
     return offer === undefined ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), offer] }
   })

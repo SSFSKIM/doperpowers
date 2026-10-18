@@ -239,12 +239,17 @@ and passes, so an offer is one step and no loop (the engine caps
 consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 300k, where the tool's
 guidance turns to "any reasonable checkpoint", and step 50k, so a
 conversation adding a few k a turn is not asked every turn while a working
-turn, tens of k, is asked each time; a figure below the last offer's is a
-compaction since (this tool's, `/compact`, the engine's own) and the growth
-counts from it. `DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (whole
-tokens) override a launch's; 0 and 0 is an offer at every turn's end. No
-offer while a request pends, on a subagent's Stop (`SubagentStop` is
-another event, and a subagent cannot compact), in a session without the
+turn, tens of k, is asked each time. The offer's baseline resets when a
+main-conversation `session.compact` stands (not a skip or a `precompute`,
+which replaces no conversation), and when this mod's own compaction stands.
+As a backstop for an engine path that compacts without the event, a figure
+below the last offer's at any Stop resets it too, even below the floor.
+`DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (whole tokens) override a
+launch's; 0 and 0 is an offer at every turn's end. No
+offer when a hook beneath sets `preventContinuation` (its answer passes
+through unchanged, without spending an offer), while a request pends, on a
+subagent's Stop (`SubagentStop` is another event, and a subagent cannot
+compact), in a session without the
 tool (headless), or when the figures cannot be read (logged). The free
 `context_usage` tool the model used to ask the figures with was retired
 with the offer (7.184.0): the offer carries them, and the tool's
@@ -253,9 +258,10 @@ the floor, and it may compact unasked at any checkpoint.
 
 A subagent's call to `compact` is refused (its turn ends are not the main
 conversation's). A headless (`-p` / SDK) session gets no tool: the engine
-has no compactor a plugin can call there yet. The session and turn events
-are taken with a matcher (`isInteractive: true`, `reason: "answer"`)
-because kairos and agents register them too, and the engine admits one
+has no compactor a plugin can call there yet. The shared session and turn
+events are taken with matchers (`isInteractive: true`, `trigger: /^/`,
+`reason: "answer"`) because kairos, agents and bridge register them too,
+and the engine admits one
 unmatched registration of an event per module.
 
 The tool is an MCP tool to the engine, which tool search defers (the model
