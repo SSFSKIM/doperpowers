@@ -77,8 +77,9 @@ CLI adapter, Codex portal packaging — are automatically irrelevant.
 
 Since 2026-10-18 the board's automatic dispatch is dormant (the owner's
 ruling, `docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md`).
-The board holds the backlog: the human names the tickets that go, and
-the session they name runs each one through the attended workflow —
+The board holds the backlog: the human names tickets to work, and a
+session may take a ticket that is ready to implement on its own
+initiative; whoever takes one runs it through the attended workflow —
 brainstorming / execspec, a plan-executor or subagents, review-code, the
 merge. The sweep, the dispatchers, the worker protocols, the review
 stand-in and `qa-loop` stay in the tree, tested and armed nowhere; nothing
