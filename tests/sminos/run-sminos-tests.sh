@@ -4367,6 +4367,113 @@ assert_contains "$(grep '"src": "toolu_async2"' "$HPLOG/testhost.$HA.jsonl" | gr
   "a plugin-submitted delivery records its answer without the engine's framing"
 assert_equals "$(grep -c 'This is how Claude Code' "$HPLOG/testhost.$HA.jsonl" || true)" "0" "the framing is not part of it"
 
+# A session under MAWS asks through MAWS's own tool (mcp__maws__ask, blocking
+# false), whose shape MAWS owns: maws-ask-async.jsonl is a live transcript of
+# one, answered by MAWS's steer while the session was idle, and
+# maws-ask-async-midturn.jsonl the same steer as the engine writes a prompt it
+# took into a running turn (both built from MAWS's recorded fixtures). Its
+# question records once its acceptance is on disk and its answer once the
+# steer is, both under the call's id, and chat --host shows them as it shows
+# the plugin's. (Only a member records: MAWS registers its sessions with an
+# sdk-ts entrypoint, which joins no project on sight; these stand in for one
+# that is a member.)
+MAWS_CALL=toolu_016zBCDTWVXbAqbGdLyd1Zzj
+HM=5d000001-0000-4000-8000-00000000005d
+TM="$TXD/$HM.jsonl"
+hp_peer hm "$HM" user interactive
+hook_run SessionStart "$HM" "$R3" "$TM" startup
+head -n 5 "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TM"
+hook_run Stop "$HM" "$R3" "$TM"
+assert_equals "$(hp_events "$HM")" "joined question:$MAWS_CALL " "a MAWS async ask records a question at the Stop after its acceptance, src its call id"
+assert_contains "$(grep "$MAWS_CALL" "$HPLOG/testhost.$HM.jsonl")" '"text": ["Proceed?"], "choices": ["Yes", "No"]' \
+  "carrying its question and its option labels, as the plugin's does"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "hm asks (open): Proceed?" "chat --host shows the MAWS question, open"
+assert_contains "$OUT" "    choices: Yes · No" "with its labels"
+tail -n +6 "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TM"
+hook_run Stop "$HM" "$R3" "$TM"
+assert_equals "$(hp_events "$HM")" "joined question:$MAWS_CALL answered:$MAWS_CALL " "its steer records answered under the same src"
+assert_contains "$(grep '"kind": "answered"' "$HPLOG/testhost.$HM.jsonl")" '"from": "hm", "src": "'"$MAWS_CALL"'", "text": "1. Proceed? — Yes"' \
+  "carrying the steer's answer lines, without its tag, header or result block"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "hm asks: Proceed?" "the answered MAWS question is no longer open"
+assert_contains "$OUT" "    answered: 1. Proceed? — Yes" "and its answer stands under it"
+hook_run Stop "$HM" "$R3" "$TM"
+assert_equals "$(hp_events "$HM")" "joined question:$MAWS_CALL answered:$MAWS_CALL " "a replayed Stop appends nothing"
+# The steer taken into a running turn: one turn, one Stop, both events.
+HN=5e000001-0000-4000-8000-00000000005e
+TN="$TXD/$HN.jsonl"
+MAWS_MID=toolu_01MidTurnMawsAskStandIn00
+hp_peer hn "$HN" user interactive
+hook_run SessionStart "$HN" "$R3" "$TN" startup
+python3 - "$SCRIPT_DIR/maws-ask-async-midturn.jsonl" "$MAWS_CALL" "$MAWS_MID" >> "$TN" <<'PY_MID'
+import sys
+sys.stdout.write(open(sys.argv[1]).read().replace(sys.argv[2], sys.argv[3]))   # its own call id, so chat --host tells the two apart
+PY_MID
+hook_run Stop "$HN" "$R3" "$TN"
+assert_equals "$(hp_events "$HN")" "joined question:$MAWS_MID answered:$MAWS_MID " "a steer the engine queued into the running turn records the answer too"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "hn asks: Proceed?" "chat --host shows that question answered"
+# What is no async MAWS ask, or no answer to one: a blocking call (answered in
+# its own result), a call made async whose result answered it anyway (MAWS
+# holds a subagent's ask as blocking), a refused call, and steers that are not
+# the human's (a peer quoting one) or whose result names another ask. Among
+# them, an ask whose call reached MAWS without the engine's tool-use id, so
+# MAWS accepted and steered it under its request id: it records under that id.
+HO=5f000001-0000-4000-8000-00000000005f
+TO="$TXD/$HO.jsonl"
+hp_peer ho "$HO" user interactive
+hook_run SessionStart "$HO" "$R3" "$TO" startup
+python3 - "$SCRIPT_DIR/maws-ask-async.jsonl" "$MAWS_CALL" >> "$TO" <<'PY_NOT'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+call = sys.argv[2]
+use, accepted, steer = rows[2], rows[3], rows[5]
+answered = steer["message"]["content"].split("```json\n")[1].rsplit("\n```", 1)[0]
+
+def ask(new, blocking, result, is_error=False):
+    u = json.loads(json.dumps(use).replace(call, new))
+    u["message"]["content"][0]["input"]["blocking"] = blocking
+    r = json.loads(json.dumps(accepted).replace(call, new))
+    r["message"]["content"][0]["content"] = [{"type": "text", "text": result.replace(call, new)}]
+    if is_error:
+        r["message"]["content"][0]["is_error"] = True
+    return [u, r]
+
+def steer_as(new, text_call=None, origin=None):
+    s = json.loads(json.dumps(steer).replace(call, new))
+    if text_call:
+        s["message"]["content"] = s["message"]["content"].replace('"askId": "%s"' % new, '"askId": "%s"' % text_call)
+    if origin:
+        s["origin"] = origin
+    return [s]
+
+out = ask("toolu_maws_blocking", True, answered) + ask("toolu_maws_held", False, answered) \
+    + ask("toolu_maws_refused", False, "the session ended before the user answered", True) \
+    + ask("toolu_maws_unnamed", False, json.dumps({"status": "asked", "askId": "req_maws_unnamed"}, indent=2)) \
+    + steer_as("req_maws_unnamed") \
+    + steer_as("toolu_maws_quoted", origin={"kind": "peer", "name": "other"}) \
+    + steer_as("toolu_maws_mismatch", text_call="toolu_maws_else")
+for r in out:
+    print(json.dumps(r, ensure_ascii=False))
+PY_NOT
+hook_run Stop "$HO" "$R3" "$TO"
+assert_equals "$(hp_events "$HO")" "joined question:req_maws_unnamed answered:req_maws_unnamed " \
+  "an ask MAWS accepted under its request id records its question and answer under that id; a blocking, a held or a refused MAWS ask, a peer's quote and a mismatched steer record nothing"
+# A Stop that reads the MAWS call before its acceptance reaches the transcript
+# holds the export position before the call, so the next Stop still pairs the
+# two and records the question.
+HW=60000001-0000-4000-8000-000000000060
+TW="$TXD/$HW.jsonl"
+hp_peer hw "$HW" user interactive
+hook_run SessionStart "$HW" "$R3" "$TW" startup
+head -n 3 "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TW"
+hook_run Stop "$HW" "$R3" "$TW"
+assert_equals "$(hp_events "$HW")" "joined " "a MAWS ask whose acceptance is not on disk yet records no question"
+sed -n 4,5p "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TW"
+hook_run Stop "$HW" "$R3" "$TW"
+assert_equals "$(hp_events "$HW")" "joined question:$MAWS_CALL " "the next Stop, its acceptance on disk, records the question under the call id"
+
 # An export that died after the first of two spans in one record: the retry
 # appends only the second.
 tx "$TA" asst a4000001 '<message>first of two</message> <message>second of two</message>'

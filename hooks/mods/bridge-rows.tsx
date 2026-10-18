@@ -53,6 +53,11 @@ const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', r
 const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
 /** Async asks whose other row (the call, or its result) has not been kept yet. */
 const ASKS_KEPT = 50
+/** MAWS's ask tool, which a session under MAWS asks through instead of the plugin's (sminos.MAWS_ASK_TOOL). */
+const MAWS_ASK_TOOL = 'mcp__maws__ask'
+/** A call of an ask tool that does not wait for its answer: the plugin's with `async` true, MAWS's with `blocking` false. */
+const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
+  (name === ASK_TOOL && input.async === true) || (name === MAWS_ASK_TOOL && input.blocking === false)
 /** How many of each loop's latest notices' rows are remembered, to tell the rows past its cut no notice named. */
 const NAMED_KEPT = 200
 /**
@@ -243,12 +248,12 @@ export function exportRow(door: string, message: { content?: unknown }, uuid: st
       }
     }
     for (const b of content) {
-      if (b.type === 'tool_use' && b.name === ASK_TOOL && typeof b.id === 'string' && isRecord(b.input) && b.input.async === true) {
+      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && isAsyncAsk(b.name, b.input)) {
         keepAsk(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
       }
     }
   } else if (door === 'tool-result') {
-    const isAsk = isRecord(origin) && origin.kind === 'tool' && origin.tool === ASK_TOOL
+    const isAsk = isRecord(origin) && origin.kind === 'tool' && (origin.tool === ASK_TOOL || origin.tool === MAWS_ASK_TOOL)
     for (const b of content) {
       if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isAsk || state.asks.has(b.tool_use_id))) {
         keepAsk(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })

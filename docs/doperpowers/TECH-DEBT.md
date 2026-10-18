@@ -310,10 +310,26 @@ the spec's Decision Log entry "the branch review round"
   or `compact` claimed before a stop is still answered `interrupted`,
   though the child would keep its answer under the nonce if the daemon
   sent it. Worth it once a stop mid-RPC is seen in practice.
-- **Backlog, not debt — MAWS async questions never reach the log** (§9 of
-  the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
-  whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are
-  the ones most affected.
+- **Open — a session MAWS launched is no project member, so nothing of it
+  reaches the log** (board #76's finding). The readers know MAWS's ask now
+  (`mcp__maws__ask` with `blocking` false and its `[MAWS ask <id>]` steer,
+  `extract_asks`, and the bridge's export), but MAWS launches every session
+  with `CLAUDE_CODE_ENTRYPOINT=sdk-ts`, and an `sdk*` entrypoint never joins
+  on sight (the M3 ruling that keeps headless runs out, `joinable`). So a
+  MAWS session records no `joined`, no message, no question, and the desk
+  has no presence or transcript for it. Admitting it is a membership
+  decision (presence, deliveries and `@all` reach it too), and MAWS sets no
+  marker of its own on every launch to tell its sessions from another
+  TypeScript SDK tool's. Trigger: the owner's call on whether MAWS sessions
+  are members.
+- **T3 — an answer reaches the log only at the session's next Stop.** The
+  bridge exports an async question as its call and acceptance are written,
+  but no answer row (the plugin's delivery, MAWS's steer): an answer taken
+  into a long running turn shows on the desk, and in `chat --host`, as open
+  until that turn ends. Fix: export the delivery and steer rows in
+  `exportRow` too (the `prompt` row, and the attachment rows as the
+  bridge's doors present them). Trigger: an answered question seen open on
+  the desk for long.
 
 ## to-human style (2026-10-15, 7.158.0)
 
