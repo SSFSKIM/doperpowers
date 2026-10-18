@@ -329,8 +329,8 @@ In a MAWS worktree (`git -C /Users/new/Developer/GitHub/MAWS worktree add <path>
 
     pnpm --filter desk-hub typecheck && pnpm --filter desk-hub test     # M2, local (run with the worktree as cwd through `pnpm -C <path>`)
     pnpm --filter desk-web typecheck && pnpm --filter desk-web test     # M6, local
-    <maws>/scripts/ci-gate.sh <path> --class1a linux                                            # M2 and M6: static, unit, probes on Linux
-    <maws>/scripts/ci-gate.sh <path> --gates e2e:desk-web --runner linux --class1a linux        # M6: the desk-web e2e, named — a Linux lane runs no e2e group unnamed
+    <path>/scripts/ci-gate.sh <path> --gates static,unit,probes --class1a linux                 # M2 and M6: static, unit, probes on Linux (the worktree's copy; outside with-slot.sh)
+    <path>/scripts/ci-gate.sh <path> --gates e2e:desk-web --runner linux --class1a linux        # M6: the desk-web e2e, named — a Linux lane runs no e2e group unnamed
 
 Expected: each ends `ci-gate: run <id> success` (exit 0). The desk-web e2e never runs on a Mac.
 
@@ -441,6 +441,10 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M1 executor, accepted by the controller.
 - Decision (M1): `project_kind` in `--json` is `hub` or `local` (a mirrored `.smns` project reads `local`); M3 adds `machine`. The subagent tree prints in text mode only, so `--json` stays a list of rows; `find` prints no tree. Tree statuses: from the bridge `running`/`finished` (bridge entries used only when it reports ready), from the transcript DX4's word with `unknown` shown as `running`; a live child of a folded parent goes under its nearest shown ancestor. `(no project)` rows are interactive or bg sessions only (not `sdk-*`), the transcript title as their in-charge line. A remote row's state column is the plain word, its published age moving to `· active`; `state_column` is unchanged for the chart. A row has one `cwd` (`joined`'s, else the seat's, else the record's), the source of both `repo@branch` and the JSON `cwd`.
   Date/Author: 2026-10-18, M1 executor.
+- Decision (M2): the `Registry` sends `org` through a new `Machine.directory(frame, version)` rather than `send`; a `Machine` drops a version it has already passed, so a late older snapshot never overwrites a newer one (the version never goes on the wire). Each stream holds every write after `welcome` until the `Registry`'s snapshot is written, so `org` is always the second frame. The machine project id uses a synchronous SHA-1 UUID v5 (the `Registry`'s confirm, register and revoke steps are synchronous); its vector is `apps/desk-hub/src/protocol/vectors/machine-project.json` (`{about, namespace, vectors: [{org, machine, name, id, why}]}`), written by its own generator `generate-machine-project.py` from Python's `uuid`, apart from DX1's `generate.py`. `org.machines` lists confirmed machines only. Online state is kept per project and machine in a `machine_states` table, cleared on revocation. A follow hello drops that machine's presence row; working and waiting counts include only machines that hold the project. A machine project always takes the machine's enrolled name. `machines_state` is optional in the summary report, so a `Project` still on the old version during a deploy rollover keeps working. `ProjectRecord` gains `retired` beside `kind`; desk-web's typed fixtures gained `kind: 'hub'`.
+  Date/Author: 2026-10-18, M2 executor.
+- Decision (M2, Concrete Steps): MAWS's class-1a Linux gate runs from the worktree's own `scripts/ci-gate.sh` (the main checkout's copy predates `--class1a`) and names its gates: `<worktree>/scripts/ci-gate.sh <worktree> --gates static,unit,probes --class1a linux`; without `--gates` the e2e lane takes the repository's macOS default and the whole set runs on the mini. ci-gate and other remote waiters run outside `with-slot.sh` (it only polls GitHub); the slot is for local heavy work (orchestrator, 2026-10-18).
+  Date/Author: 2026-10-18, M2 executor and the orchestrator.
 
 ## Outcomes & Retrospective
 
