@@ -356,7 +356,14 @@ the spec's Decision Log entry "the branch review round"
   reach the hook joined a line apart, so a line another hook appended after
   a delivery in the same attachment would ride in that answer's `text` (its
   `src` is right); none of the 66 delivery attachments in this machine's
-  transcripts (2.1.300–2.1.302) held one.
+  transcripts (2.1.300–2.1.302) held one. This plugin can write one: in
+  auto mode, when the call that carries a held answer is blocked, the
+  appeal mod (outer to the ask's `tool.call`) appends its block notice
+  after the answer, and the live `answered` text then ends with that notice
+  and wins the `(answered, src)` key over the Stop hook's clean reading.
+  Fix: the ask mod records the exact entries it attached and the bridge
+  exports those, or skips the live export when anything follows them.
+  Trigger: an `answered` seen in the log ending with an appeal notice.
 
 ## to-human style (2026-10-15, 7.158.0)
 
