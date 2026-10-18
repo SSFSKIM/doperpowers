@@ -101,6 +101,14 @@ function remember(loop: string, uuid: string) {
  */
 export function compacted(agentId: string | null, messages: readonly SessionMessage[] | undefined) {
   const loop = agentId ?? 'main'
+  // The main conversation compacted holds its rows in a summary, not
+  // verbatim, so the delivered rows still tracked (bridge.tsx,
+  // recheckDeliveries) would all read as missing and be given twice: every
+  // one is let go. A row a rewind left on a dead branch before the
+  // compaction is the accepted loss.
+  if (agentId === null) {
+    state.deliveredRows = []
+  }
   const after = state.cut.get(loop)
   const summary = messages?.[0]?.handle
   // With no cut yet (a module that has not read its first hello) there is

@@ -651,13 +651,14 @@ function refuseDelivery($: EngineInterface, delivery: DeliveryKey, reason: strin
  * (`turnId`) it is bound to that turn as a steer is (settleSteers): a turn
  * that answers before any request read it wakes once. Appended while idle,
  * it waits for the next turn. Either way it is held until the conversation
- * is known to keep it (recheckDeliveries).
+ * is known to keep it (recheckDeliveries). `bound`: the steer a re-check
+ * bound before its first await, so its turn's end already counts it.
  */
-async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, turnId: string | undefined) {
-  const pending: Steer | undefined = turnId === undefined ? undefined : { turnId, isAppended: false, isRead: false }
-  if (pending !== undefined) {
-    state.steers.push(pending)
-  }
+async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, turnId: string | undefined, bound?: Steer) {
+  const pending = bound ?? (turnId === undefined ? undefined : bindSteer(turnId))
+  // A /clear while the append is pending (state.conversation moves): the row
+  // is the old conversation's, so the new one's check never holds it.
+  const conversationAt = state.conversation
   const settled = (isIn: boolean) => {
     if (pending === undefined) {
       return
@@ -682,13 +683,22 @@ async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: s
     refuseDelivery($, delivery, stored.deny)
     return
   }
-  state.deliveredRows.push({ key: delivery, text, ...(turnId !== undefined && { turnId }) })
+  if (conversationAt === state.conversation) {
+    state.deliveredRows.push({ key: delivery, text, ...(turnId !== undefined && { turnId }) })
+  }
   // The hook does not see the plugin's own append: named once it is in.
   noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
   emit({ type: 'delivered', key: delivery, outcome: 'entered', uuid: stored.uuid })
   // One line: the transcript line draws a newline as U+FFFD.
   $.ui.log(`delivered: ${text.replaceAll('\n', ' ')}`)
   settled(true)
+}
+
+/** A steer bound to its main turn, its append still to come. */
+function bindSteer(turnId: string): Steer {
+  const pending: Steer = { turnId, isAppended: false, isRead: false }
+  state.steers.push(pending)
+  return pending
 }
 
 /**
@@ -700,12 +710,34 @@ async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: s
  * reads. One the conversation lacks is appended again, in this turn (read
  * from its second request, or by the wake when it answers in one); one it
  * holds is let go. A row of a turn that answered is in the conversation for
- * good, so its turn's end lets it go (mainTurnEnded).
+ * good, so its turn's end lets it go (mainTurnEnded), as a compaction lets
+ * every row go (bridge-rows.tsx, compacted).
+ *
+ * Every row's steer is bound to this turn before the first await: the turn
+ * may end while the check runs, and its end settles only the steers it has
+ * (settleSteers), so a replay bound after it would never wake. Each is let
+ * go as its row proves held, or settled as its append does. A /clear while
+ * the check runs ends it: nothing is appended to, or kept for, a
+ * conversation that is gone.
  */
 async function recheckDeliveries($: EngineInterface, turnId: string) {
   const due = state.deliveredRows.filter((r) => r.turnId !== turnId)
   if (due.length === 0) {
     return
+  }
+  const conversationAt = state.conversation
+  const steers = due.map(() => bindSteer(turnId))
+  const release = (released: readonly Steer[]) => {
+    state.steers = state.steers.filter((s) => !released.includes(s))
+    settleSteers($, turnId)
+  }
+  // The old conversation's turn wakes nothing in the new one: its steers go unsettled.
+  const isGone = () => {
+    if (conversationAt === state.conversation) {
+      return false
+    }
+    state.steers = state.steers.filter((s) => s.turnId !== turnId)
+    return true
   }
   let conversation: unknown
   try {
@@ -713,18 +745,28 @@ async function recheckDeliveries($: EngineInterface, turnId: string) {
   } catch (error) {
     conversation = message(error)
   }
+  if (isGone()) {
+    return
+  }
   // Unread, the rows wait for the next turn's check.
   if (!Array.isArray(conversation)) {
     $.ui.log(`bridge: the conversation was not read to check ${due.length} delivered rows: ${JSON.stringify(conversation)}`, { to: 'debug' })
+    release(steers)
     return
   }
   const texts = userTexts(conversation)
   state.deliveredRows = state.deliveredRows.filter((r) => !due.includes(r))
-  for (const r of due) {
-    if (!texts.some((t) => t.includes(r.text))) {
-      $.ui.log(`bridge: the delivery ${r.key.writer}:${r.key.seq} is not in the conversation this turn reads (an Esc rewound past it): delivered again`, { to: 'debug' })
-      await appendDelivery($, r.key, r.text, turnId)
+  const isHeld = due.map((r) => texts.some((t) => t.includes(r.text)))
+  release(steers.filter((_, i) => isHeld[i]))
+  for (const [i, r] of due.entries()) {
+    if (isHeld[i]) {
+      continue
     }
+    if (isGone()) {
+      return
+    }
+    $.ui.log(`bridge: the delivery ${r.key.writer}:${r.key.seq} is not in the conversation this turn reads (an Esc rewound past it): delivered again`, { to: 'debug' })
+    await appendDelivery($, r.key, r.text, turnId, steers[i])
   }
 }
 

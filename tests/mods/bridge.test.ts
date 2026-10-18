@@ -160,6 +160,8 @@ function harness(
   /** What `$.session.messages({ as: "api" })` answers when a test set it; and how many times it was read. */
   let apiConversation: unknown[] | undefined
   let apiReads = 0
+  /** While held (`holdApiReads`), `$.session.messages({ as: "api" })` waits. */
+  let apiGate: Promise<void> = Promise.resolve()
   let listedAgents = options.agents ?? []
   /** How many times the mod read `$.agent.list()`. */
   let agentLists = 0
@@ -176,6 +178,7 @@ function harness(
           return options.messages ?? []
         }
         apiReads++
+        await apiGate
         return apiConversation ?? conversation.map((m) => ({ role: 'user', content: m.content }))
       },
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
@@ -471,6 +474,12 @@ function harness(
     setSession: (id: string) => (session = id),
     setAgents: (agents: Record<string, unknown>[]) => (listedAgents = agents),
     setApiConversation: (messages: unknown[] | undefined) => (apiConversation = messages),
+    /** Holds the next reads of the conversation as the requests read it until the returned function is called. */
+    holdApiReads: () => {
+      let release: () => void = () => undefined
+      apiGate = new Promise((resolve) => (release = resolve))
+      return release
+    },
     apiReads: () => apiReads,
     agentLists: () => agentLists,
   }
@@ -1668,6 +1677,84 @@ describe('deliver', () => {
     await h.settle()
     expect(h.apiReads()).toBe(1)
     expect(h.calls.map((c) => c.op)).toEqual(['submit', 'append'])
+  })
+
+  test("a compaction lets every delivered row go: one read before an Esc, its words now only in the summary, is not given again (the bridge's own compaction, and the engine's)", async () => {
+    const compactions: [string, (h: ReturnType<typeof harness>) => Promise<unknown>][] = [
+      [
+        'compact command',
+        async (h) => {
+          await h.command({ op: 'compact' })
+          h.compactions[0]!.finish({ messages: [], tokensBefore: 9, tokensAfter: 1 })
+        },
+      ],
+      ['session.compact', (h) => h.hook('session.compact', { trigger: 'auto' })(h.engine, { messages: [], trigger: 'auto' }, async () => ({ messages: [] }))],
+    ]
+    for (const [way, compactNow] of compactions) {
+      const h = harness()
+      await h.ready()
+      await h.turn('t1')
+      await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 9 }, text: 'read, then compacted' })
+      await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [])
+      await h.complete('t1', 'aborted')
+      await compactNow(h)
+      await h.settle()
+      h.setApiConversation([{ role: 'user', content: [{ type: 'text', text: 'This session is being continued from a previous conversation…' }] }])
+      await h.turn('t2')
+      await h.settle()
+      expect([way, h.calls.filter((c) => c.op === 'append').length, h.apiReads()]).toEqual([way, 1, 0])
+    }
+  })
+
+  test("rows given again as a turn starts are each bound to it before the check's first await: a one-request turn that ends while the first replay is pending still wakes once for the second", async () => {
+    const options: NonNullable<Parameters<typeof harness>[0]> = { holdAppend: true }
+    const h = harness(options)
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'first words' })
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 2 }, text: 'second words' })
+    for (const release of h.appends.splice(0)) {
+      release()
+    }
+    await h.settle()
+    await h.complete('t1', 'aborted')
+    h.setApiConversation([])
+    // The first replay is refused, so only the second can owe the wake.
+    options.denyAppend = 'first words'
+    await h.turn('t2')
+    await h.settle()
+    await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 2 }, [])
+    await h.complete('t2')
+    const wakes = () => h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)
+    h.appends.shift()!()
+    await h.settle()
+    expect(wakes()).toEqual([])
+    h.appends.shift()!()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(4)
+    expect(wakes()).toEqual([STEER_WAKE])
+  })
+
+  test('a /clear while the re-check reads the conversation: nothing of the old conversation is given again, nor kept to be checked in the new one', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'old words' })
+    await h.complete('t1', 'aborted')
+    h.setApiConversation([])
+    const release = h.holdApiReads()
+    await h.turn('t2')
+    await h.settle()
+    expect(h.apiReads()).toBe(1)
+    await h.complete('t2', 'aborted')
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    release()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(1)
+    await h.turn('t3')
+    await h.settle()
+    expect(h.apiReads()).toBe(1)
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
   })
 
   test('a deliver with no key or no text is refused', async () => {
