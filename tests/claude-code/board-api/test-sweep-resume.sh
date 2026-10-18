@@ -1821,29 +1821,39 @@ t  "so the predecessor's uncommitted edits survive the bootstrap"  "m1" \
 # board-sweep.sh defaults LOCAL_REPO to $PWD and the spawn passes it as --cwd,
 # but the harness does not append .claude/worktrees/<name> to that cwd: it takes
 # the cwd's git toplevel, and for a LINKED worktree the main checkout's root.
-# Launched from a subdirectory of the operator's own worktree, this tick's cwd
-# differs from that root on both counts, so it is the one launch point that
-# would catch either half of the resolution going missing.
-PEFIX="$TDIR/fix-pred-samewt-elsewhere.json"; predfix "$PEFIX" 83
-rboard "$PEFIX"
-PE_WT="$(predsetup 12-successor-implementer 2 12-samewt-elsewhere)"; PE_ROOT="$RREPO"
-echo "half a milestone, uncommitted" > "$PE_WT/m1"
-PE_LAUNCH="$TDIR/operator-worktree"
-gitx "$PE_ROOT" worktree add -q -b operator "$PE_LAUNCH" main
-mkdir -p "$PE_LAUNCH/sub"
-PEDH="$TDIR/dh-pred-samewt-elsewhere"; predreg "$PEDH" "$PE_ROOT" 12-successor-implementer
-: > "$SPAWN_LOG"
-OUTPE="$TDIR/pred-samewt-elsewhere.out"
-LOCAL_REPO="$PE_LAUNCH/sub" RSW "$PEDH" > "$OUTPE" 2>&1 || true
+# Two halves, so two launch points, each guarding one. A subdirectory of the
+# MAIN checkout needs the toplevel step and nothing else. A subdirectory of the
+# operator's own linked worktree needs the mapping — and the mapping replaces
+# whatever the toplevel step produced, so that case cannot catch the toplevel
+# step going missing; only the first one can.
+samewt_from() {  # samewt_from <main|linked> <successor run id>
+  local fix="$TDIR/fix-pred-samewt-$1.json" wt launch dh out
+  predfix "$fix" "$2"
+  rboard "$fix"
+  wt="$(predsetup 12-successor-implementer 2 "12-samewt-$1")"
+  echo "half a milestone, uncommitted" > "$wt/m1"
+  launch="$RREPO"
+  if [ "$1" = linked ]; then
+    launch="$TDIR/operator-worktree"
+    gitx "$RREPO" worktree add -q -b operator "$launch" main
+  fi
+  mkdir -p "$launch/sub"
+  dh="$TDIR/dh-pred-samewt-$1"; predreg "$dh" "$RREPO" 12-successor-implementer
+  : > "$SPAWN_LOG"
+  out="$TDIR/pred-samewt-$1.out"
+  LOCAL_REPO="$launch/sub" RSW "$dh" > "$out" 2>&1 || true
 
-t  "the spawn is handed the launch point as its cwd" "cwd=$PE_LAUNCH/sub" \
-   cat "$SPAWN_LOG"
-t  "and the tick still sees the successor lands in the predecessor's worktree" \
-   "lands in the predecessor's own worktree"                        cat "$OUTPE"
-t  "so nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
-   run_emitted_whole "$SPAWN_LOG" "$PE_WT"
-t  "and the predecessor's uncommitted edits survive the bootstrap"  "m1" \
-   git -C "$PE_WT" diff --name-only
+  t  "[$1 subdir] the spawn is handed the launch point as its cwd" "cwd=$launch/sub" \
+     cat "$SPAWN_LOG"
+  t  "[$1 subdir] and the tick still sees the successor lands in the predecessor's worktree" \
+     "lands in the predecessor's own worktree"                      cat "$out"
+  t  "[$1 subdir] so nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
+     run_emitted_whole "$SPAWN_LOG" "$wt"
+  t  "[$1 subdir] and the predecessor's uncommitted edits survive the bootstrap"  "m1" \
+     git -C "$wt" diff --name-only
+}
+samewt_from main 84     # the toplevel step
+samewt_from linked 83   # the linked-worktree mapping
 
 # ---- a push that HANGS: the deadline has to reach what git spawned --------
 # git is rarely the process actually holding the connection. An ssh push spawns
