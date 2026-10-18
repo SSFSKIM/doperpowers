@@ -99,7 +99,7 @@ describe('texts', () => {
   test('the offer carries the figures, names the tool, and asks for a line on a decline', async () => {
     const text = offerText({ tokens: 412_300, window: 1_000_000 }, 967_000)
     expect(text).toContain('Context: 412,300 tokens; window 1,000,000.')
-    expect(text).toContain('call mcp__doperpowers__compact, alone, then end your turn')
+    expect(text).toContain('If you truly think this is the right time to compact, you can compact now with\nmcp__doperpowers__compact (alone, then end your turn')
     expect(text).toContain('reply "Not compacting."')
   })
 

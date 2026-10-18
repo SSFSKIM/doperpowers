@@ -147,9 +147,10 @@ export function usageText(context: ContextFigures, threshold: number): string {
 export function offerText(context: ContextFigures, threshold: number): string {
   return [
     usageText(context, threshold),
-    'If you would like, compact now: call mcp__doperpowers__compact, alone, then end your turn;',
-    "its description says when a checkpoint is worth it. Otherwise reply \"Not compacting.\"",
-    '(one line, a reason optional) and end your turn.',
+    'If you truly think this is the right time to compact, you can compact now with',
+    'mcp__doperpowers__compact (alone, then end your turn; its description says when a',
+    "checkpoint is worth it). Otherwise reply \"Not compacting.\" (one line, a reason",
+    'optional) and end your turn.',
   ].join('\n')
 }
 
