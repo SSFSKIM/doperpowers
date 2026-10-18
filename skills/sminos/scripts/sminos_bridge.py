@@ -132,12 +132,12 @@ def _no_kept():
 
 def load_kept(session):
     """What a child kept for the session: {"override": {model, effort} | None,
-    "delivered": {writer: seq}}, and, once a command sent for a desk RPC was
-    answered, "rpcs": {nonce: the answer's op, ok, result, error}; once the
-    engine dropped a delivery the mod had submitted, "refused": [{"key":
-    {writer, seq}, "reason"}], oldest first, the last REFUSED_KEPT, which the
-    daemon reports (sminos_outcomes.report_refused); nothing kept reads as
-    none."""
+    "delivered": {mark: seq}}, a mark as _mark gives it, and, once a command
+    sent for a desk RPC was answered, "rpcs": {nonce: the answer's op, ok,
+    result, error}; once the engine dropped a delivery the mod had submitted,
+    "refused": [{"key": {project?, writer, seq}, "reason"}], oldest first, the
+    last REFUSED_KEPT, which the daemon reports
+    (sminos_outcomes.report_refused); nothing kept reads as none."""
     try:
         with open(kept_path(session)) as f:
             d = json.load(f)
@@ -163,7 +163,15 @@ def _refusal(r):
     """Whether `r` is a refusal as the child keeps it."""
     key = r.get("key") if isinstance(r, dict) else None
     return isinstance(key, dict) and isinstance(key.get("writer"), str) and type(key.get("seq")) is int \
-        and isinstance(r.get("reason"), str)
+        and isinstance(key.get("project", ""), str) and isinstance(r.get("reason"), str)
+
+
+def _mark(key):
+    """The mark a delivery key raises, as the mod's: every project numbers a
+    writer's events on its own, so `<project>/<writer>`, or the bare writer
+    for a key naming no project (a CLI older than the project in the key)."""
+    project, writer = key.get("project"), key.get("writer")
+    return "%s/%s" % (project, writer) if isinstance(project, str) else writer
 
 
 # ------------------------------------------------------------------ the client
@@ -274,12 +282,11 @@ def _refused(kept, key, reason):
     last REFUSED_KEPT, its reason cut to REASON_MAX; as it was for a key that
     is not one."""
     key = key if isinstance(key, dict) else {}
-    writer, seq = key.get("writer"), key.get("seq")
+    key = {k: key[k] for k in ("project", "writer", "seq") if k in key}
     refused = kept.get("refused") or []
-    if not isinstance(writer, str) or type(seq) is not int \
-            or any(r["key"] == {"writer": writer, "seq": seq} for r in refused):
+    if not _refusal({"key": key, "reason": ""}) or any(r["key"] == key for r in refused):
         return kept
-    entry = {"key": {"writer": writer, "seq": seq}, "reason": str(reason or "")[:REASON_MAX]}
+    entry = {"key": key, "reason": str(reason or "")[:REASON_MAX]}
     return {**kept, "refused": (refused + [entry])[-REFUSED_KEPT:]}
 
 
@@ -678,9 +685,9 @@ class Bridge:
             self._keep({**self.kept, "override": o if o["model"] is not None or o["effort"] is not None else None})
         elif kind == "delivered" and e.get("outcome") == "submitted":
             key = e.get("key") or {}
-            writer, seq = key.get("writer"), key.get("seq")
-            if isinstance(writer, str) and type(seq) is int and seq > self.kept["delivered"].get(writer, 0):
-                self._keep({**self.kept, "delivered": {**self.kept["delivered"], writer: seq}})
+            mark, seq = _mark(key), key.get("seq")
+            if isinstance(mark, str) and type(seq) is int and seq > self.kept["delivered"].get(mark, 0):
+                self._keep({**self.kept, "delivered": {**self.kept["delivered"], mark: seq}})
         elif kind == "delivered" and e.get("outcome") == "refused":
             # The engine dropped what the mod submitted: kept with its key,
             # for the daemon's next delivery pass to report `failed` (DC8.G5).
@@ -1237,9 +1244,10 @@ def cmd_bridge(a):
 
 def watch_session(q):
     """The session a member name names here, or exit 4 saying why not. A full
-    session id is taken as given."""
+    session id is taken as given, or, when the harness sent it to the
+    background and it no longer runs, as the session it continues in."""
     if S.UUID_RE.match(q):
-        return q
+        return successor(q)
     target = S.find_target(q)
     if target[0] == "none":
         S.die("no member matching '%s'" % q, S.EXIT_UNKNOWN)
@@ -1253,6 +1261,16 @@ def watch_session(q):
     if not m.local:
         S.die("%s runs on %s; its bridge is that machine's" % (q, m.machine or "another machine"), S.EXIT_UNKNOWN)
     return m.session
+
+
+def successor(session):
+    """The session that goes on for `session`: itself while it runs or was
+    never handed off, else the end of its chain of hand-offs (continued_in)."""
+    seen = {session}
+    while not S.session_running(session) and (nxt := S.continued_in(session)) and nxt not in seen:
+        seen.add(nxt)
+        session = nxt
+    return session
 
 
 def _first_line(text, width=160):
@@ -1359,7 +1377,7 @@ class Renderer:
             self.line("· compaction %s" % ("started" if phase == "start" else _compact_outcome(e)))
         elif kind == "delivered" and e.get("outcome") != "duplicate":
             k = e.get("key") or {}
-            self.line("· delivered %s:%s %s" % (k.get("writer"), k.get("seq"), e.get("outcome")))
+            self.line("· delivered %s:%s %s" % (_mark(k), k.get("seq"), e.get("outcome")))
         elif kind == "gap":
             self.line("· %s events were lost on the way from the session" % e.get("dropped"))
         elif kind == "kept":
@@ -1407,6 +1425,15 @@ def _reconnect_window():
         return 5.0
 
 
+def _follow_window():
+    """How long a watch waits for the bridge of the session its session was
+    handed to: that process starts, loads its plugins, and only then serves."""
+    try:
+        return float(os.environ.get("SMINOS_BRIDGE_FOLLOW") or 60)
+    except ValueError:
+        return 60.0
+
+
 def cmd_watch(a):
     session = watch_session(a.member)
     path = endpoint(session)
@@ -1447,6 +1474,16 @@ def cmd_watch(a):
             except (OSError, http.client.HTTPException, ValueError):
                 pass
             if ended:
+                # Sent to the background: the conversation goes on in another
+                # session, whose bridge answers once its process is up.
+                nxt = S.continued_in(session)
+                deadline = time.time() + _follow_window()
+                while nxt and time.time() < deadline and probe(endpoint(nxt)) is None:
+                    time.sleep(0.2)
+                if nxt and probe(endpoint(nxt)) is not None:
+                    say("· sent to the background, continued in %s; following" % nxt[:8])
+                    session, path, ended, pid = nxt, endpoint(nxt), False, None
+                    continue
                 say("· the session ended")
                 return
             if lost and probe(path) is not None:

@@ -424,7 +424,7 @@ the interface, with the retry rule below (the scenario's choice is in §6); **st
 (the root's, and each subagent's under the session's directory, from which a
 stopped agent resumes by SendMessage); git (each unit's branches and
 worktrees, committed as the work goes); and the forge's records — the tools'
-(`integration.jsonl`, the log of every publication and landing;
+(`integration.jsonl`, the log of every publication, landing and `full`;
 verification results; `events.jsonl` for escalations, budget thresholds
 and oracle failures at the tip; the ledger's status) and the agents'
 progress files (the root's and one per controller: each unit's state,
@@ -440,13 +440,18 @@ product code (Bun, Airbnb, Carlini, Google).
 
 A gate that fails is not always a verdict. ci-kit records a preempted Spot
 VM but does not re-run its job, which GitHub fails like any other and
-ci-kit's CLI reports as a failed gate (the ci-kit design, §3a), so the
-provider contract tells a loss from a result: the forge's gates write a
-result marker when the oracle completes; a failed gate job with no marker
-is an infrastructure loss; and the `ci-kit` provider re-runs the same head
-up to the manifest's `infra_retries`, then records an `ERROR` environment
+ci-kit's CLI reports as a failed gate (the ci-kit design, §3a), and a
+candidate that hangs until the job's own timeout, or fails to build before
+the oracle runs, fails the same way. So the forge's gate command is a
+supervising wrapper that writes a durable result for every outcome it
+observes — pass, divergence, build failure, and candidate timeout, a bound
+the manifest sets below the CI job's own timeout — and only a missing
+wrapper result is a lost runner: the provider re-runs the same head up to
+the manifest's `infra_retries`, then records an `ERROR` environment
 escalation — never `MORE_WORK`, and never a round against the unit's
-`max_rounds`.
+`max_rounds`. A build failure or a candidate timeout is the candidate's
+result, not the runner's, and is read as a divergence is: a round's
+findings returned to the implementer, or at `full` a tip failure.
 
 #### 2.8 The rigor gate
 
@@ -584,7 +589,19 @@ lock. A `full` or held-out failure
 bisect over the wave's landings from the last green tip (landings are
 linear, so this is mechanical); the ledger names the behavior that broke,
 not the blame — a newly landed caller can break a slice an earlier unit
-owns. A slice belongs to the tip's regression suite only once its unit has
+owns. A `full` is transactional the same way, with more to carry: its
+`intent` line holds its result before the ref moves — pass or fail, the
+divergences, and for a failure the bisect's attribution (the landing that
+caused it, the ledger items that broke) — and the ledger commit, the
+`full`, `tip-failure` and `reopened` events and the reopened unit's state
+are effects derived from that line, each keyed by the operation's id (the
+ledger commit names it, which is how reconciliation knows it for the new
+tip). Reconciling a `full` rebuilds the ledger commit from the result while
+the ref is still at the old tip, and finishes whichever effects are not yet
+written whether or not `done` exists, so a second pass writes nothing
+twice; and `status` reads the tip's red or green from the last `full`
+operation in the log, not from the events, so a crash anywhere after the
+result line still leaves the tip red and the reopened unit named. A slice belongs to the tip's regression suite only once its unit has
 landed: a published slice for a unit still being implemented runs in that
 unit's verifications and nowhere else, so a publication cannot redden the
 tip (in a ladder or dependency-order shape the slice rightly fails until
@@ -834,7 +851,7 @@ repository's `devenv/` installing bun, the toolchain and the reference, and
 the held-out on that host outside every worktree; verification and `full`
 through **ci-kit** on its GCE Spot backend (the 2026-10-15 ci-kit design,
 §3a), which records a preemption but does not re-run the job, so the
-forge's provider re-runs a gate that failed without its result marker
+forge's provider re-runs a gate whose supervising wrapper left no result
 (§2.7). A verification is a stateless job of minutes (checkout at the head,
 build the hybrid, run the slices against the scripted server, diff) and the
 work is embarrassingly parallel, which is the load Spot capacity is priced
@@ -941,8 +958,15 @@ Observable at the end, each with the milestone that proves it:
    named, and holds the next wave until it is fixed; a published slice of a
    unit still in flight is skipped by the tip's `full` and reported as
    pending; a kill on either side of a landing's ref move is reconciled
-   by the next writer or `status`; and a publication concurrent with a
-   landing waits on the integration lock, both recorded in order. (M5)
+   by the next writer or `status`; a failing `full` killed after its
+   result line, after its ledger commit, after its ref move, after its
+   `done` line, or between its event writes is followed by `status`
+   showing the tip red and the reopened unit, with no event written twice;
+   a publication concurrent with a landing waits on the integration lock,
+   both recorded in order; and on the `local` provider a candidate that
+   hangs past the manifest's candidate timeout returns `MORE_WORK`, while
+   a wrapper killed before it writes its result is retried up to
+   `infra_retries` and then escalated as `ERROR`. (M5)
 8. **The root protocol and delegator work on seeded events.** Events for
    each escalation class are fed; the delegator resolves the class-1–3 ones
    with the manifest line it used and drafts a question for the class-4 one;
@@ -1120,7 +1144,8 @@ checkout at the unit's head, runs the unit's slices and a `fast` sample on a
 seed it draws, applies the path check (§M5), and writes a result record
 under the unit's run directory, through the manifest's sandbox provider
 (`local` here; `ci-kit` is the scenario's, designed with §2.7's retry
-rule and not built);
+rule and not built), the oracle running under the supervising wrapper
+whose result the record carries (Interfaces);
 `oracle` subcommands call `forge/oracle/run.py` with a fixed argument
 contract (`<axis> <binary> <slice>` → a directory of observations,
 `normalize`, `compare` → a summary line and a detail file) so the harness
@@ -1159,7 +1184,9 @@ failure after landing is attributed by a bisect over the wave's landings
 from the last green tip, writes a `reopened`
 event naming the landing that caused it and the ledger items that broke,
 moves that unit to `reopened`, and `status` reports the tip red so no
-controller dispatches while it is (a
+controller dispatches while it is — for `full`, read from its operation in
+`integration.jsonl` (below); a held-out failure, run by the root outside
+the lock, is read from its `heldout-failure` event (a
 test has unit B's landing break a slice unit A owns, and B reopens; another
 interleaves two units' publications and landings and sees both land); the
 fast-forward writes a `land` operation's `intent` line with the old and
@@ -1170,11 +1197,32 @@ from slice results at landing and at `full`, and any role diff touching
 `ledger.tsv` is refused; the verifier's path check compares the implementer's own delta
 (`onto..head` of the latest rebase, the `onto` recorded at `rebase-start`;
 the oracle revision kept for provenance only) against `forge/oracle/**` and
-`ledger.tsv`; `full` runs under the integration lock, commits its ledger
-update as a `full` operation of `integration.jsonl`, writes a `full` event
-with the result and a `tip-failure` event per divergence, and is what a
+`ledger.tsv`; `full` runs under the integration lock as a `full`
+operation of `integration.jsonl`, in order: the tip's suite and, on a
+failure, the bisect; the `intent` line with the old tip and the result
+(pass or fail, the divergences, the attribution); the ledger commit,
+naming the operation's id; the ref move; the `done` line; then the `full`
+event with the result, a `tip-failure` event per divergence and a
+`reopened` event per attributed unit, each carrying the operation's id.
+Reconciliation finishes whatever of that is missing after the `intent`
+line, `done` or not, and writes an event only where none of its kind,
+unit and operation id exists; `status` takes the tip's red or green and
+the reopened units from the last `full` operation, not from the events
+(tests: a failing `full` killed after each of those writes — the result
+line, the ledger commit, the ref move, the `done` line, each event — and
+`status` then shows the tip red and the reopened unit, and a second
+reconciliation writes no event twice). `full` is what a
 controller runs after the manifest's count of landings and at its wave's
-end, while held-out stays the root's to run. Does not touch: the agents.
+end, while held-out stays the root's to run. `verify` and `full` read the
+supervising wrapper's result (§2.7, Interfaces): a build failure or a
+candidate timeout past `run.candidate_timeout` is the candidate's, read
+as a divergence is (a round's findings in `verify`, a tip failure in
+`full`), and only a run with no
+wrapper result is a lost runner, re-run on the same head up to
+`run.infra_retries` on any provider and then escalated as `ERROR` (tests,
+on `local` with a simulated loss: a candidate that hangs past the timeout
+returns `MORE_WORK`; a wrapper killed before it writes is retried and then
+escalated). Does not touch: the agents.
 Proves: acceptance 6 and 7, on the toy with scripted candidates and the
 toy's oracle.
 
@@ -1265,7 +1313,8 @@ Defined once here; milestones point at them.
   "id", "title", "ledger": [], "touches": [], "reference_locus": [],
   "consumes": [], "produces": [], "slices": [], "max_rounds", "models": {}
   } ], "run": { "parallel", "budget": { "unit_tokens", "run_tokens",
-  "prices": {} }, "full_every_landings", "sandbox_provider": "local", "infra_retries" } }`;
+  "prices": {} }, "full_every_landings", "sandbox_provider": "local", "infra_retries",
+  "candidate_timeout" } }`;
   the manifest's Target section carries `spec_paths` and the reference
   paths; a
   role's report is its final message, its first line one of `DONE`,
@@ -1282,16 +1331,23 @@ Defined once here; milestones point at them.
   plan|worktree <unit> [--author]|oracle <sub>|publish <unit>|verify <unit>|land <unit>|full|status|usage|report
   <forge-dir>`, `oracle heldout` taking `--path <p>`. **Records**:
   `runs/<id>/units/<unit>/verify/<n>.json`
-  `{ "head", "seed", "slices", "result", "detail" }`;
+  `{ "head", "seed", "slices", "result", "detail" }`, `result` the
+  supervising wrapper's, one of `pass | divergence | build-failure |
+  candidate-timeout`;
   `runs/<id>/integration.jsonl`, the integration log, appended under the
   integration lock by every write to the integration branch, lines
-  `{ "op", "unit", "kind", … }` with `op` in `publish | land | full` and
+  `{ "id", "op", "unit", "kind", … }` with `id` the operation's, shared by
+  its lines, `op` in `publish | land | full` and
   `kind` in `rebase-start {onto} | review-void | tip-check | intent {old,
   new} | done {new}` — a publication's `done` names the unit's oracle
-  revision, and `full`'s ledger update has no unit; `events.jsonl` lines
-  `{ "ts", "unit", "kind", "detail" }` with `kind` in `escalation |
+  revision; a `full` has no unit, and its `intent` is `{old, result}`,
+  `result` being `{ "pass", "divergences", "attribution": [ { "landing",
+  "unit", "ledger": [] } ] }`, its new tip the ledger commit that names
+  the operation's `id`; `events.jsonl` lines
+  `{ "ts", "unit", "kind", "detail", "op_id" }` with `kind` in `escalation |
   infeasible | tip-failure | heldout-failure | reopened | budget | full |
-  gate-miss`. **Progress files**, written by the agents and rewritten, not
+  gate-miss`, `op_id` set on the events a `full` operation derives, so
+  reconciliation writes each at most once. **Progress files**, written by the agents and rewritten, not
   appended: `runs/<id>/progress.md` (the root's: waves, controllers and
   their agent ids, escalations open) and `runs/<id>/waves/<w>.md` (each
   controller's: per unit its state, attempt, head, review head, and every
@@ -1306,23 +1362,32 @@ Defined once here; milestones point at them.
   passing `verify` at the same head); `implemented → implemented` (either
   `MORE_WORK`, `attempt + 1`, while `attempt ≤ max_rounds`); `judged →
   landed` (the `done` line); `judged → implemented` (`review-void` or a
-  failed `tip-check`); `landed → reopened` (a `full` or held-out failure
-  attributed to the unit) and `reopened → implemented`; any role `BLOCKED`
+  failed `tip-check`); `landed → reopened` (a `full` failure attributed to
+  the unit in the last `full` operation's result, or a held-out failure
+  attributed to it) and `reopened → implemented`; any role `BLOCKED`
   or `INFEASIBLE`, or `max_rounds` exceeded, → `escalated` with an event.
   **Linearization points**: a unit is published, or landed, when the
   integration ref moves (`git update-ref`, atomic, under the integration
   lock), bracketed by its operation's `intent` and `done` lines, which the
-  next writer or `status` reconciles; a role's outcome counts once the
+  next writer or `status` reconciles; a `full`'s result counts, and the
+  tip is red or green, once its `intent` line is written, the ledger
+  commit, ref move and events following from that line; a role's outcome counts once the
   controller has written it to its progress file, and a role whose outcome
   is not written is resumed by SendMessage or dispatched again.
 - **Sandbox provider contract** (M4 builds `local`; `ci-kit` is designed
   here and not built): `verify` and `full` hand the provider a head and the
   oracle's command and get back the result record; a provider changes where
-  the run happens, never the runner contract. A gate writes a result marker
-  when the oracle completes; a failed gate job with no marker is an
-  infrastructure loss, which the `ci-kit` provider re-runs on the same head
-  up to `run.infra_retries` and then records as an `escalation` event with
-  status `ERROR` — never `MORE_WORK`, never a round (§2.7).
+  the run happens, never the runner contract. The command runs under the
+  forge's supervising wrapper, which writes a durable result for every
+  outcome it observes — `pass`, `divergence`, `build-failure`, or
+  `candidate-timeout` past `run.candidate_timeout`, which the manifest sets
+  below the CI job's own timeout. A build failure or a candidate timeout
+  is the candidate's result, read as a divergence is: in `verify` a
+  round's findings for the implementer (`MORE_WORK`), in `full` a tip
+  failure; only a run with no wrapper result is an
+  infrastructure loss, which the provider, whichever it is, re-runs on the
+  same head up to `run.infra_retries` and then records as an `escalation`
+  event with status `ERROR` — never `MORE_WORK`, never a round (§2.7).
 - **Agents** (M6, the reviewer M1): `doperpowers:forge-controller`,
   `forge-oracle-author`, `forge-implementer`, `forge-reviewer`,
   `forge-delegator`, dispatched through the Agent tool.
@@ -1686,6 +1751,33 @@ Defined once here; milestones point at them.
   ref's label, the seed from the nonce commit, and shard gates.
   Supersedes: "preemption handled" in the ci-kit entry above.
   Date/Author: 2026-10-16
+- Decision: After the second review of the 2026-10-16 revisions
+  (2026-10-17, scoped to the entry above), two changes, and review of
+  those revisions is closed with this fold. A `full` is transactional like
+  a publication and a landing: its `intent` line carries its result —
+  pass or fail, the divergences, and for a failure the bisect's
+  attribution — before the ref moves, and its ledger commit, events and
+  reopened state are effects of that line, keyed by the operation's id,
+  which reconciliation finishes idempotently whether or not `done` exists,
+  while `status` reads the tip's red or green from the last `full`
+  operation. The forge's gate command is a supervising wrapper that writes
+  a durable result for every outcome it observes — pass, divergence, build
+  failure, and candidate timeout under a manifest bound below the CI job's
+  own — so only a missing wrapper result is a lost runner, retried and then
+  escalated as `ERROR`, and a build failure or a timeout returns to the
+  implementer as a round's findings.
+  Rationale: the review found that a crash after `full`'s ledger commit
+  moved the ref but before its events were written left the tip red with
+  nothing recording it, so the dispatch hold failed; and that a candidate
+  hung until the CI job's timeout, or failing to build before the oracle
+  ran, left no result marker and would have been retried and escalated as
+  an infrastructure loss instead of returned to its implementer. It found
+  the fold otherwise sound: no ref-overwrite counterexample under the
+  shared lock, and the worktree baselines, the phased maintainability
+  checks, the held-out argument and the usage attribution close the
+  defects they were written for.
+  Supersedes: the result-marker rule in the entry above.
+  Date/Author: 2026-10-17
 
 ## Outcomes & Retrospective
 

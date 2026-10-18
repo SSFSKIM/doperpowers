@@ -26,7 +26,10 @@ the first that fails is its answer, as DX6's error code:
    input_sha256}`) against the request still pending in the session, as its
    bridge reports it (`digest-mismatch`, `not-pending`), and the decision
    fitting that request by the bridge's own rule (`bad-shape`);
-8. the session's kind against §5's table (`unsupported`).
+8. the session's kind against §5's table (`unsupported`);
+9. for a stop, the task: a background shell or monitor the session's jobs
+   index holds as running, the main loop's or a subagent's, read from the
+   rows as the plane reads them (sminos_jobs.running_task; `unknown-task`).
 
 A refusal from 1 or 2 precedes the ledger and is not kept in it: it goes up
 while its project is open on the stream (an `unknown-project` never is, and
@@ -44,7 +47,7 @@ words sent another way — for as long as that trace may still appear, then
 answered `failed` `interrupted`.
 
 Execution (§5) goes through the session's bridge (DC2's DX5): steer,
-interrupt, model, and compact as commands; an answer or a decision as the
+interrupt, stop, model, and compact as commands; an answer or a decision as the
 request's decision, by the member. A steer to a live session without a
 bridge takes `sminos steer`'s own fallbacks (the supervisor's `reply`, the
 inbox frame), so its result names no row. Spawn and retire run `sminos spawn`
@@ -98,6 +101,7 @@ import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_control as control  # noqa: E402
+import sminos_jobs as jobs  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 
 LEDGER_FILE = "rpcs.json"
@@ -116,7 +120,8 @@ VERB_TIMEOUT = 120
 SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod's first resync
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
-RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume")
+RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop")
+TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}")
 WORKTREE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 CREATED_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?Z")
@@ -370,6 +375,8 @@ class Rpcs:
         record = here.record(sid) if sid else None
         facts = {"running": record is not None, "bg": control.bg_job(record or {}), "root": project.root,
                  "checkout": args.get("checkout"), "status": (record or {}).get("status")}
+        if name == "stop":
+            facts["transcript"] = sminos.transcript_path(sid)
         if name == "resume":
             seat = next((s for s in sminos.seats() if s["current"] == sid), None)
             facts.update(cwd=here.cwd(project, sid),
@@ -514,6 +521,11 @@ class Rpcs:
                 return lambda: self.compact(path, rpc, sid)
             if name in ("answer", "decide"):
                 return lambda: decide(path, args["digest"]["request"], decision)
+            if name == "stop":
+                if not jobs.running_task(facts["transcript"], args["taskId"]):
+                    raise Refused("unknown-task", "the session's jobs hold no background shell or monitor %s running"
+                                  % args["taskId"])
+                return lambda: stop(path, args["taskId"])
         if name == "steer":
             if facts["status"] == "idle":
                 # The engine's own record says no turn runs (composite 21c32db7).
@@ -776,6 +788,9 @@ def shape(name, args, member):
         need(m is not None or e is not None, "a model, an effort, or both")
         need(m is None or (isinstance(m, str) and MODEL_RE.fullmatch(m)), "model is an id, an alias, or default")
         need(e is None or e in control.EFFORTS, "effort is one of %s" % ", ".join(control.EFFORTS))
+    elif name == "stop":
+        need(isinstance(args.get("taskId"), str) and TASK_RE.fullmatch(args["taskId"]),
+             "taskId is a background task's id")
     elif name == "spawn":
         need(is_text(args.get("brief")), "brief is the session's brief")
         wt, m, e = args.get("worktree"), args.get("model"), args.get("effort")
@@ -877,6 +892,17 @@ def interrupt(path):
     r = out.get("result") or {}
     return done({"turnId": r.get("turnId"), "stopped": list(r.get("stopped") or []),
                  "running": list(r.get("running") or [])})
+
+
+def stop(path, task):
+    """A background shell or monitor stopped through the session's bridge,
+    which runs TaskStop for it (DX5 `stop`). The engine's refusal is the
+    RPC's failure, in the engine's words; the job's `stopped` reaches
+    browsers on the session's DX4 body, not here."""
+    out, _ = command(path, {"op": "stop", "taskId": task, "from": "desk"})
+    if not out.get("ok"):
+        raise Refused("failed", refusal(out))
+    return done({"taskId": task})
 
 
 def bridge_snapshot(path):

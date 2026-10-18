@@ -615,12 +615,19 @@ three of these hold.
   since the launch never says where an isolated agent's work lives. The
   conversation is read as it stands, `$.session.messages({ as: "api" })`:
   the engine's live messages from the last compaction on, a rewind applied,
-  a notification that came in mid-turn rendered into a user message under
-  the engine's system-notification frame (the rows form leaves those out),
-  the newest 4096 messages. So a notification rewound or summarized away,
-  refused or answered by a hook beneath before it reached the session, or
-  rewritten there without its worktree, is not held, and the next one
-  passes.
+  the newest 4096 messages. A notification that started a turn is a user
+  message's text there. One that came in while a tool call ran (the rows
+  form leaves those out) the engine folds into that call's result, in a
+  `<system-reminder>` of its own under its system-notification frame
+  ("[SYSTEM NOTIFICATION - NOT USER INPUT]" and the four lines after it, the
+  same text from 2.1.283 to 2.1.302), opening the result or after a blank
+  line. In a tool result a notification counts only so, directly under the
+  frame and alone in its reminder, so a tool's output that quotes one (a
+  file read, a grep of a transcript) does not. So a notification rewound or
+  summarized away, refused or answered by a hook beneath before it reached
+  the session, or rewritten there without its worktree, is not held, and
+  the next one passes; so is one folded under a frame a later engine
+  rewrites, until the match learns the new text.
 
 Every check fails open: a lookup that errs or cannot tell (no
 `<output-file>`, a link that is dangling or lands anywhere but the agent's
@@ -638,7 +645,17 @@ notifications, where the text alone dropped 745: 20 pointers pass, 133 whose
 worktree the conversation did not hold yet, 41 orphans' with no earlier
 notification there, and 4 carrying the safety classifier's warning. Every
 parked agent's transcript held the reminder, so telling the engine's
-placeholder from an agent's cost no drops.
+placeholder from an agent's cost no drops. That replay put a notification
+that came in mid-turn into user text, which the filter first read only in
+7.171.1, when it learned the fold: replayed over a later session with the
+filter live (MAWS `37052769`, engine 2.1.302, 50 interim notifications),
+each mid-turn one folded into the running call's result as the engine folds
+it, the earlier filter reproduces every live decision (44 drops), and the
+fold adds 4 drops, each a worktree repeat whose path an earlier
+notification of that task, folded mid-turn, had already given, each agent's
+report reaching the session later. Across this machine's transcripts no
+stored tool result reads as a fold, though 496 in the 2,612 files that carry
+the frame quote a notification, 3 of them with the frame itself.
 
 What it gives up: the parent no longer sees that the agent parked again. An
 agent killed while parked gets no notification either way, since the engine
@@ -649,7 +666,14 @@ cases: a fork, whose own contract is off while its transcript inherits its
 parent's reminder, and a notification still queued from an earlier run after
 a permission-mode change let a later run write the reminder. In either, what
 the filter drops is an agent's whole answer that is, byte for byte, the
-engine's waiting sentence; no report is in it. Each drop still leaves a line
+engine's waiting sentence; no report is in it. Reading a notification folded
+into a tool result trusts the engine's frame: a tool's output that ends, after
+a blank line, with that exact frame and a notification carrying a live
+agent's task id and worktree, alone in a reminder of its own, counts as the
+engine's, and that agent's first notification of the worktree (or an
+orphan's first) drops. What is lost is a placeholder, never a report; the
+worktree and the orphan come again with its report and final notification.
+Each drop still leaves a line
 in the transcript, "Prompt dropped by a hook: interim agent notification:
 its work is still running": the engine writes a `system` notice at level
 `warning` for every `prompt.submit` that ends without entering (a hook's

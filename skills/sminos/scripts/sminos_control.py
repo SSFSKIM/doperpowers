@@ -1,16 +1,16 @@
 """The control verbs and a delivery's last hop (DC2 M2, contract DX5).
 
-`sminos steer|interrupt|model|compact <member>` act on a session through its
+`sminos steer|interrupt|stop|model|compact <member>` act on a session through its
 bridge: a command on the session's endpoint (sminos_bridge), answered by the
 bridge mod. A session with no bridge falls back as the desk's design (§5) has
 it: a steer to a --bg job goes through the engine supervisor's `reply`, to a
-terminal session as a cross-session frame on its inbox; interrupt, model and
-compact need the bridge and are refused, saying so.
+terminal session as a cross-session frame on its inbox; interrupt, stop, model
+and compact need the bridge and are refused, saying so.
 
 `push_live` is a delivery's last hop to a live session, for the log's
 delivery and `send` alike: the bridge, which submits the text as the human's
-words, keyed by the log event (a key it has already submitted is dropped, so
-delivery stays at least once); else, for a human's event to a --bg job, the
+words, keyed by the log event and its project (a key it has already
+submitted is dropped, so delivery stays at least once); else, for a human's event to a --bg job, the
 supervisor's `reply` (human-origin input); else the inbox frame. Each path
 carries the frame the inbox would, so the model reads the same addressing.
 """
@@ -72,12 +72,16 @@ def post_command(path, body, wait_ms=COMMAND_WAIT_MS):
         c.close()
 
 
-def deliver(session, event, text):
-    """The bridge's submission of a log event: True once submitted (or found
-    already submitted), None when the session has no bridge, False when the
-    bridge refused it (nothing was submitted). Raises SendFailed("after")
-    when the bridge took it and gave no answer: it may have been submitted."""
-    body = {"op": "deliver", "key": {"writer": event["writer"], "seq": event["seq"]}, "text": text}
+def deliver(session, project, event, text):
+    """The bridge's submission of a log event of the project `project` (its
+    id): True once submitted (or found already submitted), None when the
+    session has no bridge, False when the bridge refused it (nothing was
+    submitted). Raises SendFailed("after") when the bridge took it and gave no
+    answer: it may have been submitted. The key names the project, since
+    every project numbers a writer's events on its own. A duplicate is taken
+    as delivered, since it was submitted before, but said: were it not, the
+    event would be lost with no other trace."""
+    body = {"op": "deliver", "key": {"project": project, "writer": event["writer"], "seq": event["seq"]}, "text": text}
     try:
         r = post_command(B.endpoint(session), body)
     except Unanswered as e:
@@ -86,6 +90,10 @@ def deliver(session, event, text):
         return None
     status, out = r
     if status == 200 and isinstance(out, dict) and out.get("ok"):
+        if (out.get("result") or {}).get("duplicate"):
+            line = "the bridge of session %s took %s as already delivered" % (session, S.event_ref(event))
+            S.warn(line)
+            S.daemon_log(line)
         return True
     if status == 504:
         raise S.SendFailed("after", "the bridge's session did not answer")
@@ -163,12 +171,12 @@ def supervisor_reply(short, text):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None):
+def push_live(peer, session, text, event=None, project=None):
     """A delivery's last hop to a live session, `event` the last log event the
-    text carries (None for a frame no log holds). Raises SendFailed as
-    send_frame does: "before" when nothing reached the session, "after" when
-    it may have."""
-    if event is not None and deliver(session, event, text):
+    text carries (None for a frame no log holds) and `project` the id of the
+    project whose log holds it. Raises SendFailed as send_frame does:
+    "before" when nothing reached the session, "after" when it may have."""
+    if event is not None and deliver(session, project, event, text):
         return
     if event is not None and event.get("kind") == "human" and bg_job(peer):
         took = supervisor_reply(bg_job(peer), text)
@@ -245,6 +253,15 @@ def cmd_interrupt(a):
     if running:
         S.die("interrupt of %s is incomplete: background task%s %s still running (TaskStop failed)" % (
             a.member, "s" if len(running) > 1 else "", ", ".join(running)), 1)
+
+
+def cmd_stop(a):
+    """A background shell or monitor of the member's stopped with TaskStop,
+    the main loop's or a subagent's."""
+    _, result = bridged(a.member, "stop", {"op": "stop", "taskId": a.task})
+    if result is None:
+        no_bridge(a.member, "stop")
+    print("stopped %s's background task %s" % (a.member, result.get("taskId") or a.task))
 
 
 def cmd_model(a):

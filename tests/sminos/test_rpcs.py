@@ -159,6 +159,38 @@ def append_row(sid, row):
         f.write(json.dumps(row) + "\n")
 
 
+def start_job(sid, task, kind="shell", agent=None):
+    """A background shell's or monitor's start, as the engine writes it: the
+    call, then its result naming the task (in a subagent's own transcript
+    for `agent`)."""
+    path = transcript(sid)
+    if agent:
+        path = os.path.join(path[:-len(".jsonl")], "subagents", "agent-%s.jsonl" % agent)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    call = "toolu_" + task
+    tool, tur, text = (("Bash", {"backgroundTaskId": task},
+                        "Command running in background with ID: %s. Output is being written to: /tmp/%s.output"
+                        % (task, task)) if kind == "shell"
+                       else ("Monitor", {"taskId": task, "timeoutMs": 300000, "persistent": False},
+                             "Monitor started (task %s, timeout 300000ms)." % task))
+    now = iso(time.time())
+    with open(path, "a") as f:
+        f.write(json.dumps({"type": "assistant", "uuid": str(uuidlib.uuid4()), "timestamp": now, "message": {
+            "role": "assistant", "content": [{"type": "tool_use", "id": call, "name": tool,
+                                              "input": {"command": "sleep 600", "description": task}}]}}) + "\n")
+        f.write(json.dumps({"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": now, "toolUseResult": tur,
+                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call,
+                                                                     "content": text}]}}) + "\n")
+
+
+def end_job(sid, task, status):
+    """A task's notification, as the engine queues it when the task ends."""
+    append_row(sid, {"type": "attachment", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()),
+                     "attachment": {"type": "queued_command", "commandMode": "task-notification",
+                                    "prompt": "<task-notification>\n<task-id>%s</task-id>\n<status>%s</status>\n"
+                                              "<summary>done</summary>\n</task-notification>" % (task, status)}})
+
+
 class Mod(tpr.Bridge):
     """DC2's bridge child with this test as its mod: each command answered
     as bridge.tsx answers it. `turn` is the main turn running (None: idle);
@@ -171,6 +203,7 @@ class Mod(tpr.Bridge):
         self.hold = 0.0
         self.answer_steer = True  # False: the row is written, the answer never comes
         self.unknown = False      # True: loaded into a conversation, its turn state not known yet (DC2 27c46947)
+        self.stop_fails = {}      # task id → the engine's error for its TaskStop
         self.rows = []
         super().__init__(sid)
 
@@ -204,6 +237,18 @@ class Mod(tpr.Bridge):
         elif op == "interrupt":
             res = {"ok": True, "result": {"turnId": self.turn, "stopped": ["b1x2y3z4"] if self.turn else [],
                                           "running": []}}
+        elif op == "stop":
+            if cmd["taskId"] in self.stop_fails:
+                res = {"ok": False, "error": self.stop_fails[cmd["taskId"]]}
+            else:
+                # The mod's note, which the engine keeps isMeta from the plugin: the rows' record of the stop.
+                append_row(self.sid, {"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()),
+                                      "isMeta": True, "origin": {"kind": "plugin", "name": "doperpowers"},
+                                      "message": {"role": "user", "content": [{"type": "text", "text": (
+                                          "Task %s, a background task, was stopped from %s: it is not running."
+                                          % (cmd["taskId"], "the desk" if cmd.get("from") == "desk"
+                                             else "outside the terminal"))}]}})
+                res = {"ok": True, "result": {"taskId": cmd["taskId"]}}
         elif op == "model":
             model = None if cmd.get("model") in (None, "default") else cmd["model"]
             self.post({"type": "model", "model": model, "effort": cmd.get("effort")})
@@ -293,6 +338,7 @@ class Checks(unittest.TestCase):
         self.mod.hold = 0.0
         self.mod.answer_steer = True
         self.mod.unknown = False
+        self.mod.stop_fails = {}
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -402,7 +448,8 @@ class Checks(unittest.TestCase):
                            ("interrupt", {"session": self.bridged.sid}),
                            ("spawn", {"checkout": self.root, "brief": "b"}),
                            ("retire", {"session": self.plain.sid}),
-                           ("resume", {"session": self.ended})):
+                           ("resume", {"session": self.ended}),
+                           ("stop", {"session": self.bridged.sid, "taskId": "bro1"})):
             self.refused(self.send(name, args), "read-only")
         self.assertEqual(self.mod.commands, [], "nothing reached the bridge")
         self.assertEqual(launches(self.claude), [], "nothing launched")
@@ -552,8 +599,77 @@ class Checks(unittest.TestCase):
                            ("decide", {"session": self.plain.sid, "decision": "allow",
                                        "digest": digest_of(self.plain.sid, "toolu_x", "Bash", {})}),
                            ("steer", {"session": self.ended, "text": "x"}),
-                           ("interrupt", {"session": self.ended})):
+                           ("interrupt", {"session": self.ended}),
+                           ("stop", {"session": self.plain.sid, "taskId": "bplain1"}),
+                           ("stop", {"session": self.ended, "taskId": "bended1"})):
             self.refused(self.send(name, args), "unsupported")
+        self.assertEqual(self.mod.commands, [], "nothing reached a bridge")
+
+    # ------------------------------------------------ stop a job (DC10)
+
+    def test_k_stop_a_running_job_the_main_loops_or_a_subagents(self):
+        """DX6 `stop`: a background shell of the main loop and a monitor of a
+        subagent, each the session's jobs hold as running, stopped through
+        the bridge (DX5 `stop`), answered `{taskId}`."""
+        start_job(self.bridged.sid, "bmain1")
+        start_job(self.bridged.sid, "magent1", kind="monitor", agent="a1b2c3")
+        for task in ("bmain1", "magent1"):
+            o = self.outcome(self.send("stop", {"session": self.bridged.sid, "taskId": task}))
+            self.assertEqual(o, {"state": "done", "result": {"taskId": task}})
+        self.assertEqual([(c["taskId"], c.get("from")) for c in self.mod.ops("stop")],
+                         [("bmain1", "desk"), ("magent1", "desk")])
+        # Stopped, recorded in the session's rows: a second Stop of either finds no running task.
+        for task in ("bmain1", "magent1"):
+            self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "unknown-task")
+        self.assertEqual(len(self.mod.ops("stop")), 2)
+
+    def test_k_a_task_the_jobs_do_not_hold_running_is_unknown_task_before_the_claim(self):
+        """G3: a task never started, one that ended, one of another session,
+        a subagent's call that started nothing: refused `unknown-task`, never
+        sent to the bridge, and the nonce never claimed."""
+        start_job(self.bridged.sid, "bdone1")
+        end_job(self.bridged.sid, "bdone1", "completed")
+        start_job(self.bridged.sid, "bkill1")
+        end_job(self.bridged.sid, "bkill1", "killed")
+        start_job(self.plain.sid, "bother1")
+        claims = []
+        real = rpcs.Ledger.put
+
+        def put(ledger, nonce, entry):
+            if "outcome" not in entry:
+                claims.append(nonce)
+            return real(ledger, nonce, entry)
+
+        with mock.patch.object(rpcs.Ledger, "put", put):
+            for task in ("bnever1", "bdone1", "bkill1", "bother1"):
+                self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "unknown-task")
+        self.assertEqual(claims, [], "refused before any claim")
+        self.assertEqual(self.mod.ops("stop"), [])
+
+    def test_k_a_malformed_task_id_is_bad_shape(self):
+        for task in ("", "a" * 65, "b 1", "b.1", None, 7):
+            self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "bad-shape")
+        self.refused(self.send("stop", {"session": self.bridged.sid}), "bad-shape")
+        self.assertEqual(self.mod.ops("stop"), [])
+
+    def test_k_an_engine_refusal_fails_the_rpc_in_its_words(self):
+        """G4: TaskStop's error is the RPC's `failed`, with the engine's own
+        message."""
+        start_job(self.bridged.sid, "bstuck1")
+        self.mod.stop_fails["bstuck1"] = "Task bstuck1 is not running (status: completed)"
+        o = self.outcome(self.send("stop", {"session": self.bridged.sid, "taskId": "bstuck1"}))
+        self.assertEqual(o, {"state": "failed", "error": {"code": "failed",
+                                                          "message": "Task bstuck1 is not running (status: completed)"}})
+
+    def test_k_a_retried_nonce_never_stops_twice(self):
+        start_job(self.bridged.sid, "bonce1")
+        nonce = codes.b64url(os.urandom(16))
+        first = self.send("stop", {"session": self.bridged.sid, "taskId": "bonce1"}, nonce=nonce)
+        self.assertEqual(self.outcome(first)["state"], "done")
+        self.r.reset()
+        self.send("stop", {"session": self.bridged.sid, "taskId": "bonce1"}, nonce=nonce)
+        self.assertEqual(len(results(self.r.opening(self.pid), nonce)), 1, "answered from the ledger")
+        self.assertEqual(len(self.mod.ops("stop")), 1, "TaskStop ran once")
 
     # ------------------------------------------------ execution, through DC2's protocol
 

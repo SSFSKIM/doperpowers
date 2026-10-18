@@ -1,0 +1,7 @@
+[user]
+	name = Devcloud Test
+	email = devcloud-test@example.com
+[init]
+	defaultBranch = main
+[url "http://fixtures:8083/"]
+	insteadOf = https://github.com/

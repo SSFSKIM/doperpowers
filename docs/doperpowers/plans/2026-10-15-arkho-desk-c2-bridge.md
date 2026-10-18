@@ -428,9 +428,12 @@ M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
 
 - **File:** `$SMINOS_HOME/bridge/<session-id>.json`, mode 0600, written whole
   (temporary name, then rename) whenever it changes:
-  `{"override": {"model": <id or null>, "effort": <effort or null>} | null, "delivered": {"<writer>": <seq>}}`.
+  `{"override": {"model": <id or null>, "effort": <effort or null>} | null, "delivered": {"<mark>": <seq>}}`.
+  **[#229]** A mark is `<project>/<writer>`, or the bare `<writer>` for a key naming no
+  project (`deliver`, below); the marks kept before keys named their project are bare,
+  and are kept as they are.
 - **Written from the mod's events:** `model` (sets `override`; null when both are null),
-  `delivered` with outcome `submitted` (raises the writer's seq), `resync` (replaces
+  `delivered` with outcome `submitted` (raises the key's mark), `resync` (replaces
   `override` and `delivered` with the mod's copy).
 - **[fw1] A failed write is not taken as kept.** The child holds the mod's copy in memory and
   writes it whole whenever it differs from what the file holds; what the file holds moves
@@ -463,7 +466,7 @@ M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
 | `interrupt` | M2 **[M2]** **[fw1]** **[record]** | `{from?}` | `{turnId, stopped: [<task ids>], running: [<task ids>]}`: `$.turn.abort` on the main turn, then `TaskStop` (`$.tool.call`) on each Bash call **attributable to that turn** and running at the abort whose result names the background task the abort moved it to (`running in background with ID: <id>`; their results awaited at most 3 s). **[fw1]** Attributable: a main-loop call made during that turn, or a call of a foreground subagent spawned in it (nested foreground subagents inherit their parent's turn); a background subagent's calls never are. **[fw1]** `running` names each task whose TaskStop failed (an `isError` result or a rejection): the interrupt is incomplete when it is not empty. Idle: `{turnId: null, stopped: [], running: []}`. **[record]** A plugin's abort leaves the model no marker (Esc leaves `[Request interrupted by user]`), and a Bash call it moved to the background reads as still running there: so once the stops settle the interrupt appends two user rows. **[marker]** The first is Esc's marker whole, `[Request interrupted by user]`, one text block: a transcript's reader knows a turn's interrupt by a row whose whole text is the marker and by nothing else (the engine's own readers, 2.1.300 `He`/`pQn`, and MAWS's `INTERRUPT_MARKERS`), so the earlier one-row shape, `[Request interrupted by user from the desk]` with the task lines after it, read as no interrupt. The second is the note: `The interrupt came from the desk.` (`from: "desk"`, which the daemon's RPC sends) or `The interrupt came from outside the terminal.`, then a line per task: stopped, `Task <id>, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`; in `running`, `… could not be stopped: it may still be running.` The engine keeps a plugin's user row `isMeta: true` with `origin: {kind: "plugin", name}` whatever the plugin asks (2.1.300 `m6r`; it refuses any other user row): the model reads both rows, and no reader takes the note for a prompt. A marker a hook refuses is followed by no note. Both must be in before the turn ends: a next turn already queued takes its messages before it waits for any hook (2.1.300 `ir`/`cn`), so an append in `turn.complete` would miss its first request. The engine waits for a Bash call's result after a turn abort, so each Bash call of the turn being interrupted is held in the `tool.call` hook, after its result, until both rows are in (at most 10 s, `INTERRUPT_HOLD_MS`): they are kept before the moved call's result row, and the next request carries them after that result, the marker then the note (live, 2.1.302). An interrupt with no Bash call running appends at once after the abort, racing only the turn's own unwinding. A second interrupt of a turn being interrupted leaves the first's record alone (the engine refuses its abort). Each row is named by a `row-seen` notice (door `note`). The transcript mirrors the rows on one line as `interrupt: [Request interrupted by user] <the note's text>` (a newline there draws as U+FFFD). Nothing for an idle interrupt or a refused abort |
 | `model` | M2 **[M2]** | `{model, effort?}` — `model` an id, a family alias, `"default"` or null; `effort` one of `low medium high xhigh max`, or null | `{model, effort}` now in force (null: the session's own). Rewritten on every **main-loop** `turn.step` request, subagents untouched; never `$.config.set`. A family alias (`haiku`, `sonnet`, `opus`, `fable`) is resolved through the session's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; one it does not map is refused, naming the id to use. Emits `model`; kept by the child |
 | `compact` | M2 **[M2]** | `{instructions?}` | During the main turn `{queued: true, turnId}`: held, and run inside that turn's `turn.complete` (a second while one is held keeps the first). Idle `{started: true}`: run at once. Either way the outcome follows on the stream as `compact` events carrying this command's `id` |
-| `deliver` | M2 **[M2]** **[fw1]** | `{key: {writer, seq}, text}` | `{submitted: true}` or `{duplicate: true}`. `text` is submitted with `$.prompt.submit({text, asUser: true})` (queued until the session is idle; not awaited). **The delivery key** is the log event's `(writer, seq)` — for a push carrying several events of one writer, the last. A key whose seq is at or below the highest already submitted for its writer is a duplicate and dropped (delivery goes per writer in seq order). The per-writer seqs are kept by the child across reloads; a /clear starts them anew (a new id is a new recipient). **[fw1]** The `delivered` event is emitted before the submission is made, so it is the next thing posted. Deduplication across a module reload is **best effort when the reload lands mid-submission**: a key submitted whose `delivered` had not reached the child is not kept, and a redelivery of it may submit again (a residual of at-least-once delivery, §3) |
+| `deliver` | M2 **[M2]** **[fw1]** **[#229]** | `{key: {project, writer, seq}, text}` | `{submitted: true}` or `{duplicate: true}`. `text` is submitted with `$.prompt.submit({text, asUser: true})` (queued until the session is idle; not awaited). **The delivery key** is the log event's `(writer, seq)` — for a push carrying several events of one writer, the last. A key whose seq is at or below the highest already submitted for its writer is a duplicate and dropped (delivery goes per writer in seq order). The per-writer seqs are kept by the child across reloads; a /clear starts them anew (a new id is a new recipient). **[fw1]** The `delivered` event is emitted before the submission is made, so it is the next thing posted. Deduplication across a module reload is **best effort when the reload lands mid-submission**: a key submitted whose `delivered` had not reached the child is not kept, and a redelivery of it may submit again (a residual of at-least-once delivery, §3). **[#229]** The key names the log's project (its id): every project numbers a writer's events on its own, and a writer id is per session, not per project, so one writer delivering to one session from two projects reaches seqs the other project already passed — keyed by `(writer, seq)` alone, those were dropped as duplicates and settled, lost with no trace. Deduplication is per writer **within a project**, against the mark `<project>/<writer>`; a key naming no project (a CLI older than this) is held to the bare `<writer>` mark, which is all such a CLI raised, so no kept mark is migrated, and a session whose bare mark is past a project's own count takes that project's scoped keys from the first. The CLI takes a `duplicate` as delivered (with scoped keys it was submitted before) but says it, to the sender and in `daemon.log`, naming the event and the session. A refusal (`refused`, below) keeps the key whole, project included, and the daemon reports only those naming its own project, or none |
 
 ##### Events (the mod's posts; the stream's lines)
 
@@ -474,7 +477,7 @@ M1 left them (with fw1/fw2). Changed rows are marked **[M2]**.
 | `model` | M2 **[M2]** | `model, effort` — the choice now in force (null: the session's own) |
 | `compact` / `start` | M2 **[M2]** | `id` — the `compact` command's id |
 | `compact` / `end` | M2 **[M2]** | `id`, and one of: `tokensBefore, tokensAfter` (null when the engine recorded none); `skip` (a hook vetoed it); `error` (the engine refused it, as during a turn) |
-| `delivered` | M2 **[M2]** (was reserved) | `key: {writer, seq}, outcome: "submitted" \| "duplicate" \| "refused"`, `reason?` — `refused` follows a `submitted` when the engine later dropped or rejected the prompt |
+| `delivered` | M2 **[M2]** (was reserved), **[#229]** | `key: {project?, writer, seq}` (the command's key, whole), `outcome: "submitted" \| "duplicate" \| "refused"`, `reason?` — `refused` follows a `submitted` when the engine later dropped or rejected the prompt |
 | `kept` | M2 **[fw1]** **[fw2]** (the child's own) | `ok: false, error` when writing `<id>.json` starts to fail (said once, however many batches it keeps failing; retried at the end of every batch); `ok: true` when a write works again after a failure |
 
 ##### Subscription (`GET /events`)
@@ -819,6 +822,44 @@ a full backlog refuses too). The child's listen backlog is 128.
 - **Verbs:** `sminos interrupt|steer|compact` exit 1 with that reason. Before this wave,
   interrupt said "idle: nothing to interrupt" with exit 0, compact ran at once, and steer
   was refused as idle.
+
+#### DC10 extension (stop a job; the desk composite's DC10, DX6 `stop`)
+
+- **Command `stop`** `{taskId, from?}` → `{taskId}`. `taskId` matches `[A-Za-z0-9_-]{1,64}`,
+  else `{ok: false, error: "stop needs a task id"}`. An id or a name the engine's agent list
+  (`$.agent.list()`) holds is refused, `"<id> is an agent, not a background shell or
+  monitor"`, before any call: TaskStop also ends an agent named by its id or its name. Then
+  `$.tool.call({tool: "TaskStop", task_id})`, idle or mid-turn, no turn aborted. An `isError`
+  result is `{ok: false, error}`, the engine's text without its `<tool_use_error>` wrapping
+  (`No task found with ID: <id>…`, `Task <id> is not running (status: <status>)`). On
+  success the mod appends one user row, kept `isMeta` with `origin: {kind: "plugin"}` as the
+  interrupt's are, named by a `row-seen` notice (door `note`) and mirrored on the transcript
+  line as `stop: <text>`: `Task <id>, a background task, was stopped from the desk: it is not
+  running.` (`from: "desk"`, which the daemon's RPC sends) or `… from outside the terminal: …`.
+  A refused or failed append is logged and the answer is still `ok` (the task is stopped). Not
+  a turn verb: it is answered while the turn state is unknown.
+- **Why the note** (engine 2.1.300, read for DC10): a plugin's `$.tool.call` runs the tool as
+  the main session (no `agentId`) and persists neither its call nor its result, and for a
+  task the main session owns, TaskStop marks it `killed` and `notified`, so no
+  task-notification follows. Without the note the model would wait on a notification that
+  never comes, and the rows would hold no word that the task stopped. TaskStop looks the task
+  up in the session-wide registry, and a main-session caller may stop any task, a
+  subagent's shell or monitor included; for a subagent's task the engine also queues a
+  `<status>stopped</status>` notification to that subagent, folded into its transcript at
+  its next tool batch (dropped if the agent ends first). TaskStop answers before the process
+  has died: SIGTERM to the tree at once, SIGKILL to the group after 1.5 s.
+- **DX4 reads the note** (`sminos_jobs.STOP_NOTE`) by the row's whole text, never by a line
+  found in it, since a steer's row is kept isMeta from the plugin too: the stop's note
+  exactly, or the interrupt's (its `The interrupt came from …` line, then only its
+  `… was then stopped: …` and `… could not be stopped: …` lines), each stopped line
+  `stopped` for its task, so a task an interrupt stopped no longer reads `running`. `steer`
+  refuses a text that would read as either note. A subagent's subscription takes the main
+  loop's record of its own jobs after its own rows (`jobs_body(also=…)`). The RPC's check
+  (`task_rows`) searches only the task's exact references (a whole JSON string, a
+  notification's `<task-id>`, the note's `Task <id>, `), so a short id reads no more rows
+  than name it.
+- **Verb** `sminos stop <member> <task>`: op `stop`; prints `stopped <member>'s background
+  task <id>`; the mod's refusal exits 1 with its reason; no bridge, exit 4 "no bridge".
 
 ## Decision Log
 

@@ -99,6 +99,20 @@ gates:
     timeout: 15
     paths: ["to-human/**", ".github/**"]
 
+  # The devcloud host: unit tests, then the image built and booted in containers
+  # against stand-ins (hosted runner's Docker). bun runs the guard's detector
+  # over the image's filesystem.
+  - name: devcloud
+    run: |
+      for i in 1 2 3; do
+        timeout 300 npm i -g bun && break
+        [ "$i" = 3 ] && exit 1; sleep 10
+      done
+      bash devcloud/tests/run.sh
+    timeout: 45
+    # devenv/: the integration tests set up this checkout's own devenv/ on the image.
+    paths: ["devcloud/**", "devenv/**", ".github/**"]
+
   - name: triaging-feedback
     run: cd application-agents/triaging-feedback && npm ci && npm test
     timeout: 10

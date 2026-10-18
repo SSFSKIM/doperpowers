@@ -20,6 +20,8 @@ pin them, with the rules spelled out in their `about`.
 import copy
 import errno
 import fcntl
+import json
+import mmap
 import os
 import re
 import stat
@@ -51,10 +53,28 @@ FORK_STARTED = "Fork started — processing in background"
 EXPIRED = "expired"
 EXPIRY_EVENTS = ("[Monitor expired after ", "[Monitor timed out")
 NOTIFICATION_PREAMBLE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+# The bridge's notes of tasks it stopped with TaskStop (hooks/mods/bridge.tsx): a plugin's TaskStop writes no row
+# of its own, and for a task of the main loop's the engine queues no notification, so the note the bridge appends
+# for the model is the rows' only word that the task stopped. The engine keeps the note's user row isMeta with
+# origin {kind: plugin}, as it keeps a steer's text, so a note is known by its row's whole text, never by a line
+# found inside it: a stop's note (stopNote) is the whole text; an interrupt's (interruptNote) is its origin line,
+# then one line per task the interrupt moved to the background, stopped or not. Only a stopped line is evidence,
+# and a text with any other line is no note. The bridge refuses a steer whose text would read as either.
+TASK_ID = r"([A-Za-z0-9_-]{1,64})"
+STOP_NOTE = re.compile(r"Task %s, a background task, was stopped from (?:the desk|outside the terminal): "
+                       r"it is not running\." % TASK_ID)
+INTERRUPT_ORIGINS = ("The interrupt came from the desk.", "The interrupt came from outside the terminal.")
+INTERRUPT_STOPPED = re.compile(r"Task %s, the Bash command the interrupt moved to the background, was then stopped: "
+                               r"it is not running, and no notification will come for it\." % TASK_ID)
+INTERRUPT_RUNNING = re.compile(r"Task %s, the Bash command the interrupt moved to the background, could not be "
+                               r"stopped: it may still be running\." % TASK_ID)
 ENDED = ("completed", "failed", "stopped", "exited")
 SPAWN_FIELDS = ("parentAgentId", "subagentType", "description", "name", "background", "model", "toolUseId")
 CALLS = ("Agent", "Task", "Bash", "Monitor", "TaskStop")
 OUTPUT_PATH = re.compile(r"Output is being written to: (\S+)")
+# The engine's request records (`api-request`, `api-request-blob`, `api-request-shape`): no row, and each repeats
+# the conversation, so a task's id is in most of them.
+REQUEST_RECORD = b'{"type":"api-request'
 ELEMENT = {name: re.compile(r"<%s>([\s\S]*?)</%s>" % (name, name))
            for name in ("task-id", "tool-use-id", "output-file", "status", "summary", "event")}
 
@@ -111,6 +131,29 @@ def _plain_notification(row, content):
         cut = text.find("\n\n<task-notification>")
         text = text[cut + 2:] if cut >= 0 else ""
     return text if text.startswith("<task-notification>") else None
+
+
+def _stop_records(row, content):
+    """(task, line) for each task the bridge's note in this plugin's user row says it stopped (STOP_NOTE)."""
+    origin = row.get("origin")
+    if row.get("type") != "user" or row.get("isMeta") is not True or not isinstance(origin, dict) \
+            or origin.get("kind") != "plugin":
+        return ()
+    text = content if isinstance(content, str) else _text(content)
+    m = STOP_NOTE.fullmatch(text)
+    if m:
+        return ((m.group(1), text),)
+    lines = text.split("\n")
+    if lines[0] not in INTERRUPT_ORIGINS:
+        return ()
+    out = []
+    for line in lines[1:]:
+        m = INTERRUPT_STOPPED.fullmatch(line)
+        if m:
+            out.append((m.group(1), line))
+        elif not INTERRUPT_RUNNING.fullmatch(line):
+            return ()
+    return out
 
 
 def _str(value):
@@ -184,6 +227,8 @@ class Ledger:
         plain = _plain_notification(row, content)
         if plain is not None:
             self._notification(plain, at)
+        for task, line in _stop_records(row, content):
+            self._said({"raw": "stopped", "at": at, "summary": line}, task=task)
         if isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -318,11 +363,16 @@ class Ledger:
                     if not (ev.get("result") and ev["raw"] != LAUNCHED and (background or ev.get("background")))]
         return fold(evidence)
 
-    def jobs_body(self, session_running):
+    def jobs_body(self, session_running, also=None):
+        """The loop's jobs. `also`, a ledger of the main loop's rows for a subagent's loop: its words on these
+        tasks count after the loop's own, since the bridge's record of a subagent's task it stopped is in the
+        main loop's transcript (the engine's own notice reaches the subagent only at its next tool batch)."""
         out = []
         for task, job in self.jobs.items():
-            o = fold([self.evidence[i] for i in self.by_task.get(task, ())],
-                     {"status": "running", "raw": "running", "at": job["startedAt"]})
+            said = [self.evidence[i] for i in self.by_task.get(task, ())]
+            if also is not None:
+                said += [also.evidence[i] for i in also.by_task.get(task, ())]
+            o = fold(said, {"status": "running", "raw": "running", "at": job["startedAt"]})
             entry = {"taskId": task, "kind": job["kind"], "toolUseId": job["toolUseId"], "startedAt": job["startedAt"],
                      "description": job["description"], "outputFile": self.outputs.get(task)}
             if "command" in job:
@@ -345,11 +395,12 @@ def file_facts(rows, size, mtime_ms):
             "lastAt": stamps[-1] if stamps else None}
 
 
-def derive(ledger, metas, *, bridge, files, parents, session_running):
+def derive(ledger, metas, *, bridge, files, parents, session_running, also=None):
     """DX4's widened `subagents` body. `ledger` is the loop's; `metas` [{agentId, meta}] in order (one entry
     each); `bridge` the bridge's agents (each with `running`), or None for no bridge; `files` {agentId: facts}
     for the agent files there are; `parents` {agentId: Ledger, or None when that agent's transcript is gone or
-    unreadable}; `session_running` whether the session's process runs."""
+    unreadable}; `session_running` whether the session's process runs; `also` the main loop's words on a
+    subagent loop's tasks (Ledger.jobs_body)."""
     held = {a.get("agentId"): a for a in bridge or () if isinstance(a, dict)}
     meta_of = {m["agentId"]: m["meta"] for m in metas}
     done, busy = {}, set()
@@ -394,8 +445,109 @@ def derive(ledger, metas, *, bridge, files, parents, session_running):
         done[agent_id] = e
         return e
 
-    return {"subagents": [entry(m["agentId"]) for m in metas], "jobs": ledger.jobs_body(session_running),
+    return {"subagents": [entry(m["agentId"]) for m in metas], "jobs": ledger.jobs_body(session_running, also),
             "mcp": [{"name": n} for n in ledger.mcp]}
+
+
+def _lines_holding(mm, needle):
+    """The (start, end) of each line of `mm` that holds `needle`, found at the scan's speed rather than a row's
+    parse."""
+    out, at = set(), 0
+    while True:
+        i = mm.find(needle, at)
+        if i < 0:
+            return out
+        start = mm.rfind(b"\n", 0, i) + 1
+        end = mm.find(b"\n", i)
+        end = len(mm) if end < 0 else end
+        out.add((start, end))
+        at = end + 1
+
+
+def _task_calls(row, task):
+    """The calls a row ties to `task` as a task: the tool_results of a row whose toolUseResult started it
+    (backgroundTaskId, taskId), and a TaskStop call naming it (input.task_id)."""
+    msg = row.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    tur = row.get("toolUseResult")
+    started = isinstance(tur, dict) and task in (tur.get("backgroundTaskId"), tur.get("taskId"))
+    out = set()
+    for block in content if isinstance(content, list) else ():
+        if not isinstance(block, dict):
+            continue
+        if started and block.get("type") == "tool_result" and _str(block.get("tool_use_id")):
+            out.add(block["tool_use_id"])
+        elif block.get("type") == "tool_use" and block.get("name") == "TaskStop" and _str(block.get("id")) \
+                and isinstance(block.get("input"), dict) and block["input"].get("task_id") == task:
+            out.add(block["id"])
+    return out
+
+
+def task_rows(path, task):
+    """The rows of one loop's transcript that can say what task `task` is and how it stands, in file order: each
+    row naming it exactly (its start's result, a notification, a `task_status`, a TaskStop call, a bridge's note),
+    then each row naming a call those rows tie to the task (the start's own call, the TaskStop's result). Fed to a
+    Ledger, they give the task the status the whole file would; a short id
+    reads no more rows than it names. The file is searched, not parsed: only those rows are, and never the engine's
+    request records, which repeat the conversation (most of a long transcript's bytes) and hold no row. Empty
+    when the file never names the task or cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            if os.fstat(f.fileno()).st_size == 0:
+                return []
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    except (OSError, ValueError):
+        return []
+    try:
+        rows = {}
+
+        def take(spans):
+            for span in spans - rows.keys():
+                line = mm[span[0]:span[1]]
+                row = None
+                if not line.startswith(REQUEST_RECORD):
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        pass
+                rows[span] = row if isinstance(row, dict) and _str(row.get("uuid")) else None
+
+        # The task's exact references, never its bare id, which a short one shares with most rows: a whole JSON
+        # string (backgroundTaskId, taskId, task_id), a notification's element, a bridge's note (STOP_NOTE).
+        for needle in ('"%s"', "<task-id>%s</task-id>", "Task %s, "):
+            take(_lines_holding(mm, (needle % task).encode()))
+        ids = set()
+        for row in [r for r in rows.values() if r is not None]:
+            ids |= _task_calls(row, task)
+        for i in sorted(ids):
+            take(_lines_holding(mm, ('"%s"' % i).encode()))
+        return [rows[span] for span in sorted(rows) if rows[span] is not None]
+    finally:
+        mm.close()
+
+
+def running_task(main, task):
+    """Whether `task` is a background shell or monitor the session's jobs index holds as running, its process
+    running: the main loop's (`main`, its transcript) or any subagent's, each loop's rows read as the plane reads
+    them (the job's start, then its notifications, `task_status` and TaskStop through the one table)."""
+    if not main.endswith(".jsonl"):
+        return False
+    agents = os.path.join(main[:-len(".jsonl")], "subagents")
+    try:
+        loops = [main] + sorted(os.path.join(agents, n) for n in os.listdir(agents)
+                                if n.startswith("agent-") and n.endswith(".jsonl"))
+    except OSError:
+        loops = [main]
+    top = None
+    for path in loops:
+        ledger = Ledger()
+        ledger.feed(task_rows(path, task))
+        if top is None:
+            top = ledger
+        if task in ledger.jobs:
+            body = ledger.jobs_body(True, None if ledger is top else top)
+            return any(j["taskId"] == task and j["status"] == "running" for j in body)
+    return False
 
 
 def _opened_path(fd):

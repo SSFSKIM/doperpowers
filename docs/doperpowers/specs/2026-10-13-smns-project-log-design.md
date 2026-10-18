@@ -200,6 +200,41 @@ terminal session the human opened, so reconciliation re-joins it only as
 a different process (another pid, or a later start). A resume re-joins,
 and the retire is not undone a moment later.
 
+**Hand-off.** Sending an interactive session to the background
+(`/background`, the agents view's ←) does not move its process: the
+harness starts a job with `--resume <transcript> --fork-session` — a new
+session id, a new process, a new bridge endpoint — lets the interactive
+process exit, and appends `{"type": "continued-in", "continuedInSessionId":
+<new>}` to the old transcript (its own `/resume` hides the old session by
+it). The job is the same member: the old session is retired with `reason`
+`continued` and `to` the new one, in its own file, and the projection
+reads the new session as continuing it (`former`): what it has not set of
+its own — alias, spawner, in-charge line, status, worktree — it carries on,
+its chat cursor is copied, a seat that held the old session moves to it,
+and a tag, `alias#short`, or full id naming the old session resolves to
+it. The link is recorded when the job joins while the old process still
+exits (the usual case: observed, it outlives the job's start by half a minute), else
+when the old one's membership would end, and for a seat at every
+reconciliation while the session it holds no longer runs (the harness
+writes the record only once the job has started, so the job may join
+first). The cursor is copied and the seat moved before the retirement is
+recorded, so a hand-off cut short (a seat lock another command holds, a
+hook out of time) leaves the old session joined and is done again whole.
+The record is read as the harness reads it, the latest one with no turn
+after it, so an old session resumed and worked in again is its own: it
+re-joins, and a `joined` of its own after the `continued` retirement ends
+the link, the job keeping what its own events hold. A `continued`
+retirement holds against the exiting process as a `retire` does.
+
+**Names the harness makes up.** The alias of a seat-less session is its
+harness name, unless that name is one the harness made up (`nameSource`
+`derived`: the directory's name and one random byte, drawn again by every
+process; `auto`: a title it wrote; `collision`: a given name it suffixed)
+and the log already holds an alias for the member. A resume therefore
+keeps `maws-4d` rather than becoming `maws-3f`, and a job keeps the alias
+of the session it continues rather than its generated title. A name
+someone gives (`/rename`, `--name`) renames the member as before.
+
 There is no host seat. A seat that spawns another is recorded as its
 spawner (§6) and nothing more: it does not integrate the other's work, is
 not woken by its reports, and retiring it leaves the other running. The
@@ -1788,6 +1823,23 @@ Dispatch scripts: one `--brief` each.
   sminos's projection and the desk's, passes over a kind it does not know,
   and the hub verifies any kind.
   Date/Author: 2026-10-17, the desk's session-title change.
+
+- Decision: a session sent to the background is the member it was (§2,
+  Hand-off), linked by the harness's own `continued-in` record and carried
+  in the log as a `retired` with `reason` `continued` and `to`; and a name
+  the harness made up never replaces an alias the log holds. The owner saw
+  a session's alias and socket change on every `/background` (MAWS,
+  2026-10-17: `maws-fe` became "GUI AI agent workspace charter", a new
+  session, and the old one was retired `ended`), and a resume rename a
+  member (`maws-4d` → `maws-3f`, same session). Rejected: a member id
+  apart from the session id, which would re-key every record sminos and
+  the desk keep per session for a case the projection can fold; and a
+  stable socket path per member, which would let one endpoint answer for
+  two processes while both run. A retirement, not a new kind,
+  so an older reader (the desk's projection) reads the old session as
+  retired and the job as a member of its own, which is what it reads now.
+  The desk folding the two is MAWS's follow-up.
+  Date/Author: 2026-10-17, the hand-off change.
 
 ## Outcomes & Retrospective
 

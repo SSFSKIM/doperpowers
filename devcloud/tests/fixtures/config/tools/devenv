@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""The stand-in devenv runner (the real one is the person's, in their
+configuration repository). It does the part boot step 12 relies on:
+`up <name> --url <url> [--ref <ref>]` clones into ~/src/<name> (borrowing from
+DEVENV_MIRROR_DIR/<owner>/<repo>.git when it is there), checks out the ref and
+runs devenv/setup.sh as the real runner would; `show <name>` lists the
+project's repositories. Every call is logged with the mirror directory it saw."""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+state = pathlib.Path.home() / ".local/state/devcloud-test"
+state.mkdir(parents=True, exist_ok=True)
+with open(state / "devenv.log", "a") as log:
+    log.write(f"{' '.join(sys.argv[1:])} | mirror={os.environ.get('DEVENV_MIRROR_DIR', 'unset')}\n")
+command, name, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+checkout = pathlib.Path.home() / "src" / name
+known = state / f"devenv-{name}.json"
+if command == "show":
+    print(known.read_text())
+    sys.exit(0)
+opts = dict(zip(args[::2], args[1::2]))
+url = opts["--url"]
+if not checkout.exists():
+    owner, repo = url.removesuffix(".git").split("/")[-2:]
+    mirror = pathlib.Path(os.environ.get("DEVENV_MIRROR_DIR", "/nonexistent")) / owner / f"{repo}.git"
+    borrow = ["--reference", str(mirror)] if mirror.is_dir() else []
+    subprocess.run(["git", "clone", "--quiet", *borrow, url, str(checkout)], check=True)
+    if "--ref" in opts:
+        subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet", opts["--ref"], "--"], check=True)
+known.write_text(json.dumps({"repos": [{"name": name, "url": url, "path": str(checkout)}]}))
+sys.exit(subprocess.run(["bash", "devenv/setup.sh"], cwd=checkout).returncode)

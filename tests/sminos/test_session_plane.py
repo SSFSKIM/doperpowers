@@ -213,6 +213,11 @@ class Rows:
         return self.row(type="attachment", attachment={"type": "queued_command", "prompt": prompt,
                                                        "commandMode": "task-notification"})
 
+    def plugin_note(self, text):
+        """A user row a plugin appended: kept isMeta with origin {kind: plugin}."""
+        return self.row(type="user", isMeta=True, origin={"kind": "plugin", "name": "doperpowers"},
+                        message={"role": "user", "content": [{"type": "text", "text": text}]})
+
     def task_status(self, task, status, path=None, kind="local_bash"):
         return self.row(type="attachment", attachment={"type": "task_status", "taskId": task, "taskType": kind,
                                                        "description": "", "status": status, "deltaSummary": None,
@@ -1299,6 +1304,31 @@ class Jobs(Session):
         self.assertEqual(b.errors + cb.errors, [])
 
     # ---------------------------------------------------- an agent's subscription
+
+    def test_a_job_the_bridge_stopped_reads_stopped_from_its_note_the_main_loops_and_a_subagents(self):
+        """DC10: a plugin's TaskStop writes no row, so the bridge's note in the
+        main loop's rows is the word: it ends a main-loop job on the main
+        subscription, and a subagent's job on that agent's subscription, whose
+        own rows hear of it only at the agent's next tool batch."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_A", description="a", run_in_background=True),
+                   r.result("toolu_A", {"status": "async_launched"}),
+                   r.call("Bash", "toolu_bm", command="main's", run_in_background=True),
+                   r.result("toolu_bm", {"backgroundTaskId": "bm"}))
+        self.write(r.row(type="user", message={"role": "user", "content": "the brief"}),
+                   r.call("Monitor", "toolu_ma", command="agent's"),
+                   r.result("toolu_ma", {"taskId": "ma", "timeoutMs": 1, "persistent": False}), agent="aA")
+        self.fake.meta("aA", {"toolUseId": "toolu_A", "requestShape": "background"})
+        main, mb = self.subscribe(bridge=False)
+        self.assertEqual(by_task(self.opened(main, mb))["bm"]["status"], "running")
+        sa, ab = self.subscribe(agent="aA", bridge=False)
+        self.assertEqual(by_task(self.opened(sa, ab))["ma"]["status"], "running")
+        self.write(r.plugin_note("Task bm, a background task, was stopped from the desk: it is not running."),
+                   r.plugin_note("Task ma, a background task, was stopped from the desk: it is not running."))
+        self.assertTrue(self.look(main, mb, lambda: by_task(mb.body)["bm"]["status"] == "stopped"))
+        self.assertTrue(self.look(sa, ab, lambda: by_task(ab.body)["ma"]["status"] == "stopped"),
+                        "the agent's job, from the main loop's note")
+        self.assertNotIn("ma", by_task(mb.body), "a subagent's job is not the main loop's")
 
     def test_an_agents_subscription_carries_its_own_entry_and_jobs(self):
         """Two derivations: its entry from its parent loop's rows, its jobs and
