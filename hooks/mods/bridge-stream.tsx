@@ -187,6 +187,7 @@ export function forgetLive() {
   // Its agents were set aside first (bridge-agents.tsx, forgetAgents).
   state.agents.clear()
   state.submissions = []
+  state.deliveredRows = []
   state.refusals = []
   state.delivered.clear()
   state.loopTurns.clear()

@@ -157,6 +157,9 @@ function harness(
   const disk: Record<string, string[]> = {}
   const rowReads: { loop: string | null; after: string | null; socketPath?: string }[] = []
   let session = SID
+  /** What `$.session.messages({ as: "api" })` answers when a test set it; and how many times it was read. */
+  let apiConversation: unknown[] | undefined
+  let apiReads = 0
   let listedAgents = options.agents ?? []
   /** How many times the mod read `$.agent.list()`. */
   let agentLists = 0
@@ -167,7 +170,14 @@ function harness(
       id: async () => session,
       model: async () => 'claude-haiku',
       version: async () => ({ version: '2.1.300' }),
-      messages: async () => options.messages ?? [],
+      // As the requests read it (`as: "api"`): the mod's appended rows, unless a test rewound it.
+      messages: async (args?: { as?: string }) => {
+        if (args?.as !== 'api') {
+          return options.messages ?? []
+        }
+        apiReads++
+        return apiConversation ?? conversation.map((m) => ({ role: 'user', content: m.content }))
+      },
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
       append: (args: unknown) => {
         calls.push({ op: 'append', args })
@@ -460,6 +470,8 @@ function harness(
     step,
     setSession: (id: string) => (session = id),
     setAgents: (agents: Record<string, unknown>[]) => (listedAgents = agents),
+    setApiConversation: (messages: unknown[] | undefined) => (apiConversation = messages),
+    apiReads: () => apiReads,
     agentLists: () => agentLists,
   }
 }
@@ -1532,6 +1544,130 @@ describe('deliver', () => {
     expect(await h.command({ op: 'deliver', key: { project: 'p1', writer: 'mac/s2', seq: 4 }, text: 'p1 4' })).toMatchObject({ result: { duplicate: true } })
     expect(await h.command({ op: 'deliver', key: { project: 'p3', writer: 'mac/s2', seq: 4 }, text: 'p3 4' })).toMatchObject({ result: { submitted: true } })
     expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual(['p2 6', 'p3 4'])
+  })
+
+  test("busy: the delivery goes into the running turn as a row, read at its next request; `submitted`, then `entered` with the row; mirrored; nothing submitted", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const key = { project: 'p1', writer: 'mac/s1', seq: 3 }
+    const text = '[sminos chat p mac/s1:3 from peer → @you]\nthe build is green'
+    expect(await h.command({ op: 'deliver', key, text })).toMatchObject({ ok: true, result: { submitted: true } })
+    await h.settle()
+    expect(h.calls).toEqual([{ op: 'append', args: { message: { type: 'user', content: [{ type: 'text', text }] } } }])
+    expect(h.ofType('delivered').map((e) => [e.key, e.outcome, e.uuid])).toEqual([
+      [key, 'submitted', undefined],
+      [key, 'entered', 'row-1'],
+    ])
+    expect(h.logs).toContain('delivered: [sminos chat p mac/s1:3 from peer → @you] the build is green')
+    // The next request carries it.
+    await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [])
+    expect(h.requests.at(-1)!.map((m) => m.content[0]!.text)).toEqual([text])
+  })
+
+  test('busy: a turn that answers before any request read the delivered row wakes the session once; one a request read wakes nothing', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'unread' })
+    await h.complete('t1')
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => c.args)).toEqual([{ text: STEER_WAKE, asUser: true }])
+    await h.turn('t2')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 2 }, text: 'read' })
+    await h.step({ turnId: 't2', index: 1, model: 'm', messageCount: 3 }, [])
+    await h.complete('t2')
+    expect(h.calls.filter((c) => c.op === 'submit').length).toBe(1)
+  })
+
+  test('busy: an append the engine refuses is `refused` with the key whole, and wakes nothing', async () => {
+    const h = harness({ denyAppend: 'blocked' })
+    await h.ready()
+    await h.turn('t1')
+    const key = { project: 'p1', writer: 'mac/s1', seq: 4 }
+    expect(await h.command({ op: 'deliver', key, text: 'blocked' })).toMatchObject({ ok: true, result: { submitted: true } })
+    await h.settle()
+    await h.complete('t1')
+    expect(h.ofType('delivered').map((e) => [e.key, e.outcome, e.reason])).toEqual([
+      [key, 'submitted', undefined],
+      [key, 'refused', 'refused by a hook'],
+    ])
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
+  test("a delivered row an Esc rewound past (the prompt handed back, the next one sent where it stood) goes in again as the next turn starts, named `entered` again", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const key = { writer: 'mac/s1', seq: 5 }
+    await h.command({ op: 'deliver', key, text: 'the delivered words' })
+    await h.complete('t1', 'aborted')
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+    h.setApiConversation([{ role: 'user', content: [{ type: 'text', text: 'the prompt, edited' }] }])
+    await h.turn('t2')
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(2)
+    expect(h.ofType('delivered').map((e) => [e.outcome, e.uuid])).toEqual([
+      ['submitted', undefined],
+      ['entered', 'row-1'],
+      ['entered', 'row-2'],
+    ])
+    // Given in t2, it is t2's: a turn that answers lets it go, and the next turn reads nothing.
+    await h.step({ turnId: 't2', index: 1, model: 'm', messageCount: 3 }, [])
+    await h.complete('t2')
+    const reads = h.apiReads()
+    await h.turn('t3')
+    await h.settle()
+    expect(h.apiReads()).toBe(reads)
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(2)
+  })
+
+  test("a row given again as a turn starts is not in that turn's first request: a turn that answers in one request wakes once", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 8 }, text: 'given again' })
+    await h.complete('t1', 'aborted')
+    h.setApiConversation([])
+    await h.turn('t2')
+    await h.settle()
+    // The first request was built as the turn began, before the row went in.
+    await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 2 }, [])
+    await h.complete('t2')
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE])
+  })
+
+  test('a delivered row an interrupted turn kept (Esc mid-tool) is let go at the next turn, not given again', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 6 }, text: 'kept words' })
+    await h.complete('t1', 'aborted')
+    h.setApiConversation([{ role: 'user', content: [{ type: 'text', text: 'prompt' }, { type: 'text', text: 'kept words' }] }, { role: 'user', content: 'next' }])
+    await h.turn('t2')
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(1)
+    await h.complete('t2', 'aborted')
+    await h.turn('t3')
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(1)
+    expect(h.apiReads()).toBe(1)
+  })
+
+  test("idle: a prompt the engine drops because the human stopped the session goes in as a row, starting no turn; it is checked when the next turn starts", async () => {
+    const h = harness({ submitDrops: 'the session was stopped and nobody has sent input since' })
+    await h.ready()
+    const key = { writer: 'mac/s1', seq: 7 }
+    await h.command({ op: 'deliver', key, text: 'while stopped' })
+    await h.settle()
+    expect(h.calls.map((c) => c.op)).toEqual(['submit', 'append'])
+    expect(h.ofType('delivered').map((e) => [e.outcome, e.uuid])).toEqual([
+      ['submitted', undefined],
+      ['entered', 'row-2'],
+    ])
+    await h.turn('t1')
+    await h.settle()
+    expect(h.apiReads()).toBe(1)
+    expect(h.calls.map((c) => c.op)).toEqual(['submit', 'append'])
   })
 
   test('a deliver with no key or no text is refused', async () => {

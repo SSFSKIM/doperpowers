@@ -48,9 +48,12 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * moved to the background, and before the turn ends appends Esc's marker and
  * a note saying so;
  * `model` rewrites the main loop's requests;
- * `compact` runs between turns; `deliver` submits a log event as the human's
- * words, once per key. What must outlive a module reload (the model chosen,
- * the keys delivered) the child keeps on disk: its hello hands it back.
+ * `compact` runs between turns; `deliver` gives a log event as the human's
+ * words, once per key: into the running turn as a row, as a steer, else as a
+ * prompt of its own (a row when the human stopped the session), and a row an
+ * Esc rewound past is given again. What must outlive a module reload (the
+ * model chosen, the keys delivered) the child keeps on disk: its hello hands
+ * it back.
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
  * child and the session it serves, control, and the wait for a decision. The
@@ -559,13 +562,28 @@ async function runCompaction($: EngineInterface, request: { id: string; instruct
 }
 
 /**
- * A log event for this session, submitted as the human's words: queued until
- * the session is idle. Delivery is at least once and goes in seq order per
- * writer within a project, so a key at or below its mark (the last submitted
- * for that writer in that project) is a repeat, and dropped. Every project
- * numbers a writer's events on its own, so the mark is `<project>/<writer>`;
- * a key naming no project (a CLI older than the project in the key) is held
- * to the writer's bare mark, which is all such a CLI ever raised.
+ * Why the engine drops a plugin's prompt when the human stopped the session
+ * (2.1.300 `zBt`, `k_e`): Esc, or the stop-agents chord, empties the queue of
+ * plugin prompts, and refuses each new one until the human sends input. Any
+ * other drop is a hook's or the engine's own decision.
+ */
+const STOPPED_DROPS = new Set(['the prompt was removed from the queue before it ran', 'the session was stopped and nobody has sent input since'])
+
+/**
+ * A log event for this session, as the human's words. While the main turn
+ * runs it goes in as a user row, read at the loop's next request (its next
+ * tool round), as a steer does; idle, it is submitted as a prompt, a turn of
+ * its own. A prompt the engine drops because the human stopped the session
+ * goes in as a row instead, which starts no turn: the model reads it with the
+ * human's next prompt. Either way `entered` names its row once it is kept,
+ * and `refused` follows `submitted` when nothing could be.
+ *
+ * Delivery is at least once and goes in seq order per writer within a
+ * project, so a key at or below its mark (the last submitted for that writer
+ * in that project) is a repeat, and dropped. Every project numbers a writer's
+ * events on its own, so the mark is `<project>/<writer>`; a key naming no
+ * project (a CLI older than the project in the key) is held to the writer's
+ * bare mark, which is all such a CLI ever raised.
  */
 function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
   const { project, writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { project?: unknown; writer?: unknown; seq?: unknown }
@@ -586,27 +604,141 @@ function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
   }
   state.delivered.set(mark, delivery.seq)
   emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
+  if (state.mainTurn !== undefined) {
+    void appendDelivery($, delivery, text, state.mainTurn)
+    return { ok: true, result: { submitted: true } }
+  }
   // Its row, once kept, is named `entered` (bridge-rows.tsx, enteredRow).
   const submission = { key: delivery, text }
   state.submissions.push(submission)
   if (state.submissions.length > SUBMISSIONS_KEPT) {
     state.submissions.shift()
   }
-  const refused = (reason: string) => {
-    state.submissions = state.submissions.filter((s) => s !== submission)
-    $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
-    emit({ type: 'delivered', key: delivery, outcome: 'refused', reason })
-  }
+  const forget = () => (state.submissions = state.submissions.filter((s) => s !== submission))
   // Not awaited: it resolves when the prompt's turn starts, after any running turn.
   void $.prompt.submit({ text, asUser: true }).then(
     (entered) => {
-      if (entered.drop !== undefined) {
-        refused(entered.drop)
+      if (entered.drop === undefined) {
+        return
+      }
+      forget()
+      if (STOPPED_DROPS.has(entered.drop)) {
+        $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} was not taken as a prompt (${entered.drop}): it goes in as a row`, { to: 'debug' })
+        void appendDelivery($, delivery, text, undefined)
+      } else {
+        refuseDelivery($, delivery, entered.drop)
       }
     },
-    (error: unknown) => refused(message(error)),
+    (error: unknown) => {
+      forget()
+      refuseDelivery($, delivery, message(error))
+    },
   )
   return { ok: true, result: { submitted: true } }
+}
+
+/** A delivery that could not enter: `refused`, after its `submitted`, with the engine's reason. */
+function refuseDelivery($: EngineInterface, delivery: DeliveryKey, reason: string) {
+  const mark = delivery.project === undefined ? delivery.writer : `${delivery.project}/${delivery.writer}`
+  $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
+  emit({ type: 'delivered', key: delivery, outcome: 'refused', reason })
+}
+
+/**
+ * A delivery put in the conversation as a user row, read at the loop's next
+ * request, and named `entered` once it is in. The terminal does not draw an
+ * appended row, so a transcript line mirrors it. In a running main turn
+ * (`turnId`) it is bound to that turn as a steer is (settleSteers): a turn
+ * that answers before any request read it wakes once. Appended while idle,
+ * it waits for the next turn. Either way it is held until the conversation
+ * is known to keep it (recheckDeliveries).
+ */
+async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, turnId: string | undefined) {
+  const pending: Steer | undefined = turnId === undefined ? undefined : { turnId, isAppended: false, isRead: false }
+  if (pending !== undefined) {
+    state.steers.push(pending)
+  }
+  const settled = (isIn: boolean) => {
+    if (pending === undefined) {
+      return
+    }
+    if (isIn) {
+      pending.isAppended = true
+    } else {
+      state.steers = state.steers.filter((s) => s !== pending)
+    }
+    settleSteers($, pending.turnId)
+  }
+  let stored: Awaited<ReturnType<EngineInterface['session']['append']>>
+  try {
+    stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+  } catch (error) {
+    settled(false)
+    refuseDelivery($, delivery, message(error))
+    return
+  }
+  if (stored.deny !== undefined) {
+    settled(false)
+    refuseDelivery($, delivery, stored.deny)
+    return
+  }
+  state.deliveredRows.push({ key: delivery, text, ...(turnId !== undefined && { turnId }) })
+  // The hook does not see the plugin's own append: named once it is in.
+  noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+  emit({ type: 'delivered', key: delivery, outcome: 'entered', uuid: stored.uuid })
+  // One line: the transcript line draws a newline as U+FFFD.
+  $.ui.log(`delivered: ${text.replaceAll('\n', ' ')}`)
+  settled(true)
+}
+
+/**
+ * The delivered rows that a main turn which did not answer, or the idle
+ * session, left behind, checked as the next main turn starts against the
+ * conversation its requests read. An Esc before the model answered hands the
+ * human's prompt back to the input box, and the prompt sent next goes in
+ * where that one stood: a row given after it is left on a branch no request
+ * reads. One the conversation lacks is appended again, in this turn (read
+ * from its second request, or by the wake when it answers in one); one it
+ * holds is let go. A row of a turn that answered is in the conversation for
+ * good, so its turn's end lets it go (mainTurnEnded).
+ */
+async function recheckDeliveries($: EngineInterface, turnId: string) {
+  const due = state.deliveredRows.filter((r) => r.turnId !== turnId)
+  if (due.length === 0) {
+    return
+  }
+  let conversation: unknown
+  try {
+    conversation = await $.session.messages({ as: 'api' })
+  } catch (error) {
+    conversation = message(error)
+  }
+  // Unread, the rows wait for the next turn's check.
+  if (!Array.isArray(conversation)) {
+    $.ui.log(`bridge: the conversation was not read to check ${due.length} delivered rows: ${JSON.stringify(conversation)}`, { to: 'debug' })
+    return
+  }
+  const texts = userTexts(conversation)
+  state.deliveredRows = state.deliveredRows.filter((r) => !due.includes(r))
+  for (const r of due) {
+    if (!texts.some((t) => t.includes(r.text))) {
+      $.ui.log(`bridge: the delivery ${r.key.writer}:${r.key.seq} is not in the conversation this turn reads (an Esc rewound past it): delivered again`, { to: 'debug' })
+      await appendDelivery($, r.key, r.text, turnId)
+    }
+  }
+}
+
+/** The text blocks of a conversation's user messages, as `$.session.messages({ as: "api" })` answers it. */
+function userTexts(messages: readonly { role?: unknown; content?: unknown }[]): string[] {
+  return messages.flatMap((m) =>
+    m?.role !== 'user'
+      ? []
+      : typeof m.content === 'string'
+        ? [m.content]
+        : Array.isArray(m.content)
+          ? m.content.flatMap((b: { type?: unknown; text?: unknown }) => (b?.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
+          : [],
+  )
 }
 
 /**
@@ -652,13 +784,18 @@ async function awaitDecision($: EngineInterface, r: Request, signal: AbortSignal
 
 /**
  * The end of the main turn: a compaction held for it, then the turn's steers
- * settled (settleSteers): when it answered before any request read one, one
- * wake (the row is in the conversation already), as a prompt typed mid-turn
- * would start the next turn — at once, or once the last of its pending
- * appends settles. An interrupted or failed turn wakes nothing.
+ * and delivered rows settled (settleSteers): when it answered before any
+ * request read one, one wake (the row is in the conversation already), as a
+ * prompt typed mid-turn would start the next turn — at once, or once the
+ * last of its pending appends settles. An interrupted or failed turn wakes
+ * nothing; its delivered rows are checked when the next turn starts
+ * (recheckDeliveries).
  */
 async function mainTurnEnded($: EngineInterface, turnId: string, reason: string) {
   state.interrupts.delete(turnId)
+  if (reason === 'answer') {
+    state.deliveredRows = state.deliveredRows.filter((r) => r.turnId !== turnId)
+  }
   for (const s of state.steers) {
     if (s.turnId === turnId) {
       s.ended = reason
@@ -928,10 +1065,13 @@ export function registerBridge(on: On) {
     return next(e)
   })
 
-  on('turn.start', { turnId: /^/ }, (_, e, next) => {
+  on('turn.start', { turnId: /^/ }, ($, e, next) => {
     if (e.agentId === undefined) {
       state.mainTurn = e.turnId
       state.isTurnUnknown = false
+      if (state.deliveredRows.length > 0) {
+        void recheckDeliveries($, e.turnId)
+      }
     }
     state.loopTurns.set(loopKey(e.agentId), e.turnId)
     // A loop whose spawn the bridge did not see (a forked skill): the list names it.
@@ -998,9 +1138,12 @@ export function registerBridge(on: On) {
     }
     if (isMain) {
       state.steps++
-      // This request carries every row of its turn appended before it.
+      // A request after the turn's first carries every row of its turn
+      // appended before it. The first carries the conversation as the turn
+      // began: a row appended between turn.start and it is not in it (live,
+      // 2.1.302), so that row waits for the second request, or the wake.
       for (const s of state.steers) {
-        if (s.isAppended && s.turnId === e.turnId) {
+        if (e.index > 0 && s.isAppended && s.turnId === e.turnId) {
           s.isRead = true
         }
       }
