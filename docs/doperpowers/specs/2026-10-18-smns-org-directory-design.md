@@ -12,7 +12,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 - [x] (2026-10-18 18:33Z) M2 — Hub (MAWS): the `org` frame, follow-only hellos, machine projects at the Registry, machines' online state (MAWS `desk-org-hub` b982d762f, fixes 151c9957d, 3165ebafb; review clean; PR SSFSKIM/MAWS#54, gate run 39153008591)
 - [x] (2026-10-18 19:51Z) M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns` (715537cd, fix a607fccc; ci-kit 91492fd on `smns-org-directory`; review clean)
 - [x] (2026-10-18 21:26Z) M4 — `sminos join`, `session_project`, moves when a resolved project changes, the launch directory (§1c) (1197ad58, fix 8696668f; review clean)
-- [ ] M5 — Addressing across the org and the copy in the sender's log
+- [x] (2026-10-18 22:26Z) M5 — Addressing across the org and the copy in the sender's log (96eea875, fix 6e571b59; review clean)
 - [ ] M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid
 - [ ] M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release
 
@@ -431,6 +431,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Observation (M4): `lifecycle`'s positional `project` parameter collided with a `retired` event's `project` field (a `TypeError` at the first `moved` write); renamed `log_project`. Editing `run-sminos-tests.sh` while it runs breaks that run with a syntax error yet the wrapper exits 0.
   Evidence: task-4 report.
 
+- Observation (M5): the old early "one message, one project" check resolved an unqualified tag's project as the sender's, which with org-wide `@short` would refuse `@projB/rb @<rb's short>` as two projects; it now runs after resolution. `find_target`'s bare match never matched a member by its eight-hex short, only its full id (unlike tags'); seats answer to their harness short through `find_seat`, so the org pass matches session shorts only.
+  Evidence: task-5 report, Discoveries.
+
 ## Decision Log
 
 - Decision: the verification this spec gets. One independent design review by a general-purpose subagent at model fable; the `doperpowers:adversarial-reviewer` buildability review of the execution section, dispatched in the same round; at the end, the branch review at doperpowers:review-code's xhigh panel, since the change is cross-repo (doperpowers, MAWS, ci-kit) and large.
@@ -496,6 +499,8 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M4 executor from the task review.
 - Decision (controller): M6 is built in parallel with M5 rather than after it. M6 consumes only the `copy` event's wire shape, which the Interfaces table fixes, not M5's code, and the two are in different repositories; M6's review waits until M5 is reviewed clean, so a deviation in M5's shape is caught before M6 is approved.
   Date/Author: 2026-10-18, the plan-executor.
+- Decision (M5): only a session's cross-project message gets a copy (the condition that already sets `from_project`); an operator's message from a terminal writes none. The copy drops `from_project` (it lives in the sender's own project) and keeps every other field of the delivering event, its `ts` included; the copy skip lives in `addressed_to`, so `_owed`, `log_read(to_session=…)` and the outcome reports skip it, and `report_closed` skips it explicitly. The org-wide scope for `@short` and `@alias#short` is every known project minus those `org.json` marks retired. A session matched in two projects (a move's one-tick overlap) is addressed where it joined last, not refused. `@<name>/<alias>#<short>` falls to the machine tier when the ordinary project has no member matching alias and short, so a refusal's printed label always reaches its session. An unqualified `alias#short` is looked up org-wide in one pass, for tags and member verbs alike, and a collision is refused naming both; a bare name stays local-first. `find_target` (`send`, `status`, `retire`) follows the tag rules. `send` by raw harness name is refused on an enrolled machine; a Codex thread by UUID still works anywhere. Refusals: `<raw> moved to <project>; @<short> reaches it`, and a bare-name miss `no member <raw> in project P; elsewhere: @Q/a#s, …` with `a bare name reaches only your project; @short reaches anyone`, exit 4. `project_tiers` consults a lower tier only when no higher tier has the name, so a shadowed lower tier's ambiguity never defeats the winning name.
+  Date/Author: 2026-10-18, M5 executor (with its task review).
 
 ## Outcomes & Retrospective
 
