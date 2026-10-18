@@ -2,9 +2,10 @@
 #
 # The bridge's control verbs and delivery (DC2 M2, DX5): `sminos steer`,
 # `interrupt`, `model`, `compact` through a session's endpoint, what the child
-# keeps across a module reload, and a delivery's last hop — the bridge, keyed
-# by the log event; the engine supervisor's `reply` for a human's event to a
-# --bg job with no bridge; else the inbox frame. A stand-in for the mod
+# keeps across a module reload, and a delivery's last hop — for the owner's
+# event the bridge, keyed by the log event, then the engine supervisor's
+# `reply` for a --bg job with no bridge; for a peer's, and else, the inbox
+# frame in the engine's peer envelope. A stand-in for the mod
 # (fakemod) spawns the child and answers its command lines as the mod would;
 # a stand-in inbox socket and a stand-in supervisor control socket record what
 # reaches them. Hermetic: HOME and SMINOS_HOME are temporary (SMINOS_HOME
@@ -444,12 +445,44 @@ L="$(last_op "$T/lines-b" deliver)"
 assert_contains "$(field_of "$L" text)" "[sminos message from human id=" "send's own frame went through the bridge"
 SENDSEQ="$(field_of "$L" key.seq)"
 assert_equals "$(( SENDSEQ > SEQ ))" "1" "keyed by its own event"
+# A peer's say or send to a bridged member is a peer message: never the
+# bridge, but the inbox frame, in the engine's own peer envelope naming its
+# sender, so the engine delivers it as another session's.
+PEER_SID=5f000005-0000-4000-8000-0000000000c5
+P1="$(field_of "$(cat "$R/.smns")" project)"
+# The peer is a live member of the project (no inbox: it is reached as recorded).
+printf '{"pid":%s,"sessionId":"%s","name":"peerone","nameSource":"user","kind":"interactive","status":"busy","cwd":"%s"}\n' \
+  "$$" "$PEER_SID" "$R" > "$HOME/.claude/sessions/peerone.json"
+N="$(count_op "$T/lines-b" deliver)"
+set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" say "@rover from a peer session" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a peer's say to a bridged member exits 0"
+assert_contains "$OUT" "rover: sent" "reporting it sent"
+assert_equals "$(count_op "$T/lines-b" deliver)" "$N" "and not through the bridge"
+until_true 100 grep -q "from a peer session" "$T/rover-inbox" || true
+FRAME="$(grep "from a peer session" "$T/rover-inbox" | tail -1)"
+CONTENT="$(field_of "$FRAME" message.content)"
+assert_equals "$(head -1 <<<"$CONTENT")" '<cross-session-message from-name="peerone">' \
+  "but its inbox, in the engine's peer envelope naming the sender"
+assert_contains "$(sed -n 2p <<<"$CONTENT")" "[sminos chat ctldemo 5f000005:" "around the frame the bridge would have carried"
+REPLY_LINE="$(tail -2 <<<"$CONTENT" | head -1)"
+assert_equals "$REPLY_LINE" "[To reply, run in Bash: $(cd "$(dirname "$SMINOS")" && pwd -P)/sminos say \"@$P1/5f000005 <your reply>\"]" \
+  "its last line says how to answer the sending session: the CLI's path, the sender by project and short"
+assert_equals "$(tail -1 <<<"$CONTENT")" "</cross-session-message>" "closed"
+set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" send rover "a peer's direct word" --from scout 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a peer's send to a bridged member exits 0"
+assert_equals "$(count_op "$T/lines-b" deliver)" "$N" "and does not use the bridge either"
+until_true 100 grep -q "direct word" "$T/rover-inbox" || true
+CONTENT="$(field_of "$(grep "direct word" "$T/rover-inbox" | tail -1)" message.content)"
+assert_contains "$CONTENT" $'<cross-session-message from-name="scout">\n[sminos message from scout id=' \
+  "its inbox frame is named by the sender it signs as"
+
 # The bridge refusing a delivery (it did not submit) leaves the inbox frame.
 mode refuse
 set +e; OUT="$(cd "$R" && "$SMINOS" say "@rover second try" 2>&1)"; RC=$?; set -e
 assert_contains "$OUT" "rover: sent" "a delivery the bridge refuses still reaches the member"
 until_true 100 test -s "$T/rover-inbox" || true
 assert_contains "$(cat "$T/rover-inbox" 2>/dev/null)" "second try" "through its inbox socket"
+assert_not_contains "$(grep "second try" "$T/rover-inbox")" "To reply" "with no reply line: the owner is answered in the session, not by say"
 # A session the human stopped (Esc): the engine refuses the mod's prompt, so
 # the bridge answers not-ok and the inbox frame, which starts a turn, carries it.
 mode stopped
@@ -470,8 +503,10 @@ ctl post "$SOCK" '[{"type":"inbox","text":"[sminos bridge]\nA message for you wa
 until_true 100 test -s "$T/rover-inbox" || true
 FRAME="$(tail -1 "$T/rover-inbox" 2>/dev/null || true)"
 [ -n "$FRAME" ] || FRAME='{}'
-assert_equals "$(field_of "$FRAME" message.content)" "[sminos bridge]
-A message for you was added" "the child sends the mod's inbox event as a frame to the session's own socket"
+assert_equals "$(field_of "$FRAME" message.content)" "<cross-session-message from-name=\"sminos bridge\">
+[sminos bridge]
+A message for you was added
+</cross-session-message>" "the child sends the mod's inbox event as a frame to the session's own socket, the bridge's own"
 assert_equals "$(field_of "$FRAME" type)" "user" "as the inbox frame sminos sends"
 # With no socket of the session answering, a delivery the frame should have
 # carried is kept as a refusal, for the daemon to report `failed`.
@@ -522,6 +557,24 @@ assert_not_contains "$OUT" "already delivered" "with no duplicate said"
 assert_equals "$([ -s "$T/rover-inbox" ] && echo framed || echo none)" "none" "and nothing went to the inbox socket"
 printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$$" "$SID" "$R" "$INBOX" > "$HOME/.claude/sessions/rover.json"
+# A peer of the second project speaking into the first: its frame's reply line
+# names the peer in its own project, and runs as written from the recipient's.
+printf '{"pid":%s,"sessionId":"%s","name":"peerone","nameSource":"user","kind":"interactive","status":"busy","cwd":"%s"}\n' \
+  "$$" "$PEER_SID" "$R2" > "$HOME/.claude/sessions/peerone.json"
+set +e; OUT="$(cd "$R2" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" say "@ctldemo/rover across projects" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a peer's say into another project exits 0"
+until_true 100 grep -q "across projects" "$T/rover-inbox" || true
+CONTENT="$(field_of "$(grep "across projects" "$T/rover-inbox" | tail -1)" message.content)"
+REPLY_LINE="$(tail -2 <<<"$CONTENT" | head -1)"
+assert_contains "$REPLY_LINE" "say \"@$P2/5f000005 <your reply>\"]" "its reply line names the sender's own project"
+REPLY_CMD="${REPLY_LINE#\[To reply, run in Bash: }"
+REPLY_CMD="${REPLY_CMD%\]}"
+REPLY_CMD="${REPLY_CMD/<your reply>/the answer}"
+set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$SID" bash -c "$REPLY_CMD" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "the reply line runs as written from the recipient's project"
+assert_contains "$OUT" "in ctlsecond" "recorded in the sender's project"
+assert_contains "$OUT" "peerone: recorded" "addressed to the sender"
+rm -f "$HOME/.claude/sessions/peerone.json"
 
 # A --bg job with no bridge: a human's event goes through the engine
 # supervisor's control socket (`reply`, human-origin), else the inbox frame.
@@ -556,7 +609,7 @@ run "$SMINOS" steer "$BG" "stop after this file"
 assert_rc 0 "$RC" "a steer to a --bg job with no bridge exits 0"
 assert_contains "$OUT" "supervisor" "through the supervisor"
 assert_contains "$(tail -1 "$T/sup-in")" "stop after this file" "which got the text"
-# A peer's say is a peer message, as today: the inbox frame.
+# A peer's say is a peer message: the inbox frame.
 set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" say "@bgone from a peer" 2>&1)"; RC=$?; set -e
 until_true 100 test -s "$T/bg-inbox" || true
 assert_contains "$(cat "$T/bg-inbox" 2>/dev/null)" "from a peer" "a session's say to it is the inbox frame"

@@ -134,6 +134,13 @@ project a name resolves across every project known here. `--group`,
 `--parent`, `--team`, and `retire --cascade` are gone: the project is the
 group and there is no tree.
 
+A message a session sends (`say`, `send`) reaches a live member through
+its inbox socket, as a message from another Claude session — never as
+that member's human's words, so it approves nothing for them; a member
+running with `bypassPermissions` holds it for its human's approval. Only
+the human's own messages (sminos run outside any session, or the desk)
+reach a session with the bridge mod as the human's words.
+
 `send` is the direct message to one member, recorded like a tagged `say`:
 a live member reads it from its inbox socket, a stopped seat is resumed
 with it, and a seat-less session that is not live is refused (resuming

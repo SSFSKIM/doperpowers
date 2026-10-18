@@ -1532,6 +1532,17 @@ describe('deliver', () => {
     ])
   })
 
+  test("a session's event is refused: a peer's words never enter as the human's", async () => {
+    const h = harness()
+    await h.ready()
+    const key = { project: 'p1', writer: 'mac/5d000003-0000-4000-8000-0000000000c3', seq: 1 }
+    expect(await h.command({ op: 'deliver', key, text: '[sminos chat p 5d000003:1 from peer → @you]\nhi' })).toMatchObject({ ok: false })
+    expect(await h.command({ op: 'deliver', key: { writer: 'hub/0123456789abcdef0123456789abcdef', seq: 1 }, text: 'owner' }))
+      .toMatchObject({ ok: true, result: { submitted: true } })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => c.args)).toEqual([{ text: 'owner', asUser: true }])
+    expect(h.ofType('delivered').map((e) => e.key)).toEqual([{ writer: 'hub/0123456789abcdef0123456789abcdef', seq: 1 }])
+  })
+
   test("each project numbers a writer's events on its own: the mark is per project, and a key naming none is held to the bare mark", async () => {
     const h = harness()
     await h.ready()

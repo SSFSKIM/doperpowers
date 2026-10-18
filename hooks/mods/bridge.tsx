@@ -48,15 +48,16 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * moved to the background, and before the turn ends appends Esc's marker and
  * a note saying so;
  * `model` rewrites the main loop's requests;
- * `compact` runs between turns; `deliver` gives a log event as the human's
- * words, once per key: into the running turn as a row, as a steer, else as a
- * prompt of its own. A message to the session wakes it, though the engine
- * refuses a plugin's prompt after an Esc: such a delivery is answered not-ok,
- * so sminos sends it as an inbox frame, and a delivered row a stopped turn
- * left unread wakes the session through its inbox (the child's `inbox`
- * event). A row an Esc rewound past is given again. What must outlive a
- * module reload (the model chosen, the keys delivered) the child keeps on
- * disk: its hello hands it back.
+ * `compact` runs between turns; `deliver` gives the owner's log event as the
+ * human's words, once per key: into the running turn as a row, as a steer,
+ * else as a prompt of its own (a peer's goes to the session's inbox, and the
+ * bridge refuses one written by a session). A message to the session wakes
+ * it, though the engine refuses a plugin's prompt after an Esc: such a
+ * delivery is answered not-ok, so sminos sends it as an inbox frame, and a
+ * delivered row a stopped turn left unread wakes the session through its
+ * inbox (the child's `inbox` event). A row an Esc rewound past is given
+ * again. What must outlive a module reload (the model chosen, the keys
+ * delivered) the child keeps on disk: its hello hands it back.
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
  * child and the session it serves, control, and the wait for a decision. The
@@ -611,6 +612,9 @@ async function runCompaction($: EngineInterface, request: { id: string; instruct
   }
 }
 
+/** A session's writer, `<machine>/<session id>`: its events are a peer's words. */
+const SESSION_WRITER = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 /**
  * Why the engine drops a plugin's prompt when the human stopped the session
  * (2.1.300 `zBt`, `k_e`): Esc, or the stop-agents chord, empties the queue of
@@ -622,7 +626,10 @@ const STOPPED_DROPS = new Set(['the prompt was removed from the queue before it 
 export const STOPPED_ERROR = 'the session was stopped, so its prompt was refused'
 
 /**
- * A log event for this session, as the human's words. While the main turn
+ * The owner's log event for this session, as the human's words (sminos sends
+ * only the owner's here; one a session wrote is refused whoever sends it, so
+ * its sender falls back to the session's inbox, where the engine delivers it
+ * as a peer's). While the main turn
  * runs it goes in as a user row, read at the loop's next request (its next
  * tool round), as a steer does; idle, it is submitted as a prompt, a turn of
  * its own. Either way `entered` names its row once it is kept, and `refused`
@@ -653,6 +660,9 @@ async function deliver($: EngineInterface, key: unknown, text: unknown): Promise
     (project !== undefined && (typeof project !== 'string' || project === ''))
   ) {
     return { ok: false, error: 'deliver needs key {project?, writer, seq} and text' }
+  }
+  if (SESSION_WRITER.test(writer)) {
+    return { ok: false, error: "a session's event is a peer's, not the human's words: it goes to the session's inbox" }
   }
   const delivery: DeliveryKey = { ...(project !== undefined && { project: project as string }), writer, seq: seq as number }
   const mark = project === undefined ? writer : `${project}/${writer}`

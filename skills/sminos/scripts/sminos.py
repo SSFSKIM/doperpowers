@@ -82,13 +82,14 @@ answers to `group/alias`. Scripts may pass a full seat id or session id.
 
 Messaging is one verb, `send`: to a live seat it writes a frame to the
 session's inbox socket — the socket the harness's native cross-session
-SendMessage tool also rides — which the harness delivers as a peer message
-(an idle session starts a new turn, a busy one reads it at its next tool
-round); a stopped seat is resumed with the frame as its message. A session
-with a bridge (the bridge mod) takes the same frame through it instead, as
-the human's words, submitted once per log event however often it is
-delivered; a --bg job with none takes a human's message through the engine
-supervisor's `reply`. `resume` is
+SendMessage tool also rides, wrapped in that tool's own envelope — which the
+harness delivers as a peer message (an idle session starts a new turn, a busy
+one reads it at its next tool round); a stopped seat is resumed with the
+frame as its message. A peer's message always takes the inbox. The owner's
+(owner_event) takes a session's bridge (the bridge mod) instead, as the
+human's words, submitted once per log event however often it is delivered,
+and a --bg job with no bridge takes it through the engine supervisor's
+`reply`. `resume` is
 the process-level continuation the board pipeline relays through: a fresh
 `claude --bg --resume` carrying the invoking environment.
 
@@ -118,6 +119,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -126,6 +128,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid as uuidlib
 from contextlib import contextmanager
 from typing import NamedTuple, NoReturn, Optional
@@ -795,6 +798,16 @@ def writer_session(writer):
     return last if UUID_RE.match(last) else ""
 
 
+def owner_event(e):
+    """Whether a log event is the owner's words: a `human` event written by
+    the owner's own writer — `<machine>/human` (sminos run with no session)
+    or the hub's `hub/<member>` (a send from the desk, which the hub stores
+    only as a `human`). A session's `say`, and anything else, is a peer's:
+    it reaches a session as a peer message, never as the human's words."""
+    writer = str(e.get("writer") or "")
+    return e.get("kind") == "human" and (writer.startswith("hub/") or writer.rsplit("/", 1)[-1] == "human")
+
+
 def writer_short(writer):
     session = writer_session(writer)
     return session[:8] if session else writer
@@ -988,8 +1001,10 @@ def cursor_save(project, session_uuid, cursor):
 
 # Delivery records: per recipient session, per writer, the seq up to which
 # every event owed to it is settled, and the one pending event that failed
-# with its attempt count. A deliverer never settles past an unsettled event of
-# the same writer, so a later success cannot bury an earlier failure.
+# with its attempt count — or that was pushed and could not be settled yet
+# (`pushed`: [seq, outcome], deliver_next). A deliverer never settles past an
+# unsettled event of the same writer, so a later success cannot bury an
+# earlier failure.
 
 
 def delivered_load(project, session_uuid):
@@ -1005,6 +1020,10 @@ def delivered_load(project, session_uuid):
             out[str(w)] = {"settled": int(v.get("settled") or 0),
                            "pending": pending if type(pending) is int else None,
                            "attempts": int(v.get("attempts") or 0)}
+            pushed = v.get("pushed")
+            if isinstance(pushed, list) and len(pushed) == 2 and type(pushed[0]) is int and pushed[0] == pending \
+                    and pushed[1] in PUSHED:
+                out[str(w)]["pushed"] = pushed
     return out
 
 
@@ -1038,6 +1057,22 @@ def delivered_fail(project, session_uuid, writer, seq):
     record[writer] = {"settled": w["settled"], "pending": seq, "attempts": attempts}
     write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
     return attempts
+
+
+def delivered_pushed(project, session_uuid, writer, seq, outcome):
+    """Note that the writer's next owed event was pushed (`outcome`, one of
+    PUSHED) and stays unsettled: the next pass settles it on that outcome
+    without pushing it again. Kept best effort — a note that cannot be
+    written leaves the push to be made again, at least once as before."""
+    try:
+        record = delivered_load(project, session_uuid)
+        w = _next_check(record, writer, seq)
+        record[writer] = {"settled": w["settled"], "pending": seq,
+                          "attempts": w["attempts"] if w["pending"] == seq else 0, "pushed": [seq, outcome]}
+        write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    except OSError as err:
+        daemon_log("delivery: the push of %s:%d to %s could not be noted (%s): a later pass pushes it again" % (
+            writer, seq, session_uuid, err))
 
 
 # --------------------------------------------------------------- the family
@@ -1846,8 +1881,11 @@ def deliver_next(project, member):
     as `refused-read-only` (sminos_policy, read at each such event). Every
     settlement of an outside-origin event of a hub project leaves its outcome
     for the uplink (sminos_outcomes), recorded before the settlement: an
-    outcome that cannot be recorded leaves the event pending (pushed again by
-    a later pass, at least once as smns delivery is)."""
+    outcome that cannot be recorded leaves the event pending for a later
+    pass, which records it again; a push already made is noted in the
+    delivery record (delivered_pushed), so that pass settles it on the same
+    outcome without pushing it again (a peer's frame has no bridge key to
+    drop a second copy)."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
@@ -1856,14 +1894,18 @@ def deliver_next(project, member):
     outcomes = sibling_module("sminos_outcomes")
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
         events = log_read(project)
+        record = delivered_load(project, session)
         streams = {}
-        for e in _owed(events, session, delivered_load(project, session)):
+        for e in _owed(events, session, record):
             streams.setdefault(e["writer"], []).append(e)
         cursor = cursor_load(project, session)
         for writer, queue in streams.items():
             outside = policy.outside_origin({"writer": writer})
+            noted = _delivery(record, writer).get("pushed")
             for i, e in enumerate(queue):
-                if outside and policy.read_only():
+                if noted and noted[0] == e["seq"]:
+                    outcome = noted[1]
+                elif outside and policy.read_only():
                     outcome = outcomes.READ_ONLY
                 else:
                     outcome = push_event(project, member, session, e, events, cursor)
@@ -1876,7 +1918,10 @@ def deliver_next(project, member):
                         event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
                 if outside and not outcomes.record(project, e, session, outcome, member):
                     # Settled only once its outcome is kept: it stays pending,
-                    # and the next pass pushes and records it again.
+                    # and the next pass records it again — a push noted, so
+                    # never made twice.
+                    if outcome in PUSHED:
+                        delivered_pushed(project, session, writer, e["seq"], outcome)
                     result["pending"] += len(queue) - i
                     break
                 if outcome in PUSHED:
@@ -2078,11 +2123,13 @@ class ResumeRefused(Exception):
 
 
 def push_member(member, text, tagged, session=None, event=None, project=None):
-    """Push one frame to a member: to the live session (push_live: its bridge,
-    keyed by `event`, the log event the frame carries, and `project`, the id
-    of the project whose log holds it; its supervisor; its inbox socket); for
-    a seat, a resume when it is stopped and the message is addressed to it
-    (`tagged`). A session sminos did not spawn is never
+    """Push one frame to a member: to the live session (push_live: an
+    owner's event through its bridge, keyed by `event`, the log event the
+    frame carries, and `project`, the id of the project whose log holds it,
+    or its supervisor; a peer's, and whatever those do not take, through its
+    inbox socket); for a seat, a resume when it is stopped and the message is
+    addressed to it (`tagged`), the frame then its resumed prompt whoever sent
+    it. A session sminos did not spawn is never
     resumed: it is the human's to reopen, and reads the chat when it is back.
     Given `session`, a seat that now holds another session is not this
     message's recipient: delivery goes by session id, so a replacement cannot
@@ -2174,6 +2221,8 @@ def cmd_say(a):
     fields = {"from": sender, "to": recipients if (recipients or wake) else "*", "text": a.text}
     if wake:
         fields["wake"] = True
+    if sid and home is not None and home.id != dest.id:
+        fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
         e = log_append(dest, writer, kind, **fields)
     except OSError as err:
@@ -3785,15 +3834,90 @@ class SendFailed(OSError):
         self.phase = phase
 
 
-def send_frame(path, text):
+PEER_TAG = "cross-session-message"
+# The engine's closing-tag escape for an envelope's body (2.1.300 `KXe`/`w`/`K`,
+# cli.pretty.js ≈ 941747-941780), rebuilt so the envelope round-trips its parser:
+# an opening angle or a lookalike, not already followed by a backslash, then a run
+# of filler (anything but a word character or an angle), a slash or a lookalike,
+# filler, and the tag name, invisible characters allowed between its letters and
+# each `-` any dash or connector, then no word character. The match's angle
+# becomes `<\\` (one backslash).
+_OPEN = "<\uff1c\ufe64\u2329\u27e8\u3008\u2039\u02c2\u1438\u276c\u276e\u2770\u29fc\u226e\u227a\u22d6"
+_CLOSE = ">\uff1e\ufe65\u232a\u27e9\u3009\u203a\u02c3\u1433\u276d\u276f\u2771\u29fd\u226f\u227b\u22d7"
+_SLASH = "/\uff0f\u2215\u2044"
+# \p{Pd}, \p{Pc} and the engine's extra dashes, as one class.
+_DASH = ("\u002d\u005f\u02cd\u02d7\u058a\u05be\u0640\u07fa\u1400\u1806\u2010\u2011\u2012\u2013\u2014\u2015"
+         "\u2017\u203f\u2040\u2043\u2054\u207b\u208b\u2212\u2796\u2e17\u2e1a\u2e3a\u2e3b\u2e40\u2e5d\u301c"
+         "\u3030\u30a0\u30fc\ufe31\ufe32\ufe33\ufe34\ufe4d\ufe4e\ufe4f\ufe58\ufe63\uff0d\uff3f\uff70\U00010ead")
+# Between the name's letters only invisible, combining and control characters
+# (the engine's `qXe`: its `t$t`, `du` and C0/C1 controls).
+_INVIS = ("\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u115f\u1160\u17b4\u17b5"
+          "\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+          "\ufff0-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3"
+          "\U0001d173-\U0001d17a\U00016fe4\U000e0000-\U000e0fff"
+          "\u0300-\u0344\u0346-\u036f\u0483-\u0489\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7"
+          "\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06dc\u06df-\u06e4\u06e7\u06e8\u06ea-\u06ed"
+          "\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\u3099\u309a\ufe20-\ufe2f"
+          "\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029")
+_LETTERS = "[%s]*" % _INVIS
+_FILL = "[^A-Za-z0-9_\\-%s%s]*" % (re.escape(_OPEN), re.escape(_CLOSE))
+_FILL_SLASH = "[^A-Za-z0-9_\\-%s%s%s]*" % (re.escape(_OPEN), re.escape(_CLOSE), re.escape(_SLASH))
+CLOSING_TAG_RE = re.compile("[%s](?!\\\\)(?=%s[%s]%s%s(?:[^A-Za-z0-9_\\-]|$))" % (
+    re.escape(_OPEN), _FILL_SLASH, re.escape(_SLASH), _FILL,
+    _LETTERS.join("[%s]" % re.escape(_DASH) if ch == "-" else re.escape(ch) for ch in PEER_TAG)),
+    re.IGNORECASE)
+# What the engine strips from `from-name`: quotes and angles, then control,
+# format, surrogate and line/paragraph-separator characters.
+NAME_DROP = ("Cc", "Cf", "Cs", "Zl", "Zp")
+
+
+def reply_line(session, project=""):
+    """The body's closing line for a peer's frame: how to answer the session
+    that sent it, as a command a model that knows nothing of sminos can run
+    (the CLI is not on PATH, so it is named by this install's path, which the
+    recipient shares: delivery is always on its own machine). The tag names
+    the sender by its short in its own project (`@<project id>/<short>`: the
+    event's `from_project` when it spoke into another project's log, else the log's
+    own), so a reply reaches it from any project and on any machine; the
+    envelope carries no `from` address, so SendMessage has none to answer.
+    The project part sits inside a double-quoted shell argument and arrives in
+    synced log events, so one that is not id-shaped (valid_name) is left out."""
+    if not valid_name(project):
+        project = ""
+    return '[To reply, run in Bash: %s say "@%s%s <your reply>"]' % (
+        shlex.quote(os.path.join(SCRIPT_DIR, "sminos")), "%s/" % project if project else "", session[:8])
+
+
+def peer_envelope(text, sender="", reply_to="", project=""):
+    """The text wrapped as the engine's own SendMessage wraps a peer message
+    (2.1.300 SPEC §38.23.1): `<cross-session-message from-name="…">`, the
+    body, the closing tag. The receiving engine reads `from-name` into the
+    message's origin (the speaker its transcript and MAWS draw) when the
+    envelope round-trips its parser: the name stripped as it strips one, and
+    a closing tag in the body escaped as it escapes one. No `from` address:
+    there is no inbox a reply could reach through SendMessage — a member
+    answers with `sminos say`, which, given `reply_to` (the sending session),
+    the body's last line spells out (reply_line)."""
+    if reply_to:
+        text = "%s\n%s" % (text, reply_line(reply_to, project))
+    name = "".join(ch for ch in re.sub(r'["<>]', "", sender) if unicodedata.category(ch) not in NAME_DROP)
+    name = name.strip()[:64].strip()  # the engine keeps 64 code points, trimmed
+    body = CLOSING_TAG_RE.sub("<\\\\", text)
+    return "<%s%s>\n%s\n</%s>" % (PEER_TAG, ' from-name="%s"' % name if name else "", body, PEER_TAG)
+
+
+def send_frame(path, text, sender="", reply_to="", project=""):
     """Write one message frame to a session's inbox socket.
 
-    The frame the harness documents for scripts is a plain user message; it is
-    delivered as a peer message ("another Claude session sent…"). The frame
-    carries no sender name, so callers put identity in the text's first line.
+    The frame is a plain user message whose content is the text in the peer
+    envelope (peer_envelope, naming `sender`, closed by how to answer the
+    session `reply_to` of the project `project` when a session sent it); the
+    harness delivers it as a
+    peer message ("Another Claude session sent a message"), never as its
+    user's words. Callers also put identity in the text's first line.
     Raises SendFailed(phase) — see the class.
     """
-    frame = {"type": "user", "message": {"role": "user", "content": text}}
+    frame = {"type": "user", "message": {"role": "user", "content": peer_envelope(text, sender, reply_to, project)}}
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:
@@ -5395,11 +5519,12 @@ def compose_frame(sender, msg_id, msg):
     return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
 
 
-def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
+def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the socket delivery, and the status write, so a
     concurrent fill/resume/retire cannot slip between them. A live seat takes
-    the frame (push_live: its bridge, else its inbox socket) and is recorded
+    the frame (push_live: the owner's through its bridge, a peer's through its
+    inbox socket) and is recorded
     `working`; a stopped one is
     resumed with the frame as its message; vacant, retired, and gone seats
     are refused, pointing at the verb that can reach them. Given `session`,
@@ -5465,7 +5590,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
             control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
                                        delivery.project.id)
         else:
-            send_frame(sock, text)
+            send_frame(sock, text, sender)
     except SendFailed as e:
         if e.phase == "before":
             # Nothing reached the peer (the session exited between the
@@ -5612,6 +5737,9 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
     fields = {"from": sender, "to": [{"session": session, "alias": alias}], "text": text, "msg_id": msg_id}
     if via and via != sender:
         fields["via"] = via
+    home = caller_scope() if sid else None
+    if home is not None and home.id != project.id:
+        fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
         event = log_append(project, writer, "say" if sid else "human", **fields)
         return SendDelivery(project, session, writer, event) if deliver else event
@@ -5622,7 +5750,8 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
 def send_to_member(project, m, sender, via, text, msg_id):
     """send to a member that holds no seat here. A remote member's send is
     recorded and owed: its own machine's daemon delivers it. A local one is
-    reached while it runs (push_live: its bridge, else its inbox socket); a
+    reached while it runs (push_live: the owner's through its bridge, a peer's
+    through its inbox socket); a
     session sminos did not spawn is never resumed — it is the human's to
     reopen."""
     if not m.local:
@@ -5679,7 +5808,7 @@ def _send(a):
         if sid and res["current"] == sid:
             die("you cannot send to yourself")
         send_to_seat(res, text, msg_id, a.wait, record=lambda s: record_send(s, sender, frm, a.msg, msg_id),
-                     session=target[2])
+                     session=target[2], sender=frm)
         return
     if target[0] == "member":
         project, m = target[1], target[2]
@@ -5705,7 +5834,7 @@ def _send(a):
              if not (isinstance(r.get("cwd"), str) and r["cwd"] and resolve_project(r["cwd"]))]
     if len(peers) == 1:
         try:
-            send_frame(socket_path_of(peers[0]), text)
+            send_frame(socket_path_of(peers[0]), text, frm)
         except SendFailed as e:
             if e.phase == "after":
                 die("delivery to session '%s' is UNCERTAIN — the frame was written but the close-out failed (%s); "

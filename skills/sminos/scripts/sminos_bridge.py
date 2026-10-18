@@ -284,6 +284,27 @@ def _key(e):
     return "%s|%s|%s" % (e.get("turnId"), e.get("agentId"), e.get("step"))
 
 
+def inbox_sender(key):
+    """Who an inbox frame the mod asks for is from, as its envelope names
+    them: a wake (no key) is the bridge's own; a delivery's is its log
+    event's sender (`via`, else `from`), read from the project's log. The
+    bridge takes only the owner's events, so one whose event cannot be read
+    is the human's."""
+    if key is None:
+        return "sminos bridge"
+    project = S.find_project(key["project"], required=False) if isinstance(key.get("project"), str) else None
+    if project is not None:
+        try:
+            with open(S.writer_path(project, str(key.get("writer"))), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    e = S.parse_event(line)
+                    if e and e["seq"] == key.get("seq"):
+                        return str(e.get("via") or e.get("from") or "human")
+        except Exception:  # the lookup never costs the owner's delivery
+            pass
+    return "human"
+
+
 def _refused(kept, key, reason):
     """`kept` with a refusal of the delivery `key` added, once per key, the
     last REFUSED_KEPT, its reason cut to REASON_MAX; as it was for a key that
@@ -782,7 +803,7 @@ class Bridge:
             reason = "no inbox socket of the session answers"
         else:
             try:
-                S.send_frame(S.socket_path_of(peer), text)
+                S.send_frame(S.socket_path_of(peer), text, inbox_sender(key))
                 return
             except S.SendFailed as err:
                 if err.phase == "after":
