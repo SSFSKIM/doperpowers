@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { ASK_TOOL } from '../../hooks/mods/ask'
+import { ASK_TOOL, deliveryText } from '../../hooks/mods/ask'
 import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
@@ -3324,6 +3324,52 @@ describe('the export to the host', () => {
     await h.responseRow(askUse('toolu_open', true), { uuid: 'r-open' })
     await h.resultRow('toolu_bash', 'a Bash result')
     expect(h.ofType('export')).toEqual([])
+  })
+
+  // An answer's rows as the engine hands them to session.append: a prompt
+  // row's text as kept, an attachment's as rendered (live, 2.1.300–302).
+  const PLUGIN_PROMPT = 'The doperpowers plugin sent a message:\n'
+  const PLUGIN_FRAMING = "\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above."
+  const answer = (id: string) => deliveryText(id, 'The user answered: "Which fruit?"="Mango".')
+  const steer = (id: string) =>
+    `[MAWS ask ${id}] The user answered the questions you asked:\n1. Proceed? — Yes\n\`\`\`json\n${JSON.stringify({ status: 'answered', askId: id, answers: [] }, null, 2)}\n\`\`\``
+  const midTurn = (prompt: string) =>
+    `<system-reminder>\nThe user sent a new message while you were working:\n${prompt}\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>`
+  const prompt = (h: ReturnType<typeof harness>, text: string, uuid: string, origin: Record<string, unknown>, agentId?: string) =>
+    h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text }] }, { uuid, origin, agentId })
+  const context = (h: ReturnType<typeof harness>, text: string, uuid: string, name = 'hook_additional_context') =>
+    h.append('hook-context', { type: 'attachment', name, role: 'user', isMeta: true, content: [{ type: 'text', text }] }, { uuid, origin: { kind: 'plugin', event: 'tool.call' } })
+  const queued = (h: ReturnType<typeof harness>, text: string, uuid: string) =>
+    h.append('delivery', { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: [{ type: 'text', text: midTurn(text) }] }, { uuid, origin: { kind: 'composer' } })
+
+  test("each row that may answer an ask goes to the child as it is kept, in the transcript's shape: the plugin's answer as a prompt or as context, MAWS's steer as a prompt or taken mid-turn", async () => {
+    const h = harness()
+    await h.ready()
+    const submitted = `${PLUGIN_PROMPT}${answer('toolu_a1')}${PLUGIN_FRAMING}`
+    await prompt(h, submitted, 'r-plugin', { kind: 'plugin', name: 'doperpowers' })
+    await context(h, `<system-reminder>\ntool.call hook additional context: another hook's line\n${answer('toolu_a2')}\n${answer('toolu_a3')}\n</system-reminder>`, 'r-context')
+    await prompt(h, steer('toolu_m1'), 'r-steer', { kind: 'composer' })
+    await queued(h, steer('toolu_m2'), 'r-queued')
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [{ type: 'user', uuid: 'r-plugin', origin: { kind: 'plugin', name: 'doperpowers' }, message: { content: [{ type: 'text', text: submitted }] } }],
+      [{ type: 'attachment', uuid: 'r-context', attachment: { type: 'hook_additional_context', content: [`${answer('toolu_a2')}\n${answer('toolu_a3')}`] } }],
+      [{ type: 'user', uuid: 'r-steer', origin: { kind: 'human' }, message: { content: [{ type: 'text', text: steer('toolu_m1') }] } }],
+      [{ type: 'attachment', uuid: 'r-queued', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: steer('toolu_m2'), origin: { kind: 'human' } } }],
+    ])
+  })
+
+  test("an unrelated prompt or attachment, a subagent's answer, and an answer past the events' cap are not exported", async () => {
+    const h = harness()
+    await h.ready()
+    await prompt(h, 'go on with the parser', 'r-go', { kind: 'composer' })
+    await context(h, '<system-reminder>\nUserPromptSubmit hook additional context: the branch is main\n</system-reminder>', 'r-ctx')
+    await context(h, answer('toolu_a1'), 'r-other', 'hook_success')
+    await queued(h, 'and also the lexer', 'r-midturn')
+    await queued(h, '[MAWS ask toolu_m1] with no fence', 'r-unfenced')
+    await prompt(h, steer('toolu_m3'), 'r-sub', { kind: 'composer' }, 'a7')
+    await prompt(h, steer('toolu_m4') + 'x'.repeat(TEXT_CAP), 'r-long', { kind: 'composer' })
+    expect(h.ofType('export')).toEqual([])
+    expect(h.logs.some((l) => l.includes('r-long'))).toBe(true)
   })
 })
 

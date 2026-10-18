@@ -1527,8 +1527,8 @@ export function registerBridge(on: On) {
   // Every row the session keeps, once it is written: named (row order: the
   // engine's appends may resolve in another order than they began, and the
   // file holds them in the order they resolve), then a call's result, a
-  // main-loop row that may hold a message to the host. A row refused beneath
-  // is never written, and never named.
+  // main-loop row that may hold a message to the host or an answer to its
+  // question. A row refused beneath is never written, and never named.
   on('session.append', { door: /^/ }, async (_, e, next) => {
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null
