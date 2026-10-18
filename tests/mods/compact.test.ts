@@ -47,7 +47,7 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('compacts on its own at about 967,000')
     expect(describeCompact(undefined)).toContain("compacts on its own near the window's end")
     expect(describeCompact(967_000)).toContain('Runs when\nthis turn ends')
-    expect(describeCompact(967_000)).toContain('250k–450k: at any reasonable checkpoint')
+    expect(describeCompact(967_000)).toContain('300k–450k: at any reasonable checkpoint')
     expect(describeCompact(967_000)).toContain('Prefer not to pass 600k')
     expect(describeCompact(967_000)).toContain('a backstop, not the plan')
     expect(describeCompact(967_000)).toContain('never as a percentage of the window')
