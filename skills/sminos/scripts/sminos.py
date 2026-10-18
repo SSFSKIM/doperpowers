@@ -1114,6 +1114,7 @@ class Member(NamedTuple):
     branch: str = ""      # the branch checked out there ("" when detached or none)
     charge_age: float | None = None   # seconds since its in-charge line's event; None for a line with none
     active_age: float | None = None   # seconds since its engine record's updatedAt here, its last state remotely
+    title: str = ""       # another machine's session: the title its machine published (here, the transcript's)
 
 
 def project_kind(project):
@@ -1786,7 +1787,8 @@ def _member(sid, r, seat, peer, local, title=True, info=None):
         charge="", charge_source="",
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
         by=next((x["by"] for x in chain if x["by"]), ""), worktree=seat["worktree"] if seat else worktree,
-        seat=seat, former=former, kind=kind, cwd=cwd, repo=repo, branch=branch, active_age=active)
+        seat=seat, former=former, kind=kind, cwd=cwd, repo=repo, branch=branch, active_age=active,
+        title="" if local else published_title(r))
     # charge_of reads each writer's events in seq order, and one writer (a
     # remote operator) may have set a line for each session of the chain.
     charge, source, ts = charge_of(m, sorted((e for x in chain for e in x["in_charge"]),
@@ -3850,6 +3852,19 @@ def session_running(session_id):
                 None)
 
 
+def running_now(session_id):
+    """session_running over the engine's records read afresh, not this
+    invocation's copy: what a route about to resume a session asks last."""
+    global _PEERS
+    _PEERS = None
+    return session_running(session_id)
+
+
+def quiet_inbox_refusal(ref):
+    return ('seat %s runs, but its inbox does not answer — nothing was sent; try again, or sminos resume %s '
+            '"<msg>" stops its turn and resumes it' % (ref, ref))
+
+
 def peer_for_session(session_id):
     if not session_id:
         return None
@@ -5435,7 +5450,9 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
         # row is host-local by construction; only a RECORDED short is gated on
         # the record's host identity, because shorts are reusable across boots.
         stop_short = row["id"]
-    elif not row and peer_for_session(cur) and s["short"] and identity_local(s["host"], s["boot_id"], cur):
+    elif not row and running_now(cur) and s["short"] and identity_local(s["host"], s["boot_id"], cur):
+        # Its process runs (the engine's record), whether or not its inbox
+        # answers: the recorded short is the turn to release.
         stop_short = s["short"]
     if stop_short:
         if not claude_stop(stop_short):
@@ -5445,6 +5462,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
             raise ResumeRefused("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
                 "resume (it would start a copy)" % (s["group"], s["alias"], stop_short,
                                                     os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)
+    elif running_now(cur):
+        raise ResumeRefused("the session of %s/%s (%s) still runs, and there is no turn of it sminos can stop (no "
+                            "harness row, no recorded short) — not launching a resume (it would start a copy)"
+                            % (s["group"], s["alias"], cur[:8]), 1)
     prev_status = s["status"]
     short, banner = run_claude_bg(["--bg", "--resume", cur, msg], cwd, s["settings"])
     if not short:
@@ -5616,8 +5637,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     if not peer and st in FILLED:
         # Its process runs (the engine's record): a resume would start a copy
         # of the running session, so nothing is sent.
-        die('seat %s runs, but its inbox does not answer — nothing was sent; try again, or sminos resume %s '
-            '"<msg>" stops its turn and resumes it' % (ref, ref), EXIT_UNKNOWN)
+        die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
     delivery = record(s) if record else None
     if delivery and not delivery.queue:
         # A concurrent deliverer pushed it between the append and our lock: no
@@ -5660,8 +5680,15 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
             send_frame(sock, text, sender)
     except SendFailed as e:
         if e.phase == "before":
-            # Nothing reached the peer (the session exited between the
-            # liveness check and the write): fall through to the resume path.
+            # Nothing reached the peer. A session that exited between the
+            # liveness check and the write is resumed; one whose process
+            # still runs (its record, read again) is not: a resume would
+            # start a copy of it.
+            if running_now(s["current"]):
+                if delivery:
+                    delivery.fail()
+                unlock(locks)
+                die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
             warn("inbox socket delivery to %s failed before the frame was written (%s); resuming instead" % (ref, e))
             resume(locks)
             return
@@ -6254,28 +6281,29 @@ def state_words(value):
 
 
 def list_scope(a):
-    """(projects, words): the projects a list reads and the words its rows
-    must match. With no filter, the caller's project (view_projects). Any
-    filter widens to every project known here before it narrows: a project
-    named first (as before), or with --project; --machine, --state, --here,
-    --org and words narrow the rows. Under --org or --project every
-    argument is a word."""
+    """(projects, words, picked): the projects a list reads, the words its
+    rows must match, and whether projects were named (so a session in no
+    project is none of them). With no filter, the caller's project
+    (view_projects). Any filter widens to every project known here before it
+    narrows: a project named first (as before), or with --project;
+    --machine, --state, --here, --org and words narrow the rows. Under --org
+    or --project every argument is a word."""
     args = list(a.args)
     if a.org or a.projects:
         named, words = "", args
     else:
         named, words = (args[0], args[1:]) if args else ("", [])
     if not (named or a.projects or a.machine or a.state or a.org or a.here or words):
-        return view_projects("")[0], []
+        return view_projects("")[0], [], False
     if named:
-        return [find_project(named)], words
+        return [find_project(named)], words, True
     if a.projects:
         picked = {}
         for q in a.projects:
             p = find_project(q)
             picked.setdefault(p.id, p)
-        return list(picked.values()), words
-    return sorted(known_projects(), key=lambda p: (p.name, p.id)), words
+        return list(picked.values()), words, True
+    return sorted(known_projects(), key=lambda p: (p.name, p.id)), words, False
 
 
 def row_matches(m, project, a, words):
@@ -6290,7 +6318,9 @@ def row_matches(m, project, a, words):
         return False
     if not words:
         return True
-    title = m.charge if m.charge_source == "title" else (transcript_title(m.session) if m.local and m.session else "")
+    # Its title whatever line won its in-charge: its transcript's here, the
+    # one its machine published (Member.title) for another machine's.
+    title = (transcript_title(m.session) if m.session else "") if m.local else m.title
     hay = " ".join((m.alias, m.short, project.name if project else "", m.repo, m.branch, m.charge, m.status,
                     title)).lower()
     return all(w.lower() in hay for w in words)
@@ -6425,7 +6455,7 @@ def cmd_list(a):
     column when several do; --here adds `(no project)`. Retired and gone
     fold into a tail line unless --all or --state names them. Inside a
     session, the list ends with its subagents (subagent_lines)."""
-    projects, words = list_scope(a)
+    projects, words, picked = list_scope(a)
     sections, out, hidden, members_known = [], [], 0, set()
     for p in projects:
         every = project_rows(p)
@@ -6443,7 +6473,7 @@ def cmd_list(a):
         if rows:
             sections.append((p, rows))
     loose = []
-    if a.here:
+    if a.here and not picked:   # a session in no project is in none of the projects named
         for p in known_projects():
             if p.id not in {q.id for q in projects}:
                 members_known |= {m.session for m in project_rows(p) if m.session}

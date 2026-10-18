@@ -4369,6 +4369,64 @@ run_in "$ODA" "$SMINOS" list
 assert_not_contains "$OUT" "subagents" "outside a session there is no tree"
 run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --json
 assert_equals "$(python3 -c 'import json, sys; print(type(json.loads(sys.argv[1])).__name__)' "$OUT")" "list" "--json stays the rows' list"
+
+# Filters combine: a project named with --here keeps the sessions in no
+# project out, as it keeps every other project's.
+run_in "$ODH" "$SMINOS" list --project odalpha --here --json
+assert_contains "$OUT" '"alias": "quiet-seat"' "--project with --here lists the project's members on this machine"
+assert_not_contains "$OUT" "home-session" "and no session in no project"
+run_in "$ODH" "$SMINOS" list odalpha --here
+assert_not_contains "$OUT" "(no project)" "nor does a project named first"
+
+# A remote session's published title is searched whatever line it is in
+# charge of: its title is not its in-charge line when a higher source wins.
+OD_R1=0d000006-0000-4000-8000-0000000000d6
+python3 - "$SMINOS_PY" "$ODA" "$OD_R1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos_od", sys.argv[1])
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+p, sid = S.resolve_project(sys.argv[2]), sys.argv[3]
+S._append(p, "elsewhere/" + sid, [
+    {"kind": "joined", "session": sid, "alias": "far-one", "name_source": "user", "machine": "elsewhere",
+     "cwd": "/srv/x", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive",
+     "repo": "x", "branch": "main"},
+    {"kind": "titled", "session": sid, "title": "unique-remote-title"},
+    {"kind": "in-charge", "session": sid, "text": "an explicit line", "source": "set"}])
+PY
+run_in "$ODA" "$SMINOS" find unique-remote-title
+assert_contains "$OUT" "far-one [0d000006]" "find matches a remote session's published title under a set line"
+assert_contains "$OUT" "in charge: an explicit line" "while its row shows the line that wins"
+
+# A socket that answers the probe and is gone before the frame: the record
+# says the process runs, so nothing resumes it (a resume would copy it).
+OD_FLIP=0d000007-0000-4000-8000-0000000000d7
+cat > "$TEST_ROOT/oneshot.py" <<'PY'
+import os, socket, sys
+path = sys.argv[1]
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path)
+srv.listen(1)
+c, _ = srv.accept()   # the liveness probe: connect, then close
+c.close()
+srv.close()
+os.unlink(path)
+PY
+python3 "$TEST_ROOT/oneshot.py" "$TEST_ROOT/od-flip.sock" & EXTRA_PIDS+=("$!")
+for _ in $(seq 1 50); do [ -S "$TEST_ROOT/od-flip.sock" ] && break; sleep 0.05; done
+od_peer flip flipper "$OD_FLIP" bg idle "$ODA" "$TEST_ROOT/od-flip.sock"
+od_tx "$OD_FLIP"
+"$SMINOS" seat add od-alpha flipper --session "$OD_FLIP" >/dev/null
+: > "$STUB_STATE/log/calls.log"
+run_in "$ODA" "$SMINOS" send od-alpha/flipper "are you there"
+assert_rc 4 "$RC" "send whose inbox vanished after the probe, its process running, is refused (exit 4)"
+assert_contains "$OUT" "runs, but its inbox does not answer" "saying why"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and resumes nothing"
+# resume itself never launches over a running process it cannot stop: here
+# the harness lists no row and the seat records no short to stop.
+STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
+assert_rc 1 "$RC" "resume of a running seat it cannot stop is refused"
+assert_contains "$OUT" "still runs" "saying the session still runs"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/od-"*.json
 
