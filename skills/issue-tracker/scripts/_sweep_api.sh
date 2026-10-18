@@ -2384,7 +2384,7 @@ _predecessor_work() {  # <session uuid> <successor worktree name> — block or n
   # exactly what makes the collision worth not leaving in place.
   local meta="$DAEMON_HOME/$1.json" root wtname wtdir branch want base ahead head
   local govern mine own via note="" dirty="" onbr="" succdir samewt="" headfull
-  local reach dirtyreach
+  local reach dirtyreach sroot sgit
   [ -f "$meta" ] || return 0
   root="$(_meta_field "$meta" cwd)"
   wtname="$(_meta_field "$meta" worktree)"
@@ -2443,14 +2443,28 @@ _predecessor_work() {  # <session uuid> <successor worktree name> — block or n
   # Built from the same two values the spawn below passes — `--cwd
   # ${LOCAL_REPO:-$BOARD_ROOT}` and `--worktree <name>` — through the harness's
   # own name-to-path rule, so this is a comparison against a known destination
-  # rather than a guess. Canonicalized on both sides: the governed root and the
-  # meta's cwd reach one directory by different routes, and the successor's
-  # directory may not exist yet, so the resolved ROOT is what carries it.
+  # rather than a guess. THE RULE STARTS FROM THE REPO'S ROOT, NOT FROM THE CWD:
+  # the harness takes the cwd's git toplevel and, when that toplevel is a LINKED
+  # worktree, the main checkout's root instead — the common dir with its /.git
+  # dropped (a common dir of another name, a bare repo's, it keeps whole) —
+  # before appending .claude/worktrees/<name>. board-sweep.sh defaults LOCAL_REPO
+  # to $PWD, so a tick launched from a subdirectory, or from the operator's own
+  # worktree, hands the spawn exactly such a cwd; compared against that cwd as
+  # given, a genuine second reclaim never matched and the block emitted the very
+  # reset this exists to withhold. A git dir other than the common dir is what
+  # marks the linked worktree, and `govern` is that common dir already.
+  # Canonicalized on both sides: the governed root and the meta's cwd reach one
+  # directory by different routes, and the successor's directory may not exist
+  # yet, so the resolved ROOT is what carries it.
   succdir=""
   if [ -n "${2:-}" ]; then
-    succdir="$(cd "${LOCAL_REPO:-$BOARD_ROOT}" 2>/dev/null && pwd -P)" || succdir=""
-    [ -z "$succdir" ] ||
-      succdir="$succdir/.claude/worktrees/$(printf '%s' "$2" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+    sroot="$(git -C "${LOCAL_REPO:-$BOARD_ROOT}" rev-parse --show-toplevel 2>/dev/null)" &&
+      sroot="$(cd "$sroot" 2>/dev/null && pwd -P)" || sroot=""
+    sgit="$(git -C "${LOCAL_REPO:-$BOARD_ROOT}" rev-parse --path-format=absolute --git-dir 2>/dev/null)" &&
+      sgit="$(cd "$sgit" 2>/dev/null && pwd -P)" || sgit=""
+    [ -z "$sgit" ] || [ "$sgit" = "$govern" ] || sroot="${govern%/.git}"
+    [ -z "$sroot" ] ||
+      succdir="$sroot/.claude/worktrees/$(printf '%s' "$2" | sed 's/[^a-zA-Z0-9._-]/-/g')"
   fi
   if [ -n "$succdir" ] && [ "$(cd "$wtdir" && pwd -P)" = "$succdir" ]; then samewt=1; fi
 

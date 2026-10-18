@@ -1469,10 +1469,10 @@ gitx() {  # gitx <dir> <args…> — git with the identity a throwaway repo lack
 # repo: an origin, a `main`, and a LINKED worktree under
 # .claude/worktrees/<name> on branch worktree-<name> — the harness's own layout,
 # so the path derivation and the common-dir check are exercised, not assumed.
-predsetup() {  # predsetup <worktree name> <commits ahead> — prints the worktree path
-  local wt i=0
-  git init -q --bare "$TDIR/origin-$1.git"
-  gitx "$RREPO" remote add origin "$TDIR/origin-$1.git"
+predsetup() {  # predsetup <worktree name> <commits ahead> [origin name] — prints the worktree path
+  local wt i=0 origin="$TDIR/origin-${3:-$1}.git"
+  git init -q --bare "$origin"
+  gitx "$RREPO" remote add origin "$origin"
   echo base > "$RREPO/f"; gitx "$RREPO" add -A; gitx "$RREPO" commit -qm base
   gitx "$RREPO" branch -M main
   gitx "$RREPO" push -q origin main
@@ -1816,6 +1816,34 @@ t  "and nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
    run_emitted_whole "$SPAWN_LOG" "$PC_WT"
 t  "so the predecessor's uncommitted edits survive the bootstrap"  "m1" \
    git -C "$PC_WT" diff --name-only
+
+# ---- …and the same second reclaim, from a tick launched OUTSIDE the root ----
+# board-sweep.sh defaults LOCAL_REPO to $PWD and the spawn passes it as --cwd,
+# but the harness does not append .claude/worktrees/<name> to that cwd: it takes
+# the cwd's git toplevel, and for a LINKED worktree the main checkout's root.
+# Launched from a subdirectory of the operator's own worktree, this tick's cwd
+# differs from that root on both counts, so it is the one launch point that
+# would catch either half of the resolution going missing.
+PEFIX="$TDIR/fix-pred-samewt-elsewhere.json"; predfix "$PEFIX" 83
+rboard "$PEFIX"
+PE_WT="$(predsetup 12-successor-implementer 2 12-samewt-elsewhere)"; PE_ROOT="$RREPO"
+echo "half a milestone, uncommitted" > "$PE_WT/m1"
+PE_LAUNCH="$TDIR/operator-worktree"
+gitx "$PE_ROOT" worktree add -q -b operator "$PE_LAUNCH" main
+mkdir -p "$PE_LAUNCH/sub"
+PEDH="$TDIR/dh-pred-samewt-elsewhere"; predreg "$PEDH" "$PE_ROOT" 12-successor-implementer
+: > "$SPAWN_LOG"
+OUTPE="$TDIR/pred-samewt-elsewhere.out"
+LOCAL_REPO="$PE_LAUNCH/sub" RSW "$PEDH" > "$OUTPE" 2>&1 || true
+
+t  "the spawn is handed the launch point as its cwd" "cwd=$PE_LAUNCH/sub" \
+   cat "$SPAWN_LOG"
+t  "and the tick still sees the successor lands in the predecessor's worktree" \
+   "lands in the predecessor's own worktree"                        cat "$OUTPE"
+t  "so nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
+   run_emitted_whole "$SPAWN_LOG" "$PE_WT"
+t  "and the predecessor's uncommitted edits survive the bootstrap"  "m1" \
+   git -C "$PE_WT" diff --name-only
 
 # ---- a push that HANGS: the deadline has to reach what git spawned --------
 # git is rarely the process actually holding the connection. An ssh push spawns
