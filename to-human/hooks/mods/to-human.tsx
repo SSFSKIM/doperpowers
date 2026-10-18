@@ -1,6 +1,7 @@
 import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
 
-import { ASK_TOOL } from './ask'
+/** The doperpowers ask mod's tool, the model's one way to ask the human in an interactive session. */
+const ASK_TOOL = 'mcp__doperpowers__AskUserQuestion'
 
 /**
  * The mark the `to-human` output style asks the model to write: a message
@@ -329,9 +330,21 @@ const DELIVERED: ReadonlySet<string> = new Set([
   'plugin',
 ])
 
+/** The origins the person's own gesture stamps: Enter at the prompt, and a Remote Control client's message. */
+const TYPED: ReadonlySet<string> = new Set(['composer', 'bridge'])
+
+/**
+ * The line sminos opens every delivery with, whichever way it reaches the
+ * session (the bridge's prompt, a background job's reply, the inbox), naming
+ * who sent it: `human` for the person, else another session's alias.
+ */
+const SMINOS_FRAME = /^\[sminos message from (\S+) id=[0-9a-f]{8}\]/
+
 /** The props of a prompt row that say what it is. */
 export type PromptRowProps = {
   origin?: Pick<PromptOrigin, 'kind'>
+  /** What the row shows; a delivery's text opens with its sender's frame. */
+  text?: string
   /** Present when someone other than the person sent it: an agent, a teammate, another session, a channel. */
   from?: { name: string }
   /** Present on a notification row: the background task it reports on, an agent's run among them. */
@@ -342,7 +355,10 @@ export type PromptRowProps = {
  * The person's own words stay visible. Messages delivered by agents and
  * background notifications belong to the working record, except the
  * failure of an agent the report shows the spawn of (`spawns`, the calls'
- * ids): the spawn stays in the report, so its failure does too.
+ * ids): the spawn stays in the report, so its failure does too. A sminos
+ * delivery is read by its frame: the person's, sent from elsewhere, stays,
+ * and another session's is working record, though the bridge submits both as
+ * the person's words.
  */
 export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = new Set()): RowKind {
   const { task } = props
@@ -352,7 +368,12 @@ export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = n
   if (props.from !== undefined || task !== undefined) {
     return 'record'
   }
-  return props.origin !== undefined && DELIVERED.has(props.origin.kind) ? 'record' : 'user'
+  const kind = props.origin?.kind
+  const sender = kind !== undefined && TYPED.has(kind) ? undefined : SMINOS_FRAME.exec(props.text ?? '')?.[1]
+  if (sender !== undefined) {
+    return sender === 'human' ? 'user' : 'record'
+  }
+  return kind !== undefined && DELIVERED.has(kind) ? 'record' : 'user'
 }
 
 /**
@@ -725,7 +746,8 @@ const native = async ($: EngineInterface, e: object) =>
  * behind buttons, until a row is unfolded by its button or the whole
  * transcript by the band above the prompt. Agent spawns and their failures
  * stay in the report, and so does an API error that ends the turn; agent
- * messages and finish notifications are working record.
+ * messages, finish notifications and other sessions' messages are working
+ * record.
  */
 export function registerToHuman(on: On) {
   let hasSeenMark = false
@@ -1020,26 +1042,32 @@ export function registerToHuman(on: On) {
   })
 
   // The band above the prompt names the view and switches it: the whole
-  // transcript as the engine draws it, or the report.
+  // transcript as the engine draws it, or the report. Its line goes under
+  // what the hooks beneath draw there (the ask's open questions), which this
+  // plugin's hooks sit outside of.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
     }
 
+    const inner = await next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
 
     return (
-      <Box marginTop={1}>
-        <Text dimColor>to-human view · </Text>
-        <Button
-          key={MODE}
-          label={isFullTranscript ? 'report only' : 'full transcript'}
-          dimColor
-          onPress={() => {
-            isFullTranscript = !isFullTranscript
-          }}
-        />
+      <Box flexDirection="column">
+        {inner}
+        <Box marginTop={1}>
+          <Text dimColor>to-human view · </Text>
+          <Button
+            key={MODE}
+            label={isFullTranscript ? 'report only' : 'full transcript'}
+            dimColor
+            onPress={() => {
+              isFullTranscript = !isFullTranscript
+            }}
+          />
+        </Box>
       </Box>
     )
   })

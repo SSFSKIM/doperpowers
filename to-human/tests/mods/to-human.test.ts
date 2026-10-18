@@ -312,8 +312,8 @@ describe('runEnd', () => {
 })
 
 describe('transcript order', () => {
-  // The plugin the runner stages the mods as.
-  const PLUGIN = 'doperpowers-mods'
+  // The plugin under test.
+  const PLUGIN = 'to-human'
 
   test('the search lists each row by its id and each call by its tool_use_id, in the file\'s order', async () => {
     expect(placeArgs('/t.jsonl').at(-1)).toBe('/t.jsonl')
@@ -415,11 +415,23 @@ describe('promptRow', () => {
     expect(promptRow({ origin: { kind: 'peer-send-message' }, from: { name: 'lead' } })).toBe('record')
     expect(promptRow({ from: { name: 'reviewer' } })).toBe('record')
   })
+
+  test('a sminos delivery is read by its frame: the person\'s stays, another session\'s is working record', async () => {
+    // The bridge submits both as the person's words, under its own plugin's origin.
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos message from CI-opt id=2808a58d]\nCI-opt: the hold is granted.' })).toBe('record')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos message from human id=86388163]\nstatus?' })).toBe('user')
+    // The inbox frame, where no bridge runs, comes with no stamp the engine can name.
+    expect(promptRow({ origin: { kind: 'unclassified' }, text: '[sminos message from CI-opt id=2808a58d]\nhi' })).toBe('record')
+    // What the person typed is theirs, whatever it opens with.
+    expect(promptRow({ origin: { kind: 'composer' }, text: '[sminos message from CI-opt id=2808a58d]\nquoted' })).toBe('user')
+    // A plugin's other prompts stay working record.
+    expect(promptRow({ origin: { kind: 'plugin' }, text: 'Continue from the summary.' })).toBe('record')
+  })
 })
 
 describe('rows', () => {
-  // The plugin the runner stages the mods as.
-  const PLUGIN = 'doperpowers-mods'
+  // The plugin under test.
+  const PLUGIN = 'to-human'
 
   test('incoming messages fold into the surrounding run and remain available when unfolded', async ($, on) => {
     mock.env(on, {})
@@ -449,6 +461,51 @@ describe('rows', () => {
     await first.press({ key: 'to-human-toggle' })
     expect(await incoming.find({ type: 'Text', text: 'Review ready.' })).toBeDefined()
     expect(await last.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+  })
+
+  test('another session\'s sminos message folds into the run; the person\'s own stays', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    const delivery = (requestId: string, text: string) =>
+      $.ui.mount({
+        plugin: PLUGIN,
+        surface: 'terminal',
+        component: 'UserMessage',
+        requestId,
+        props: { text, origin: { kind: 'plugin', name: 'doperpowers', asUser: true }, isExpanded: false },
+      })
+    await message('m1', '<message>Waiting on CI.</message>')
+    const peer = await delivery('d1', '[sminos message from CI-opt id=2808a58d]\nCI-opt: the hold is granted.')
+    const own = await delivery('d2', '[sminos message from human id=86388163]\nstatus?')
+
+    expect(await peer.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await peer.find({ type: 'Text', text: '[sminos message from CI-opt id=2808a58d]\nCI-opt: the hold is granted.' })).toBeUndefined()
+    expect(await own.find({ type: 'Text', text: '[sminos message from human id=86388163]\nstatus?' })).toBeDefined()
+  })
+
+  test('the band draws its line under what the hooks beneath draw there', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    // Beneath the view: the ask's open-question line, as the doperpowers plugin draws it.
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [e.component === 'AbovePrompt' ? '1 open question' : String((e.props as { text?: string }).text ?? e.component)],
+    }))
+    await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Asked.</message>', isFirstOfReply: true } })
+    const band = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+    })
+    const texts = (await band.findAll({ type: 'Text' })).map((text) => text.text)
+    expect(texts[0]).toBe('1 open question')
+    expect(texts.some((text) => text.includes('to-human view'))).toBe(true)
+    expect(await band.find({ type: 'Button', text: 'full transcript' })).toBeDefined()
   })
 
   test('an agent\'s finish notification stands in the run it falls in', async ($, on) => {
@@ -496,7 +553,7 @@ describe('rows', () => {
 })
 
 describe('failures', () => {
-  const PLUGIN = 'doperpowers-mods'
+  const PLUGIN = 'to-human'
   const engineDrawing = (on: On) =>
     on('ui.render', (_, e) => ({
       type: 'Text',
@@ -564,7 +621,7 @@ describe('failures', () => {
 })
 
 describe('mixed', () => {
-  const PLUGIN = 'doperpowers-mods'
+  const PLUGIN = 'to-human'
 
   test('a marked message with record beside it draws the one button for itself and the run after it', async ($, on) => {
     mock.env(on, {})
@@ -593,7 +650,7 @@ describe('mixed', () => {
 })
 
 describe('surfaces', () => {
-  const PLUGIN = 'doperpowers-mods'
+  const PLUGIN = 'to-human'
   // An old transcript's question: its mark reads as a message, its choice lines as text.
   const QUESTION = 'Which branch?\n<choice recommended>main</choice>\n<choice>dev</choice>'
   const TEXT = `<message>One.</message>\n<need-input>${QUESTION}\n</need-input>`
@@ -701,7 +758,7 @@ describe('surfaces', () => {
     const marginTop = async (ui: { drawn: () => Promise<unknown> }) => ((await ui.drawn()) as { props?: { marginTop?: number } }).props?.marginTop
     expect(await marginTop(marked)).toBe(1)
     expect(await marginTop(record)).toBe(1)
-    expect(await marginTop(band)).toBe(1)
+    expect((await band.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text.includes('full transcript'))).toBe(true)
     // A mixed message's button stands a line below its body.
     expect((await mixed.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text === 'working record')).toBe(true)
   })

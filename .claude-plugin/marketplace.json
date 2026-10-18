@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "Emerges by humans, Converges by Agent",
-      "version": "7.170.0",
+      "version": "7.171.0",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -41,6 +41,18 @@
         "email": "supremekim17@gmail.com"
       },
       "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/devcloud",
+      "license": "MIT"
+    },
+    {
+      "name": "to-human",
+      "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind [ working record ] buttons",
+      "version": "0.1.0",
+      "source": "./to-human",
+      "author": {
+        "name": "SSFSKIM",
+        "email": "supremekim17@gmail.com"
+      },
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/to-human",
       "license": "MIT"
     }
   ]
