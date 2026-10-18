@@ -698,6 +698,41 @@ PY
 }
 _alive() { [ "$(_liveness "$1")" = live ]; }
 
+# DOES A STAMPED HAND-OFF STILL HOLD? `stall_exhausted` was decided on a
+# reading that has aged since. The worker may have been woken (the relay, an
+# operator, a native SendMessage) and be mid-turn, or have answered as itself
+# and gone idle again, or be waiting on a human. Ending the run then takes it
+# from a worker that is working, and since the hand-off ENDS the run and
+# retires the meta rather than letting a lease decay, there is no slower
+# failure to fall back on. So the arm re-decides from the seat as it stands
+# now: the caller's liveness call has synced the record, and an idle seat's
+# turn goes back through _stall_step, the one place the hand-off is decided —
+# `spent` still hands off, `clear` is a recovery and keeps the run, and
+# `human`, `busy` or anything unsettled keeps it for this tick. A session the
+# harness no longer has is handed off as before: there is no worker left to
+# take it from. Returns 0 when the run should be ended now.
+_handoff_due() {  # <uuid> <meta path> <run> <ticket> <liveness>
+  local reply verdict
+  [ "$5" != dead ] || return 0
+  [ "$(_meta_field "$2" status)" = idle ] || return 1
+  # An unreadable or empty turn settles nothing (see phase_stall): keep the
+  # run, and the next tick decides on a turn it can read.
+  reply="$(_stall_reply "$1")" || return 1
+  case "$reply" in *[![:space:]]*) ;; *) return 1 ;; esac
+  verdict=""
+  IFS=$'\x1f' read -r verdict _ < <(_stall_step "$2" "$3" "$reply" 0 "") || true
+  case "$verdict" in
+    spent | exhausted) return 0 ;;
+    clear)
+      # The recovery phase 1b would have seen later in this tick, seen here
+      # first — so it does what phase 1b does with one, the ticket's cycles
+      # included.
+      echo "run $3: $1 answers as itself again — its spent harness-error ladder is cleared and the run is kept"
+      _stall_cycles "$4" clear ;;
+  esac
+  return 1
+}
+
 # ---- phase 1: lease renewal + bind repair ----------------------------------
 phase_renew() {
   # Every column gets its own name, including the ones this phase ignores.
@@ -706,12 +741,16 @@ phase_renew() {
   # against the 0x1f contract above, which is where the real field-shift bug
   # lived (tab as IFS whitespace collapsed the empty bearer column and the
   # fence came back as the lane).
-  local uuid run bindc ticket bearer fence lane status sexhausted path rc
+  local uuid run bindc ticket bearer fence lane status sexhausted path rc live
   RENEWED_AT="$(date +%s)"
   # shellcheck disable=SC2034  # the trailing names exist to hold the columns
   while IFS=$'\x1f' read -r uuid run bindc ticket bearer fence lane status \
                             sexhausted path; do
     [ -n "$run" ] || continue
+    # The liveness call is also the SYNC — it reconciles the record with the
+    # harness and promotes a natively woken seat to working — so it runs ahead
+    # of the hand-off arm, which reads the record it leaves.
+    live="$(_liveness "$uuid")"
     # THE HARNESS-ERROR LADDER IS SPENT → GIVE THE RUN UP. Phase 1b nudged
     # this worker every attempt it had and the turn still ends on a harness
     # error. Automation holds no transition authority on this binding, so the
@@ -727,7 +766,10 @@ phase_renew() {
     # half: the attempts are gone AND the seat is idle on a harness error
     # again. It carries the run id because the ladder is per run — a successor
     # claimed onto this same seat starts fresh and inherits no exhaustion.
-    if [ -n "$sexhausted" ] && [ "$sexhausted" = "$run" ]; then
+    # And the stamp is a reading, not a standing order: _handoff_due asks
+    # whether it still holds before anything is ended.
+    if [ -n "$sexhausted" ] && [ "$sexhausted" = "$run" ] \
+       && _handoff_due "$uuid" "$path" "$run" "$ticket" "$live"; then
       # END IT, DO NOT MERELY STOP RENEWING. dp#58 words the hand-off as
       # "leave the lease to expire", and that is one word short of safe: a run
       # this phase never calls renew for never answers 409 run-ended, so
@@ -773,7 +815,7 @@ PY
     # A `forked` session still gets its lease: an unresolved fork may well be
     # running on that run, and expiring the lease under it would hand the same
     # ticket to a successor while the fork keeps writing.
-    [ "$(_liveness "$uuid")" != dead ] || continue
+    [ "$live" != dead ] || continue
     rc=0
     T_RUN="$run" _api_py - <<'PY' || rc=$?
 import os, sys
@@ -909,10 +951,17 @@ _tick_renew() { phase_renew interleaved || true; }
 # env-issue.
 
 # The seat's latest turn, as the sminos CLI itself renders it — `sminos reply`
-# is where "what did this seat last say" is already owned, including the two
-# renderings that must NOT read as errors (a pending AskUserQuestion, the
-# harness-prompt marker). Only what follows the fixed separator is the turn:
-# the header block carries the seat's TASK line, which may quote anything.
+# is where "what did this seat last say" is already owned. Only what follows
+# the fixed separator is the turn: the header block carries the seat's TASK
+# line, which may quote anything.
+#
+# A SEAT WAITING ON A HUMAN RENDERS ITS OLD TEXT FIRST. sminos takes the last
+# assistant message that CARRIES TEXT and APPENDS a marker line after it — the
+# pending AskUserQuestion (transcript_reply) or the harness-prompt one
+# (record_reply, for a turn that ended blocked with no question), and maps that
+# ended-blocked turn to status `idle`. So a worker woken after a 429 whose next
+# turn stopped at a prompt before writing a word renders as the 429 followed by
+# the marker; _stall_step reads the markers as a verdict of their own.
 #
 # AND ITS EXIT STATUS IS HALF THE ANSWER. Piped straight into awk, the
 # pipeline's status was awk's — so a `sminos reply` that died printed an empty
@@ -947,8 +996,13 @@ EOF
 # One meta's ladder step, decided and recorded in a single pass under the
 # registry's metalock. Prints "<verdict>0x1f<attempts>0x1f<error line>":
 #   none       the turn is not a harness error and no marker stands
+#   human      the seat is waiting on a human (a pending AskUserQuestion or a
+#              harness prompt): nothing is marked, cleared or charged, so a
+#              standing ladder neither advances nor resets while it waits
 #   clear      it is not one any more — the marker is gone, the ladder reset
 #   stale      the meta no longer names this run (a renewal retired it mid-phase)
+#   busy       the seat no longer reads idle under the lock — a wake landed
+#              after the caller's unlocked reading; nothing is written
 #   mark       marker stamped; the first nudge is not due yet
 #   hold       the marker stands and the next nudge is not due yet
 #   blocked    the nudge is DUE and the caller has said it cannot issue one
@@ -1118,6 +1172,17 @@ def prose_reset(text):
     return int(when.timestamp())
 
 
+# A SEAT WAITING ON A HUMAN IS NOT A DEAD TURN, whatever its first line says
+# (see _stall_reply: sminos appends these markers AFTER the last text, so that
+# line can be an error from an earlier turn). dp#58 names this case as one the
+# phase leaves alone, and a nudge here would interrupt the very call the human
+# is being asked about. Decided before the lock because it writes nothing. The
+# openings are sminos's own (transcript_reply, record_reply), pinned there by
+# test-sweep-stall.sh so a rewording cannot silently reopen this.
+HUMAN_RE = re.compile(r"^\[(?:pending AskUserQuestion|blocked on a harness prompt) — ")
+if any(HUMAN_RE.match(ln) for ln in lines):
+    say("human")
+
 lock = open(os.path.join(env["T_DHOME"], ".metalock"), "a")
 fcntl.flock(lock, fcntl.LOCK_EX)
 try:
@@ -1131,6 +1196,13 @@ try:
     # withhold a lease from whatever run comes next.
     if str(meta.get("run_id", "")) != run:
         say("stale")
+    # AND THE IDLE READING IS RE-TAKEN HERE, under the lock every sminos writer
+    # takes. The caller's candidate gate read `idle` outside it, and a wake
+    # landing since — the relay, an operator, a native SendMessage — leaves the
+    # seat working: a ladder charged or a hand-off stamped on that reading
+    # would act on a worker that is mid-turn.
+    if str(meta.get("status", "")) != "idle":
+        say("busy")
 
     marked = str(meta.get("stall_run", "")) == run
 
@@ -1328,8 +1400,9 @@ phase_stall() {
         fi ;;
       '') echo "stall: #$ticket run $run — the ladder step failed for $uuid; retried next tick" >&2 ;;
       # stale (the run ended under this scan), none (not a harness error),
-      # hold (the window has not passed) and spent (already handed off) are all
-      # non-actions, and a tick logs actions.
+      # hold (the window has not passed), spent (already handed off), human
+      # (waiting on a person) and busy (woken since the candidate read) are
+      # all non-actions, and a tick logs actions.
       *) ;;
     esac
   done < <(_registry_metas)
