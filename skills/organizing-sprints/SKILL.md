@@ -60,7 +60,7 @@ Create a task per phase; complete them in order.
 5. **Author the umbrella spec** — per `references/sprint-spec-template.md`,
    born landed: v1 already carries the grill's decisions. Acceptance
    criteria are observable behavior. No per-epic plans of work —
-   a big epic's Architect derives its plan at dispatch time, from this document.
+   a big epic's plan is derived when the epic is taken, from this document.
 6. **Self-review, then the human gate** — scan for placeholders,
    contradictions, and untraceable observations (every atomized observation
    maps to an epic, a maintenance bundle, a deferral, or an explicit park).
@@ -69,7 +69,8 @@ Create a task per phase; complete them in order.
 7. **Materialize onto the board** — see Materialization below. Often a
    separate session: the spec's tracking-map section is the handoff
    contract.
-8. **Hand off, keep the spec alive** — show the board; dispatch per
+8. **Hand off, keep the spec alive** — show the board; your human partner
+   names the tickets that go, and each is taken per
    doperpowers:issue-tracker. During the sprint the spec's Progress /
    Decision Log / Surprises stay current; the retrospective closes it; its
    Deferred section seeds the next organizing run.
@@ -159,7 +160,7 @@ spec is self-contained).
   product-core work, `--state deferred` for next-milestone reservations —
   notes required).
 - Ticket bodies are fleshed to the pre-spec bar: self-contained, so a
-  fresh-context worker can gate from the body alone. Carry the epic's
+  fresh-context session can take it from the body alone. Carry the epic's
   decisions and acceptance criteria INTO the body, and cite the spec's epic
   section (path + epic id) for surrounding context — the citation is
   context, not a substitute for self-containment.
@@ -182,7 +183,7 @@ spec is self-contained).
 | Building from the note | The verification table is truth; the note is testimony. A misread built as-written ships the reverse of what was wanted. |
 | Authoring the spec, then grilling | Born-landed beats revised: land the grill first, author once. |
 | Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
-| Per-epic plans of work in the umbrella | The umbrella stops at observable acceptance criteria; each epic's plan derives downstream at dispatch time. |
+| Per-epic plans of work in the umbrella | The umbrella stops at observable acceptance criteria; each epic's plan derives downstream when the epic is taken. |
 | Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
 | Re-running this skill on already-materialized tickets | Duplicate process. Targeted reinforcement instead: answer on the tickets, register only the deltas. |
 | Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |
