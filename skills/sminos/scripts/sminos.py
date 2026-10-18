@@ -38,6 +38,8 @@ member too, seat-less, from the first call that reads its project.
                    request; the running tool goes on (no bridge: a --bg job's supervisor, else a frame)
     sminos interrupt <member>                             # stop the running turn, and any Bash it moved to
                    the background, as Esc does (needs the bridge)
+    sminos stop     <member> <task>                       # stop a background shell or monitor of its, the main
+                   loop's or a subagent's, with TaskStop (needs the bridge)
     sminos model    <member> <model|default> [--effort E] # the model (and effort) of this session's next
                    requests; the user's settings untouched (needs the bridge)
     sminos compact  <member> [instructions]               # compact now, or when the running turn ends
@@ -5852,6 +5854,10 @@ def cmd_interrupt(a):
     control_module().cmd_interrupt(a)
 
 
+def cmd_stop(a):
+    control_module().cmd_stop(a)
+
+
 def cmd_model(a):
     control_module().cmd_model(a)
 
@@ -6098,6 +6104,11 @@ def build_parser():
     it = sub.add_parser("interrupt", add_help=False)
     it.add_argument("member")
     it.set_defaults(fn=cmd_interrupt)
+
+    st = sub.add_parser("stop", add_help=False)
+    st.add_argument("member")
+    st.add_argument("task")
+    st.set_defaults(fn=cmd_stop)
 
     mo = sub.add_parser("model", add_help=False)
     mo.add_argument("member")

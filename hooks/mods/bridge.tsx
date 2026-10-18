@@ -196,6 +196,8 @@ function commandAnswer($: EngineInterface, command: Command): Answer | Promise<A
       return steer($, command.text)
     case 'interrupt':
       return interrupt($, command.from)
+    case 'stop':
+      return stopTask($, command.taskId, command.from)
     case 'model':
       return chooseModel($, command.model, command.effort)
     case 'compact':
@@ -222,6 +224,10 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   // Kept as the interrupt's marker row is (isMeta, from this plugin), it would be one.
   if (isInterruptText(text)) {
     return { ok: false, error: 'that text is the interrupt marker, which would read as an interrupt: interrupt the session instead' }
+  }
+  // Kept so too, it would read as the bridge's note that a task was stopped.
+  if (isNoteText(text)) {
+    return { ok: false, error: "that text is the bridge's note of a stop or an interrupt, which would read as one: stop the task or interrupt the session instead" }
   }
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
@@ -350,6 +356,78 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   }
 }
 
+/** A task id as the engine spells one (DX6 `stop`). */
+const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * One background shell or monitor stopped, the main loop's or a subagent's,
+ * as TaskStop stops it in the terminal. TaskStop also ends an agent, named by
+ * its id or its name, so an id the engine's agent list names is refused before
+ * the call. The engine's refusal (a task that already ended, one it does not
+ * know) is the answer's error, in its words.
+ *
+ * A plugin's TaskStop writes no row, and for a task of the main loop's the
+ * engine queues no notification (a subagent's own is told at its next tool
+ * batch): so, as an interrupt does, the stop leaves the model a note, which is
+ * also the rows' record that the task stopped (DX4 reads it). The note is in
+ * whether a turn runs or not: an idle session reads it at its next request.
+ */
+async function stopTask($: EngineInterface, taskId: unknown, from: unknown): Promise<Answer> {
+  if (typeof taskId !== 'string' || !TASK_ID.test(taskId)) {
+    return { ok: false, error: 'stop needs a task id' }
+  }
+  const agents = await $.agent.list()
+  if (agents.some((a) => a.id === taskId || a.name === taskId)) {
+    return { ok: false, error: `${taskId} is an agent, not a background shell or monitor` }
+  }
+  const r = await $.tool.call({ tool: 'TaskStop', task_id: taskId })
+  if (r.isError === true) {
+    return { ok: false, error: engineError(r.text) }
+  }
+  await recordStop($, taskId, from)
+  return { ok: true, result: { taskId } }
+}
+
+/** A tool's error text without the engine's `<tool_use_error>` wrapping. */
+function engineError(text: string | undefined): string {
+  const t = (text ?? '').replace(/^\s*<tool_use_error>([\s\S]*)<\/tool_use_error>\s*$/, '$1').trim()
+  return t === '' ? 'TaskStop failed' : t
+}
+
+/** The line a stop leaves the model, and DX4 reads as the row's whole text (sminos_jobs.STOP_NOTE). */
+export function stopNote(taskId: string, from: unknown): string {
+  return `Task ${taskId}, a background task, was stopped from ${from === 'desk' ? 'the desk' : 'outside the terminal'}: it is not running.`
+}
+
+const STOP_NOTE = /^Task [A-Za-z0-9_-]{1,64}, a background task, was stopped from (?:the desk|outside the terminal): it is not running\.$/
+
+/**
+ * A text DX4 would read as one of the bridge's notes, were it appended as a
+ * steer is (isMeta, from the plugin): a stop's note whole, or a text opening
+ * on an interrupt note's first line.
+ */
+function isNoteText(text: string): boolean {
+  const t = text.trim()
+  const first = t.split('\n')[0]
+  return STOP_NOTE.test(t) || first === interruptOrigin('desk') || first === interruptOrigin('cli')
+}
+
+/** The stop's note, kept as the interrupt's is (isMeta, from the plugin) and mirrored in the transcript. */
+async function recordStop($: EngineInterface, taskId: string, from: unknown) {
+  const text = stopNote(taskId, from)
+  try {
+    const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    if (stored.deny !== undefined) {
+      $.ui.log(`bridge: the stop's note was refused: ${stored.deny}`, { to: 'debug' })
+      return
+    }
+    noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+    $.ui.log(`stop: ${text}`)
+  } catch (error) {
+    $.ui.log(`bridge: the stop's note was not appended: ${message(error)}`, { to: 'debug' })
+  }
+}
+
 /** Esc's own marker, whole: the one text a transcript's reader knows a turn's interrupt by. */
 const INTERRUPT_MARKER = '[Request interrupted by user]'
 
@@ -368,9 +446,13 @@ function isInterruptText(text: string): boolean {
  * and each Bash call it moved to the background, whose result says the
  * command runs on there.
  */
+function interruptOrigin(from: unknown): string {
+  return `The interrupt came from ${from === 'desk' ? 'the desk' : 'outside the terminal'}.`
+}
+
 function interruptNote(from: unknown, stops: Stops): string {
   return [
-    `The interrupt came from ${from === 'desk' ? 'the desk' : 'outside the terminal'}.`,
+    interruptOrigin(from),
     ...stops.stopped.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`),
     ...stops.running.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`),
   ].join('\n')

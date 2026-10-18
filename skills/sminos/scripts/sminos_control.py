@@ -1,11 +1,11 @@
 """The control verbs and a delivery's last hop (DC2 M2, contract DX5).
 
-`sminos steer|interrupt|model|compact <member>` act on a session through its
+`sminos steer|interrupt|stop|model|compact <member>` act on a session through its
 bridge: a command on the session's endpoint (sminos_bridge), answered by the
 bridge mod. A session with no bridge falls back as the desk's design (§5) has
 it: a steer to a --bg job goes through the engine supervisor's `reply`, to a
-terminal session as a cross-session frame on its inbox; interrupt, model and
-compact need the bridge and are refused, saying so.
+terminal session as a cross-session frame on its inbox; interrupt, stop, model
+and compact need the bridge and are refused, saying so.
 
 `push_live` is a delivery's last hop to a live session, for the log's
 delivery and `send` alike: the bridge, which submits the text as the human's
@@ -245,6 +245,15 @@ def cmd_interrupt(a):
     if running:
         S.die("interrupt of %s is incomplete: background task%s %s still running (TaskStop failed)" % (
             a.member, "s" if len(running) > 1 else "", ", ".join(running)), 1)
+
+
+def cmd_stop(a):
+    """A background shell or monitor of the member's stopped with TaskStop,
+    the main loop's or a subagent's."""
+    _, result = bridged(a.member, "stop", {"op": "stop", "taskId": a.task})
+    if result is None:
+        no_bridge(a.member, "stop")
+    print("stopped %s's background task %s" % (a.member, result.get("taskId") or a.task))
 
 
 def cmd_model(a):

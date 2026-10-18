@@ -19,6 +19,7 @@ import {
   registerBridge,
   resetBridge,
   splitLines,
+  stopNote,
 } from '../../hooks/mods/bridge'
 
 tier('user')
@@ -878,6 +879,27 @@ describe('steer', () => {
     expect(await h.command({ op: 'steer', text: 'why did you print [Request interrupted by user]?' })).toMatchObject({ ok: true })
   })
 
+  test("a steer whose text is one of the bridge's stop or interrupt notes is refused, nothing appended: DX4 would read it as a task stopped", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const moved = 'Task b1, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.'
+    for (const text of [
+      stopNote('b1', 'desk'),
+      `  ${stopNote('b1', 'cli')}\n`,
+      `The interrupt came from the desk.\n${moved}`,
+      'The interrupt came from outside the terminal.',
+      `\nThe interrupt came from the desk.\n${moved}\nand more`,
+    ]) {
+      expect(await h.command({ op: 'steer', text })).toMatchObject({ ok: false, error: expect.stringContaining('stop the task or interrupt the session instead') })
+    }
+    expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
+    // A note quoted inside a steer is a steer, and DX4 reads no note in it.
+    for (const text of [`please stop: ${stopNote('b1', 'desk')}`, `why?\nThe interrupt came from the desk.\n${moved}`]) {
+      expect(await h.command({ op: 'steer', text })).toMatchObject({ ok: true })
+    }
+  })
+
   test('idle: refused, nothing appended (a send is how an idle session is reached)', async () => {
     const h = harness()
     await h.ready()
@@ -1217,6 +1239,61 @@ async function stepThrough(h: ReturnType<typeof harness>, e: Record<string, unkn
   }
   await h.settle()
 }
+
+describe('stop', () => {
+  test("a background task stopped with TaskStop, idle or mid-turn, whoever started it: the main loop's or a subagent's", async () => {
+    const h = harness()
+    await h.ready()
+    expect(await h.command({ op: 'stop', taskId: 'bsh01', from: 'desk' })).toMatchObject({ ok: true, result: { taskId: 'bsh01' } })
+    await h.turn('t1')
+    expect(await h.command({ op: 'stop', taskId: 'mon_02' })).toMatchObject({ ok: true, result: { taskId: 'mon_02' } })
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([
+      { op: 'tool', args: { tool: 'TaskStop', task_id: 'bsh01' } },
+      { op: 'tool', args: { tool: 'TaskStop', task_id: 'mon_02' } },
+    ])
+    expect(h.calls.some((c) => c.op === 'abort'), 'the turn runs on').toBe(false)
+  })
+
+  test('each stop leaves the model a note, the rows\' record that the task stopped: from the desk, or from outside the terminal', async () => {
+    const h = harness()
+    await h.ready()
+    await h.command({ op: 'stop', taskId: 'bsh01', from: 'desk' })
+    await h.command({ op: 'stop', taskId: 'mon_02' })
+    const record = said(h.conversation)
+    expect(record).toContain('Task bsh01, a background task, was stopped from the desk: it is not running.')
+    expect(record).toContain('Task mon_02, a background task, was stopped from outside the terminal: it is not running.')
+    expect(stopNote('bsh01', 'desk')).toBe('Task bsh01, a background task, was stopped from the desk: it is not running.')
+  })
+
+  test("the engine's refusal is the answer's error, in its words without the tool-error wrapping; no note", async () => {
+    const h = harness({ taskStopFails: ['gone01'] })
+    await h.ready()
+    ;(h.engine as unknown as { tool: { call: (a: Record<string, unknown>) => Promise<unknown> } }).tool.call = async () => ({
+      text: '<tool_use_error>Task gone01 is not running (status: completed)</tool_use_error>',
+      isError: true,
+    })
+    expect(await h.command({ op: 'stop', taskId: 'gone01' })).toMatchObject({ ok: false, error: 'Task gone01 is not running (status: completed)' })
+    expect(said(h.conversation)).not.toContain('gone01')
+  })
+
+  test("an agent's id or name is refused before any TaskStop, which would end the agent", async () => {
+    const h = harness({ agents: [{ id: 'a1b2c3d4e5f6a7b8c', description: 'Find it', type: 'general-purpose', status: 'running', name: 'finder' }] })
+    await h.ready()
+    for (const taskId of ['a1b2c3d4e5f6a7b8c', 'finder']) {
+      expect(await h.command({ op: 'stop', taskId })).toMatchObject({ ok: false, error: `${taskId} is an agent, not a background shell or monitor` })
+    }
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([])
+  })
+
+  test('a task id that is none is refused before any TaskStop', async () => {
+    const h = harness()
+    await h.ready()
+    for (const taskId of [undefined, '', 'a b', 'x'.repeat(65), 7]) {
+      expect(await h.command({ op: 'stop', taskId })).toMatchObject({ ok: false, error: 'stop needs a task id' })
+    }
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([])
+  })
+})
 
 describe('model and effort', () => {
   test("rewritten on each of the main loop's requests, not a subagent's; reported in the step and as an event", async () => {

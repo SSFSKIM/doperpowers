@@ -820,6 +820,44 @@ a full backlog refuses too). The child's listen backlog is 128.
   interrupt said "idle: nothing to interrupt" with exit 0, compact ran at once, and steer
   was refused as idle.
 
+#### DC10 extension (stop a job; the desk composite's DC10, DX6 `stop`)
+
+- **Command `stop`** `{taskId, from?}` → `{taskId}`. `taskId` matches `[A-Za-z0-9_-]{1,64}`,
+  else `{ok: false, error: "stop needs a task id"}`. An id or a name the engine's agent list
+  (`$.agent.list()`) holds is refused, `"<id> is an agent, not a background shell or
+  monitor"`, before any call: TaskStop also ends an agent named by its id or its name. Then
+  `$.tool.call({tool: "TaskStop", task_id})`, idle or mid-turn, no turn aborted. An `isError`
+  result is `{ok: false, error}`, the engine's text without its `<tool_use_error>` wrapping
+  (`No task found with ID: <id>…`, `Task <id> is not running (status: <status>)`). On
+  success the mod appends one user row, kept `isMeta` with `origin: {kind: "plugin"}` as the
+  interrupt's are, named by a `row-seen` notice (door `note`) and mirrored on the transcript
+  line as `stop: <text>`: `Task <id>, a background task, was stopped from the desk: it is not
+  running.` (`from: "desk"`, which the daemon's RPC sends) or `… from outside the terminal: …`.
+  A refused or failed append is logged and the answer is still `ok` (the task is stopped). Not
+  a turn verb: it is answered while the turn state is unknown.
+- **Why the note** (engine 2.1.300, read for DC10): a plugin's `$.tool.call` runs the tool as
+  the main session (no `agentId`) and persists neither its call nor its result, and for a
+  task the main session owns, TaskStop marks it `killed` and `notified`, so no
+  task-notification follows. Without the note the model would wait on a notification that
+  never comes, and the rows would hold no word that the task stopped. TaskStop looks the task
+  up in the session-wide registry, and a main-session caller may stop any task, a
+  subagent's shell or monitor included; for a subagent's task the engine also queues a
+  `<status>stopped</status>` notification to that subagent, folded into its transcript at
+  its next tool batch (dropped if the agent ends first). TaskStop answers before the process
+  has died: SIGTERM to the tree at once, SIGKILL to the group after 1.5 s.
+- **DX4 reads the note** (`sminos_jobs.STOP_NOTE`) by the row's whole text, never by a line
+  found in it, since a steer's row is kept isMeta from the plugin too: the stop's note
+  exactly, or the interrupt's (its `The interrupt came from …` line, then only its
+  `… was then stopped: …` and `… could not be stopped: …` lines), each stopped line
+  `stopped` for its task, so a task an interrupt stopped no longer reads `running`. `steer`
+  refuses a text that would read as either note. A subagent's subscription takes the main
+  loop's record of its own jobs after its own rows (`jobs_body(also=…)`). The RPC's check
+  (`task_rows`) searches only the task's exact references (a whole JSON string, a
+  notification's `<task-id>`, the note's `Task <id>, `), so a short id reads no more rows
+  than name it.
+- **Verb** `sminos stop <member> <task>`: op `stop`; prints `stopped <member>'s background
+  task <id>`; the mod's refusal exits 1 with its reason; no bridge, exit 4 "no bridge".
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
