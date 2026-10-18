@@ -1965,6 +1965,23 @@ class ChainRules(unittest.TestCase):
         self.assertEqual(sorted(on), sorted(r["uuid"] for r in (a, b, ra, rb)), "the whole response, both results")
         self.assertEqual(c.offs, {other["uuid"]})
 
+    def test_rows_brought_back_stand_in_the_order_they_were_written(self):
+        """A later branch cuts by where rows stand on the chain, so a result
+        brought back with its response stands before the turn that followed."""
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        prompt = t.prompt("check both")
+        a, b = t.tool_call("toolu_a", "m1"), t.tool_call("toolu_b", "m1")
+        ra, rb = t.tool_result("toolu_a", a), t.tool_result("toolu_b", b)
+        answer = t.answer("both pass", "m2")     # after rb: the branch back runs through rb, not ra
+        other = t.prompt("never mind", parent=prompt["uuid"])
+        back = t.prompt("go on", parent=answer["uuid"])
+        fork = t.prompt("redo a", parent=ra["uuid"])
+        got = self.feed(c, before + [prompt, a, b, ra, rb, answer, other, back, fork])
+        self.assertEqual(got[fork["uuid"]], ([answer["uuid"], back["uuid"]], []),
+                         "the turn after the response goes; the response's rows stay")
+        self.assertEqual(c.offs, {other["uuid"], answer["uuid"], back["uuid"]})
+
     def test_a_cascade_reports_each_rows_net_move(self):
         """Waiting rows placed in one cascade can move a row more than once;
         what the row reports is where each ended up."""

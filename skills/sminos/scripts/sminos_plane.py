@@ -352,6 +352,7 @@ class Chain:
     def __init__(self, main=True):
         self.main = main
         self.parent = {}       # uuid → its parentUuid (None: a root), every row seen
+        self.seq = {}          # uuid → its place in the file's order
         self.progress = set()
         self.source = {}       # a tool result's uuid → the assistant it answers
         self.group = {}        # an assistant's uuid → its response's message id
@@ -366,7 +367,7 @@ class Chain:
 
     def copy(self):
         c = Chain(self.main)
-        c.parent, c.progress, c.source = dict(self.parent), set(self.progress), dict(self.source)
+        c.parent, c.seq, c.progress, c.source = dict(self.parent), dict(self.seq), set(self.progress), dict(self.source)
         c.group, c.groups = dict(self.group), {k: list(v) for k, v in self.groups.items()}
         c.results = {k: list(v) for k, v in self.results.items()}
         c.waiting = {k: list(v) for k, v in self.waiting.items()}
@@ -389,6 +390,7 @@ class Chain:
         p = row.get("parentUuid")
         p = p if isinstance(p, str) and p else None
         self.parent[u] = p
+        self.seq[u] = len(self.seq)
         message = row.get("message") if isinstance(row.get("message"), dict) else {}
         content = message.get("content")
         if row.get("type") == "progress":
@@ -477,14 +479,15 @@ class Chain:
                 self.join(r)
             else:
                 self.leave(r)
-        back = collections.deque(reversed(walk))
-        while back:
-            r = back.popleft()
-            if r in self.pos:
-                continue
+        back, todo = set(), list(walk)
+        while todo:
+            r = todo.pop()
+            if r not in back:
+                back.add(r)
+                todo.extend(a for a in self.groups.get(self.group.get(r), ()) if a in self.offs)
+                todo.extend(t for t in self.results.get(r, ()) if t in self.offs)
+        for r in sorted(back, key=self.seq.__getitem__):   # in the order they were written, as they first stood
             self.join(r)
-            back.extend(a for a in self.groups.get(self.group.get(r), ()) if a in self.offs)
-            back.extend(t for t in self.results.get(r, ()) if t in self.offs)
         self.join(x)
 
 
