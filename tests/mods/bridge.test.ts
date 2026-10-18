@@ -5,6 +5,7 @@ import { ASK_TOOL } from '../../hooks/mods/ask'
 import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
+  DELIVERY_WAKE,
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
   RECORD_WAIT_MS,
@@ -12,6 +13,8 @@ import {
   ROWS_POLL_MS,
   STEER_WAKE,
   STEP_END_WAIT_MS,
+  STOPPED_ERROR,
+  STOP_DROP_WAIT_MS,
   TRANSCRIPT_RETRY_MS,
   TEXT_CAP,
   compacted,
@@ -113,6 +116,8 @@ function harness(
     agents?: Record<string, unknown>[]
     /** `$.prompt.submit` resolves dropped, with this reason. */
     submitDrops?: string
+    /** `$.prompt.submit` waits until the test settles it (`submits`), as a prompt taken does until its turn starts. */
+    holdSubmit?: boolean
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -146,6 +151,8 @@ function harness(
   const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
   /** Appends held by `holdAppend`, each released by the test. */
   const appends: (() => void)[] = []
+  /** Submits held by `holdSubmit`, each settled by the test with what `$.prompt.submit` resolves to. */
+  const submits: ((entered: Record<string, unknown>) => void)[] = []
   /** The rows the mod's appends put in the main conversation, in order; and what each model request carried of them. */
   const conversation: { type: string; content: { type: string; text: string }[] }[] = []
   const requests: (typeof conversation)[] = []
@@ -230,6 +237,9 @@ function harness(
     prompt: {
       submit: async (args: unknown) => {
         calls.push({ op: 'submit', args })
+        if (options.holdSubmit) {
+          return new Promise((resolve) => submits.push(resolve))
+        }
         return options.submitDrops !== undefined ? { drop: options.submitDrops } : { text: String((args as { text?: unknown }).text) }
       },
     },
@@ -457,6 +467,7 @@ function harness(
     calls,
     compactions,
     appends,
+    submits,
     conversation,
     requests,
     command,
@@ -1662,21 +1673,80 @@ describe('deliver', () => {
     expect(h.apiReads()).toBe(1)
   })
 
-  test("idle: a prompt the engine drops because the human stopped the session goes in as a row, starting no turn; it is checked when the next turn starts", async () => {
+  test('idle: a prompt the engine refuses because the human stopped the session is answered not-ok for sminos to send as an inbox frame: its mark put back, no `submitted`, no `refused`, no row', async () => {
+    const options: NonNullable<Parameters<typeof harness>[0]> = { submitDrops: 'the session was stopped and nobody has sent input since' }
+    const h = harness(options)
+    await h.ready()
+    const key = { project: 'p1', writer: 'mac/s1', seq: 7 }
+    const r = await h.command({ op: 'deliver', key, text: 'while stopped' })
+    expect(r).toMatchObject({ ok: false })
+    expect(r.error).toBe(`${STOPPED_ERROR}: the session was stopped and nobody has sent input since`)
+    await h.settle()
+    expect(h.calls.map((c) => c.op)).toEqual(['submit'])
+    expect(h.ofType('delivered')).toEqual([])
+    expect(h.ofType('inbox')).toEqual([])
+    // The key is free again: once the human has sent input, the same event is taken.
+    options.submitDrops = undefined
+    expect(await h.command({ op: 'deliver', key, text: 'while stopped' })).toMatchObject({ ok: true, result: { submitted: true } })
+    expect(h.ofType('delivered').map((e) => [e.key, e.outcome])).toEqual([[key, 'submitted']])
+    // The mark is put back to what it was before, not cleared.
+    options.submitDrops = 'the prompt was removed from the queue before it ran'
+    expect(await h.command({ op: 'deliver', key: { ...key, seq: 8 }, text: 'eight' })).toMatchObject({ ok: false })
+    expect(await h.command({ op: 'deliver', key, text: 'while stopped' })).toMatchObject({ result: { duplicate: true } })
+  })
+
+  test('idle: a prompt taken is answered `submitted` once the wait for a stop has passed; a stop that drops it after that (an Esc emptied the queue) sends it to the child as an inbox frame, with its key', async () => {
+    const h = harness({ holdSubmit: true })
+    await h.ready()
+    const key = { project: 'p1', writer: 'mac/s1', seq: 2 }
+    h.children[0]!.write(line({ id: 'held', op: 'deliver', key, text: 'queued words' }))
+    await h.settle()
+    expect(h.ofType('result').find((e) => e.id === 'held')).toBeUndefined()
+    await h.fire(STOP_DROP_WAIT_MS)
+    expect(h.ofType('result').find((e) => e.id === 'held')).toMatchObject({ ok: true, result: { submitted: true } })
+    h.submits[0]!({ drop: 'the prompt was removed from the queue before it ran' })
+    await h.settle()
+    expect(h.ofType('inbox')).toEqual([expect.objectContaining({ text: 'queued words', key })])
+    expect(h.ofType('delivered').map((e) => e.outcome)).toEqual(['submitted'])
+    expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
+  })
+
+  test('a delivered row a stopped turn left unread wakes the session once through its inbox (the engine refuses the prompt then); one a request read, or a steer, wakes nothing', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'unread one' })
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 2 }, text: 'unread two' })
+    await h.complete('t1', 'aborted')
+    expect(h.ofType('inbox').map((e) => [e.text, e.key])).toEqual([[DELIVERY_WAKE, undefined]])
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+    // The rows held, the next turn lets them go; it reads a new one before its Esc.
+    await h.turn('t2')
+    await h.settle()
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 3 }, text: 'read' })
+    await h.step({ turnId: 't2', index: 1, model: 'm', messageCount: 4 }, [])
+    await h.complete('t2', 'aborted')
+    await h.turn('t3')
+    await h.settle()
+    await h.command({ op: 'steer', text: 'a steer, unread' })
+    await h.complete('t3', 'aborted')
+    expect(h.ofType('inbox').length).toBe(1)
+  })
+
+  test("a turn that answers before reading a delivered row, whose wake the engine refuses for a stop, wakes the session through its inbox; a steer's alone does not", async () => {
     const h = harness({ submitDrops: 'the session was stopped and nobody has sent input since' })
     await h.ready()
-    const key = { writer: 'mac/s1', seq: 7 }
-    await h.command({ op: 'deliver', key, text: 'while stopped' })
-    await h.settle()
-    expect(h.calls.map((c) => c.op)).toEqual(['submit', 'append'])
-    expect(h.ofType('delivered').map((e) => [e.outcome, e.uuid])).toEqual([
-      ['submitted', undefined],
-      ['entered', 'row-2'],
-    ])
     await h.turn('t1')
+    await h.command({ op: 'steer', text: 'steer only' })
+    await h.complete('t1')
     await h.settle()
-    expect(h.apiReads()).toBe(1)
-    expect(h.calls.map((c) => c.op)).toEqual(['submit', 'append'])
+    expect(h.ofType('inbox')).toEqual([])
+    await h.turn('t2')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'delivered, unread' })
+    await h.complete('t2')
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual([STEER_WAKE, STEER_WAKE])
+    expect(h.ofType('inbox').map((e) => e.text)).toEqual([`[sminos bridge]\n${STEER_WAKE}`])
   })
 
   test("a compaction lets every delivered row go: one read before an Esc, its words now only in the summary, is not given again (the bridge's own compaction, and the engine's)", async () => {

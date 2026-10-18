@@ -11,7 +11,13 @@ before the model answered hands the prompt back to the input box and the
 human's edited resend goes in where it stood, which leaves a row given after
 it on a branch no request reads (the bridge gives it again as the next turn
 starts); a delivery made after an Esc meets the engine's refusal of plugin
-prompts until the human speaks (the bridge gives it as a row instead).
+prompts until the human speaks, so the bridge answers not-ok and sminos sends
+it as an inbox frame, which starts a turn; a row given mid-turn that an Esc
+left unread wakes the session through its inbox.
+
+The two wake scenarios deliver through the CLI (`sminos send`, the path a
+human's message takes) and say ok or FAIL: a turn starts after the delivery
+and the model says the word, with no prompt from the human.
 
 It spends model calls (haiku, short prompts). Isolation is
 live-bridge-check.py's.
@@ -22,12 +28,15 @@ live-bridge-check.py's.
     bash-esc    delivered mid-Bash, then Esc; the human asks for the word
     restore     delivered as the turn starts, Esc before any answer, edit, resend
     after-esc   Esc before any answer, delivered while the prompt is back in the box, edit, resend
+    cli-after-esc  Esc mid-Bash; idle, delivered through the CLI: a turn starts and reads it
+    esc-wake    delivered through the CLI mid-Bash, Esc before a request read it: the session wakes and reads it
 """
 
 import glob
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -37,7 +46,8 @@ spec = importlib.util.spec_from_file_location("live_bridge_check", os.path.join(
 LB = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(LB)
 
-SCENARIOS = {"busy": "KIWI", "bash-esc": "MANGO", "restore": "PAPAYA", "after-esc": "PEAR"}
+SCENARIOS = {"busy": "KIWI", "bash-esc": "MANGO", "restore": "PAPAYA", "after-esc": "PEAR",
+             "cli-after-esc": "LYCHEE", "esc-wake": "GUAVA"}
 ASK = "If an earlier message asked you to include a word, reply with that word only; otherwise reply NONE."
 
 
@@ -181,6 +191,54 @@ class Probe(LB.Live):
         self.resend()
         self.report("after-esc", t, key, word, before)
 
+    def send(self, word):
+        """A human's message through the CLI, as `sminos send` delivers it."""
+        r = subprocess.run([self.sminos(), "send", LB.NAME, "Include the word %s in your reply." % word],
+                           cwd=self.work, env=self.local_env(), capture_output=True, text=True, timeout=60)
+        print("   sminos send exited %d: %s" % (r.returncode, (r.stdout + r.stderr).strip().replace("\n", " | ")), flush=True)
+        return r
+
+    def woke(self, name, sent, word, cli):
+        """Waits for a main turn started after `sent` that says the word, and says ok or FAIL."""
+        try:
+            LB.wait_for("a turn that says %s" % word, 120, lambda: word in self.text_since(sent))
+        except TimeoutError:
+            pass
+        self.idle()
+        starts = [str(e.get("text"))[:90] for e in self.seen(lambda e: is_main(e, "turn", "start"), sent)]
+        said = word in self.text_since(sent)
+        print("== %s" % name)
+        print("   main turns started after the delivery: %s" % starts)
+        print("   %s  a turn started after the delivery" % ("ok  " if starts else "FAIL"))
+        print("   %s  the model said %s, with no prompt from the human" % ("ok  " if said else "FAIL", word))
+        if cli is not None:
+            stopped = "was stopped (Esc)" in cli.stderr + cli.stdout
+            print("   the CLI said the session was stopped: %s" % stopped, flush=True)
+        self.results.append((name, bool(starts) and said, ""))
+
+    def cli_after_esc(self, word):
+        t = time.time()
+        self.bash_turn(t)
+        self.keys("Escape")
+        time.sleep(3)
+        self.idle()
+        sent = time.time()
+        r = self.send(word)
+        self.woke("cli-after-esc", sent, word, r)
+
+    def esc_wake(self, word):
+        t = time.time()
+        self.bash_turn(t)
+        sent = time.time()
+        r = self.send(word)
+        LB.wait_for("the delivered row", 20, lambda: self.seen(
+            lambda e: e.get("type") == "delivered" and e.get("outcome") == "entered", sent))
+        self.keys("Escape")
+        read = self.seen(lambda e: is_main(e, "step", "start"), sent)
+        print("   a request began between the delivery and the Esc: %s" % bool(read), flush=True)
+        time.sleep(1)
+        self.woke("esc-wake", sent, word, r)
+
     def run(self, scenarios):
         self.setup()
         self.start_session()
@@ -212,6 +270,10 @@ def main():
         print("  pane:\n" + "\n".join("    " + l for l in p.pane().rstrip().splitlines()[-25:]))
     finally:
         p.cleanup()
+    failed = [r[0] for r in p.results if not r[1]]
+    if p.results:
+        print("wake scenarios: %s" % ("all ok" if not failed else "FAILED: " + ", ".join(failed)))
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

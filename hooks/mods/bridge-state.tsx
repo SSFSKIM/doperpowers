@@ -36,9 +36,10 @@ export type Call = {
  * A steer (or a delivery given into the turn), bound to the main turn it was
  * given in before its row is appended.
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
- * `ended`: how its turn ended, while some append of that turn is still pending.
+ * `ended`: how its turn ended, while some append of that turn is still pending;
+ * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread.
  */
-export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string }
+export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean }
 /** What an interrupt did to the Bash calls it moved to the background: the tasks it stopped, and those it could not. */
 export type Stops = { stopped: string[]; running: string[] }
 /** An interrupt of a main turn: `recorded` settles once its record is in (or it failed); the turn's Bash calls wait for it. */
@@ -103,10 +104,9 @@ export type DeliveryKey = { project?: string; writer: string; seq: number }
 export type Submission = { key: DeliveryKey; text: string }
 /**
  * A delivery the bridge put in the conversation as a row, until the
- * conversation is known to keep it: `turnId`, the main turn it was appended
- * in; absent, appended while the session was idle.
+ * conversation is known to keep it: `turnId`, the main turn it was appended in.
  */
-export type DeliveredRow = { key: DeliveryKey; text: string; turnId?: string }
+export type DeliveredRow = { key: DeliveryKey; text: string; turnId: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
 export type Refusal = { key: DeliveryKey; reason: string }
 

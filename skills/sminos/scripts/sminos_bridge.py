@@ -42,6 +42,13 @@ after the mod answered `submitted` is kept there with its key and reason
 (`refused`, the last REFUSED_KEPT), which the daemon's delivery pass reports
 as a `failed` outcome (sminos_outcomes.report_refused).
 
+The mod's `inbox` event asks the child for a frame on the session's own
+inbox socket (the engine's messaging socket): after an Esc the engine refuses
+the mod's prompts until the human sends input, not a message to the session,
+so this is how a delivered row a stopped turn left unread wakes it, and how a
+delivery whose prompt a stop dropped reaches it. One carrying a delivery's
+key that no frame carried is kept as a refusal, as above.
+
 Requests from outside (DC2 M3): the mod raises a permission prompt or a
 question as `raised` and settles it as `settled`; the child keeps the pending
 set and the recent settlements for the snapshot, takes a client's decision
@@ -551,6 +558,9 @@ class Bridge:
                 if e.get("type") == "export":
                     self._export(e)
                     continue
+                if e.get("type") == "inbox":
+                    self._inbox(e)
+                    continue
                 self._apply(e)
                 if e.get("type") == "resync":
                     # The first makes the child ready; any later one replaced
@@ -741,10 +751,49 @@ class Bridge:
         if not (isinstance(records, list) and all(isinstance(r, dict) for r in records) and isinstance(cwd, str) and cwd):
             return
         try:
-            self.exports.put_nowait((cwd, records))
+            self.exports.put_nowait((self._export_now, cwd, records))
         except queue.Full:
             sys.stderr.write("sminos bridge: an export was dropped (%d waiting); the Stop hook's export has it\n"
                              % EXPORTS_QUEUED)
+
+    def _inbox(self, e):
+        """A frame the mod asks for on the session's own inbox socket (the
+        engine's messaging socket), which starts a turn where the engine
+        refuses the mod's prompt (after an Esc): the wake for a delivered row
+        a stopped turn left unread, or a delivery whose prompt a stop dropped
+        after the mod answered (`key`). Sent from the export thread, the one
+        that reads sminos's caches; never handed to subscribers."""
+        text, key = e.get("text"), e.get("key")
+        if not (isinstance(text, str) and text.strip()):
+            return
+        try:
+            self.exports.put_nowait((self._send_inbox, text, key if isinstance(key, dict) else None))
+        except queue.Full:
+            sys.stderr.write("sminos bridge: an inbox frame was dropped (%d waiting)\n" % EXPORTS_QUEUED)
+
+    def _send_inbox(self, text, key):
+        S.forget_caches()   # the registry as it is now: this child lives as long as its session
+        peer = S.peer_for_session(self.session)
+        if peer is None:
+            reason = "no inbox socket of the session answers"
+        else:
+            try:
+                S.send_frame(S.socket_path_of(peer), text)
+                return
+            except S.SendFailed as err:
+                if err.phase == "after":
+                    sys.stderr.write("sminos bridge: an inbox frame may not have arrived: %s\n" % err)
+                    return
+                reason = "the inbox frame did not go: %s" % err
+        sys.stderr.write("sminos bridge: %s\n" % reason)
+        if key is None:
+            return
+        # A delivery nothing carried: kept for the daemon to report `failed`.
+        with self.lock:
+            self._keep(_refused(self.kept, key, reason))
+            note = self._save()
+            if note is not None:
+                self._fan_out(note)
 
     def run_exports(self):
         """Appends what the mod exports through the record path's own writer
@@ -753,16 +802,23 @@ class Bridge:
         daemon's sync), and a slow append must not hold up the session's events.
         A failure is the Stop hook's to make good: its export appends whatever
         of the same rows the log does not hold. This thread is the only one in
-        the child that reads sminos's caches, which each export clears."""
+        the child that reads sminos's caches, which each export clears; so it
+        also sends the inbox frames the mod asks for (_inbox)."""
         while not self.closing.is_set():
             try:
-                cwd, records = self.exports.get(timeout=0.5)
+                work, *args = self.exports.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                S.export_live(cwd, self.session, records)
-            except (Exception, SystemExit) as err:  # noqa: BLE001 — the next export must still run
-                sys.stderr.write("sminos bridge: export to the log failed: %s: %s\n" % (type(err).__name__, err))
+                work(*args)
+            except (Exception, SystemExit) as err:  # noqa: BLE001 — the next one must still run
+                sys.stderr.write("sminos bridge: %s failed: %s: %s\n" % (work.__name__.strip("_"), type(err).__name__, err))
+
+    def _export_now(self, cwd, records):
+        try:
+            S.export_live(cwd, self.session, records)
+        except (Exception, SystemExit) as err:  # noqa: BLE001 — the next export must still run
+            sys.stderr.write("sminos bridge: export to the log failed: %s: %s\n" % (type(err).__name__, err))
 
     def _keep(self, kept):
         """What is kept for the session: the mod's copy, written at the end of
