@@ -517,9 +517,11 @@ rows read from the transcript, and the export to the host).
   dispatch (an Esc, an interrupt). Each carries the nonce the child's hello
   named: a reload's old module, still posting to the session's path, is
   turned away (409) and stops.
-- **Control.** `steer` appends a user row the loop reads at its next request
-  (the running tool goes on; a turn that answers before reading it is woken
-  once); `interrupt` aborts the turn and stops each Bash call the abort moved
+- **Control.** `steer` appends a user row the loop reads at its next request,
+  the owner's words under the line `[sminos steer from human]`, by which a
+  reader of the transcript tells it from the bridge's other rows (the running
+  tool goes on; a turn that answers before reading it is woken once);
+  `interrupt` aborts the turn and stops each Bash call the abort moved
   to the background, then appends a user row telling the model so (a
   plugin's abort leaves no marker of its own, and the moved call's result
   says it runs on), holding the turn's Bash calls until the row is in, since

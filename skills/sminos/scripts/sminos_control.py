@@ -245,6 +245,7 @@ def cmd_steer(a):
                 print("steered %s through the engine supervisor (no bridge): read at its next step" % a.member)
                 return
             S.warn("the supervisor did not take the steer (%s); it goes as a cross-session frame" % took)
+        # The first line the bridge's steer row carries too (hooks/mods/bridge.tsx, STEER_LINE).
         S.send_frame(S.socket_path_of(peer), "[sminos steer from human]\n%s" % a.text, "human")
     except S.SendFailed as e:
         if e.phase == "after":

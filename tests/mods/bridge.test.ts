@@ -10,6 +10,7 @@ import {
   RECORD_WAIT_MS,
   ROWS_POLLS,
   ROWS_POLL_MS,
+  STEER_LINE,
   STEP_END_WAIT_MS,
   TRANSCRIPT_RETRY_MS,
   TEXT_CAP,
@@ -895,41 +896,24 @@ describe('steer', () => {
     await h.turn('t1')
     const r = await h.command({ op: 'steer', text: 'also print the date' })
     expect(r).toMatchObject({ op: 'steer', ok: true, result: { row: 'row-1' } })
-    expect(h.calls[0]).toEqual({ op: 'append', args: { message: { type: 'user', content: [{ type: 'text', text: 'also print the date' }] } } })
+    // The owner's words under the steer's own first line: the row says it is a steer.
+    expect(STEER_LINE).toBe('[sminos steer from human]')
+    expect(h.calls[0]).toEqual({ op: 'append', args: { message: { type: 'user', content: [{ type: 'text', text: '[sminos steer from human]\nalso print the date' }] } } })
+    // The mirror carries the words alone.
     expect(h.logs).toContain('steer: also print the date')
   })
 
-  test("a steer whose text is an interrupt marker is refused, saying so, nothing appended: its row would be the interrupt's own", async () => {
-    const h = harness()
-    await h.ready()
-    await h.turn('t1')
-    for (const text of ['[Request interrupted by user]', '  [Request interrupted by user for tool use]\n', '[Request interrupted by user from the desk]\nTask x was then stopped']) {
-      expect(await h.command({ op: 'steer', text })).toMatchObject({ ok: false, error: expect.stringContaining('interrupt the session instead') })
-    }
-    expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
-    // Mentioning the marker inside a steer is a steer.
-    expect(await h.command({ op: 'steer', text: 'why did you print [Request interrupted by user]?' })).toMatchObject({ ok: true })
-  })
-
-  test("a steer whose text is one of the bridge's stop or interrupt notes is refused, nothing appended: DX4 would read it as a task stopped", async () => {
+  test("a steer whose text is the interrupt's marker or one of the bridge's notes goes in as a steer: its first line keeps the row from reading as either", async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
     const moved = 'Task b1, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.'
-    for (const text of [
-      stopNote('b1', 'desk'),
-      `  ${stopNote('b1', 'cli')}\n`,
-      `The interrupt came from the desk.\n${moved}`,
-      'The interrupt came from outside the terminal.',
-      `\nThe interrupt came from the desk.\n${moved}\nand more`,
-    ]) {
-      expect(await h.command({ op: 'steer', text })).toMatchObject({ ok: false, error: expect.stringContaining('stop the task or interrupt the session instead') })
-    }
-    expect(h.calls.filter((c) => c.op === 'append')).toEqual([])
-    // A note quoted inside a steer is a steer, and DX4 reads no note in it.
-    for (const text of [`please stop: ${stopNote('b1', 'desk')}`, `why?\nThe interrupt came from the desk.\n${moved}`]) {
+    const texts = ['[Request interrupted by user]', '[Request interrupted by user from the desk]\nTask x was then stopped', stopNote('b1', 'desk'), `The interrupt came from the desk.\n${moved}`]
+    for (const text of texts) {
       expect(await h.command({ op: 'steer', text })).toMatchObject({ ok: true })
     }
+    const appended = h.calls.filter((c) => c.op === 'append').map((c) => (c.args as { message: { content: { text: string }[] } }).message.content[0]!.text)
+    expect(appended).toEqual(texts.map((text) => `${STEER_LINE}\n${text}`))
   })
 
   test('idle: refused, nothing appended (a send is how an idle session is reached)', async () => {
