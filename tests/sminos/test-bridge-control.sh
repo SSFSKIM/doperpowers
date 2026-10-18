@@ -481,6 +481,24 @@ until_true 100 grep -q '"p9"' "$KEPT" || true
 assert_contains "$(cat "$KEPT")" '"refused": [{"key": {"project": "p9", "writer": "mac/s9", "seq": 4}, "reason": "no inbox socket of the session answers"}]' \
   "an inbox frame for a delivery that no socket took is kept as a refusal"
 mv "$T/rover.json.aside" "$HOME/.claude/sessions/rover.json"
+# The same when the export thread's queue is full: the frame never goes, so a
+# keyed one is kept as a refusal (in process, its own session: a full queue).
+FULL="$(python3 - "$REPO_ROOT/skills/sminos/scripts" 2>"$T/full.err" <<'PY_FULL'
+import json, os, queue, sys
+sys.path.insert(0, sys.argv[1])
+import sminos_bridge as B
+b = B.Bridge("5b000009-0000-4000-8000-0000000000c9", "/nonexistent.sock")
+os.makedirs(os.path.dirname(B.kept_path(b.session)), mode=0o700, exist_ok=True)
+b.exports = queue.Queue(1)
+b.exports.put_nowait(None)
+b.ingest([{"type": "inbox", "text": "words", "key": {"project": "p8", "writer": "mac/s8", "seq": 7}},
+          {"type": "inbox", "text": "a wake, no key"}])
+with open(B.kept_path(b.session)) as f:
+    print(json.dumps(json.load(f).get("refused")))
+PY_FULL
+)" || FULL="python failed: $(cat "$T/full.err")"
+assert_equals "$FULL" '[{"key": {"project": "p8", "writer": "mac/s8", "seq": 7}, "reason": "the inbox frame was dropped: 1000 were waiting"}]' \
+  "a keyed inbox frame a full queue drops is kept as a refusal (a wake with no key is not)"
 # One writer delivering to one session from two projects (#229): every
 # project numbers the writer's events on its own, so the second project's
 # event is below what the first delivered, and arrives all the same.

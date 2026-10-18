@@ -429,3 +429,16 @@ the spec's Decision Log entry "the branch review round"
   Accepted at design (Decision Log, round 3). Trigger: a raw value found in
   the session store's copy of a `tool-results/` file, or the store gaining a
   reader other than the person.
+
+## sminos bridge: a delivery wakes a stopped session (2026-10-17, e269230e)
+
+- **A late stop drop can be lost with no refusal when its post fails.** A
+  delivery the engine drops for a stop after the mod answered `submitted` goes
+  to the child as a keyed `inbox` event. If the post carrying it fails before
+  the child takes it in, the poster replaces the batch with a gap and a resync
+  (bridge-stream.tsx), and neither carries inbox work. The message is then
+  lost, its mark stays, and the daemon is never told it `failed`. Two things
+  must happen together: a prompt queued in the instant the session turned
+  busy, then an Esc; and a failed post to the child's local socket. Trigger:
+  a delivery reported lost with no refusal, or the poster's resync gaining
+  retained work for another reason.

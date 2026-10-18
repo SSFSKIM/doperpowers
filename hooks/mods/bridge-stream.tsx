@@ -188,6 +188,10 @@ export function forgetLive() {
   state.agents.clear()
   state.submissions = []
   state.deliveredRows = []
+  // A steer or delivery whose append settles after the /clear, and a wake
+  // still pending, are the old conversation's: none wakes the new one.
+  state.steers = []
+  state.wakes = []
   state.refusals = []
   state.delivered.clear()
   state.loopTurns.clear()

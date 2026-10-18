@@ -1749,6 +1749,51 @@ describe('deliver', () => {
     expect(h.ofType('inbox').map((e) => e.text)).toEqual([`[sminos bridge]\n${STEER_WAKE}`])
   })
 
+  test("a wake queued behind the human's prompt, whose turn read the delivered row before an Esc emptied the queue, sends no inbox frame; one no request read since still does", async () => {
+    for (const [isReadMeanwhile, frames] of [
+      [true, 0],
+      [false, 1],
+    ] as const) {
+      const h = harness({ holdSubmit: true })
+      await h.ready()
+      await h.turn('t1')
+      await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'delivered, unread' })
+      await h.complete('t1')
+      expect(h.submits.length).toBe(1)
+      // The human's prompt runs ahead of the wake; its first request carries the row.
+      await h.turn('t2')
+      if (isReadMeanwhile) {
+        await h.step({ turnId: 't2', index: 0, model: 'm', messageCount: 3 }, [])
+      }
+      await h.complete('t2', 'aborted')
+      h.submits[0]!({ drop: 'the prompt was removed from the queue before it ran' })
+      await h.settle()
+      expect([isReadMeanwhile, h.ofType('inbox').length]).toEqual([isReadMeanwhile, frames])
+    }
+  })
+
+  test("a delivery whose append is still pending through an Esc and a /clear wakes nothing when it lands: its turn was the old conversation's", async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 1 }, text: 'old words' })
+    await h.complete('t1', 'aborted')
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await h.settle()
+    const NEW = '6c000002-0000-4000-8000-00000000006c'
+    const NEWSOCK = `/tmp/s/bridge/${NEW}.sock`
+    h.setSession(NEW)
+    h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    h.appends.shift()!()
+    await h.settle()
+    expect(h.posts.filter((p) => p.socketPath === NEWSOCK).length).toBeGreaterThan(0)
+    expect(h.ofType('inbox')).toEqual([])
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
   test("a compaction lets every delivered row go: one read before an Esc, its words now only in the summary, is not given again (the bridge's own compaction, and the engine's)", async () => {
     const compactions: [string, (h: ReturnType<typeof harness>) => Promise<unknown>][] = [
       [

@@ -2,7 +2,7 @@ import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, Sess
 
 import { ASK_TOOL, PLUGIN, observeAsks } from './ask'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
-import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops } from './bridge-state'
+import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
@@ -302,20 +302,37 @@ function settleSteers($: EngineInterface, turnId: string) {
  * already in the conversation, so the prompt points to it rather than
  * repeating it, and the next request reads both. When a delivery's row is
  * among them and the engine refuses the prompt because the human stopped the
- * session, the wake goes as an inbox frame instead.
+ * session, the wake goes as an inbox frame instead, decided as the drop
+ * settles: not when a request has read the rows since (a human's prompt the
+ * wake queued behind, then an Esc that emptied the queue), nor after a /clear
+ * (forgetLive lets the wake go).
  */
 function wakeForSteer($: EngineInterface, isDelivery: boolean) {
+  // Marked read by the main loop's requests meanwhile (turn.step).
+  const wake: Wake | undefined = isDelivery ? { isRead: false, ...(state.mainTurn !== undefined && { turnAt: state.mainTurn }) } : undefined
+  if (wake !== undefined) {
+    state.wakes.push(wake)
+  }
+  const isOwed = () => {
+    const owed = wake !== undefined && state.wakes.includes(wake) && !wake.isRead
+    state.wakes = state.wakes.filter((w) => w !== wake)
+    return owed
+  }
   void $.prompt.submit({ text: STEER_WAKE, asUser: true }).then(
     (entered) => {
+      const owed = isOwed()
       if (entered.drop === undefined) {
         return
       }
       $.ui.log(`bridge: the wake for an unread steer was dropped: ${entered.drop}`, { to: 'debug' })
-      if (isDelivery && STOPPED_DROPS.has(entered.drop)) {
+      if (owed && STOPPED_DROPS.has(entered.drop)) {
         emit({ type: 'inbox', text: `[sminos bridge]\n${STEER_WAKE}` })
       }
     },
-    (error: unknown) => $.ui.log(`bridge: the wake for an unread steer was not submitted: ${message(error)}`, { to: 'debug' }),
+    (error: unknown) => {
+      isOwed()
+      $.ui.log(`bridge: the wake for an unread steer was not submitted: ${message(error)}`, { to: 'debug' })
+    },
   )
 }
 
@@ -1262,6 +1279,13 @@ export function registerBridge(on: On) {
       for (const s of state.steers) {
         if (e.index > 0 && s.isAppended && s.turnId === e.turnId) {
           s.isRead = true
+        }
+      }
+      // A wake's rows were in before it was given: any later request carries
+      // them, but the first of a turn that was already running.
+      for (const w of state.wakes) {
+        if (e.index > 0 || e.turnId !== w.turnAt) {
+          w.isRead = true
         }
       }
     }

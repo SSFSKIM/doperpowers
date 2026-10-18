@@ -40,6 +40,13 @@ export type Call = {
  * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread.
  */
 export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean }
+/**
+ * The wake a turn owes for delivered rows it answered before reading, until
+ * its prompt settles: `isRead`, a main-loop request began since that carries
+ * them; `turnAt`, the main turn already running when it was given, whose
+ * first request was built before the rows went in.
+ */
+export type Wake = { isRead: boolean; turnAt?: string }
 /** What an interrupt did to the Bash calls it moved to the background: the tasks it stopped, and those it could not. */
 export type Stops = { stopped: string[]; running: string[] }
 /** An interrupt of a main turn: `recorded` settles once its record is in (or it failed); the turn's Bash calls wait for it. */
@@ -182,6 +189,8 @@ export type BridgeState = {
   isSeeded: boolean
   /** Steers given in the main turn, and those whose turn ended before their row was in. */
   steers: Steer[]
+  /** Wakes for unread delivered rows whose prompt has not settled (bridge.tsx, wakeForSteer). */
+  wakes: Wake[]
   /** The main turns the bridge's interrupt is ending, by turn, until each one ends. */
   interrupts: Map<string, Interrupt>
   /** For each running foreground subagent, the main turn it belongs to (its tool calls are that turn's). */
@@ -300,6 +309,7 @@ const fresh = (): BridgeState => ({
   delivered: new Map(),
   isSeeded: false,
   steers: [],
+  wakes: [],
   interrupts: new Map(),
   foreground: new Map(),
 })

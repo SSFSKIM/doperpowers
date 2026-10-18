@@ -770,6 +770,10 @@ class Bridge:
             self.exports.put_nowait((self._send_inbox, text, key if isinstance(key, dict) else None))
         except queue.Full:
             sys.stderr.write("sminos bridge: an inbox frame was dropped (%d waiting)\n" % EXPORTS_QUEUED)
+            if isinstance(key, dict):
+                # A delivery nothing will carry, kept as _send_inbox keeps one;
+                # the caller (ingest, under the lock) saves it.
+                self._keep(_refused(self.kept, key, "the inbox frame was dropped: %d were waiting" % EXPORTS_QUEUED))
 
     def _send_inbox(self, text, key):
         S.forget_caches()   # the registry as it is now: this child lives as long as its session
