@@ -359,6 +359,16 @@ function deliverySender(text: string): string | undefined {
   return undefined
 }
 
+/**
+ * How the doperpowers ask mod opens the plugin prompt that hands the model
+ * the person's answer to an async question (its `deliveryText`), possibly
+ * after the framing the engine stores before a plugin prompt. It stays the
+ * person's: the ask's own row does not draw the feedback a person gives with
+ * "Chat about this" or the notes added to an answer, so this row carries
+ * their words whole.
+ */
+const ASK_DELIVERY = /^(?:The doperpowers plugin sent a message:\s*)?The human responded to your async AskUserQuestion \(call /
+
 /** The props of a prompt row that say what it is. */
 export type PromptRowProps = {
   origin?: Pick<PromptOrigin, 'kind'>
@@ -377,7 +387,7 @@ export type PromptRowProps = {
  * ids): the spawn stays in the report, so its failure does too. A sminos
  * delivery is read by its frame: the person's, sent from elsewhere, stays,
  * and another session's is working record, though the bridge submits both as
- * the person's words.
+ * the person's words. The ask mod's delivery of an async answer stays too.
  */
 export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = new Set()): RowKind {
   const { task } = props
@@ -388,6 +398,9 @@ export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = n
     return 'record'
   }
   const kind = props.origin?.kind
+  if (ASK_DELIVERY.test(props.text ?? '')) {
+    return 'user'
+  }
   const sender = kind !== undefined && TYPED.has(kind) ? undefined : deliverySender(props.text ?? '')
   if (sender !== undefined) {
     return sender === 'human' ? 'user' : 'record'

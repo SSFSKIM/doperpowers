@@ -327,6 +327,18 @@ the spec's Decision Log entry "the branch review round"
   audit of interactive to-human sessions, counting final turns with text
   and no mark, that finds the same order of rate.
 
+- **The ask mod's transcript row does not draw the person's "Chat about this"
+  feedback or an answer's notes.** `askRow` reduces the feedback to a "User
+  declined to answer questions" row and `answerRows` drops added notes
+  (`hooks/mods/ask.tsx`). An async answer delivered while the session is idle
+  arrives as a plugin prompt carrying their words whole, which the view keeps
+  as the person's (`ASK_DELIVERY` in `to-human.tsx`); an answer that reaches
+  the model while it is busy, as context on a tool result, leaves no delivery
+  row, so the report shows neither. Fix: draw the feedback and notes in the
+  ask row; the delivery row could then fold as a duplicate. Trigger: the
+  person's feedback or notes found missing from a report, or the next edit to
+  `askRow`/`answerRows`.
+
 ## to-human view in the fullscreen transcript (2026-10-16, engine 2.1.302)
 
 - **A wheel or trackpad scroll up jumps back down, 6–30 rows at a time.** It

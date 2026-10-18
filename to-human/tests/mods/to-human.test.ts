@@ -416,6 +416,15 @@ describe('promptRow', () => {
     expect(promptRow({ from: { name: 'reviewer' } })).toBe('record')
   })
 
+  test('the person\'s answer to an async question stays theirs, with or without the engine\'s framing', async () => {
+    const answer = 'The human responded to your async AskUserQuestion (call toolu_01): User has answered your questions: "Which?"="A". Notes: prefer B'
+    expect(promptRow({ origin: { kind: 'plugin' }, text: answer })).toBe('user')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: `The doperpowers plugin sent a message:\n${answer}` })).toBe('user')
+    // Any other plugin prompt is the model's business.
+    expect(promptRow({ origin: { kind: 'plugin' }, text: 'Continue from the summary.' })).toBe('record')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: 'The doperpowers plugin sent a message:\nContinue from the summary.' })).toBe('record')
+  })
+
   test('a sminos delivery is read by its frame: the person\'s stays, another session\'s is working record', async () => {
     // The bridge submits both as the person's words, under its own plugin's origin.
     expect(promptRow({ origin: { kind: 'plugin' }, text: '[sminos message from CI-opt id=2808a58d]\nCI-opt: the hold is granted.' })).toBe('record')
