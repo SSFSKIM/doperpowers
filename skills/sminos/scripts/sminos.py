@@ -2351,9 +2351,10 @@ PLUGIN_FRAMING = "\n\nThis is how Claude Code surfaces a prompt a plugin submits
 # MAWS's ask tool, which a session under MAWS asks through instead (MAWS owns
 # the shape, in its src/shared/maws/ask.ts; tests/sminos/maws-ask-*.jsonl are
 # transcripts of it): called with `blocking` false, it answers at once with
-# {"status": "asked", "askId": <the call id>} as JSON, and the answers come
-# later as the human's prompt, a steer, which opens with `[MAWS ask <askId>] `
-# and ends with the answered result in a json fence.
+# {"status": "asked", "askId": ...} as JSON, the askId being the call id, or
+# MAWS's request id when the engine named no call, and the answers come later
+# as the human's prompt, a steer, which opens with `[MAWS ask <askId>] ` and
+# ends with the answered result in a json fence.
 MAWS_ASK_TOOL = "mcp__maws__ask"
 MAWS_STEER_RE = re.compile(r"\[MAWS ask ([^\]\s]+)\] ")
 MAWS_STEER_HEADER = "The user answered the questions you asked:"
@@ -2436,7 +2437,7 @@ def _maws_steer_texts(record):
 
 
 def _maws_answer(text):
-    """(call id, answer) of a MAWS steer, read as MAWS's parseAskSteer reads
+    """(askId, answer) of a MAWS steer, read as MAWS's parseAskSteer reads
     one: its tag names the ask, and its last json fence, which ends the text,
     holds the answered result of the same ask. The answer is the steer's own
     lines between the two, one per question, without MAWS's header line. None
@@ -2456,13 +2457,16 @@ def _maws_answer(text):
     return tag.group(1), (body[len(MAWS_STEER_HEADER):] if body.startswith(MAWS_STEER_HEADER) else body).strip("\n")
 
 
-def _maws_asked(call, text):
-    """Whether a MAWS ask's result is its acceptance as an async ask."""
+def _maws_asked(text):
+    """The askId a MAWS ask's result names when it is its acceptance as an
+    async ask (the call id, or MAWS's request id when the engine named no
+    call), else None."""
     try:
         result = json.loads(text)
     except ValueError:
-        return False
-    return isinstance(result, dict) and result.get("status") == "asked" and result.get("askId") == call
+        return None
+    ask = result.get("askId") if isinstance(result, dict) and result.get("status") == "asked" else None
+    return ask if isinstance(ask, str) and ask else None
 
 
 def _ask_events(records):
@@ -2470,9 +2474,12 @@ def _ask_events(records):
     order: a `question` for each tool_use of an ask tool called async (the
     plugin's with `async` true, MAWS's with `blocking` false) whose paired
     tool_result is that tool's acceptance, and an `answered` for each delivery
-    (the plugin's) or steer (MAWS's) of an answer. A blocking ask — the
-    plugin's without async, MAWS's by default or in a subagent, or the native
-    AskUserQuestion — is no event: the session waits, and the human goes to it."""
+    (the plugin's) or steer (MAWS's) of an answer. Each src is the call id;
+    for MAWS's, the askId its acceptance and steer name, which is the call id
+    unless the engine named no call to MAWS (then MAWS's request id). A
+    blocking ask — the plugin's without async, MAWS's by default or in a
+    subagent, or the native AskUserQuestion — is no event: the session waits,
+    and the human goes to it."""
     calls, results, out = [], {}, []
     for i, r in enumerate(records):
         for b in _blocks(r, "tool_use"):
@@ -2489,20 +2496,24 @@ def _ask_events(records):
     for i, call, name, inp in calls:
         res = results.get(call)
         text = _result_text(res.get("content")) if res is not None and res.get("is_error") is not True else None
-        if text is None or not (_maws_asked(call, text) if name == MAWS_ASK_TOOL else text == ASYNC_RESULT):
+        if text is None:
+            continue
+        src = _maws_asked(text) if name == MAWS_ASK_TOOL else (call if text == ASYNC_RESULT else None)
+        if src is None:
             continue
         questions = [q for q in inp.get("questions") or [] if isinstance(q, dict)]
         out.append((i, {"kind": "question", "text": [str(q.get("question") or "") for q in questions],
                         "choices": [str(o.get("label") or "") for q in questions
-                                    for o in q.get("options") or [] if isinstance(o, dict)], "src": call}))
+                                    for o in q.get("options") or [] if isinstance(o, dict)], "src": src}))
     out.sort(key=lambda x: x[0])
     return out
 
 
 def extract_asks(records):
     """The async asks and their answers the transcript records hold, in order:
-    {"kind": "question", "src": call id, "text": [questions], "choices": [labels]}
-    and {"kind": "answered", "src": call id, "text": the engine's result text}."""
+    {"kind": "question", "src": the ask's id, "text": [questions], "choices": [labels]}
+    and {"kind": "answered", "src": the ask's id, "text": the engine's result text},
+    the ask's id being its call id, or MAWS's askId."""
     return [e for _, e in _ask_events(records)]
 
 
@@ -2510,7 +2521,8 @@ def host_events(records, alias):
     """The events a run of transcript records holds for the host, in record
     order, ready for log_append_batch: each marked span of an assistant record
     as a `message` (src `<record uuid>#<span index>`), each accepted async ask
-    as a `question`, each delivery of an answer as `answered` (src the call id)."""
+    as a `question`, each delivery of an answer as `answered` (src the call id,
+    or MAWS's askId)."""
     out = []
     for i, r in enumerate(records):
         if r.get("type") != "assistant" or not isinstance(r.get("uuid"), str) or not r["uuid"]:
@@ -2780,7 +2792,7 @@ def await_flush(tpath, last_message, until):
 def export_host(project, session, tpath, alias):
     """Append what the transcript holds for the host past the session's export
     position, as one batch, then advance the position to the last assistant
-    record read whose async asks all have their results (so a question is
+    record read whose ask calls all have their results (so a question is
     never split from the result that accepts it). With no position, the
     trailing run of assistant records is exported (§4). Exports of a session
     are serialised by its export lock, taken before the log's locks."""
@@ -2795,7 +2807,7 @@ def export_host(project, session, tpath, alias):
         new, pending = None, set()
         for at, r in records:
             for b in _blocks(r, "tool_use"):
-                if b.get("name") == ASK_TOOL and b.get("id"):
+                if b.get("name") in (ASK_TOOL, MAWS_ASK_TOOL) and b.get("id"):
                     pending.add(str(b["id"]))
             for b in _blocks(r, "tool_result"):
                 pending.discard(str(b.get("tool_use_id") or ""))
