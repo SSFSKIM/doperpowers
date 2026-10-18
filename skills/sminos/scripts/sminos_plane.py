@@ -53,6 +53,17 @@ row order, composite cd2667d8):
   so does one for a history row whose block the subscriber still holds,
   which the seeded cut rules out and is kept as a guard.
 
+The live chain. The engine reads only the chain from a transcript's leaf; the
+rows a branch left behind (an Esc's or a /rewind's, a response the engine
+dropped) stay on disk. Each subscription follows its transcript's chain
+(Chain: the build's, read with the index, then each row as it is released)
+and marks what is off it, so a consumer can draw the conversation the engine
+holds: the snapshot and every `rows` page carry `offChain`, the uuids of
+their rows off the chain; a `row` carries `offChain` when it took rows off
+(a branch's start: the rows it left behind; itself, when it is off), and
+`onChain` when it put rows back on. Each is read off the subscription's own
+chain as its message goes, so in message order the latest says.
+
 A gap in the bridge's stream, and its end while the session runs (the child
 ends every subscription on a module reload), end the subscription with
 `discontinuity`: the browser subscribes again. Without a bridge the rows come
@@ -306,18 +317,193 @@ class Index:
         return lo
 
 
+class Chain:
+    """Which of a transcript's rows are on the conversation's live chain: the
+    rows the engine holds. A transcript is a tree — each row names its
+    `parentUuid` — and the engine reads only the chain from its leaf, while
+    the rows a branch left behind stay in the file: a prompt sent again after
+    an Esc handed it back, the turns a /rewind undid, a response the engine
+    dropped when a message reached its turn mid-stream.
+
+    Fed every row in file order, it follows the engine's writes. A row whose
+    parent is the leaf extends the chain. A tool result names its issuing
+    assistant rather than the leaf, so parallel calls' results hang off their
+    own assistants (the engine's `sourceToolAssistantUUID`): it joins the
+    chain while that assistant is on it, and so what the leaf's ancestry
+    skips stays on — sibling results and everything delivered between a call
+    and its result, as the live engine holds it (its resume-time loader
+    keeps only the meta and attachment rows of those). Any other row whose
+    parent is not the leaf starts a branch: the rows that joined after the
+    branch point leave the chain (but a tool result whose assistant stays on
+    it, or an assistant of a response that does, as the loader recovers
+    them), and the branch's own rows rejoin it if a branch had taken them
+    off. A tool result whose assistant is off the chain is off it too, and
+    moves nothing.
+
+    Rows are written out of order around a session's start (a child a few ms
+    ahead of its parent), so a row whose parent is not placed yet waits for
+    it and is placed with it; one whose parent never comes stays unplaced,
+    and unmarked. A null parent (a compaction's boundary, a session's first
+    row) continues the chain: the history before a compaction stays drawn.
+    Progress rows pass their parent through and are never marked; in a main
+    transcript, so are sidechain rows (an old engine's subagent rows).
+    `add` returns the rows each row took off the chain and put back on."""
+
+    def __init__(self, main=True):
+        self.main = main
+        self.parent = {}       # uuid → its parentUuid (None: a root), every row seen
+        self.seq = {}          # uuid → its place in the file's order
+        self.progress = set()
+        self.source = {}       # a tool result's uuid → the assistant it answers
+        self.group = {}        # an assistant's uuid → its response's message id
+        self.groups = {}       # message id → the assistants of that response
+        self.waiting = {}      # uuid → the rows seen whose parent it is, while it is not placed
+        self.results = {}      # an assistant's uuid → the tool results that answer it
+        self.line = []         # the chain, in the order its rows joined it
+        self.pos = {}          # uuid → its index in `line`: the rows on the chain
+        self.offs = set()      # the rows placed off it
+        self.passed = set()    # the progress rows placed
+        self.moved = {}        # while a row is added: each row it moved → whether that row was off before
+
+    def copy(self):
+        c = Chain(self.main)
+        c.parent, c.seq, c.progress, c.source = dict(self.parent), dict(self.seq), set(self.progress), dict(self.source)
+        c.group, c.groups = dict(self.group), {k: list(v) for k, v in self.groups.items()}
+        c.results = {k: list(v) for k, v in self.results.items()}
+        c.waiting = {k: list(v) for k, v in self.waiting.items()}
+        c.line, c.pos, c.offs, c.passed = list(self.line), dict(self.pos), set(self.offs), set(self.passed)
+        return c
+
+    def off(self, uuid):
+        return uuid in self.offs
+
+    def placed(self, uuid):
+        return uuid in self.pos or uuid in self.offs or uuid in self.passed
+
+    def add(self, row):
+        """One row, in file order: (off, on), the rows it took off the chain,
+        itself among them when it was placed off it, and the rows it put back
+        on. A row seen before changes nothing (the engine writes a uuid once)."""
+        u = row.get("uuid")
+        if not isinstance(u, str) or not u or u in self.parent or (self.main and row.get("isSidechain") is True):
+            return [], []
+        p = row.get("parentUuid")
+        p = p if isinstance(p, str) and p else None
+        self.parent[u] = p
+        self.seq[u] = len(self.seq)
+        message = row.get("message") if isinstance(row.get("message"), dict) else {}
+        content = message.get("content")
+        if row.get("type") == "progress":
+            self.progress.add(u)
+        elif row.get("type") == "assistant":
+            mid = message.get("id")
+            if isinstance(mid, str) and mid:
+                self.group[u] = mid
+                self.groups.setdefault(mid, []).append(u)
+        elif row.get("type") == "user" and isinstance(content, list) and \
+                any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            src = row.get("sourceToolAssistantUUID")
+            self.source[u] = src if isinstance(src, str) and src else p
+            self.results.setdefault(self.source[u], []).append(u)
+        if p is not None and not self.placed(p):
+            self.waiting.setdefault(p, []).append(u)
+            return [], []
+        # A cascade of waiting rows can move one row more than once: what it
+        # reports is each row's net move, in the order it first moved.
+        self.moved = {}
+        todo = collections.deque([u])
+        while todo:
+            x = todo.popleft()
+            self.place(x)
+            todo.extend(self.waiting.pop(x, ()))
+        moved, self.moved = self.moved, {}
+        return ([r for r, was in moved.items() if not was and r in self.offs],
+                [r for r, was in moved.items() if was and r in self.pos])
+
+    def through(self, p):
+        while p in self.progress:
+            p = self.parent[p]
+        return p
+
+    def note(self, x):
+        self.moved.setdefault(x, x in self.offs)
+
+    def join(self, x):
+        self.note(x)
+        self.offs.discard(x)
+        self.pos[x] = len(self.line)
+        self.line.append(x)
+
+    def leave(self, x):
+        self.note(x)
+        self.offs.add(x)
+
+    def place(self, x):
+        if x in self.progress:   # passes its parent through; never the leaf, never marked
+            self.passed.add(x)
+            return
+        p = self.through(self.parent[x])
+        if p is None or (self.line and p == self.line[-1]):
+            self.join(x)
+        elif x in self.source:
+            if p in self.pos or self.source[x] in self.pos:
+                self.join(x)
+            else:
+                self.leave(x)
+        else:
+            self.branch(x, p)
+
+    def kept(self, r):
+        """Whether a row stays on, or comes back, with the chain: a tool
+        result whose assistant is on it, or an assistant of a response that
+        is (the engine's loader recovers both)."""
+        return self.source.get(r) in self.pos or any(a in self.pos for a in self.groups.get(self.group.get(r), ()))
+
+    def branch(self, x, p):
+        """`x` starts a branch at `p`, a placed row other than the leaf: the
+        rows after the last of p's ancestors on the chain leave it, and p's
+        rows back to that ancestor (if a branch had taken them off) rejoin,
+        with the responses' other rows and results the loader recovers."""
+        walk, y = [], p
+        while y is not None and y not in self.pos:
+            walk.append(y)
+            y = self.through(self.parent[y])
+        at = self.pos[y] + 1 if y is not None else 0
+        left = self.line[at:]
+        for r in left:
+            self.note(r)
+            del self.pos[r]
+        del self.line[at:]
+        for r in left:
+            if self.kept(r):
+                self.join(r)
+            else:
+                self.leave(r)
+        back, todo = set(), list(walk)
+        while todo:
+            r = todo.pop()
+            if r not in back:
+                back.add(r)
+                todo.extend(a for a in self.groups.get(self.group.get(r), ()) if a in self.offs)
+                todo.extend(t for t in self.results.get(r, ()) if t in self.offs)
+        for r in sorted(back, key=self.seq.__getitem__):   # in the order they were written, as they first stood
+            self.join(r)
+        self.join(x)
+
+
 class Transcript:
-    """One transcript file's index, its loop's jobs ledger, and the worker
-    that reads it: every read of the file's bulk — an open's build, a page,
-    a look at the disk facts, an `output` — is a job run here, one at a
-    time, in the order submitted. A job is `job(transcript)` and hands its
-    own result over; the index and the ledger, fed every row the index reads,
-    are touched by jobs alone."""
+    """One transcript file's index, its loop's jobs ledger, its chain, and
+    the worker that reads it: every read of the file's bulk — an open's
+    build, a page, a look at the disk facts, an `output` — is a job run here,
+    one at a time, in the order submitted. A job is `job(transcript)` and
+    hands its own result over; the index, the ledger and the chain, fed every
+    row the index reads, are touched by jobs alone."""
 
     def __init__(self, path):
         self.path = path
         self.index = Index(path)
         self.ledger = jobs.Ledger()
+        self.chain = Chain(main=not is_agent_path(path))
         self.users = 0         # the subscriptions holding it (under Transcripts' lock)
         self.lock = threading.Lock()
         self.jobs = collections.deque()
@@ -344,10 +530,16 @@ class Transcript:
         """The index, brought up to the file's end. A file replaced or shrunk
         since leaves a fresh index for whoever reads next, and the Reset says
         so to the reader holding rows of the old one."""
+        ledger, chain = self.ledger, self.chain
+
+        def on_row(row):
+            ledger.add(row)
+            chain.add(row)
+
         try:
-            self.index.extend(self.ledger.add)
+            self.index.extend(on_row)
         except Reset:
-            self.index, self.ledger = Index(self.path), jobs.Ledger()
+            self.index, self.ledger, self.chain = Index(self.path), jobs.Ledger(), Chain(self.chain.main)
             raise
         return self.index
 
@@ -390,13 +582,14 @@ class Built:
     no file yet); `emitted` the history's uuids; `shown` the history's newest
     rows that fit, newest first, `more` whether older ones are left; `past`
     the rows past the cut, (uuid, row) oldest first, which go out live;
-    `ledger` the loop's jobs ledger as of `offset`, the subscription's own to
-    feed from there; `facts` the disk facts, once looked at."""
+    `ledger` the loop's jobs ledger and `chain` its chain as of `offset`, the
+    subscription's own to feed from there; `facts` the disk facts, once
+    looked at."""
 
-    def __init__(self, ino, offset, emitted, shown, more, past, ledger):
+    def __init__(self, ino, offset, emitted, shown, more, past, ledger, chain):
         self.ino, self.offset = ino, offset
         self.emitted, self.shown, self.more, self.past = emitted, shown, more, past
-        self.ledger = ledger
+        self.ledger, self.chain = ledger, chain
         self.facts = None
 
 
@@ -423,7 +616,7 @@ def build(t, cut, bridged):
     lo = index.older(split, None)
     return "built", Built(index.ino, index.end, dict.fromkeys(index.uuids[:split], "history"),
                           index.rows(lo, split)[::-1], lo > 0, [(r["uuid"], r) for r in index.rows(split, n)],
-                          t.ledger.copy())
+                          t.ledger.copy(), t.chain.copy())
 
 
 def page_of(t, ino, before, limit):
@@ -445,6 +638,10 @@ def agent_path(main, agent):
     """A subagent's transcript beside the session's (the engine's layout:
     <session>/subagents/agent-<id>.jsonl)."""
     return "%s/subagents/agent-%s.jsonl" % (main[:-len(".jsonl")], agent) if main.endswith(".jsonl") else ""
+
+
+def is_agent_path(path):
+    return os.path.basename(os.path.dirname(path)) == "subagents" and os.path.basename(path).startswith("agent-")
 
 
 # ------------------------------------------------------------- the disk facts
@@ -892,6 +1089,10 @@ class Subscription:
         # worker every METAS_EVERY; and the body last sent.
         self.disk = disk or DISK
         self.ledger = jobs.Ledger()
+        # The loop's chain (Chain): the build's, then fed each row as it is
+        # released, so every mark this subscription sends is read off it in
+        # the order the messages go.
+        self.chain = Chain(main=agent is None)
         self.agents = None            # agentId → the bridge's state of it: its spawn's fields, `running`
         self.facts = Facts()
         self.looking = False          # a look at the disk is asked and not answered yet
@@ -1049,7 +1250,7 @@ class Subscription:
             out += self.end("session-ended", "no transcript of the session on this machine")
             return False
         self.tail.path, self.tail.offset, self.tail.ino = self.source.path, built.offset, built.ino
-        self.ledger, self.facts = built.ledger, built.facts
+        self.ledger, self.chain, self.facts = built.ledger, built.chain, built.facts
         self.emitted = built.emitted
         for u, row in built.past:
             if u not in self.emitted and u not in self.pool:
@@ -1088,7 +1289,8 @@ class Subscription:
         self.next_look = now + METAS_EVERY
         self.was_alive = self.alive()
         self.body = self.derive(self.was_alive)
-        body = {"rows": shown, "more": more, **self.body, "presence": self.presence(), "streaming": streaming}
+        body = {"rows": shown, "more": more, "offChain": self.off_chain(shown), **self.body, "presence": self.presence(),
+                "streaming": streaming}
         if self.agent is None:
             body["usage"] = usage_of(self.snap.get("usage")) if self.bridged else None
         out.append(self.message("snapshot", body))
@@ -1218,10 +1420,23 @@ class Subscription:
 
     def release_row(self, u):
         """The row message for a row past the cut; it counts as named when its
-        own notice came."""
+        own notice came. It carries what the row did to the chain: the rows
+        it took off (itself, when it is off it) and those it put back on."""
         row = self.pool.pop(u)[0]
         self.emitted[u] = "named" if self.noticed.pop(u, None) is not None else "unnamed"
-        return self.message("row", {"row": row, "agentId": self.agent})
+        off, on = self.chain.add(row)
+        if not off and not on and self.chain.off(u):   # placed by the build, which read past the cut
+            off = [u]
+        body = {"row": row, "agentId": self.agent}
+        if off:
+            body["offChain"] = off
+        if on:
+            body["onChain"] = on
+        return self.message("row", body)
+
+    def off_chain(self, rows):
+        """The uuids of `rows` off the chain, as this subscription knows it now."""
+        return [r["uuid"] for r in rows if isinstance(r, dict) and self.chain.off(r.get("uuid"))]
 
     def subagents(self, now, out):
         """DX4 `subagents` whenever the body derived changes: from a row the
@@ -1300,7 +1515,7 @@ class Subscription:
         if self.ended or self.n is None:
             return []
         if self.tail.ino is None:
-            return [self.message("rows", {"rows": [], "before": before, "more": False})]
+            return [self.message("rows", {"rows": [], "before": before, "more": False, "offChain": []})]
         ino = self.tail.ino
         self.ask(self.tail.path, lambda t: page_of(t, ino, before, limit))
         return []
@@ -1308,14 +1523,15 @@ class Subscription:
     def answer(self, out):
         """What the worker answered, in the order asked — pages, `output`s,
         looks at the disk; a transcript replaced under a page is a
-        discontinuity."""
+        discontinuity. A page's rows are marked off the chain here, from this
+        subscription's chain, in the order its messages go."""
         while not self.ended:
             try:
                 kind, value = self.answers.get_nowait()
             except queue.Empty:
                 return
             if kind == "page":
-                out.append(self.message("rows", value))
+                out.append(self.message("rows", {**value, "offChain": self.off_chain(value["rows"])}))
             elif kind == "output":
                 out.append(self.message("output", value))
             elif kind == "facts":
