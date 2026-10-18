@@ -3292,6 +3292,30 @@ describe('the export to the host', () => {
     ])
   })
 
+  test("MAWS's ask goes the same way when it does not wait (blocking false), and not when it does", async () => {
+    const h = harness()
+    await h.ready()
+    const PROCEED = { id: 'q1', question: 'Proceed?', modality: 'choice', options: [{ label: 'Yes' }, { label: 'No' }] }
+    const mawsUse = (id: string, blocking?: boolean) => ({ type: 'tool_use', id, name: 'mcp__maws__ask', input: { questions: [PROCEED], ...(blocking !== undefined && { blocking }) } })
+    const mawsResult = (id: string, text: string) => ({ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }] })
+    const asked = (id: string) => JSON.stringify({ status: 'asked', askId: id }, null, 2)
+    const answered = (id: string) => JSON.stringify({ status: 'answered', askId: id, answers: [] }, null, 2)
+    const keep = (id: string, uuid: string, text: string) =>
+      h.append('tool-result', { type: 'user', role: 'user', content: [mawsResult(id, text)] }, { uuid, origin: { kind: 'tool', tool: 'mcp__maws__ask' } })
+    await keep('toolu_m1', 'r-mres1', asked('toolu_m1'))
+    await h.responseRow(mawsUse('toolu_m1', false), { uuid: 'r-muse1' })
+    await h.responseRow(mawsUse('toolu_m2'), { uuid: 'r-muse2' })
+    await keep('toolu_m2', 'r-mres2', answered('toolu_m2'))
+    await h.responseRow(mawsUse('toolu_m3', true), { uuid: 'r-muse3' })
+    await keep('toolu_m3', 'r-mres3', answered('toolu_m3'))
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [
+        { type: 'assistant', uuid: 'r-muse1', message: { content: [mawsUse('toolu_m1', false)] } },
+        { type: 'user', uuid: 'r-mres1', message: { content: [mawsResult('toolu_m1', asked('toolu_m1'))] } },
+      ],
+    ])
+  })
+
   test("a blocking ask, an async one whose result never came, and another tool's result are not exported", async () => {
     const h = harness()
     await h.ready()

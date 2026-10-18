@@ -693,10 +693,13 @@ Not here: the chief-of-staff agent (a reader of the log on the human's
 behalf; whether a resident session or a per-event routine is decided when
 the log is in use), inbound Slack or mail, a human seat, remote control of
 a session's process, any change to the board loop or to `decomposing`,
-and the async questions of a MAWS session. Under `MAWS_NATIVE_TO_HUMAN`,
-the plugin's ask tool is not registered, and `mcp__maws__ask` (blocking
-false), whose answer shape this repository does not own, carries them.
-They reach neither the log nor `chat --host` (residue).
+and the sessions MAWS launches. Under `MAWS_NATIVE_TO_HUMAN`, the plugin's
+ask tool is not registered, and `mcp__maws__ask` (blocking false) carries
+a session's async questions; the readers know its shape, read from MAWS's
+transcripts (board #76: `question` at the acceptance, `answered` at the
+`[MAWS ask <id>]` steer, `src` the call id). But MAWS launches with an
+`sdk-ts` entrypoint, which joins no project on sight (§2), so such a
+session is no member and records nothing (residue).
 
 ## Acceptance
 
