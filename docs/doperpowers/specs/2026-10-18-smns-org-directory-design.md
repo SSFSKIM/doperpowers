@@ -494,6 +494,8 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M4 executor.
 - Decision (M4 review): the launch directory's reader reads each transcript row to its newline (a first row over 64 KiB is never cut and dropped; at most 1000 rows), and falls to the caller's cwd only when no complete row exists, uncached. A seat's directory is its session's launch directory, the recorded seat `cwd` only the fallback (`seat_cwd`, used by `seat_project`, the seat's joins and `resume_session`; a fresh `fill` still starts in the recorded `cwd`). A relocation within one project writes one more `joined` with `relocated: true`, `by` `""` and the new `cwd`/`repo`/`branch` — only when the launch directory differs from the latest `joined.cwd`, re-checked under the session's lock — so every reader of the latest `joined.cwd` (list, Resume, the plane) follows it. `tests/sminos/engine_relocated_shape.py` reads the installed engine binary (`~/.local/bin/claude` or `$SMINOS_ENGINE`) and fails when the `relocated` producer or the tail-then-head reader changes shape, printing SKIP where no engine is installed (CI); a format change otherwise degrades to the first row's `cwd`, never the current directory (the orchestrator's condition).
   Date/Author: 2026-10-18, M4 executor from the task review.
+- Decision (controller): M6 is built in parallel with M5 rather than after it. M6 consumes only the `copy` event's wire shape, which the Interfaces table fixes, not M5's code, and the two are in different repositories; M6's review waits until M5 is reviewed clean, so a deviation in M5's shape is caught before M6 is approved.
+  Date/Author: 2026-10-18, the plan-executor.
 
 ## Outcomes & Retrospective
 
