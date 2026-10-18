@@ -273,6 +273,14 @@ ctl post "$SMINOS_HOME/bridge/$SB.sock" "$(rows export marks)" >/dev/null
 ctl post "$SMINOS_HOME/bridge/$SB.sock" '[{"type":"heartbeat","state":{},"t":2}]' >/dev/null
 sleep 0.5
 assert_equals "$(events_of "$SB")" "" "a session that is no member (a headless SDK run) exports nothing"
+SM=5b000001-0000-4000-8000-0000000000e7
+peer "$SM" exmaws interactive sdk-ts
+SMNS_MEMBER="$(ps -o ppid= -p $$ | tr -d ' ')" start_child "$SM"
+ctl post "$SMINOS_HOME/bridge/$SM.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SM\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SM.sock" "$(rows export marks)" >/dev/null
+until_true 100 has "$SM" "message:e1#1" || true
+assert_equals "$(events_of "$SM")" "joined message:e1#0 message:e1#1" \
+  "an SDK run its host marked as a member (MAWS's SMNS_MEMBER, naming the engine's parent, which the bridge's child inherits) joins and exports as a terminal session does"
 
 SC=5b000001-0000-4000-8000-0000000000e3
 peer "$SC" exout interactive cli

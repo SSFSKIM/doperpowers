@@ -311,8 +311,13 @@ the spec's Decision Log entry "the branch review round"
   or `compact` claimed before a stop is still answered `interrupted`,
   though the child would keep its answer under the nonce if the daemon
   sent it. Worth it once a stop mid-RPC is seen in practice.
-- **Open — a session MAWS launched is no project member, so nothing of it
-  reaches the log** (board #76's finding). The readers know MAWS's ask now
+- ~~**Open — a session MAWS launched is no project member, so nothing of it
+  reaches the log**~~ **Resolved in 7.184.0**: the owner ruled MAWS
+  sessions members (2026-10-18); MAWS sets `SMNS_MEMBER` to its own pid on
+  every engine it spawns, and the hook, the bridge's child and a verb the
+  session's tools run admit an SDK run whose engine that pid spawned
+  (`member_mark`, the spec's Decision Log).
+  Was: (board #76's finding). The readers know MAWS's ask now
   (`mcp__maws__ask` with `blocking` false and its `[MAWS ask <id>]` steer,
   `extract_asks`, and the bridge's export), but MAWS launches every session
   with `CLAUDE_CODE_ENTRYPOINT=sdk-ts`, and an `sdk*` entrypoint never joins
