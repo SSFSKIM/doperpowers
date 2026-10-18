@@ -243,13 +243,26 @@ rather than design it alone. For each ticket you take:
 1. `board-show.sh <n>` — the body is the statement of work; the comments
    carry what was learned since.
 2. Move it as the work moves; the first move is your claim, so make it
-   before the work starts — a refused transition means another session
-   took the ticket first. A `ready-for-implementer` ticket goes
+   before the work starts. A `ready-for-implementer` ticket goes
    straight to `in-progress --branch <branch>`. A `ready-for-architect`
    ticket goes `in-design` while you design it, then crosses the build
    edge with a note, its pin and its branch:
    `board-transition.sh <n> in-progress "<note>" --plan <path>@<sha>|pre-spec --branch <branch>`.
    `in-review --pr <url>` when the PR opens.
+
+   A claim another session made first is refused as already in flight:
+   `#<n> is already in-progress` on the gh binding,
+   `refused: illegal-transition — in-progress → in-progress` on the api
+   binding (`in-design` for a design claim). Any other failure (auth,
+   network, the server, an argument the script rejects) is an ordinary
+   error to diagnose or report. On the api binding the claim is
+   exclusive: the board service checks the state and writes it in one
+   transaction under the ticket's row lock, so of two claims the second
+   is refused. On the gh binding it is visible, not exclusive: the script
+   reads the ticket, then rewrites its labels and branch with nothing to
+   arbitrate, so two claims seconds apart can both succeed and the later
+   branch stands. There, re-read the ticket (`board-show.sh <n>`) before
+   you build on it, and leave it if the branch it records is not yours.
 3. Run the work as you would without a ticket. The ticket changes nothing
    about how it is designed, built or reviewed.
 4. Close it. On the gh binding the PR body's `Closes #<n>` closes it at the
