@@ -108,6 +108,7 @@ export function compacted(agentId: string | null, messages: readonly SessionMess
   // compaction is the accepted loss.
   if (agentId === null) {
     state.deliveredRows = []
+    state.compactions++
   }
   const after = state.cut.get(loop)
   const summary = messages?.[0]?.handle
