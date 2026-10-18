@@ -7,7 +7,7 @@
 
    idea ─▶ grill ─▶ design you sign off ─▶ spec ─┬─▶ ONE MILESTONE · runs in order from the spec itself
                                                  └─▶ SEVERAL       · a fresh subagent per milestone, reviewed at each frontier
-   board ─▶ dispatch ─▶ build ─▶ review ─▶ merge     · the same method while you're away
+   board · the backlog: you name a ticket, the session takes it through the same method
 ```
 
 Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers sizes the work first. Every change starts with a grill that closes the design questions while you are present, then a design you approve. From there the shape follows the reader: a change one agent builds in the session goes straight from the approved design to code; anything else gets one spec that carries its design with its reasoning, its acceptance, and its plan of work told as milestones. One milestone runs in order from the spec; several run a fresh subagent per milestone, reviewed at every boundary. How much independent review the work gets is a separate call, made from its stakes rather than its size. Either way the agent runs without stopping until it meets a decision the design did not cover, and that comes back to you.
@@ -26,8 +26,8 @@ The agent refuses to jump straight to code. It interviews you (`brainstorming`) 
 **Several units, or taste mid-flight** — work that needs more than one agent-ownable milestone, or your judgment while it is built.
 The same grill and the same spec: its plan of work is told as milestones an executor can own from the document and the code — files, interfaces, the decisions already settled, proof; no line numbers, no steps — and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
 
-**Unattended** — the same method with nobody watching.
-Tickets live as GitHub issues and gated workers pick them up (`issue-tracker`): an Architect grills against the ticket, writes the spec, and executes it through a subagent that comes back to it when the plan does not cover a decision; the same seat then runs the review of its own PR through a QA agent that lands it (`qa-loop`); the fleet of durable background sessions doing it is one registry of seats (`sminos`). Product feedback can even feed the board directly (`triaging-feedback`).
+**Later** — the backlog.
+Work deferred out of a session lands as a ticket on the board (`issue-tracker`, GitHub issues or an Arkho board service), and waits there until you name it; the session you name it to takes it through the same method. Sessions working in one project see each other, message each other and you, and hand work between them (`sminos`). Product feedback can feed the board directly (`triaging-feedback`). The board once dispatched its own Architect, Executor and review workers onto tickets with nobody watching; that pipeline is dormant (`docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md`): unattended work proved slower and less reliable than a session working with you.
 
 ---
 
@@ -84,9 +84,9 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`)
 - `progress-report` — explain a change your human partner didn't watch, or a concept, so they can steer it: behavior, the decisions made for them, limits, how to check; or mechanism, boundaries, what it means for them — delivered as a self-contained HTML page opened in their browser (manual `/progress-report`)
 
-**Run it unattended**
-- `issue-tracker` — the board, backed by GitHub issues, plus the execution loop that dispatches Architect and Executor workers onto tickets (gate before building; the design lane authors the plan)
-- `sminos` — the fleet registry: seats (durable background sessions with a role, in a group), spawn/wake/attach, topology, and the group board
+**Track it and coordinate**
+- `issue-tracker` — the board as a backlog, in GitHub issues or on an Arkho board service: register, search, take a named ticket, close it out (its automatic dispatch is dormant)
+- `sminos` — the project family: every session in a project is a member that can message the others and its human, spawn and retire background sessions, and span machines
 
 **Deployed alongside, not a skill**
 - `application-agents/triaging-feedback/` — the feedback→triage poller: turns product feedback into grounded board tickets
