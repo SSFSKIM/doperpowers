@@ -45,10 +45,10 @@ The brainstorm's decisions, each dated, recorded here once and bound by the sect
 
 ## 1. Every session on an enrolled machine is in a synced project
 
-A session's project is resolved in this order, by one resolver, `session_project(session, cwd)` in `skills/sminos/scripts/sminos.py` (§7):
+A session's project is resolved in this order, by one resolver, `session_project(session, launch_cwd)` in `skills/sminos/scripts/sminos.py` (§7), where `launch_cwd` is the session's **launch directory** (§1c), never the directory it happens to be in now:
 
 1. its join override, when the file exists and names a project known here;
-2. the working directory's `.smns`, walking up (`resolve_project` as today), with the worktree rule of §1a;
+2. the launch directory's `.smns`, walking up (`resolve_project` as today), with the worktree rule of §1a;
 3. on an enrolled machine, the machine's own machine project;
 4. on an unenrolled machine, the local project of the owning git repository, `local-<repo>`, as today; a directory in no repository is no project, as today.
 
@@ -73,6 +73,16 @@ Consequences, each a decision:
 ### 1b. The scope widening, stated
 
 Before this change a stray recorded nothing: `hooks/smns-record.sh` exits, before Python starts, where no `.smns` or `.git` lies above the directory; the bridge's export (`sminos.export_live`) appends nothing where `resolve_project` finds no project; and `derive --all` covers members only. After it a stray on an enrolled machine is a member of its machine project, so its `<message>` spans and async asks are exported to that project's log and uploaded to the hub (the owner approved this on 2026-10-18), its presence is published to the hub, and `derive` covers it. The hook's cheap look stays and admits every directory when the enrollment file exists (`${SMINOS_HOME:-~/.claude/sminos}/daemon/hub.json`), since on an enrolled machine every directory is a project. `SMNS_INTERNAL` forks stay excluded everywhere (`sminos.internal_pids`, the hook's first line), as do headless and SDK runs (`HEADLESS_ENTRYPOINT`). On an unenrolled machine nothing widens.
+
+### 1c. A session's directory is where it was launched
+
+A session's project is resolved from its **launch directory** — the directory the engine started it in, which also keys its transcript directory (`~/.claude/projects/<encoded launch directory>/`) and which `claude --resume` needs to find the transcript — and never from the directory it is in now. An agent's `cd` moves no session: not when it shows in the hook payload's `cwd`, in the engine record's `cwd`, or in the transcript rows' `cwd`, all of which follow the shell. Only a `.smns` change that resolves the launch directory differently (§1a), or `sminos join` (§7), moves a session.
+
+- `session_project` takes the launch directory for every consumer §7 names: the record hook (`cmd_record`), the bridge export (`export_live`), and `_local_sessions` (through it the plane's presence). The engine record's `cwd` cannot serve here (it follows the shell); the launch directory is read once per session and cached (the transcript's first row's `cwd`, or `CLAUDE_PROJECT_DIR` where a command hook's environment carries it — M4 verifies which sources hold it and how a worktree entered with `EnterWorktree` records it).
+- `joined` carries the launch directory as its `cwd`: Resume (the RPC) and `known_checkouts` read it, and a `joined` written while the session was `cd`'d elsewhere would otherwise record a directory Resume cannot use.
+- `list` shows the launch directory as a row's `cwd` (the `joined` one; M1's row rule) — the directory that names the session's project and resumes it.
+- A worktree the engine moves a session into (`EnterWorktree`) resolves to the same project through §1a's main-checkout rule whichever directory the transcript records.
+- Rejected: following the current directory — today's behavior, which split one session's exports across two projects (Surprises & Discoveries, 2026-10-18), and which once doperpowers' `.smns` lands (M3) would write a `moved`/`joined` pair on every `cd`. Rejected: sticking to the first project a session joined, an accident of where its first export ran.
 
 ## 2. `.smns` names the org; the enrollment knows the URL
 
@@ -145,8 +155,8 @@ Where this supersedes the log design: §2's "from a directory that is no project
 - The override is `$SMINOS_HOME/sessions/<session-uuid>.json`: `{"project": "<id>", "at": "<ts>"}`. It is removed only by `join --cwd` or another `join`; the daemon sweeps overrides whose session's transcript has not changed for 30 days or is gone. An override whose target has become ineligible (its machine project retired, the project no longer known) is read as absent — `session_project` falls through to the directory, so the session moves (§1a) — and is removed by the sweep, with a `daemon.log` line naming the session and the target.
 - Hand-off (the log design §2) copies the override to the successor session, as it copies the cursor.
 - Seats cannot join: a seat's project is its record's `cwd` (its spawner chose it), so `join` from a seat is refused with "a seat's project is where it was spawned".
-- **One resolver, `session_project(session, cwd)`**, serves the record hook (`cmd_record`), the bridge export (`export_live`), `_local_sessions` (and through it the plane's presence, which reads `view_of`), `seat_project`, `caller_project` and `caller_scope`. It does not serve `known_checkouts`, which must keep reading each `joined`'s `cwd` through `resolve_project` so a joined-by-override session's directory is never offered as a checkout of the project it joined.
-- Resume (the RPC) uses the real `cwd` carried on `joined`, as it does today.
+- **One resolver, `session_project(session, launch_cwd)`** (§1c), serves the record hook (`cmd_record`), the bridge export (`export_live`), `_local_sessions` (and through it the plane's presence, which reads `view_of`), `seat_project`, `caller_project` and `caller_scope`. It does not serve `known_checkouts`, which must keep reading each `joined`'s `cwd` through `resolve_project` so a joined-by-override session's directory is never offered as a checkout of the project it joined.
+- Resume (the RPC) uses the `cwd` carried on `joined`, which is the launch directory (§1c).
 
 ## 8. Desk
 
@@ -259,17 +269,17 @@ Proves: acceptance 3 (the CLI side), 4, 8, and the remote half of 2 (members on 
 
 ### M4 — `sminos join`, `session_project`, moves when a resolved project changes
 
-What exists at its end: `sminos join <project>`, `join --cwd`, `join` alone; the override file and its sweep; `session_project(session, cwd)` serving every consumer §7 names; a `.smns` appearing or disappearing under a live session moves it within one tick; hand-off copies the override; seats are refused.
+What exists at its end: `sminos join <project>`, `join --cwd`, `join` alone; the override file and its sweep; `session_project(session, launch_cwd)` serving every consumer §7 names from the session's launch directory (§1c), so a `cd` never moves a session and `joined` carries the launch directory; a `.smns` appearing or disappearing under a live session moves it within one tick; hand-off copies the override; seats are refused.
 
-Touches: `sminos.py` (`session_project`, `cmd_join`, `caller_project`, `caller_scope`, `seat_project`, `_local_sessions`, `_reconcile` for `moved`, `hand_off`, `cmd_record`, `export_live`), `sminos_daemon.py` (`tick_all`'s session map, the override sweep), tests. The plane needs no change: its presence reads `view_of`, which reads `_local_sessions`.
+Touches: `sminos.py` (`session_project`, the launch-directory reader and its per-session cache, `joined_fields`' `cwd`, `cmd_join`, `caller_project`, `caller_scope`, `seat_project`, `_local_sessions`, `_reconcile` for `moved`, `hand_off`, `cmd_record`, `export_live`), `sminos_daemon.py` (`tick_all`'s session map, the override sweep), tests. The plane needs no change: its presence reads `view_of`, which reads `_local_sessions`.
 
 Interfaces: produces `session_project`, the override file, the `retired` `moved` fields and `joined` `by` `join`/`move` (Interfaces and Dependencies). Consumes M3's machine project.
 
-Decisions: `_reconcile(project, …)` retires a live local member whose `session_project` is now another project with `reason` `moved`, `project` the new id, and `by` `""`; the new project's reconciliation joins it as a live session whose project it is (the existing on-sight rule, with `session_project` in place of `resolve_project(cwd)`), `by` `move` when the join follows a move and `join` when `cmd_join` writes it directly. `cmd_join` checks the target's eligibility (§7: on an enrolled machine an active hub project of the org, by its `project.json`'s hub and the absence of `retired`), writes the override, then runs both projects' reconciliation itself, so the move is visible before the verb returns. A `join` naming the session's current project is a no-op that says so. `session_project` applies the same eligibility to an existing override and reads an ineligible one as absent. The sweep runs in the daemon's hourly duties beside `derive`, by the transcript's mtime (`transcript_path`), or its absence, and removes only the file. A `moved` retirement holds against re-join by construction: on-sight joins only where `session_project` resolves.
+Decisions: `_reconcile(project, …)` retires a live local member whose `session_project` is now another project with `reason` `moved`, `project` the new id, and `by` `""`; the new project's reconciliation joins it as a live session whose project it is (the existing on-sight rule, with `session_project` in place of `resolve_project(cwd)`), `by` `move` when the join follows a move and `join` when `cmd_join` writes it directly. `cmd_join` checks the target's eligibility (§7: on an enrolled machine an active hub project of the org, by its `project.json`'s hub and the absence of `retired`), writes the override, then runs both projects' reconciliation itself, so the move is visible before the verb returns. A `join` naming the session's current project is a no-op that says so. `session_project` applies the same eligibility to an existing override and reads an ineligible one as absent. The sweep runs in the daemon's hourly duties beside `derive`, by the transcript's mtime (`transcript_path`), or its absence, and removes only the file. A `moved` retirement holds against re-join by construction: on-sight joins only where `session_project` resolves. The launch directory (§1c) is read once per session and cached under `$SMINOS_HOME` (its source settled by M4: the transcript's first row's `cwd`, `CLAUDE_PROJECT_DIR` in a hook's environment, or the transcript directory's encoding, whichever the engine's records prove reliable — verify each against a real transcript and hook payload, and report how an `EnterWorktree` session records it).
 
 Does not touch: tag resolution, the copy, the desk.
 
-Proves: acceptance 6 (but its last sentence, the `moved to` refusal and `@short`, which is M5's) and 7; tests pin that a `.smns` written into a live session's repository moves it on the next tick with `retired (moved)` in the old log and `joined (by: move)` in the new; that removing the file moves it back, and — with two homes and the stand-in — that the old project's `moved` retirement reaches the other home while the first keeps following that project; that `join` from a seat is refused, and so are `join local-<name>` and `join <retired machine project>` on the enrolled home, each saying why; that an override whose target the next `org` frame marks retired moves the session back to its directory's project on the next tick and is swept; that an override survives a `.smns` appearing; that hand-off (a `continued-in` record) carries the override to the successor; that an override whose transcript is 31 days old or gone is swept and a 29-day one is not.
+Proves: acceptance 6 (but its last sentence, the `moved to` refusal and `@short`, which is M5's) and 7; tests pin that a `.smns` written into a live session's repository moves it on the next tick with `retired (moved)` in the old log and `joined (by: move)` in the new; that removing the file moves it back, and — with two homes and the stand-in — that the old project's `moved` retirement reaches the other home while the first keeps following that project; that `join` from a seat is refused, and so are `join local-<name>` and `join <retired machine project>` on the enrolled home, each saying why; that an override whose target the next `org` frame marks retired moves the session back to its directory's project on the next tick and is swept; that an override survives a `.smns` appearing; that hand-off (a `continued-in` record) carries the override to the successor; that an override whose transcript is 31 days old or gone is swept and a 29-day one is not; that a fixture session whose transcript rows' `cwd` (and hook payloads' `cwd`, and engine record's `cwd`) flips between two projects' directories leaves the record hook's export, `export_live` and presence all on the launch directory's project, with no `moved` event written, while a `.smns` added under the launch directory still moves it; that a `joined` written while the session is `cd`'d elsewhere carries the launch directory.
 
 ### M5 — Addressing across the org and the copy in the sender's log
 
@@ -366,7 +376,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 
 **`project.json`** of a followed project: `{"project", "name", "remote": "", "root": "", "hub": {"url", "org"}}` — the five fields `project_path` writes and nothing else. A project's kind and whether it is retired are read from `org.json` (§3); whether this machine holds or follows it is decided at each scan (M3).
 
-**`session_project(session: str, cwd: str) -> Project | None`** in `sminos.py`: §1's order. `machine_project(org: str, machine: str) -> Project`: the machine project of this machine (`Project` with `root` `""`, `hub` from the enrollment). `resolve_project(cwd)` keeps its signature and gains the worktree rule and the machine-project fallback; `session_project` adds the override.
+**`session_project(session: str, launch_cwd: str) -> Project | None`** in `sminos.py`: §1's order, from the session's launch directory (§1c). `machine_project(org: str, machine: str) -> Project`: the machine project of this machine (`Project` with `root` `""`, `hub` from the enrollment). `resolve_project(cwd)` keeps its signature and gains the worktree rule and the machine-project fallback; `session_project` adds the override.
 
 **The join override** (`$SMINOS_HOME/sessions/<session-uuid>.json`): `{"project": "<project id>", "at": "<ts>"}`. An eligible target on an enrolled machine is a project whose `project.json` names the org's hub and that `org.json` does not mark retired; an override naming an ineligible project is read as absent (§7).
 
@@ -374,7 +384,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 
 | kind | new fields |
 | --- | --- |
-| `joined` | `session_kind` `interactive`/`bg`/`seat` (never `kind`, the event's own discriminator); `repo` the owning repository's basename (`""` outside one); `branch` (`""` when detached or none); `by` may be `join` or `move` |
+| `joined` | `cwd` is the session's launch directory (§1c); `session_kind` `interactive`/`bg`/`seat` (never `kind`, the event's own discriminator); `repo` the owning repository's basename (`""` outside one); `branch` (`""` when detached or none); `by` may be `join` or `move` |
 | `retired` | `reason` `moved` with `project` the new project's id |
 | `say`, `human` | `to[]` entries may carry `project` (the recipient's project id); `copy` `"<project id>:<writer>:<seq>"` marks the sender's copy of a cross-project message; `from_project` as today |
 
@@ -407,6 +417,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Evidence: `tests/sminos/run-sminos-tests.sh`, `assert_contains`.
 - Observation (M1): an agent's meta file carries `finished: true` even while the agent waits on its own background work, so the subagent tree does not read status from `finished`.
   Evidence: this execution's own plan-executor meta file.
+
+- Observation (2026-10-18, the owner's incident): a session's exports split across two projects because each export resolved the project from the directory at that moment. CI-opt (session a45b97a3, MacBook, a MAWS member on the desk), launched in the doperpowers checkout, `cd`'d between doperpowers and MAWS some thirty times since 10-15; its MAWS writer stops at seq 72 (11:06:16Z, a 30-second stay in MAWS), and everything since (seq 74–112 of its `local-doperpowers` writer: messages, ⚠ Criticals, questions) went to `local-doperpowers`, off the desk — including its 17:06:59Z answer to the owner's 17:04Z web message, which had been delivered (hub/1858…:1, settled). Some spans went to both (local-doperpowers 74/75 = MAWS 71/72, same `src`). Nothing retired it from MAWS, so the desk kept offering it there.
+  Evidence: the orchestrator's reading of CI-opt's transcript (`~/.claude/projects/-Users-new-Developer-GitHub-doperpowers/`), its engine record (`sessions/97483.json`), and both projects' logs. The engine record's `cwd` and the hook payload's `cwd` both follow the shell. Hence §1c.
 
 ## Decision Log
 
@@ -451,6 +464,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Decision (M2 review): if the `Registry` cannot produce the opening `org` snapshot, the stream ends and the daemon reconnects (no live stream ever runs without its directory). Machines' online state is fenced by enrollment credential, not a per-name generation: each lease keeps the Access client id of the stream that opened it, and only the active enrollment's client id counts toward the machine's `online`, so a late report from a revoked enrollment never counts for a same-name successor, whatever the name's case (a per-name generation compared counters of different `Machine` objects, since the worker routes by the enrolled spelling). Each `Project` report carries a rising `seq`; the `Registry` keeps the last `seq` per project, a report at or below it changes nothing, and a newer one replaces what that project said before. A report with no `seq` (a `Project` still on the old version mid-rollover) sets the counts and leaves online state alone. These replace the first-round M2 decisions on online state (stored per project and machine, cleared on revocation) and on an optional `machines_state`.
   Rationale: the task review found the first fence destructive (a stale report erased a successor's newer state) and broken by case-only re-enrollment; enrollment identity and report ordering are independent problems, each fenced directly.
   Date/Author: 2026-10-18, M2 executor from the task review.
+- Decision: a session's project is resolved from its launch directory, never its current directory (§1c, §1, §7, M4, Interfaces); `joined` carries the launch directory; `list`'s `cwd` is that directory. Reached from the owner's incident of 2026-10-18 (Surprises & Discoveries), as the design's intent: one project per session (§1) and Resume by `joined`'s `cwd` (§7) both assume a directory that does not change with the shell.
+  Rationale: following the current directory is the split observed, and with doperpowers' committed `.smns` it would write a `moved`/`joined` pair on every `cd`; sticking to the first project joined encodes an accident. The launch directory is what the engine itself keys the session by.
+  Date/Author: 2026-10-18, the orchestrator; folded by the plan-executor.
 
 ## Outcomes & Retrospective
 
