@@ -120,6 +120,69 @@ class Containment(unittest.TestCase):
         self.assertNotIn("text", got)
 
 
+class TaskIndex(unittest.TestCase):
+    """The `stop` RPC's check (DX6, DC10.G3): `running_task` reads only the
+    rows that name a task and the calls they name, never the engine's request
+    records, and comes to the status the whole loop gives it; a subagent's
+    task stopped through the bridge is recorded in the main loop's rows."""
+
+    def write(self, path, rows, requests=True):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+                if requests:
+                    # A request record repeats the conversation so far, task ids and all, and is no row.
+                    f.write(json.dumps({"type": "api-request", "sessionId": "s", "uuid": "not-a-row",
+                                        "body": {"messages": [row]}}) + "\n")
+        return path
+
+    def test_every_vector_job_has_the_status_the_whole_loop_gives_it(self):
+        n = 0
+        for i, case in enumerate(VECTORS["cases"]):
+            if not case["input"]["session"]["running"]:
+                continue
+            main = self.write(os.path.join(HOME, "idx", "c%d.jsonl" % i), case["input"]["main"])
+            for job in case["expect"]["jobs"]:
+                n += 1
+                ledger = fed(jobs.task_rows(main, job["taskId"]))
+                got = [j for j in ledger.jobs_body(True) if j["taskId"] == job["taskId"]]
+                self.assertEqual(got, [job], "%s: %s" % (case["name"], job["taskId"]))
+                self.assertEqual(jobs.running_task(main, job["taskId"]), job["status"] == "running",
+                                 "%s: %s" % (case["name"], job["taskId"]))
+        self.assertGreater(n, 10)
+
+    def test_a_subagents_task_stopped_through_the_bridge_is_recorded_in_the_main_loop(self):
+        main = os.path.join(HOME, "idx", "sess.jsonl")
+        agent = os.path.join(HOME, "idx", "sess", "subagents", "agent-a1.jsonl")
+        call = {"type": "assistant", "uuid": "u1", "timestamp": "2026-10-18T00:00:01Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_M", "name": "Monitor", "input": {"command": "tail -F x", "description": "x"}}]}}
+        started = {"type": "user", "uuid": "u2", "timestamp": "2026-10-18T00:00:02Z",
+                   "toolUseResult": {"taskId": "mon01", "timeoutMs": 1, "persistent": False},
+                   "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_M", "content": "started"}]}}
+        note = {"type": "user", "uuid": "u3", "timestamp": "2026-10-18T00:00:03Z", "isMeta": True,
+                "origin": {"kind": "plugin", "name": "doperpowers"}, "message": {"content": [
+                    {"type": "text", "text": "Task mon01, a background task, was stopped from the desk: it is not running."}]}}
+        self.write(agent, [call, started])
+        self.write(main, [{"type": "user", "uuid": "u0", "timestamp": "2026-10-18T00:00:00Z",
+                           "message": {"content": "go"}}])
+        self.assertTrue(jobs.running_task(main, "mon01"), "a subagent's running monitor")
+        self.assertFalse(jobs.running_task(main, "mon02"), "a task nobody started")
+        self.assertFalse(jobs.running_task(main, "a1"), "an agent is no job")
+        self.write(main, [note])
+        self.assertFalse(jobs.running_task(main, "mon01"), "stopped: the main loop's record")
+        own = fed(jobs.task_rows(agent, "mon01"))
+        self.assertEqual(own.jobs_body(True)[0]["status"], "running", "the subagent's own rows alone")
+        stopped = own.jobs_body(True, fed([note]))[0]
+        self.assertEqual((stopped["status"], stopped["endedAt"]), ("stopped", "2026-10-18T00:00:03Z"))
+
+    def test_a_missing_or_empty_transcript_holds_no_task(self):
+        self.assertFalse(jobs.running_task("", "b1"))
+        self.assertFalse(jobs.running_task(os.path.join(HOME, "nowhere.jsonl"), "b1"))
+        empty = self.write(os.path.join(HOME, "idx", "empty.jsonl"), [])
+        self.assertEqual(jobs.task_rows(empty, "b1"), [])
+
+
 class Table(unittest.TestCase):
     def test_words(self):
         self.assertEqual(jobs.normalize("killed"), ("stopped", True))

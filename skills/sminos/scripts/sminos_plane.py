@@ -133,7 +133,7 @@ SLUG_MAX = 200            # UTF-16 units of the engine's slug before it is cut a
 # TaskStop; a notification or a task_status; a result of a call it holds. Every other line (the loop's Bash,
 # Read, Edit calls and their results: most of an agent transcript's bytes) is passed over unparsed.
 AGENT_CALL = re.compile(rb'"name":\s*"(?:Agent|Task)')   # TaskStop and the Task tools too
-OUTCOME_KEYS = (b"task-notification", b'"task_status"')
+OUTCOME_KEYS = (b"task-notification", b'"task_status"', b": it is not running")   # the last: the bridge's stop record
 RESULT_OF = re.compile(rb'"tool_use_id":\s*"([^"\\]+)"')
 
 
@@ -646,20 +646,22 @@ class Facts:
     its transcript is gone or unreadable}; `main` (an agent's subscription)
     the main loop's view for the agents it ran."""
 
-    def __init__(self, metas=(), files=None, parents=None, main=None):
+    def __init__(self, metas=(), files=None, parents=None, main=None, stops=None):
         self.metas, self.files, self.parents, self.main = list(metas), files or {}, parents or {}, main
+        self.stops = stops   # (an agent's) the main loop's view for the agent's own jobs: the bridge's records
 
 
 def subagents_dir(main):
     return os.path.join(main[:-len(".jsonl")], "subagents") if main.endswith(".jsonl") else ""
 
 
-def look(disk, main, agent, spawns):
+def look(disk, main, agent, spawns, tasks=()):
     """The disk facts of a main subscription (every subagent) or of an
     agent's (that agent and the chain of agents above it, whose ends end
     it); `spawns` {agentId: (parentAgentId, toolUseId)} from the bridge's
-    agent state, for what a meta does not say. Each file stat'ed, read only
-    when it changed (Disk)."""
+    agent state, for what a meta does not say; `tasks` an agent's own jobs,
+    whose stop the bridge records in the main loop's rows. Each file
+    stat'ed, read only when it changed (Disk)."""
     d = subagents_dir(main)
     if not d:
         return Facts()
@@ -718,7 +720,8 @@ def look(disk, main, agent, spawns):
             ids[1].append(tool)
     parents = {p: disk.view(agent_path(main, p), *ids) for p, ids in loops.items() if p}
     top = disk.view(main, *loops[None]) if agent is not None and None in loops else None
-    return Facts(metas, files, parents, top)
+    stops = disk.view(main, list(tasks), []) if agent is not None and tasks else None
+    return Facts(metas, files, parents, top, stops)
 
 
 def _id(value):
@@ -1248,7 +1251,8 @@ class Subscription:
         disk, main, agent = self.disk, self.main, self.agent
         spawns = {k: (a.get("parentAgentId"), a.get("toolUseId") if isinstance(a.get("toolUseId"), str) else None)
                   for k, a in (self.agents or {}).items()}
-        return lambda: look(disk, main, agent, spawns)
+        tasks = list(self.ledger.jobs) if agent is not None else []
+        return lambda: look(disk, main, agent, spawns, tasks)
 
     def derive(self, alive):
         """The widened body: for a main subscription the session's tree, its
@@ -1261,7 +1265,7 @@ class Subscription:
                                session_running=alive)
         chain = jobs.derive(f.main or jobs.Ledger(), f.metas, bridge=bridge, files=f.files, parents=f.parents,
                             session_running=alive)
-        own = jobs.derive(self.ledger, [], bridge=None, files={}, parents={}, session_running=alive)
+        own = jobs.derive(self.ledger, [], bridge=None, files={}, parents={}, session_running=alive, also=f.stops)
         return {**own, "subagents": [e for e in chain["subagents"] if e["agentId"] == self.agent]}
 
     def finish(self, now, out):

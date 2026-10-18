@@ -196,6 +196,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                 result = {"ok": True, "result": {"turnId": None, "stopped": [], "running": []}} if mode == "idle" \
                     else {"ok": True, "result": {"turnId": "t1", "stopped": ["b5y6zo7fe"], "running": ["stuck01"]}} \
                     if mode == "stuck" else {"ok": True, "result": {"turnId": "t1", "stopped": ["b5y6zo7fe"], "running": []}}
+            elif o == "stop":
+                result = {"ok": False, "error": "Task %s is not running (status: completed)" % msg.get("taskId")} \
+                    if msg.get("taskId") == "bdone001" else {"ok": True, "result": {"taskId": msg.get("taskId")}}
             elif o == "model":
                 pick = {"model": msg.get("model"), "effort": msg.get("effort")}
                 events.append({"type": "model", **pick})
@@ -339,6 +342,13 @@ assert_contains "$OUT" "still running" "and saying so"
 mode idle
 run "$SMINOS" interrupt "$SID"
 assert_contains "$OUT" "nothing to interrupt" "an idle session has nothing to interrupt, said so"
+run "$SMINOS" stop "$SID" bsrv0001
+assert_rc 0 "$RC" "stop exits 0"
+assert_contains "$OUT" "bsrv0001" "naming the task it stopped"
+assert_equals "$(field_of "$(last_op "$T/lines-b" stop)" taskId)" "bsrv0001" "the task reached the mod as a stop"
+run "$SMINOS" stop "$SID" bdone001
+assert_rc 1 "$RC" "a stop the engine refuses exits 1"
+assert_contains "$OUT" "is not running (status: completed)" "in the engine's words"
 # After a module reload, until the mod knows whether a turn runs, the verbs
 # that need it are refused with the reason: never a false idle.
 mode unknown
@@ -371,8 +381,10 @@ assert_equals "$(field_of "$(last_op "$T/lines-b" compact)" instructions)" "keep
 
 echo "the control verbs, no bridge:"
 NOB=5c000002-0000-4000-8000-0000000000c2
-for verb in interrupt model compact; do
-  if [ "$verb" = model ]; then run "$SMINOS" model "$NOB" sonnet; else run "$SMINOS" "$verb" "$NOB"; fi
+for verb in interrupt stop model compact; do
+  if [ "$verb" = model ]; then run "$SMINOS" model "$NOB" sonnet
+  elif [ "$verb" = stop ]; then run "$SMINOS" stop "$NOB" bsrv0001
+  else run "$SMINOS" "$verb" "$NOB"; fi
   assert_rc 4 "$RC" "$verb with no bridge exits 4"
   assert_contains "$OUT" "no bridge" "saying so"
 done
