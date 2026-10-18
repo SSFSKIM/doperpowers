@@ -445,8 +445,8 @@ the spec's Decision Log entry "the branch review round"
   only at its next turn. T3. Trigger: a stopped session found holding an
   unread delivered row with no wake sent, or the poster's resync gaining
   retained work for another reason.
-- **A delivered text with no sminos frame line gets a wake of the fixed
-  text.** A wake names the rows it points at by their frame lines, so no two
+- **A delivered text with no sminos frame line gets a wake with no
+  `Unread:` line.** A wake names the rows it points at by their frame lines, so no two
   wakes are one text (the engine drops a peer message identical to its
   sender's last within 30 s). sminos frames every event it pushes, so only a
   `deliver` command sent by hand with a bare text (the live probe's direct

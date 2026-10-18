@@ -29,11 +29,12 @@ live-bridge-check.py's.
 
     busy        delivered mid-Bash; the turn runs on
     bash-esc    delivered mid-Bash, then Esc; the human asks for the word
-    restore     delivered as the turn starts, Esc before any answer, edit, resend
+    restore     delivered as the turn starts, Esc before any answer, edit, resend: given again; a wake names a message, which the model acts on
     after-esc   Esc before any answer, delivered while the prompt is back in the box, edit, resend
     cli-after-esc  Esc mid-Bash; idle, delivered through the CLI: it goes in as a row, the inbox wakes the session, which reads it
     esc-twice   Esc mid-Bash; two messages through the CLI, the second within 30 s of the first one's wake: each wakes the session
     esc-wake    delivered through the CLI mid-Bash, Esc before a request read it: the session wakes and reads it
+    steer-wake  a steer during the final answer: the bridge's wake names a note, and the model acts on it
 """
 
 import glob
@@ -51,7 +52,7 @@ LB = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(LB)
 
 SCENARIOS = {"busy": "KIWI", "bash-esc": "MANGO", "restore": "PAPAYA", "after-esc": "PEAR",
-             "cli-after-esc": "LYCHEE", "esc-twice": "MELON", "esc-wake": "GUAVA"}
+             "cli-after-esc": "LYCHEE", "esc-twice": "MELON", "esc-wake": "GUAVA", "steer-wake": "PINEAPPLE"}
 ASK = "If an earlier message asked you to include a word, reply with that word only; otherwise reply NONE."
 
 
@@ -172,6 +173,35 @@ class Probe(LB.Live):
         time.sleep(3)
         self.report("bash-esc", t, key, word, before)
 
+    def wake_check(self, name, t, word, unread):
+        """Says ok or FAIL for the bridge's wakes after `t`: the model acted on
+        what was unread (said the word), and each wake named it as what it is
+        (`unread`: "a message for you" or "a note"), was answered with the
+        word, and was not dismissed. Prints each wake and the turn it started."""
+        wakes = self.seen(lambda e: is_main(e, "turn", "start") and "[sminos bridge]" in str(e.get("text")), t)
+        checks = [(word in self.text_since(t), "the model acted on the unread %s (said %s)" % (unread, word))]
+        for w in wakes:
+            prompt = str(w.get("text"))
+            said = "".join(e["chunk"].get("text", "") for e in self.seen(
+                lambda e: e.get("type") == "chunk" and e.get("turnId") == w.get("turnId")
+                and e["chunk"].get("kind") == "text", t))
+            print("   wake prompt: %r" % prompt)
+            print("   its turn said: %r" % said[:300], flush=True)
+            other = "a note" if unread == "a message for you" else "a message for you"
+            checks += [
+                (unread.capitalize() in prompt and other not in prompt and other.capitalize() not in prompt,
+                 "the wake named %s, as what was unread" % unread),
+                (word in said, "the wake's turn acted on it (said %s)" % word),
+                (not any(x in said.lower() for x in ("empty", "nothing to act on")),
+                 "the wake's turn did not dismiss it as empty"),
+            ]
+        if not wakes:
+            print("   no wake: a request of the turn read the row", flush=True)
+        print("== %s: wake" % name)
+        for ok, what in checks:
+            print("   %s  %s" % ("ok  " if ok else "FAIL", what))
+        self.results.append((name, all(ok for ok, _ in checks), ""))
+
     def restore(self, word):
         t, before = time.time(), len(self.rows())
         self.prompt("Write a 150-word poem about rivers. Use no tools.")
@@ -183,6 +213,25 @@ class Probe(LB.Live):
         self.show_pane(word)
         self.resend()
         self.report("restore", t, key, word, before)
+        self.wake_check("restore", t, word, "a message for you")
+
+    def steer_wake(self, word):
+        """A steer given while the model writes its final answer: the turn
+        answers before any request reads it, so the bridge's wake starts a
+        turn, naming a note, and the model acts on the steer."""
+        t = time.time()
+        self.prompt("Write a 300-word story about a lighthouse keeper. Use no tools.")
+        LB.wait_for("the story's text", 90, lambda: self.seen(
+            lambda e: is_main(e, "chunk") and e["chunk"].get("kind") == "text", t))
+        s, body = self.command({"op": "steer", "text": "After the story, also say the word %s." % word})
+        print("   steer answered: %s %s" % (s, body and (body.get("result") or body.get("error"))), flush=True)
+        try:
+            LB.wait_for("the wake's turn", 120, lambda: self.seen(
+                lambda e: is_main(e, "turn", "start") and "[sminos bridge]" in str(e.get("text")), t))
+        except TimeoutError:
+            pass
+        self.idle()
+        self.wake_check("steer-wake", t, word, "a note")
 
     def after_esc(self, word):
         t, before = time.time(), len(self.rows())

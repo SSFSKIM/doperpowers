@@ -38,9 +38,10 @@ export type Call = {
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
  * `ended`: how its turn ended, while some append of that turn is still pending;
  * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread;
- * `frame`: a delivery's frame line, which an inbox wake names (bridge.tsx, inboxWake).
+ * `text`: a delivery's text, by which its row is found in the conversation;
+ * `frame`: a delivery's frame line, which a wake names (bridge.tsx, wakeText).
  */
-export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean; frame?: string }
+export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean; text?: string; frame?: string }
 /**
  * The wake a turn owes for delivered rows it answered before reading, until
  * its prompt settles: `isRead`, a main-loop request began since that carries
