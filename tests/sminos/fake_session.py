@@ -293,7 +293,7 @@ class Message:
         self.texts[index] = self.texts.get(index, "") + text
         self.up_to[index] = self.next_chunk
         e = {"type": "chunk", **self.ids(), "chunkIndex": self.next_chunk,
-             "chunk": {"kind": "text", "index": index, "text": text}, "t": 0}
+             "chunk": {"kind": "text", "index": index, "text": text}, "t": 1760000000000 + self.next_chunk}
         self.next_chunk += 1
         self.post([e])
 

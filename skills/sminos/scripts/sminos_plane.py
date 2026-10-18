@@ -27,7 +27,8 @@ main one (`agentId` null) or one subagent's. The answer is DX4's: a snapshot
 the subagent tree; presence; the bridge's streaming entries; usage on a main
 one), then `row`, `chunk`, `block-row`, `step-end` (a model request ended:
 DX5's step end, or the turn's end cutting it off, after its block-rows),
-`subagents`, `usage`, each numbered, and `end`. Rows come from the transcript on disk and everything live from the
+`subagents`, `usage`, each numbered, and `end` (a `chunk` carries the bridge's
+stamp `t`, so the web can say how long one took to be drawn). Rows come from the transcript on disk and everything live from the
 bridge's DX5 stream, so the two are joined in one order — the disk's (DX5's
 row order, composite cd2667d8):
 
@@ -1332,8 +1333,11 @@ class Subscription:
             if isinstance(chunk, dict):
                 self.held.add(key + (chunk.get("index"),))
             self.steps.add(key)
-            out.append(self.message("chunk", {"turnId": e.get("turnId"), "agentId": agent, "step": e.get("step"),
-                                              "chunkIndex": index, "chunk": chunk}))
+            body = {"turnId": e.get("turnId"), "agentId": agent, "step": e.get("step"), "chunkIndex": index, "chunk": chunk}
+            # The bridge's stamp (ms on this machine's clock), for the web's chunk-to-drawn latency.
+            if type(e.get("t")) in (int, float):
+                body["t"] = e["t"]
+            out.append(self.message("chunk", body))
         elif kind in ("block-row", "row-seen"):
             if not self.carried(agent):
                 return
