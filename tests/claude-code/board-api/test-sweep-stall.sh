@@ -76,6 +76,16 @@ cat > "$FIX" <<'JSON'
  {"method":"POST","path":"/runs/90/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/91/renew","status":200,"body":{"renewed":true}},
  {"method":"POST","path":"/runs/92/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/93/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/94/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/95/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/96/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/97/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/98/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/66/renew","status":200,"body":{"renewed":true}},
+ {"method":"POST","path":"/runs/97/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/98/end","status":200,"body":{"ended":true}},
+ {"method":"POST","path":"/runs/66/end","status":200,"body":{"ended":true}},
  {"method":"POST","path":"/runs/71/end","status":200,"body":{"ended":true}},
  {"method":"POST","path":"/runs/79/end","status":500,"once":true,
   "body":{"error":{"code":"internal","message":"boom"}}},
@@ -221,6 +231,16 @@ sync)
   # re-inspects one), \`live\` for a running turn. Driven off the record, so a
   # status the sweep writes is visible here.
   [ "\$1" != u-gone ] || { echo absent; exit 0; }
+  # A seat the harness shows RUNNING again — woken natively after its ladder
+  # was spent. The real verb promotes the idle record to working and says so.
+  if [ "\$1" = u-revived ]; then
+    python3 - "$DH/u-revived.json" <<'PY'
+import json, sys
+p = sys.argv[1]; m = json.load(open(p)); m["status"] = "working"
+json.dump(m, open(p, "w"))
+PY
+    echo live; exit 0
+  fi
   python3 - "$DH/\$1.json" <<'PY'
 import json, sys
 try:
@@ -234,6 +254,15 @@ reply)
   # A read that DIES. The pipeline used to hide this status behind awk's, and
   # an empty string reads as ordinary prose — which clears a standing ladder.
   [ -z "\${REPLY_MUST_FAIL:-}" ] || exit 1
+  # A WAKE THAT LANDS IN THE GAP: the phase read this seat idle a moment ago,
+  # and by the time its turn is read a wake has made it working.
+  if [ "\$1" = u-gap ]; then
+    python3 - "$DH/u-gap.json" <<'PY'
+import json, sys
+p = sys.argv[1]; m = json.load(open(p)); m["status"] = "working"
+json.dump(m, open(p, "w"))
+PY
+  fi
   # The real verb's shape: a header block, a fixed separator, then the turn.
   # The header carries the seat's TASK — which quotes an error here on purpose,
   # because only what follows the separator may decide this phase.
@@ -528,6 +557,9 @@ meta u-endfail '{"uuid":"u-endfail","current":"u-endfail","status":"idle","run_i
                  "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"51",
                  "run_bearer":"tok-79","stall_run":"79","stall_attempts":3,
                  "stall_exhausted":"79","stall_error":"API Error: 529 Overloaded."}'
+# The arm re-reads the turn before it ends anything, so the seat says what its
+# stamp says: still dead on the error.
+say u-endfail "API Error: 529 Overloaded."
 : > "$FIX.log"
 OEF1="$TDIR/endfail1.out"
 SW "$SCRIPTS/_sweep_api.sh" renew > "$OEF1" 2>&1 || true
@@ -618,6 +650,103 @@ OALL="$TDIR/all.out"
 SW env BOARD_SWEEP_TICK_BUDGET=0 "$SCRIPTS/_sweep_api.sh" all > "$OALL" 2>&1 || true
 t  "the whole-tick run reaches the stall phase" "#49 run 78"             cat "$OALL"
 t  "and stamps the meta it found"        "78"                            mfield u-allcheck stall_run
+
+# =========================================================================
+# A SEAT WAITING ON A HUMAN IS NOT A DEAD TURN — dp#58 names it as one the
+# phase leaves alone. sminos renders the last assistant message that CARRIES
+# TEXT and APPENDS the pending-AskUserQuestion or harness-prompt marker after
+# it, and an ended-blocked turn reads `idle`. So a worker woken after a 429
+# whose next turn stopped at a prompt before writing a word renders as the 429,
+# then the marker. Read from the first line, it was nudged — which interrupts
+# the very call the human is being asked about — and charged a ladder rung.
+# =========================================================================
+ERR429="API Error: Request rejected (429) · This account is out of plan usage until 2020-01-01T00:00:00Z."
+ASKQ='[pending AskUserQuestion — the seat is blocked on it; answer with sminos send g/seat "<answer>"]
+Q: Which base should the release branch be cut from?
+   options: main / release-7'
+HPROMPT="[blocked on a harness prompt — no pending AskUserQuestion in the transcript, most likely a permission prompt holding a tool call. Resume with an answer/instruction via sminos send (the pending call is interrupted), or 'claude attach' the session to approve it interactively.]"
+meta u-askq '{"uuid":"u-askq","current":"u-askq","status":"idle","run_id":93,"fence":1,
+              "lane":"implementer","bind_confirmed":true,"ticket":"61","run_bearer":"tok-93"}'
+say u-askq "$ERR429
+$ASKQ"
+meta u-hprompt '{"uuid":"u-hprompt","current":"u-hprompt","status":"idle","run_id":94,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"62",
+                 "run_bearer":"tok-94"}'
+say u-hprompt "$ERR429
+$HPROMPT"
+# One rung into a ladder, its next nudge due, when the seat starts waiting.
+meta u-midladder '{"uuid":"u-midladder","current":"u-midladder","status":"idle","run_id":95,
+                   "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"63",
+                   "run_bearer":"tok-95","stall_run":"95","stall_since":1,"stall_due":1,
+                   "stall_attempts":1,"stall_error":"API Error: 529 Overloaded."}'
+say u-midladder "API Error: 529 Overloaded.
+$ASKQ"
+OHU="$TDIR/human.out"; STALL "$OHU"
+t  "a seat waiting on an AskUserQuestion is not marked" "<absent>"       mfield u-askq stall_run
+t  "and is never nudged"                 "0"                             wakes_for u-askq
+t  "nor is one held by a harness prompt" "<absent>"                      mfield u-hprompt stall_run
+t  "and it is never nudged either"       "0"                             wakes_for u-hprompt
+t  "a standing ladder does not advance while its seat waits" "1"         mfield u-midladder stall_attempts
+t  "and is not reset either"             "95"                            mfield u-midladder stall_run
+t  "and no nudge interrupts the wait"    "0"                             wakes_for u-midladder
+# The openings this phase keys on are sminos's renderings, not its own, so a
+# rewording there would silently reopen the case above. Pinned at the source.
+t  "sminos still renders the AskUserQuestion marker this phase reads" "found" \
+   sh -c "grep -rqF '[pending AskUserQuestion — ' '$REPO_ROOT/skills/sminos/scripts' && echo found"
+t  "and the harness-prompt one"          "found" \
+   sh -c "grep -rqF '[blocked on a harness prompt — ' '$REPO_ROOT/skills/sminos/scripts' && echo found"
+
+# =========================================================================
+# THE IDLE READING IS RE-TAKEN UNDER THE LOCK. The candidate gate reads
+# `idle` outside the registry lock; a wake landing between that read and the
+# ladder step (the relay, an operator, a native SendMessage) leaves the seat
+# working, and a step that re-checked only the run id charged a rung and
+# nudged a worker that was mid-turn.
+# =========================================================================
+meta u-gap '{"uuid":"u-gap","current":"u-gap","status":"idle","run_id":96,"fence":1,
+             "lane":"implementer","bind_confirmed":true,"ticket":"64","run_bearer":"tok-96"}'
+say u-gap "$ERR429"
+OGAP="$TDIR/gap.out"; STALL "$OGAP"
+t  "a wake landing after the idle read charges nothing" "<absent>"       mfield u-gap stall_run
+t  "and nudges nothing"                  "0"                             wakes_for u-gap
+t  "the seat is working, as the wake left it" "working"                  mfield u-gap status
+
+# =========================================================================
+# A SPENT LADDER'S STAMP IS A READING, NOT A STANDING ORDER. The hand-off ENDS
+# the run and retires the meta, so a stamp that has gone stale since phase 1b
+# wrote it takes the run from a worker that is working. Three ways it goes
+# stale, each of which must keep the run: the seat was woken and the harness
+# shows it running now; it answered as itself and went idle again; it is
+# waiting on a human. Only the stamp still being true — idle, on the error —
+# hands off (u-stall and u-endfail above).
+# =========================================================================
+SPENT='"stall_since":1,"stall_due":1,"stall_attempts":3,"stall_error":"API Error: 529 Overloaded."'
+meta u-revived '{"uuid":"u-revived","current":"u-revived","status":"idle","run_id":97,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"65",
+                 "run_bearer":"tok-97","stall_run":"97","stall_exhausted":"97",'"$SPENT"'}'
+say u-revived "API Error: 529 Overloaded."
+meta u-recovered '{"uuid":"u-recovered","current":"u-recovered","status":"idle","run_id":98,
+                   "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"66",
+                   "run_bearer":"tok-98","stall_run":"98","stall_exhausted":"98",'"$SPENT"'}'
+say u-recovered "Re-stated the gate verdict as a ticket comment; continuing from milestone 3."
+meta u-waiting '{"uuid":"u-waiting","current":"u-waiting","status":"idle","run_id":66,
+                 "fence":1,"lane":"implementer","bind_confirmed":true,"ticket":"67",
+                 "run_bearer":"tok-66","stall_run":"66","stall_exhausted":"66",'"$SPENT"'}'
+say u-waiting "API Error: 529 Overloaded.
+$ASKQ"
+: > "$FIX.log"
+OARM="$TDIR/arm.out"
+SW "$SCRIPTS/_sweep_api.sh" renew > "$OARM" 2>&1 || true
+nt "a worker woken since its stamp is not ended"  '"path": "/runs/97/end"' cat "$FIX.log"
+t  "it keeps its lease"                  '"path": "/runs/97/renew"'      cat "$FIX.log"
+t  "and its run"                         "97"                            mfield u-revived run_id
+nt "a worker that answered as itself is not ended" '"path": "/runs/98/end"' cat "$FIX.log"
+t  "it keeps its lease"                  '"path": "/runs/98/renew"'      cat "$FIX.log"
+t  "and its ladder is cleared, stamp and all"  "<absent>"                mfield u-recovered stall_exhausted
+t  "and the tick says so"                "u-recovered answers as itself again" cat "$OARM"
+nt "a worker waiting on a human is not ended"   '"path": "/runs/66/end"' cat "$FIX.log"
+t  "it keeps its lease"                  '"path": "/runs/66/renew"'      cat "$FIX.log"
+t  "and its stamp stands untouched while it waits" "66"                  mfield u-waiting stall_exhausted
 
 # =========================================================================
 # The phase is addressable on its own, and named in the usage line.

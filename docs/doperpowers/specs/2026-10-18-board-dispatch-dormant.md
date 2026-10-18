@@ -16,8 +16,10 @@ Two things stay.
   and the session merges.
 - **The board as the backlog**, as the 2026-10-09 ruling already described
   it (`2026-10-09-attended-orchestration-ruling.md`): tickets hold the state
-  of future work, the human names which ones go, and the session they are
-  named to runs each one through the workflow above.
+  of future work. The human names tickets to work, and a session may also
+  take a ticket that is ready to implement on its own initiative — not
+  every ticket needs the owner's approval (the owner, later the same day).
+  Whoever takes a ticket runs it through the workflow above.
 
 If board-driven spawning comes back, it will very likely be a mirror of the
 attended workflow run automatically: the same architect → executor →
