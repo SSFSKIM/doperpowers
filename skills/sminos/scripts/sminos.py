@@ -35,6 +35,8 @@ member too, seat-less, from the first call that reads its project.
     sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork
     sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin);
                    a session with the bridge has its marks exported as they are written, and this finds them there
+    sminos guide                                          # the SessionStart guidance hook's verb (payload on stdin):
+                   who the session is, its project and why, the verbs that reach the org; nothing unenrolled
     sminos watch    <member> [--json]                     # a session's live stream through its bridge: the
                    conversation as it streams, subagents labelled (--json: the endpoint's lines); a stream
                    the bridge ends (its state resent, the child restarted) is followed on
@@ -7420,6 +7422,80 @@ def cmd_join(a):
         me, target.name, now_in.name if now_in else "no project", home.name if home else "no project"))
 
 
+def session_alias(project, session):
+    """The alias a session of this machine goes by in `project`, as its own
+    say would sign it (default_from, for a session named by its id rather
+    than the environment): its seat's, else held_alias; "" for none yet."""
+    seat = next((s for s in seats() if s["current"] == session), None)
+    if seat:
+        return seat["alias"]
+    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    return held_alias(*own_alias(_own_events(project, session), session), peer, session)[0]
+
+
+def guide_text(session, launch):
+    """The SessionStart guidance (§9) for a session launched in `launch` on
+    this enrolled machine: who it is and where its project comes from, then
+    the verbs that find and reach the org's other sessions. Only facts the
+    model cannot derive, and only lines the evals showed move behavior."""
+    project = session_project(session, launch)
+    if project is None:
+        return ""
+    home = resolve_project(launch)
+    alias = session_alias(project, session)
+    who = "%s [%s]" % (alias, session[:8]) if alias and alias != session[:8] else "[%s]" % session[:8]
+    cli = os.path.join(SCRIPT_DIR, "sminos")
+    if home is not None and home.id != project.id:
+        where = ("by your own `sminos join` (your launch directory, %s, is in %s; `%s join --cwd` returns you there)"
+                 % (launch, home.name, cli))
+    elif project_kind(project) == "machine":
+        where = "this machine's own project, since no .smns claims your launch directory, %s" % launch
+    else:
+        where = "the project of your launch directory, %s" % launch
+    return "\n".join([
+        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project."
+        % (who, project.name, enrollment()["machine"], where),
+        "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
+        "To find one or tell it something, use sminos (not on PATH):",
+        "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
+        "  %s find <words>    sessions whose repository, branch, alias or in-charge line match" % cli,
+        '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
+        " a bare @alias reaches only your project" % cli,
+        "  %s join <project>  when your standing work belongs to another project"
+        " (once, not per repository you visit)" % cli,
+        '  %s charge "<line>" what you are in charge of, shown beside you in every list' % cli,
+    ])
+
+
+def cmd_guide(_a):
+    """The SessionStart hook's verb (§9): its payload on stdin, the guidance
+    on stdout. Nothing on a machine not enrolled at a desk hub, for an
+    internal fork, or for a payload naming no session — the gate is here, so
+    the hook stays a few lines. It reads and never migrates (the record hook
+    beside it does, bounded): a session's start must not wait on a lock."""
+    if os.environ.get("SMNS_INTERNAL") or enrollment() is None or sys.stdin.isatty():
+        return
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        return
+    if not isinstance(payload, dict):
+        return
+    session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
+    if not UUID_RE.match(session):
+        return
+    try:
+        text = guide_text(session, launch_cwd(session, str(payload.get("transcript_path") or ""), fallback=cwd))
+    except Exception as e:  # noqa: BLE001 — guidance is a courtesy; a failure must never fail the session's start
+        try:
+            daemon_log("guide %s: %s: %s" % (session[:8], type(e).__name__, e))
+        except OSError:
+            pass
+        return
+    if text:
+        print(text)
+
+
 def cmd_attach(a):
     s = resolve_seat(a.seat)
     live = state(s)
@@ -7685,6 +7761,9 @@ def build_parser():
     rec = sub.add_parser("record", add_help=False)
     rec.set_defaults(fn=cmd_record)
 
+    gd = sub.add_parser("guide", add_help=False)
+    gd.set_defaults(fn=cmd_guide)
+
     pj = sub.add_parser("project", add_help=False)
     psub = pj.add_subparsers(dest="op")
     pi = psub.add_parser("init", add_help=False)
@@ -7867,6 +7946,11 @@ def main(argv=None):
         # A session's own child, started in every session: it reads no
         # registry, so it runs no migration (which takes the registry's lock).
         cmd_bridge(a)
+        return
+    if a.cmd == "guide":
+        # A SessionStart hook's: the record hook beside it migrates, bounded;
+        # a session's start never waits here on the registry's lock.
+        cmd_guide(a)
         return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":

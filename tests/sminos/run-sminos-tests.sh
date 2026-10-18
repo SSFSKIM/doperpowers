@@ -383,6 +383,8 @@ run_suites() {
     fail "a session's project: its launch directory, join, moves (test-join.sh)"; fi
   if "$SCRIPT_DIR/test-address.sh"; then pass "addressing across the org and the sender's copy (test-address.sh)"; else
     fail "addressing across the org and the sender's copy (test-address.sh)"; fi
+  if "$SCRIPT_DIR/test-guide.sh"; then pass "the SessionStart guidance (test-guide.sh)"; else
+    fail "the SessionStart guidance (test-guide.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
