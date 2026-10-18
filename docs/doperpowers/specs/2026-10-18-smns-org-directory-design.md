@@ -9,7 +9,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 ## Progress
 
 - [x] (2026-10-18 18:25Z) M1 — Rows from the engine's records, the filter layer, `--here`, the subagent tree (60d7042f, fixes 68b27693, b59774da; review clean)
-- [ ] M2 — Hub (MAWS): the `org` frame, follow-only hellos, machine projects at the Registry, machines' online state
+- [x] (2026-10-18 18:33Z) M2 — Hub (MAWS): the `org` frame, follow-only hellos, machine projects at the Registry, machines' online state (MAWS `desk-org-hub` b982d762f, fixes 151c9957d, 3165ebafb; review clean; PR SSFSKIM/MAWS#54, gate run 39153008591)
 - [ ] M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns`
 - [ ] M4 — `sminos join`, `session_project`, moves when a resolved project changes
 - [ ] M5 — Addressing across the org and the copy in the sender's log
@@ -448,6 +448,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Decision (M1 review): no path resumes a session whose engine record names a running process. `resume_session`, the one path every local resume takes (delivery, `fill`, `resume`, `send`), picks the turn to stop from the engine record rather than the socket probe and refuses to launch over a running process it cannot stop (no harness row, no recorded short); `wait_stopped` counts a turn down only when the harness row is not running and fresh engine records name no running process, the socket no longer consulted, so a stop that succeeds but leaves the process alive times out into the refusal. `send`'s before-write failure re-reads the records and, while the session runs, refuses with exit 4 and leaves the delivery failed for the daemon to retry. A named project (`--project` or positional) with `--here` leaves out the `(no project)` group; a remote member's published title (`Member.title`) is searched whichever in-charge source wins.
   Rationale: the task review found three paths into a resume of a running process beyond `push_member`'s; §4's invariant is the engine record's, wherever a resume starts.
   Date/Author: 2026-10-18, M1 executor from the task review.
+- Decision (M2 review): if the `Registry` cannot produce the opening `org` snapshot, the stream ends and the daemon reconnects (no live stream ever runs without its directory). Machines' online state is fenced by enrollment credential, not a per-name generation: each lease keeps the Access client id of the stream that opened it, and only the active enrollment's client id counts toward the machine's `online`, so a late report from a revoked enrollment never counts for a same-name successor, whatever the name's case (a per-name generation compared counters of different `Machine` objects, since the worker routes by the enrolled spelling). Each `Project` report carries a rising `seq`; the `Registry` keeps the last `seq` per project, a report at or below it changes nothing, and a newer one replaces what that project said before. A report with no `seq` (a `Project` still on the old version mid-rollover) sets the counts and leaves online state alone. These replace the first-round M2 decisions on online state (stored per project and machine, cleared on revocation) and on an optional `machines_state`.
+  Rationale: the task review found the first fence destructive (a stale report erased a successor's newer state) and broken by case-only re-enrollment; enrollment identity and report ordering are independent problems, each fenced directly.
+  Date/Author: 2026-10-18, M2 executor from the task review.
 
 ## Outcomes & Retrospective
 
