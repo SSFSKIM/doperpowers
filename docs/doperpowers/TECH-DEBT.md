@@ -484,3 +484,20 @@ the spec's Decision Log entry "the branch review round"
   #238's evidence (run 7, `restore`). The desk keeps #42's frame-line fold
   for the delivery; the prompt draws as read. Trigger: the engine writing
   a null parent there, or a rewind trace that names the cut.
+
+## api tick: the successor's rescue (2026-10-18, PR #242, re-landing PR #153's review)
+
+- **A predecessor record naming a sibling worktree of the same repository
+  passes both guards.** The rescue checks that the worktree belongs to the
+  governed repository and that its branch is the dispatcher-created one, but
+  a stale record pointing at another ticket's worktree of the same repository
+  satisfies both, so the tick would publish that ticket's branch under this
+  one's recovery. Deferred by PR #153's review and still open after #242. T2.
+  Trigger: a recovery tick whose predecessor record's worktree carries a
+  ticket number other than its own; then bind the worktree to the ticket's
+  seat name before pushing.
+- **`remote.origin.pushurl` can redirect the rescue's push.** W1-6 pinned the
+  recovery's reset to the commit the tick verified, but the push itself still
+  follows whatever `pushurl` the worktree's config names. T3. Trigger: a
+  worktree whose `remote.origin.pushurl` differs from `remote.origin.url`;
+  then push to the resolved `url` explicitly.

@@ -210,10 +210,8 @@ test named by the behavior it asserts is complete, and so is an
 implementation described by its contract. Pointing at a decision the spec
 makes elsewhere is not a placeholder — it is the rule.
 
-**When it is written.** After the design is approved, never before: in an
-interactive session with the rest of the spec, once the presentation is
-approved; on the board, after the approval park when the ticket carries
-one. Writing it is the first hostile read of the design — a design
+**When it is written.** After the design is approved, never before: with
+the rest of the spec, once the presentation is approved. Writing it is the first hostile read of the design — a design
 statement the milestones prove wrong is fixed in the design, with a dated
 line in the Decision Log.
 

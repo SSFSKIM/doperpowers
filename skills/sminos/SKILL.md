@@ -38,8 +38,7 @@ ticket, and the reader follows it.
 
 A **seat** is the named position a background session sminos spawned
 fills. It outlives its process: `fill --resume` continues its saved
-session, `fill` starts a fresh one in the same seat. The board pipeline's
-workers are seats.
+session, `fill` starts a fresh one in the same seat.
 
 ## Speaking
 
@@ -150,8 +149,7 @@ between turns), and, from a directory in no project, a live session in
 no project by its harness name.
 `send --wait` waits for the turn's end and prints the reply; it needs a
 seat. `resume` interrupts a live turn and inherits this process's
-environment (the board pipeline's credentials ride it), so prefer `send`
-for a working seat.
+environment, so prefer `send` for a working seat.
 
 A member on another machine is reached by `say` and `send` (delivered by
 its machine's daemon) and described by `charge` and `status`. `send
@@ -198,16 +196,16 @@ display name = the alias) in the working directory's project, or
 in-charge line. Every spawn renders `references/spawn-preamble.md` ahead
 of the task. `--wait` blocks to the turn's end and prints the reply.
 Spawning an alias whose seat is retired, vacant, stopped, or gone re-fills
-it with a fresh session (the pipeline's worker names rely on this); a live
-seat is refused.
+it with a fresh session; a live seat is refused.
 
 **What gets a session.** A session is for a separable standing
 responsibility — one that outlives the task that revealed it, held by
 whoever is in charge of it, not by whoever started it. A bounded task,
 however large, is not a session: the session that takes it on runs it,
 with subagents for its depth, so large work stays inside one session.
-Ticket-shaped work goes to the board (doperpowers:issue-tracker), whose
-dispatch spawns its own seats. A spawned session idles between messages:
+Work for later goes on the board's backlog (doperpowers:issue-tracker),
+and nothing spawns a session from there: whoever takes a ticket runs it.
+A spawned session idles between messages:
 nothing wakes it unless a member, the human, or a schedule sends it
 something.
 
@@ -343,16 +341,3 @@ its own code changes, so `KeepAlive` or `Restart=always` restarts it on
 the new code. Two machines with the same host name would write the same
 files: the second one's daemon refuses, naming the claim, until one sets
 `DAEMON_HOST` or the stale claim is removed.
-
-## Seats and the board pipeline
-
-Pipeline workers are seats like any other, spawned by
-`execute-dispatch.sh` and `review-dispatch.sh` through the `SMINOS_CLI`
-seam with `--brief "ticket #<n>: <title>"` or `--brief "review PR #<n>"`,
-so `list` shows each worker's ticket. Their tickets and run credentials
-live on the same records (`ticket`, `role`, `run_id`, …) under the shared
-lock. Do not hand-drive a pipeline worker: it escalates by parking its
-ticket (per the who-unparks discriminant in doperpowers:issue-tracker,
-the board schema's single home), the human answers on the ticket, and
-issue-tracker's `board-answer.sh` relays that answer with `sminos resume`
-— an answer that bypasses the ticket leaves the board unaware of it.
