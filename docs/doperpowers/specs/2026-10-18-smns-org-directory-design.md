@@ -14,7 +14,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 - [ ] M4 — `sminos join`, `session_project`, moves when a resolved project changes
 - [ ] M5 — Addressing across the org and the copy in the sender's log
 - [ ] M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid
-- [ ] M7 — Guidance at session start, its evals, documentation, release
+- [ ] M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release
 
 ## Terms
 
@@ -160,6 +160,12 @@ Where this supersedes the log design: §2's "from a directory that is no project
 - Why this injection earns its place when the repository tore out the upstream SessionStart bootstrap (CLAUDE.md, `hooks/`): that bootstrap injected a skill index into every session on every machine — generic text the skills' own descriptions already trigger. This one carries facts the model cannot derive and that are false on most machines (that it has peers across machines, under which alias and in which project it is seen, and the two verbs that reach them), is gated to enrolled machines, and stays only as long as its evals show it changes behavior.
 - It goes through `doperpowers:writing-skills` evals (#93's constraints): a model with the guidance finds and messages peers through sminos unprompted, including when `ListAgents` is denied; it still uses `SendMessage` for its own subagents; it can name its own subagent tree from `sminos list`; plus two new scenarios — it finds and messages the right session in another repository unprompted ("tell whoever is on the CI gate that …"), and it joins when its directory misfiles it ("you are working on MAWS from a scratch clone"). Only lines that move the evals stay. The scenarios are committed to the eval harness's own repository (`superpowers-evals`, cloned into the gitignored `evals/`; CLAUDE.md, "Eval harness") on a branch and PR there; their before/after results are recorded in this spec's Surprises & Discoveries.
 - Once the evals hold, the owner adds `ListAgents` to `permissions.deny` in their settings with a CLAUDE.md note on how an agent views peer sessions instead. That is the owner's step, after M7, not a change this spec makes.
+- **The skill splits by its reader** (owner, 2026-10-18). At 7.180.0 `skills/sminos/SKILL.md` is 7,149 tokens (the API's `count_tokens`, Opus 5.5). About 2,100 of them are one-time machine setup: the project and its mirror, the desk hub, the daemon. Every session that loads the skill to message a peer reads them, beside the rules that matter to it.
+  - The body keeps what a member acts on: who it is and who else is here, speaking and addressing (§5), `list` and its state words, `send`, spawning with its rules (what gets a session, permissions, isolated worktrees), and not hand-driving the pipeline's seats.
+  - Setup moves to `skills/sminos/references/setup.md`, named in one line of the body.
+  - The operator verbs a member rarely runs (`meta`, `seat add`, `sync`, `remove`, `migrate`, `chart`, `tui`) are left to `sminos --help`, which must then describe each one.
+  - The body's target is about 3,000 to 3,500 tokens.
+  - The split runs through the same writing-skills evals as the guidance, plus one scenario: a session asked to enroll a new machine and install its daemon finds the reference and does it.
 
 ## 10. Channels: later
 
@@ -293,11 +299,11 @@ Does not touch: the hub, sminos.
 
 Proves: acceptance 9 (the web half); unit tests pin the merge and order of groups across two fake connections and the copy/origin marks; the org view's e2e spec joins the `desk-web` e2e group and the gate names it (`--gates e2e:desk-web --runner linux --class1a linux`, Concrete Steps), never on a Mac.
 
-### M7 — Guidance at session start, its evals, documentation, release
+### M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release
 
-What exists at its end: `hooks/smns-guide.sh` on `SessionStart` and `sminos guide`; the eval set under `evals/` for the scenarios §9 names, with before/after results recorded in this spec's Surprises & Discoveries; `skills/sminos/SKILL.md` and `CLAUDE.md`'s repo map updated (the directory, the filter layer, `join`, machine projects, the org-only `.smns`, the guidance hook); the plugin version bumped; the acceptance section run as written.
+What exists at its end: `hooks/smns-guide.sh` on `SessionStart` and `sminos guide`; the eval set under `evals/` for the scenarios §9 names, with before/after results recorded in this spec's Surprises & Discoveries; `skills/sminos/SKILL.md` and `CLAUDE.md`'s repo map updated (the directory, the filter layer, `join`, machine projects, the org-only `.smns`, the guidance hook); the skill split by its reader (§9): a member's body of about 3,000 to 3,500 tokens and `references/setup.md`, its token counts before and after recorded in Surprises & Discoveries; the plugin version bumped; the acceptance section run as written.
 
-Touches: `hooks/smns-guide.sh` (new), `hooks/hooks.json`, `sminos.py` (`cmd_guide`), `skills/sminos/SKILL.md`, `CLAUDE.md`, the eval scenarios in `superpowers-evals` (a branch and PR there; run from the `evals/` clone), `tests/claude-code/` (the hook's shape, as `test-to-human-stream-hook.sh` tests a hook), the manifests through `scripts/bump-version.sh <next-version>`.
+Touches: `hooks/smns-guide.sh` (new), `hooks/hooks.json`, `sminos.py` (`cmd_guide`, and `--help` for the verbs the body no longer carries), `skills/sminos/SKILL.md`, `skills/sminos/references/setup.md` (new), `CLAUDE.md`, the eval scenarios in `superpowers-evals` (a branch and PR there; run from the `evals/` clone), `tests/claude-code/` (the hook's shape, as `test-to-human-stream-hook.sh` tests a hook), the manifests through `scripts/bump-version.sh <next-version>`.
 
 Interfaces: consumes everything above.
 
@@ -415,6 +421,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Decision: two corrections from the orchestrator, upholding the design. (1) The committed `.smns` of doperpowers and ci-kit is org-only, `{"hub": {"org": "ssfskim"}}`, with no `url`, as the design decided; the first round's choice to carry the `url` through the transition is reversed. Both repositories are public and history is never rewritten here, so a committed URL is a permanent disclosure; the transition cost is a window of minutes between the merge that lands the files and the plugin roll, which follows the merge directly (§1, M3, Constraints). (2) Deploys and rolls are the orchestrating session's, not "the owner's steps" and never an executor's: it deploys the hub after M2 and hub and web after M6 through the scripted deploy with `--assets` and `--web`, and rolls the plugin with daemon restarts after the merge that lands the `.smns` files, every enrolled machine at once, under the owner's standing approval for desk deploys of MAWS master and for plugin updates and daemon kickstarts; if that approval no longer stands when the build runs, the orchestrator asks. The executor never deploys, never rolls, and never calls the deployed hub (Constraints, M3, M7).
   Rationale: a permanent public disclosure set against a window of minutes; and the deploy and roll are the orchestrator's standing duties under an approval already given, not a new ask of the owner.
   Date/Author: 2026-10-18, the orchestrator, applied by the authoring session.
+- Decision: M7 also splits `skills/sminos/SKILL.md` by its reader (§9). The member's body stays; machine setup moves to `references/setup.md`; rare operator verbs go to `--help`. The owner asked whether the skill needed to be 7,149 tokens and chose this route.
+  Rationale: M5 rewrites the addressing text and M7 runs the skill's evals anyway. Rejected: splitting it now as a change of its own, which would rewrite the same sections twice and run the evals twice; leaving it whole, which has every session that messages a peer read about 2,100 tokens of one-time setup.
+  Date/Author: 2026-10-18, owner ruling, written by the orchestrator.
 
 ## Outcomes & Retrospective
 
