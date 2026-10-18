@@ -161,6 +161,8 @@ def steer(call):
     answered = {"status": "answered", "askId": call, "answers": [{"id": "q1", "question": "Proceed?", "status": "answered", "value": ["Yes"]}]}
     return "[MAWS ask %s] The user answered the questions you asked:\n1. Proceed? — Yes\n```json\n%s\n```" % (call, json.dumps(answered, indent=2))
 
+QUOTED = "Is this what MAWS sent?\n%s\nIt looks wrong to me." % steer("toolu_ex_quoted")
+TAGGED = 'The human responded to your async AskUserQuestion (call toolu_ex_tag): The user answered: "How?"="wrap it in <system-reminder> tags".'
 MARKS = "Reading.\n<message>first to the host</message>\nAnd `<message>not this</message>` is literal.\n<message>second</message>"
 ROWS = {
     "marks": [text("e1", MARKS)],
@@ -178,6 +180,11 @@ ROWS = {
         {"type": "attachment", "uuid": "a4", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": steer("toolu_ex_mid"),
                                                             "origin": {"kind": "human"}}},
     ],
+    # The human's mid-turn message quoting a steer, which the mod hands over whole.
+    "quoted": [
+        {"type": "attachment", "uuid": "a5", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": QUOTED,
+                                                            "origin": {"kind": "human"}}},
+    ],
 }
 # The same answer rows as the transcript keeps them, where the Stop hook reads
 # them: a prompt's content a string, an attachment's payload whole, beside its
@@ -192,6 +199,18 @@ KEPT = {
         {"type": "user", "uuid": "a3", "origin": {"kind": "human"}, "promptSource": "sdk", "message": {"role": "user", "content": steer("toolu_ex_maws")}},
         {"type": "attachment", "uuid": "a4", "attachment": {"type": "queued_command", "prompt": steer("toolu_ex_mid"), "source_uuid": "s-a4",
                                                             "commandMode": "prompt", "origin": {"kind": "human"}, "humanTurn": True}},
+    ],
+    "quoted": [
+        {"type": "attachment", "uuid": "a5", "attachment": {"type": "queued_command", "prompt": QUOTED, "source_uuid": "s-a5",
+                                                            "commandMode": "prompt", "origin": {"kind": "human"}, "humanTurn": True}},
+    ],
+    # An answer holding a system-reminder tag, which the engine's rendering
+    # escapes: the mod does not export it, and the Stop hook reads the payload.
+    "tagged": [
+        {"type": "attachment", "uuid": "a6",
+         "attachment": {"type": "hook_additional_context", "content": [TAGGED], "hookName": "tool.call", "hookEvent": "PostToolUse"},
+         "rendered": [{"content": "<system-reminder>\ntool.call hook additional context: %s\n</system-reminder>"
+                                  % TAGGED.replace("<system-reminder>", "&lt;system-reminder>")}]},
     ],
 }
 op = sys.argv[1]
@@ -275,26 +294,33 @@ assert_equals "$(events_of "$SA")" "joined message:e1#0 message:e1#1 question:to
   "a row exported twice (a redelivered batch) appends nothing more"
 assert_not_contains "$(cat "$T/stream")" '"export"' "the export is the child's to act on: it is not handed to subscribers"
 
-# An answer reaches the log as its row is kept, not at the turn's end.
+# An answer reaches the log as its row is kept, not at the turn's end. The
+# quoting message goes first: once the last answer is in, it was read too.
+ctl post "$SOCK" "$(rows exports quoted)" >/dev/null
 ctl post "$SOCK" "$(rows exports answers)" >/dev/null
 until_true 100 has "$SA" "answered:toolu_ex_mid" || true
 LIVE="joined message:e1#0 message:e1#1 question:toolu_ex_async message:es#0 answered:toolu_ex_async answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid"
 assert_equals "$(events_of "$SA")" "$LIVE" \
   "each exported answer row appends answered under its ask's id: the plugin's delivery as a prompt and as context, MAWS's steer as a prompt and taken mid-turn"
+assert_not_contains "$(events_of "$SA")" "toolu_ex_quoted" \
+  "a mid-turn message that quotes a steer, exported whole, answers nothing: it neither opens with the tag nor ends with the fence"
 assert_equals "$(text_of "$SA" answered toolu_ex_async)" 'The user answered: "Which backend?"="Postgres".' \
   "a delivery's answered carries the engine's result text, without the plugin prompt's framing"
 assert_equals "$(text_of "$SA" answered toolu_ex_mid)" "1. Proceed? — Yes" \
   "a steer's carries its answer lines, without MAWS's header or the result's fence"
 
 # The Stop hook's export over the same rows: what the bridge already put in
-# the log is there; only what it never saw (row e9) is appended.
+# the log is there; only what it never saw (the tagged answer, row e9) is
+# appended.
 hook SessionStart "$SA" "$TA"
-rows transcript "$TA" prompt marks ask answers e9
+rows transcript "$TA" prompt marks ask answers quoted tagged e9
 hook Stop "$SA" "$TA"
-assert_equals "$(events_of "$SA")" "$LIVE message:e9#0" \
+assert_equals "$(events_of "$SA")" "$LIVE answered:toolu_ex_tag message:e9#0" \
   "the Stop hook's export finds the bridge's events, answers included, already there and appends only what the bridge did not export"
+assert_equals "$(text_of "$SA" answered toolu_ex_tag)" 'The user answered: "How?"="wrap it in <system-reminder> tags".' \
+  "an answer holding a system-reminder tag, left by the bridge, lands at the Stop as the human wrote it, not as the engine's escaped rendering"
 hook Stop "$SA" "$TA"
-assert_equals "$(events_of "$SA")" "$LIVE message:e9#0" \
+assert_equals "$(events_of "$SA")" "$LIVE answered:toolu_ex_tag message:e9#0" \
   "and a Stop replayed appends nothing"
 # The same answer rows in a session no bridge exported: the Stop hook alone
 # reads each as the bridge's export did, under the same src with the same text.
@@ -302,10 +328,10 @@ SF=5b000001-0000-4000-8000-0000000000e8
 TF="$HOME/.claude/projects/x/$SF.jsonl"
 peer "$SF" exstop interactive cli
 hook SessionStart "$SF" "$TF"
-rows transcript "$TF" prompt answers
+rows transcript "$TF" prompt answers quoted
 hook Stop "$SF" "$TF"
 assert_equals "$(events_of "$SF")" "joined answered:toolu_ex_async answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid" \
-  "without the bridge, the Stop hook reads the same answer rows as the same answered events"
+  "without the bridge, the Stop hook reads the same answer rows as the same answered events, and the quoting message as none"
 same_texts=yes
 for src in toolu_ex_async toolu_ex_ctx toolu_ex_maws toolu_ex_mid; do
   [[ "$(text_of "$SA" answered "$src")" == "$(text_of "$SF" answered "$src")" ]] || same_texts="no: $src"

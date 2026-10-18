@@ -582,8 +582,10 @@ rows read from the transcript, and the export to the host).
   row with a mark, an async ask with its result, a row that may answer one
   (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
   steer, as the human's prompt or taken into a running turn) — go to the
-  child in the shape the transcript keeps them (an attachment rebuilt from
-  its rendering, all the hook is handed of it), and the child appends their
+  child in the shape the transcript keeps them (an attachment's payload read
+  back from its rendering, all the hook is handed of it, by stripping the
+  engine's exact framing; one not so framed, or holding the engine's `&lt;`
+  escape, is left to the Stop hook), and the child appends their
   `message`, `question` and `answered` events to the project's log through
   `sminos record`'s own writer and `(kind, src)` keys, so they reach the log
   as they are written and the Stop hook's export finds them there.

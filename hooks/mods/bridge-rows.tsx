@@ -59,14 +59,32 @@ const MAWS_ASK_TOOL = 'mcp__maws__ask'
 /** A call of an ask tool that does not wait for its answer: the plugin's with `async` true, MAWS's with `blocking` false. */
 const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
   (name === ASK_TOOL && input.async === true) || (name === MAWS_ASK_TOOL && input.blocking === false)
-/**
- * The tag a MAWS steer opens with, and the fence that closes its answered
- * result, which ends it (sminos.MAWS_STEER_RE, MAWS_FENCE_CLOSE).
- */
+/** The tag a MAWS steer opens with (sminos.MAWS_STEER_RE). */
 const MAWS_STEER = '[MAWS ask '
-const FENCE_CLOSE = '\n```'
 /** A text that may answer an async ask: the ask mod's delivery, or a MAWS steer. The child's parser decides. */
 const mayAnswer = (text: string) => text.includes(DELIVERY_HEAD) || text.includes(MAWS_STEER)
+/**
+ * The engine's framing of an attachment's rendering, which session.append
+ * hands in place of its payload (2.1.302): a hook's context is
+ * `<system-reminder>\n<hook> hook additional context: <entries, a line
+ * apart>\n</system-reminder>` (its `ROe`); the human's prompt taken into a
+ * running turn is the prompt between MID_TURN_OPEN and MID_TURN_CLOSE (its
+ * `oJe`, `D4n` and `Al`; every rendered one in this machine's transcripts,
+ * 2.1.259–2.1.302, was).
+ */
+const CONTEXT_OPEN = '<system-reminder>\n'
+const CONTEXT_LABEL = ' hook additional context: '
+const CONTEXT_CLOSE = '\n</system-reminder>'
+const MID_TURN_OPEN = '<system-reminder>\nThe user sent a new message while you were working:\n'
+const MID_TURN_CLOSE =
+  '\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>'
+/**
+ * What the engine's renderings write for a `<` they escape (a system-reminder
+ * tag in a hook's context, in another sender's prompt, in an id'd reminder):
+ * a rendering holding it is not read back, since a literal one the human
+ * typed reads the same.
+ */
+const ESCAPED = '&lt;'
 /**
  * A row's origin as the transcript names it, where sminos reads whether a
  * steer is the human's: the event's `composer` and `bridge` are the
@@ -305,39 +323,47 @@ function exportRecord(uuid: string, texts: { text: string }[], record: Transcrip
  * idle) or the human's MAWS steer; the attachment of an answer the ask mod
  * gave as context (`hook_additional_context`, door `hook-context`), or of a
  * steer the engine took into a running turn (`queued_command`, door
- * `delivery`), rebuilt from its rendering, which is all the hook is handed of
- * it. None for any other row.
+ * `delivery`), its payload read back from its rendering, which is all the
+ * hook is handed of it. None for any other row, and none for an attachment
+ * whose rendering does not give its payload back exactly (not in the
+ * engine's framing, or holding an escape), said in the debug log: the Stop
+ * hook reads that row's payload itself.
  */
 function answerRecord(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown): { texts: { text: string }[]; record: TranscriptRecord } | undefined {
   const texts = textBlocks(message.content)
   if (door === 'prompt') {
     return texts.some((b) => mayAnswer(b.text)) ? { texts, record: { type: 'user', uuid, origin: transcriptOrigin(origin), message: { content: texts } } } : undefined
   }
-  if (door === 'hook-context' && message.name === 'hook_additional_context') {
-    // Rendered `<system-reminder>\n<hook> hook additional context: <entries,
-    // a line apart>\n</system-reminder>`: the entries from the first delivery
-    // on, each delivery read up to the next.
-    const rendered = texts.find((b) => b.text.includes(DELIVERY_HEAD))?.text
-    if (rendered === undefined) {
-      return undefined
-    }
-    const entries = rendered.slice(rendered.indexOf(DELIVERY_HEAD)).replace(/\n<\/system-reminder>$/, '')
-    return { texts: [{ text: entries }], record: { type: 'attachment', uuid, attachment: { type: 'hook_additional_context', content: [entries] } } }
+  const isContext = door === 'hook-context' && message.name === 'hook_additional_context'
+  const isQueued = door === 'delivery' && message.name === 'queued_command'
+  const rendered = isContext || isQueued ? texts.find((b) => mayAnswer(b.text))?.text : undefined
+  if (rendered === undefined) {
+    return undefined
   }
-  if (door === 'delivery' && message.name === 'queued_command') {
-    // Rendered inside the engine's mid-turn framing: a steer is the prompt
-    // from its tag through the fence that ends it. A queued prompt is the
-    // only command a steer comes as.
-    const rendered = texts.find((b) => b.text.includes(MAWS_STEER))?.text ?? ''
-    const at = rendered.indexOf(MAWS_STEER)
-    const end = rendered.lastIndexOf(FENCE_CLOSE)
-    if (at === -1 || end < at) {
-      return undefined
-    }
-    const prompt = rendered.slice(at, end + FENCE_CLOSE.length)
-    return { texts: [{ text: prompt }], record: { type: 'attachment', uuid, attachment: { type: 'queued_command', commandMode: 'prompt', prompt, origin: transcriptOrigin(origin) } } }
+  // The entries, joined a line apart (each delivery is read up to the next),
+  // or the queued prompt whole, so the child's start and end checks decide.
+  const payload = isContext ? unframed(rendered, CONTEXT_OPEN, CONTEXT_CLOSE, CONTEXT_LABEL) : unframed(rendered, MID_TURN_OPEN, MID_TURN_CLOSE)
+  if (payload === undefined || payload.includes(ESCAPED)) {
+    state.log?.(`bridge: row ${uuid}: its rendering does not give its ${message.name} back exactly; the Stop hook exports it`)
+    return undefined
   }
-  return undefined
+  const attachment = isContext
+    ? { type: 'hook_additional_context', content: [payload] }
+    : { type: 'queued_command', commandMode: 'prompt', prompt: payload, origin: transcriptOrigin(origin) }
+  return { texts: [{ text: payload }], record: { type: 'attachment', uuid, attachment } }
+}
+
+/** The text between a rendering's exact framing (after `label`'s first occurrence, if given), or undefined when it is not framed so. */
+function unframed(rendered: string, open: string, close: string, label?: string): string | undefined {
+  if (!rendered.startsWith(open) || !rendered.endsWith(close) || rendered.length < open.length + close.length) {
+    return undefined
+  }
+  const inner = rendered.slice(open.length, rendered.length - close.length)
+  if (label === undefined) {
+    return inner
+  }
+  const at = inner.indexOf(label)
+  return at === -1 ? undefined : inner.slice(at + label.length)
 }
 
 /**

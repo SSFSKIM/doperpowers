@@ -3339,23 +3339,47 @@ describe('the export to the host', () => {
     h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text }] }, { uuid, origin, agentId })
   const context = (h: ReturnType<typeof harness>, text: string, uuid: string, name = 'hook_additional_context') =>
     h.append('hook-context', { type: 'attachment', name, role: 'user', isMeta: true, content: [{ type: 'text', text }] }, { uuid, origin: { kind: 'plugin', event: 'tool.call' } })
-  const queued = (h: ReturnType<typeof harness>, text: string, uuid: string) =>
-    h.append('delivery', { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: [{ type: 'text', text: midTurn(text) }] }, { uuid, origin: { kind: 'composer' } })
+  const queued = (h: ReturnType<typeof harness>, text: string, uuid: string, render = midTurn) =>
+    h.append('delivery', { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: [{ type: 'text', text: render(text) }] }, { uuid, origin: { kind: 'composer' } })
+  const contextOf = (...entries: string[]) => `<system-reminder>\ntool.call hook additional context: ${entries.join('\n')}\n</system-reminder>`
+  const exported = (h: ReturnType<typeof harness>) => h.ofType('export').map((e) => e.records)
 
   test("each row that may answer an ask goes to the child as it is kept, in the transcript's shape: the plugin's answer as a prompt or as context, MAWS's steer as a prompt or taken mid-turn", async () => {
     const h = harness()
     await h.ready()
     const submitted = `${PLUGIN_PROMPT}${answer('toolu_a1')}${PLUGIN_FRAMING}`
     await prompt(h, submitted, 'r-plugin', { kind: 'plugin', name: 'doperpowers' })
-    await context(h, `<system-reminder>\ntool.call hook additional context: another hook's line\n${answer('toolu_a2')}\n${answer('toolu_a3')}\n</system-reminder>`, 'r-context')
+    await context(h, contextOf("another hook's line", answer('toolu_a2'), answer('toolu_a3')), 'r-context')
     await prompt(h, steer('toolu_m1'), 'r-steer', { kind: 'composer' })
     await queued(h, steer('toolu_m2'), 'r-queued')
-    expect(h.ofType('export').map((e) => e.records)).toEqual([
+    expect(exported(h)).toEqual([
       [{ type: 'user', uuid: 'r-plugin', origin: { kind: 'plugin', name: 'doperpowers' }, message: { content: [{ type: 'text', text: submitted }] } }],
-      [{ type: 'attachment', uuid: 'r-context', attachment: { type: 'hook_additional_context', content: [`${answer('toolu_a2')}\n${answer('toolu_a3')}`] } }],
+      [{ type: 'attachment', uuid: 'r-context', attachment: { type: 'hook_additional_context', content: [`another hook's line\n${answer('toolu_a2')}\n${answer('toolu_a3')}`] } }],
       [{ type: 'user', uuid: 'r-steer', origin: { kind: 'human' }, message: { content: [{ type: 'text', text: steer('toolu_m1') }] } }],
       [{ type: 'attachment', uuid: 'r-queued', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: steer('toolu_m2'), origin: { kind: 'human' } } }],
     ])
+  })
+
+  test('a mid-turn message that quotes a steer goes whole, never cut down to the steer it quotes: the child reads it as the human wrote it', async () => {
+    const h = harness()
+    await h.ready()
+    const quoting = `Is this what MAWS sent?\n${steer('toolu_m5')}\nIt looks wrong to me.`
+    await queued(h, quoting, 'r-quote')
+    expect(exported(h)).toEqual([[{ type: 'attachment', uuid: 'r-quote', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: quoting, origin: { kind: 'human' } } }]])
+  })
+
+  test("an attachment the engine's exact framing does not give back, or whose rendering holds an escape, is the Stop hook's, said in the debug log", async () => {
+    const h = harness()
+    await h.ready()
+    // The engine writes `&lt;` for a system-reminder tag in a hook's context
+    // (its ROe), in another sender's prompt and in an id'd reminder; a literal
+    // one the human typed reads the same.
+    await context(h, contextOf(deliveryText('toolu_a4', 'The user answered: "How?"="wrap it in &lt;system-reminder> tags".')), 'r-escaped')
+    await queued(h, steer('toolu_m6').replace('Yes', 'Yes &lt;/system-reminder&gt;'), 'r-qescaped')
+    await queued(h, steer('toolu_m7'), 'r-idwrapped', (p) => `<system-reminder id="0123456789abcdef">\n${p}\n</system-reminder id="0123456789abcdef">`)
+    await context(h, answer('toolu_a5'), 'r-bare')
+    expect(exported(h)).toEqual([])
+    expect(['r-escaped', 'r-qescaped', 'r-idwrapped', 'r-bare'].map((u) => h.logs.some((l) => l.includes(u) && l.includes('Stop hook')))).toEqual([true, true, true, true])
   })
 
   test("an unrelated prompt or attachment, a subagent's answer, and an answer past the events' cap are not exported", async () => {
@@ -3365,7 +3389,6 @@ describe('the export to the host', () => {
     await context(h, '<system-reminder>\nUserPromptSubmit hook additional context: the branch is main\n</system-reminder>', 'r-ctx')
     await context(h, answer('toolu_a1'), 'r-other', 'hook_success')
     await queued(h, 'and also the lexer', 'r-midturn')
-    await queued(h, '[MAWS ask toolu_m1] with no fence', 'r-unfenced')
     await prompt(h, steer('toolu_m3'), 'r-sub', { kind: 'composer' }, 'a7')
     await prompt(h, steer('toolu_m4') + 'x'.repeat(TEXT_CAP), 'r-long', { kind: 'composer' })
     expect(h.ofType('export')).toEqual([])

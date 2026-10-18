@@ -341,13 +341,18 @@ the spec's Decision Log entry "the branch review round"
   as it is kept: the `prompt` row (the plugin's delivery submitted while
   idle, MAWS's steer as the human's prompt) as kept, and the
   `hook_additional_context` (door `hook-context`) and `queued_command`
-  (door `delivery`) attachments rebuilt from their renderings, the only
-  form the hook is handed (`answerRecord`). The child's `host_events`
-  decides, under the Stop hook's `(kind, src)`, so the Stop appends nothing
-  more (`tests/sminos/test-bridge-export.sh`). What still waits for the
-  Stop: an answer past 65,536 characters, and a prompt row the transcript
-  keeps with no origin (the hook reads it as `unclassified`, which sminos
-  does not take for the human). Residual: a context attachment's entries
+  (door `delivery`) attachments, their payload read back from their
+  renderings, the only form the hook is handed (`answerRecord`): the
+  engine's exact framing stripped, the queued prompt whole, so a message
+  that quotes a steer is read as written and answers nothing. The child's
+  `host_events` decides, under the Stop hook's `(kind, src)`, so the Stop
+  appends nothing more (`tests/sminos/test-bridge-export.sh`). What still
+  waits for the Stop: an answer past 65,536 characters; a prompt row the
+  transcript keeps with no origin (the hook reads it as `unclassified`,
+  which sminos does not take for the human); an attachment whose rendering
+  is not in that framing, or holds `&lt;` (the engine's escape of a
+  system-reminder tag, which a literal one typed by the human reads the
+  same as). Residual: a context attachment's entries
   reach the hook joined a line apart, so a line another hook appended after
   a delivery in the same attachment would ride in that answer's `text` (its
   `src` is right); none of the 66 delivery attachments in this machine's
