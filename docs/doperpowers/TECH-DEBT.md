@@ -462,3 +462,14 @@ the spec's Decision Log entry "the branch review round"
   has no uuid and is no row here. Trigger: the owner reading a handed-back
   prompt as sent, or a desk-side rewind control (whose anchor the plane would
   then read).
+- **An Esc that empties the conversation leaves no branch.** When the Esc
+  hands back a session's first prompt (nothing before it), the engine writes
+  its next row (a re-appended delivery, the wake) under the file's stale
+  leaf, the abandoned turn's last row. The file's chain then runs through the
+  prompt the live conversation no longer holds, and the engine's own resume
+  would rebuild it too. The only trace is a `last-prompt {leafUuid:
+  "00000000-…", explicit: true}` written after the next turn's first rows
+  (2.1.300 class `ydt`): it says a rewind happened, not where. Seen in
+  #238's evidence (run 7, `restore`). The desk keeps #42's frame-line fold
+  for the delivery; the prompt draws as read. Trigger: the engine writing
+  a null parent there, or a rewind trace that names the cut.
