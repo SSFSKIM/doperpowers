@@ -399,6 +399,14 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Evidence: `skills/sminos/scripts/sminos_policy.py`, `known_checkouts`: `p = sminos.resolve_project(cwd); if p is not None and p.id == project.id: paths.append(cwd)`. Hence §3's explicit `[]` for a machine project rather than relying on "it has no root".
 - Observation: a project that appears (a `.smns` committed under a live session) is not visited by the daemon until something resolves it, because `tick_all` iterates `known_projects()`, which lists only projects with a `project.json` or a seat.
   Evidence: `sminos.known_projects` reads `projects/*/project.json` and the seats; `project_path` writes `project.json` on first use. Hence §1a's first step of each tick.
+- Observation (M1): board:646's `stopped` came from neither suspected path. `_member` took a seat-less member's engine record only through `_local_sessions`, which admits a record only when the record's own `cwd` resolves to the project; the hook joins a session where its turn ran while the record keeps the directory it started in (`/Users/new`), so the member had no record and fell to `stopped`. The seat path was real too: before M1 a running seat with a quiet inbox was resumed (one `--resume` launched).
+  Evidence: task-1 report; the tests `a member whose record names a directory of no project reads the record's word, never stopped (board:646)` and the `quiet-seat` tests in `tests/sminos/run-sminos-tests.sh`. Until M4 routes `_local_sessions` through `session_project`, `_member` asks `session_running(sid)` directly.
+- Observation (M1): `same_process` returns true when either side cannot be parsed, so a record without `procStart` counts as running while its pid lives; `procStart` (always present in real 2.1.3xx records) is what keeps a recycled pid from reading live. Test fixtures modelling a stale record carry a mismatching `procStart`.
+  Evidence: `sminos.same_process`; the recycled-pid fixtures updated in M1.
+- Observation (M1): the suite's `assert_contains` with a multi-line expected value matches any single line (`grep -F` reads each line as a pattern), so such assertions are weaker than they read; the old "--all lists every project" check passed vacuously. New multi-line checks use `assert_equals` on extracted blocks.
+  Evidence: `tests/sminos/run-sminos-tests.sh`, `assert_contains`.
+- Observation (M1): an agent's meta file carries `finished: true` even while the agent waits on its own background work, so the subagent tree does not read status from `finished`.
+  Evidence: this execution's own plan-executor meta file.
 
 ## Decision Log
 
@@ -424,6 +432,15 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Decision: M7 also splits `skills/sminos/SKILL.md` by its reader (§9). The member's body stays; machine setup moves to `references/setup.md`; rare operator verbs go to `--help`. The owner asked whether the skill needed to be 7,149 tokens and chose this route.
   Rationale: M5 rewrites the addressing text and M7 runs the skill's evals anyway. Rejected: splitting it now as a change of its own, which would rewrite the same sections twice and run the evals twice; leaving it whole, which has every session that messages a peer read about 2,100 tokens of one-time setup.
   Date/Author: 2026-10-18, owner ruling, written by the orchestrator.
+- Decision (M1): `list --all` only unfolds (retired and gone rows, finished subagents); widening to every project is `--org`'s, so §4's "`--all` keeps its meaning (nothing folded)" is read as its folding meaning alone. Before M1 `--all` also listed every project; with `--org` and the filters that is redundant, and a flag that both widens and unfolds would make `list --all` inside a session print every project of the org. The one `list` line in SKILL.md says so; `chart` and `tui` keep their `--all`.
+  Rationale: one flag, one effect; §4 gives widening to the filters and `--org`.
+  Date/Author: 2026-10-18, M1 executor, accepted by the controller.
+- Decision (M1): the first positional of `list` is still the project (unknown exits 4); under `--org` or `--project` every positional is a word; several words must all match. Words after a flag are a usage error (argparse).
+  Date/Author: 2026-10-18, M1 executor.
+- Decision (M1): `send` to a running seat whose inbox does not answer is refused (exit 4) and launches nothing, and `fill` of such a seat refuses as filled. The spec named only `push_member`'s stopped fallback, but `send` had the same resume path, which would start a copy of a running session (§4's intent).
+  Date/Author: 2026-10-18, M1 executor, accepted by the controller.
+- Decision (M1): `project_kind` in `--json` is `hub` or `local` (a mirrored `.smns` project reads `local`); M3 adds `machine`. The subagent tree prints in text mode only, so `--json` stays a list of rows; `find` prints no tree. Tree statuses: from the bridge `running`/`finished` (bridge entries used only when it reports ready), from the transcript DX4's word with `unknown` shown as `running`; a live child of a folded parent goes under its nearest shown ancestor. `(no project)` rows are interactive or bg sessions only (not `sdk-*`), the transcript title as their in-charge line. A remote row's state column is the plain word, its published age moving to `· active`; `state_column` is unchanged for the chart. A row has one `cwd` (`joined`'s, else the seat's, else the record's), the source of both `repo@branch` and the JSON `cwd`.
+  Date/Author: 2026-10-18, M1 executor.
 
 ## Outcomes & Retrospective
 
