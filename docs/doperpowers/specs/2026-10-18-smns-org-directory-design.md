@@ -10,7 +10,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 
 - [x] (2026-10-18 18:25Z) M1 — Rows from the engine's records, the filter layer, `--here`, the subagent tree (60d7042f, fixes 68b27693, b59774da; review clean)
 - [x] (2026-10-18 18:33Z) M2 — Hub (MAWS): the `org` frame, follow-only hellos, machine projects at the Registry, machines' online state (MAWS `desk-org-hub` b982d762f, fixes 151c9957d, 3165ebafb; review clean; PR SSFSKIM/MAWS#54, gate run 39153008591)
-- [ ] M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns`
+- [x] (2026-10-18 19:51Z) M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns` (715537cd, fix a607fccc; ci-kit 91492fd on `smns-org-directory`; review clean)
 - [ ] M4 — `sminos join`, `session_project`, moves when a resolved project changes
 - [ ] M5 — Addressing across the org and the copy in the sender's log
 - [ ] M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid
@@ -480,6 +480,8 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M3 executor.
 - Decision (M3): `hello` carries `follow: true` only when following (a held hello omits it). Held versus followed is re-decided at every scan from the plane's members and from checkouts every `CHECKOUTS_EVERY` (10 s); a follower's open still posts leaver tombstones (presence `{record: null}`), which clear stale hub presence when a held project becomes followed. `project show` gains a `kind` line (`hub (not enrolled)` per acceptance 8) and prints root `-` for a rootless project. `sminos projects` lists a project a higher name tier shadows by its id (e.g. `local-orgproj`); `LIVE` counts busy/idle/waiting members and `MACHINES` those of live members; `machines` prints `never seen` for `seen: null`. Neither has `--json`. The hook's cheap look honors `DAEMON_HOME` too, as `sminos.root()` does. The scenarios live in a new suite file `tests/sminos/test-org.sh`; the id parity runs in the core part beside the codes parity.
   Date/Author: 2026-10-18, M3 executor.
+- Decision (M3 review): `Link.tick` refreshes every already-open HubLog's Project from the scan's registrations before presence and plane work, so a followed project that gains a checkout with no session becomes held; `project_path` never replaces a rooted registration with a rootless Project (a stale rootless Project held by a HubLog until the next scan cannot erase a checkout); `register_if_absent` looks up and writes a followed project's registration under `project.json.lock` in one step.
+  Date/Author: 2026-10-18, M3 executor from the task review.
 
 ## Outcomes & Retrospective
 
