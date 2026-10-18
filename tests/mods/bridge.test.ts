@@ -1841,6 +1841,73 @@ describe('deliver', () => {
     )
   })
 
+  test("a stopped turn's check and the next turn's never take one row both: a row the next turn's check holds is not given again by the stopped turn's, whose wake comes late (an append still pending at its end)", async () => {
+    const options: NonNullable<Parameters<typeof harness>[0]> = { holdAppend: true }
+    const h = harness(options)
+    await h.ready()
+    await h.turn('t1')
+    const first = '[sminos message from human id=m1]\nfirst words'
+    const second = '[sminos message from human id=m2]\nsecond words'
+    await h.command({ op: 'deliver', key: { writer: 'mac/human', seq: 1 }, text: first })
+    h.appends.shift()!()
+    await h.settle()
+    await h.command({ op: 'deliver', key: { writer: 'mac/human', seq: 2 }, text: second })
+    // The turn is stopped with the second append still pending: its wake waits for it.
+    await h.complete('t1', 'aborted')
+    h.setApiConversation([{ role: 'user', content: [{ type: 'text', text: second }] }])
+    const release = h.holdApiReads()
+    // The next turn's check takes the first row and waits on the conversation.
+    await h.turn('t2')
+    await h.settle()
+    // The second append lands: the stopped turn's check starts, and waits too.
+    h.appends.shift()!()
+    await h.settle()
+    options.holdAppend = false
+    release()
+    await h.settle()
+    const appended = h.calls.filter((c) => c.op === 'append').map((c) => JSON.stringify(c.args))
+    expect(appended.filter((a) => a.includes('first words')).length).toBe(2)
+    expect(appended.filter((a) => a.includes('second words')).length).toBe(1)
+  })
+
+  test('a compaction while a check of delivered rows reads the conversation gives no row again: the summary carries them (the stopped turn\'s check, and the next turn\'s)', async () => {
+    const compact = (h: ReturnType<typeof harness>) => h.hook('session.compact', { trigger: 'auto' })(h.engine, { messages: [], trigger: 'auto' }, async () => ({ messages: [] }))
+    const words = '[sminos message from human id=m1]\nhandled words'
+    // What the check's read answers: the row gone, or (a read before the compaction) still there.
+    const cases = [
+      ['the stopped turn', []],
+      ['the stopped turn', [{ role: 'user', content: [{ type: 'text', text: words }] }]],
+      ['the next turn', []],
+    ] as const
+    for (const [at, read] of cases) {
+      const h = harness()
+      await h.ready()
+      await h.turn('t1')
+      await h.command({ op: 'deliver', key: { writer: 'mac/human', seq: 1 }, text: words })
+      if (at === 'the next turn') {
+        await h.complete('t1', 'aborted')
+        await h.settle()
+      }
+      h.setApiConversation([...read])
+      const release = h.holdApiReads()
+      if (at === 'the stopped turn') {
+        await h.complete('t1', 'aborted')
+      } else {
+        await h.turn('t2')
+      }
+      await h.settle()
+      await compact(h)
+      release()
+      await h.settle()
+      expect([at, read.length, h.calls.filter((c) => c.op === 'append').length]).toEqual([at, read.length, 1])
+      // Nor at a later turn's check, which reads the summary (no row verbatim).
+      h.setApiConversation([])
+      await h.turn('t3')
+      await h.settle()
+      expect([at, read.length, h.calls.filter((c) => c.op === 'append').length]).toEqual([at, read.length, 1])
+    }
+  })
+
   test("a stopped turn whose Esc rewound its delivered row: the row goes in again before any wake, which names it as given after the stop; a row it still holds is named in the stopped turn's wake", async () => {
     const h = harness()
     await h.ready()

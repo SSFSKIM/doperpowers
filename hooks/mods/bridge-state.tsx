@@ -254,6 +254,11 @@ export type BridgeState = {
   agentReads: { asked: number; applied: number }
   /** Moves at each /clear: a read begun in an earlier conversation is not this one's. */
   conversation: number
+  /**
+   * Moves at each compaction of the main conversation: a check of delivered
+   * rows begun before it holds rows the summary now carries (bridge.tsx).
+   */
+  compactions: number
   /** After a /clear, the answers that set the old conversation's agents aside; every later read waits for them. */
   clearing?: Promise<void>
   /** The reads of the list not answered yet: a /clear waits for each of them. */
@@ -292,6 +297,7 @@ const fresh = (): BridgeState => ({
   isAgentsWatched: false,
   agentReads: { asked: 0, applied: 0 },
   conversation: 0,
+  compactions: 0,
   agentListsInFlight: new Set(),
   submissions: [],
   deliveredRows: [],

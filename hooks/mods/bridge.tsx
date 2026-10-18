@@ -353,6 +353,7 @@ function settleSteers($: EngineInterface, turnId: string) {
  */
 async function wakeAfterStop($: EngineInterface, turnId: string, unread: readonly Steer[]) {
   const conversationAt = state.conversation
+  const compactionsAt = state.compactions
   // Taken out of the next turn's check while this one runs, so no row is given twice.
   const rows = state.deliveredRows.filter((r) => r.turnId === turnId)
   state.deliveredRows = state.deliveredRows.filter((r) => r.turnId !== turnId)
@@ -363,6 +364,11 @@ async function wakeAfterStop($: EngineInterface, turnId: string, unread: readonl
     conversation = message(error)
   }
   if (conversationAt !== state.conversation) {
+    return
+  }
+  // Compacted meanwhile: the rows are in its summary, and none is given again.
+  if (compactionsAt !== state.compactions) {
+    emit({ type: 'inbox', text: wakeText('aborted', unread) })
     return
   }
   const texts = Array.isArray(conversation) ? userTexts(conversation) : undefined
@@ -376,7 +382,7 @@ async function wakeAfterStop($: EngineInterface, turnId: string, unread: readonl
     emit({ type: 'inbox', text: wakeText('aborted', named) })
   }
   for (const r of missing) {
-    if (conversationAt !== state.conversation) {
+    if (conversationAt !== state.conversation || compactionsAt !== state.compactions) {
       return
     }
     $.ui.log(`bridge: the delivery ${r.key.writer}:${r.key.seq} is not in the conversation after the stop (an Esc rewound past it): delivered again`, { to: 'debug' })
@@ -894,18 +900,27 @@ async function recheckDeliveries($: EngineInterface, turnId: string) {
     return
   }
   const conversationAt = state.conversation
+  const compactionsAt = state.compactions
   const steers = due.map((r) => bindSteer(turnId, r.text))
+  // Taken out while the check runs, so another (a stopped turn's, wakeAfterStop) never gives them too.
+  state.deliveredRows = state.deliveredRows.filter((r) => !due.includes(r))
   const release = (released: readonly Steer[]) => {
     state.steers = state.steers.filter((s) => !released.includes(s))
     settleSteers($, turnId)
   }
-  // The old conversation's turn wakes nothing in the new one: its steers go unsettled.
+  // The old conversation's turn wakes nothing in the new one: its steers go
+  // unsettled. After a compaction the rows are in its summary: none is given
+  // again, and the steers are let go.
   const isGone = () => {
-    if (conversationAt === state.conversation) {
-      return false
+    if (conversationAt !== state.conversation) {
+      state.steers = state.steers.filter((s) => s.turnId !== turnId)
+      return true
     }
-    state.steers = state.steers.filter((s) => s.turnId !== turnId)
-    return true
+    if (compactionsAt !== state.compactions) {
+      release(steers)
+      return true
+    }
+    return false
   }
   let conversation: unknown
   try {
@@ -919,11 +934,11 @@ async function recheckDeliveries($: EngineInterface, turnId: string) {
   // Unread, the rows wait for the next turn's check.
   if (!Array.isArray(conversation)) {
     $.ui.log(`bridge: the conversation was not read to check ${due.length} delivered rows: ${JSON.stringify(conversation)}`, { to: 'debug' })
+    state.deliveredRows.push(...due)
     release(steers)
     return
   }
   const texts = userTexts(conversation)
-  state.deliveredRows = state.deliveredRows.filter((r) => !due.includes(r))
   const isHeld = due.map((r) => texts.some((t) => t.includes(r.text)))
   release(steers.filter((_, i) => isHeld[i]))
   for (const [i, r] of due.entries()) {
