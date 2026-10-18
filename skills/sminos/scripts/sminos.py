@@ -936,12 +936,32 @@ def project_path(project, *parts):
                 hub_elsewhere = project.hub is None and isinstance(held, dict) and held.get("hub") is not None \
                     and str(held.get("root") or "") != project.root \
                     and names_hub(str(held.get("root") or ""), project.id)
-                if held != info and not hub_elsewhere:
+                # A project known without a checkout (one the org's directory
+                # names, read before its checkout registered) never takes the
+                # root away: no checkout resolves to a rootless project.
+                root_kept = not project.root and isinstance(held, dict) and bool(held.get("root"))
+                if held != info and not hub_elsewhere and not root_kept:
                     write_json(path, info)
         _HOMES.add(project.id)
     path = os.path.join(project.home, *parts)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     return path
+
+
+def register_if_absent(project):
+    """Register a project known here without a checkout (the org's
+    directory names it): project.json written only when there is none,
+    checked and written under the lock project_path takes, so a registration
+    a CLI or hook makes meanwhile — with its real root — is kept."""
+    path = os.path.join(project.home, "project.json")
+    os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
+    with flocked(path + ".lock"):
+        if registration(project.id):
+            return
+        info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
+        if project.hub is not None:
+            info["hub"] = project.hub
+        write_json(path, info)
 
 
 def known_projects(all_seats=None):

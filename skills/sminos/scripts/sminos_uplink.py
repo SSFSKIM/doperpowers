@@ -594,8 +594,8 @@ def keep_org(frame, cred):
     sminos.write_json(path, {"projects": projects, "machines": machines, "at": sminos.now(ms=True)})
     hub = {"url": cred["hub"], "org": cred["org"]}
     for p in projects:
-        if not p["retired"] and not sminos.registration(p["id"]):
-            sminos.project_path(sminos.make_project(p["id"], p["name"], "", "", hub), "log")
+        if not p["retired"]:
+            sminos.register_if_absent(sminos.make_project(p["id"], p["name"], "", "", hub))
     sminos.forget_caches()
     return True
 
@@ -989,6 +989,11 @@ class Link:
                     # one project; a revocation is rare enough for a reconnect).
                     raise EndStream("no longer a hub project of org %s here: %s" % (
                         self.cred["org"], ", ".join(self.logs[pid].project.name for pid in gone)))
+                for pid in self.opened:
+                    # Each open project as it is registered now: a followed
+                    # one whose checkout registered since has its root, which
+                    # is what makes it held (machine_presence).
+                    self.logs[pid].project = known[pid]
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
                 self.machine_presence(time.monotonic())

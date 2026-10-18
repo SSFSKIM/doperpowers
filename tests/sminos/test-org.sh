@@ -85,6 +85,11 @@ cat > "$T/bin/claude" <<'STUB'
 case "${1:-}" in
   agents) cat "$STUB_STATE/agents.json" 2>/dev/null || echo "[]"; exit 0 ;;
 esac
+case " $* " in
+  *" --fork-session "*)
+    printf '{"type": "result", "is_error": false, "result": "keeps the bare directory tidy", "session_id": "x"}\n'
+    exit 0 ;;
+esac
 exit 0
 STUB
 chmod +x "$T/bin/claude"
@@ -275,6 +280,62 @@ printf '%s\n' '{"type":"assistant","uuid":"st000002","isSidechain":false,"messag
 hook_payload Stop "$STRAY" "$BARE" "$TX" | CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$HOOK"
 assert_contains "$(cat "$SMINOS_HOME/projects/$AMP/log/"*.jsonl 2>/dev/null)" "done in the bare directory" \
   "a stray's <message> is exported to its machine project's log"
+# derive --all covers the machine project's strays: one its human named is
+# asked nothing (§5 of the log design), one the harness named is derived.
+DRIFT=5a000005-0000-4000-8000-0000000000a5
+live_pid
+printf '{"pid":%s,"sessionId":"%s","name":"drift","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$LIVE_PID" "$DRIFT" "$BARE" > "$HOME/.claude/sessions/drift.json"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  printf '{"type":"user","uuid":"dr%06d","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"step %s"}}\n' "$i" "$i"
+done > "$(dirname "$TX")/$DRIFT.jsonl"
+run_in "$BARE" "$SMINOS" derive --all
+assert_contains "$OUT" "stray: not derived — its human named it" "derive --all covers the stray in its machine project"
+assert_contains "$OUT" "drift: keeps the bare directory tidy" "and derives a harness-named one"
+assert_contains "$(cat "$SMINOS_HOME/projects/$AMP/log/alpha.$DRIFT.jsonl")" '"source": "derived"' \
+  "recording its derived line in the machine project's log"
+rm -f "$HOME/.claude/sessions/drift.json"
+
+# The org directory's registration of a project it does not know keeps a
+# registration that lands meanwhile: a CLI or hook registering the project
+# with its real root between the uplink's lookup and its write (the lock both
+# take held here, the rooted registration written while the uplink waits).
+RACE=0e0e0e0e-1111-4222-8333-444455556666
+mkdir -p "$T/race/root"
+assert_equals "$(SMINOS_HOME="$T/race/s" python3 - "$RACE" "$T/race/root" <<'PY'
+import contextlib, fcntl, json, os, sys, threading
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos, sminos_uplink as uplink
+pid, root = sys.argv[1], sys.argv[2]
+home = os.path.join(sminos.projects_root(), pid)
+os.makedirs(home, exist_ok=True)
+lock = os.path.join(home, "project.json.lock")
+waiting = threading.Event()
+real = sminos.flocked
+
+@contextlib.contextmanager
+def flocked(path, *args, **kw):
+    if path == lock:
+        waiting.set()
+    with real(path, *args, **kw):
+        yield
+
+sminos.flocked = flocked
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+cred = {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "alpha"}
+frame = {"t": "org", "projects": [{"id": pid, "name": "raced", "kind": "hub", "retired": False}], "machines": []}
+t = threading.Thread(target=uplink.keep_org, args=(frame, cred))
+t.start()
+if not waiting.wait(10):
+    sys.exit("keep_org never asked for the registration lock")
+rooted = {"project": pid, "name": "raced", "remote": "", "root": root, "hub": {"url": "http://127.0.0.1:9", "org": "org-1"}}
+sminos.write_json(os.path.join(home, "project.json"), rooted)
+fcntl.flock(fd, fcntl.LOCK_UN)
+t.join(10)
+print(json.load(open(os.path.join(home, "project.json")))["root"] == root)
+PY
+)" True "a rooted registration landing while the org's directory registers the project is kept"
 
 # ---- a machine not enrolled
 echo "a machine not enrolled:"
@@ -317,6 +378,13 @@ assert_equals "$(ctl state "d['registry'].get('$AMP')")" '{"name": "alpha", "kin
   "which the hub lists as alpha's machine project"
 until_true hub_says "$AMP" "done in the bare directory" || true
 hub_says "$AMP" "done in the bare directory" && pass "the stray's <message> reaches the hub" || fail "the stray's <message> reaches the hub"
+RK="$T/a/chkproj"
+gitq init -q "$RK"
+write_smns "$RK" chkproj '{"org": "org-1"}'
+KPID="$(smns_id "$RK")"
+run_in "$RK" "$SMINOS" say "chkproj exists"
+until_true follows "$KPID" alpha false || true
+assert_equals "$(hub_follow "$KPID" alpha)" false "a project registered here by its checkout alone is held"
 ctl register "$FOLLOWX" followed-x
 until_true follows "$FOLLOWX" alpha true || true
 assert_equals "$(hub_follow "$FOLLOWX" alpha)" true "a project of the org's directory alpha does not hold is opened follow: true"
@@ -357,6 +425,24 @@ session_record wb "$WB" "$LIVE_PID" "$RB" waiting
 run_in "$RB" "$SMINOS" list
 until_true follows "$OPID" beta false || true
 assert_equals "$(hub_follow "$OPID" beta)" false "once a session joins it there, beta holds orgproj: hello again with follow false"
+# A checkout alone makes a project held: beta, following chkproj with no
+# checkout, clones it and registers the clone (a verb in it), no session there.
+until_true follows "$KPID" beta true || true
+assert_equals "$(hub_follow "$KPID" beta)" true "beta follows chkproj, of which it has no checkout"
+RKB="$T/b/chkproj"
+cp -R "$RK" "$RKB"
+run_in "$RKB" "$SMINOS" chat
+until_true follows "$KPID" beta false || true
+assert_equals "$(hub_follow "$KPID" beta)" false "a registered checkout, no session, makes beta hold it: hello again without follow"
+offered() {
+  ctl state "any(x['machine'] == 'beta' and x['message'].get('kind') == 'machine' and x['message'].get('project') == '$KPID'
+              and any(c['path'].endswith('/b/chkproj') for c in x['message']['body'].get('checkouts', [])) for x in d['sessions'])" \
+    | grep -q true
+}
+until_true offered || true
+offered && pass "with the checkout in its machine presence" || fail "with the checkout in its machine presence"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["root"].endswith("/b/chkproj"))' \
+  "$SMINOS_HOME/projects/$KPID/project.json")" True "and the rooted registration kept"
 
 echo "alpha reads both:"
 as a alpha
