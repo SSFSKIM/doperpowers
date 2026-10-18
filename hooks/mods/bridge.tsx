@@ -737,12 +737,14 @@ function refuseDelivery($: EngineInterface, delivery: DeliveryKey, reason: strin
  * main turn (`turnId`) as a steer is (settleSteers): a turn that ends before
  * any request read it wakes the session once. With no turn running (a stop
  * refused its prompt), the session is woken through its inbox once the row is
- * in. It is held until the conversation is known to keep it
- * (recheckDeliveries). `bound`: the steer a re-check bound before its first
- * await, so its turn's end already counts it.
+ * in, unless a main turn started while the append was pending: the row is
+ * then that turn's, as a busy delivery's is. It is held until the
+ * conversation is known to keep it (recheckDeliveries). `bound`: the steer a
+ * re-check bound before its first await, so its turn's end already counts it.
  */
-async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, turnId: string | undefined, bound?: Steer) {
-  const pending = bound ?? (turnId === undefined ? undefined : bindSteer(turnId, text))
+async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, given: string | undefined, bound?: Steer) {
+  let turnId = given
+  let pending = bound ?? (turnId === undefined ? undefined : bindSteer(turnId, text))
   // A /clear while the append is pending (state.conversation moves): the row
   // is the old conversation's, so the new one's check never holds it.
   const conversationAt = state.conversation
@@ -773,6 +775,12 @@ async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: s
     settled(false)
     refuseDelivery($, delivery, stored.deny)
     return
+  }
+  // Given idle, in while a main turn runs (one started meanwhile): that turn
+  // reads it from its next request, and its end wakes the session if none did.
+  if (pending === undefined && state.mainTurn !== undefined && conversationAt === state.conversation) {
+    turnId = state.mainTurn
+    pending = bindSteer(turnId, text)
   }
   if (conversationAt === state.conversation) {
     state.deliveredRows.push({ key: delivery, text, ...(turnId !== undefined && { turnId }) })

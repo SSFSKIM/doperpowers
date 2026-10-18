@@ -1781,6 +1781,23 @@ describe('deliver', () => {
     expect(h.ofType('inbox')).toEqual([])
   })
 
+  test('idle: a main turn that starts while a row a stop sent in is still pending takes it as a busy delivery: no wake at once; its end wakes the session only if no request of it read the row', async () => {
+    for (const isRead of [false, true]) {
+      const h = harness({ submitDrops: 'the session was stopped and nobody has sent input since', holdAppend: true })
+      await h.ready()
+      await h.command({ op: 'deliver', key: { writer: 'mac/human', seq: 1 }, text: '[sminos message from human id=m1]\nwords' })
+      await h.turn('t1')
+      h.appends.shift()!()
+      await h.settle()
+      expect([isRead, h.ofType('delivered').map((e) => e.outcome), h.ofType('inbox')]).toEqual([isRead, ['submitted', 'entered'], []])
+      if (isRead) {
+        await h.step({ turnId: 't1', index: 1, model: 'm', messageCount: 3 }, [])
+      }
+      await h.complete('t1', 'aborted')
+      expect([isRead, h.ofType('inbox').map((e) => e.text)]).toEqual([isRead, isRead ? [] : [`${DELIVERY_WAKE}\nUnread: [sminos message from human id=m1]`]])
+    }
+  })
+
   test("every inbox wake names the delivered rows it points at by their frame lines, so no two are one text (the engine drops a peer message identical to its sender's last within 30 s); a text with no frame line is never quoted", async () => {
     const h = harness({ submitDrops: 'the session was stopped and nobody has sent input since' })
     await h.ready()
