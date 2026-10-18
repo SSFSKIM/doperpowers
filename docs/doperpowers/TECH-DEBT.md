@@ -432,16 +432,27 @@ the spec's Decision Log entry "the branch review round"
 
 ## sminos bridge: a delivery wakes a stopped session (2026-10-17, e269230e)
 
-- **A late stop drop can be lost with no refusal when its post fails.** A
-  delivery the engine drops for a stop after the mod answered `submitted` goes
-  to the child as a keyed `inbox` event. If the post carrying it fails before
-  the child takes it in, the poster replaces the batch with a gap and a resync
-  (bridge-stream.tsx), and neither carries inbox work. The message is then
-  lost, its mark stays, and the daemon is never told it `failed`. Two things
-  must happen together: a prompt queued in the instant the session turned
-  busy, then an Esc; and a failed post to the child's local socket. Trigger:
-  a delivery reported lost with no refusal, or the poster's resync gaining
+- ~~**A late stop drop can be lost with no refusal when its post fails.**~~
+  **Gone 2026-10-18** (smns-esc-owner): a delivery the engine drops for a
+  stop no longer travels as an `inbox` event; its words go in as a row
+  (`$.session.append`), so no post carries them. What a failed post can still
+  lose is the wake (next item).
+- **A wake is lost when the post carrying it fails.** The bridge's `inbox`
+  event (the wake after a stop) is not retained work: a failed post to the
+  child's local socket replaces the batch with a gap and a resync
+  (bridge-stream.tsx), which carries no wake. The delivered row is in the
+  conversation, so nothing is lost, but the session is not woken and reads it
+  only at its next turn. T3. Trigger: a stopped session found holding an
+  unread delivered row with no wake sent, or the poster's resync gaining
   retained work for another reason.
+- **A delivered text with no sminos frame line gets a wake with no
+  `Unread:` line.** A wake names the rows it points at by their frame lines, so no two
+  wakes are one text (the engine drops a peer message identical to its
+  sender's last within 30 s). sminos frames every event it pushes, so only a
+  `deliver` command sent by hand with a bare text (the live probe's direct
+  path did, until it framed its texts) can produce two identical wakes in that
+  window, the second dropped. T3. Trigger: a sender of `deliver` that does
+  not frame its text.
 
 ## sminos plane: the live chain (2026-10-18, PR #239)
 

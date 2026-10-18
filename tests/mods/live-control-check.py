@@ -223,7 +223,7 @@ class Control(LB.Live):
         r = self.cli("steer", who, "After the story, also say the word PINEAPPLE.")
         first = self.turn_end(stream, t)
         woke = wait_for("the wake turn", 60, lambda: stream.seen(
-            lambda e: is_main(e, "turn", "start") and "added a note" in str(e.get("text")), t))
+            lambda e: is_main(e, "turn", "start") and "[sminos bridge]" in str(e.get("text")), t))
         self.idle(endpoint)
         starts = stream.seen(lambda e: is_main(e, "turn", "start"), t)
         text = main_text(stream, t)
