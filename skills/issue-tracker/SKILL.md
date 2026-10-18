@@ -49,7 +49,7 @@ PR gates, and cycle/deadlock checks that GitHub's API will not.
 |---|---|
 | **The session working a ticket** | that ticket's open states as the work moves (Taking a ticket, below), its comments, and new tickets for what it defers |
 | **Your human partner** | everything else — priorities, park answers, `wontfix`, edge re-cuts, closes of non-PR work |
-| **Board bookkeeping** (the scripts' own sweeps) | epic states nobody claims by hand: an epic pulled in-flight by its first active child, and returned to `ready-for-architect` when its last child lands (`[board-epic]` comments) |
+| **Board bookkeeping** (the scripts' inline sweeps; on the api binding, the board service's reconciler) | epic states nobody claims by hand: an epic pulled in-flight by its first active child, and returned to `ready-for-architect` when its last child lands (`[board-epic]` comments); on the api binding also the `needs-human` park of a dependency wait gone silent (State vocabulary) |
 
 ## Categories
 
@@ -85,7 +85,7 @@ depend on it.)
 | state | GitHub encoding | meaning | note |
 |---|---|---|---|
 | `ready-for-architect` | open + `status:ready-for-architect` | backlog: the work needs design before it is built. On an EPIC, its recomposition is due (Epics below) | — |
-| `in-design` | open + `status:in-design` | a session is designing it. Exits to `in-progress` by the **build edge**, which pins what will be built: `--plan <path>@<sha>` (a spec pushed to the remote) or `--plan pre-spec` (the body is enough); to `ready-for-implementer` with the same pin when the build is left for later; or to a park. On an epic it also exits to `done`/`in-review` — the recomposition verdict; on a leaf those edges are refused | optional |
+| `in-design` | open + `status:in-design` | a session is designing it. A leaf exits to `in-progress` by the **build edge**, which takes a note, `--branch`, and the pin of what will be built: `--plan <path>@<sha>` (a spec pushed to that branch) or `--plan pre-spec` (the body is enough) — the gh binding refuses it without all three; to `ready-for-implementer` with a note when the build is left for later (a real pin there needs `--branch` too); or to `deferred` or a park — never back to `ready-for-architect`. An epic never takes the build edge (the gh binding refuses it); once every child is terminal it also exits to `done`/`in-review`, the recomposition verdict (Epics below) | optional |
 | `ready-for-implementer` | open + `status:ready-for-implementer` | backlog: buildable from its body, or from the plan pinned to it (`plan:`). The DEFAULT birth state | — |
 | `in-progress` | open + `status:in-progress` | a session is building it | optional |
 | `needs-human` | open + `status:needs-human` | parked for your human partner **as themselves**: a decision only they can make, or a real-world input only they hold (credentials, auth, production data) | **required** |
@@ -104,19 +104,30 @@ crisp question list, each with a recommended answer; knowledge work anyone
 could do → `needs-info`, the note says what is missing; ongoing steering
 of the work's core → `interactive-preferred` — but any ENUMERABLE set of
 open decisions, however many, is `needs-human`. Missing design an agent
-can author is not a park: it is `ready-for-architect`. The board counts
-escalation edges into it: a second traversal of the same edge on one
-ticket converts to `needs-human` mechanically.
+can author is not a park: it is `ready-for-architect`. On the gh binding
+the board counts escalation edges into it: a second traversal of the same
+edge on one ticket converts to `needs-human` mechanically (the api board
+counts only a worker's traversals).
+
+Your human partner's answers to a park go on the ticket. On the gh
+binding that is two operations: `board-comment.sh <n> "[answers] …"` (a
+comment opening `[answers]` is what resets that count), then
+`board-transition.sh <n> <state>` out of the park. On the api binding
+`board-answer.sh <n> "<answers>" --to <state>` does both (Toolkit).
 
 Waiting on other tickets is NOT a park: dependencies are edges
 (`board-edge.sh <n> --block <blocker>`), and the board re-surfaces the
 ticket when its blockers land, which no park state does. `in-progress →
 ready-for-implementer` is the dependency yield and is refused `not-blocked`
 unless an unfinished blocker is already on record, so cut the edge first.
-A blocker that goes unworked and silent past the dependency threshold, or
-a ring of blockers that can never resolve, parks the waiting ticket
-`needs-human` with the chain in its note. (`blocked` was retired in v8;
-lint names any legacy label with the migration FIX.)
+On the api binding the board service's reconciler bounds the wait: a
+blocker gone unworked and silent past its threshold (48 hours by
+default), or a ring of blockers that can never resolve, parks the waiting
+ticket `needs-human` with the chain in its note. On the gh binding that
+pass lived in the dormant sweep, so nothing watches the wait:
+`board-list.sh` tags the ticket `waiting:#<blocker>`, and a blocker
+nobody is moving needs your human partner's attention by hand. (`blocked`
+was retired in v8; lint names any legacy label with the migration FIX.)
 
 Exactly one `status:*` label on every open issue; terminal states are the
 close reason (no label). An issue outside this scheme is `untracked` (no
@@ -209,7 +220,7 @@ binding (or the checkout's own repo), the board's repo key on the api binding
 | `board-list.sh [--all-repos] [state]` | the backlog in priority order (P0 rows first, unprioritized last); `CLOSE?` tag = close candidate (Edge cases). API binding: rows in the server's own order (the header says so), and `--all-repos` widens past the bound repo |
 | `board-search.sh [--states s1,s2] [--bodies] [--all-repos] [--] <query>` | full-text search for the pre-registration dedup / prior-art check (The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies; a query that leads with `-` rides behind `--`. gh binding: `gh issue list --state all --limit 200 -R <repo> --search` (`--states` refused; gh search already matches bodies) |
 | `board-show.sh <n>` | one ticket in full: header row, the statement of work, then the timeline (gh binding: node JSON + issue URL) |
-| `board-answer.sh <n> <answers> --to <state>` | API binding: answer a park and name where the ticket goes next — the server records the answers and moves it (gh binding: comment the answers, then `board-transition.sh` out of the park) |
+| `board-answer.sh <n> <answers> --to <state>` | API binding only: answer a `needs-human` park and move the ticket to `<state>` in one call — a queue, another park or a close; the server refuses an in-flight `<state>` on a park no worker is bound to, so a ticket you are about to take goes to its queue first. The gh binding refuses `--to`; its answer is a comment and a transition (Park discriminant) |
 | `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered DAG with a kanban toggle) and **`BOARD.md`** into the gitignored render dir; `--serve` also serves it on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) with hot reload; `--stop` kills the server. No argument prints the table |
 | `board-reconcile.sh` | read-only catch-up: parked tickets with their notes, orphaned in-flight tickets, the backlog, then a lint pass |
 | `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required, no dependency cycles, at most one priority label (missing priority is a WARN), retired labels named with their migration FIX; WARNs close candidates. `FAIL … FIX: …` lines, exit 1 |
@@ -222,11 +233,12 @@ For each one:
 
 1. `board-show.sh <n>` — the body is the statement of work; the comments
    carry what was learned since.
-2. Move it as the work moves. A `ready-for-architect` ticket goes
-   `in-design` while you design it, then crosses the build edge to
-   `in-progress` with its pin; a `ready-for-implementer` ticket goes
-   straight to `in-progress --branch <branch>`. `in-review --pr <url>` when
-   the PR opens.
+2. Move it as the work moves. A `ready-for-implementer` ticket goes
+   straight to `in-progress --branch <branch>`. A `ready-for-architect`
+   ticket goes `in-design` while you design it, then crosses the build
+   edge with a note, its pin and its branch:
+   `board-transition.sh <n> in-progress "<note>" --plan <path>@<sha>|pre-spec --branch <branch>`.
+   `in-review --pr <url>` when the PR opens.
 3. Run the work as you would without a ticket. The ticket changes nothing
    about how it is designed, built or reviewed.
 4. Close it. On the gh binding the PR body's `Closes #<n>` closes it at the
@@ -237,9 +249,39 @@ For each one:
 5. What the work left behind goes on the board before you report it done
    (Scope-outs become tickets).
 
-A ticket set down unfinished goes to `deferred` with a note on where it
-stands, to `ready-for-architect` when its design is what changed, or to a
-park when it waits on your human partner.
+The build edge is a leaf's; the gh binding refuses an epic ("epics
+recompose, they never build"). An epic's work is its children, each taken
+as its own ticket. When the last one lands the epic returns to
+`ready-for-architect`, and whoever takes it then goes `in-design`,
+verifies the parent's own acceptance, and closes it: `done` directly for a
+non-code parent; for a code-bearing one, a closure package
+(`board-comment.sh <n> --kind closure-package`) and `in-review` with it as
+`--pr` (Epics above, doperpowers:decomposing).
+
+On the gh binding the build edge still checks surfaces (Dormant
+machinery). When the ticket carries a `surface:*` label, the repo has a
+`.doperpowers/surfaces.md`, and another open leaf with that label is
+`in-design`, `in-progress` or `in-review`, the edge is refused:
+`surface <name> is occupied by #<m> — hand off instead: ready-for-implementer with the same --plan`.
+The queue that handoff feeds is dormant, so it only shelves the build.
+Read the occupant: if nobody is working it, or your human partner accepts
+the overlap, `SURFACE_OVERRIDE=1 board-transition.sh …` takes the edge
+and names the occupant on stderr.
+
+A ticket set down unfinished goes to a park when it waits on your human
+partner; otherwise it takes one of its state's exits, with a note on where
+it stands:
+
+- from `in-design`: `deferred`, or `ready-for-implementer` (note
+  required, and the pin if a design was written) when only the build is
+  left. `ready-for-architect` is not an exit from `in-design`; `deferred`
+  is, and leads back to it.
+- from `in-progress`: `deferred`, or `ready-for-architect` (note
+  required) when its design is what changed. `ready-for-implementer` is
+  only the dependency yield (State vocabulary).
+
+A `deferred` ticket taken up again re-enters through its queue state,
+`ready-for-architect` or `ready-for-implementer`.
 
 ## The ticket body (pre-spec)
 
@@ -368,7 +410,8 @@ than wake this doctrine as written (the ruling).
   `.doperpowers/surfaces.md` (read from the default branch); the board
   carries them as the closed `surface:<name>` label vocabulary (lint FAILs
   a label with no entry). Labels still arrive at registration and on entry
-  to a backlog state; what they bought — at most one implement worker per
-  surface, and the sweep registering a consolidation ticket when three
-  pile onto one — ran in the dormant dispatcher. The cluster tripwire
+  to a backlog state, and on the gh binding the build edge's occupancy
+  check is live (Taking a ticket). The rest ran in the dormant machinery:
+  at most one implement worker per surface, and the sweep registering a
+  consolidation ticket when three pile onto one. The cluster tripwire
   under The ticket body is the manual form that still applies.
