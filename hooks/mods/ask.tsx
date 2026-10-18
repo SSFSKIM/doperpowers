@@ -1147,8 +1147,8 @@ export function openCount(open: readonly OpenAsk[]): string {
 /**
  * The line above the prompt while an async ask is open: how many questions
  * wait, and `[ answer ]` for the oldest, since the ask's own row scrolls away
- * while the model works. Registered before the to-human view, whose band
- * draws without calling on, so this one is outer and draws above it.
+ * while the model works. The to-human view (its own plugin, outside this
+ * one) draws its line under this.
  */
 export function registerAskBand(on: On) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -1225,8 +1225,8 @@ async function askStart($: EngineInterface) {
  * through `$.ui.ask` and returns the engine's own result text; an async ask
  * returns at once and is answered from its `[ answer ]`, the answer handed
  * to the model; the built-in is withdrawn from the model, and a declined ask
- * ends the model's turn as the built-in's does. Registered after the
- * to-human view, so its row hooks are inner to that view's.
+ * ends the model's turn as the built-in's does. The to-human view, a plugin
+ * that depends on this one, sits outside its row hooks.
  */
 export function registerAsk(on: On) {
   // Under MAWS (MAWS_NATIVE_TO_HUMAN set) the host offers its own ask tool,

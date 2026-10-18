@@ -31,7 +31,8 @@
           "scripts/bump-version.sh",
           ".claude",
           ".worktrees",
-          "devcloud"
+          "devcloud",
+          "to-human"
         ]
       }
     },
@@ -49,6 +50,23 @@
       ],
       "audit": {
         "root": "devcloud",
+        "exclude": []
+      }
+    },
+    {
+      "name": "to-human",
+      "files": [
+        {
+          "path": "to-human/.claude-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/marketplace.json",
+          "field": "plugins[name=to-human].version"
+        }
+      ],
+      "audit": {
+        "root": "to-human",
         "exclude": []
       }
     }

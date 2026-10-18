@@ -150,7 +150,7 @@ os.umask(0o077)
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
-import sminos_marks  # noqa: E402 — the mark grammar of hooks/mods/to-human.tsx, ported
+import sminos_marks  # noqa: E402 — the mark grammar of to-human/hooks/mods/to-human.tsx, ported
 
 LAUNCHER = os.path.join(SCRIPT_DIR, "sminos")
 # The engine's permission modes (2.1.300), least permissive first.
