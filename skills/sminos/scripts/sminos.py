@@ -3879,7 +3879,11 @@ def reply_line(session, project=""):
     the sender by its short in its own project (`@<project id>/<short>`: the
     event's `from_project` when it spoke into another project's log, else the log's
     own), so a reply reaches it from any project and on any machine; the
-    envelope carries no `from` address, so SendMessage has none to answer."""
+    envelope carries no `from` address, so SendMessage has none to answer.
+    The project part sits inside a double-quoted shell argument and arrives in
+    synced log events, so one that is not id-shaped (valid_name) is left out."""
+    if not valid_name(project):
+        project = ""
     return '[To reply, run in Bash: %s say "@%s%s <your reply>"]' % (
         shlex.quote(os.path.join(SCRIPT_DIR, "sminos")), "%s/" % project if project else "", session[:8])
 

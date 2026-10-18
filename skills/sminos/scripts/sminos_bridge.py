@@ -295,12 +295,12 @@ def inbox_sender(key):
     project = S.find_project(key["project"], required=False) if isinstance(key.get("project"), str) else None
     if project is not None:
         try:
-            with open(S.writer_path(project, str(key.get("writer")))) as f:
+            with open(S.writer_path(project, str(key.get("writer"))), encoding="utf-8", errors="replace") as f:
                 for line in f:
                     e = S.parse_event(line)
                     if e and e["seq"] == key.get("seq"):
                         return str(e.get("via") or e.get("from") or "human")
-        except OSError:
+        except Exception:  # the lookup never costs the owner's delivery
             pass
     return "human"
 

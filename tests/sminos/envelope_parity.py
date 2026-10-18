@@ -54,6 +54,16 @@ for given, want in NAMES:
 if sminos.peer_envelope("t", "‍") != "<cross-session-message>\nt\n</cross-session-message>":
     failures += 1
     print("FAIL a name that strips to nothing leaves no attribute")
-total = len(BODIES) + len(NAMES) + 1
+HOSTILE = ['x"$(touch /tmp/pwn)"', "p`id`", 'a"; id; "', "a b", "p$IFS", "", "../x"]
+for bad in HOSTILE:
+    line = sminos.reply_line("0123456789abcdef", bad)
+    if any(c in line.split("say ", 1)[1] for c in "$`;") or line.count('"') != 2 or "@0123" not in line:
+        failures += 1
+        print("FAIL hostile project %r reached the reply line: %r" % (bad, line))
+for good in ["local-demo", "0e1d2c3b-aaaa-bbbb-cccc-ddddeeeeffff"]:
+    if '"@%s/01234567 ' % good not in sminos.reply_line("0123456789abcdef", good):
+        failures += 1
+        print("FAIL id-shaped project %r dropped from the reply line" % good)
+total = len(BODIES) + len(NAMES) + 1 + len(HOSTILE) + 2
 print("%s: %d of %d envelope cases" % ("FAILED" if failures else "ok", total - failures, total))
 sys.exit(1 if failures else 0)

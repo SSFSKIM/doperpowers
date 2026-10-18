@@ -200,8 +200,11 @@ def push_live(peer, session, text, event=None, project=None):
         if took is True:
             return
     sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
+    # from_project arrives in synced events and lands in a shell argument: only an id-shaped one is used
+    origin = event.get("from_project") if event is not None else None
+    origin = origin if isinstance(origin, str) and S.valid_name(origin) else project
     S.send_frame(S.socket_path_of(peer), text, sender, S.writer_session(event["writer"]) if event is not None else "",
-                 str(event.get("from_project") or project or "") if event is not None else "")
+                 str(origin or "") if event is not None else "")
 
 
 # ------------------------------------------------------------------ the verbs
