@@ -225,6 +225,10 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   if (isInterruptText(text)) {
     return { ok: false, error: 'that text is the interrupt marker, which would read as an interrupt: interrupt the session instead' }
   }
+  // Kept so too, it would read as the bridge's note that a task was stopped.
+  if (isNoteText(text)) {
+    return { ok: false, error: "that text is the bridge's note of a stop or an interrupt, which would read as one: stop the task or interrupt the session instead" }
+  }
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
   }
@@ -390,9 +394,22 @@ function engineError(text: string | undefined): string {
   return t === '' ? 'TaskStop failed' : t
 }
 
-/** The line a stop leaves the model, and DX4 reads (sminos_jobs.STOP_RECORD). */
+/** The line a stop leaves the model, and DX4 reads as the row's whole text (sminos_jobs.STOP_NOTE). */
 export function stopNote(taskId: string, from: unknown): string {
   return `Task ${taskId}, a background task, was stopped from ${from === 'desk' ? 'the desk' : 'outside the terminal'}: it is not running.`
+}
+
+const STOP_NOTE = /^Task [A-Za-z0-9_-]{1,64}, a background task, was stopped from (?:the desk|outside the terminal): it is not running\.$/
+
+/**
+ * A text DX4 would read as one of the bridge's notes, were it appended as a
+ * steer is (isMeta, from the plugin): a stop's note whole, or a text opening
+ * on an interrupt note's first line.
+ */
+function isNoteText(text: string): boolean {
+  const t = text.trim()
+  const first = t.split('\n')[0]
+  return STOP_NOTE.test(t) || first === interruptOrigin('desk') || first === interruptOrigin('cli')
 }
 
 /** The stop's note, kept as the interrupt's is (isMeta, from the plugin) and mirrored in the transcript. */
@@ -429,9 +446,13 @@ function isInterruptText(text: string): boolean {
  * and each Bash call it moved to the background, whose result says the
  * command runs on there.
  */
+function interruptOrigin(from: unknown): string {
+  return `The interrupt came from ${from === 'desk' ? 'the desk' : 'outside the terminal'}.`
+}
+
 function interruptNote(from: unknown, stops: Stops): string {
   return [
-    `The interrupt came from ${from === 'desk' ? 'the desk' : 'outside the terminal'}.`,
+    interruptOrigin(from),
     ...stops.stopped.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`),
     ...stops.running.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`),
   ].join('\n')

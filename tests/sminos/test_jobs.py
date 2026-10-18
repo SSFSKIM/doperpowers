@@ -133,8 +133,9 @@ class TaskIndex(unittest.TestCase):
                 f.write(json.dumps(row) + "\n")
                 if requests:
                     # A request record repeats the conversation so far, task ids and all, and is no row.
+                    # Written compact, as the engine writes it (REQUEST_RECORD is its prefix).
                     f.write(json.dumps({"type": "api-request", "sessionId": "s", "uuid": "not-a-row",
-                                        "body": {"messages": [row]}}) + "\n")
+                                        "body": {"messages": [row]}}, separators=(",", ":")) + "\n")
         return path
 
     def test_every_vector_job_has_the_status_the_whole_loop_gives_it(self):
@@ -175,6 +176,31 @@ class TaskIndex(unittest.TestCase):
         self.assertEqual(own.jobs_body(True)[0]["status"], "running", "the subagent's own rows alone")
         stopped = own.jobs_body(True, fed([note]))[0]
         self.assertEqual((stopped["status"], stopped["endedAt"]), ("stopped", "2026-10-18T00:00:03Z"))
+
+    def test_a_short_id_reads_only_the_rows_that_name_it(self):
+        # Ids are matched as references, not as bytes: `a` is in every row here, and names no task.
+        rows = []
+        for i in range(200):
+            tid, task = "toolu_a%03d" % i, "ba%05d" % i
+            rows.append({"type": "assistant", "uuid": "c%d" % i, "timestamp": "2026-10-18T00:00:00Z",
+                         "message": {"content": [{"type": "tool_use", "id": tid, "name": "Bash", "input": {
+                             "command": "sleep a", "description": "a task", "run_in_background": True}}]}})
+            rows.append({"type": "user", "uuid": "r%d" % i, "timestamp": "2026-10-18T00:00:01Z",
+                         "toolUseResult": {"backgroundTaskId": task, "stdout": "", "stderr": ""},
+                         "message": {"content": [{"type": "tool_result", "tool_use_id": tid,
+                                                  "content": "Command running in background with ID: %s." % task}]}})
+        rows.append({"type": "attachment", "uuid": "n7", "timestamp": "2026-10-18T00:00:02Z", "attachment": {
+            "type": "queued_command", "commandMode": "task-notification",
+            "prompt": "<task-notification>\n<task-id>ba00007</task-id>\n<tool-use-id>toolu_a007</tool-use-id>\n"
+                      "<status>completed</status>\n</task-notification>"}})
+        main = self.write(os.path.join(HOME, "idx", "short.jsonl"), rows)
+        for short in ("a", "b", "0", "toolu"):
+            self.assertEqual(jobs.task_rows(main, short), [], short)
+            self.assertFalse(jobs.running_task(main, short), short)
+        self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "ba00003")], ["c3", "r3"])
+        self.assertTrue(jobs.running_task(main, "ba00003"))
+        self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "ba00007")], ["c7", "r7", "n7"])
+        self.assertFalse(jobs.running_task(main, "ba00007"))
 
     def test_a_missing_or_empty_transcript_holds_no_task(self):
         self.assertFalse(jobs.running_task("", "b1"))

@@ -53,13 +53,21 @@ FORK_STARTED = "Fork started — processing in background"
 EXPIRED = "expired"
 EXPIRY_EVENTS = ("[Monitor expired after ", "[Monitor timed out")
 NOTIFICATION_PREAMBLE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
-# The bridge's record of a task it stopped with TaskStop (hooks/mods/bridge.tsx): a plugin's TaskStop writes no
-# row of its own, and for a task of the main loop's the engine queues no notification, so the line the bridge
-# appends for the model is the rows' only word that the task stopped. One line per task, in a user row the engine
-# keeps isMeta with origin {kind: plugin}: the interrupt's ("Task <id>, the Bash command the interrupt moved to the
-# background, was then stopped: it is not running, …") and a stop's ("Task <id>, a background task, was stopped
-# from the desk: it is not running."). "could not be stopped" is no such line.
-STOP_RECORD = re.compile(r"^Task ([A-Za-z0-9_-]{1,64}), [^\n]*? stopped(?: from [^:\n]+)?: it is not running", re.M)
+# The bridge's notes of tasks it stopped with TaskStop (hooks/mods/bridge.tsx): a plugin's TaskStop writes no row
+# of its own, and for a task of the main loop's the engine queues no notification, so the note the bridge appends
+# for the model is the rows' only word that the task stopped. The engine keeps the note's user row isMeta with
+# origin {kind: plugin}, as it keeps a steer's text, so a note is known by its row's whole text, never by a line
+# found inside it: a stop's note (stopNote) is the whole text; an interrupt's (interruptNote) is its origin line,
+# then one line per task the interrupt moved to the background, stopped or not. Only a stopped line is evidence,
+# and a text with any other line is no note. The bridge refuses a steer whose text would read as either.
+TASK_ID = r"([A-Za-z0-9_-]{1,64})"
+STOP_NOTE = re.compile(r"Task %s, a background task, was stopped from (?:the desk|outside the terminal): "
+                       r"it is not running\." % TASK_ID)
+INTERRUPT_ORIGINS = ("The interrupt came from the desk.", "The interrupt came from outside the terminal.")
+INTERRUPT_STOPPED = re.compile(r"Task %s, the Bash command the interrupt moved to the background, was then stopped: "
+                               r"it is not running, and no notification will come for it\." % TASK_ID)
+INTERRUPT_RUNNING = re.compile(r"Task %s, the Bash command the interrupt moved to the background, could not be "
+                               r"stopped: it may still be running\." % TASK_ID)
 ENDED = ("completed", "failed", "stopped", "exited")
 SPAWN_FIELDS = ("parentAgentId", "subagentType", "description", "name", "background", "model", "toolUseId")
 CALLS = ("Agent", "Task", "Bash", "Monitor", "TaskStop")
@@ -126,12 +134,26 @@ def _plain_notification(row, content):
 
 
 def _stop_records(row, content):
-    """The bridge's records of tasks it stopped, in a plugin's user row (STOP_RECORD)."""
+    """(task, line) for each task the bridge's note in this plugin's user row says it stopped (STOP_NOTE)."""
     origin = row.get("origin")
     if row.get("type") != "user" or row.get("isMeta") is not True or not isinstance(origin, dict) \
             or origin.get("kind") != "plugin":
         return ()
-    return STOP_RECORD.finditer(content if isinstance(content, str) else _text(content))
+    text = content if isinstance(content, str) else _text(content)
+    m = STOP_NOTE.fullmatch(text)
+    if m:
+        return ((m.group(1), text),)
+    lines = text.split("\n")
+    if lines[0] not in INTERRUPT_ORIGINS:
+        return ()
+    out = []
+    for line in lines[1:]:
+        m = INTERRUPT_STOPPED.fullmatch(line)
+        if m:
+            out.append((m.group(1), line))
+        elif not INTERRUPT_RUNNING.fullmatch(line):
+            return ()
+    return out
 
 
 def _str(value):
@@ -205,8 +227,8 @@ class Ledger:
         plain = _plain_notification(row, content)
         if plain is not None:
             self._notification(plain, at)
-        for m in _stop_records(row, content):
-            self._said({"raw": "stopped", "at": at, "summary": m.group(0)}, task=m.group(1))
+        for task, line in _stop_records(row, content):
+            self._said({"raw": "stopped", "at": at, "summary": line}, task=task)
         if isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -442,24 +464,31 @@ def _lines_holding(mm, needle):
         at = end + 1
 
 
-def _call_ids(row):
-    """The call ids a row names: each tool_use block's own and each tool_result's `tool_use_id`."""
+def _task_calls(row, task):
+    """The calls a row ties to `task` as a task: the tool_results of a row whose toolUseResult started it
+    (backgroundTaskId, taskId), and a TaskStop call naming it (input.task_id)."""
     msg = row.get("message")
     content = msg.get("content") if isinstance(msg, dict) else None
+    tur = row.get("toolUseResult")
+    started = isinstance(tur, dict) and task in (tur.get("backgroundTaskId"), tur.get("taskId"))
     out = set()
     for block in content if isinstance(content, list) else ():
-        if isinstance(block, dict):
-            key = "id" if block.get("type") == "tool_use" else "tool_use_id" if block.get("type") == "tool_result" else None
-            if key and _str(block.get(key)):
-                out.add(block[key])
+        if not isinstance(block, dict):
+            continue
+        if started and block.get("type") == "tool_result" and _str(block.get("tool_use_id")):
+            out.add(block["tool_use_id"])
+        elif block.get("type") == "tool_use" and block.get("name") == "TaskStop" and _str(block.get("id")) \
+                and isinstance(block.get("input"), dict) and block["input"].get("task_id") == task:
+            out.add(block["id"])
     return out
 
 
 def task_rows(path, task):
     """The rows of one loop's transcript that can say what task `task` is and how it stands, in file order: each
-    row naming it (its start's result, a notification, a `task_status`, a TaskStop call), then each row naming a
-    call those rows name (the start's own call, the TaskStop's result). Fed to a Ledger, they give the task the
-    status the whole file would. The file is searched, not parsed: only those rows are, and never the engine's
+    row naming it exactly (its start's result, a notification, a `task_status`, a TaskStop call, a bridge's note),
+    then each row naming a call those rows tie to the task (the start's own call, the TaskStop's result). Fed to a
+    Ledger, they give the task the status the whole file would; a short id
+    reads no more rows than it names. The file is searched, not parsed: only those rows are, and never the engine's
     request records, which repeat the conversation (most of a long transcript's bytes) and hold no row. Empty
     when the file never names the task or cannot be read."""
     try:
@@ -483,12 +512,15 @@ def task_rows(path, task):
                         pass
                 rows[span] = row if isinstance(row, dict) and _str(row.get("uuid")) else None
 
-        take(_lines_holding(mm, task.encode()))
+        # The task's exact references, never its bare id, which a short one shares with most rows: a whole JSON
+        # string (backgroundTaskId, taskId, task_id), a notification's element, a bridge's note (STOP_NOTE).
+        for needle in ('"%s"', "<task-id>%s</task-id>", "Task %s, "):
+            take(_lines_holding(mm, (needle % task).encode()))
         ids = set()
         for row in [r for r in rows.values() if r is not None]:
-            ids |= _call_ids(row)
+            ids |= _task_calls(row, task)
         for i in sorted(ids):
-            take(_lines_holding(mm, i.encode()))
+            take(_lines_holding(mm, ('"%s"' % i).encode()))
         return [rows[span] for span in sorted(rows) if rows[span] is not None]
     finally:
         mm.close()

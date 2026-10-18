@@ -133,7 +133,7 @@ SLUG_MAX = 200            # UTF-16 units of the engine's slug before it is cut a
 # TaskStop; a notification or a task_status; a result of a call it holds. Every other line (the loop's Bash,
 # Read, Edit calls and their results: most of an agent transcript's bytes) is passed over unparsed.
 AGENT_CALL = re.compile(rb'"name":\s*"(?:Agent|Task)')   # TaskStop and the Task tools too
-OUTCOME_KEYS = (b"task-notification", b'"task_status"', b": it is not running")   # the last: the bridge's stop record
+OUTCOME_KEYS = (b"task-notification", b'"task_status"', b": it is not running")   # the last: in each stopped line of the bridge's notes (sminos_jobs.STOP_NOTE)
 RESULT_OF = re.compile(rb'"tool_use_id":\s*"([^"\\]+)"')
 
 
