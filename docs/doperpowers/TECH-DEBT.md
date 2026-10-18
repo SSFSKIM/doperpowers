@@ -442,3 +442,23 @@ the spec's Decision Log entry "the branch review round"
   busy, then an Esc; and a failed post to the child's local socket. Trigger:
   a delivery reported lost with no refusal, or the poster's resync gaining
   retained work for another reason.
+
+## sminos plane: the live chain (2026-10-18, PR #239)
+
+- **A row whose parent never comes stays unmarked, and so does all that
+  follows it.** The chain places a row only once its parent is placed (the
+  engine writes a child a few ms ahead of its parent around a session's
+  start). A transcript whose first row names a parent outside the file — 1 of
+  1,500 on this machine, a resumed subagent — leaves every row unplaced: the
+  desk draws them all, as before the chain. The engine's loader treats such a
+  row as a root. Trigger: a transcript the desk draws with a dead branch whose
+  rows the plane left unplaced; then place a parent that has not come after a
+  bound (rows read) as a root.
+- **An Esc's retraction lands with the branch's first row, not at the Esc.**
+  The interactive engine writes nothing when an Esc hands a prompt back; the
+  rows it left behind go off when the next row is written (the prompt sent
+  again, a delivery, a system notice). Until then the desk draws them as
+  live. Its SDK rewind writes a `last-prompt {rewound: true}` anchor, which
+  has no uuid and is no row here. Trigger: the owner reading a handed-back
+  prompt as sent, or a desk-side rewind control (whose anchor the plane would
+  then read).
