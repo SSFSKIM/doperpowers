@@ -379,6 +379,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
     fail "the org's directory: machine projects, follow-only hellos (test-org.sh)"; fi
+  if "$SCRIPT_DIR/test-join.sh"; then pass "a session's project: its launch directory, join, moves (test-join.sh)"; else
+    fail "a session's project: its launch directory, join, moves (test-join.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
@@ -412,13 +414,13 @@ if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 echo "usage:"
 run "$SMINOS"; assert_rc 2 "$RC" "no arguments is a usage error (exit 2)"
 run "$SMINOS" help; assert_rc 0 "$RC" "help exits 0"; assert_contains "$OUT" "sminos spawn" "help lists the verbs"
-for verb in post board topology view groups mark join leave listen log; do
+for verb in post board topology view groups mark leave listen log; do   # `join` came back: a session declaring its project
   run "$SMINOS" "$verb"
   assert_rc 2 "$RC" "removed $verb is a usage error"
   assert_contains "$OUT" 'usage: sminos' "removed $verb shows usage"
 done
 run "$SMINOS" --help
-for verb in post board topology view groups mark join leave listen log; do
+for verb in post board topology view groups mark leave listen log; do
   assert_not_contains "$OUT" "sminos $verb" "--help omits removed $verb"
 done
 run "$SMINOS" bogus; assert_rc 2 "$RC" "unknown command is a usage error"

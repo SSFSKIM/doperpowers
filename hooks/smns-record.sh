@@ -18,23 +18,28 @@ IFS= read -r -d '' input
 
 # Where there is no project, nothing is recorded: no .smns and no git
 # repository above the session's directory. A cheap look before Python starts;
-# a cwd carrying JSON escapes is left to `record` to decide. On a machine
-# enrolled at a desk hub every directory is a project (a directory nothing
-# claims is in the machine's own), so the enrollment's file admits them all;
-# it is only looked for, never read.
+# a cwd carrying JSON escapes is left to `record` to decide. The payload's cwd
+# is where the shell is now, and a session's project is its launch
+# directory's, so the engine's project directory ($CLAUDE_PROJECT_DIR) is
+# looked at too: either admits. On a machine enrolled at a desk hub every
+# directory is a project (a directory nothing claims is in the machine's
+# own), so the enrollment's file admits them all; it is only looked for,
+# never read.
 enrolled=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}/daemon/hub.json
+in_project() { # dir — whether a .smns or .git lies above it (a dir it cannot judge: yes)
+  local d=$1
+  [[ $d == /* && $d != *\\* ]] || return 0
+  until [[ -e $d/.smns || -e $d/.git ]]; do
+    [[ -z $d ]] && return 1
+    d=${d%/*}
+  done
+}
 cwd=${input#*\"cwd\":}
 if [[ ! -e $enrolled && $cwd != "$input" ]]; then
   cwd=${cwd#"${cwd%%[![:space:]]*}"}
   cwd=${cwd#\"}
   cwd=${cwd%%\"*}
-  if [[ $cwd == /* && $cwd != *\\* ]]; then
-    d=$cwd
-    until [[ -e $d/.smns || -e $d/.git ]]; do
-      [[ -z $d ]] && exit 0
-      d=${d%/*}
-    done
-  fi
+  in_project "$cwd" || { [[ -n ${CLAUDE_PROJECT_DIR:-} ]] && in_project "$CLAUDE_PROJECT_DIR"; } || exit 0
 fi
 
 root=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
