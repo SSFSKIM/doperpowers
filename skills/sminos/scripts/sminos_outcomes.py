@@ -285,7 +285,13 @@ def report_refused(project, view):
     for name in names:
         sid, ext = os.path.splitext(name)
         if ext == ".json" and sid in view.info:
-            refused = bridge.load_kept(sid).get("refused")
+            # A bridge keeps the refusals of every project that delivered to
+            # its session, and each project numbers a writer's events on its
+            # own: one naming another project is that project's to report.
+            # One naming none (a CLI older than the project in the key) is
+            # matched here, as it always was.
+            refused = [r for r in bridge.load_kept(sid).get("refused") or []
+                       if r["key"].get("project", project.id) == project.id]
             if refused:
                 found[sid] = refused
     if not found:

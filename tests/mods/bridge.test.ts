@@ -1500,6 +1500,40 @@ describe('deliver', () => {
     ])
   })
 
+  test("each project numbers a writer's events on its own: the mark is per project, and a key naming none is held to the bare mark", async () => {
+    const h = harness()
+    await h.ready()
+    const p1 = { project: 'p1', writer: 'mac/s1', seq: 98 }
+    const p2 = { project: 'p2', writer: 'mac/s1', seq: 98 }
+    expect(await h.command({ op: 'deliver', key: p1, text: 'p1 98' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: p2, text: 'p2 98' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: { ...p2, seq: 6 }, text: 'p2 6' })).toMatchObject({ result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 6 }, text: 'bare 6' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 5 }, text: 'bare 5' })).toMatchObject({ result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { ...p1, project: '' }, text: 'x' })).toMatchObject({ ok: false })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual(['p1 98', 'p2 98', 'bare 6'])
+    expect(h.ofType('delivered').map((e) => [e.key, e.outcome])).toEqual([
+      [p1, 'submitted'],
+      [p2, 'submitted'],
+      [{ ...p2, seq: 6 }, 'duplicate'],
+      [{ writer: 'mac/s1', seq: 6 }, 'submitted'],
+      [{ writer: 'mac/s1', seq: 5 }, 'duplicate'],
+    ])
+  })
+
+  test("a hello's kept marks are honored as they come: a bare mark guards only keys naming no project, a scoped one only its project", async () => {
+    const h = harness()
+    await h.start()
+    // #229: a bare mark a writer raised in one project, kept before keys named theirs.
+    h.children[0]!.write(hello(SID, SOCK, { override: null, delivered: { 'mac/s1': 98, 'p1/mac/s2': 4 } }))
+    await h.settle()
+    expect(await h.command({ op: 'deliver', key: { project: 'p2', writer: 'mac/s1', seq: 6 }, text: 'p2 6' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: { writer: 'mac/s1', seq: 98 }, text: 'bare 98' })).toMatchObject({ result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { project: 'p1', writer: 'mac/s2', seq: 4 }, text: 'p1 4' })).toMatchObject({ result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { project: 'p3', writer: 'mac/s2', seq: 4 }, text: 'p3 4' })).toMatchObject({ result: { submitted: true } })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual(['p2 6', 'p3 4'])
+  })
+
   test('a deliver with no key or no text is refused', async () => {
     const h = harness()
     await h.ready()
@@ -1612,7 +1646,7 @@ describe("a delivered prompt's row (G6)", () => {
     await h.settle()
     h.posts[0]!.release()
     await h.settle()
-    const key = { writer: 'hub/m1', seq: 8 }
+    const key = { project: 'p1', writer: 'hub/m1', seq: 8 }
     h.children[0]!.write(line({ id: 'c1', op: 'deliver', key, text: 'dropped' }))
     await h.settle()
     ;(await untilRefusal(h)).fail() // the refusal never reaches the child

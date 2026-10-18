@@ -121,7 +121,7 @@ function track(e: BridgeEvent) {
 
 /** The refusals a post the child answered carried, in its own events or a resync's: the child keeps them. */
 function acknowledge(batch: BridgeEvent[]) {
-  const name = (k: Refusal['key']) => `${k.writer}:${k.seq}`
+  const name = (k: Refusal['key']) => `${k.project ?? ''}|${k.writer}:${k.seq}`
   const carried = new Set(
     batch.flatMap((e) =>
       e.type === 'resync' ? (e.refused as Refusal[]).map((r) => name(r.key)) : e.type === 'delivered' && e.outcome === 'refused' ? [name(e.key as Refusal['key'])] : [],
@@ -235,9 +235,9 @@ export function adoptKept(kept: unknown) {
     state.override = next.model === null && next.effort === null ? undefined : next
   }
   if (typeof delivered === 'object' && delivered !== null) {
-    for (const [writer, seq] of Object.entries(delivered)) {
-      if (Number.isInteger(seq) && (seq as number) > (state.delivered.get(writer) ?? 0)) {
-        state.delivered.set(writer, seq as number)
+    for (const [mark, seq] of Object.entries(delivered)) {
+      if (Number.isInteger(seq) && (seq as number) > (state.delivered.get(mark) ?? 0)) {
+        state.delivered.set(mark, seq as number)
       }
     }
   }

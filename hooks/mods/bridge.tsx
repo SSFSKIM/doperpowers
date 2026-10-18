@@ -2,7 +2,7 @@ import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, Sess
 
 import { ASK_TOOL, PLUGIN, observeAsks } from './ask'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
-import type { Answer, Command, Decision, Override, Request, Steer, Stops } from './bridge-state'
+import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
@@ -561,20 +561,30 @@ async function runCompaction($: EngineInterface, request: { id: string; instruct
 /**
  * A log event for this session, submitted as the human's words: queued until
  * the session is idle. Delivery is at least once and goes in seq order per
- * writer, so a key at or below the writer's last submitted is a repeat, and
- * dropped.
+ * writer within a project, so a key at or below its mark (the last submitted
+ * for that writer in that project) is a repeat, and dropped. Every project
+ * numbers a writer's events on its own, so the mark is `<project>/<writer>`;
+ * a key naming no project (a CLI older than the project in the key) is held
+ * to the writer's bare mark, which is all such a CLI ever raised.
  */
 function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
-  const { writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { writer?: unknown; seq?: unknown }
-  if (typeof writer !== 'string' || writer === '' || !Number.isInteger(seq) || typeof text !== 'string') {
-    return { ok: false, error: 'deliver needs key {writer, seq} and text' }
+  const { project, writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { project?: unknown; writer?: unknown; seq?: unknown }
+  if (
+    typeof writer !== 'string' ||
+    writer === '' ||
+    !Number.isInteger(seq) ||
+    typeof text !== 'string' ||
+    (project !== undefined && (typeof project !== 'string' || project === ''))
+  ) {
+    return { ok: false, error: 'deliver needs key {project?, writer, seq} and text' }
   }
-  const delivery = { writer, seq: seq as number }
-  if (delivery.seq <= (state.delivered.get(writer) ?? 0)) {
+  const delivery: DeliveryKey = { ...(project !== undefined && { project: project as string }), writer, seq: seq as number }
+  const mark = project === undefined ? writer : `${project}/${writer}`
+  if (delivery.seq <= (state.delivered.get(mark) ?? 0)) {
     emit({ type: 'delivered', key: delivery, outcome: 'duplicate' })
     return { ok: true, result: { duplicate: true } }
   }
-  state.delivered.set(writer, delivery.seq)
+  state.delivered.set(mark, delivery.seq)
   emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
   // Its row, once kept, is named `entered` (bridge-rows.tsx, enteredRow).
   const submission = { key: delivery, text }
@@ -584,7 +594,7 @@ function deliver($: EngineInterface, key: unknown, text: unknown): Answer {
   }
   const refused = (reason: string) => {
     state.submissions = state.submissions.filter((s) => s !== submission)
-    $.ui.log(`bridge: the delivery ${writer}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
+    $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
     emit({ type: 'delivered', key: delivery, outcome: 'refused', reason })
   }
   // Not awaited: it resolves when the prompt's turn starts, after any running turn.
