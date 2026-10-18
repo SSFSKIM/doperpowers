@@ -1907,7 +1907,7 @@ def push_event(project, member, session, e, events, cursor):
     if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
         return "recorded"
     return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session,
-                       event=e)
+                       event=e, project=project.id)
 
 
 def compose_chat_frame(project_name, ref, sender, target, unread, text):
@@ -2077,11 +2077,12 @@ class ResumeRefused(Exception):
         self.code = code
 
 
-def push_member(member, text, tagged, session=None, event=None):
+def push_member(member, text, tagged, session=None, event=None, project=None):
     """Push one frame to a member: to the live session (push_live: its bridge,
-    keyed by `event`, the log event the frame carries; its supervisor; its
-    inbox socket); for a seat, a resume when it is stopped and the message is
-    addressed to it (`tagged`). A session sminos did not spawn is never
+    keyed by `event`, the log event the frame carries, and `project`, the id
+    of the project whose log holds it; its supervisor; its inbox socket); for
+    a seat, a resume when it is stopped and the message is addressed to it
+    (`tagged`). A session sminos did not spawn is never
     resumed: it is the human's to reopen, and reads the chat when it is back.
     Given `session`, a seat that now holds another session is not this
     message's recipient: delivery goes by session id, so a replacement cannot
@@ -2092,7 +2093,7 @@ def push_member(member, text, tagged, session=None, event=None):
         if not peer:
             return "recorded"
         try:
-            control_module().push_live(peer, session, text, event)
+            control_module().push_live(peer, session, text, event, project)
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -2117,7 +2118,7 @@ def push_member(member, text, tagged, session=None, event=None):
     peer = peer_for_session(fresh["current"])
     if peer:
         try:
-            control_module().push_live(peer, fresh["current"], text, event)
+            control_module().push_live(peer, fresh["current"], text, event, project)
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -5461,7 +5462,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session=""):
     was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
     try:
         if delivery:
-            control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1])
+            control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
+                                       delivery.project.id)
         else:
             send_frame(sock, text)
     except SendFailed as e:
@@ -5638,7 +5640,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
         print("sent to %s (delivered by a concurrent delivery)" % m.alias)
         return
     try:
-        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1])
+        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id)
     except SendFailed as e:
         if e.phase == "after":
             delivery.settle()

@@ -96,10 +96,12 @@ export type TranscriptRecord = { type: 'assistant' | 'user'; uuid: string; messa
 export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
 /** One agent of the session as `$.agent.list()` gives it (the fields the bridge reads). */
 export type ListedAgent = { id: string; description: string; type: string; status: string; parentId?: string; name?: string }
+/** A log event's key: its project (absent from a CLI older than the project in the key), writer and seq. */
+export type DeliveryKey = { project?: string; writer: string; seq: number }
 /** A log event submitted as the human's words, whose row is still to be kept. */
-export type Submission = { key: { writer: string; seq: number }; text: string }
+export type Submission = { key: DeliveryKey; text: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
-export type Refusal = { key: { writer: string; seq: number }; reason: string }
+export type Refusal = { key: DeliveryKey; reason: string }
 
 export type BridgeState = {
   /**
@@ -158,7 +160,12 @@ export type BridgeState = {
   toolCalls: number
   /** The model and effort chosen through the bridge, if any. */
   override?: Override
-  /** Per writer, the highest seq of a log event submitted: delivery goes in seq order, so any key at or below it was. */
+  /**
+   * Per mark, the highest seq of a log event submitted: delivery goes in seq
+   * order, so any key at or below it was. A mark is `<project>/<writer>`, or
+   * the bare writer for a key naming no project; kept marks are taken as
+   * they come, whichever they are.
+   */
   delivered: Map<string, number>
   /**
    * Whether the module's first hello was read: what the child keeps
