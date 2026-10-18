@@ -44,9 +44,9 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * turned away stops for good.
  *
  * Control (DC2 M2): `steer` appends a user row the loop reads at its next
- * request; `interrupt` aborts the main turn and stops each Bash call the abort
- * moved to the background, and before the turn ends appends Esc's marker and
- * a note saying so;
+ * request, the owner's words under STEER_LINE; `interrupt` aborts the main
+ * turn and stops each Bash call the abort moved to the background, and before
+ * the turn ends appends Esc's marker and a note saying so;
  * `model` rewrites the main loop's requests;
  * `compact` runs between turns; `deliver` gives the owner's log event as the
  * human's words, once per key: into the running turn as a row, as a steer,
@@ -271,22 +271,27 @@ function commandAnswer($: EngineInterface, command: Command): Answer | Promise<A
 }
 
 /**
+ * The first line of a steer's row, the owner's words after it. The engine
+ * keeps every row this plugin appends alike (a user row, isMeta, the plugin's
+ * origin) and takes nothing from `$.session.append` but text blocks, so the
+ * row's own text is the only place a reader of the transcript (the desk among
+ * them) can tell a steer from the bridge's other rows. The line is the one
+ * `sminos steer` opens its inbox fallback with (sminos_control.py), and no
+ * delivery's: the model reads the owner's words framed as a delivery's are.
+ */
+export const STEER_LINE = '[sminos steer from human]'
+
+/**
  * A user row in the running turn, read at the loop's next model request; the
- * running tool goes on. The terminal does not draw an appended row, so a
- * transcript line mirrors it. Idle, there is no next request to read it: a
- * send is how an idle session is reached.
+ * running tool goes on. The row is the owner's words under STEER_LINE, so no
+ * text, the interrupt's marker or a note quoted whole included, reads as
+ * another of the bridge's rows. The terminal does not draw an appended row,
+ * so a transcript line mirrors the words. Idle, there is no next request to
+ * read it: a send is how an idle session is reached.
  */
 async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   if (typeof text !== 'string' || text.trim() === '') {
     return { ok: false, error: 'steer needs text' }
-  }
-  // Kept as the interrupt's marker row is (isMeta, from this plugin), it would be one.
-  if (isInterruptText(text)) {
-    return { ok: false, error: 'that text is the interrupt marker, which would read as an interrupt: interrupt the session instead' }
-  }
-  // Kept so too, it would read as the bridge's note that a task was stopped.
-  if (isNoteText(text)) {
-    return { ok: false, error: "that text is the bridge's note of a stop or an interrupt, which would read as one: stop the task or interrupt the session instead" }
   }
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
@@ -296,7 +301,7 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   state.steers.push(pending)
   let stored: Awaited<ReturnType<EngineInterface['session']['append']>>
   try {
-    stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: `${STEER_LINE}\n${text}` }] } })
   } catch (error) {
     state.steers = state.steers.filter((s) => s !== pending)
     settleSteers($, pending.turnId)
@@ -545,19 +550,6 @@ export function stopNote(taskId: string, from: unknown): string {
   return `Task ${taskId}, a background task, was stopped from ${from === 'desk' ? 'the desk' : 'outside the terminal'}: it is not running.`
 }
 
-const STOP_NOTE = /^Task [A-Za-z0-9_-]{1,64}, a background task, was stopped from (?:the desk|outside the terminal): it is not running\.$/
-
-/**
- * A text DX4 would read as one of the bridge's notes, were it appended as a
- * steer is (isMeta, from the plugin): a stop's note whole, or a text opening
- * on an interrupt note's first line.
- */
-function isNoteText(text: string): boolean {
-  const t = text.trim()
-  const first = t.split('\n')[0]
-  return STOP_NOTE.test(t) || first === interruptOrigin('desk') || first === interruptOrigin('cli')
-}
-
 /** The stop's note, kept as the interrupt's is (isMeta, from the plugin) and mirrored in the transcript. */
 async function recordStop($: EngineInterface, taskId: string, from: unknown) {
   const text = stopNote(taskId, from)
@@ -576,16 +568,6 @@ async function recordStop($: EngineInterface, taskId: string, from: unknown) {
 
 /** Esc's own marker, whole: the one text a transcript's reader knows a turn's interrupt by. */
 const INTERRUPT_MARKER = '[Request interrupted by user]'
-
-/**
- * A text a transcript's reader takes for an interrupt: either of the engine's
- * markers whole (Esc's, and its tool-use form), or the bridge's earlier
- * record, `[Request interrupted by user from …]`.
- */
-function isInterruptText(text: string): boolean {
-  const t = text.trim()
-  return t === INTERRUPT_MARKER || t === '[Request interrupted by user for tool use]' || t.startsWith('[Request interrupted by user from ')
-}
 
 /**
  * What an interrupt tells the model beyond Esc's marker: where it came from,

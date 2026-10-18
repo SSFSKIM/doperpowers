@@ -59,7 +59,8 @@ NOTIFICATION_PREAMBLE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
 # origin {kind: plugin}, as it keeps a steer's text, so a note is known by its row's whole text, never by a line
 # found inside it: a stop's note (stopNote) is the whole text; an interrupt's (interruptNote) is its origin line,
 # then one line per task the interrupt moved to the background, stopped or not. Only a stopped line is evidence,
-# and a text with any other line is no note. The bridge refuses a steer whose text would read as either.
+# and a text with any other line is no note. A steer's row opens with its own line (bridge.tsx STEER_LINE), so it is
+# never either; one an older bridge appended has no such line, and the whole-text reading tells it apart.
 TASK_ID = r"([A-Za-z0-9_-]{1,64})"
 STOP_NOTE = re.compile(r"Task %s, a background task, was stopped from (?:the desk|outside the terminal): "
                        r"it is not running\." % TASK_ID)
