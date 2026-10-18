@@ -4245,18 +4245,18 @@ def claude_stop(short):
 
 def wait_stopped(s, short, cur):
     """After `claude stop`, wait (bounded by SMINOS_STOP_TIMEOUT, default 30s)
-    until the old turn's harness row is gone or no longer running AND no live
-    peer socket answers for the session. Resuming while the old process still
-    runs makes the harness start a copy; a stop that did not take is refused
-    loudly rather than papered over. True iff the turn is confirmed down."""
+    until the old turn's harness row is gone or no longer running AND no
+    engine record of the session names a running process (running_now: its
+    process, whether or not its inbox answers). Resuming while the old
+    process still runs makes the harness start a copy; a stop that did not
+    take is refused loudly rather than papered over. True iff the turn is
+    confirmed down."""
     deadline = time.time() + float(os.environ.get("SMINOS_STOP_TIMEOUT", "30"))
     while True:
         agents_refresh()
         row = agent_row(short=short) if short else harness_row(s)
         running = bool(row) and normalize_state(row) in ("working", "blocked")
-        global _PEERS
-        _PEERS = None
-        if not running and peer_for_session(cur) is None:
+        if not running and running_now(cur) is None:
             return True
         if time.time() >= deadline:
             return False
