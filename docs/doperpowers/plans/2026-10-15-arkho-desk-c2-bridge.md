@@ -845,11 +845,16 @@ a full backlog refuses too). The child's listen backlog is 128.
   `<status>stopped</status>` notification to that subagent, folded into its transcript at
   its next tool batch (dropped if the agent ends first). TaskStop answers before the process
   has died: SIGTERM to the tree at once, SIGKILL to the group after 1.5 s.
-- **DX4 reads the note** (`sminos_jobs.STOP_RECORD`): a line `Task <id>, … stopped( from
-  …)?: it is not running` in such a row is `stopped` for that task, the interrupt's own
-  note line (`… was then stopped: it is not running, …`) included, so a task an interrupt
-  stopped no longer reads `running`. A subagent's subscription takes the main loop's
-  record of its own jobs after its own rows (`jobs_body(also=…)`).
+- **DX4 reads the note** (`sminos_jobs.STOP_NOTE`) by the row's whole text, never by a line
+  found in it, since a steer's row is kept isMeta from the plugin too: the stop's note
+  exactly, or the interrupt's (its `The interrupt came from …` line, then only its
+  `… was then stopped: …` and `… could not be stopped: …` lines), each stopped line
+  `stopped` for its task, so a task an interrupt stopped no longer reads `running`. `steer`
+  refuses a text that would read as either note. A subagent's subscription takes the main
+  loop's record of its own jobs after its own rows (`jobs_body(also=…)`). The RPC's check
+  (`task_rows`) searches only the task's exact references (a whole JSON string, a
+  notification's `<task-id>`, the note's `Task <id>, `), so a short id reads no more rows
+  than name it.
 - **Verb** `sminos stop <member> <task>`: op `stop`; prints `stopped <member>'s background
   task <id>`; the mod's refusal exits 1 with its reason; no bridge, exit 4 "no bridge".
 
