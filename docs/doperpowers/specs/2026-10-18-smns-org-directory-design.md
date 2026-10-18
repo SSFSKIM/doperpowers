@@ -8,7 +8,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 
 ## Progress
 
-- [ ] M1 — Rows from the engine's records, the filter layer, `--here`, the subagent tree
+- [x] (2026-10-18 18:25Z) M1 — Rows from the engine's records, the filter layer, `--here`, the subagent tree (60d7042f, fixes 68b27693, b59774da; review clean)
 - [ ] M2 — Hub (MAWS): the `org` frame, follow-only hellos, machine projects at the Registry, machines' online state
 - [ ] M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns`
 - [ ] M4 — `sminos join`, `session_project`, moves when a resolved project changes
@@ -445,6 +445,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M2 executor.
 - Decision (M2, Concrete Steps): MAWS's class-1a Linux gate runs from the worktree's own `scripts/ci-gate.sh` (the main checkout's copy predates `--class1a`) and names its gates: `<worktree>/scripts/ci-gate.sh <worktree> --gates static,unit,probes --class1a linux`; without `--gates` the e2e lane takes the repository's macOS default and the whole set runs on the mini. ci-gate and other remote waiters run outside `with-slot.sh` (it only polls GitHub); the slot is for local heavy work (orchestrator, 2026-10-18).
   Date/Author: 2026-10-18, M2 executor and the orchestrator.
+- Decision (M1 review): no path resumes a session whose engine record names a running process. `resume_session`, the one path every local resume takes (delivery, `fill`, `resume`, `send`), picks the turn to stop from the engine record rather than the socket probe and refuses to launch over a running process it cannot stop (no harness row, no recorded short); `wait_stopped` counts a turn down only when the harness row is not running and fresh engine records name no running process, the socket no longer consulted, so a stop that succeeds but leaves the process alive times out into the refusal. `send`'s before-write failure re-reads the records and, while the session runs, refuses with exit 4 and leaves the delivery failed for the daemon to retry. A named project (`--project` or positional) with `--here` leaves out the `(no project)` group; a remote member's published title (`Member.title`) is searched whichever in-charge source wins.
+  Rationale: the task review found three paths into a resume of a running process beyond `push_member`'s; §4's invariant is the engine record's, wherever a resume starts.
+  Date/Author: 2026-10-18, M1 executor from the task review.
 
 ## Outcomes & Retrospective
 
