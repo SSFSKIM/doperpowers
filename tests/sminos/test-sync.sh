@@ -614,7 +614,9 @@ if qs_on_hub; then pass "three more hub projects open and upload"; else fail "th
 A_GEN="$(ctl gen alpha)"
 python3 - "$T/a" <<'PY'
 import json, sys
-for q, change in (("q1", lambda d: d.update(hub={"org": "org-1"})), ("q2", lambda d: d["hub"].update(org="org-2")),
+# q1's hub names no org (a .smns naming the org alone is the shape a hub
+# project takes: it stays one).
+for q, change in (("q1", lambda d: d.update(hub={"url": "https://elsewhere.example"})), ("q2", lambda d: d["hub"].update(org="org-2")),
                   ("q3", lambda d: d.pop("hub"))):
     path = "%s/%s/.smns" % (sys.argv[1], q)
     d = json.load(open(path)); change(d); json.dump(d, open(path, "w"))
@@ -632,7 +634,7 @@ done
 assert_contains "$(grep "no longer a hub project of org org-1" "$T/a/s/daemon.log")" "q1" "a malformed hub ends the project's sync, saying so"
 assert_contains "$(grep "no longer a hub project of org org-1" "$T/a/s/daemon.log")" "q2" "so does a hub of another org"
 assert_contains "$(grep "no longer a hub project of org org-1" "$T/a/s/daemon.log")" "q3" "and a .smns that names no hub"
-assert_equals "$(ctl state "sorted(p for p, v in d['projects'].items() if v['open'].get('alpha') == d['generations']['alpha'] and p != '$PID')")" "[]" \
+assert_equals "$(ctl state "sorted(p for p in ['$(qid q1)', '$(qid q2)', '$(qid q3)'] if d['projects'][p]['open'].get('alpha') == d['generations']['alpha'])")" "[]" \
   "alpha's new stream opens none of them at the hub"
 
 # ---- frames past a frame's bound travel as parts, both ways

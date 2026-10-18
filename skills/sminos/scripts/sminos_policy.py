@@ -111,13 +111,19 @@ def outside_origin(e):
 
 
 def known_checkouts(project):
-    """[{path, branch}]: the project's root, and every working directory a
+    """[{path, branch}]: the project's root while it is still a directory of
+    the project (its .smns still names it), and every working directory a
     session of the project joined from on this machine that is still a
     directory of this project — the checkouts a spawn from outside may run
-    in (sminos_rpc), as DX4's `machine` presence offers them."""
+    in (sminos_rpc), as DX4's `machine` presence offers them. None for a
+    machine project: a stray's directory resolves to it, and is no checkout."""
+    if sminos.project_kind(project) == "machine":
+        return []
     paths = []
     if project.root and os.path.isdir(project.root):
-        paths.append(project.root)
+        root = sminos.resolve_project(project.root)
+        if root is not None and root.id == project.id:
+            paths.append(project.root)
     view = sminos.view_of(project, titles=False)
     for sid, r in view.info.items():
         j = (r or {}).get("joined") or {}

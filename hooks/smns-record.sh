@@ -18,9 +18,13 @@ IFS= read -r -d '' input
 
 # Where there is no project, nothing is recorded: no .smns and no git
 # repository above the session's directory. A cheap look before Python starts;
-# a cwd carrying JSON escapes is left to `record` to decide.
+# a cwd carrying JSON escapes is left to `record` to decide. On a machine
+# enrolled at a desk hub every directory is a project (a directory nothing
+# claims is in the machine's own), so the enrollment's file admits them all;
+# it is only looked for, never read.
+enrolled=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}/daemon/hub.json
 cwd=${input#*\"cwd\":}
-if [[ $cwd != "$input" ]]; then
+if [[ ! -e $enrolled && $cwd != "$input" ]]; then
   cwd=${cwd#"${cwd%%[![:space:]]*}"}
   cwd=${cwd#\"}
   cwd=${cwd%%\"*}

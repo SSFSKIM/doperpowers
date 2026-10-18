@@ -252,7 +252,11 @@ transcript.
 
 Commit `.smns`: a collaborator's clone, and every worktree, then lands in
 the same project, and several repositories carrying one id are one
-project. Without it, a repository is a local project named after itself.
+project; a linked worktree checked out at a head without the file reads
+its main checkout's. On a machine enrolled at the desk hub, a directory
+no `.smns` claims is in the machine's own project (named after the
+machine; `sminos projects` lists it as `machine`). Elsewhere, a
+repository without one is a local project named after itself, and
 `spawn --cwd` into a directory that is no project registers a local
 project named after the directory for the seats spawned there.
 
@@ -291,14 +295,18 @@ wrote under an earlier name stays on this machine and never reaches the
 hub. `--replace` enrolls again with a new code. The credential is
 `$SMINOS_HOME/daemon/hub.json` (mode 0600).
 
-`project init --hub` writes the enrolled hub into `.smns`: a new one, or
-added to the one there, changing nothing else. Commit it; on each other
-enrolled machine, pull and run `project init --hub` too, which registers
-the project there at once. A hub project is never synced through git (a
+`project init --hub` writes the enrolled org into `.smns` —
+`"hub": {"org": "<org>"}`, no URL: each machine reaches the hub its own
+enrollment names — in a new one, or added to the one there, changing
+nothing else. Commit it. A hub project is never synced through git (a
 `remote` it names stays the log's archive), and its sessions, already
 running ones included, write to it from their next message. The daemon's
 uplink carries it to the hub: install the daemon on every enrolled
-machine.
+machine. Every enrolled machine follows every project of its org — it
+reads and delivers them without a checkout — so `@<project>/<alias>`
+reaches a project this machine has never cloned. On a machine not
+enrolled in the org a `.smns` names, the project is local there, never
+synced, and a reading verb says so once a day.
 
 ## The daemon
 

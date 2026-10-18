@@ -377,6 +377,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
+  if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
+    fail "the org's directory: machine projects, follow-only hellos (test-org.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
@@ -4475,6 +4477,10 @@ fi
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "codes parity: ${line#ok }" ;; *) fail "codes parity: ${line#FAIL }" ;; esac
 done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx1-codes.json" 2>&1)
+# A machine's own project has the id the hub computes: its shared vectors pin it (machine_project_parity.py).
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "machine project id parity: ${line#ok }" ;; *) fail "machine project id parity: ${line#FAIL }" ;; esac
+done < <(python3 "$SCRIPT_DIR/machine_project_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/machine-project-id.json" 2>&1)
 
 # Transcript records as the harness stores them (the shapes the ask design and
 # a live 2.1.296 transcript record).

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """sminos — one fleet registry for Claude Code sessions.
 
-The unit is the PROJECT (a committed .smns, else the owning repository) and
+The unit is the PROJECT (a committed .smns; else, on a machine enrolled at a
+desk hub, the machine's own project; else the owning repository) and
 its family: every session working under it is a MEMBER, with no join step and
 no host — the human is the host. A SEAT is a named position, with a role and a
 brief, that a session sminos spawned fills; it outlives the process that fills
@@ -51,7 +52,8 @@ member too, seat-less, from the first call that reads its project.
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
-                   # --hub: the project syncs through this machine's desk hub, never git
+                   # --hub: the project syncs through the desk hub of this machine's org, never git;
+                   .smns names the org alone, each machine's enrollment the hub's URL
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
     sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # what this machine admits
                    from outside: read-only delivers nothing written elsewhere; the ceiling bounds a spawn
@@ -73,6 +75,10 @@ member too, seat-less, from the first call that reads its project.
                    @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
                    it ends with the session's subagents (the ids SendMessage takes; --all: finished too)
     sminos find     <words..>                             # list --org <words>: every session they match
+    sminos projects [--all]                               # every project known here: kind (hub, machine,
+                   local), live and waiting sessions, their machines; --all: a retired machine's too
+    sminos machines                                       # every machine enrolled in the org: online or
+                   last seen, its live sessions and their projects
     sminos chart    [project] [--all] [--width N]        # the members as boxes, grouped by project
     sminos tui      [project] [--all] [--no-tmux]        # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -482,9 +488,10 @@ def find_seat(q, scope=None):
 
 # --------------------------------------------------------- projects and the log
 #
-# A project is the unit of shared work state: a committed `.smns` names it; a
-# git repository without one is a local project named after its owning
-# repository; any other directory is no project. Everything that crosses
+# A project is the unit of shared work state: a committed `.smns` names it; on
+# a machine enrolled at a desk hub, any other directory is in the machine's own
+# project; elsewhere a git repository without one is a local project named
+# after its owning repository, and any other directory is no project. Everything that crosses
 # sessions is one event in the project's append-only log — one file per
 # writer under $SMINOS_HOME/projects/<id>/log/, so a file has one writer and
 # replication is a copy. Delivery is the deliverer's own record (delivered/),
@@ -605,10 +612,12 @@ def make_project(pid, name, remote, root_dir, hub=None):
 def read_smns(path):
     """(id, name, remote, hub) from a .smns, or None — with a warning — when it
     is unreadable or names no valid id: a broken file in one repository must
-    not stop every verb that resolves a seat living there. A `hub` key that is
-    not {url, org} — null included — still makes a hub project, which git
-    never syncs and no hub feeds (hub_wellformed), with a warning: two live
-    transports are worse than none."""
+    not stop every verb that resolves a seat living there. `hub` is the file's
+    {url, org} as written — `url` "" when it names none, the shape a new hub
+    project takes (its URL is the enrollment's: hub_here) — or None. A `hub`
+    key that names no org — null included — still makes a hub project, which
+    git never syncs and no hub feeds (hub_wellformed), with a warning: two
+    live transports are worse than none."""
     try:
         with open(path) as f:
             d = json.load(f)
@@ -624,7 +633,7 @@ def read_smns(path):
         raw = d["hub"] if isinstance(d["hub"], dict) else {}
         hub = {k: raw[k] if isinstance(raw.get(k), str) else "" for k in ("url", "org")}
         if not hub_wellformed(hub):
-            warn("%s: its hub is not {url, org}; the project syncs through neither git nor a hub until it is" % path)
+            warn("%s: its hub names no org; the project syncs through neither git nor a hub until it does" % path)
             hub = {"url": "", "org": ""}  # a hub project nothing feeds
     return pid, str(d.get("name") or pid), str(d.get("remote") or ""), hub
 
@@ -648,32 +657,218 @@ def registration(pid):
 
 
 def hub_wellformed(hub):
-    """Whether a .smns `hub` is {url, org}, both non-empty strings: the only
-    hub a project syncs through. Any other value still bars git."""
-    return isinstance(hub, dict) and all(isinstance(hub.get(k), str) and hub[k] for k in ("url", "org"))
+    """Whether a .smns `hub` names an org (a non-empty string), its `url`
+    absent or a string: the only hub a project syncs through. Any other value
+    still bars git."""
+    return isinstance(hub, dict) and isinstance(hub.get("org"), str) and bool(hub["org"]) \
+        and isinstance(hub.get("url", ""), str)
 
 
-def resolve_project(cwd):
-    """The project of a directory: the first .smns walking up; else the local
-    project of the owning git repository; else None (no project)."""
-    cwd = os.path.abspath(os.path.expanduser(cwd or "."))
-    if cwd in _PROJECTS:
-        return _PROJECTS[cwd]
-    project, d = None, cwd
+def hub_synced(hub):
+    """Whether a project's hub, as this machine resolved it (hub_here), is one
+    this machine syncs through: its org's, with the enrollment's URL. A hub
+    project of an org this machine is not enrolled in has url "" — local here,
+    with a hub marker."""
+    return hub_wellformed(hub) and bool(hub.get("url"))
+
+
+# ------------------------------------------- the enrollment and the org's directory
+#
+# On an enrolled machine (daemon/hub.json names a hub, an org and a machine)
+# a .smns names only the org; the URL is the enrollment's, so moving the hub
+# never means editing committed files. Every session there is in a project the
+# hub syncs: a directory no .smns claims is in the machine's own project. The
+# uplink keeps the hub's latest `org` frame — every project of the org, with
+# its kind and whether it is retired, and every enrolled machine — at
+# daemon/org.json, the one local source of a project's kind and retirement.
+# Design: docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md §1–§3.
+
+ORG_FILE = "org.json"
+WARNED_URL = "warned-url"   # in a project's home: its .smns url, differing from the enrollment's, was said
+HINTED = "hinted"           # in a project's home: when the not-enrolled hint was last said (its mtime)
+HINT_EVERY = 86400
+# Set by main() for the verbs a person reads: only they print the daily hint,
+# so a hook or the daemon never spends it.
+HINTS = {"on": False}
+READING_VERBS = ("list", "find", "chat", "projects", "machines", "project", "chart")
+_ENROLLED = []   # [the enrollment or None], per invocation
+_ORG_DIR = []    # [daemon/org.json as read or None], per invocation
+_SAID = set()    # (marker, project id) said or checked in this invocation
+
+
+def enrollment():
+    """This machine's enrollment as resolution reads it, {url, org, machine},
+    or None when it is not enrolled (daemon/hub.json absent, unreadable, or
+    lacking one of the three)."""
+    if not _ENROLLED:
+        try:
+            with open(os.path.join(root(), "daemon", "hub.json")) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            d = None
+        ok = isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k] for k in ("hub", "org", "machine"))
+        _ENROLLED.append({"url": d["hub"], "org": d["org"], "machine": d["machine"]} if ok else None)
+    return _ENROLLED[0]
+
+
+def machine_project_id(org, machine):
+    """The id of an enrolled machine's own project: a UUID v5 of the org and
+    the machine's name, lower-cased as the hub compares names (the hub
+    computes the same; tests/sminos/machine-project-id.json pins both)."""
+    return str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "smns-machine:%s:%s" % (org, machine.lower())))
+
+
+def machine_project(org, machine):
+    """The machine project of `machine` in `org`: named after the machine, no
+    checkout anywhere (root ""), synced through the enrollment's hub."""
+    e = enrollment()
+    url = e["url"] if e and e["org"] == org else ""
+    return make_project(machine_project_id(org, machine), machine, "", "", {"url": url, "org": org})
+
+
+def own_machine_project():
+    """This machine's own project, the project of every session here no .smns
+    claims; None on a machine that is not enrolled."""
+    e = enrollment()
+    return machine_project(e["org"], e["machine"]) if e else None
+
+
+def org_path():
+    return os.path.join(root(), "daemon", ORG_FILE)
+
+
+def org_directory():
+    """daemon/org.json — {projects, machines, at} as the uplink kept the hub's
+    latest `org` frame — or None before the first (or when it is unreadable)."""
+    if not _ORG_DIR:
+        try:
+            with open(org_path()) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            d = None
+        ok = isinstance(d, dict) and isinstance(d.get("projects"), list) and isinstance(d.get("machines"), list)
+        _ORG_DIR.append({"projects": [p for p in d["projects"] if isinstance(p, dict) and isinstance(p.get("id"), str)],
+                         "machines": [m for m in d["machines"] if isinstance(m, dict) and isinstance(m.get("name"), str)],
+                         "at": str(d.get("at") or "")} if ok else None)
+    return _ORG_DIR[0]
+
+
+def org_entry(pid):
+    """The org directory's entry for a project, or None."""
+    d = org_directory()
+    return next((p for p in d["projects"] if p["id"] == pid), None) if d else None
+
+
+def org_retired(pid):
+    """Whether the org's directory marks the project retired (a revoked
+    machine's project). With no directory yet, nothing is."""
+    return (org_entry(pid) or {}).get("retired") is True
+
+
+def said_once(pid, marker):
+    """Whether the marker file in the project's home already holds — made
+    now when it did not (O_EXCL: one verb says it, whichever comes first)."""
+    if (marker, pid) in _SAID:
+        return True
+    _SAID.add((marker, pid))
+    home = os.path.join(projects_root(), pid)
+    try:
+        os.makedirs(home, mode=0o700, exist_ok=True)
+        os.close(os.open(os.path.join(home, marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except OSError:
+        return True   # held already; or a marker that cannot be made, which says nothing rather than every time
+    return False
+
+
+def hint_due(pid):
+    """Whether the daily not-enrolled hint is due for the project, marking it
+    said when it is (the marker's mtime is when)."""
+    if (HINTED, pid) in _SAID:
+        return False
+    _SAID.add((HINTED, pid))
+    path = os.path.join(projects_root(), pid, HINTED)
+    try:
+        if time.time() - os.stat(path).st_mtime < HINT_EVERY:
+            return False
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "w"):
+            pass
+        os.utime(path)
+    except OSError:
+        return False
+    return True
+
+
+def hub_here(pid, name, hub):
+    """A .smns hub as this machine syncs it: on a machine enrolled in its org,
+    {url, org} with the enrollment's URL — a different `url` in the file is
+    said once per project here (stderr and daemon.log) and never used, since
+    refusing would make a committed file an outage; elsewhere {url: "", org}:
+    a local project with a hub marker, which git never syncs and no uplink
+    opens, and which a reading verb says so of once a day."""
+    if not hub_wellformed(hub):
+        return hub
+    e = enrollment()
+    if e is None or e["org"] != hub["org"]:
+        if HINTS["on"] and hint_due(pid):
+            warn("project %s syncs through the desk hub of org %s; this machine is not enrolled%s "
+                 "(sminos hub enroll)" % (name, hub["org"], " in it" if e else ""))
+        return {"url": "", "org": hub["org"]}
+    if hub["url"] and hub["url"] != e["url"] and not said_once(pid, WARNED_URL):
+        line = ("project %s: its .smns names the hub %s, but this machine is enrolled at %s for org %s; "
+                "the enrollment's is used (drop `url` from .smns)" % (name, hub["url"], e["url"], e["org"]))
+        warn(line)
+        try:
+            daemon_log(line)
+        except OSError:
+            pass
+    return {"url": e["url"], "org": hub["org"]}
+
+
+def smns_at(cwd):
+    """(directory, read_smns) of the first .smns walking up from cwd; else,
+    for a linked worktree at a head that predates the file, its main
+    checkout's (owning_repo), so an old branch never splits the repository
+    into two projects; else None."""
+    d = cwd
     while True:
-        smns = read_smns(os.path.join(d, SMNS)) if os.path.isfile(os.path.join(d, SMNS)) else None
+        path = os.path.join(d, SMNS)
+        smns = read_smns(path) if os.path.isfile(path) else None
         if smns:
-            project = make_project(smns[0], smns[1], smns[2], d, smns[3])
-            break
+            return d, smns
         parent = os.path.dirname(d)
         if parent == d:
             break
         d = parent
-    if project is None:
-        repo = owning_repo(cwd)
-        if repo:
-            name = safe_name(os.path.basename(repo)) or "repo"
-            project = make_project("local-" + name, name, "", repo)
+    repo = owning_repo(cwd)
+    path = os.path.join(repo, SMNS) if repo else ""
+    smns = read_smns(path) if path and os.path.isfile(path) else None
+    return (repo, smns) if smns else None
+
+
+def resolve_project(cwd):
+    """The project of a directory: the first .smns walking up (a linked
+    worktree without one, its main checkout's); else, on an enrolled
+    machine, the machine's own project; else the local project of the owning
+    git repository; else None (no project)."""
+    cwd = os.path.abspath(os.path.expanduser(cwd or "."))
+    if cwd in _PROJECTS:
+        return _PROJECTS[cwd]
+    project = None
+    found = smns_at(cwd)
+    if found:
+        d, (pid, name, remote, hub) = found
+        project = make_project(pid, name, remote, d, hub_here(pid, name, hub))
+    else:
+        project = own_machine_project()
+        if project is None:
+            repo = owning_repo(cwd)
+            if repo:
+                name = safe_name(os.path.basename(repo)) or "repo"
+                project = make_project("local-" + name, name, "", repo)
     _PROJECTS[cwd] = project
     return project
 
@@ -772,10 +967,17 @@ def known_projects(all_seats=None):
 
 def find_project(q, required=True):
     """A project known locally, by id or by name; with required=False, None
-    when none is (an ambiguous name still exits)."""
+    when none is (an ambiguous name still exits). An id answers first; a name
+    among hub projects, then machine projects, then the rest (local-* and
+    git-mirrored ones), so a local project named after its repository never
+    shadows the repository's hub project."""
     known = known_projects()
-    for match in (lambda p: p.id == q, lambda p: p.name == q):
-        hits = [p for p in known if match(p)]
+    hits = [p for p in known if p.id == q]
+    if hits:
+        return hits[0]
+    named = [p for p in known if p.name == q]
+    for kind in ("hub", "machine", "local"):
+        hits = [p for p in named if project_kind(p) == kind]
         if len(hits) == 1:
             return hits[0]
         if hits:
@@ -1118,7 +1320,13 @@ class Member(NamedTuple):
 
 
 def project_kind(project):
-    """hub | local: whether the project syncs through a desk hub."""
+    """hub | machine | local: a machine's own project (this machine's by its
+    id, another's by the org's directory), a project that syncs through a desk
+    hub, or one that does not."""
+    e = enrollment()
+    if (e and project.id == machine_project_id(e["org"], e["machine"])) \
+            or (org_entry(project.id) or {}).get("kind") == "machine":
+        return "machine"
     return "hub" if project.hub else "local"
 
 
@@ -2128,6 +2336,9 @@ def resolve_tags(project, text):
             die("@all stands alone")
         if project is None:
             die("@all needs a project: say it in a project's directory, or with --in <project>")
+        if project_kind(project) == "machine":
+            # Its members share nothing but a machine.
+            die("a machine project is not a team: tag who you mean")
         live = [m for m in members(project) if m.state in FILLED]
         return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
 
@@ -3359,10 +3570,15 @@ def cmd_project(a):
         p = resolve_project(d)
         if p is None:
             die("no project at %s: no .smns above it and no git repository around it" % d, EXIT_UNKNOWN)
-        print("project  %s\nid       %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
-            p.name, p.id, p.remote or "-", ("%s (org %s)" % (p.hub["url"], p.hub["org"]) if hub_wellformed(p.hub) else "malformed: no git, no hub")
-            if p.hub is not None else "-",
-            p.root, p.home))
+        kind = project_kind(p)
+        if p.hub is not None and not hub_wellformed(p.hub):
+            kind, hub = "hub (malformed)", "names no org: no git, no hub"
+        elif p.hub is not None and not hub_synced(p.hub):
+            kind, hub = "hub (not enrolled)", "org %s — not synced here: this machine is not enrolled in it" % p.hub["org"]
+        else:
+            hub = "%s (org %s)" % (p.hub["url"], p.hub["org"]) if p.hub is not None else "-"
+        print("project  %s\nid       %s\nkind     %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
+            p.name, p.id, kind, p.remote or "-", hub, p.root or "-", p.home))
     else:
         project_attach(a)
 
@@ -3389,7 +3605,7 @@ def project_init(a):
         die("a project name is one line without '/': %r" % name)
     data = {"project": str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
     if hub:
-        data["hub"] = hub
+        data["hub"] = {"org": hub["org"]}  # the URL is each machine's enrollment's (hub_here)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
@@ -3398,7 +3614,7 @@ def project_init(a):
     _PROJECTS.clear()
     project_path(resolve_project(top), "log")
     print("project %s (%s) at %s%s — commit it, so every clone is the same project" % (
-        name, data["project"], path, ", a hub project of %s (org %s)" % (hub["url"], hub["org"]) if hub else ""))
+        name, data["project"], path, ", a hub project of org %s (through %s here)" % (hub["org"], hub["url"]) if hub else ""))
 
 
 def project_attach(a):
@@ -3410,7 +3626,8 @@ def project_attach(a):
         die("no project here to attach", EXIT_UNKNOWN)
     if p.hub is not None:
         die("project %s syncs through its hub (%s), never through git: there is no mirror to attach%s" % (
-            p.name, p.hub["url"] or "malformed", "; its remote is the log's archive" if p.remote else ""), 1)
+            p.name, p.hub["url"] or ("org %s, not enrolled here" % p.hub["org"] if p.hub["org"] else "malformed"),
+            "; its remote is the log's archive" if p.remote else ""), 1)
     if not p.remote:
         die("project %s names no remote in its .smns: nothing to attach to" % p.name)
     daemon_module().attach(p)
@@ -3642,6 +3859,8 @@ def forget_caches():
     _PROJECTS.clear()
     _HOMES.clear()
     _VIEWS.clear()
+    _ENROLLED.clear()
+    _ORG_DIR.clear()
 
 
 def refresh_caches():
@@ -6506,6 +6725,89 @@ def cmd_find(a):
     cmd_list(a)
 
 
+def live_members(projects):
+    """{project id: its live members (busy, idle, waiting)} of each project."""
+    return {p.id: [m for m in members(p) if m.state in FILLED] for p in projects}
+
+
+def print_table(header, rows):
+    widths = [max(len(r[i]) for r in [header] + rows) for i in range(len(header) - 1)]
+    for r in [header] + rows:
+        print("  ".join([c.ljust(w) for c, w in zip(r, widths)] + [r[-1]]).rstrip())
+
+
+def org_age_line():
+    """The age of daemon/org.json when it is older than a minute: the
+    directory is the hub's as of then."""
+    d = org_directory()
+    at = _ts_epoch(d["at"]) if d else None
+    if at is not None and time.time() - at > 60:
+        print("(the org's directory is %s old: the daemon's stream has said nothing newer)" % short_age(time.time() - at))
+
+
+def cmd_projects(a):
+    """`projects [--all]`: every project known here — its name, kind, live
+    and waiting sessions, and the machines they run on. A project the org's
+    directory marks retired (a revoked machine's) only with --all."""
+    known = sorted(known_projects(), key=lambda p: (p.name.lower(), p.id))
+    shown = [p for p in known if a.all or not org_retired(p.id)]
+    live = live_members(shown)
+    kinds = {p.id: project_kind(p) for p in known}
+    rows = []
+    for p in shown:
+        ms = live[p.id]
+        # A name answers to one project (find_project): one that loses it is
+        # shown by its id, the name it answers to.
+        shadowed = any(q.name == p.name and q.id != p.id and ("hub", "machine", "local").index(kinds[q.id])
+                       < ("hub", "machine", "local").index(kinds[p.id]) for q in known)
+        rows.append((p.id if shadowed else p.name, kinds[p.id] + (" (retired)" if org_retired(p.id) else ""), str(len(ms)),
+                     str(sum(1 for m in ms if m.state == "waiting")),
+                     ", ".join(sorted({m.machine for m in ms}, key=str.lower)) or "-"))
+    if not rows:
+        print("no project is known on this machine")
+        return
+    print_table(("PROJECT", "KIND", "LIVE", "WAITING", "MACHINES"), rows)
+    org_age_line()
+
+
+def cmd_machines(_a):
+    """`machines`: every machine enrolled in the org (daemon/org.json) —
+    online, or when it was last seen — with its live sessions and the
+    projects they are in, read from the logs this machine holds. On a machine
+    that is not enrolled, this machine alone."""
+    e = enrollment()
+    org = org_directory() if e else None
+    by_machine = {}
+    projects = known_projects()
+    live = live_members(projects)
+    for p in projects:
+        for m in live[p.id]:
+            sessions, names = by_machine.setdefault(m.machine.lower(), (set(), set()))
+            sessions.add(m.session)
+            names.add(p.name)
+
+    def row(name, state):
+        sessions, names = by_machine.get(name.lower(), (set(), set()))
+        return name, state, str(len(sessions)), ", ".join(sorted(names, key=str.lower)) or "-"
+
+    if e is None:
+        print("this machine is not enrolled at a desk hub (sminos hub enroll): it knows only itself")
+        rows = [row(host_name(), "this machine")]
+    elif org is None:
+        print("no org directory yet: the daemon has not connected to the hub (sminos daemon run)")
+        rows = [row(e["machine"], "this machine")]
+    else:
+        rows = []
+        for m in sorted(org["machines"], key=lambda m: m["name"].lower()):
+            seen = _ts_epoch(m.get("seen"))
+            state = "online" if m.get("online") is True else \
+                "last seen %s ago" % short_age(max(0.0, time.time() - seen)) if seen is not None else "never seen"
+            rows.append(row(m["name"], state))
+    print_table(("MACHINE", "STATE", "LIVE", "PROJECTS"), rows)
+    if org is not None:
+        org_age_line()
+
+
 def cmd_attach(a):
     s = resolve_seat(a.seat)
     live = state(s)
@@ -6886,6 +7188,13 @@ def build_parser():
     list_flags(fd)
     fd.set_defaults(fn=cmd_find, find=True)
 
+    pjs = sub.add_parser("projects", add_help=False)
+    pjs.add_argument("--all", action="store_true")
+    pjs.set_defaults(fn=cmd_projects)
+
+    mcs = sub.add_parser("machines", add_help=False)
+    mcs.set_defaults(fn=cmd_machines)
+
     ch = sub.add_parser("chart", add_help=False)
     ch.add_argument("project", nargs="?", default="")
     ch.add_argument("--all", action="store_true")
@@ -6949,6 +7258,7 @@ def main(argv=None):
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     migrate()
+    HINTS["on"] = a.cmd in READING_VERBS
     try:
         a.fn(a)
     except LogWriteFailed as e:

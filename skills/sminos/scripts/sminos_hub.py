@@ -223,8 +223,8 @@ def held():
 
 
 def enrolled_hub():
-    """This machine's hub as .smns names it, {url, org}; exits when the
-    machine is not enrolled."""
+    """This machine's hub, {url, org} (a .smns names only the org); exits
+    when the machine is not enrolled."""
     d = held()
     if not (d and isinstance(d.get("hub"), str) and isinstance(d.get("org"), str) and d["hub"] and d["org"]):
         sminos.die("this machine is not enrolled at a hub: run sminos hub enroll first, and paste the code the web "
@@ -364,13 +364,13 @@ def add_hub(path, smns, hub, a):
     other field kept as it is."""
     if a.name or a.remote:
         sminos.die("%s exists: --hub adds the hub to it and changes nothing else — drop --name and --remote" % path)
-    if smns[3] == hub:
-        print("project %s is already a hub project of %s (org %s)" % (smns[1], hub["url"], hub["org"]))
+    if sminos.hub_wellformed(smns[3]) and smns[3]["org"] == hub["org"]:
+        print("project %s is already a hub project of org %s" % (smns[1], hub["org"]))
         return
     if smns[3] is not None:
         sminos.die("project %s already names %s: its hub is not changed here" % (
-            smns[1], "the hub %s (org %s)" % (smns[3]["url"], smns[3]["org"]) if sminos.hub_wellformed(smns[3])
-            else "a hub that is not {url, org}, so it syncs through neither git nor a hub — fix its .smns by hand"), 1)
+            smns[1], "the hub of org %s" % smns[3]["org"] if sminos.hub_wellformed(smns[3])
+            else "a hub that names no org, so it syncs through neither git nor a hub — fix its .smns by hand"), 1)
     # Under the mirror's sync lock: a sync of the project in flight ends
     # first, and every git phase after it reads the hub (ensure_mirrored), so
     # git and the uplink never feed this log at once. The registration both
@@ -381,7 +381,7 @@ def add_hub(path, smns, hub, a):
     with daemon.sync_op(log):
         with open(path) as f:
             d = json.load(f)
-        d["hub"] = hub
+        d["hub"] = {"org": hub["org"]}  # the URL is each machine's enrollment's (sminos.hub_here)
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(d, f, indent=2)
@@ -390,8 +390,8 @@ def add_hub(path, smns, hub, a):
         os.replace(tmp, path)
         sminos.forget_caches()
         sminos.project_path(sminos.resolve_project(os.path.dirname(path)), "log")
-    print("project %s is now a hub project of %s (org %s) — commit .smns, so every clone syncs through the hub%s" % (
-        smns[1], hub["url"], hub["org"],
+    print("project %s is now a hub project of org %s — commit .smns, so every clone syncs through the hub%s" % (
+        smns[1], hub["org"],
         "; its remote %s is no longer synced live (it stays the log's archive)" % smns[2] if smns[2] else ""))
 
 

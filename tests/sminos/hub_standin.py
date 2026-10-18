@@ -34,6 +34,18 @@ is <client-id> / <client-secret>.
   rejection for a project not opened on this stream are `refused`
   (`not-open`). The answer, `200 {"ok": true, "frames": n}`, comes once every
   reply is written down the stream.
+- The org's directory (the org directory's M2): the Registry's projects —
+  each machine's own project (`kind` `machine`, its id a UUID v5 of the org
+  and its lower-cased name, registered for `testhost` at start and for a
+  machine at its enrollment's confirmation), and every project a `hello`
+  registers (`kind` `hub`, unless its id is an active machine's project) —
+  and the machines with whether each is online (its lease fresh: started by
+  a `hello`, renewed by `hb-ack`, lapsed or ended with its stream) and `seen`
+  (when that last changed). It goes down a stream as `org` second, after
+  `welcome`, and to every open stream whenever a project is registered,
+  retired or reactivated, a machine is confirmed, or a machine's online
+  state changes. `hello` takes `follow` (a boolean; anything else is
+  `bad-shape`), kept per project and machine (`follow` in `projects`).
 - `POST /machine/enroll` `{token, machine}`: DX7's redemption. A token is
   `open` until redeemed, then `pending` (the name reserved, a service token
   minted and answered once: `{org, machine, client_id, client_secret}`), then
@@ -77,6 +89,10 @@ The test's own hands (the stand-in plays a hub that may lie):
   connection each); 0 ends it.
 - `POST /control/archive` `{"project", "machine"}` designates the project's
   archive machine (DX2's `have.archive`).
+- `POST /control/register` `{"project", "name", "kind"?}` registers a
+  project as another machine's `hello` would (`kind` `hub` by default), and
+  `POST /control/retire` `{"project", "retired"}` marks one retired or
+  active again: the org's directory goes to every open stream.
 - `POST /control/enrollment` `{"ttl_s"?}`: a one-time token, as an admin's
   `POST /api/enrollments` gives it (`201 {"token", "org"}`).
 - `POST /control/fault` `{"redeem": [<fault>, ...]}`: replaces the faults
@@ -89,7 +105,9 @@ The test's own hands (the stand-in plays a hub that may lie):
 - `GET /control/state`: `{"generation" (of the stream opened last),
   "generations", "connected", "posted", "machines", "enrollments",
   "redemptions", "faults", "post_faults", "projects", "hb_acks", "sessions",
-  "leases", "lapses"}`
+  "leases", "lapses", "registry", "online", "orgs"}` — `registry` the
+  directory's projects, `online` each machine's `{online, seen}`, `orgs` how
+  many `org` frames each machine's streams were sent
   — `machines` without their secrets, `redemptions` every body
   `/machine/enroll` received, `projects` each project's name, vector,
   events per writer, the machines that opened it, and its audit record.
@@ -103,6 +121,7 @@ frames are flowing down, its `at` to the millisecond.
 import json
 import os
 import queue
+import uuid
 import re
 import secrets
 import sys
@@ -132,7 +151,75 @@ state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults":
          "machines": {"testhost": {"name": "testhost", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
                                    "state": "active", "enrollment": ""}},
          # token → {id, state, machine, ttl_s, expires}
-         "enrollments": {}}
+         "enrollments": {},
+         # the org's directory: project id → {name, kind, machine?, retired}; machine name → {online, seen}
+         "registry": {}, "online": {}, "orgs": {}}
+
+
+def machine_project_id(machine):
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "smns-machine:%s:%s" % (ORG, machine.lower())))
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % (t % 1 * 1000)
+
+
+def org_frame():
+    """The org's directory as the Registry sends it (the lock held)."""
+    active = sorted(m["name"] for m in state["machines"].values() if m["state"] == "active")
+    return {"t": "org",
+            "projects": [{"id": pid, **r} for pid, r in state["registry"].items()],
+            "machines": [{"name": n, "online": state["online"].get(n, {}).get("online", False),
+                          "seen": state["online"].get(n, {}).get("seen")} for n in active]}
+
+
+def directory_changed():
+    """Every open stream is sent the directory whole (the lock held)."""
+    frame = org_frame()
+    for m, s in state["streams"].items():
+        if not s.ended.is_set():
+            s.put([frame])
+            state["orgs"][m] = state["orgs"].get(m, 0) + 1
+
+
+def register(pid, name, kind="hub"):
+    """A project into the directory (the lock held): a machine's own by its
+    id, whoever registers it first; a retired machine project whose machine
+    is active again is reactivated. Whether the directory changed."""
+    held = state["registry"].get(pid)
+    owner = next((m["name"] for m in state["machines"].values()
+                  if m["state"] == "active" and machine_project_id(m["name"]) == pid), None)
+    if held is not None and not (held["retired"] and owner):
+        return False
+    if owner:
+        state["registry"][pid] = {"name": owner, "kind": "machine", "machine": owner, "retired": False}
+    else:
+        state["registry"][pid] = {"name": name, "kind": kind, "retired": False}
+    return True
+
+
+def machine_online(machine):
+    lease = state["leases"].get(machine)
+    return lease is not None and not lease["lapsed"] and lease_live(machine, lease)
+
+
+def refresh_online():
+    """Each machine's online state as its lease says it now; a change goes
+    out in the directory (the lock held)."""
+    changed = False
+    for m in state["machines"].values():
+        if m["state"] != "active":
+            continue
+        online = machine_online(m["name"])
+        held = state["online"].setdefault(m["name"], {"online": False, "seen": None})
+        if held["online"] != online:
+            held.update(online=online, seen=iso(time.time()))
+            changed = True
+    if changed:
+        directory_changed()
+
+
+register(machine_project_id("testhost"), "testhost")
 
 
 def sse(frame):
@@ -190,6 +277,7 @@ def sweep_leases():
                 if lease_live(machine, lease) and not lease["lapsed"] and now > lease["expires"]:
                     lease["lapsed"] = True
                     state["lapses"].append({"machine": machine, "generation": lease["generation"], "at": now})
+            refresh_online()
 
 
 def expire_lapsed(now):
@@ -257,6 +345,7 @@ def apply(machine, s, frame, replies):
         lease = state["leases"].get(machine)
         if lease is not None and frame.get("generation") == s.generation == lease["generation"]:
             lease.update(expires=time.time() + LEASE, lapsed=False)
+            refresh_online()
         return
     if t == "session":
         state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message"),
@@ -268,6 +357,7 @@ def apply(machine, s, frame, replies):
                         "refusal": {"reason": "bad-shape", "message": "the frame names no .smns project id"}})
         return
     p = project(pid)
+    p.setdefault("follow", {})
 
     def refuse(refusal):
         replies.append({"t": "refused", "project": pid, "refusal": refusal})
@@ -276,12 +366,17 @@ def apply(machine, s, frame, replies):
     if t == "hello":
         have = frame.get("have")
         if not (isinstance(frame.get("name"), str) and frame["name"] and isinstance(have, dict)
-                and all(type(v) is int and v >= 0 for v in have.values())):
-            return refuse({"reason": "bad-shape", "message": "hello is {project, name, have: {writer: seq}}"})
+                and all(type(v) is int and v >= 0 for v in have.values())
+                and isinstance(frame.get("follow", False), bool)):
+            return refuse({"reason": "bad-shape", "message": "hello is {project, name, have: {writer: seq}, follow?: boolean}"})
         p["name"] = p["name"] or frame["name"]
         p["open"][machine] = s.generation
+        p["follow"][machine] = frame.get("follow", False)
+        if register(pid, frame["name"]):
+            directory_changed()
         if state["leases"].get(machine, {}).get("generation") != s.generation:
             state["leases"][machine] = {"generation": s.generation, "expires": time.time() + LEASE, "lapsed": False}
+            refresh_online()
         replies.append({"t": "have", "project": pid, "have": vector(p), "archive": p["archive"] == machine})
         for w, evs in sorted(p["writers"].items()):
             suffix = [e for e in evs if e["seq"] > have.get(w, 0)]
@@ -390,6 +485,8 @@ class Handler(BaseHTTPRequestHandler):
                         for e in state["enrollments"].values():
                             if e["id"] == m["enrollment"]:
                                 e["state"] = "confirmed"
+                        register(machine_project_id(m["name"]), m["name"])
+                        directory_changed()
                     return m["name"]
         self.reply(403, {"error": "not-enrolled"})
         return None
@@ -412,8 +509,9 @@ class Handler(BaseHTTPRequestHandler):
                                for m, lease in state["leases"].items()},
                     "lapses": state["lapses"],
                     "projects": {pid: {"name": p["name"], "vector": vector(p), "writers": p["writers"],
-                                       "open": p["open"], "audit": p["audit"]}
+                                       "open": p["open"], "audit": p["audit"], "follow": p.get("follow", {})}
                                  for pid, p in state["projects"].items()},
+                    "registry": state["registry"], "online": state["online"], "orgs": state["orgs"],
                     "machines": [{k: v for k, v in m.items() if k != "client_secret"}
                                  for m in state["machines"].values()],
                     "enrollments": [{k: v for k, v in e.items()} for e in state["enrollments"].values()]})
@@ -475,6 +573,20 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.body())
             with lock:
                 project(req["project"])["archive"] = req["machine"]
+            self.reply(200, {})
+        elif self.path == "/control/register":
+            req = json.loads(self.body())
+            with lock:
+                if register(req["project"], req["name"], req.get("kind", "hub")):
+                    directory_changed()
+            self.reply(200, {})
+        elif self.path == "/control/retire":
+            req = json.loads(self.body())
+            with lock:
+                held = state["registry"][req["project"]]
+                if held["retired"] != bool(req["retired"]):
+                    held["retired"] = bool(req["retired"])
+                    directory_changed()
             self.reply(200, {})
         elif self.path == "/control/enrollment":
             req = json.loads(self.body() or b"{}")
@@ -631,7 +743,9 @@ class Handler(BaseHTTPRequestHandler):
             state["generations"][machine] = generation
             mine = state["streams"][machine] = state["last"] = Stream(generation, machine)
             mine.put([{"t": "welcome", "org": ORG, "machine": machine, "generation": generation,
-                       "heartbeat_ms": HEARTBEAT_MS}])
+                       "heartbeat_ms": HEARTBEAT_MS}, org_frame()])
+            state["orgs"][machine] = state["orgs"].get(machine, 0) + 1
+            refresh_online()   # the old stream's lease ended with it
             lock.notify_all()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -666,6 +780,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             mine.ended.set()
+            with lock:
+                refresh_online()
             # Anyone waiting on a write to this stream is let go.
             while True:
                 try:

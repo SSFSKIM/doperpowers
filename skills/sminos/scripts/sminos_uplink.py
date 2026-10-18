@@ -23,8 +23,14 @@ main thread takes whatever is queued as one batch, then ticks once: what the
 batch imported is delivered once per project, so a burst from the hub costs
 a tick, not a tick a frame.
 
-On every stream, for every hub project of this machine's org known here, the
-uplink sends `hello` with its vector and its machine's presence (DX4
+The hub sends the org's directory down the stream (`org`: every project of
+the org, with its kind and whether it is retired, and every enrolled
+machine); the uplink keeps it at daemon/org.json and registers every project
+of it it does not know (root ""), so the machine follows every project of
+its org. On every stream, for every hub project of this machine's org known
+here (hub_projects), the uplink sends `hello` with its vector — `follow` when
+the machine has no checkout of it and no session in it, and again whenever
+that changes — and, for a project it holds, its machine's presence (DX4
 `machine`), then uploads its own writers' suffix past the hub's `have`, and
 from then on what they append; it follows `resend`, says each `refused` in
 daemon.log, and imports what the hub sends (sminos_hublog.py: each event's
@@ -543,30 +549,55 @@ def exchange(cred, path, generation, body, ended):
 # ------------------------------------------------------------- the projects
 
 
-def smns_hub(root_dir):
-    """The `hub` field of the .smns at root_dir when it is a well-formed
-    {url, org}, or None: a malformed hub is fed by no hub."""
-    try:
-        with open(os.path.join(root_dir, sminos.SMNS)) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return None
-    hub = d.get("hub") if isinstance(d, dict) else None
-    return hub if sminos.hub_wellformed(hub) else None
-
-
 def hub_projects(cred):
-    """{project id: project} of every project known here whose .smns, read as
-    it is now, names a hub of this machine's org."""
+    """{project id: project} of every project known here registered as one of
+    this machine's org's (its project.json's hub names the org), rooted or
+    not, but those the org's directory marks retired. Whether a root's .smns
+    still names the project decides only whether this machine holds or
+    follows it (Link.holds): the org's directory, not a checkout's file, says
+    which projects exist, and a .smns edit on one checkout must not strand the
+    retirements it causes."""
     out = {}
     for p in sminos.known_projects():
-        if p.id in out or not (p.root and os.path.isdir(p.root)):
+        if p.id in out or not (isinstance(p.hub, dict) and p.hub.get("org") == cred["org"]) \
+                or sminos.org_retired(p.id):
             continue
-        fresh = sminos.resolve_project(p.root)
-        hub = smns_hub(fresh.root) if fresh is not None and fresh.id == p.id else None
-        if hub and hub["org"] == cred["org"]:
-            out[p.id] = fresh
+        fresh = sminos.resolve_project(p.root) if p.root and os.path.isdir(p.root) else None
+        out[p.id] = fresh if fresh is not None and fresh.id == p.id else p
     return out
+
+
+def register_own(cred):
+    """This machine's own project registered here (project.json), so it is
+    hello'ed on every stream whether or not the hub has listed it yet — the
+    hello is what registers it at a hub this machine enrolled at before
+    machine projects existed."""
+    sminos.project_path(sminos.machine_project(cred["org"], cred["machine"]), "log")
+
+
+def keep_org(frame, cred):
+    """The hub's `org` frame kept at daemon/org.json (its projects and
+    machines, and when it came), and every project it names that is not
+    retired and not known here registered as a followed one: the five fields
+    project_path writes, root "", the hub the enrollment's. Whether the frame
+    was one to keep."""
+    projects, machines = frame.get("projects"), frame.get("machines")
+    if not (isinstance(projects, list) and isinstance(machines, list)):
+        return False
+    projects = [p for p in projects if isinstance(p, dict) and isinstance(p.get("id"), str)
+                and sminos.valid_name(p["id"]) and isinstance(p.get("name"), str) and p["name"].strip()
+                and "\n" not in p["name"] and p.get("kind") in ("hub", "machine") and isinstance(p.get("retired"), bool)]
+    machines = [m for m in machines if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]
+                and isinstance(m.get("online"), bool) and (m.get("seen") is None or isinstance(m.get("seen"), str))]
+    path = sminos.org_path()
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    sminos.write_json(path, {"projects": projects, "machines": machines, "at": sminos.now(ms=True)})
+    hub = {"url": cred["hub"], "org": cred["org"]}
+    for p in projects:
+        if not p["retired"] and not sminos.registration(p["id"]):
+            sminos.project_path(sminos.make_project(p["id"], p["name"], "", "", hub), "log")
+    sminos.forget_caches()
+    return True
 
 
 def hub_project(pid, cred):
@@ -637,12 +668,15 @@ class Link:
         self.rpcs.wake = wake
         self.machine_sent = {}    # project id → the `machine` body last posted on this stream
         self.next_checkouts = 0.0
+        self.own = sminos.machine_project_id(cred["org"], cred["machine"])  # always held: its strays are its members
+        self.follows = {}         # project id → whether its last `hello` on this stream said `follow`
+        self.checkouts = {}       # project id → whether it had a known checkout here when last read
         self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
                          "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "rpc": self.on_rpc,
-                         "rpc-ack": self.on_rpc_ack}
+                         "rpc-ack": self.on_rpc_ack, "org": self.on_org}
 
     def post(self, frames):
         post(self.cred, self.generation, frames, self.ended)
@@ -691,6 +725,8 @@ class Link:
         self.generation = generation if type(generation) is int else None
         self.opened.clear()
         self.machine_sent.clear()
+        self.follows.clear()
+        self.checkouts.clear()
         for hl in self.logs.values():
             hl.reset()
         self.plane.close()
@@ -778,6 +814,15 @@ class Link:
     def on_rpc_ack(self, frame, _stream):
         self.rpcs.ack(frame)
 
+    def on_org(self, frame, _stream):
+        """The org's directory: kept, every project of it registered, and
+        the projects looked over at once — a new one is followed, a retired
+        one leaves (tick)."""
+        if not keep_org(frame, self.cred):
+            log("an org frame without its projects and machines: passed by")
+            return
+        self.next_scan = 0.0
+
     def deliver_imports(self):
         """What the frames handled since the last call imported, delivered
         once per project (sminos_hublog's `deliver`: a fresh read of the
@@ -803,27 +848,39 @@ class Link:
 
     # ---------------------------------------------------- frames up
 
+    def holds(self, pid):
+        """Whether this machine holds the project rather than follows it: its
+        own machine project, or one with a local member (the plane's) or a
+        known checkout here (as last read)."""
+        return pid == self.own or bool(self.plane.members.get(pid)) or self.checkouts.get(pid, False)
+
     def open(self, hl):
         """`hello` for a project on this stream, with what DX2 republishes
-        after every connect that is this child's — the machine's presence —
-        and the rejections not yet reported. A live member that joined under a
-        former name of this machine joins again first, so the vector and the
-        upload carry it."""
+        after every connect that is this child's — the machine's presence,
+        for a project it holds — and the rejections not yet reported. A
+        project it neither has a checkout of nor a session in is opened to
+        follow (`follow`): no machine presence, and no session presence but
+        the leavers'. A live member that joined under a former name of this
+        machine joins again first, so the vector and the upload carry it."""
         hl.rejoin_former()
         unreported = hl.unreported()
         self.plane.refresh(hl.project)
-        sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
         machine = hl.presence()
+        self.checkouts[hl.project.id] = bool(machine["message"]["body"]["checkouts"])
+        follow = not self.holds(hl.project.id)
+        sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
         # The project's bridges are followed before its set is drawn up: the
         # set goes now if they are read, else once they are (Requests.due).
         self.requests.follow(self.bridged(self.opened | {hl.project.id}))
         self.requests.take()
         owed = self.requests.opening(hl.project.id)
         results = self.rpcs.opening(hl.project.id)
-        self.post([hl.hello(), machine] + sessions + unreported + owed + results)
+        self.post([hl.hello(follow)] + ([] if follow else [machine]) + sessions + unreported + owed + results)
         self.plane.accepted(hl.project.id)   # the hub took the leavers' presence: only later ones are said again
         self.opened.add(hl.project.id)
-        self.machine_sent[hl.project.id] = machine["message"]["body"]
+        self.follows[hl.project.id] = follow
+        if not follow:
+            self.machine_sent[hl.project.id] = machine["message"]["body"]
         hl.reported(unreported)
         self.requests.sent(owed)
         self.rpcs.sent(results)
@@ -849,19 +906,41 @@ class Link:
         box.drop(lines)
 
     def machine_presence(self, now):
-        """`machine` again for each open project whose body changed: the
-        policy is read at every scan (a `daemon policy` nudges one), the
-        checkouts every CHECKOUTS_EVERY."""
+        """Each open project held or followed, as it is now, and the machine's
+        presence in each it holds. At every scan a project whose local members
+        came or went is hello'ed again — `follow` as it is now — with the
+        machine's presence when it is held now (a follower posts none: the hub
+        drops it); the checkouts are read again every CHECKOUTS_EVERY, or at
+        once when the policy changed (a `daemon policy` nudges one), and
+        `machine` goes again for each held project whose body changed."""
         current = policy.machine_policy()
-        if now < self.next_checkouts and all(self.machine_sent.get(pid, {}).get("policy") == current
-                                             for pid in self.opened):
-            return
-        self.next_checkouts = now + CHECKOUTS_EVERY
+        fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
+                                                  for pid in self.opened if not self.follows.get(pid))
+        if fresh:
+            self.next_checkouts = now + CHECKOUTS_EVERY
         for pid in sorted(self.opened):
-            m = self.logs[pid].presence()
-            if m["message"]["body"] != self.machine_sent.get(pid):
-                self.post([m])
-                self.machine_sent[pid] = m["message"]["body"]
+            hl = self.logs[pid]
+            machine = None
+            if fresh:
+                machine = hl.presence()
+                self.checkouts[pid] = bool(machine["message"]["body"]["checkouts"])
+            follow = not self.holds(pid)
+            if follow != self.follows.get(pid):
+                frames = [hl.hello(follow)]
+                if not follow:
+                    machine = machine or hl.presence()
+                    frames.append(machine)
+                self.post(frames)
+                self.follows[pid] = follow
+                if follow:
+                    self.machine_sent.pop(pid, None)
+                else:
+                    self.machine_sent[pid] = machine["message"]["body"]
+                log("%s: %s" % (hl.project.name, "followed (no checkout and no session here)" if follow else
+                                "held (a checkout or a session here)"))
+            elif not follow and machine is not None and machine["message"]["body"] != self.machine_sent.get(pid):
+                self.post([machine])
+                self.machine_sent[pid] = machine["message"]["body"]
 
     def bridged(self, pids):
         """{session: project id}: the members of these projects with a bridge
@@ -899,13 +978,15 @@ class Link:
             if now >= self.next_scan or nudged:
                 self.next_scan = now + SCAN_EVERY
                 sminos.forget_caches()
+                register_own(self.cred)
                 known = hub_projects(self.cred)
                 gone = sorted(self.opened - set(known))
                 if gone:
-                    # Its .smns no longer names a hub of this org (or names
-                    # another id): nothing more goes up, and a new stream,
-                    # which opens only what is eligible, takes it out of the
-                    # hub's fan-out to this machine.
+                    # The org's directory retired it (a revoked machine's
+                    # project): nothing more goes up, and a new stream, which
+                    # opens only what is eligible, takes it out of the hub's
+                    # fan-out to this machine (there is no frame that closes
+                    # one project; a revocation is rare enough for a reconnect).
                     raise EndStream("no longer a hub project of org %s here: %s" % (
                         self.cred["org"], ", ".join(self.logs[pid].project.name for pid in gone)))
                 for pid in sorted(set(known) - self.opened):
@@ -917,7 +998,7 @@ class Link:
                 # again, it answers with the designation as it is now.
                 self.next_confirm = now + every
                 if self.opened:
-                    self.post([self.logs[pid].hello() for pid in sorted(self.opened)])
+                    self.post([self.logs[pid].hello(self.follows.get(pid, False)) for pid in sorted(self.opened)])
             if now >= self.next_upload or nudged:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):

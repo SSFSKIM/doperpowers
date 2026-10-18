@@ -306,8 +306,15 @@ class HubLog:
 
     # ---------------------------------------------------- up
 
-    def hello(self):
-        return {"t": "hello", "project": self.project.id, "name": self.project.name, "have": self.vector()}
+    def hello(self, follow=False):
+        """DX2's `hello`; `follow` when this machine holds no checkout and no
+        session of the project and opens it only to read and deliver (the
+        org's directory): its lease then counts toward none of the project's
+        machines. Without it the machine holds the project."""
+        frame = {"t": "hello", "project": self.project.id, "name": self.project.name, "have": self.vector()}
+        if follow:
+            frame["follow"] = True
+        return frame
 
     def presence(self):
         """DX4's `machine` message for this project: online (the hub's word,
