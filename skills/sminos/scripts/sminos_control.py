@@ -190,7 +190,8 @@ def push_live(peer, session, text, event=None, project=None):
         if took is True:
             return
     sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
-    S.send_frame(S.socket_path_of(peer), text, sender, S.writer_session(event["writer"]) if event is not None else "")
+    S.send_frame(S.socket_path_of(peer), text, sender, S.writer_session(event["writer"]) if event is not None else "",
+                 project or "")
 
 
 # ------------------------------------------------------------------ the verbs

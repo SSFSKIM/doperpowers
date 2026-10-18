@@ -3869,18 +3869,20 @@ CLOSING_TAG_RE = re.compile("[%s](?!\\\\)(?=%s[%s]%s%s(?:[^A-Za-z0-9_\\-]|$))" %
 NAME_DROP = ("Cc", "Cf", "Cs", "Zl", "Zp")
 
 
-def reply_line(session):
+def reply_line(session, project=""):
     """The body's closing line for a peer's frame: how to answer the session
     that sent it, as a command a model that knows nothing of sminos can run
     (the CLI is not on PATH, so it is named by this install's path, which the
-    recipient shares: delivery is always on its own machine). `@<short>`
-    names the sender in the project's log on any machine; the envelope
-    carries no `from` address, so SendMessage has none to answer."""
-    return '[To reply, run in Bash: %s say "@%s <your reply>"]' % (
-        shlex.quote(os.path.join(SCRIPT_DIR, "sminos")), session[:8])
+    recipient shares: delivery is always on its own machine). The tag names
+    the sender by its short in the project whose log holds the message
+    (`@<project id>/<short>`), so a reply reaches it from any project and on
+    any machine; the envelope carries no `from` address, so SendMessage has
+    none to answer."""
+    return '[To reply, run in Bash: %s say "@%s%s <your reply>"]' % (
+        shlex.quote(os.path.join(SCRIPT_DIR, "sminos")), "%s/" % project if project else "", session[:8])
 
 
-def peer_envelope(text, sender="", reply_to=""):
+def peer_envelope(text, sender="", reply_to="", project=""):
     """The text wrapped as the engine's own SendMessage wraps a peer message
     (2.1.300 SPEC §38.23.1): `<cross-session-message from-name="…">`, the
     body, the closing tag. The receiving engine reads `from-name` into the
@@ -3891,24 +3893,25 @@ def peer_envelope(text, sender="", reply_to=""):
     answers with `sminos say`, which, given `reply_to` (the sending session),
     the body's last line spells out (reply_line)."""
     if reply_to:
-        text = "%s\n%s" % (text, reply_line(reply_to))
+        text = "%s\n%s" % (text, reply_line(reply_to, project))
     name = "".join(ch for ch in re.sub(r'["<>]', "", sender) if unicodedata.category(ch) not in NAME_DROP)
     name = name.strip()[:64].strip()  # the engine keeps 64 code points, trimmed
     body = CLOSING_TAG_RE.sub("<\\\\", text)
     return "<%s%s>\n%s\n</%s>" % (PEER_TAG, ' from-name="%s"' % name if name else "", body, PEER_TAG)
 
 
-def send_frame(path, text, sender="", reply_to=""):
+def send_frame(path, text, sender="", reply_to="", project=""):
     """Write one message frame to a session's inbox socket.
 
     The frame is a plain user message whose content is the text in the peer
     envelope (peer_envelope, naming `sender`, closed by how to answer the
-    session `reply_to` when a session sent it); the harness delivers it as a
+    session `reply_to` of the project `project` when a session sent it); the
+    harness delivers it as a
     peer message ("Another Claude session sent a message"), never as its
     user's words. Callers also put identity in the text's first line.
     Raises SendFailed(phase) — see the class.
     """
-    frame = {"type": "user", "message": {"role": "user", "content": peer_envelope(text, sender, reply_to)}}
+    frame = {"type": "user", "message": {"role": "user", "content": peer_envelope(text, sender, reply_to, project)}}
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:

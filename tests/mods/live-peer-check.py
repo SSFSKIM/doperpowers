@@ -9,7 +9,8 @@ What only a running engine shows, in a terminal session with the bridge mod:
   `from-name`), wrapped as the engine wraps a peer message, and no row
   carries it as the human's words; and the session, which has no sminos
   skill to read (its SKILL.md is left out of the plugin copy), answers the
-  peer through the reply line the frame closes with (`sminos say @<short>`),
+  peer through the reply line the frame closes with (`sminos say
+  @<project>/<short>`),
   recorded in the project's log;
 - a peer's `sminos say` during a running turn is read in that turn, at its
   next tool round;
@@ -176,7 +177,7 @@ class Peer(LB.Live):
         replies = [e for e in self.peer_log() if e.get("kind") == "say"
                    and str(e.get("writer", "")).endswith("/" + self.session)]
         self.check("the session, with no sminos context, answers the peer through the frame's reply line",
-                   texts and ('say "@%s <your reply>"]' % PEER_SID[:8]) in texts[0]
+                   texts and ('/%s <your reply>"]' % PEER_SID[:8]) in texts[0]
                    and any("PEACH" in str(e.get("text")) for e in replies),
                    "replies %s" % [(e.get("from"), e.get("text")) for e in replies])
         self.check("the pane draws it as a message from another session, not as a prompt",

@@ -528,7 +528,13 @@ session has a bridge, so the engine delivers it as a message from another Claude
    control characters and cut to 64 code points as the engine strips one, and a closing tag in
    the text escaped as the engine escapes one (`<\/cross-session-message`), so the envelope
    round-trips the engine's parser and `from-name` reaches the row's `origin.name`. No `from`
-   address: nothing could answer one, and a member replies with `sminos say`. No
+   address: nothing could answer one, and a member replies with `sminos say`. **[peer]**
+   For a session's event the body closes with one fixed line saying how, runnable by a
+   model that knows nothing of sminos (the CLI is not on PATH):
+   `[To reply, run in Bash: <this install's sminos path> say "@<project id>/<sender short> <your reply>"]`.
+   The tag names the sender in the project whose log holds the message, so the reply
+   reaches it from any project and machine. The owner's fallback frames and the steer's
+   carry no such line. Surfaces that draw the body drop this last line. No
    `from-mode`: sminos does not know the sender's permission mode, so a receiver that
    bypasses permission prompts holds the message for its user's approval
    (`no-mode-asserted`, §38.22.2) and every other receiver accepts it.

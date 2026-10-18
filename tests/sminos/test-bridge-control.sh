@@ -445,6 +445,10 @@ assert_equals "$(( SENDSEQ > SEQ ))" "1" "keyed by its own event"
 # bridge, but the inbox frame, in the engine's own peer envelope naming its
 # sender, so the engine delivers it as another session's.
 PEER_SID=5f000005-0000-4000-8000-0000000000c5
+P1="$(field_of "$(cat "$R/.smns")" project)"
+# The peer is a live member of the project (no inbox: it is reached as recorded).
+printf '{"pid":%s,"sessionId":"%s","name":"peerone","nameSource":"user","kind":"interactive","status":"busy","cwd":"%s"}\n' \
+  "$$" "$PEER_SID" "$R" > "$HOME/.claude/sessions/peerone.json"
 N="$(count_op "$T/lines-b" deliver)"
 set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" say "@rover from a peer session" 2>&1)"; RC=$?; set -e
 assert_rc 0 "$RC" "a peer's say to a bridged member exits 0"
@@ -453,11 +457,12 @@ assert_equals "$(count_op "$T/lines-b" deliver)" "$N" "and not through the bridg
 until_true 100 grep -q "from a peer session" "$T/rover-inbox" || true
 FRAME="$(grep "from a peer session" "$T/rover-inbox" | tail -1)"
 CONTENT="$(field_of "$FRAME" message.content)"
-assert_equals "$(head -1 <<<"$CONTENT")" '<cross-session-message from-name="session:5f000005">' \
+assert_equals "$(head -1 <<<"$CONTENT")" '<cross-session-message from-name="peerone">' \
   "but its inbox, in the engine's peer envelope naming the sender"
 assert_contains "$(sed -n 2p <<<"$CONTENT")" "[sminos chat ctldemo 5f000005:" "around the frame the bridge would have carried"
-assert_equals "$(tail -2 <<<"$CONTENT" | head -1)" "[To reply, run in Bash: $(cd "$(dirname "$SMINOS")" && pwd -P)/sminos say \"@5f000005 <your reply>\"]" \
-  "its last line says how to answer the sending session, with the CLI's path"
+REPLY_LINE="$(tail -2 <<<"$CONTENT" | head -1)"
+assert_equals "$REPLY_LINE" "[To reply, run in Bash: $(cd "$(dirname "$SMINOS")" && pwd -P)/sminos say \"@$P1/5f000005 <your reply>\"]" \
+  "its last line says how to answer the sending session: the CLI's path, the sender by project and short"
 assert_equals "$(tail -1 <<<"$CONTENT")" "</cross-session-message>" "closed"
 set +e; OUT="$(cd "$R" && CLAUDE_CODE_SESSION_ID="$PEER_SID" "$SMINOS" send rover "a peer's direct word" --from scout 2>&1)"; RC=$?; set -e
 assert_rc 0 "$RC" "a peer's send to a bridged member exits 0"
@@ -496,6 +501,16 @@ assert_equals "$(field_of "$(cat "$KEPT")" "delivered.$P2/testhost/human")" "$(f
   "and it was submitted: the child keeps the second project's mark"
 assert_not_contains "$OUT" "already delivered" "with no duplicate said"
 assert_equals "$([ -s "$T/rover-inbox" ] && echo framed || echo none)" "none" "and nothing went to the inbox socket"
+# The peer's reply line, run as written by the member from the second
+# project's directory, reaches the peer in the first project's log.
+REPLY_CMD="${REPLY_LINE#\[To reply, run in Bash: }"
+REPLY_CMD="${REPLY_CMD%\]}"
+REPLY_CMD="${REPLY_CMD/<your reply>/the answer}"
+set +e; OUT="$(cd "$R2" && CLAUDE_CODE_SESSION_ID="$SID" bash -c "$REPLY_CMD" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a peer frame's reply line runs as written, from another project"
+assert_contains "$OUT" "in ctldemo" "recorded in the sender's project"
+assert_contains "$OUT" "peerone: recorded" "addressed to the sender"
+rm -f "$HOME/.claude/sessions/peerone.json"
 printf '{"pid":%s,"sessionId":"%s","name":"rover","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$$" "$SID" "$R" "$INBOX" > "$HOME/.claude/sessions/rover.json"
 
