@@ -37,9 +37,7 @@ intake — here there is no verification table, but grounding still matters
 
 ## The Gate
 
-One criterion decides division, at every altitude — the same two checks as
-the board's ticket gate (doperpowers:issue-tracker
-`references/ticket-gate.md` is its board rendering):
+One criterion decides division, at every altitude — two checks:
 
 - **WELL-DEFINED** — every fork the work will hit has an owner or an
   answer: purpose stated, acceptance observable, load-bearing decisions
@@ -121,11 +119,10 @@ landed, closing the parent is a VERIFICATION event against that acceptance
 (integration seams, end-to-end behavior). Only then does the retrospective
 write.
 
-On the board that verification is a dispatch. When the last child goes
-terminal the parent RETURNS to `ready-for-architect` (`recomposition-due`)
-instead of closing — the only state an epic is dispatchable in — and an
-Architect issues the verdict. A non-code parent closes on its
-verification evidence directly. A code-bearing one — children that
+On the board, when the last child goes terminal the parent RETURNS to
+`ready-for-architect` (`recomposition-due`) instead of closing, and the
+session holding this composite issues the verdict. A non-code parent
+closes on its verification evidence directly. A code-bearing one — children that
 touched one executable surface, cross-child invariants, multi-repo
 composition, or a composite spec that marks review required — posts a closure
 package and goes to `in-review` for a SCALE REVIEW, whose clean verdict
@@ -142,7 +139,7 @@ outward-facing batch action — do not touch the board before approval.
 ## Upward Revision
 
 Children read the parent's current state at dispatch — the dispatch
-machinery stamps `parent-pin:` (the parent, plus a hash of the parent's
+stamps `parent-pin:` (the parent, plus a hash of the parent's
 body as the child received it) into the child
 so "what contract did this child execute" is always answerable. A child
 revises its own means freely — and overturning advisory inheritance is
@@ -150,13 +147,12 @@ revising means: the child records the overturn itself as a dated
 Decision Log entry on the parent (evidence in a line) and moves on, no
 reconciliation. Discovery that touches a parent-owned end — purpose,
 acceptance, a cross-child contract, an edge, a BINDING design decision,
-the division itself — becomes a `[parent-impact]` comment on the child's
-own ticket (evidence + affected clauses; binding content the child
-never edits). The sweep returns the parent to `ready-for-architect`
-(`reconciliation-due`); the reconciling Architect judges materiality,
-updates the parent's record, and flags affected in-flight
+the division itself — goes back to the session holding this composite,
+in the child's escalation or report (evidence + affected clauses;
+binding content the child never edits). That session judges
+materiality, updates the parent's record, and flags affected in-flight
 children. Purpose changes and material acceptance reductions go to the
-human. At final recomposition the Architect runs the lineage check:
+human. At final recomposition it runs the lineage check:
 every child's pin against the final parent revision — incorporated,
 explicitly irrelevant, or a corrective child.
 
@@ -205,18 +201,14 @@ share no design surface, so there was nothing to mature jointly; phases
    approval opens phase 6. (A design already approved in brainstorming
    needs their eyes only on what this run added — the cut, the grades,
    the contracts.)
-6. **Materialize onto the board (optional)** — when the project runs the
-   board pipeline: children as tickets with typed edges via
+6. **Materialize onto the board (optional)** — when the project keeps its
+   backlog on the board: children as tickets with typed edges via
    doperpowers:issue-tracker scripts, bodies fleshed to the pre-spec bar
    and citing this composite spec (path + child id). Deferred entries that
    are real work may register as parked tickets citing this composite spec, so
    overflow from the design session keeps a durable home beyond the
    Deferred list. Skip for document-only
-   projects — the tracking map is the handoff contract either way. (A
-   dispatched worker that finds its ticket gate-failing on scope runs this
-   same division at board altitude — doperpowers:issue-tracker's
-   `references/implement-decompose.md` is this skill's move in worker
-   clothes.)
+   projects — the tracking map is the handoff contract either way.
 7. **Dispatch and tend** — children go to their routes per their grain
    hint, each carrying its section as pre-landed design and writing no
    spec of its own: a brief child implements against its section and a
@@ -231,8 +223,7 @@ share no design surface, so there was nothing to mature jointly; phases
    parent pin), carries the brief verbatim, and then Progress as
    deliverables land, in-flight Decisions with their rationale, Surprises,
    and the flow-back raised; its outcome section, written at close, is
-   the child's retrospective and the Tracking Map points at it. On a board
-   the ticket timeline and the PR body are that ledger. Residue rulings a
+   the child's retrospective and the Tracking Map points at it. Residue rulings a
    leaf makes land in this Decision Log under the child's id — by the
    parent's one writer when siblings run at once (below). As children
    land, the tracking map, Decision Log, and Surprises stay current; when
@@ -252,13 +243,12 @@ Each child section of the composite spec fixes:
 - **Design inheritance** — the parent design content that bears on this
   child, each piece carrying its authority grade;
 - **Grain hint** — brief (the section plus a dispatch brief is the
-  whole contract; the board's DIRECT mode), plan (a standalone execution
-  document at milestone grain — the spec's execution section on its own,
-  per doperpowers:execspec's references/living-spec.md; the board's
-  PLAN-EXECUTION), spike (deliverable is findings, never a merge), or
-  another decomposing run at dispatch. Every child's executor is a fresh
-  context — a subagent, a daemon, a board worker — so the hint names the
-  grain of the brief, never who runs it.
+  whole contract), plan (a standalone execution document at milestone
+  grain — the spec's execution section on its own, per
+  doperpowers:execspec's references/living-spec.md), spike (deliverable
+  is findings, never a merge), or another decomposing run at dispatch.
+  Every child's executor is a fresh context, so the hint names the grain
+  of the brief, never who runs it.
 
 Everything the parent hands a child carries one of two authority
 grades:

@@ -17,7 +17,7 @@ A blockquote declaring:
   post-v1 revision lands in the Decision Log, dated, with a reason. This
   is the selective transplant of living-spec discipline (execspec's
   references/living-spec.md) to umbrella scale: acceptance as observable
-  behavior, the record — but NO Concrete Steps. A delegated epic's Architect derives its plan from this
+  behavior, the record — but NO Concrete Steps. Whoever takes an epic derives its plan from this
   document.
 - **Evidence sources** — the observation note (origin, date), the grill
   session (date, question range), the code explorations run.
