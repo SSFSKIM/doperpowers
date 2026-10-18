@@ -883,19 +883,29 @@ def seat_project(seat):
     seat record is the explicit registration automatic discovery never makes.
     A record with no cwd at all (written by hand, or before cwd was recorded)
     belongs to the local project named after its group, so it stays in view.
-    The recorded cwd is where its spawner launched it (session_project; a
-    seat cannot join elsewhere)."""
+    Its directory is its session's launch directory (seat_cwd: where the
+    engine last moved it, the recorded cwd until its transcript names one);
+    a seat cannot join elsewhere."""
     if not seat:
         return None
     cwd = str(seat.get("cwd") or "")
     if not cwd:
         name = safe_name(str(seat.get("group") or "")) or "fleet"
         return make_project("local-" + name, name, "", "")
-    project = session_project(str(seat.get("current") or ""), cwd)
+    project = session_project(str(seat.get("current") or ""), seat_cwd(seat))
     if project is None:
         name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
         project = make_project("local-" + name, name, "", os.path.abspath(cwd))
     return project
+
+
+def seat_cwd(seat):
+    """The directory a seat's session runs in, as a session's: its launch
+    directory (launch_cwd), the seat's recorded cwd — where its spawner
+    launched it — standing in until the transcript names one."""
+    cwd = str(seat.get("cwd") or "")
+    sid = str(seat.get("current") or "")
+    return launch_cwd(sid, fallback=cwd) if sid and cwd else cwd
 
 
 def write_json(path, data, mode=0o600):
@@ -1042,8 +1052,8 @@ def caller_project(caller=None):
 # Ahead of the directory stands the session's join override (`sminos join`).
 # Design: docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md §1c, §7.
 
-LAUNCH_HEAD = 1 << 16    # the engine reads a session's first cwd within this much of its transcript's start
-LAUNCH_REACH = 1 << 20   # and its relocated row near the end; read wider than its 64 KiB
+LAUNCH_REACH = 1 << 20   # the engine keeps a session's relocated row near the end; read wider than its 64 KiB
+FIRST_ROWS = 1000        # the rows read for the first cwd (the engine writes it in its first few)
 _LAUNCH = {}             # session → {"transcript", "size", "launch"}, as cached under launch/
 
 
@@ -1075,12 +1085,17 @@ def _relocated_in(f, start, end):
 
 
 def _first_cwd(f):
-    """The cwd of a transcript's first row that carries one, or ""."""
+    """The top-level cwd of a transcript's first whole row that carries one,
+    or "" before one is written. Each row is read to its end, however long
+    (a first prompt can be a long paste): a row cut short at a read boundary
+    would not parse, and the caller's current directory would stand in for
+    a launch directory the transcript does hold. Rows ahead of it (the
+    engine's mode and snapshot rows) are a few; FIRST_ROWS bounds the look."""
     f.seek(0)
-    data = f.read(LAUNCH_HEAD)
-    if len(data) == LAUNCH_HEAD and b'"cwd"' not in data:
-        data += f.read(LAUNCH_REACH - LAUNCH_HEAD)
-    for line in data.split(b"\n"):   # a line the read cut short does not parse
+    for _ in range(FIRST_ROWS):
+        line = f.readline()
+        if not line.endswith(b"\n"):
+            return ""   # none yet, or the row being written
         if b'"cwd"' in line:
             r = _record(line) or {}
             if isinstance(r.get("cwd"), str) and r["cwd"]:
@@ -1671,7 +1686,7 @@ def join_seat(seat, by=""):
         return []
     return lifecycle(seat_project(seat), seat["current"], "joined",
                      guard=lambda evs: latest_membership(evs) != "joined",
-                     **joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"],
+                     **joined_fields(seat["alias"], "seat", seat_cwd(seat), seat["worktree"], seat["role"],
                                      seat["seat_id"], by, "seat"))
 
 
@@ -1744,7 +1759,8 @@ def _reconcile(project, events, local, by_session):
     removed, a seat's directory resolves elsewhere — is retired here, reason
     `moved`, naming the project it moved to; that project's reconciliation
     joins it (§1a). One may join before the other retires: a dual membership
-    of one tick."""
+    of one tick. A member the engine relocated within the project is joined
+    again where it runs now (refresh_joined)."""
     latest, joined = {}, {}
     for e in events:
         if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
@@ -1778,6 +1794,8 @@ def _reconcile(project, events, local, by_session):
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
         if (latest.get(sid) == "joined") if peer else (sid in latest):
+            if latest.get(sid) == "joined":
+                out += refresh_joined(project, sid, joined[sid])
             continue
         out += join_on_sight(project, sid, seat, peer, bool(peer),
                              recheck=None if seat or not peer else lambda peer=peer: record_project(peer))
@@ -1805,6 +1823,34 @@ def retire_moved(project, sid, where, recheck=None):
         return now_in is not None and now_in.id == where.id
 
     return lifecycle(project, sid, "retired", guard=guard, required=False, by="", reason="moved", project=where.id)
+
+
+def refresh_joined(project, sid, last):
+    """A member the engine relocated within this project (EnterWorktree, an
+    exit from one, a `/cd` inside the repository) is joined again where it
+    runs now: `joined` with `relocated: true`, its alias and the rest as its
+    last `joined` had them, `by` empty, `cwd` (and repo, branch) the launch
+    directory — the one Resume and known_checkouts read, whose old value may
+    name a directory since removed. Written only when the transcript names a
+    launch directory other than the last joined's `cwd`, checked again under
+    the session file's lock, so it is one event per relocation, never one per
+    tick."""
+    launch = launch_cwd(sid)   # the transcript's; nothing where it names none
+    if not launch or launch == str(last.get("cwd") or ""):
+        return []
+
+    def guard(evs):
+        if latest_membership(evs) != "joined":
+            return False
+        j = next((e for e in reversed(evs) if e["kind"] == "joined"), None)
+        return j is not None and str(j.get("cwd") or "") != launch
+
+    alias, source = own_alias(_own_events(project, sid), sid)
+    fields = joined_fields(alias or str(last.get("alias") or sid[:8]),
+                           source or str(last.get("name_source") or "derived"), launch,
+                           str(last.get("worktree") or ""), str(last.get("role") or ""), str(last.get("seat") or ""),
+                           "", str(last.get("session_kind") or ""))
+    return lifecycle(project, sid, "joined", guard=guard, required=False, relocated=True, **fields)
 
 
 def moved_here(project, sid):
@@ -1914,8 +1960,8 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None):
     if by is None:
         by = "move" if moved_here(project, sid) else ""
     if seat:
-        fields = joined_fields(seat["alias"], "seat", seat["cwd"], seat["worktree"], seat["role"], seat["seat_id"],
-                               by, "seat")
+        fields = joined_fields(seat["alias"], "seat", seat_cwd(seat), seat["worktree"], seat["role"],
+                               seat["seat_id"], by, "seat")
     else:
         held = own_alias(_own_events(project, sid), sid)
         if str(peer.get("kind") or "") == "bg" and not held[0]:
@@ -5964,7 +6010,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     if not s["current"]:
         raise ResumeRefused("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
-    cwd = os.path.abspath(os.path.expanduser(s["cwd"]))
+    # Where the engine keeps its session now (a /cd or EnterWorktree moved it), else where it was spawned.
+    cwd = os.path.abspath(os.path.expanduser(seat_cwd(s)))
     if not os.path.isdir(cwd):
         raise ResumeRefused("resume of %s/%s: cwd does not exist or is not a directory: %s" % (
             s["group"], s["alias"], cwd), EXIT_USAGE)

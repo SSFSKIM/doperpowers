@@ -4483,6 +4483,15 @@ done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$REPO_ROOT/skills/sminos/scripts
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "machine project id parity: ${line#ok }" ;; *) fail "machine project id parity: ${line#FAIL }" ;; esac
 done < <(python3 "$SCRIPT_DIR/machine_project_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/machine-project-id.json" 2>&1)
+# The installed engine still stamps and reads `relocated` as launch_cwd reads
+# it (engine_relocated_shape.py); where no engine is installed (CI) it says SKIP.
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*) pass "engine relocated shape: ${line#ok }" ;;
+    "SKIP "*) echo "  skip engine relocated shape: ${line#SKIP }" ;;
+    *) fail "engine relocated shape: ${line#FAIL }" ;;
+  esac
+done < <(python3 "$SCRIPT_DIR/engine_relocated_shape.py" 2>&1)
 
 # Transcript records as the harness stores them (the shapes the ask design and
 # a live 2.1.296 transcript record).

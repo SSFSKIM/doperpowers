@@ -109,8 +109,8 @@ elif cmd == "code":  # hub token machine key
     print("smns-enroll-v1." + base64.urlsafe_b64encode(body).rstrip(b"=").decode())
 elif cmd == "state":  # a python expression over the state, d
     print(json.dumps(eval(args[0], {"d": call("GET", "/control/state")[1], "json": json})))
-elif cmd == "register":  # project name
-    call("POST", "/control/register", {"project": args[0], "name": args[1]})
+elif cmd == "register":  # project name [kind]
+    call("POST", "/control/register", {"project": args[0], "name": args[1], "kind": (args[2:] or ["hub"])[0]})
 elif cmd == "retire":  # project true|false
     call("POST", "/control/retire", {"project": args[0], "retired": args[1] == "true"})
 PY
@@ -262,6 +262,78 @@ printf '{"type":"user","uuid":"s3-u9","isSidechain":false,"cwd":"%s","message":{
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
 assert_equals "$(members_of other)" "s3" "a transcript's latest relocated row names the session's directory (/cd, EnterWorktree)"
 assert_equals "$(events_of "$OPID" "$S3")" "joined - - - $OR" "and its joined carries that directory"
+S14=1a000014-0000-4000-8000-000000000014
+assert_equals "$(python3 - "$S14" "$B3" "$HOME/.claude/projects/p-$S14/$S14.jsonl" <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+sid, launch, tx = sys.argv[1:4]
+os.makedirs(os.path.dirname(tx), exist_ok=True)
+with open(tx, "w") as f:   # a first row past 64 KiB, its cwd near its start: a long pasted prompt
+    f.write(json.dumps({"type": "user", "cwd": launch, "sessionId": sid,
+                        "message": {"role": "user", "content": "x" * 70000}}) + "\n")
+print(sminos.launch_cwd(sid, fallback="/current"))
+PY
+)" "$B3" "a first row longer than 64 KiB is read to its end for its cwd, never the current directory"
+assert_equals "$(python3 - "$S14" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+tx = sminos.transcript_path(sys.argv[1])
+with open(tx, "w") as f:   # a row still being written: no row yet
+    f.write('{"type": "user", "cwd": "/launch", "mess')
+if os.path.exists(sminos.launch_cache_path(sys.argv[1])):
+    os.unlink(sminos.launch_cache_path(sys.argv[1]))
+print(sminos.launch_cwd(sys.argv[1], fallback="/current"))
+PY
+)" "/current" "only before a whole row exists does the current directory stand in"
+
+echo "a seat the engine relocated:"
+SEAT2=1a000015-0000-4000-8000-000000000015
+run_in "$B3" "$SMINOS" seat add crew mover --session "$SEAT2"
+live_pid
+session_record mover "$SEAT2" "$LIVE_PID" "$B3"
+transcript "$SEAT2" "$B3"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+assert_contains " $(members_of alpha) " " mover " "a seat launched in a bare directory is in the machine project"
+printf '{"type":"relocated","sessionId":"%s","relocatedCwd":"%s"}\n' "$SEAT2" "$B2" >> "$TX"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+assert_not_contains " $(members_of alpha) " " mover " "relocated into another project, the seat leaves its spawn directory's project"
+assert_contains " $(members_of bare2) " " mover " "and is a member of the project its session now runs in, as its engine record is"
+assert_equals "$(events_of "$B2PID" "$SEAT2" | tail -1)" "joined - - move $B2" "joined there with the relocated directory"
+
+echo "a session relocated within its project (a worktree):"
+WR="$T/a/wtp"
+gitq init -q "$WR"
+write_smns "$WR" wtp
+WPID="$(smns_id "$WR")"
+gitq -C "$WR" add .smns
+gitq -C "$WR" commit -q -m smns
+gitq -C "$WR" worktree add -q -b one "$WR/.claude/worktrees/one"
+gitq -C "$WR" worktree add -q -b two "$WR/.claude/worktrees/two"
+S13=1a000013-0000-4000-8000-000000000013
+live_pid
+session_record s13 "$S13" "$LIVE_PID" "$WR/.claude/worktrees/one"
+transcript "$S13" "$WR/.claude/worktrees/one"
+S13_TX=$TX
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+assert_equals "$(events_of "$WPID" "$S13")" "joined - - - $WR/.claude/worktrees/one" "a session launched in a worktree joins with the worktree"
+printf '{"type":"relocated","sessionId":"%s","relocatedCwd":"%s"}\n' "$S13" "$WR" >> "$S13_TX"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+assert_equals "$(events_of "$WPID" "$S13" | tail -1)" "joined - - - $WR" \
+  "leaving the worktree (the engine relocates it) refreshes its joined directory, in the same project"
+gitq -C "$WR" worktree remove --force "$WR/.claude/worktrees/one"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+run_in "$WR" "$SMINOS" list --json
+assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print([r["cwd"] for r in json.load(sys.stdin) if r["alias"] == "s13"])')" "['$WR']" \
+  "with its former directory removed, its row names the directory Resume can use"
+printf '{"type":"relocated","sessionId":"%s","relocatedCwd":"%s"}\n' "$S13" "$WR/.claude/worktrees/two" >> "$S13_TX"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+assert_equals "$(events_of "$WPID" "$S13")" "joined - - - $WR/.claude/worktrees/one
+joined - - - $WR
+joined - - - $WR/.claude/worktrees/two" "entering another worktree refreshes it again: one event per relocation, never per tick, never a move"
 
 echo "sminos join:"
 run_in "$R" "$SMINOS" join other
@@ -402,8 +474,13 @@ alpha_follows && pass "while alpha keeps following the old project" || fail "whi
 
 FY=0f0f0f0f-2222-4222-8333-444455556666
 ctl register "$FY" followed-y
-fy_known() { [ -s "$SMINOS_HOME/projects/$FY/project.json" ]; }
-until_true fy_known || true
+# A machine project whose machine is not enrolled (a revoked one's): the
+# stand-in reactivates a retired machine project while its machine is active.
+GHP="$(mp_of ghost)"
+ctl register "$GHP" ghost machine
+known_here() { [ -s "$SMINOS_HOME/projects/$1/project.json" ]; }
+until_true known_here "$FY" || true
+until_true known_here "$GHP" || true
 S12=1a000012-0000-4000-8000-000000000012
 B12="$T/a/bare12"
 mkdir -p "$B12"
@@ -413,9 +490,17 @@ transcript "$S12" "$B12"
 run_in "$T/x" in_session "$S12" "$SMINOS" join followed-y
 assert_rc 0 "$RC" "join a project alpha only follows"
 assert_equals "$(events_of "$FY" "$S12")" "joined - - join $B12" "joined there"
+# Both retired at once: each retirement ends alpha's stream and reopens it
+# without the project, so one reconnect, not two, stands between them and org.json.
 ctl retire "$FY" true
-fy_retired() { grep -q '"retired": true' "$SMINOS_HOME/daemon/org.json" 2>/dev/null; }
-until_true fy_retired || true
+ctl retire "$GHP" true
+retired_here() { python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if all(any(p["id"] == i and p.get("retired") for p in d["projects"]) for i in sys.argv[2:]) else 1)' \
+  "$SMINOS_HOME/daemon/org.json" "$@" 2>/dev/null; }
+until_true retired_here "$FY" "$GHP" || true
+retired_here "$FY" "$GHP" && pass "the org frame marking both retired reaches alpha's org.json" \
+  || fail "the org frame marking both retired reaches alpha's org.json"
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
 assert_equals "$(events_of "$FY" "$S12" | tail -1)" "retired moved $AMP - -" \
   "once the org frame retires its target, the next tick moves the session back to its directory's project"
@@ -425,13 +510,7 @@ assert_contains "$(cat "$SMINOS_HOME/daemon.log")" "${S12:0:8}" "with a daemon.l
 run_in "$T/x" in_session "$S12" "$SMINOS" join followed-y
 assert_rc 1 "$RC" "join of a retired project is refused"
 assert_contains "$OUT" "retired" "saying it is retired"
-THP="$(mp_of testhost)"
-ctl retire "$THP" true
-th_retired() { python3 -c 'import json, sys
-d = json.load(open(sys.argv[1]))
-sys.exit(0 if any(p["id"] == sys.argv[2] and p.get("retired") for p in d["projects"]) else 1)' "$SMINOS_HOME/daemon/org.json" "$THP"; }
-until_true th_retired || true
-run_in "$T/x" in_session "$S12" "$SMINOS" join testhost
+run_in "$T/x" in_session "$S12" "$SMINOS" join ghost
 assert_rc 1 "$RC" "join of a retired machine project is refused"
 assert_contains "$OUT" "retired" "saying why"
 
