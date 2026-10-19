@@ -304,6 +304,25 @@ import sminos
 print(" ".join("%s|%s|%s" % (t["project"], t["name"], t["short"]) for t in sminos.leading_tags(sys.argv[2])))
 PY
 )" "team proj|peer-q|" "and the tag parses back to its project and name"
+ME3=f8000f08-0000-4000-8000-0000000000f8   # continues OLD3 (a hand-off only teamproj's log holds), since joined otherproj
+OLD3=f9000f09-0000-4000-8000-0000000000f9
+P=fa000f0a-0000-4000-8000-0000000000fa     # in otherproj; OLD3 wrote it from teamproj
+record me3 "$ME3" "$REPO"
+transcript "$ME3" "$REPO"
+ME3_TX="$TX"
+member "$REPO" "$OLD3" me3 alpha 60
+member "$OTHER" "$P" peer-p beta 60
+# OLD3's message into otherproj (its writer's first event there: seq 1), and its copy in teamproj's log.
+say "$OTHER" "alpha/$OLD3" "[{\"session\":\"$P\",\"alias\":\"peer-p\"}]" me3 30 "\"from_project\":\"$REPO_ID\""
+say "$REPO" "alpha/$OLD3" "[{\"session\":\"$P\",\"alias\":\"peer-p\",\"project\":\"$OTHER_ID\"}]" me3 30 \
+  "\"copy\":\"$OTHER_ID:alpha/$OLD3:1\""
+emit "$REPO" "alpha/$OLD3" retired "{\"session\":\"$OLD3\",\"reason\":\"continued\",\"to\":\"$ME3\"}" 20
+member "$REPO" "$ME3" me3 alpha 20
+(cd "$REPO" && CLAUDE_CODE_SESSION_ID=$ME3 "$SMINOS" join otherproj >/dev/null 2>&1)
+guide "$(payload "$ME3" "$REPO" "$ME3_TX" | sed 's/"startup"/"compact"/')"
+roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
+assert_contains "$(head -1 <<<"$OUT")" "project otherproj" "me3 is in otherproj by its join, whose log does not hold its hand-off"
+assert_contains "$(line peer-p)" "you wrote it" "a message the session it continues sent there counts, read off the copy at home"
 
 echo "nothing for an internal fork, or a payload naming no session:"
 OUT="$(printf '%s' "$(payload "$S1" "$STRAY" "$TX")" | SMNS_INTERNAL=1 "$SMINOS" guide 2>&1)"

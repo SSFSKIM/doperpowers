@@ -7993,16 +7993,19 @@ def _roster_exchanges(session, projects):
             sender = writer_session(e["writer"])
             if "copy" in e and sender not in mine:
                 continue   # a copy counts only as the session's own message out; a peer's would hide its delivery
+            # Seen only once counted: a log that does not hold a hand-off reads
+            # the session it continues as a stranger, and another log may not.
             ref = str(e.get("copy") or "%s:%s:%d" % (p.id, e["writer"], e["seq"]))
             if ref in seen:
                 continue
-            seen.add(ref)
             to = [r for r in to if isinstance(r, dict) and UUID_RE.match(str(r.get("session") or ""))]
             if sender in mine:
+                seen.add(ref)
                 for r in to:
                     if r["session"] not in mine:
                         note((str(r.get("project") or p.id), r["session"]), "out", e["ts"], str(r.get("alias") or ""))
             elif sender and any(r["session"] in mine for r in to):
+                seen.add(ref)
                 note((str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
     return out
 
