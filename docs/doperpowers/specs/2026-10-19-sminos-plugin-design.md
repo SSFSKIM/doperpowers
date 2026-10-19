@@ -71,7 +71,8 @@ reload still run.
       holding back a failed dependency's closure and every reload that would load a plugin over a
       missing dependency (doperpowers 7.189.7, to-human 0.1.2). Reviewed clean: task review (opus)
       and branch review (reviewer-high on fable), two fix waves (Decision Log, M1 review and fix
-      waves); its PR and merge are recorded with M3.
+      waves). PR https://github.com/SSFSKIM/doperpowers/pull/281, merge 359c71a6 (ci-gate GREEN,
+      run 39303896510).
 - [ ] M3 — The carve-out and the rename, opened by the `next.trace` spike (M3a), rehearsed on a local
       git remote.
 - [ ] M4 — The roll and each machine's migration (owner steps).
@@ -1562,6 +1563,21 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   held reload, which holds every reload on the machine, was said only in the debug log, unseen on the
   unattended Mac mini.
   Date/Author: 2026-10-19, M1's fixer, folded by the plan's executor.
+
+- Decision (M3's execution): M3 stays one milestone, one branch and one release, built by three
+  executors in sequence on `sminos-m3-carveout`, each task-reviewed before the next: M3.1 the
+  carve-out and the rename (everything M3 touches but the bridge's probe and the rehearsal — the
+  moves, the sminos plugin's files, `ASK_TOOL` and `PLUGIN`, the `sminos.ask` channel with its
+  shape-1 fallback, appeal's and reload's reads and appeal's fake-guard case, the compact → bridge
+  path, the shim, `installed_cli`, the service templates and `sminos_host.py`, the board resolver and
+  templates, the manifests, the gates, the versions, the agents, the output style and the
+  documents; proved by A8's suites, both validates and ci-gate); M3.2 the bridge's probe (§4 as
+  amended); M3.3 the rehearsal and the live acceptance in the rehearsal's HOME (A1, A2's
+  blocking-dialog clause, A5, A8's rehearsal half), changing code only to fix what it finds. The
+  xhigh panel reviews the whole PR once it is gated green.
+  Rationale: M3 is several times any other milestone; the probe is separable code with its own case
+  table, and the rehearsal is live, slot-bound, and needs the built release to roll onto.
+  Date/Author: 2026-10-19, the plan's executor.
 
 ## Outcomes & Retrospective
 
