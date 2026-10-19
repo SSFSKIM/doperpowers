@@ -1134,8 +1134,26 @@ const STORED_FORMS = [
   `"content":${JSON.stringify(PLUGIN_PROMPT + DELIVERY_HEAD).slice(0, -1)}`,
 ]
 
-/** The search for the stored forms in the transcript at `path`. */
+/**
+ * Prints each line holding one of the forms, as `grep -F` does, its exit code
+ * grep's: 0 lines found, 1 none, 2 the file unreadable. Every form is one
+ * literal of a single alternation, which perl matches in one pass.
+ */
+const SEARCH =
+  'my $path = pop @ARGV; my $re = join "|", map { quotemeta } @ARGV; open(my $fh, "<", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /$re/o) { print $line; $found = 1 } } exit($found ? 0 : 1);'
+
+/**
+ * The search for the stored forms in the transcript at `path`. Not grep: the
+ * macOS one slows with each `-e`, and on a transcript of 144 MiB took 7 s
+ * for these five where perl takes 0.3 s (2026-10-19), while a resumed
+ * session's questions waited for it.
+ */
 export function searchArgs(path: string): string[] {
+  return ['perl', '-e', SEARCH, '--', ...STORED_FORMS, path]
+}
+
+/** The same search through grep, on a host where perl does not start. */
+export function grepArgs(path: string): string[] {
   return ['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path]
 }
 
@@ -1157,16 +1175,16 @@ async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
     }
     let search: Awaited<ReturnType<typeof $.process.run>>
     try {
-      search = await $.process.run(searchArgs(path))
+      search = await $.process.run(searchArgs(path)).catch(() => $.process.run(grepArgs(path)))
     } catch (searchError) {
       return failed(`could not be searched (${message(searchError)})`)
     }
-    // grep: 0 lines found, 1 none, anything else a failure.
+    // 0 lines found, 1 none, anything else a failure.
     if (search.exitCode === 1) {
       return []
     }
     if (search.exitCode !== 0) {
-      return failed(`could not be searched (grep exited ${search.exitCode})`)
+      return failed(`could not be searched (the search exited ${search.exitCode})`)
     }
     if (search.isStdoutTruncated === true) {
       return failed('its asks run past what one search returns')

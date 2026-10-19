@@ -1301,8 +1301,25 @@ describe('a resumed session', () => {
     await h.classicStart(T, 's', 'resume')
     expect(asyncAsks().length).toBe(2)
     const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
-    expect(argv[0]).toBe('grep')
+    expect(argv[0]).toBe('perl')
     expect(argv.at(-1)).toBe(T)
+  })
+
+  test('where perl does not start, grep searches for the same forms', async () => {
+    const h = harness({
+      run: async (argv) => {
+        if (argv[0] === 'perl') {
+          throw new Error('perl: command not found')
+        }
+        return { exitCode: 0, stdout: lines.join('\n'), isStdoutTruncated: false }
+      },
+    })
+    await h.start()
+    await h.classicStart(T, 's', 'resume')
+    expect(asyncAsks().length).toBe(2)
+    const [perl, grep] = h.calls.filter((c) => c.op === 'process.run').map((c) => c.args as string[])
+    expect(grep?.[0]).toBe('grep')
+    expect(grep?.filter((_, i) => grep[i - 1] === '-e')).toEqual(perl?.slice(perl.indexOf('--') + 1, -1))
   })
 
   test('the search patterns find exactly the stored forms resume reads', async () => {
@@ -1310,7 +1327,7 @@ describe('a resumed session', () => {
     await h.start()
     await h.classicStart(T, 's', 'resume')
     const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
-    const patterns = argv.filter((_, i) => argv[i - 1] === '-e')
+    const patterns = argv.slice(argv.indexOf('--') + 1, -1)
     const plugin = line({ type: 'user', message: { role: 'user', content: `The doperpowers plugin sent a message:\n${deliveryText('t-open', ANSWER)}` } })
     const human = line({ type: 'user', message: { role: 'user', content: `see ${deliveryText('t-open', ANSWER)}` } })
     const snapshot = line({ type: 'attachment', attachment: { type: 'prompt_snapshot', tools: [{ name: ASK_TOOL, description: 'd' }] } })

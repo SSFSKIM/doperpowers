@@ -485,9 +485,11 @@ result is the async one and whose input is valid is an ask; it reads answered
 when a row the model read names its call in a delivery (a context attachment,
 a prompt the plugin submitted, known by the engine's framing; never the
 human's own prompt quoting one), else open. A transcript over the 4 MiB a
-read takes is searched with `grep` for the stored forms resume reads; a search
-that fails, or whose output is cut at the same 4 MiB, rebuilds nothing, with a
-debug-log line. `/clear` forgets the asks; a compaction keeps them.
+read takes is searched for the stored forms resume reads, by one `perl` pass
+(macOS's `grep` slows with each pattern: 7 s against 0.3 s on a transcript of
+144 MiB), or by `grep` where perl does not start; a search that fails, or
+whose output is cut at the same 4 MiB, rebuilds nothing, with a debug-log
+line. `/clear` forgets the asks; a compaction keeps them.
 
 Known limits: a tool already running in parallel with the ask when the human
 declines it finishes, where the built-in's abort would cut it; the refusal
