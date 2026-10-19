@@ -232,9 +232,10 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
 
   /**
    * The machine's fetch is installing and updating a batch of plugins: the
-   * file moves at each, maybe more than a period apart, and a reload in
-   * between would load the batch half applied. A lock past its stale age
-   * was left by a session that died holding it.
+   * file moves at each, maybe more than a period apart, and a reload at each
+   * gap would reload every idle session again, and load what is not yet
+   * updated of the batch. A lock past its stale age was left by a session
+   * that died holding it.
    */
   async function isFetching(): Promise<boolean> {
     try {

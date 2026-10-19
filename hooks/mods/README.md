@@ -896,9 +896,9 @@ plugin those manifests depend on that is not installed (a name without
 applies nothing, with a debug line, and since the versions still differ the
 next fetch tries again. The watch then reloads every session on the machine,
 once: a reload waits while the fetch holds its lock, so a batch whose
-installs and updates land more than a period apart is not loaded half
-applied. A release that moves mods into a new plugin that another comes
-to depend on thus lands whole.
+installs and updates land more than a period apart is not reloaded at each.
+A release that moves mods into a new plugin that another comes to depend on
+thus lands whole: the new plugin is installed before anything reloads.
 Each session looks once a minute whether the machine's fetch is due:
 `~/.claude/autoreload/fetch.stamp` is older than 5 minutes, and the lock
 directory beside it (`fetch.lock`, made with `mkdir`) is free. The lock
