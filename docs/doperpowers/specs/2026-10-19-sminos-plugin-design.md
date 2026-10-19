@@ -871,8 +871,8 @@ per name and per framing so a transcript over 4 MiB is still found by `grep -F` 
 record export's Python mirrors the TypeScript sets. The reload mod's step is triggered by a version
 difference between `installed_plugins.json` and the clone's manifests (the marketplace's `source`
 paths in the clone's `.claude-plugin/marketplace.json`), installs with the engine's CLI as it updates
-with it, and treats a refusal as "this fetch applies nothing", logged, acted on again at the next
-fetch because the difference remains.
+with it, and treats a refusal as holding back the plugins whose dependency chain reaches it, logged,
+acted on again at the next fetch because the difference remains (Decision Log, M1 review).
 
 **What it does not touch.** No file moves; no manifest, gate or document changes beyond the
 version bump.
@@ -882,8 +882,9 @@ whose delivery carries the new framing, and the reverse, each rebuilt as one ope
 `asksIn`, and the same pair rebuilt by `historyAsks` from a fake `$.session.messages()`; to-human's
 `promptRow` reads both framings as the person's answer; `sminos record` exports a `question` and
 `answered` from each. The reload mod: a fake clone whose to-human manifest names a dependency not
-installed makes the mod install it before `plugin update`; a failing install applies nothing and the
-next fetch, the head unchanged but the version still behind, tries again; a clone whose head is
+installed makes the mod install it before `plugin update`; a failing install holds back the plugins
+whose chain reaches it, and the next fetch, the head unchanged but the version still behind, tries
+again; a reload is held while what it would load lacks a dependency; a clone whose head is
 unchanged and whose versions match applies nothing. `tests/mods/run-mods-tests.sh`,
 `to-human/tests/mods/run.sh`, `tests/sminos/run-sminos-tests.sh` green; `ci-gate` GREEN.
 
@@ -1491,9 +1492,10 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   whose recorded version differs from its clone manifest's (`plugin.json` at the entry's string
   `source`); a plugin with no such manifest version (a url source like ci-kit) updates only on a
   moved head, as before. Before the batch it installs every dependency the enabled plugins' clone
-  manifests name that has no user or managed record; a failed install applies nothing and the next
-  fetch retries. Every session's reloader holds while the machine's `fetch.lock` is fresh, so a
-  batch of installs and updates reloads once at its end. `hooks/mods/README.md`'s reload section
+  manifests name that has no user or managed record (superseded in part by the two entries below:
+  the closure, the narrower hold, and the `fetch.applying` mark in place of `fetch.lock`). Every
+  session's reloader holds while the fetch applies, so a batch of installs and updates reloads once at
+  its end. `hooks/mods/README.md`'s reload section
   describes the new path.
   Rationale: M1's report — the sets make `PLUGIN_PROMPT` dead code; the render hooks match stored
   rows by name; a batch's writes land more than one watcher period apart, and each gap would reload
@@ -1525,6 +1527,19 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   to-human held and doperpowers (depending on nothing) updated, that record change would reload
   doperpowers at M3 without the ask and to-human without sminos. A reload held for a dependency that
   never installs waits until the records change; M3's rehearsal checks the held reload's debug line.
+  Date/Author: 2026-10-19, M1's fixer, folded by the plan's executor.
+- Decision (M1 fix wave 2): the dependency hold is evaluated on the tick that would fire, just before
+  the reload, not when the records changed (a clone can move under a pending reload with no record
+  write — the fetcher's own marketplace update, or a person's); the `fetch.applying` mark is written
+  before each marketplace's refresh and at the top of each marketplace's pass once a batch has
+  started, so a two-marketplace batch stays under it; a held reload is told once per hold (plugin and
+  missing dependency) as a toast and a transcript line, as `FORCE_TEXT` is — "A plugin update is not
+  applied: <key> would load without <missing>, which is not installed. /plugin install <missing>
+  installs it, and the reload follows." — with the debug line kept.
+  Rationale: the branch re-review's P2 (a stale pending reload loading M3 from the clone without
+  sminos) and P3 (two reloads on a slow two-marketplace roll); the task re-review's minor that a
+  held reload, which holds every reload on the machine, was said only in the debug log, unseen on the
+  unattended Mac mini.
   Date/Author: 2026-10-19, M1's fixer, folded by the plan's executor.
 
 ## Outcomes & Retrospective
