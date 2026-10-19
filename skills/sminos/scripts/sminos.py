@@ -7908,18 +7908,45 @@ def cmd_join(a):
 GUIDE_RECORD_WAIT = 1.5   # seconds the guide waits for the engine's record; the hook's bound is 10
 
 
-def guide_text(session, launch):
+def _hook_engine(session, title=""):
+    """(None, record) standing for `session` when no engine record names it
+    yet, from the record of the engine running its SessionStart hook. A
+    session that replaces another in the same process — `/branch`, an
+    in-session `/resume` — fires its hook while the engine's record still
+    names the session it left: the engine (2.1.303) rewrites it only after
+    the SessionStart hooks return, so no wait sees it. The process is the new
+    session's all the same (its kind, entrypoint, pid and its host's mark),
+    and so is its name, unless the payload gives the title the engine names
+    it by next (`/branch`'s, as the user's). The hook's environment says
+    which engine: CLAUDE_PID, written beside CLAUDE_CODE_SESSION_ID, which
+    must name this session (a pair inherited from an outer engine names
+    another). None when there is no such record, or for derive's internal
+    fork."""
+    pid = os.environ.get("CLAUDE_PID", "")
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") != session or not pid.isdigit() or pid in internal_pids():
+        return None
+    rec = next((r for r in peer_records() if str(r.get("pid")) == pid and peer_running(r)), None)
+    if rec is None:
+        return None
+    return None, dict(rec, sessionId=session, **({"name": title, "nameSource": "user"} if title else {}))
+
+
+def guide_text(session, launch, source="", title=""):
     """The SessionStart guidance (§9) for a session launched in `launch` on
     this enrolled machine: who it is and where its project comes from, then
     the verbs that find and reach the org's other sessions. Only for a
     session that is a member on sight, as the record hook decides it
     (joinable: a headless or SDK run its host did not mark, or one the
     engine has not recorded, is told nothing it is not), and no `join` for a
-    seat, which cannot. Only facts the model cannot derive, and only lines
+    seat, which cannot. A fork (`source`, the payload's) is told so: its
+    context holds the guidance the session it was forked from read, which
+    names that session. Only facts the model cannot derive, and only lines
     the evals showed move behavior."""
     global _PEERS
     project = session_project(session, launch)
     seen = _on_sight(project, session) if project is not None else None
+    if seen == (None, None):
+        seen = _hook_engine(session, title) or seen
     # Neither a seat nor the engine's record names it yet: the engine may
     # write the record a moment after the hook starts, so it is looked for
     # again, briefly, before the session is left unguided for its whole run.
@@ -7946,9 +7973,11 @@ def guide_text(session, launch):
         where = "the project of your launch directory, %s" % launch
     join = [] if seat else ["  %s join <project>  when your directory files you in the wrong project (a scratch copy)"
                             " or your standing work belongs to another; once, not per repository you visit" % cli]
+    fork = " You are a fork of another session: any sminos line above this one was written for it, not you." \
+        if source == "fork" else ""
     return "\n".join([
-        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project."
-        % (who, project.name, enrollment()["machine"], where),
+        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
+        % (who, project.name, enrollment()["machine"], where, fork),
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
         "To find one or tell it something, use sminos (not on PATH):",
         "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
@@ -8145,7 +8174,7 @@ def cmd_guide(_a):
     text = ""
     try:
         launch = launch_cwd(session, str(payload.get("transcript_path") or ""), fallback=cwd)
-        text = guide_text(session, launch)
+        text = guide_text(session, launch, str(payload.get("source") or ""), str(payload.get("session_title") or ""))
         roster = roster_text(session, launch) if text and payload.get("source") in ROSTER_SOURCES else ""
         text += "\n" + roster if roster else ""
     except Exception as e:  # noqa: BLE001 — guidance is a courtesy; a failure must never fail the session's start
