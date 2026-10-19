@@ -24,14 +24,18 @@ they reported it:
   subagent's `deadline` (epoch ms on DX5) as ISO 8601 UTC with
   milliseconds, after which the hub marks the request `terminal_only`;
 - DX4 `settled` `{request, winner, outcome, by}` as the bridge settled it,
-  once per raise: every settlement a bridge reports, live or in a snapshot's
-  recent list, goes up unless it went before (the ones the hub took are
-  kept in `daemon/requests.json` across restarts; the hub records each it
-  is sent as a decision). A request raised again after its settlement (the
-  open ask a resumed session raises under its call's id) is held here
-  again, and its next settlement goes too; a snapshot that lists the
-  request pending again holds the settlement before that raise, which is
-  passed by;
+  once per raise, and never after a later raise of the same request (the
+  open ask a resumed session raises again under its call's id). A
+  settlement is its request and the bridge's `t`: every one a bridge
+  reports, live or in a snapshot's recent list, goes up unless it went
+  before. One still waiting here when its request is raised again, or
+  listed beside that request pending again, never goes: the raise
+  supersedes it, the hub holding the request pending under the same id.
+  The ones sent or superseded are kept in `daemon/requests.json` across
+  restarts (the hub records each it is sent as a decision). The file's
+  older entries, bare request ids, are not read: the first start on a file
+  of that form sends again what live bridges still list, which the hub
+  takes as resends of requests no longer pending;
 - DX2 `pending` `{project, raised}`: the machine's complete set for the
   project, after every connect, and whenever a request left the set with no
   settlement the bridge reported (its bridge gone, a snapshot without it):
@@ -70,7 +74,7 @@ RETRY_MAX = 30.0           # doubling up to this while its bridge gives no snaps
 CONNECT_WAIT = 10.0        # s: the bridge holds GET /events until it is ready, at most 5 s
 HOLD_MAX = 8.0             # s: the complete set waits for the bridges' snapshots at most this long
 OUTBOX_MAX = 2000          # messages kept for the hub while it is out of reach (settlements: all of them)
-RELAYED_FILE = "requests.json"  # daemon/: the settlements the hub took, per session
+RELAYED_FILE = "requests.json"  # daemon/: the settlements done with, per session
 RELAYED_KEPT = 200
 RELAYED_SESSIONS = 1000
 TOOL_USE_ID_MAX = 512      # the hub's bound on `raised.toolUseId` (DC3, MAWS 4b5d0a67)
@@ -203,8 +207,8 @@ class Requests:
         self.outbox = []      # [(project id, frame)]: raised and settled messages not yet sent, in order
         self.stale = set()    # project ids whose complete pending set is owed
         self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
-        self.queued = set()   # (session, request) of the settlements in the outbox
-        self.relayed = load_relayed()  # session → [request]: the settlements the hub took
+        self.queued = {}      # (session, request, t) → the outbox's frame carrying that settlement
+        self.relayed = load_relayed()  # session → [(request, t)]: the settlements done with (sent or superseded)
         self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
         self.said = set()
 
@@ -310,9 +314,10 @@ class Requests:
             return None
 
     def queue(self, pid, sid, kind, body):
-        self.outbox.append((pid, {"t": "session", "message": {
+        frame = {"t": "session", "message": {
             "project": pid, "machine": self.machine, "session": sid, "kind": kind, "sub": None, "n": None,
-            "body": body}}))
+            "body": body}}
+        self.outbox.append((pid, frame))
         if len(self.outbox) > OUTBOX_MAX:
             # A raise is rebuilt by the complete set after the next connect;
             # a settlement is not, so settlements are never dropped.
@@ -324,12 +329,14 @@ class Requests:
                 del self.outbox[i]
                 self.say_once("full", "more than %d messages wait for the hub: the oldest raises go (the "
                                       "complete set, sent next, carries what is pending)" % OUTBOX_MAX)
+        return frame
 
     def raised(self, sid, pid, e):
         draft = raised_draft(sid, e)
         if draft is None:
             log("a raised from %s's bridge without a request, tool, or input: passed by" % sid)
             return
+        self.supersede([k for k in self.queued if k[:2] == (sid, draft["request"])])
         held = self.pending.setdefault(sid, {})
         old = held.get(draft["request"])
         if old is not None and {k: v for k, v in old.items() if k != "mac"} == draft:
@@ -339,35 +346,58 @@ class Requests:
             held[draft["request"]] = body
             self.queue(pid, sid, "raised", body)
 
-    def seen(self, sid, rid):
-        return (sid, rid) in self.queued or rid in self.relayed.get(sid, ())
+    def seen(self, key):
+        return key in self.queued or key[1:] in self.relayed.get(key[0], ())
+
+    def done(self, key):
+        held = self.relayed.setdefault(key[0], [])
+        if key[1:] not in held:
+            held.append(key[1:])
+            del held[:-RELAYED_KEPT]
+
+    def supersede(self, keys):
+        """Settlements a later raise of their request supersedes: never sent
+        (one in the outbox leaves it) and kept as done with, so no snapshot
+        brings them back. The hub holds the request pending under the same
+        id."""
+        keys = [k for k in keys if k[1:] not in self.relayed.get(k[0], ())]
+        if not keys:
+            return
+        gone = {id(self.queued.pop(k)) for k in keys if k in self.queued}
+        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in gone]
+        for k in keys:
+            self.done(k)
+        save_relayed(self.relayed)
 
     def settled(self, sid, pid, e):
         draft = settled_draft(e)
         if draft is None:
             log("a settled from %s's bridge without request, winner, outcome, or by: passed by" % sid)
             return
-        # A request held here is pending at the hub, or will be: this settles
-        # that raise, though the id was settled before it.
-        held = self.pending.get(sid, {}).pop(draft["request"], None)
-        if held is None and self.seen(sid, draft["request"]):
+        key = settlement(sid, e)
+        if self.seen(key):
+            # It went before, or waits to: any raise held here came after it, and stays.
             return
+        self.pending.get(sid, {}).pop(draft["request"], None)
         body = self.seal("settled", pid, draft)
         if body is not None:
-            self.queued.add((sid, draft["request"]))
-            self.queue(pid, sid, "settled", body)
+            self.queued[key] = self.queue(pid, sid, "settled", body)
 
     def reconcile(self, sid, pid, pending, settled):
         """A snapshot or a resync: the session's pending set as the bridge
         holds it now, and its recent settlements. Every settlement not yet
         relayed goes up (one raised and settled while no reader was there
-        too), but not one of a request pending there again, which came before
-        that raise; a request held here and gone there with none sends the
+        too), but not one of a request pending there again, which that raise
+        supersedes; a request held here and gone there with none sends the
         complete set again; new ones are raised."""
         now = [r for r in pending if isinstance(r, dict) and isinstance(r.get("request"), str)]
         ids = {r["request"] for r in now}
         for s in settled:
-            if isinstance(s, dict) and not (isinstance(s.get("request"), str) and s["request"] in ids):
+            if not isinstance(s, dict):
+                continue
+            if isinstance(s.get("request"), str) and s["request"] in ids:
+                self.supersede([settlement(sid, s)])
+            else:
                 self.settled(sid, pid, s)
         for rid in [rid for rid in self.pending.get(sid, {}) if rid not in ids]:
             self.pending[sid].pop(rid, None)
@@ -412,24 +442,28 @@ class Requests:
         return backlog + ([self.pending_frame(pid)] if self.set_due(pid) else [])
 
     def sent(self, frames):
-        """`frames` reached the hub (a POST answered 200)."""
+        """`frames` reached the hub (a POST answered 200). A settlement among
+        them that a raise superseded meanwhile is done with already."""
         ids = {id(f) for f in frames}
         self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
-        took = False
         for f in frames:
             if f.get("t") == "pending":
                 self.stale.discard(f["project"])
                 self.holding.pop(f["project"], None)
-            elif f.get("t") == "session" and f["message"]["kind"] == "settled":
-                sid, rid = f["message"]["session"], f["message"]["body"]["request"]
-                self.queued.discard((sid, rid))
-                held = self.relayed.setdefault(sid, [])
-                if rid not in held:
-                    held.append(rid)
-                    del held[:-RELAYED_KEPT]
-                took = True
+        took = [k for k, f in self.queued.items() if id(f) in ids]
+        for k in took:
+            del self.queued[k]
+            self.done(k)
         if took:
             save_relayed(self.relayed)
+
+
+def settlement(sid, e):
+    """A settlement's key: its session, its request, and the bridge's `t`
+    (None when it carries no number), which tells two settlements of one
+    request apart."""
+    t = e.get("t")
+    return sid, e.get("request"), t if isinstance(t, (int, float)) and not isinstance(t, bool) else None
 
 
 def relayed_path():
@@ -437,7 +471,8 @@ def relayed_path():
 
 
 def load_relayed():
-    """The settlements the hub took, per session, as kept across restarts."""
+    """The settlements done with, per session, as kept across restarts:
+    [request, t] each (a bare request id, the older form, is none)."""
     try:
         with open(relayed_path()) as f:
             d = json.load(f)
@@ -445,7 +480,9 @@ def load_relayed():
         return {}
     if not isinstance(d, dict):
         return {}
-    return {sid: [r for r in rids if isinstance(r, str)] for sid, rids in d.items() if isinstance(rids, list)}
+    return {sid: [(k[0], k[1]) for k in keys if isinstance(k, list) and len(k) == 2 and isinstance(k[0], str)
+                  and (k[1] is None or isinstance(k[1], (int, float)) and not isinstance(k[1], bool))]
+            for sid, keys in d.items() if isinstance(keys, list)}
 
 
 def save_relayed(relayed):
