@@ -49,9 +49,11 @@ the session moves within one interval (§1a of the org directory's design).
 hub (`daemon uplink`, sminos_uplink.py) as a child process it restarts with
 backoff — a process, not a thread, because sminos's caches are module globals
 the tick clears, and so a hang or a crash of either side never stops the
-other; `install` writes the machine's service, a launchd agent on macOS or a
-systemd user unit on Linux (it loads nothing); `status` prints the last tick
-per project.
+other. When its scripts change (a plugin update), it stops the uplink and
+executes itself again in the same process, so the service manager sees no
+exit and its restart throttle never holds the machine off the hub. `install`
+writes the machine's service, a launchd agent on macOS or a systemd user unit
+on Linux (it loads nothing); `status` prints the last tick per project.
 """
 
 import contextlib
@@ -87,11 +89,11 @@ UPLINK_STOP_GRACE = 3
 # The pid of the `daemon run` that spawned an uplink, in the uplink's
 # environment: it ends whenever its parent is another process.
 UPLINK_PARENT_ENV = "SMINOS_UPLINK_PARENT"
-# The scripts `daemon run` runs, itself and its uplink child: a change to one
-# ends the loop for a restart on the new code.
-OWN_CODE = ("sminos.py", "sminos_marks.py", "sminos_daemon.py", "sminos_uplink.py", "sminos_hublog.py",
-            "sminos_codes.py", "sminos_archive.py", "sminos_plane.py", "sminos_bridge.py", "sminos_policy.py",
-            "sminos_outcomes.py", "sminos_requests.py", "sminos_rpc.py", "sminos_control.py")
+# A change to the daemon's code is acted on once its scripts have held still
+# this long (a plugin update is a git pull: one in progress finishes first),
+# and at the latest this long after it was seen.
+CODE_SETTLE = 1.0
+CODE_SETTLE_MAX = 10.0
 LABEL = "com.doperpowers.sminos-daemon"
 PLIST_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", "sminos-daemon.plist")
 UNIT = "sminos-daemon.service"
@@ -851,7 +853,15 @@ def derive_running(d):
             return True
         _DERIVE = None  # reaped: a zombie of ours would read as alive
     pid = d.get("pid")
-    return bool(pid) and sminos.pid_alive(pid) and sminos.proc_start(pid) == d.get("start")
+    if not (pid and sminos.pid_alive(pid) and sminos.proc_start(pid) == d.get("start")):
+        return False
+    # A child of this process it holds no handle on: one started before
+    # `daemon run` restarted in place, which keeps the pid and its children.
+    # Reaped here once it has ended, since its zombie reads as alive.
+    try:
+        return os.waitpid(int(pid), os.WNOHANG)[0] == 0
+    except ChildProcessError:
+        return True  # not this process's child: another's derivation
 
 
 def derive_duty():
@@ -991,18 +1001,52 @@ def run_lock_path():
 
 
 def own_code():
-    """The scripts this loop and its uplink run, with their mtimes: when one
-    changes (a plugin update), the loop ends and the service manager starts it
-    on the new code (launchd's KeepAlive, systemd's Restart=always)."""
-    out = {}
+    """Every script beside this one, with its mtime: what this loop and its
+    uplink import, now or later, is among them, and a script added or removed
+    changes the set. When it changes (a plugin update), the loop restarts in
+    place on the new code (restart_in_place)."""
     here = os.path.dirname(os.path.realpath(__file__))
-    for name in OWN_CODE:
-        path = os.path.realpath(os.path.join(here, name))
-        try:
-            out[path] = os.stat(path).st_mtime_ns
-        except OSError:
-            out[path] = None
+    out = {}
+    try:
+        names = os.listdir(here)
+    except OSError:
+        return out
+    for name in names:
+        if name.endswith(".py"):
+            try:
+                out[name] = os.stat(os.path.join(here, name)).st_mtime_ns
+            except OSError:
+                pass  # removed since the listing
     return out
+
+
+def settle_code(seen, stop):
+    """Waits until the scripts, `seen` when their change was noticed, have
+    held still for CODE_SETTLE seconds, CODE_SETTLE_MAX at most, or until
+    `stop` (SIGTERM) is set."""
+    began = still = time.time()
+    while not stop and time.time() - still < CODE_SETTLE and time.time() - began < CODE_SETTLE_MAX:
+        time.sleep(0.1)
+        now = own_code()
+        if now != seen:
+            seen, still = now, time.time()
+
+
+def restart_in_place():
+    """`daemon run` executed again in this process, on the code as it is now:
+    the same interpreter with its options, script and arguments. The pid
+    stays, so launchd or systemd sees no exit and applies no restart
+    throttle. Across the exec go the pid, stdin, stdout and stderr (the
+    service's log), the environment, the working directory and any child
+    still running (a derivation, which derive_running reaps once it ends);
+    every other descriptor is closed, the run lock's with it, which the new
+    image takes again; signal handlers fall back to their defaults until it
+    sets them. The uplink is stopped before. Returns only when the exec
+    failed (OSError): code that fails to import exits from the new image, and
+    the service manager restarts it under its throttle."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable] + sys.orig_argv[1:])
 
 
 def nudged_at():
@@ -1082,17 +1126,20 @@ class UplinkSupervisor(threading.Thread):
             p.wait()
 
     def stop(self):
+        """Whether the child is gone once the supervisor ended (it is, unless
+        the supervisor did not end in time)."""
         self.halt.set()
         self.join(UPLINK_STOP_GRACE + 2)
+        return not self.is_alive() and (self.proc is None or self.proc.poll() is not None)
 
 
 def cmd_run(a):
     """The loop: a tick every `--interval` seconds (from one tick's start to
     the next), or at once when a sender touched daemon/nudge since the last
     one began; the uplink beside it (UplinkSupervisor). SIGTERM ends it after
-    the tick in hand; so does a change to its own scripts, exiting 0 for the
-    service manager to restart it on the new code; the uplink is stopped
-    either way."""
+    the tick in hand, the uplink stopped with it. A change to its scripts,
+    once they hold still, stops the uplink and restarts the loop in place on
+    the new code (restart_in_place)."""
     interval = a.interval
     if interval <= 0:
         sminos.die("--interval is a number of seconds above 0")
@@ -1125,11 +1172,26 @@ def cmd_run(a):
             except Exception as e:  # noqa: BLE001 — the loop outlives one bad tick
                 sminos.daemon_log("tick failed: %r" % e)
             sys.stdout.flush()
-            if own_code() != code:
-                sminos.daemon_log("daemon run (pid %d): its code changed; exiting for a restart on the new code"
-                                  % os.getpid())
-                print("%s its code changed: exiting, to be restarted on the new code" % sminos.now())
-                return
+            changed = own_code()
+            if changed != code:
+                settle_code(changed, stop)
+                if stop:
+                    break
+                me = os.getpid()
+                sminos.daemon_log("daemon run (pid %d): its code changed; restarting in place on the new code" % me)
+                print("%s its code changed: restarting in place on the new code" % sminos.now())
+                # An uplink left running would outlive the exec unnoticed: it
+                # ends when its parent's pid changes, and the pid stays.
+                if not uplink.stop():
+                    sminos.daemon_log("daemon run (pid %d): its uplink did not stop; exiting instead, for the "
+                                      "service manager to restart it" % me)
+                elif not stop:  # a SIGTERM while the uplink stopped ends the loop instead
+                    try:
+                        restart_in_place()
+                    except OSError as e:
+                        sminos.daemon_log("daemon run (pid %d): could not restart in place (%s); exiting for the "
+                                          "service manager to restart it" % (me, e))
+                break
             while not stop and time.time() - started < interval and nudged_at() == nudge:
                 time.sleep(0.05)
     finally:
