@@ -186,9 +186,12 @@ so the button reads `off` there, as the shell hooks do.
 One tool the model can call, registered at `session.start` under the
 plugin's name, `mcp__doperpowers__compact`: the model compacting its own
 context at a checkpoint of its choosing. And its offer: at the end of each
-main-conversation turn from 300k tokens on, once the context has grown 50k
+main-conversation turn from 220k tokens on, once the context has grown 50k
 since the last offer, the model is told its size and offered the
-compaction, through the Stop hook.
+compaction, through the Stop hook. Below 300k the offer adds that
+compacting is not necessarily recommended unless this is a clean
+checkpoint, with no execution, decision or design pending that needs the
+prior context whole.
 
 The engine compacts only between turns (`$.session.compact` is refused while
 a turn runs), so the tool defers: its handler keeps the request
@@ -236,8 +239,10 @@ turn's end compacts as above) or replies "Not compacting." (a line, asked
 for because an answer with no text costs the engine's "no visible output"
 nudge, a step more); the Stop after that step carries `stop_hook_active`
 and passes, so an offer is one step and no loop (the engine caps
-consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 300k, where the tool's
-guidance turns to "any reasonable checkpoint", and step 50k, so a
+consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 220k, below the 300k
+where the tool's guidance turns to "any reasonable checkpoint"
+(`EARLY_BELOW`, under which the offer carries that caveat), so a clean
+checkpoint before it is not missed, and step 50k, so a
 conversation adding a few k a turn is not asked every turn while a working
 turn, tens of k, is asked each time. The offer's baseline resets when a
 main-conversation `session.compact` stands (not a skip or a `precompute`,
@@ -730,6 +735,38 @@ to-human view can fold it. `session.append` can rewrite a stored row's text
 but refuses only a plugin's own append, and `session.receive`, which can
 take a delivery without a trace, sees deliveries from outside the process,
 never an agent's notification.
+
+## address (`address.tsx`)
+
+Every commit and pull request a session writes carries its sminos address, so
+whoever reads the artifact later — the owner, another session — reaches the
+session that made it in one step: `sminos who <commit|PR>` reads the line back
+and says who that session is now and how to reach or resume it. The engine
+composes the attribution text the model is told to end a commit message and a
+PR body with (the settings' `attribution`, and its own `Claude-Session:`
+trailer for a remote or bridged session) and passes each through
+`attribution.text`; the mod adds `Sminos-Session: <alias>#<short> (<project>
+on <machine>)` — to a commit as a git trailer (in the trailer block when the
+text ends in one, a paragraph of its own otherwise), to a PR body as its last
+line. With the settings' attribution empty the line stands alone, and the
+engine still tells the model to write it: the reminder is built whenever the
+composed text is non-empty (checked live on 2.1.303, in an interactive
+session, a `--bg` job and `claude -p`, the main loop and a subagent alike).
+
+The line is the CLI's, `sminos who --session <id>`, which composes it where
+the identity lives (the alias the session's own `say` signs with, its project,
+the machine's enrolled name; the short alone, `Sminos-Session: <short>
+(<project> on <machine>)`, for a session with no name fit for a line, such
+as a `claude --bg "<prompt>"` job that joined under its prompt) and prints
+nothing for a session in no project,
+an internal fork (`SMNS_INTERNAL`), or one that is no member (a headless run
+its host did not mark). The engine asks before every model request of every
+loop, twice (commit, then pr): the mod keeps the line and asks the CLI again
+only for a new session id (a session sent to the background goes on as a new
+one) or once the kept line is a minute old (an alias renamed mid-session); a
+CLI that cannot run keeps the line it had. A subagent's request reads the
+parent's session id, so a subagent's commits carry the session someone can
+reach. The engine re-sends its reminder only when the text changes.
 
 ## reload (`reload.tsx`)
 

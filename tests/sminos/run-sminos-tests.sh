@@ -385,6 +385,8 @@ run_suites() {
     fail "addressing across the org and the sender's copy (test-address.sh)"; fi
   if "$SCRIPT_DIR/test-guide.sh"; then pass "the SessionStart guidance (test-guide.sh)"; else
     fail "the SessionStart guidance (test-guide.sh)"; fi
+  if "$SCRIPT_DIR/test-who.sh"; then pass "a session's address and who reads it back (test-who.sh)"; else
+    fail "a session's address and who reads it back (test-who.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
@@ -5834,6 +5836,27 @@ for _ in $(seq 1 100); do [ "$(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log
 sleep 0.5
 assert_equals "$(( $(grep -c 'derive --all started' "$MD/solo/sminos/daemon.log") - STARTS_BEFORE ))" 1 "two ticks at once start exactly one derive between them"
 assert_equals "$(( $(grep -c '^fork-env:' "$MD/solo/stub/log/calls.log") - FORKS_BEFORE ))" 1 "one fork"
+# A derivation child the process holds no handle on: one started before
+# `daemon run` restarted in place, which keeps the pid and its children. It
+# reads as running while it runs; once it ends it is reaped, where its zombie
+# would read as running for the rest of the process's life.
+assert_equals "$(python3 - "$REPO_ROOT/skills/sminos/scripts" <<'PY_ORPHAN'
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_daemon as d
+pid = os.posix_spawn("/bin/sleep", ["sleep", "0.5"], dict(os.environ))
+rec = {"pid": pid, "start": sminos.proc_start(pid)}
+running = d.derive_running(rec)
+time.sleep(1.5)
+ended = d.derive_running(rec)
+try:
+    os.waitpid(pid, os.WNOHANG)
+    reaped = False
+except ChildProcessError:
+    reaped = True
+print(running, ended, reaped)
+PY_ORPHAN
+)" "True False True" "a derivation from before a restart in place reads as running, then is reaped once it ends"
 for _ in $(seq 1 200); do [ -z "$(find "$MD/solo/sminos/internal" -type f 2>/dev/null)" ] && break; sleep 0.05; done
 # A harness rename is recorded in a project with no remote too: the only
 # record of a name change.
@@ -6080,18 +6103,29 @@ rc, out, err = sminos_rpc.run_verb(["list", "--all"], ".", 60)
 print(rc, err.strip()[:200])
 PY_VERB
 )" "0 " "and a verb it runs for the desk runs on its own Python, not the first python3 on that PATH"
-# run notices new code: a change to its own scripts ends the loop with exit 0,
-# for launchd's KeepAlive to restart it on the new code.
+# run notices new code: a change to its own scripts restarts the loop in place,
+# the same process on the new code, so launchd's KeepAlive never sees an exit
+# to throttle.
 env HOME="$MD/inst" SMINOS_HOME="$MD/inst/sminos" "$CACHE/skills/sminos/scripts/sminos" daemon run --interval 1 > "$MD/run-code.out" 2>&1 & RUNC=$!
+RUNC_LOG="$MD/inst/sminos/daemon.log"
 # The change has to come after the loop read its code, so it is made again
-# until the loop notices, rather than once after a guessed start-up time.
-run_noticed_code() { touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"; ! kill -0 "$RUNC" 2>/dev/null; }
+# until the loop notices, rather than once after a guessed start-up time; a
+# change waits for the scripts to hold still, so each is given time to.
+run_restarted() { grep -Fq "daemon run (pid $RUNC): its code changed; restarting in place" "$RUNC_LOG" 2>/dev/null; }
+run_noticed_code() {
+  touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"
+  for _ in $(seq 1 60); do run_restarted && return 0; sleep 0.05; done
+  return 1
+}
 wait_until run_noticed_code || true
-if kill -0 "$RUNC" 2>/dev/null; then fail "run exits once its code changes"; kill "$RUNC"; wait "$RUNC" || true; else
-  set +e; wait "$RUNC"; RUNC_RC=$?; set -e
-  assert_rc 0 "$RUNC_RC" "run exits 0 once its code changes"
-fi
-assert_contains "$(cat "$MD/run-code.out")" "its code changed" "saying why"
+run_started_twice() { [ "$(grep -Fc "daemon run started (pid $RUNC," "$RUNC_LOG" 2>/dev/null)" -ge 2 ]; }
+wait_until run_started_twice || true
+if kill -0 "$RUNC" 2>/dev/null && run_started_twice; then pass "run restarts in place once its code changes"; else
+  fail "run restarts in place once its code changes"; fi
+assert_contains "$(cat "$MD/run-code.out")" "its code changed: restarting in place" "saying why"
+kill "$RUNC" 2>/dev/null || true
+set +e; wait "$RUNC"; RUNC_RC=$?; set -e
+assert_rc 0 "$RUNC_RC" "and SIGTERM still ends it, with exit 0"
 run env "${H1[@]}" "$SMINOS" daemon
 assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"

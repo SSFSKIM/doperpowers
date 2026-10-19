@@ -7,8 +7,8 @@
 # sits in a hung git fetch of a hub-less project, and while a derivation runs;
 # a burst from the hub costs a few ticks, not a tick a frame, however slow
 # each POST is; what fails its code or its shape never enters the log; the uplink and the
-# tick loop restart and fail apart; the run lock and the exit on a change of
-# the daemon's own code still hold; an event the uplink imports while a tick is
+# tick loop restart and fail apart; the run lock holds, and a change of the
+# daemon's code restarts it in place, the uplink back within seconds; an event the uplink imports while a tick is
 # mid-delivery to the same member is delivered once; the machine's lease at the
 # hub never lapses while the main thread is held, and lapses once the stream
 # is silent.
@@ -435,28 +435,89 @@ if [[ -n "$UP" ]] && dead "$UP"; then pass "an uplink whose daemon run was kille
   fail "an uplink whose daemon run was killed ends on its own"; echo "    uplink pid '$UP'"; fi
 assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP): its daemon is gone" "saying its daemon is gone"
 
-# ---- daemon run exits on a change to its own code, the uplink's and the codes' included
+# ---- daemon run restarts in place on a change to its code: the same pid on
+# the new code, never an exit a service manager would throttle, and the uplink
+# back within seconds. What a change brings is seen: each changed script
+# marks, as it is imported, which process imported it.
 echo "a change of code:"
 CACHE="$T/cache"
 mkdir -p "$CACHE"
 cp -R "$REPO_ROOT/skills/sminos" "$CACHE/"
-GEN=3
-for changed in sminos_uplink.py sminos_codes.py; do
-  GEN=$((GEN + 1))
-  "$CACHE/sminos/scripts/sminos" daemon run --interval 1 > "$T/run-code.out" 2>&1 & RUNC=$!
-  PIDS+=("$RUNC")
-  until_true 200 gen_is "$GEN" || true
-  UP="$(uplink_pid)"
-  sleep 1.2
-  touch "$CACHE/sminos/scripts/$changed"
-  until_true 200 dead "$RUNC" || true
-  if alive "$RUNC"; then fail "run exits once $changed changes"; kill "$RUNC"; else
-    set +e; wait "$RUNC"; RUNC_RC=$?; set -e
-    assert_rc 0 "$RUNC_RC" "run exits 0 once $changed changes"
-  fi
-  assert_contains "$(cat "$T/run-code.out")" "its code changed" "saying why"
-  if [[ -n "$UP" ]] && dead "$UP"; then pass "its uplink ($UP) is stopped with it"; else fail "its uplink is stopped with it"; fi
+CODE="$CACHE/sminos/scripts"
+change() { # script — new code in it, marking each import
+  printf '\nopen("%s/imported-%%s-%%d" %% (__name__, os.getpid()), "w").close()\n' "$T" >> "$CODE/$1"
+}
+imported() { [[ -n "$2" && -e "$T/imported-$1-$2" ]]; }
+restarts() { # pid — the epoch time of each of its restarts in place, one a line
+  python3 - "$DLOG" "$1" <<'PY'
+import calendar, sys, time
+mark = "daemon run (pid %s): its code changed; restarting in place" % sys.argv[2]
+for line in open(sys.argv[1]):
+    if mark in line:
+        stamp, ms = line.split(" ", 1)[0].rstrip("Z").split(".")
+        print("%.3f" % (calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%S")) + int(ms) / 1000))
+PY
+}
+gap() { # pid — seconds from its last restart in place to the next stream its uplink opened
+  python3 - "$DLOG" "$1" <<'PY'
+import datetime, sys
+lines = open(sys.argv[1]).read().splitlines()
+mark = "daemon run (pid %s): its code changed; restarting in place" % sys.argv[2]
+i = max(i for i, line in enumerate(lines) if mark in line)
+j = next((j for j in range(i + 1, len(lines)) if "uplink: connected to" in lines[j]), None)
+at = lambda line: datetime.datetime.strptime(line.split(" ", 1)[0], "%Y-%m-%dT%H:%M:%S.%fZ")
+print("never" if j is None else "%.2f" % (at(lines[j]) - at(lines[i])).total_seconds())
+PY
+}
+started_in() { grep -Fc "daemon run started (pid $1," "$DLOG" || true; }
+"$CACHE/sminos/scripts/sminos" daemon run --interval 1 > "$T/run-code.out" 2>&1 & RUNC=$!
+PIDS+=("$RUNC")
+GEN=4
+until_true 200 gen_is "$GEN" || true
+UP="$(uplink_pid)"
+# sminos_jobs.py: imported by the uplink alone (through the plane and the
+# RPCs), and once missing from the daemon's list of its own code.
+change sminos_jobs.py
+GEN=5
+until_true 200 gen_is "$GEN" || true
+NEW_UP="$(uplink_pid)"
+if alive "$RUNC" && [ "$(started_in "$RUNC")" = 2 ]; then pass "run restarts in place once sminos_jobs.py changes (pid $RUNC)"; else
+  fail "run restarts in place once sminos_jobs.py changes"; echo "    alive: $(alive "$RUNC" && echo yes || echo no), starts: $(started_in "$RUNC")"; fi
+assert_contains "$(cat "$T/run-code.out")" "its code changed: restarting in place" "saying why"
+if [[ "$NEW_UP" != "$UP" ]] && dead "$UP" && grep -Fq "uplink: stopped (pid $UP)" "$DLOG" && imported sminos_jobs "$NEW_UP"; then
+  pass "its uplink ($UP) ended on its SIGTERM, and a new one ($NEW_UP) runs the new code"; else
+  fail "its uplink ended on its SIGTERM, and a new one runs the new code"; echo "    uplink $UP -> '$NEW_UP'"; fi
+assert_within "$(gap "$RUNC")" 5 "the uplink is back on a new stream within seconds of the restart"
+# A pull in progress: the daemon's own script first, the uplink's last, a
+# script every quarter second between. It restarts once, after the last.
+UP="$NEW_UP"
+change sminos_daemon.py
+for f in sminos_codes.py sminos_hublog.py sminos_plane.py sminos_rpc.py sminos_bridge.py sminos_policy.py; do
+  sleep 0.25; touch "$CODE/$f"
 done
+sleep 0.25; change sminos_uplink.py
+PULLED="$(python3 -c 'import time; print("%.3f" % time.time())')"
+GEN=6
+until_true 200 gen_is "$GEN" || true
+NEW_UP="$(uplink_pid)"
+AT="$(restarts "$RUNC" | sed -n 2p)"
+if alive "$RUNC" && imported sminos_daemon "$RUNC" && [ "$(started_in "$RUNC")" = 3 ]; then
+  pass "a pull restarts it in place again, the same pid on the new code"; else
+  fail "a pull restarts it in place again, the same pid on the new code"
+  echo "    alive: $(alive "$RUNC" && echo yes || echo no), starts: $(started_in "$RUNC")"; fi
+if [[ -n "$AT" ]] && python3 -c 'import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))' "$AT" "$PULLED"; then
+  pass "once, after the pull's last script"; else fail "once, after the pull's last script"; echo "    at '$AT', pulled $PULLED"; fi
+if [[ "$NEW_UP" != "$UP" ]] && dead "$UP" && imported sminos_uplink "$NEW_UP"; then
+  pass "a new uplink ($NEW_UP) on the pull's code"; else fail "a new uplink on the pull's code"; echo "    uplink $UP -> '$NEW_UP'"; fi
+assert_within "$(gap "$RUNC")" 5 "back on a new stream within seconds"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "daemon: running (pid $RUNC " "the restarted loop holds the run lock again"
+kill "$RUNC"
+set +e; wait "$RUNC"; RUNC_RC=$?; set -e
+assert_rc 0 "$RUNC_RC" "and SIGTERM ends it as before"
+until_true 100 dead "$NEW_UP" || true
+if dead "$NEW_UP"; then pass "its uplink with it"; else fail "its uplink with it"; fi
+assert_equals "$(restarts "$RUNC" | wc -l | tr -d ' ')" 2 "two restarts in place in all: the pull cost one"
 
 # ---- an uplink whose supervisor died while it started
 # The supervisor names itself at spawn: a parent that is gone before the

@@ -10,8 +10,8 @@
   may find an older python3 first, which cannot import sminos), running
   the marketplace clone's sminos.py when the installing one ran from the
   versioned plugin cache, so a plugin update does not strand it; the
-  daemon exits when its scripts change and KeepAlive restarts it on the
-  new code. The gateway route's values (a token among them) sit here in
+  daemon executes itself again in place when its scripts change, so
+  KeepAlive and the throttle meet only a crash. The gateway route's values (a token among them) sit here in
   plain text, in a file only its owner can read (0600): accepted.
 -->
 <plist version="1.0">

@@ -35,8 +35,8 @@ describe('thresholdOf', () => {
 
 describe('offerDue', () => {
   test('nothing under the floor, the first offer at the floor', async () => {
-    expect(offerDue(250_000, 0, OFFER_GATE)).toBe(false)
-    expect(offerDue(300_000, 0, OFFER_GATE)).toBe(true)
+    expect(offerDue(200_000, 0, OFFER_GATE)).toBe(false)
+    expect(offerDue(220_000, 0, OFFER_GATE)).toBe(true)
     expect(offerDue(undefined, 0, OFFER_GATE)).toBe(false)
   })
 
@@ -77,8 +77,8 @@ describe('texts', () => {
 
   test('the compact description tells the model when it is told its size, by the gate', async () => {
     const gated = describeCompact(967_000)
-    expect(gated).toContain("at the end of each turn from 300,000 tokens on, once it has grown 50,000 since the last time (a Stop hook's additional context")
-    expect(gated).toContain('Until the first time, you are under 300,000.')
+    expect(gated).toContain("at the end of each turn from 220,000 tokens on, once it has grown 50,000 since the last time (a Stop hook's additional context")
+    expect(gated).toContain('Until the first time, you are under 220,000.')
     expect(gated).toContain('compact unasked at any checkpoint, mid-turn included')
     expect(gated).not.toContain('context_usage')
     const every = describeCompact(967_000, { floor: 0, step: 0 })
@@ -101,6 +101,13 @@ describe('texts', () => {
     expect(text).toContain('Context: 412,300 tokens; window 1,000,000.')
     expect(text).toContain('If you truly think this is the right time to compact, you can compact now with\nmcp__doperpowers__compact (alone, then end your turn')
     expect(text).toContain('reply "Not compacting."')
+  })
+
+  test('below 300k the offer says compacting is not necessarily recommended', async () => {
+    const early = offerText({ tokens: 240_000, window: 1_000_000 }, 967_000)
+    expect(early).toContain('Below 300,000 tokens, compacting is not necessarily recommended unless this is a\nclean checkpoint')
+    expect(early).toContain("needs the prior context's information and nuance as a whole.\nIf you truly think")
+    expect(offerText({ tokens: 300_000, window: 1_000_000 }, 967_000)).not.toContain('not necessarily recommended')
   })
 
   test('the scheduled text tells the model to end its turn and what comes next', async () => {
@@ -200,7 +207,7 @@ describe('registerCompact', () => {
     expect(h.registered()).toEqual(['compact'])
     const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
     expect(spec.description).toContain('at about 967,000')
-    expect(spec.description).toContain('from 300,000 tokens on')
+    expect(spec.description).toContain('from 220,000 tokens on')
   })
 
   test('a compaction window smaller than the model window is the one measured against', async () => {
@@ -214,7 +221,7 @@ describe('registerCompact', () => {
   })
 
   test("the turn's end is offered a compaction from the floor on, once per step of growth", async () => {
-    const h = harness({ tokens: 250_000 })
+    const h = harness({ tokens: 200_000 })
     await h.mod.start(h.engine, start(true))
     expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
     h.state.tokens = 312_400
@@ -310,7 +317,7 @@ describe('registerCompact', () => {
     const spec = every.calls.find((c) => c.op === 'tool.register')?.args as { description: string }
     expect(spec.description).toContain('at the end of every turn')
 
-    const bad = harness({ tokens: 250_000, env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: 'abc', DOPERPOWERS_COMPACT_OFFER_STEP: '-1' } })
+    const bad = harness({ tokens: 200_000, env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: 'abc', DOPERPOWERS_COMPACT_OFFER_STEP: '-1' } })
     await bad.mod.start(bad.engine, start(true))
     expect((await bad.stop(stopAt())).additionalContext).toBeUndefined()
   })
