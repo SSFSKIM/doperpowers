@@ -9,7 +9,9 @@ import { asksInFlight } from './ask'
  * marketplace auto-update): each session runs the version it loaded until
  * `/reload-plugins`. This mod watches the file and, when a plugin the session
  * runs has a new install there, runs `/reload-plugins` itself, which the
- * engine queues until the session is idle.
+ * engine queues until the session is idle; and one session per machine at a
+ * time fetches the `autoUpdate` marketplaces' new versions, which the engine
+ * does only at a session's start.
  */
 
 /** One install record of installed_plugins.json, as the engine writes it. */
@@ -279,9 +281,157 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
 }
 
 /**
- * Registers the watch, in interactive sessions only: headless runs refuse a
- * plugin's `/reload-plugins`. `DOPERPOWERS_AUTORELOAD=off` (or 0, false)
- * leaves a launch on the version it loaded.
+ * Fetching: the engine refreshes a marketplace marked `autoUpdate` once per
+ * process, so a machine whose sessions run on gets nothing new until a session
+ * starts or someone rolls it. One session per machine at a time, at most every
+ * FETCH_MS, asks each such marketplace's remote for its head and, where it
+ * moved, updates the marketplace and the enabled plugins installed from it at
+ * user scope; the watch above then reloads every session on the machine.
+ */
+export const FETCH_MS = 5 * 60_000
+/** A lock older than this was left by a session that died holding it. */
+export const LOCK_STALE_MS = 30 * 60_000
+
+export type Marketplace = { name: string; url: string; ref: string; clone: string }
+
+/** The marketplaces known_marketplaces.json marks `autoUpdate` that come from a git remote. */
+export function autoUpdating(source: string): Marketplace[] {
+  let data: unknown
+  try {
+    data = JSON.parse(source)
+  } catch {
+    return []
+  }
+  if (!isRecord(data)) {
+    return []
+  }
+  return Object.entries(data).flatMap(([name, entry]) => {
+    if (!isRecord(entry) || entry.autoUpdate !== true || !isRecord(entry.source)) {
+      return []
+    }
+    const { source: kind, repo, url, ref } = entry.source
+    const remote = kind === 'github' && typeof repo === 'string' ? `https://github.com/${repo}.git` : kind === 'git' ? text(url) : undefined
+    const clone = text(entry.installLocation)
+    return remote === undefined || clone === undefined ? [] : [{ name, url: remote, ref: text(ref) ?? 'HEAD', clone }]
+  })
+}
+
+export type FetchIo = {
+  /** Rejects when the path is missing. */
+  stat: (path: string) => Promise<{ mtimeMs: number }>
+  read: (path: string) => Promise<string>
+  write: (path: string, text: string) => Promise<void>
+  run: (argv: readonly string[], timeoutMs: number) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+  enabled: () => Promise<ReadonlySet<string>>
+  now: () => number
+  log: (text: string) => void
+}
+
+export type FetchWhere = {
+  /** The engine's plugins directory: known_marketplaces.json, installed_plugins.json. */
+  plugins: string
+  /** The fetch's own directory, shared by the machine's sessions: its lock and its stamp. */
+  state: string
+}
+
+const firstLine = (s: string) => s.trim().split('\n')[0] ?? ''
+
+export function createFetcher(io: FetchIo, where: FetchWhere) {
+  const stamp = `${where.state}/fetch.stamp`
+  const lock = `${where.state}/fetch.lock`
+  let isBusy = false
+
+  async function age(path: string): Promise<number | undefined> {
+    try {
+      return io.now() - (await io.stat(path)).mtimeMs
+    } catch {
+      return undefined
+    }
+  }
+
+  const isFresh = async () => {
+    const stamped = await age(stamp)
+    return stamped !== undefined && stamped < FETCH_MS
+  }
+
+  /** One marketplace: nothing when its clone is at the remote's head, else the marketplace and then its plugins updated. */
+  async function fetchOne(m: Marketplace, installed: Installed, enabled: ReadonlySet<string>) {
+    const remote = await io.run(['git', 'ls-remote', m.url, m.ref], 30_000)
+    const head = remote.exitCode === 0 ? firstLine(remote.stdout).split(/\s/)[0] : undefined
+    if (head === undefined || head === '') {
+      io.log(`reload: ${m.name}: the remote's head could not be read (${firstLine(remote.stderr) || `exit ${remote.exitCode}`})`)
+      return
+    }
+    const local = await io.run(['git', '-C', m.clone, 'rev-parse', 'HEAD'], 10_000)
+    if (local.exitCode === 0 && local.stdout.trim() === head) {
+      return
+    }
+    const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], 120_000)
+    if (refreshed.exitCode !== 0) {
+      io.log(`reload: ${m.name}: the marketplace did not update (${firstLine(refreshed.stderr) || firstLine(refreshed.stdout)})`)
+      return
+    }
+    const keys = Object.keys(installed).filter((key) => key.endsWith(`@${m.name}`) && enabled.has(key) && installed[key]?.some((r) => r.scope === 'user'))
+    for (const key of keys) {
+      const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', 'user'], 120_000)
+      io.log(`reload: ${key}: ${firstLine(updated.stdout) || firstLine(updated.stderr) || `exit ${updated.exitCode}`}`)
+    }
+  }
+
+  async function step() {
+    if (await isFresh()) {
+      return
+    }
+    await io.run(['mkdir', '-p', where.state], 5_000)
+    if ((await io.run(['mkdir', lock], 5_000)).exitCode !== 0) {
+      const held = await age(lock)
+      if (held !== undefined && held > LOCK_STALE_MS) {
+        await io.run(['rmdir', lock], 5_000)
+      }
+      return
+    }
+    try {
+      // Another session may have fetched between the look and the lock.
+      if (await isFresh()) {
+        return
+      }
+      // Stamped before the fetch, so a fetch that fails is not retried by every session at once.
+      await io.write(stamp, new Date(io.now()).toISOString())
+      const marketplaces = autoUpdating(await io.read(`${where.plugins}/known_marketplaces.json`))
+      const installed = parseInstalled(await io.read(`${where.plugins}/installed_plugins.json`)) ?? {}
+      const enabled = await io.enabled()
+      for (const m of marketplaces) {
+        await fetchOne(m, installed, enabled)
+      }
+    } finally {
+      await io.run(['rmdir', lock], 5_000)
+    }
+  }
+
+  return {
+    async tick() {
+      if (isBusy) {
+        return
+      }
+      isBusy = true
+      try {
+        await step()
+      } catch (error) {
+        io.log(`reload: the fetch failed: ${message(error)}`)
+      } finally {
+        isBusy = false
+      }
+    },
+  }
+}
+
+/** How often a session looks whether the machine's fetch is due. */
+export const FETCH_LOOK_MS = 60_000
+
+/**
+ * Registers the watch and the fetch, in interactive sessions only: headless
+ * runs refuse a plugin's `/reload-plugins`. `DOPERPOWERS_AUTORELOAD=off` (or
+ * 0, false) leaves a launch on the versions it loaded and fetches nothing.
  */
 export function registerReload(on: On) {
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -290,16 +440,30 @@ export function registerReload(on: On) {
     if (off === 'off' || off === '0' || off === 'false') {
       return result
     }
-    const plugins = `${(await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`}/plugins`
+    const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
+    const plugins = `${config}/plugins`
+    const enabled = async () => {
+      const { enabledPlugins } = await $.settings.read()
+      return new Set(isRecord(enabledPlugins) ? Object.keys(enabledPlugins).filter((key) => enabledPlugins[key] === true) : [])
+    }
+    const fetcher = createFetcher(
+      {
+        stat: (path) => $.fs.stat(path),
+        read: (path) => $.fs.read(path),
+        write: (path, line) => $.fs.write(path, line),
+        run: (argv, timeoutMs) => $.process.run(argv, { timeoutMs, env: { GIT_TERMINAL_PROMPT: '0' } }),
+        enabled,
+        now: () => Date.now(),
+        log: (line) => $.ui.log(line, { to: 'debug' }),
+      },
+      { plugins, state: `${config}/autoreload` },
+    )
     const reloader = createReloader(
       {
         stat: (path) => $.fs.stat(path),
         read: (path) => $.fs.read(path),
         exists: (path) => $.fs.exists(path),
-        enabled: async () => {
-          const { enabledPlugins } = await $.settings.read()
-          return new Set(isRecord(enabledPlugins) ? Object.keys(enabledPlugins).filter((key) => enabledPlugins[key] === true) : [])
-        },
+        enabled,
         reload: () => $.command.run({ command: 'reload-plugins' }),
         asksInFlight,
         now: () => Date.now(),
@@ -312,6 +476,7 @@ export function registerReload(on: On) {
       () => $.clock.every(POLL_MS, () => void reloader.tick()),
       (error) => $.ui.log(`reload: not watching plugin updates: ${message(error)}`, { to: 'debug' }),
     )
+    $.clock.every(FETCH_LOOK_MS, () => void fetcher.tick())
     return result
   })
 }

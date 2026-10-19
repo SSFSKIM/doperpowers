@@ -1,9 +1,13 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
 import {
+  FETCH_MS,
   FORCE_TEXT,
+  LOCK_STALE_MS,
   RETRY_MS,
+  autoUpdating,
   changesOf,
+  createFetcher,
   createReloader,
   parseInstalled,
   runningRecord,
@@ -231,5 +235,147 @@ describe('createReloader', () => {
     dev.install('to-human@dp', '0.2.0')
     await dev.ticks(4)
     expect(dev.reloads()).toBe(0)
+  })
+})
+
+describe('autoUpdating', () => {
+  test('reads the git marketplaces marked autoUpdate, with their remote, ref and clone', async () => {
+    const known = {
+      dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: '/m/dp', autoUpdate: true },
+      pinned: { source: { source: 'git', url: 'https://x/p.git', ref: 'stable' }, installLocation: '/m/p', autoUpdate: true },
+      official: { source: { source: 'github', repo: 'a/official' }, installLocation: '/m/o' },
+      local: { source: { source: 'directory', path: '/src/l' }, installLocation: '/src/l', autoUpdate: true },
+    }
+    expect(autoUpdating(JSON.stringify(known))).toEqual([
+      { name: 'dp', url: 'https://github.com/o/dp.git', ref: 'HEAD', clone: '/m/dp' },
+      { name: 'pinned', url: 'https://x/p.git', ref: 'stable', clone: '/m/p' },
+    ])
+    expect(autoUpdating('{')).toEqual([])
+  })
+})
+
+/**
+ * A machine's files and commands as plain records: the remote's head and the
+ * clone's, the mtimes of the stamp and the lock, and every command run
+ * written down.
+ */
+function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
+  const STATE = '/h/.claude/autoreload'
+  const state = { clock: 1_000_000_000, remote: options.remote ?? 'b'.repeat(40), failing: '' }
+  const files = new Map<string, number>()
+  const runs: string[] = []
+  const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: '/m/dp', autoUpdate: true } }
+  const installed = {
+    version: 2,
+    plugins: {
+      'doperpowers@dp': [user('doperpowers', '7.1.0')],
+      'to-human@dp': [user('to-human', '0.1.0')],
+      'old@dp': [{ scope: 'project', projectPath: '/r', installPath: '/x', version: '1' }],
+      'other@else': [user('other', '1')],
+    },
+  }
+  const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' })
+  const fetcher = createFetcher(
+    {
+      stat: async (path) => {
+        const mtime = files.get(path)
+        if (mtime === undefined) {
+          throw new Error(`ENOENT: ${path}`)
+        }
+        return { mtimeMs: mtime }
+      },
+      read: async (path) => JSON.stringify(path.endsWith('known_marketplaces.json') ? known : installed),
+      write: async (path) => void files.set(path, state.clock),
+      run: async (argv) => {
+        const line = argv.join(' ')
+        runs.push(line)
+        if (state.failing !== '' && line.startsWith(state.failing)) {
+          return { exitCode: 1, stdout: '', stderr: 'failed' }
+        }
+        const [command, first] = argv
+        if (command === 'mkdir' && first !== '-p') {
+          if (files.has(first as string)) {
+            return { exitCode: 1, stdout: '', stderr: 'File exists' }
+          }
+          files.set(first as string, state.clock)
+        }
+        if (command === 'rmdir') {
+          files.delete(first as string)
+        }
+        if (first === 'ls-remote') {
+          return ok(`${state.remote}\tHEAD\n`)
+        }
+        if (argv[3] === 'rev-parse') {
+          return ok(`${'a'.repeat(40)}\n`)
+        }
+        return ok()
+      },
+      enabled: async () => new Set(options.enabled ?? ['doperpowers@dp', 'to-human@dp', 'old@dp', 'other@else']),
+      now: () => state.clock,
+      log: () => {},
+    },
+    { plugins: '/h/.claude/plugins', state: STATE },
+  )
+  const claude = () => runs.filter((r) => r.startsWith('claude '))
+  return { fetcher, state, files, runs, claude, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp` }
+}
+
+describe('createFetcher', () => {
+  test('a moved remote updates the marketplace, then each enabled plugin installed from it at user scope', async () => {
+    const h = fetchHarness()
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual([
+      'claude plugin marketplace update dp',
+      'claude plugin update doperpowers@dp --scope user',
+      'claude plugin update to-human@dp --scope user',
+    ])
+    expect(h.files.has(h.lock)).toBe(false)
+    expect(h.files.has(h.stamp)).toBe(true)
+  })
+
+  test('a clone at the remote head updates nothing', async () => {
+    const h = fetchHarness({ remote: 'a'.repeat(40) })
+    await h.fetcher.tick()
+    expect(h.runs).toContain('git ls-remote https://github.com/o/dp.git HEAD')
+    expect(h.claude()).toEqual([])
+  })
+
+  test('the machine fetches at most once a period, whichever session looks', async () => {
+    const h = fetchHarness()
+    await h.fetcher.tick()
+    const once = h.runs.length
+    h.state.clock += FETCH_MS - 1
+    await h.fetcher.tick()
+    expect(h.runs.length).toBe(once)
+    h.state.clock += 1
+    await h.fetcher.tick()
+    expect(h.claude().filter((r) => r.includes('marketplace update'))).toHaveLength(2)
+  })
+
+  test('a lock another session holds is left alone; one past the stale age is cleared for the next look', async () => {
+    const h = fetchHarness()
+    h.files.set(h.lock, h.state.clock)
+    await h.fetcher.tick()
+    expect(h.runs.some((r) => r.includes('ls-remote'))).toBe(false)
+    expect(h.files.has(h.lock)).toBe(true)
+    h.state.clock += LOCK_STALE_MS + 1
+    await h.fetcher.tick()
+    expect(h.files.has(h.lock)).toBe(false)
+    await h.fetcher.tick()
+    expect(h.claude()).toHaveLength(3)
+  })
+
+  test('a marketplace that will not update leaves its plugins alone, and the lock is released', async () => {
+    const h = fetchHarness()
+    h.state.failing = 'claude plugin marketplace update'
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin marketplace update dp'])
+    expect(h.files.has(h.lock)).toBe(false)
+  })
+
+  test('a disabled plugin is not updated', async () => {
+    const h = fetchHarness({ enabled: ['doperpowers@dp'] })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin marketplace update dp', 'claude plugin update doperpowers@dp --scope user'])
   })
 })

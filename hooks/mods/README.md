@@ -772,9 +772,28 @@ delivered: the ask mod keeps its asks in module memory, and a reload of this
 plugin would forget them. An uninstall is not acted on, nor a newly
 installed plugin; a copy run from outside the plugin cache (`--plugin-dir`)
 is not watched, since the engine watches that folder itself.
+
+The module also fetches what the engine fetches only at a session's start.
+For each marketplace `known_marketplaces.json` marks `autoUpdate` (from
+GitHub or a git URL; this machine's are doperpowers, cua, designer and
+ptc-tool), one session per machine at a time, at most every 5 minutes,
+reads the remote's head with `git ls-remote` and compares it with the
+marketplace clone's. Where it moved, it runs `claude plugin marketplace
+update <name>` and then `claude plugin update <key> --scope user` for each
+enabled plugin installed from it at user scope; the watch then reloads every
+session on the machine. Each session looks once a minute whether the
+machine's fetch is due: `~/.claude/autoreload/fetch.stamp` is older than 5
+minutes, and the lock directory beside it (`fetch.lock`, made with `mkdir`)
+is free. The stamp is written before the fetch, so a fetch that fails waits
+out the period rather than being retried by every session, and a lock left
+by a session that died is cleared after 30 minutes. A machine with nothing
+new costs one `ls-remote` per marketplace every 5 minutes, about half a
+second each. It never passes `-y`, so a marketplace whose install command
+changed waits for a person.
+
 `DOPERPOWERS_AUTORELOAD=off` (or `0`, `false`) leaves a launch on the
-versions it loaded. Headless runs (`-p`, the SDK, MAWS) are left out: the
-engine refuses a plugin's `/reload-plugins` there.
+versions it loaded and fetches nothing. Headless runs (`-p`, the SDK, MAWS)
+are left out: the engine refuses a plugin's `/reload-plugins` there.
 
 ## secrets
 
