@@ -949,7 +949,7 @@ def seat_project(seat, fresh=False):
     key = (str(seat.get("current") or ""), cwd)
     if not fresh and key in _SEAT_PROJECTS:
         return _SEAT_PROJECTS[key]
-    project = session_project(key[0], seat_cwd(seat), fresh)
+    project = session_project(key[0], seat_cwd(seat, fresh), fresh)
     if project is None:
         name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
         project = make_project("local-" + name, name, "", os.path.abspath(cwd))
@@ -957,13 +957,14 @@ def seat_project(seat, fresh=False):
     return project
 
 
-def seat_cwd(seat):
+def seat_cwd(seat, fresh=False):
     """The directory a seat's session runs in, as a session's: its launch
-    directory (launch_cwd), the seat's recorded cwd — where its spawner
+    directory (launch_cwd; `fresh`, its transcript looked for as the
+    directories are now), the seat's recorded cwd — where its spawner
     launched it — standing in until the transcript names one."""
     cwd = str(seat.get("cwd") or "")
     sid = str(seat.get("current") or "")
-    return launch_cwd(sid, fallback=cwd) if sid and cwd else cwd
+    return launch_cwd(sid, fallback=cwd, fresh=fresh) if sid and cwd else cwd
 
 
 def write_json(path, data, mode=0o600):
@@ -1207,16 +1208,18 @@ def _first_cwd(f):
     return ""
 
 
-def launch_cwd(session, transcript="", fallback=""):
+def launch_cwd(session, transcript="", fallback="", fresh=False):
     """The directory a session was launched in (or the engine last moved it
-    to), from its transcript (`transcript`, else found by its id); `fallback`
+    to), from its transcript (`transcript`, else found by its id; `fresh`,
+    looked for as the directories are now when the index has none: for a
+    write that rests on it); `fallback`
     when the transcript does not exist yet or names none — before its first
     turn, when no tool has moved its shell, so the caller's current
     directory is the launch directory then. Cached under launch/<session>.json
     with the transcript's size read, so a later call reads only what the
     engine appended since; a transcript at another path (the engine moved
     it) or shorter than read is read again."""
-    path = transcript or transcript_path(session)
+    path = transcript or (transcript_now(session) if fresh else transcript_path(session))
     try:
         st = os.stat(path) if path else None
     except OSError:
@@ -1344,7 +1347,7 @@ def record_project(rec, fresh=False):
     sid, cwd = str(rec.get("sessionId") or ""), str(rec.get("cwd") or "")
     if not fresh and (sid, cwd) in _RECORD_PROJECTS:
         return _RECORD_PROJECTS[(sid, cwd)]
-    project = _RECORD_PROJECTS[(sid, cwd)] = session_project(sid, launch_cwd(sid, fallback=cwd), fresh)
+    project = _RECORD_PROJECTS[(sid, cwd)] = session_project(sid, launch_cwd(sid, fallback=cwd, fresh=fresh), fresh)
     return project
 
 
@@ -1914,7 +1917,7 @@ def _reconcile(project, events, local, by_session):
             if str(rec.get("pid")) not in internal_pids():
                 out += retire_moved(project, sid, record_project(rec), lambda rec=rec: record_project(rec, fresh=True))
             continue
-        successor = continued_in(sid)
+        successor = continued_in(sid, fresh=True)   # before an `ended` that would bury a hand-off
         if successor:
             out += hand_off(project, sid, successor)
             continue
@@ -2135,7 +2138,7 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
     if by is None:
         by = "move" if moved_here(project, sid) else ""
     if seat:
-        fields = joined_fields(seat["alias"], "seat", seat_cwd(seat), seat["worktree"], seat["role"],
+        fields = joined_fields(seat["alias"], "seat", seat_cwd(seat, fresh=True), seat["worktree"], seat["role"],
                                seat["seat_id"], by, "seat")
     else:
         held = own_alias(_own_events(project, sid), sid)
@@ -2149,7 +2152,7 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
                 held = own_alias(_own_events(project, old), old)
         alias, source = held_alias(*held, peer, sid)
         fields = joined_fields(alias or sid[:8], source or "derived",
-                               launch_cwd(sid, fallback=str(peer.get("cwd") or "")), by=by,
+                               launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""))
     joined = lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
     if joined:
@@ -2208,7 +2211,7 @@ HANDOFF_REACH = 1 << 20
 _HANDOFFS = {}  # session -> ((path, size, mtime_ns), successor): valid while the file is unchanged
 
 
-def continued_in(session):
+def continued_in(session, fresh=False):
     """The session `session` continues in, when the harness sent it to the
     background (`/background`, the agents view's ←): that starts a job as a
     fork, a new session id and process, lets the old process exit, and
@@ -2216,8 +2219,9 @@ def continued_in(session):
     old transcript — the record its own /resume reads to hide the old
     session (harness 2.1.300). Read as the harness reads it: the latest such
     record with no turn after it, so an old session resumed and worked in
-    again is its own again. "" when there is none."""
-    path = transcript_path(session)
+    again is its own again. "" when there is none. `fresh`: a transcript
+    the index has not listed yet looked for (transcript_now)."""
+    path = transcript_now(session) if fresh else transcript_path(session)
     try:
         st = os.stat(path) if path else None
     except OSError:
@@ -3086,6 +3090,8 @@ def push_member(member, text, tagged, session=None, event=None, project=None):
     if not tagged:
         return "recorded"
     st = seat_state(fresh, None)  # the probe above found no live peer
+    if st == "gone" and transcript_now(fresh["current"]):
+        st = "stopped"   # its transcript is newer than the index
     if st == "gone":
         # A resume of a session with no transcript here cannot work: say so,
         # as for a retired member, rather than attempt it.

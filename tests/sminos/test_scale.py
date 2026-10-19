@@ -45,6 +45,7 @@ import sminos  # noqa: E402
 daemon = sminos.daemon_module()
 uplink = sminos.sibling_module("sminos_uplink")
 SLEEPERS = []
+PROCS = {}
 
 
 def write(path, data):
@@ -72,12 +73,14 @@ def checkout(name, pid=None):
     return d
 
 
-def live_session(cwd, sid=None):
-    """A session whose engine record names a running process (a `sleep`)."""
+def live_session(cwd, sid=None, with_transcript=True):
+    """A session whose engine record names a running process (a `sleep`, kept in PROCS)."""
     sid = sid or str(uuid.uuid4())
     p = subprocess.Popen(["sleep", "600"])
     SLEEPERS.append(p)
-    transcript(cwd, sid)
+    PROCS[sid] = p
+    if with_transcript:
+        transcript(cwd, sid)
     write(os.path.join(HOME, ".claude", "sessions", "%d.json" % p.pid),
           {"pid": p.pid, "sessionId": sid, "cwd": cwd, "kind": "interactive", "entrypoint": "cli",
            "name": "s-" + sid[:4], "nameSource": "derived", "status": "idle"})
@@ -217,6 +220,41 @@ class StaleResolution(unittest.TestCase):
         sminos.view_of(own, titles=False)
         self.assertEqual(sminos.latest_membership(sminos._own_events(own, sid)), "retired",
                          "the reconciliation did not join it to its old project again")
+
+
+class FreshDecisions(unittest.TestCase):
+    """What a reconciliation writes on a transcript's evidence looks for it as
+    the directories are now, not as the index last listed them: a transcript
+    may be seconds old (the review of the index)."""
+
+    def test_a_hand_off_newer_than_the_index_is_not_retired_ended(self):
+        d = checkout("handoff")
+        own = sminos.own_machine_project()
+        sid, job = live_session(d, with_transcript=False), str(uuid.uuid4())
+        sminos.forget_caches()
+        quietly(daemon.tick_all)   # joins it, and lists the transcripts before it has one
+        self.assertEqual(sminos.latest_membership(sminos._own_events(own, sid)), "joined")
+        path = os.path.join(PROJECTS, d.replace("/", "-").replace(".", "-"), sid + ".jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:   # its first turn, then the harness sends it to the background
+            f.write(json.dumps({"type": "user", "cwd": d, "sessionId": sid,
+                                "message": {"role": "user", "content": "go"}}) + "\n")
+            f.write(json.dumps({"type": "continued-in", "continuedInSessionId": job}) + "\n")
+        PROCS[sid].kill()
+        PROCS[sid].wait()
+        quietly(daemon.tick_all)   # within TRANSCRIPT_FRESH of the last listing
+        last = next(e for e in reversed(sminos._own_events(own, sid)) if e["kind"] in sminos.MEMBERSHIP)
+        self.assertEqual((last["kind"], last.get("reason"), last.get("to")), ("retired", "continued", job))
+
+    def test_a_recheck_reads_a_transcript_newer_than_the_index(self):
+        a, b = checkout("launched"), checkout("wandered", str(uuid.uuid4()))
+        sid = str(uuid.uuid4())
+        rec = {"pid": os.getpid(), "sessionId": sid, "cwd": b}   # the shell moved on; the launch was in `a`
+        sminos.forget_caches()
+        sminos.transcript_path(str(uuid.uuid4()))   # the generation's listing, before the transcript
+        transcript(a, sid)
+        self.assertNotEqual(sminos.record_project(rec).id, sminos.resolve_project(a).id)
+        self.assertEqual(sminos.record_project(rec, fresh=True).id, sminos.resolve_project(a).id)
 
 
 class OrgAhead(unittest.TestCase):
