@@ -878,6 +878,20 @@ keeps them across the reload. An uninstall is not acted on, nor a newly
 installed plugin; a copy run from outside the plugin cache (`--plugin-dir`)
 is not watched, since the engine watches that folder itself.
 
+Nor does the module reload into a plugin whose dependency is missing,
+whoever wrote the records (its own fetch, a new session's auto-update, a
+person's `claude plugin update`, none of which need install a dependency a
+new version names). When a reload is due it reads what the reload would
+load: a plugin its marketplace carries by path at its clone's manifest
+(found through `known_marketplaces.json`), which changes when that version
+is not the one the session runs, whether or not its record moved; any other
+plugin at the manifest of its record's install. If a changing plugin's
+dependency chain reaches a plugin with no user or managed record, the
+reload waits, with a debug line, and the install that brings the dependency
+writes the file, which fires it. A plugin whose loaded version already
+lacked a dependency holds nothing: the reload leaves it as it was. A reload
+is one act, so one such plugin holds every change with it.
+
 The module also fetches what the engine fetches only at a session's start.
 For each marketplace `known_marketplaces.json` marks `autoUpdate` (from
 GitHub or a git URL; this machine's are doperpowers, cua, designer and
@@ -886,27 +900,35 @@ reads the remote's head with `git ls-remote` (an entry whose URL or ref
 begins with `-` is skipped) and compares it with the marketplace clone's.
 Where it moved, it runs `claude plugin marketplace update <name>`. Then,
 moved or not, it reads the clone's `.claude-plugin/marketplace.json` and the
-manifest at each plugin's `source` folder, and acts on the enabled plugins
-installed from it at user scope whose recorded version is not the clone's
+manifest at each plugin's `source` folder. It runs `claude plugin install
+<dep> --scope user` for every plugin the enabled plugins' dependency chains
+reach that has no user or managed record (a name without `@<marketplace>`
+is of the dependent's), whether or not anything is behind, so a dependency
+another actor's update left out is installed too. Then it runs `claude
+plugin update <key> --scope user` for each enabled plugin installed from
+the marketplace at user scope whose recorded version is not the clone's
 (one the clone holds no manifest of, ci-kit's from a URL, only when the head
-moved): it first runs `claude plugin install <dep> --scope user` for every
-plugin those manifests depend on that is not installed (a name without
-`@<marketplace>` is of the dependent's), then `claude plugin update <key>
---scope user` for each plugin behind. A dependency that will not install
-applies nothing, with a debug line, and since the versions still differ the
-next fetch tries again. The watch then reloads every session on the machine,
-once: a reload waits while the fetch holds its lock, so a batch whose
-installs and updates land more than a period apart is not reloaded at each.
-A release that moves mods into a new plugin that another comes to depend on
-thus lands whole: the new plugin is installed before anything reloads.
+moved), except one whose dependency chain reaches a dependency that did not
+install: that one is held back, with a debug line, and the rest go on, so a
+dependency that will not install on this machine stops only the plugins
+that need it. Each fetch tries the install again. The watch then reloads
+every session on the machine, once: before each install and update the
+fetch marks that it applies a batch (`fetch.applying`, beside its lock),
+and clears the mark at its end, and a reload waits while the mark is
+younger than 3 minutes (one command's 2-minute limit and a margin), so a
+batch whose writes land more than a period apart is not reloaded at each,
+and a session that dies applying holds the machine's reloads no longer
+than that. A release that moves mods into a new plugin that another comes
+to depend on thus lands whole: the new plugin is installed before anything
+reloads, and while it is not, nothing reloads into its dependent.
 Each session looks once a minute whether the machine's fetch is due:
 `~/.claude/autoreload/fetch.stamp` is older than 5 minutes, and the lock
 directory beside it (`fetch.lock`, made with `mkdir`) is free. The lock
 serializes this module's sessions only, and the engine takes none: it saves
 `installed_plugins.json` and `known_marketplaces.json` by read-modify-write,
 and refreshes a marketplace by cloning beside its clone and renaming the new
-one in (2.1.283 on; earlier engines pulled into the clone). The fetch is due
-exactly when the remote has just moved, which is when the person or the
+one in (2.1.283 on; earlier engines pulled into the clone). The fetch finds
+work mostly just after the remote moved, which is when the person or the
 merging session runs its own update, or a new session's auto-update runs.
 So the session holding the lock first looks whether either file, a clone's
 parent directory or its `.git/FETCH_HEAD` changed within the last minute; if

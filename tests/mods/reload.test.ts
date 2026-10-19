@@ -2,6 +2,7 @@ import { describe, expect, test, tier } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import {
+  APPLY_STALE_MS,
   FETCH_MS,
   FORCE_TEXT,
   LOCK_STALE_MS,
@@ -24,7 +25,10 @@ tier('user')
 
 const CACHE = '/h/.claude/plugins/cache'
 const FILE = '/h/.claude/plugins/installed_plugins.json'
-const FETCH_LOCK = '/h/.claude/autoreload/fetch.lock'
+const FETCH_STATE = '/h/.claude/autoreload'
+const APPLYING = `${FETCH_STATE}/fetch.applying`
+const KNOWN = '/h/.claude/plugins/known_marketplaces.json'
+const CLONE = '/h/.claude/plugins/marketplaces/dp'
 const at = (plugin: string, version: string) => `${CACHE}/dp/${plugin}/${version}`
 const user = (plugin: string, version: string): InstallRecord => ({ scope: 'user', installPath: at(plugin, version), version })
 
@@ -91,40 +95,61 @@ describe('changesOf', () => {
   })
 })
 
+type Manifest = { version?: string; dependencies?: string[] }
+
 /**
  * A disk of plain records and an engine that writes down what the reloader
- * asks of it. `install` rewrites the file with a new mtime; the reload's
- * answer is set per test.
+ * asks of it. `install` rewrites the file with a new mtime, and writes the
+ * manifest of what it installs; the reload's answer is set per test. With a
+ * `clone`, the marketplace's clone holds those files (`cloneOf`), which a
+ * reload loads its path-sourced plugins from; without, every plugin loads
+ * from its record, as one from a url does.
  */
-function harness(options: { root?: string; enabled?: string[]; records?: Record<string, InstallRecord[]> } = {}) {
+function harness(
+  options: { root?: string; enabled?: string[]; records?: Record<string, InstallRecord[]>; manifests?: Record<string, Manifest>; clone?: Record<string, unknown> } = {},
+) {
   let mtime = 1
   let plugins: Record<string, InstallRecord[]> = options.records ?? {
     'doperpowers@dp': [user('doperpowers', '7.1.0')],
     'to-human@dp': [user('to-human', '0.1.0')],
   }
   const existing = new Set(['/w/.git', ...Object.values(plugins).flatMap((rs) => rs.map((r) => r.installPath as string))])
+  const manifests = new Map(Object.entries(options.manifests ?? {}))
   const calls: { op: string; text?: string }[] = []
   const state = {
     clock: 0,
     isDialogUp: false,
     isTurnRunning: false,
     answer: (): Promise<{ text?: string }> => Promise.resolve({ text: 'Reloaded: 4 plugins · 30 skills' }),
-    /** When the machine's fetch took its lock; undefined while no fetch holds it. */
-    lockedAt: undefined as number | undefined,
+    /** When the machine's fetch last marked that it applies a batch; undefined while it applies none. */
+    applyingAt: undefined as number | undefined,
   }
+  const MANIFEST = '/.claude-plugin/plugin.json'
   const reloader = createReloader(
     {
       stat: async (path) => {
-        if (path !== FETCH_LOCK) {
+        if (path !== APPLYING) {
           return { mtimeMs: mtime }
         }
-        if (state.lockedAt === undefined) {
+        if (state.applyingAt === undefined) {
           throw new Error(`ENOENT: ${path}`)
         }
-        return { mtimeMs: state.lockedAt }
+        return { mtimeMs: state.applyingAt }
       },
-      read: async () => JSON.stringify({ version: 2, plugins }),
-      exists: async (path) => (path === FETCH_LOCK ? state.lockedAt !== undefined : existing.has(path)),
+      read: async (path) => {
+        if (path === FILE) {
+          return JSON.stringify({ version: 2, plugins })
+        }
+        if (path === KNOWN && options.clone !== undefined) {
+          return JSON.stringify({ dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true } })
+        }
+        const file = path.startsWith(`${CLONE}/`) ? options.clone?.[path.slice(CLONE.length + 1)] : path.endsWith(MANIFEST) ? manifests.get(path.slice(0, -MANIFEST.length)) : undefined
+        if (file === undefined) {
+          throw new Error(`ENOENT: ${path}`)
+        }
+        return JSON.stringify(file)
+      },
+      exists: async (path) => (path === APPLYING ? state.applyingAt !== undefined : existing.has(path)),
       enabled: async () => new Set(options.enabled ?? Object.keys(plugins)),
       reload: () => (calls.push({ op: 'reload' }), state.answer()),
       isAskDialogUp: () => state.isDialogUp,
@@ -133,12 +158,13 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
       toast: (text) => calls.push({ op: 'toast', text }),
       log: (text, to) => calls.push({ op: `log:${to}`, text }),
     },
-    { file: FILE, cacheDir: CACHE, fetchLock: FETCH_LOCK, cwd: '/w', self: { name: 'doperpowers', root: options.root ?? at('doperpowers', '7.1.0') } },
+    { file: FILE, cacheDir: CACHE, fetchState: FETCH_STATE, cwd: '/w', self: { name: 'doperpowers', root: options.root ?? at('doperpowers', '7.1.0') } },
   )
-  const install = (key: string, version: string) => {
+  const install = (key: string, version: string, manifest: Manifest = {}) => {
     const plugin = key.split('@')[0] as string
     plugins = { ...plugins, [key]: [user(plugin, version)] }
     existing.add(at(plugin, version))
+    manifests.set(at(plugin, version), { name: plugin, version, ...manifest } as Manifest)
     mtime += 1
   }
   // Lets the reload's answer settle: a few microtask turns, no timer.
@@ -218,29 +244,87 @@ describe('createReloader', () => {
     expect(h.reloads()).toBe(1)
   })
 
-  test("the machine's fetch holding its lock holds the reload, so a batch it is installing and updating reloads once, at its end", async () => {
+  test("the machine's fetch applying a batch holds the reload, so the batch it is installing and updating reloads once, at its end", async () => {
     const h = harness()
     await h.reloader.start()
-    h.state.lockedAt = h.state.clock
+    h.state.applyingAt = h.state.clock
     h.install('doperpowers@dp', '7.2.0')
     await h.ticks(3)
     h.install('to-human@dp', '0.2.0')
     await h.ticks(3)
     expect(h.reloads()).toBe(0)
-    h.state.lockedAt = undefined
+    h.state.applyingAt = undefined
     await h.ticks(1)
     expect(h.reloads()).toBe(1)
     expect(h.calls.find((c) => c.op === 'toast')?.text).toBe('doperpowers 7.1.0 → 7.2.0, to-human 0.1.0 → 0.2.0: reloading plugins once the session is idle')
   })
 
-  test('a fetch lock past its stale age, left by a session that died holding it, holds nothing', async () => {
+  test("a fetch's mark past its stale age, a few minutes, left by a session that died applying, holds nothing", async () => {
     const h = harness()
     await h.reloader.start()
-    h.state.lockedAt = h.state.clock
-    h.state.clock += LOCK_STALE_MS + 1
+    h.state.applyingAt = h.state.clock
+    h.state.clock += APPLY_STALE_MS + 1
     h.install('to-human@dp', '0.2.0')
     await h.ticks(2)
     expect(h.reloads()).toBe(1)
+    expect(APPLY_STALE_MS).toBeLessThan(LOCK_STALE_MS)
+  })
+
+  test('a changed plugin whose new manifest names a dependency not installed holds the reload, whoever updated it, and the reload fires once the dependency is installed', async () => {
+    const h = harness()
+    await h.reloader.start()
+    h.install('to-human@dp', '0.2.0', { dependencies: ['sminos'] })
+    await h.ticks(4)
+    expect(h.reloads()).toBe(0)
+    expect(h.calls.some((c) => c.op === 'log:debug' && c.text?.includes('to-human@dp') && c.text.includes('sminos@dp'))).toBe(true)
+    h.install('sminos@dp', '1.0.0')
+    await h.ticks(2)
+    expect(h.reloads()).toBe(1)
+    expect(h.calls.find((c) => c.op === 'toast')?.text).toBe('to-human 0.1.0 → 0.2.0: reloading plugins once the session is idle')
+  })
+
+  test('a dependency with a managed record counts as installed', async () => {
+    const managed: InstallRecord = { scope: 'managed', installPath: at('sminos', '1.0.0'), version: '1.0.0' }
+    const h = harness({ records: { 'doperpowers@dp': [user('doperpowers', '7.1.0')], 'to-human@dp': [user('to-human', '0.1.0')], 'sminos@dp': [managed] } })
+    await h.reloader.start()
+    h.install('to-human@dp', '0.2.0', { dependencies: ['sminos'] })
+    await h.ticks(2)
+    expect(h.reloads()).toBe(1)
+  })
+
+  test('the hold follows the dependency chain: a plugin over a dependency that waits for a missing one waits too, while an unrelated update reloads', async () => {
+    const h = harness({ records: { 'a@dp': [user('a', '1')], 'b@dp': [user('b', '1')], 'd@dp': [user('d', '1')] } })
+    await h.reloader.start()
+    h.install('d@dp', '2')
+    await h.ticks(2)
+    expect(h.reloads()).toBe(1)
+    h.install('b@dp', '2', { dependencies: ['c'] })
+    h.install('a@dp', '2', { dependencies: ['b'] })
+    await h.ticks(4)
+    expect(h.reloads()).toBe(1)
+    h.install('c@dp', '1')
+    await h.ticks(2)
+    expect(h.reloads()).toBe(2)
+  })
+
+  test("a plugin its marketplace carries by path is held on its clone's manifest, which the reload loads whatever its record says; one the clone holds at the version the session runs holds nothing", async () => {
+    // The fetch updated doperpowers and held to-human back for sminos: a
+    // reload would still load to-human 0.2.0 from the clone.
+    const rolled = harness({ clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] } }) })
+    await rolled.reloader.start()
+    rolled.install('doperpowers@dp', '7.2.0')
+    await rolled.ticks(4)
+    expect(rolled.reloads()).toBe(0)
+    rolled.install('sminos@dp', '1.0.0')
+    await rolled.ticks(2)
+    expect(rolled.reloads()).toBe(1)
+    // A dependency to-human named all along, never installed: the session
+    // already runs without it, and a reload changes nothing of that.
+    const standing = harness({ clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.1.0', dependencies: ['gone'] } }) })
+    await standing.reloader.start()
+    standing.install('doperpowers@dp', '7.2.0')
+    await standing.ticks(2)
+    expect(standing.reloads()).toBe(1)
   })
 
   test('a reload that needs --force is told to the person and not run again for that install', async () => {
@@ -348,6 +432,10 @@ function fetchHarness(
   const files = new Map<string, number>()
   const runs: string[] = []
   const logs: string[] = []
+  const APPLYING = `${STATE}/fetch.applying`
+  /** Each install and update, with whether the fetch's mark that it applies a batch was up as it ran. */
+  const applied: { line: string; isMarked: boolean }[] = []
+  const writes: string[] = []
   const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true } }
   const installed = {
     version: 2,
@@ -379,7 +467,10 @@ function fetchHarness(
         }
         return JSON.stringify(path.endsWith('known_marketplaces.json') ? known : installed)
       },
-      write: async (path) => void files.set(path, state.clock),
+      write: async (path) => {
+        writes.push(path)
+        files.set(path, state.clock)
+      },
       run: async (argv) => {
         const line = argv.join(' ')
         runs.push(line)
@@ -396,6 +487,12 @@ function fetchHarness(
         if (command === 'rmdir') {
           files.delete(first as string)
         }
+        if (command === 'rm') {
+          files.delete(argv.at(-1) as string)
+        }
+        if (line.startsWith('claude plugin install ') || line.startsWith('claude plugin update ')) {
+          applied.push({ line, isMarked: files.has(APPLYING) })
+        }
         if (first === 'ls-remote') {
           return ok(`${state.remote}\tHEAD\n`)
         }
@@ -410,6 +507,15 @@ function fetchHarness(
           const key = argv[3] as string
           installed.plugins[key] = [user(key.split('@')[0] as string, 'new')]
         }
+        // An update records the version the clone's manifest names.
+        if (line.startsWith('claude plugin update ')) {
+          const key = argv[3] as string
+          const name = key.split('@')[0] as string
+          const manifest = options.clone?.[`${name === 'doperpowers' ? '' : `${name}/`}.claude-plugin/plugin.json`] as { version?: string } | undefined
+          if (manifest?.version !== undefined) {
+            installed.plugins[key] = [user(name, manifest.version)]
+          }
+        }
         return ok()
       },
       enabled: async () => new Set(options.enabled ?? ['doperpowers@dp', 'to-human@dp', 'old@dp', 'other@else', ...Object.keys(options.records ?? {})]),
@@ -419,7 +525,7 @@ function fetchHarness(
     { plugins: PLUGINS, state: STATE },
   )
   const claude = () => runs.filter((r) => r.startsWith('claude '))
-  return { fetcher, state, files, runs, logs, claude, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp` }
+  return { fetcher, state, files, runs, logs, claude, applied, writes, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp`, applying: APPLYING }
 }
 
 /**
@@ -477,21 +583,55 @@ describe('createFetcher: the plugins behind their clone', () => {
     ])
   })
 
-  test("a dependency that cannot be installed applies nothing, and the next fetch, the head in place but the version still behind, tries again", async () => {
+  test("a dependency that cannot be installed holds back the plugins depending on it, not the rest; the next fetch, the head in place but the version still behind, tries again", async () => {
     const clone = cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] }, sminos: { version: '1.0.0' } })
     const h = fetchHarness({ clone })
     h.state.failing = 'claude plugin install'
     await h.fetcher.tick()
-    expect(h.claude()).toEqual(['claude plugin marketplace update dp', 'claude plugin install sminos@dp --scope user'])
-    expect(h.logs.some((line) => line.includes('sminos@dp') && line.includes('no plugin'))).toBe(true)
+    expect(h.claude()).toEqual(['claude plugin marketplace update dp', 'claude plugin install sminos@dp --scope user', 'claude plugin update doperpowers@dp --scope user'])
+    expect(h.logs.some((line) => line.includes('to-human@dp') && line.includes('sminos@dp') && line.includes('held back'))).toBe(true)
     h.state.failing = ''
     h.state.clock += FETCH_MS
     await h.fetcher.tick()
-    expect(h.claude().slice(2)).toEqual([
-      'claude plugin install sminos@dp --scope user',
-      'claude plugin update doperpowers@dp --scope user',
-      'claude plugin update to-human@dp --scope user',
-    ])
+    expect(h.claude().slice(3)).toEqual(['claude plugin install sminos@dp --scope user', 'claude plugin update to-human@dp --scope user'])
+  })
+
+  test("a missing dependency is installed though nothing is behind: another actor applied the update and left it out", async () => {
+    const records = { 'doperpowers@dp': [user('doperpowers', '7.2.0')], 'to-human@dp': [user('to-human', '0.2.0')] }
+    const h = fetchHarness({ remote: IN_PLACE, records, clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] }, sminos: { version: '1.0.0' } }) })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin install sminos@dp --scope user'])
+  })
+
+  test('a dependency with a managed record counts as installed', async () => {
+    const records = { 'sminos@dp': [{ scope: 'managed', installPath: at('sminos', '1.0.0'), version: '1.0.0' }] }
+    const h = fetchHarness({ remote: IN_PLACE, records, clone: cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] }, sminos: { version: '1.0.0' } }) })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin update to-human@dp --scope user'])
+  })
+
+  test('the hold follows the dependency chain: a plugin over one held back for a dependency that will not install is held too, while an unrelated plugin updates', async () => {
+    const records = { 'a@dp': [user('a', '1')], 'b@dp': [user('b', '1')], 'd@dp': [user('d', '1')] }
+    const clone = cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.1.0' }, a: { version: '2', dependencies: ['b'] }, b: { version: '2', dependencies: ['c'] }, c: { version: '1' }, d: { version: '2' } })
+    const h = fetchHarness({ remote: IN_PLACE, records, clone })
+    h.state.failing = 'claude plugin install c@dp'
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin install c@dp --scope user', 'claude plugin update d@dp --scope user'])
+    expect(h.logs.filter((line) => line.includes('held back'))).toEqual([expect.stringContaining('a@dp, b@dp')])
+    h.state.failing = ''
+    h.state.clock += FETCH_MS
+    await h.fetcher.tick()
+    expect(h.claude().slice(2)).toEqual(['claude plugin install c@dp --scope user', 'claude plugin update a@dp --scope user', 'claude plugin update b@dp --scope user'])
+  })
+
+  test('the fetch marks that it applies a batch through each install and update, and clears the mark after; a fetch with nothing to apply marks nothing', async () => {
+    const h = fetchHarness({ clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] }, sminos: { version: '1.0.0' } }) })
+    await h.fetcher.tick()
+    expect(h.applied.map((a) => a.isMarked)).toEqual([true, true, true])
+    expect(h.files.has(h.applying)).toBe(false)
+    const idle = fetchHarness({ remote: IN_PLACE, clone: cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.1.0' } }) })
+    await idle.fetcher.tick()
+    expect(idle.writes).not.toContain(idle.applying)
   })
 
   test("a dependency in another marketplace is installed under that marketplace's name", async () => {

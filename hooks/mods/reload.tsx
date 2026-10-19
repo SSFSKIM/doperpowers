@@ -9,10 +9,11 @@ import { isAskDialogUp, isMainTurnRunning } from './ask'
  * marketplace auto-update): each session runs the version it loaded until
  * `/reload-plugins`. This mod watches the file and, when a plugin the session
  * runs has a new install there, runs `/reload-plugins` itself while the
- * session is idle; and one session per machine at a
- * time fetches the `autoUpdate` marketplaces' new versions, which the engine
- * does only at a session's start. The rows such a reload leaves are kept
- * out of what the model reads (see `reloadRow`).
+ * session is idle and nothing it would load lacks a dependency; and one
+ * session per machine at a time fetches the `autoUpdate` marketplaces' new
+ * versions, which the engine does only at a session's start, and installs
+ * the dependencies they name. The rows such a reload leaves are kept out of
+ * what the model reads (see `reloadRow`).
  */
 
 /** One install record of installed_plugins.json, as the engine writes it. */
@@ -23,6 +24,56 @@ export type Installed = Record<string, readonly InstallRecord[]>
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const text = (value: unknown) => (typeof value === 'string' ? value : undefined)
+
+/** A plugin is installed, as a dependency, with a user or managed record: one the engine loads everywhere. */
+export const isInstalledIn = (installed: Installed, key: string) => installed[key]?.some((r) => r.scope === 'user' || r.scope === 'managed') === true
+
+/** A plugin as its manifest names it: its version, and the plugins it depends on, by key. */
+export type PluginManifest = { version?: string; dependencies: string[] }
+
+/** A manifest's fields; a dependency named without a marketplace is of the dependent's, as the engine reads it. */
+function manifestOf(data: Record<string, unknown>, marketplace: string): PluginManifest {
+  const version = text(data.version)
+  const dependencies = (Array.isArray(data.dependencies) ? data.dependencies : [])
+    .filter((dependency): dependency is string => typeof dependency === 'string')
+    .map((dependency) => (dependency.includes('@') ? dependency : `${dependency}@${marketplace}`))
+  return { ...(version !== undefined && { version }), dependencies }
+}
+
+async function readJson(read: (path: string) => Promise<string>, path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const data: unknown = JSON.parse(await read(path))
+    return isRecord(data) ? data : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const marketplaceOf = (key: string) => key.slice(key.indexOf('@') + 1)
+
+/**
+ * The missing plugin a plugin's dependency chain reaches, if any: a plugin is
+ * held when one it depends on is missing or itself held, so a dependent never
+ * lands over a dependency that is held back.
+ */
+export async function missingInChain(
+  key: string,
+  dependencies: (key: string) => Promise<readonly string[]>,
+  isMissing: (key: string) => boolean,
+  seen = new Set<string>(),
+): Promise<string | undefined> {
+  seen.add(key)
+  for (const dependency of await dependencies(key)) {
+    if (isMissing(dependency)) {
+      return dependency
+    }
+    const reached = seen.has(dependency) ? undefined : await missingInChain(dependency, dependencies, isMissing, seen)
+    if (reached !== undefined) {
+      return reached
+    }
+  }
+  return undefined
+}
 
 /** The file's records; undefined for a file that does not parse as one (mid-write, or another shape). */
 export function parseInstalled(source: string): Installed | undefined {
@@ -169,12 +220,12 @@ export type ReloadIo = {
 }
 
 export type ReloadWhere = {
-  /** installed_plugins.json. */
+  /** installed_plugins.json; known_marketplaces.json is beside it. */
   file: string
   /** The plugin cache, where an installed plugin runs from. */
   cacheDir: string
-  /** The machine's fetch's lock (`createFetcher`), held while it installs and updates plugins. */
-  fetchLock: string
+  /** The machine's fetch's directory (`createFetcher`), where it marks that it applies a batch. */
+  fetchState: string
   cwd: string
   /** This plugin: its manifest name and the directory it runs from. */
   self: { name: string; root: string }
@@ -189,8 +240,8 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
   let seen: number | undefined
   /** The mtime whose records `due` was read from. */
   let read: number | undefined
-  /** The changes the file holds against `loaded`, and the snapshot they lead to. */
-  let due: { changes: Change[]; next: Snapshot } | undefined
+  /** The changes the file holds against `loaded`, the snapshot they lead to, and what holds them when a plugin would load over a missing dependency. */
+  let due: { changes: Change[]; next: Snapshot; held?: { key: string; missing: string } } | undefined
   /** The mtime a reload was run for: one run per state of the file, so a plugin that will not load is not reloaded again and again. */
   let firedFor: number | undefined
   /** The mtime the person was told of: a reload the engine refused is tried again without telling them again. */
@@ -234,15 +285,61 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
    * The machine's fetch is installing and updating a batch of plugins: the
    * file moves at each, maybe more than a period apart, and a reload at each
    * gap would reload every idle session again, and load what is not yet
-   * updated of the batch. A lock past its stale age was left by a session
-   * that died holding it.
+   * updated of the batch. A mark past its stale age was left by a session
+   * that died applying.
    */
-  async function isFetching(): Promise<boolean> {
+  async function isApplying(): Promise<boolean> {
     try {
-      return io.now() - (await io.stat(where.fetchLock)).mtimeMs < LOCK_STALE_MS
+      return io.now() - (await io.stat(fetchFiles(where.fetchState).applying)).mtimeMs < APPLY_STALE_MS
     } catch {
       return false
     }
+  }
+
+  /**
+   * The plugin a reload would change that would load over a missing
+   * dependency, whoever wrote the records. A plugin its marketplace carries
+   * by path loads at its clone's manifest whatever its record says (see the
+   * README), so it changes when that version is not the one the session
+   * runs, and its dependencies are the clone's; any other loads its record's
+   * install. A plugin whose loaded version already lacked a dependency holds
+   * nothing: the reload leaves it as it was.
+   */
+  async function heldBy(records: Installed, changes: readonly Change[]): Promise<{ key: string; missing: string } | undefined> {
+    const known = await readJson(io.read, `${parentOf(where.file)}/known_marketplaces.json`)
+    const cloned = new Map<string, PluginManifest>()
+    for (const name of new Set([...loaded.keys()].map(marketplaceOf))) {
+      const entry = known?.[name]
+      const clone = isRecord(entry) ? text(entry.installLocation) : undefined
+      if (clone !== undefined) {
+        for (const [key, manifest] of await cloneManifests({ name, clone }, io.read)) {
+          cloned.set(key, manifest)
+        }
+      }
+    }
+    const dependencies = async (key: string) => {
+      const manifest = cloned.get(key)
+      if (manifest !== undefined) {
+        return manifest.dependencies
+      }
+      const path = (await runningRecord(records[key] ?? [], place))?.installPath
+      const data = path === undefined ? undefined : await readJson(io.read, `${path}/.claude-plugin/plugin.json`)
+      return data === undefined ? [] : manifestOf(data, marketplaceOf(key)).dependencies
+    }
+    const changing = new Set(changes.map((c) => c.key))
+    for (const [key, was] of loaded) {
+      const version = cloned.get(key)?.version
+      if (version !== undefined && version !== was.version) {
+        changing.add(key)
+      }
+    }
+    for (const key of changing) {
+      const missing = await missingInChain(key, dependencies, (dependency) => !isInstalledIn(records, dependency))
+      if (missing !== undefined) {
+        return { key, missing }
+      }
+    }
+    return undefined
   }
 
   async function step() {
@@ -253,17 +350,27 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
     }
     if (mtimeMs !== read) {
       read = mtimeMs
+      due = undefined
       const records = await installed()
-      const next = records === undefined ? undefined : await snapshotOf(records, loaded.keys(), place)
-      const changes = next === undefined ? [] : changesOf(loaded, next)
-      due = next !== undefined && changes.length > 0 ? { changes, next } : undefined
+      if (records !== undefined) {
+        const next = await snapshotOf(records, loaded.keys(), place)
+        const changes = changesOf(loaded, next)
+        // Held until the file changes again: the dependency's install
+        // writes it, and its changes are read afresh and fired.
+        const held = changes.length > 0 ? await heldBy(records, changes) : undefined
+        due = changes.length > 0 ? { changes, next, ...(held !== undefined && { held }) } : undefined
+        if (held !== undefined) {
+          io.log(`reload: ${changeText(changes)} waits: ${held.key} would load without ${held.missing}, which is not installed`, 'debug')
+        }
+      }
     }
     // Only while the session is idle, where the reload runs at once: queued
     // during a turn, it would run at the turn's end, ahead of a compaction
     // the model asked for at that end, which then fails. The ask mod keeps
-    // its open questions across the reload, but not a dialog it has up. And
-    // not while the machine's fetch is mid-batch, so a roll reloads once.
-    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning() || (await isFetching())) {
+    // its open questions across the reload, but not a dialog it has up. Not
+    // while the machine's fetch is mid-batch, so a roll reloads once. And
+    // not into a plugin whose dependency is missing.
+    if (due === undefined || due.held !== undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning() || (await isApplying())) {
       return
     }
     fire(mtimeMs, due.changes, due.next)
@@ -314,53 +421,45 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
  * starts or someone rolls it. One session per machine at a time, at most every
  * FETCH_MS and not while another actor rolls, asks each such marketplace's
  * remote for its head and, where it moved, updates the marketplace; then,
- * moved or not, updates the enabled plugins installed from it at user scope
- * whose version is not their manifest's in the clone, having first installed
- * every plugin their manifests depend on that is not installed. The watch
- * above then reloads every session on the machine, once the batch is done.
+ * moved or not, installs every plugin the enabled plugins' manifests in the
+ * clone depend on that is not installed, whoever updated those plugins, and
+ * updates the enabled plugins installed from it at user scope whose version
+ * is not their manifest's in the clone, but none whose dependency chain
+ * reaches one that did not install. The watch above then reloads every
+ * session on the machine, once the batch is done.
  */
 export const FETCH_MS = 5 * 60_000
 /** A lock older than this was left by a session that died holding it. */
 export const LOCK_STALE_MS = 30 * 60_000
+/** How long one install or update may run. */
+const PLUGIN_COMMAND_MS = 120_000
+/** The fetch marks that it applies a batch afresh before each install and update, so a mark older than one command's run and a margin was left by a session that died applying. */
+export const APPLY_STALE_MS = PLUGIN_COMMAND_MS + 60_000
 /** A write to the engine's plugin state this recent is another actor rolling it, which the fetch waits out. */
 export const ROLLING_MS = 60_000
 
-export type Marketplace = { name: string; url: string; ref: string; clone: string }
+/** The fetch's files in its directory: its stamp, its lock, and its mark that it applies a batch. */
+export const fetchFiles = (state: string) => ({ stamp: `${state}/fetch.stamp`, lock: `${state}/fetch.lock`, applying: `${state}/fetch.applying` })
 
-/** A plugin as a marketplace's clone holds it: the version its manifest names, and the plugins it depends on, by key. */
-export type CloneManifest = { version?: string; dependencies: string[] }
+export type Marketplace = { name: string; url: string; ref: string; clone: string }
 
 /**
  * The manifests a marketplace's clone holds, by plugin key: each plugin its
  * marketplace.json lists from a folder of the clone. A plugin from elsewhere
- * (a url) has none there, nor one whose manifest does not read. A dependency
- * named without a marketplace is of the dependent's, as the engine reads it.
+ * (a url) has none there, nor one whose manifest does not read.
  */
-export async function cloneManifests(m: Marketplace, read: (path: string) => Promise<string>): Promise<Map<string, CloneManifest>> {
-  const parsed = async (path: string): Promise<Record<string, unknown> | undefined> => {
-    try {
-      const data: unknown = JSON.parse(await read(path))
-      return isRecord(data) ? data : undefined
-    } catch {
-      return undefined
-    }
-  }
-  const manifests = new Map<string, CloneManifest>()
-  const listing = await parsed(`${m.clone}/.claude-plugin/marketplace.json`)
+export async function cloneManifests(m: Pick<Marketplace, 'name' | 'clone'>, read: (path: string) => Promise<string>): Promise<Map<string, PluginManifest>> {
+  const manifests = new Map<string, PluginManifest>()
+  const listing = await readJson(read, `${m.clone}/.claude-plugin/marketplace.json`)
   for (const entry of Array.isArray(listing?.plugins) ? listing.plugins : []) {
     if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.source !== 'string') {
       continue
     }
     const folder = entry.source.replace(/^\.\/?/, '').replace(/\/+$/, '')
-    const manifest = await parsed(`${m.clone}${folder === '' ? '' : `/${folder}`}/.claude-plugin/plugin.json`)
-    if (manifest === undefined) {
-      continue
+    const manifest = await readJson(read, `${m.clone}${folder === '' ? '' : `/${folder}`}/.claude-plugin/plugin.json`)
+    if (manifest !== undefined) {
+      manifests.set(`${entry.name}@${m.name}`, manifestOf(manifest, m.name))
     }
-    const version = text(manifest.version)
-    const dependencies = (Array.isArray(manifest.dependencies) ? manifest.dependencies : [])
-      .filter((dependency): dependency is string => typeof dependency === 'string')
-      .map((dependency) => (dependency.includes('@') ? dependency : `${dependency}@${m.name}`))
-    manifests.set(`${entry.name}@${m.name}`, { ...(version !== undefined && { version }), dependencies })
   }
   return manifests
 }
@@ -410,9 +509,10 @@ const firstLine = (s: string) => s.trim().split('\n')[0] ?? ''
 const lastLine = (s: string) => s.trim().split('\n').at(-1) ?? ''
 
 export function createFetcher(io: FetchIo, where: FetchWhere) {
-  const stamp = `${where.state}/fetch.stamp`
-  const lock = `${where.state}/fetch.lock`
+  const { stamp, lock, applying } = fetchFiles(where.state)
   let isBusy = false
+  /** The fetch marked that it applies a batch, so clears the mark at its end. */
+  let isMarked = false
 
   async function age(path: string): Promise<number | undefined> {
     try {
@@ -431,10 +531,10 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
    * The lock serializes this mod's sessions only. The engine saves its two
    * files by read-modify-write with no lock, and refreshes a marketplace by
    * cloning beside it and renaming the clone in (2.1.283 on; before, a pull
-   * into the clone, which writes its FETCH_HEAD). The fetch is due exactly
-   * when the remote has just moved, which is when the person, the merging
-   * session or a new session's auto-update rolls as well: a write to any of
-   * these within ROLLING_MS is such an actor at work.
+   * into the clone, which writes its FETCH_HEAD). The fetch finds work
+   * mostly just after the remote moved, which is when the person, the
+   * merging session or a new session's auto-update rolls as well: a write to
+   * any of these within ROLLING_MS is such an actor at work.
    */
   async function isRolling(marketplaces: readonly Marketplace[]): Promise<boolean> {
     const paths = new Set([`${where.plugins}/installed_plugins.json`, `${where.plugins}/known_marketplaces.json`])
@@ -451,11 +551,19 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     return false
   }
 
+  /** Before each install and update, so the mark's age stays under one command's run while the batch goes on. */
+  async function mark() {
+    await io.write(applying, new Date(io.now()).toISOString())
+    isMarked = true
+  }
+
   /**
    * One marketplace: updated where its clone is behind the remote's head;
-   * then its enabled plugins behind the clone, each dependency they name
-   * installed first. A dependency that will not install applies nothing,
-   * and the next fetch tries again, the plugins being behind still.
+   * then every plugin its enabled plugins' chains depend on that is not
+   * installed is installed, whoever updated them; then its enabled plugins
+   * behind the clone are updated, but none whose chain reaches a dependency
+   * that did not install. The next fetch tries that one again, and the
+   * plugins it held back are behind still.
    */
   async function fetchOne(m: Marketplace, installed: Installed, enabled: ReadonlySet<string>) {
     const remote = await io.run(['git', 'ls-remote', '--', m.url, m.ref], 30_000)
@@ -481,21 +589,44 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
       const version = manifests.get(key)?.version
       return version === undefined ? isMoved : installed[key]?.find((r) => r.scope === 'user')?.version !== version
     })
-    if (behind.length === 0) {
-      return
-    }
-    const isInstalled = (key: string) => installed[key]?.some((r) => r.scope === 'user' || r.scope === 'managed') === true
-    const missing = [...new Set(keys.flatMap((key) => manifests.get(key)?.dependencies ?? []))].filter((key) => !isInstalled(key))
-    for (const key of missing) {
-      const added = await io.run(['claude', 'plugin', 'install', key, '--scope', 'user'], 120_000)
-      if (added.exitCode !== 0) {
-        io.log(`reload: ${m.name}: ${key}, which its plugins depend on, did not install (${lastLine(added.stderr) || lastLine(added.stdout) || `exit ${added.exitCode}`}); no plugin is updated until a later fetch installs it`)
-        return
+    const dependencies = async (key: string) => manifests.get(key)?.dependencies ?? []
+    // Every plugin the chains reach, so a dependency's own new dependency is
+    // installed too; in the order they are reached.
+    const reached = new Set<string>()
+    const reach = (key: string) => {
+      for (const dependency of manifests.get(key)?.dependencies ?? []) {
+        if (!reached.has(dependency)) {
+          reached.add(dependency)
+          reach(dependency)
+        }
       }
-      io.log(`reload: ${key}: installed, as ${m.name}'s plugins depend on it`)
     }
+    keys.forEach(reach)
+    const missing = [...reached].filter((key) => !isInstalledIn(installed, key))
+    const failed = new Set<string>()
+    for (const key of missing) {
+      await mark()
+      const added = await io.run(['claude', 'plugin', 'install', key, '--scope', 'user'], PLUGIN_COMMAND_MS)
+      if (added.exitCode !== 0) {
+        failed.add(key)
+        io.log(`reload: ${key}, which ${m.name}'s plugins depend on, did not install (${lastLine(added.stderr) || lastLine(added.stdout) || `exit ${added.exitCode}`}); a later fetch tries again`)
+      } else {
+        io.log(`reload: ${key}: installed, as ${m.name}'s plugins depend on it`)
+      }
+    }
+    const held = new Map<string, string>()
     for (const key of behind) {
-      const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', 'user'], 120_000)
+      const reaches = await missingInChain(key, dependencies, (dependency) => failed.has(dependency))
+      if (reaches !== undefined) {
+        held.set(key, reaches)
+      }
+    }
+    if (held.size > 0) {
+      io.log(`reload: ${[...held.keys()].join(', ')}: held back, as ${[...new Set(held.values())].join(', ')} did not install`)
+    }
+    for (const key of behind.filter((k) => !held.has(k))) {
+      await mark()
+      const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', 'user'], PLUGIN_COMMAND_MS)
       // The outcome is the CLI's last line, after its "Checking for updates…".
       io.log(`reload: ${key}: ${lastLine(updated.stdout) || lastLine(updated.stderr) || `exit ${updated.exitCode}`}`)
     }
@@ -533,6 +664,10 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
         await fetchOne(m, installed, enabled)
       }
     } finally {
+      if (isMarked) {
+        isMarked = false
+        await io.run(['rm', '-f', '--', applying], 5_000)
+      }
       await io.run(['rmdir', lock], 5_000)
     }
   }
@@ -630,6 +765,7 @@ export function registerReload(on: On) {
     }
     const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
     const plugins = `${config}/plugins`
+    const fetchState = `${config}/autoreload`
     const enabled = async () => {
       const { enabledPlugins } = await $.settings.read()
       return new Set(isRecord(enabledPlugins) ? Object.keys(enabledPlugins).filter((key) => enabledPlugins[key] === true) : [])
@@ -644,7 +780,7 @@ export function registerReload(on: On) {
         now: () => Date.now(),
         log: (line) => $.ui.log(line, { to: 'debug' }),
       },
-      { plugins, state: `${config}/autoreload` },
+      { plugins, state: fetchState },
     )
     const reloader = createReloader(
       {
@@ -659,7 +795,7 @@ export function registerReload(on: On) {
         toast: (line) => $.ui.toast(line, { timeoutMs: 8000 }),
         log: (line, to) => $.ui.log(line, { to }),
       },
-      { file: `${plugins}/installed_plugins.json`, cacheDir: `${plugins}/cache`, fetchLock: `${config}/autoreload/fetch.lock`, cwd: e.cwd, self: { name: $.plugin.name, root: $.plugin.root } },
+      { file: `${plugins}/installed_plugins.json`, cacheDir: `${plugins}/cache`, fetchState, cwd: e.cwd, self: { name: $.plugin.name, root: $.plugin.root } },
     )
     void reloader.start().then(
       () => $.clock.every(POLL_MS, () => void reloader.tick()),
