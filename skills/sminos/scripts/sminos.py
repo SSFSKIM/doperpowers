@@ -7900,12 +7900,166 @@ def guide_text(session, launch):
     ])
 
 
+ROSTER_SOURCES = ("compact", "resume")   # a session that goes on with its own conversation, summarized or old
+ROSTER_CAP = 10        # peers the roster names
+ROSTER_BUDGET = 3.0    # seconds the roster may spend, inside the hook's bound of 10
+
+
+def _roster_exchanges(session, projects):
+    """{(project id, peer session): {"in", "out", "at", "alias"}}: when
+    `session`, with the sessions it continues, last wrote each peer a tagged
+    sminos message (`out`) and last was written one by it (`in`), "" for
+    neither, as the logs of `projects` hold them; `alias` is the peer's as the
+    latest of them named it (`at`). A message into another project is read
+    off the copy its own project's log keeps (record_copy), whose recipients
+    name their project; one from another project names the sender's
+    (`from_project`). An untagged line or an @all names no one in
+    particular, and the engine's own SendMessage is in no log."""
+    out, seen = {}, set()
+
+    def note(key, way, ts, alias):
+        row = out.setdefault(key, {"in": "", "out": "", "at": "", "alias": ""})
+        row[way] = max(row[way], ts)
+        if ts >= row["at"]:
+            row["at"], row["alias"] = ts, alias
+
+    for p in projects:
+        events = log_read(p)
+        mine = {session, *lineage(session, _projection(events))}
+        for e in events:
+            to = e.get("to")
+            if e["kind"] != "say" or e.get("wake") or not isinstance(to, list):
+                continue
+            ref = str(e.get("copy") or "%s:%s:%d" % (p.id, e["writer"], e["seq"]))
+            if ref in seen:
+                continue
+            seen.add(ref)
+            sender = writer_session(e["writer"])
+            to = [r for r in to if isinstance(r, dict) and UUID_RE.match(str(r.get("session") or ""))]
+            if sender in mine:
+                for r in to:
+                    if r["session"] not in mine:
+                        note((str(r.get("project") or p.id), r["session"]), "out", e["ts"], str(r.get("alias") or ""))
+            elif sender and "copy" not in e and any(r["session"] in mine for r in to):
+                note((str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
+    return out
+
+
+def _roster_peer(pid, sid, all_seats):
+    """(project, member, ended, projection) a peer is now: followed into the
+    session it continues in (a hand-off) and into the project it moved to;
+    `ended` when its membership there is retired. None when no project known
+    here holds it."""
+    for _ in range(4):   # a move chain, bounded
+        p = known_project(pid)
+        if p is None:
+            return None
+        info = _projection(log_read(p))
+        hops = []
+        while (info.get(sid) or {}).get("to") and sid not in hops:
+            hops.append(sid)
+            sid = info[sid]["to"]
+        r = info.get(sid)
+        latest = (r or {}).get("latest") or {}
+        moved_to = str(latest.get("project") or "") if latest.get("reason") == "moved" else ""
+        if latest.get("kind") == "retired" and moved_to and moved_to != p.id:
+            pid = moved_to
+            continue
+        if r is None:
+            return None
+        m = _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False, True, info)
+        return p, m, latest.get("kind") == "retired", info
+    return None
+
+
+def _roster_tag(p, m, here, info):
+    """The tag that reaches member `m` of `p` from a session of `here`:
+    `@alias` in its own project, `@<project>/<alias>` from another (§5), with
+    `#short` when another member there holds the alias too; `@<short>` for
+    an alias no tag can spell."""
+    alias = m.alias
+    if not alias or alias == m.short or '"' in alias or "/" in alias:
+        return "@" + m.short
+    body = ("" if here is not None and p.id == here.id else tag_project(p) + "/") + alias
+    tag = "@" + body if re.fullmatch(r"[\w.-]+", alias) else '@"%s"' % body
+    shared = any(s != m.session and r["latest"] and r["latest"]["kind"] == "joined"
+                 and logged_alias(s, info)[0] == alias for s, r in info.items())
+    return tag + ("#" + m.short if shared else "")
+
+
+def _roster_when(ts):
+    """A log ts as the roster says it: `HH:MMZ, 35m ago`, the date first when
+    it is not today's."""
+    age = ts_age(ts)
+    if age is None:
+        return ts
+    ago = "%dm" % (age // 60) if age < 5400 else "%dh" % (age // 3600) if age < 172800 else "%dd" % (age // 86400)
+    day = "" if ts[:10] == time.strftime("%Y-%m-%d", time.gmtime()) else ts[5:10] + " "
+    return "%s%sZ, %s ago" % (day, ts[11:16], ago)
+
+
+def roster_text(session, launch):
+    """The roster a session reads after a compaction or a resume, below its
+    guidance: the members it exchanged sminos messages with, newest exchange
+    first, at most ROSTER_CAP, each with where it is now (alias [short],
+    project, machine), its state and in-charge line, the tag that reaches it
+    now, when the last exchange was and which way, and whether its last
+    message is unanswered. Read from the logs, never the conversation: a
+    summary keeps addresses (an engine socket, an alias) that have gone
+    stale. The logs read are its project's and its launch directory's; a
+    peer reached only through the engine's SendMessage is in neither. ""
+    when it exchanged none. Read-only, and bounded by ROSTER_BUDGET: what does
+    not fit is left out."""
+    until = time.time() + ROSTER_BUDGET
+    here = session_project(session, launch)
+    if here is None:
+        return ""
+    home = resolve_project(launch)
+    rows = _roster_exchanges(session, [here] + ([home] if home is not None and home.id != here.id else []))
+    all_seats = seats()
+    peers, lines = {}, []
+    for (pid, sid), row in sorted(rows.items(), key=lambda kv: max(kv[1]["in"], kv[1]["out"]), reverse=True):
+        if len(peers) >= ROSTER_CAP or time.time() > until:
+            break
+        now = _roster_peer(pid, sid, all_seats)
+        if now is not None and now[1].session == session:
+            continue
+        key = (now[0].id, now[1].session) if now else (pid, sid)
+        if key in peers:   # two sessions of one member, the newer exchange read first
+            held = peers[key][2]
+            held["in"], held["out"] = max(held["in"], row["in"]), max(held["out"], row["out"])
+            continue
+        peers[key] = (now, sid, dict(row))
+    for now, sid, row in peers.values():
+        last = max(row["in"], row["out"])
+        way = "it wrote you" if row["in"] == last else "you wrote it"
+        tail = "last: %s %s%s" % (way, _roster_when(last), ", unanswered" if row["in"] > row["out"] else "")
+        if now is None:
+            lines.append("  %s [%s], in no project known here; %s" % (row["alias"] or sid[:8], sid[:8], tail))
+            continue
+        p, m, ended, info = now
+        who = "%s [%s], %s on %s" % (m.alias, m.short, p.name, m.machine or "?")
+        if ended:
+            lines.append("  %s: its session ended, no tag reaches it; %s" % (who, tail))
+            continue
+        charge = charge_shown(m)
+        lines.append("  %s  %s, %s%s; %s" % (_roster_tag(p, m, here, info), who, m.state or "state unknown",
+                                             ', in charge: "%s"' % charge if charge else "", tail))
+    if not lines:
+        return ""
+    return "\n".join(["sminos: who you exchanged sminos messages with, newest first, as the logs hold them now"
+                      " (a SendMessage peer is in no log). Reach them by these tags: an address your context kept"
+                      " may be stale."] + lines)
+
+
 def cmd_guide(_a):
     """The SessionStart hook's verb (§9): its payload on stdin, the guidance
     on stdout. Nothing on a machine not enrolled at a desk hub, for an
     internal fork, or for a payload naming no session — the gate is here, so
-    the hook stays a few lines. It reads and never migrates (the record hook
-    beside it does, bounded): a session's start must not wait on a lock."""
+    the hook stays a few lines. After a compaction or a resume the guidance
+    ends with the roster of the session's peers (roster_text). It reads and
+    never migrates (the record hook beside it does, bounded): a session's
+    start must not wait on a lock."""
     if os.environ.get("SMNS_INTERNAL") or enrollment() is None or sys.stdin.isatty():
         return
     try:
@@ -7917,15 +8071,18 @@ def cmd_guide(_a):
     session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
     if not UUID_RE.match(session):
         return
+    text = ""
     try:
-        text = guide_text(session, launch_cwd(session, str(payload.get("transcript_path") or ""), fallback=cwd))
+        launch = launch_cwd(session, str(payload.get("transcript_path") or ""), fallback=cwd)
+        text = guide_text(session, launch)
+        roster = roster_text(session, launch) if text and payload.get("source") in ROSTER_SOURCES else ""
+        text += "\n" + roster if roster else ""
     except Exception as e:  # noqa: BLE001 — guidance is a courtesy; a failure must never fail the session's start
         try:
             daemon_log("guide %s: %s: %s" % (session[:8], type(e).__name__, e))
         except OSError:
             pass
-        return
-    if text:
+    if text:   # a roster that failed leaves the guidance whole
         print(text)
 
 
