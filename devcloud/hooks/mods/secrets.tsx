@@ -264,17 +264,26 @@ const notQuoted = (unquotable: readonly string[]) =>
   )
 
 /**
- * Interfaces I9: from its start the session carries the guard marker in
- * `$.state`, under this plugin's name, and `cua`'s scrubbing stands down so
- * one guard decides every handle. Every plugin reads it; only devcloud writes
- * it; a child process (a `claude` a tool call starts) has its own session and
- * decides for itself. Its type is the plugin's contract (types/devcloud.d.ts).
- * Not a `globalThis` symbol: the engine evaluates each plugin's module in a
- * realm of its own (probed 2026-10-17, 2.1.302). Taken with both matchers: an
- * event is registered without one once per module.
+ * Interfaces I9: devcloud's guard is in the session's chain exactly while this
+ * module is loaded, and the guard marker says so. It is this module's answer
+ * to a read, through a `state.get` hook, and never a value the host stores:
+ * any plugin's `$.state.get({ plugin: 'devcloud', key: 'secrets-guard' })`
+ * resolves to the marker at version 0 (where the host holds nothing) while the
+ * module is loaded, and falls through to the host once it is gone (devcloud
+ * disabled and the plugins reloaded), which then answers `undefined`. A marker
+ * the host kept would outlive the module, and `cua`'s scrubbing, which stands
+ * down on it, would leave the session with no guard (board #101). The engine runs a
+ * `$` call through every plugin's hooks but the caller's, so the read reaches
+ * this hook whichever plugin sits outside the other. A child process (a
+ * `claude` a tool call starts) has its own session and decides for itself.
+ * Its type is the plugin's contract (types/devcloud.d.ts). Not a `globalThis`
+ * symbol: the engine evaluates each plugin's module in a realm of its own
+ * (probed 2026-10-17, 2.1.302).
  */
+const MARKER_READ = { value: { value: { owner: 'devcloud', version: 1 }, version: 0 } } as const
+
+// Taken with both matchers: an event is registered without one once per module.
 const secretsStart: Hook<'session.start'> = async ($, e, next) => {
-  await $.state.set({ plugin: 'devcloud', key: 'secrets-guard' }, { owner: 'devcloud', version: 1 })
   project = undefined
   await projectOf($, e.cwd)
   await refresh($, true)
@@ -284,6 +293,7 @@ const secretsStart: Hook<'session.start'> = async ($, e, next) => {
 export function registerSecrets(on: On) {
   on('session.start', { isInteractive: true }, secretsStart)
   on('session.start', { isInteractive: false }, secretsStart)
+  on('state.get', { plugin: 'devcloud', key: 'secrets-guard' }, () => MARKER_READ).catch(() => MARKER_READ)
 
   on('tool.call', async ($, e, next) => {
     let input = e
