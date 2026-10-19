@@ -186,8 +186,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except OSError:
+            pass   # the client gave up first (a probe's short timeout): as the stream below, nothing to say
         self.close_connection = True
 
     def do_GET(self):

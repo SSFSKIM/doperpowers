@@ -9,6 +9,7 @@ in an owner-only directory:
     POST /events          the mod's events, a JSON array in the order they happened, with
                           the hello's nonce (X-Bridge-Nonce; 409 without it)
     GET  /events          a subscription: one snapshot line, then every event, numbered n from 1
+    GET  /agents          the session's subagents as the child keeps them (`sminos list`'s tree)
     POST /command[?wait=ms]  a command for the mod: relayed as one line on stdout
 
 The mod reads the child's stdout line by line: first `{"op": "hello", ...}`
@@ -1026,6 +1027,13 @@ class Bridge:
                     "started": self.started, "ready": self.ready, "subscribers": len(self.subscribers),
                     "mod": {"events": self.mod_events, "last": self.mod_last}}
 
+    def agents_now(self):
+        """GET /agents: the session's subagents as this child keeps them —
+        each one's spawn and whether it runs — and whether the mod's first
+        resync has come (before it, the list may be empty for want of it)."""
+        with self.lock:
+            return {"ready": self.ready, "agents": [dict(a) for a in self.agents.values()]}
+
     # -- the mod's input: one line on stdout
 
     def emit(self, obj):
@@ -1106,6 +1114,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._stream(bridge)
         if route == "/requests":
             return self._send(200, bridge.requests())
+        if route == "/agents":
+            return self._send(200, bridge.agents_now())
         if route == "/rows":
             q = parse_qs(url.query)
             loop, after = (q.get("loop") or ["main"])[0], (q.get("after") or [""])[0]

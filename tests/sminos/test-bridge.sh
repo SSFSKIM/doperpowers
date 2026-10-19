@@ -525,6 +525,28 @@ assert_contains "$OUT" "idler has no bridge" "naming the member"
 set +e; OUT="$(cd "$R" && "$SMINOS" watch nobody 2>&1)"; RC=$?; set -e
 assert_rc 4 "$RC" "an unknown member exits 4"
 
+# GET /agents: the subagents as the child keeps them — what `sminos list` ends
+# with inside the session (its tree, read here before any transcript).
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[]},
+ {"type":"agent","phase":"spawn","agentId":"a9","parentAgentId":null,"subagentType":"Explore","description":"look"},
+ {"type":"agent","phase":"spawn","agentId":"a10","parentAgentId":"a9","subagentType":"general-purpose","description":"dig"}]' >/dev/null
+AGENTS="$(ctl get "$SOCK" /agents)"
+assert_equals "${AGENTS%% *}" "200" "GET /agents answers"
+assert_equals "$(field_of "${AGENTS#* }" agents.1.agentId)" "a10" "with each agent the child keeps"
+assert_equals "$(field_of "${AGENTS#* }" agents.1.running)" "true" "and whether it runs"
+assert_equals "$(field_of "${AGENTS#* }" ready)" "true" "and whether the mod's state has come"
+tree_of() { sed -n '/^subagents:/,$p' <<<"$1"; }
+run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list
+assert_equals "$(tree_of "$OUT")" "$(printf 'subagents:\n  a9  Explore  running\n    a10  general-purpose  running')" \
+  "inside the session, list ends with the bridge's agents, nested"
+ctl post "$SOCK" '[{"type":"agent","phase":"stop","agentId":"a9","agentType":"Explore"}]' >/dev/null
+run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list
+assert_equals "$(tree_of "$OUT")" "$(printf 'subagents:\n  a10  general-purpose  running\n  +1 finished — sminos list --all')" \
+  "a stopped agent folds, and its live child stands in its place"
+run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list --all
+assert_equals "$(tree_of "$OUT")" "$(printf 'subagents:\n  a9  Explore  finished\n    a10  general-purpose  running')" \
+  "--all shows it by its id"
+
 # The endpoint's path must fit a Unix socket's: a long SMINOS_HOME is refused.
 LONGHOME="$T/$(printf 'x%.0s' $(seq 1 80))"
 mkdir -p "$LONGHOME"

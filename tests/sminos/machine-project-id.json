@@ -1,0 +1,83 @@
+{
+  "about": "The machine project's id (the sminos org directory), written by generate-machine-project.py beside this file; see its docstring for the rule.",
+  "namespace": "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+  "vectors": [
+    {
+      "org": "ssfskim",
+      "machine": "macbook",
+      "name": "smns-machine:ssfskim:macbook",
+      "id": "6f2b2401-d443-52fb-a4cd-c9ebd370306b",
+      "why": "the owner's MacBook"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "mini",
+      "name": "smns-machine:ssfskim:mini",
+      "id": "0e21f048-262e-58e2-9e8b-b3b04b88f11d",
+      "why": "the owner's Mac mini"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "devcloud-7f3a",
+      "name": "smns-machine:ssfskim:devcloud-7f3a",
+      "id": "6c086cc1-60b7-5f96-b500-6752f13447d5",
+      "why": "a devcloud host"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "MacBook",
+      "name": "smns-machine:ssfskim:macbook",
+      "id": "6f2b2401-d443-52fb-a4cd-c9ebd370306b",
+      "why": "a name in another case: the same id as its lower-cased spelling"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "SK.local",
+      "name": "smns-machine:ssfskim:sk.local",
+      "id": "c1de9137-6cc1-5eac-9610-a139583871e9",
+      "why": "a name with a dot and capitals"
+    },
+    {
+      "org": "org-local",
+      "machine": "sp-1",
+      "name": "smns-machine:org-local:sp-1",
+      "id": "ea1765ef-f9a8-5b29-b0ae-17f9fff677d0",
+      "why": "the local runtime's org"
+    },
+    {
+      "org": "o",
+      "machine": "a",
+      "name": "smns-machine:o:a",
+      "id": "637cf2d3-bb3a-5c1f-a8cc-1418b3d9acc1",
+      "why": "the shortest name: one SHA-1 block"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "devcloud-012345678",
+      "name": "smns-machine:ssfskim:devcloud-012345678",
+      "id": "f663d18d-4364-5767-93b0-777f2b5102d3",
+      "why": "55 bytes hashed: the most one SHA-1 block holds with its padding"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "devcloud-0123456789",
+      "name": "smns-machine:ssfskim:devcloud-0123456789",
+      "id": "8293cbd9-b210-5bc2-886c-085213da3194",
+      "why": "56 bytes hashed: the padding takes a second block"
+    },
+    {
+      "org": "ssfskim",
+      "machine": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "name": "smns-machine:ssfskim:mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "id": "42cb0740-fbd5-5261-b120-e9b42ed07236",
+      "why": "the longest admitted name: two SHA-1 blocks"
+    },
+    {
+      "org": "an-org-whose-id-is-long-enough-to-cross-a-block",
+      "machine": "host_7",
+      "name": "smns-machine:an-org-whose-id-is-long-enough-to-cross-a-block:host_7",
+      "id": "72842f77-e038-583f-bc8f-29ba530346e4",
+      "why": "a long org"
+    }
+  ]
+}

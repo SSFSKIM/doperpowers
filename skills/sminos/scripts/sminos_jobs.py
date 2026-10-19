@@ -551,6 +551,88 @@ def running_task(main, task):
     return False
 
 
+def rows_naming(path, agents, tools):
+    """The rows of one loop's transcript that name any of these agent ids (as a whole JSON string, or a
+    notification's task id) or calls (their toolUseId), in file order: every row `agent_outcome` reads for
+    them. Searched, not parsed, as task_rows is; None when the file cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            if os.fstat(f.fileno()).st_size == 0:
+                return []
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    except (OSError, ValueError):
+        return None
+    try:
+        spans = set()
+        for name in agents:
+            for needle in ('"%s"', "<task-id>%s</task-id>"):
+                spans |= _lines_holding(mm, (needle % name).encode())
+        for tool in tools:
+            spans |= _lines_holding(mm, ('"%s"' % tool).encode())
+        rows = []
+        for start, end in sorted(spans):
+            line = mm[start:end]
+            if line.startswith(REQUEST_RECORD):
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and _str(row.get("uuid")):
+                rows.append(row)
+        return rows
+    finally:
+        mm.close()
+
+
+def transcript_agents(main, session_running):
+    """A session's subagents as its transcripts alone tell them (`sminos list`'s tree when no bridge answers):
+    one entry per meta file beside the main transcript (`<main>/subagents/agent-<id>.meta.json`), in the order
+    they were written, with the status DX4's derivation gives it from the rows of the loop that ran it — the main
+    loop's, or its parent agent's — only those rows read (rows_naming). [{agentId, parentAgentId, type,
+    description, status}], parentAgentId None for one the main loop ran."""
+    if not main.endswith(".jsonl"):
+        return []
+    d = os.path.join(main[:-len(".jsonl")], "subagents")
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    found = []
+    for n in names:
+        if not (n.startswith("agent-") and n.endswith(".meta.json")):
+            continue
+        path = os.path.join(d, n)
+        try:
+            written = os.stat(path).st_mtime_ns
+            with open(path) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict):
+            found.append((written, n[len("agent-"):-len(".meta.json")], meta))
+    metas = [{"agentId": agent, "meta": meta} for _, agent, meta in sorted(found, key=lambda x: (x[0], x[1]))]
+    loops = {}   # the loop that ran them (a parent agent's id, None for the main loop) → (agent ids, call ids)
+    for m in metas:
+        ids = loops.setdefault(_str(m["meta"].get("parentAgentId")), ([], []))
+        ids[0].append(m["agentId"])
+        if _str(m["meta"].get("toolUseId")):
+            ids[1].append(m["meta"]["toolUseId"])
+    ledgers = {}
+    for parent, (agents, tools) in loops.items():
+        rows = rows_naming(main if parent is None else os.path.join(d, "agent-%s.jsonl" % parent), agents, tools)
+        if rows is None and parent is not None:
+            ledgers[parent] = None   # its transcript gone: derive reads the agents it ran from nothing
+            continue
+        ledgers[parent] = Ledger()
+        ledgers[parent].feed(rows or [])
+    body = derive(ledgers.get(None) or Ledger(), metas, bridge=None, files={},
+                  parents={k: v for k, v in ledgers.items() if k is not None}, session_running=session_running)
+    return [{"agentId": e["agentId"], "parentAgentId": _str(e["meta"].get("parentAgentId")),
+             "type": _str(e["meta"].get("agentType")) or "?", "description": _str(e["meta"].get("description")) or "",
+             "status": e["status"]} for e in body["subagents"]]
+
+
 def _opened_path(fd):
     """The path of the file a descriptor holds, as the kernel names it (macOS F_GETPATH, Linux /proc), or None
     where it cannot say."""

@@ -250,8 +250,8 @@ def report_closed(project, view):
     owed = {}
     for e in view.events:
         to = e.get("to")
-        if not isinstance(to, list) or not policy.outside_origin(e):
-            continue
+        if not isinstance(to, list) or "copy" in e or not policy.outside_origin(e):
+            continue   # a copy is owed to no one (sminos.addressed_to)
         for sid in {r.get("session") for r in to if isinstance(r, dict)} & closed:
             owed.setdefault(sid, []).append(e)
     n = 0

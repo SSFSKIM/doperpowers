@@ -37,7 +37,13 @@ every project known here, each in the order of §8:
   5. push        (mirrored projects) commit what the tick appended, push
   6. archive     (hub projects with a remote, on the machine the hub
                  designates) copy the log into the archive clone, push
-  7. derive      once an hour, `derive --all` as a child it does not wait on
+  7. derive      once an hour, `derive --all` as a child it does not wait on;
+                 and the sweep of the bridges' files and of join overrides
+
+Before the first, every running session of this machine is mapped to its
+project (sminos.record_project), which registers a project not known here
+yet — a .smns committed under a live session — so it is ticked this tick and
+the session moves within one interval (§1a of the org directory's design).
 
 `daemon run` loops the tick, and beside it supervises the uplink to the desk
 hub (`daemon uplink`, sminos_uplink.py) as a child process it restarts with
@@ -97,6 +103,11 @@ _DERIVE = None  # the derivation child this process started, while it may run
 BRIDGE_QUIET_S = 86400
 BRIDGE_SWEEP_EVERY = 3600
 _BRIDGE_SWEPT = 0.0  # when this process last swept the bridges' files
+# A join override (and a launch directory cached) outlives its session's
+# transcript's last change this long; the sweep runs at most this often.
+OVERRIDE_QUIET_S = 30 * 86400
+OVERRIDE_SWEEP_EVERY = 3600
+_OVERRIDES_SWEPT = 0.0  # when this process last swept them
 
 
 class SyncFailed(Exception):
@@ -588,7 +599,8 @@ def rejoin_former(project, view=None):
 
         got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,
                                **sminos.joined_fields(m.alias, m.name_source, *(
-                                   j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by"))))
+                                   j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by")),
+                                   session_kind=str(j.get("session_kind") or m.kind)))
         if got:
             n += 1
             if m.state:
@@ -770,6 +782,7 @@ def tick_all(quiet=False):
     claimed machine name stops everything (MachineClaimed)."""
     sminos.forget_caches()
     all_seats = sminos.seats()
+    map_sessions()
     projects = {}
     for p in sminos.known_projects(all_seats):
         # A project read off its .smns as it is now: the remote may have moved.
@@ -789,6 +802,26 @@ def tick_all(quiet=False):
             print(("%s " % sminos.now() if quiet else "") + tick_line(p, out))
     derive_duty()
     bridge_duty()
+    override_duty()
+
+
+def map_sessions():
+    """Every running engine session of this machine to its project, each
+    project registered here (project_path writes its project.json), so
+    known_projects lists a project that appeared under a live session this
+    tick. Internal forks aside."""
+    internal = sminos.internal_pids()
+    for rec in sminos.peer_records():
+        sid = rec.get("sessionId")
+        if not (isinstance(sid, str) and sminos.UUID_RE.match(sid)) or str(rec.get("pid")) in internal \
+                or not sminos.peer_running(rec):
+            continue
+        try:
+            p = sminos.record_project(rec)
+            if p is not None:
+                sminos.project_path(p, "log")
+        except OSError as e:
+            sminos.daemon_log("tick: registering the project of %s failed: %s" % (sid[:8], e))
 
 
 # ------------------------------------------------------------- derivation
@@ -900,6 +933,54 @@ def sweep_bridges():
         except OSError:
             continue
         sminos.daemon_log("removed %s: its session has run nowhere here for %d h" % (path, (now - last) // 3600))
+
+
+def override_duty():
+    """The sweep of join overrides, at most once every OVERRIDE_SWEEP_EVERY
+    per loop (a one-shot tick sweeps each time)."""
+    global _OVERRIDES_SWEPT
+    if time.time() - _OVERRIDES_SWEPT < OVERRIDE_SWEEP_EVERY:
+        return
+    _OVERRIDES_SWEPT = time.time()
+    sweep_overrides()
+
+
+def sweep_overrides():
+    """A join override (`$SMINOS_HOME/sessions/<id>.json`) whose session's
+    transcript is gone or has not changed in OVERRIDE_QUIET_S, or whose
+    target the session can no longer be in (not known here, or ineligible:
+    sminos.join_refusal — a retired project), is removed, a daemon.log line
+    naming the session and the target; the session itself already resolves
+    as though it were absent (session_project). A cached launch directory
+    (`launch/<id>.json`) goes by the transcript's rule alone."""
+    now = time.time()
+    for sub in ("sessions", "launch"):
+        d = os.path.join(sminos.root(), sub)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            sid, ext = os.path.splitext(name)
+            if ext != ".json" or not sminos.UUID_RE.fullmatch(sid):
+                continue
+            last = mtime(sminos.transcript_path(sid))
+            why = "its transcript is gone" if last is None else \
+                "its transcript has not changed in %d days" % ((now - last) // 86400) \
+                if now - last >= OVERRIDE_QUIET_S else ""
+            pid = sminos.override_of(sid) if sub == "sessions" else ""
+            if sub == "sessions" and not why:
+                target = sminos.known_project(pid) if pid else None
+                why = "it names no project" if not pid else "that project is not known here" if target is None \
+                    else sminos.join_refusal(target)
+            if not why:
+                continue
+            try:
+                os.unlink(os.path.join(d, name))
+            except OSError:
+                continue
+            if sub == "sessions":
+                sminos.daemon_log("removed the join override of session %s (to %s): %s" % (sid, pid or "-", why))
 
 
 # ------------------------------------------------------------- the verbs

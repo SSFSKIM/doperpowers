@@ -2280,10 +2280,10 @@ class Lifecycle(unittest.TestCase):
                 return []
 
             def presence(self):
-                return {"t": "session", "message": {"kind": "machine", "body": {}}}
+                return {"t": "session", "message": {"kind": "machine", "body": {"checkouts": []}}}
 
-            def hello(self):
-                return {"t": "hello", "project": project.id}
+            def hello(self, follow=False):
+                return {"t": "hello", "project": project.id, **({"follow": True} if follow else {})}
 
             def reported(self, _):
                 pass
@@ -2295,7 +2295,7 @@ class Lifecycle(unittest.TestCase):
             raise uplink.NotDelivered("the hub answered 503")
 
         def link_of(post):
-            link = uplink.Link({"machine": "testhost", "key": b"k" * 32, "hub": "http://127.0.0.1:9"}, {})
+            link = uplink.Link({"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": "http://127.0.0.1:9"}, {})
             link.plane.wall = lambda: time.time() + 3600
             link.post = post
             return link

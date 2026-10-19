@@ -1,5 +1,5 @@
 {
-  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): mcp__doperpowers__AskUserQuestion (the built-in's input plus async, which withdraws the built-in), the kairos button in the prompt footer, the agents pane, the model's own compact tool (offered with the context figures at the turn's end as the Stop hook's additional context, from 300k tokens on and once per 50k of growth, one more step of the turn; compaction at the end of the turn that asked, then the resume prompt it wrote), and the bridge (the session's live stream and its control from another terminal on the machine — sminos watch, steer, interrupt, model, compact, decide, answer — through a child, sminos bridge, serving its endpoint; its <message> marks and async asks reach the project's log as they are written). to-human-stream.sh (MessageDisplay) draws the <message> mark while a message streams (the report view that folds the transcript to those marks is the to-human plugin); old <to-human>, <essential>, <need-input> and <insight> marks read as aliases of it. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. compact-instructions.md: PreCompact prints it, so every compaction's summary is written as the note a memory-reset self resumes from. smns-record.sh (SessionStart, Stop): a session in a project joins its sminos log at its start, and its <message> marks and async asks reach the log as messages to the host (the bridge's export, where it runs, has put them there already)",
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): mcp__doperpowers__AskUserQuestion (the built-in's input plus async, which withdraws the built-in), the kairos button in the prompt footer, the agents pane, the model's own compact tool (offered with the context figures at the turn's end as the Stop hook's additional context, from 300k tokens on and once per 50k of growth, one more step of the turn; compaction at the end of the turn that asked, then the resume prompt it wrote), and the bridge (the session's live stream and its control from another terminal on the machine — sminos watch, steer, interrupt, model, compact, decide, answer — through a child, sminos bridge, serving its endpoint; its <message> marks and async asks reach the project's log as they are written). to-human-stream.sh (MessageDisplay) draws the <message> mark while a message streams (the report view that folds the transcript to those marks is the to-human plugin); old <to-human>, <essential>, <need-input> and <insight> marks read as aliases of it. kairos: proactive mode — on from launch with KAIROS=1 or mid-session with /kairos, kept across compaction and resume; /kairos off ends it. compact-instructions.md: PreCompact prints it, so every compaction's summary is written as the note a memory-reset self resumes from. smns-record.sh (SessionStart, Stop): a session in a project joins its sminos log at its start, and its <message> marks and async asks reach the log as messages to the host (the bridge's export, where it runs, has put them there already). smns-guide.sh (SessionStart, every source): on a machine enrolled at a desk hub, the session reads who it is in the org (alias, project and why, machine) and the sminos verbs that find and reach the org's other sessions",
   "modules": [
     "./mods/register.tsx"
   ],
@@ -20,6 +20,16 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/smns-record.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/smns-guide.sh\"",
+            "timeout": 10
           }
         ]
       }

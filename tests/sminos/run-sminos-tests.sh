@@ -377,6 +377,14 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
+  if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
+    fail "the org's directory: machine projects, follow-only hellos (test-org.sh)"; fi
+  if "$SCRIPT_DIR/test-join.sh"; then pass "a session's project: its launch directory, join, moves (test-join.sh)"; else
+    fail "a session's project: its launch directory, join, moves (test-join.sh)"; fi
+  if "$SCRIPT_DIR/test-address.sh"; then pass "addressing across the org and the sender's copy (test-address.sh)"; else
+    fail "addressing across the org and the sender's copy (test-address.sh)"; fi
+  if "$SCRIPT_DIR/test-guide.sh"; then pass "the SessionStart guidance (test-guide.sh)"; else
+    fail "the SessionStart guidance (test-guide.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi
@@ -410,13 +418,13 @@ if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 echo "usage:"
 run "$SMINOS"; assert_rc 2 "$RC" "no arguments is a usage error (exit 2)"
 run "$SMINOS" help; assert_rc 0 "$RC" "help exits 0"; assert_contains "$OUT" "sminos spawn" "help lists the verbs"
-for verb in post board topology view groups mark join leave listen log; do
+for verb in post board topology view groups mark leave listen log; do   # `join` came back: a session declaring its project
   run "$SMINOS" "$verb"
   assert_rc 2 "$RC" "removed $verb is a usage error"
   assert_contains "$OUT" 'usage: sminos' "removed $verb shows usage"
 done
 run "$SMINOS" --help
-for verb in post board topology view groups mark join leave listen log; do
+for verb in post board topology view groups mark leave listen log; do
   assert_not_contains "$OUT" "sminos $verb" "--help omits removed $verb"
 done
 run "$SMINOS" bogus; assert_rc 2 "$RC" "unknown command is a usage error"
@@ -1319,14 +1327,21 @@ assert_rc 4 "$RC" "send to an ambiguous seat name exits 4"
 assert_equals "$OUT" "sminos: ambiguous seat 'dup' matches: ga/dup, gb/dup" "the ambiguity is named, not hidden by a name fallback"
 "$SMINOS" remove ga/dup >/dev/null; "$SMINOS" remove gb/dup >/dev/null
 
-# Recycled-pid peer: a peer record whose pid is alive but whose socket file is
-# gone must NOT count as live (so it can't block a fill or a name reuse).
+# Recycled-pid peer: a peer record whose pid is alive but names another
+# process (its procStart is not the live pid's) must NOT count as live (so it
+# can't block a fill or a name reuse). The record decides, never the socket: a
+# record whose process runs is live whether or not its inbox answers.
 STALE_UUID="99999999-abab-4000-8000-000000000099"
 "$SMINOS" seat add grp stale --session "$STALE_UUID" >/dev/null
 printf '{"pid":%s,"sessionId":"%s","name":"stale","kind":"bg","status":"idle","messagingSocketPath":"%s/gone.sock"}\n' \
   "$$" "$STALE_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/stale.json"
 run "$SMINOS" fill grp/stale "REFILL" --resume
-assert_rc 0 "$RC" "a peer with a live pid but a missing socket is not live — resume proceeds"
+assert_rc 4 "$RC" "a record whose process runs is live though its socket is missing — fill refuses (a resume would copy it)"
+assert_contains "$OUT" "is filled (idle)" "saying it is filled"
+printf '{"pid":%s,"sessionId":"%s","name":"stale","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 2001","messagingSocketPath":"%s/gone.sock"}\n' \
+  "$$" "$STALE_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/stale.json"
+run "$SMINOS" fill grp/stale "REFILL" --resume
+assert_rc 0 "$RC" "a record whose live pid is another process is not live — resume proceeds"
 rm -f "$HOME/.claude/sessions/stale.json"; "$SMINOS" remove grp/stale >/dev/null
 
 # sync promotes a natively-woken idle seat (harness shows it running) to working.
@@ -1342,7 +1357,8 @@ rm -f "$STUB_STATE/agents/nat00001"; "$SMINOS" remove grp/native >/dev/null
 # send's socket-send failure falls through to the resume path (never raises).
 FAIL_UUID="bbbb2222-abab-4000-8000-0000000b2222"
 "$SMINOS" seat add grp flaky --session "$FAIL_UUID" >/dev/null
-printf '{"pid":%s,"sessionId":"%s","name":"flaky","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
+# Its record's pid runs but is another process (a recycled pid): not live.
+printf '{"pid":%s,"sessionId":"%s","name":"flaky","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 2001","messagingSocketPath":"%s"}\n' \
   "$$" "$FAIL_UUID" "$SOCK" > "$HOME/.claude/sessions/flaky.json"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$FAIL_UUID.jsonl"   # resumable: its transcript is here
 kill "$SOCK_PID" 2>/dev/null || true; wait "$SOCK_PID" 2>/dev/null || true; rm -f "$SOCK"   # socket_ok now fails
@@ -1488,10 +1504,10 @@ kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
 DEAD_UUID="ffff5555-abab-4000-8000-0000000f5555"
 "$SMINOS" seat add grp deadsock --session "$DEAD_UUID" >/dev/null
 : > "$TEST_ROOT/dead.sock"
-printf '{"pid":%s,"sessionId":"%s","name":"deadsock","kind":"bg","status":"idle","messagingSocketPath":"%s/dead.sock"}\n' \
+printf '{"pid":%s,"sessionId":"%s","name":"deadsock","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 2001","messagingSocketPath":"%s/dead.sock"}\n' \
   "$$" "$DEAD_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/deadsock.json"
 run "$SMINOS" fill grp/deadsock "REFILL" --resume
-assert_rc 0 "$RC" "a peer whose socket file has no listener is not live — resume proceeds"
+assert_rc 0 "$RC" "a record of another process whose socket file has no listener is not live — resume proceeds"
 rm -f "$HOME/.claude/sessions/deadsock.json"; "$SMINOS" remove grp/deadsock >/dev/null
 
 # seat add --session records the harness row's short, and clears it when the row is gone.
@@ -1874,19 +1890,21 @@ assert_contains "$OUT" '"name": "s-old"' "the record's name reads as its alias"
 (cd "$TEST_ROOT/st2" && "$SMINOS" seat add st2 z --role reviewer >/dev/null)
 run "$SMINOS" list st
 assert_rc 0 "$RC" "list of a project exits 0"
-st_rows() { # alias word rest ... → rows as list prints them (alias padded to 7, word to 7)
-  while [ $# -gt 0 ]; do printf '  %-7s   %-7s  %s\n' "$1" "$2" "$3"; shift 3; done | sed 's/ *$//'
+st_rows() { # label word rest ... → rows as list prints them (`alias [short]` padded to 18, kind seat, word to 7, machine)
+  while [ $# -gt 0 ]; do printf '  %-18s  seat  %-7s  @testhost  %s\n' "$1" "$2" "$3"; shift 3; done | sed 's/ *$//'
 }
 # Members newest join first (the seats joined in the order they were added),
-# then the seats no member stands for; the line is the in-charge line, then
-# `· now:` the status. Retired and gone fold into a tail line, as chart and
-# tui do; --all shows them in place; --json keeps them.
-EXPECTED_ST_ALL="$(printf 'st\n'; st_rows s-ret retired '' s-gone gone '' s-stop stopped '' s-wait waiting '' \
-  s-idle idle '' s-bare busy '' s-shell busy '' s-busy busy '· now: parsing the schema' s-vac vacant '')"
-EXPECTED_ST="$(printf 'st\n'; st_rows s-stop stopped '' s-wait waiting '' s-idle idle '' s-bare busy '' \
-  s-shell busy '' s-busy busy '· now: parsing the schema' s-vac vacant ''
+# then the seats no member stands for: `alias [short]`, kind, word, machine,
+# then the in-charge line and `· now:` the status. Retired and gone fold into
+# a tail line, as chart and tui do; --all shows them in place; --json keeps them.
+EXPECTED_ST_ALL="$(printf 'st\n'; st_rows 's-ret [5a5a0007]' retired '' 's-gone [5a5a000a]' gone '' \
+  's-stop [5a5a0006]' stopped '' 's-wait [5a5a0005]' waiting '' 's-idle [5a5a0004]' idle '' 's-bare [5a5a0003]' busy '' \
+  's-shell [5a5a0002]' busy '' 's-busy [5a5a0001]' busy '· now: parsing the schema' s-vac vacant '')"
+EXPECTED_ST="$(printf 'st\n'; st_rows 's-stop [5a5a0006]' stopped '' 's-wait [5a5a0005]' waiting '' \
+  's-idle [5a5a0004]' idle '' 's-bare [5a5a0003]' busy '' 's-shell [5a5a0002]' busy '' \
+  's-busy [5a5a0001]' busy '· now: parsing the schema' s-vac vacant ''
   printf '+2 hidden (retired, gone) — sminos list --all')"
-assert_equals "$OUT" "$EXPECTED_ST" "list is the project heading, then alias, state word, and the member's lines — no header, ids, or recorded status; retired and gone fold into the tail"
+assert_equals "$OUT" "$EXPECTED_ST" "list is the project heading, then alias [short], kind, state word, machine and the member's lines — no header or recorded status; retired and gone fold into the tail"
 run "$SMINOS" list st --all
 assert_equals "$OUT" "$EXPECTED_ST_ALL" "--all shows the retired and gone rows in place and prints no tail"
 run "$SMINOS" list --json st
@@ -1897,13 +1915,16 @@ run "$SMINOS" list st4
 assert_equals "$OUT" "$(printf '(no members)\n+1 hidden (retired, gone) — sminos list --all')" "a project of only folded members says so, then the count on its own line"
 "$SMINOS" remove st4/ghost >/dev/null
 run "$SMINOS" list --all
-EXPECTED_ST2="$(printf 'st2\n  %s   busy\n  %-24s   vacant\n' lone-seat-with-a-long-name-past-24 z)"
-assert_contains "$OUT" "$EXPECTED_ST2" "--all lists every project; an alias pads to at most 24 cells and is never cut"
+# From a directory of no project: every project, flat, each row with its project.
+assert_contains "$OUT" "  lone-seat-with-a-long-name-past-24 [5a5a0008]  seat  busy     @testhost  st2" \
+  "from no project, list is every project, flat with the project column; a label is never cut"
+assert_contains "$OUT" "  $(printf '%-36s' z)  seat  vacant   @testhost  st2" "and pads to at most 36 cells"
+assert_not_contains "$(printf '%s\n' "$OUT" | grep -x 'st2' || true)" "st2" "with no project heading"
 assert_not_contains "$OUT" "ALIAS" "list prints no header line"
 run "$SMINOS" list st --state busy
 assert_equals "$(printf '%s\n' "$OUT" | sed 1d | awk '{print $1}' | tr '\n' ' ')" "s-bare s-shell s-busy " "--state keeps only the rows with that word"
 run "$SMINOS" list st --state gone
-assert_equals "$OUT" "$(printf 'st\n  s-gone   gone')" "--state gone keeps only the gone rows"
+assert_equals "$OUT" "$(printf 'st\n  s-gone [5a5a000a]  seat  gone  @testhost')" "--state gone keeps only the gone rows"
 run "$SMINOS" list st --state blocked
 assert_rc 2 "$RC" "--state accepts only the seven words"
 run "$SMINOS" list st --status retired
@@ -1919,8 +1940,8 @@ assert_equals "$OUT" "sminos: no project 'nosuchproject' is known on this machin
 assert_equals "$(grep -c '^agents' "$STUB_STATE/log/calls.log" || true)" "0" "list runs no claude agents, even for seats with no live peer"
 STUB_AGENTS_FAIL=1 run "$SMINOS" list st --all
 assert_rc 0 "$RC" "list is unaffected by a failing harness"
-assert_contains "$OUT" "s-idle    idle" "and still reads the live word"
-assert_contains "$OUT" "s-gone    gone" "and a gone member stays gone"
+assert_contains "$OUT" "s-idle [5a5a0004]   seat  idle" "and still reads the live word"
+assert_contains "$OUT" "s-gone [5a5a000a]   seat  gone" "and a gone member stays gone"
 # The chart's hide rule is the word: retired or gone.
 run "$SMINOS" chart st --width 200
 assert_contains "$OUT" "■ stopped" "a stopped seat is charted with its glyph"
@@ -2859,8 +2880,20 @@ CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x the shared plugin chang
 assert_rc 0 "$RC" "a tag into another project records"
 assert_contains "$OUT" "in other" "in the destination project"
 assert_contains "$(log_of "$OTHER")" "the shared plugin changed" "the message lands in the tagged project's log"
-assert_not_contains "$(log_of "$DEMO")" "the shared plugin changed" "and nowhere else"
+assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" \
+  "\"copy\": \"$OTHER:testhost/$SA:$(last_seq "$SMINOS_HOME/projects/$OTHER/log/testhost.$SA.jsonl")\"" \
+  "and is copied into the sender's own project's log, naming the event that delivers it"
 assert_contains "$(inbox x)" "[sminos chat other " "the recipient's frame names its project"
+assert_equals "$(grep -c "the shared plugin changed" "$TEST_ROOT/in-x.received")" 1 "the recipient receives it once"
+# A copy is no message spoken in its project: b, having read the chat, is
+# told of nothing unread when a tag reaches it after one.
+CLAUDE_CODE_SESSION_ID="$SB" run "$SMINOS" chat
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x a second change"
+: > "$TEST_ROOT/in-b.received"
+CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@b after the copy"
+assert_contains "$(inbox b)" "@b after the copy" "the next tag reaches b"
+assert_not_contains "$(inbox b)" "| unread" "a copy is not counted unread in its frame"
+assert_contains "$(log_of "$DEMO")" "\"text\": \"@other/x a second change\"" "though the log holds it"
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@other/x @b both"
 assert_rc 2 "$RC" "tags naming two projects are refused"
 assert_contains "$OUT" "one message, one project" "with the reason"
@@ -3268,7 +3301,7 @@ print(sum(1 for e in mod.owed(p, next(m for m in mod.members(p) if m.session == 
 PY_OWED2
 )"
 assert_equals "$OWED_LEGACY" 0 "imported history is never delivered again"
-run "$SMINOS" chat -n 50
+run "$SMINOS" chat -n 100
 assert_contains "$OUT" "old tag" "imported lines read in the project chat"
 # The previous CLI appends to a chat under chats/<host-seat-id>.lock: an import
 # waits for it, so a line appended meanwhile is imported, never archived alone.
@@ -3352,8 +3385,8 @@ pf_peer ib "$IB" busy derived "$R/deep"
 run "$SMINOS" list
 assert_rc 0 "$RC" "list in a project with two interactive sessions exits 0"
 assert_equals "$(printf '%s\n' "$OUT" | head -1)" "pfdemo" "list prints the project's heading"
-assert_contains "$OUT" "  ia   idle" "a seat-less interactive session lists with its state word"
-assert_contains "$OUT" "  ib   busy" "so does one working in a subdirectory of the project"
+assert_contains "$OUT" "  ia [${IA:0:8}]  interactive  idle" "a seat-less interactive session lists with its short, kind and state word"
+assert_contains "$OUT" "  ib [${IB:0:8}]  interactive  busy" "so does one working in a subdirectory of the project"
 assert_equals "$(events_of "$IA")" "joined " "the first list joins a live session into the log"
 assert_contains "$(cat "$PFLOG/testhost.$IA.jsonl")" '"name_source": "user"' "with the harness's name source"
 assert_contains "$(cat "$PFLOG/testhost.$IA.jsonl")" '"seat": "", "by": ""' "seat-less and spawned by no one"
@@ -3422,8 +3455,8 @@ start_inbox pc2
 printf '{"pid":%s,"sessionId":"%s","name":"pc","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$IC" "$R" "$TEST_ROOT/in-pc2.sock" > "$HOME/.claude/sessions/pf-pc2.json"
 run "$SMINOS" list
-assert_contains "$OUT" "pc#${PC:0:8}" "two members sharing an alias list as alias#short"
-assert_contains "$OUT" "pc#${IC:0:8}" "both of them"
+assert_contains "$OUT" "pc [${PC:0:8}]" "two members sharing an alias list apart by their shorts"
+assert_contains "$OUT" "pc [${IC:0:8}]" "both of them"
 run "$SMINOS" say "@pc hi"
 assert_rc 4 "$RC" "a tag both answer to is refused"
 assert_contains "$OUT" "pc#${PC:0:8}" "naming the seat"
@@ -4003,7 +4036,7 @@ FA=3d000013-0000-4000-8000-00000000003d
 pf_peer faraway "$FA" idle user "$P4"
 run "$SMINOS" send faraway "across"
 assert_rc 4 "$RC" "a bare name of another project's live session is refused"
-assert_contains "$OUT" "<project>/faraway" "pointing at the qualified name"
+assert_contains "$OUT" "elsewhere: pf-second/faraway#${FA:0:8}" "pointing at the qualified name"
 assert_equals "$(inbox faraway)" "" "and nothing is sent"
 run "$SMINOS" send pf-second/faraway "across, qualified"
 assert_rc 0 "$RC" "the qualified name reaches it"
@@ -4165,6 +4198,267 @@ assert_contains "$(head -1 "$PFLOG/testhost.$(field "$(seat_id_of sfail)" curren
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/pf-"*.json
 
+# ---- the org directory: rows from the engine's records ---------------------------
+# Every list row is the session's: alias [short], kind, the word the engine's
+# record gives (for a seat as for a seat-less member: the socket is delivery's,
+# never the word's), machine, repo@branch, the in-charge line's age, the
+# record's last activity. Filters widen to every project known here, then
+# narrow; --here lists this machine and the sessions in no project; inside a
+# session the list ends with its subagents (spec 2026-10-18, M1).
+echo "the org directory:"
+export SMINOS_HOME="$TEST_ROOT/od-registry"
+mkdir -m 700 "$SMINOS_HOME"
+rm -f "$HOME/.claude/sessions/"*.json
+unset CLAUDE_CODE_SESSION_ID
+ODA="$TEST_ROOT/od-alpha"; ODB="$TEST_ROOT/od-beta"; ODH="$TEST_ROOT/od-home"
+mkdir -p "$ODH"
+for d in "$ODA" "$ODB"; do gitq init -q "$d"; done
+(cd "$ODA" && "$SMINOS" project init --name odalpha >/dev/null)
+(cd "$ODB" && "$SMINOS" project init --name odbeta >/dev/null)
+gitq -C "$ODB" checkout -qb feature-x
+ODALOG="$SMINOS_HOME/projects/$(smns_id "$ODA")/log"
+ODTX="$HOME/.claude/projects/od"
+mkdir -p "$ODTX"
+od_peer() { # file name session kind status cwd [socket] — the engine's record of a running session, active 2 minutes ago
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"%s","entrypoint":"cli","status":"%s","cwd":"%s","updatedAt":%s,"messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$3" "$2" "$4" "$5" "$6" "$(python3 -c 'import time; print(int(time.time() * 1000) - 120000)')" \
+    "${7:-$TEST_ROOT/od-nobody.sock}" > "$HOME/.claude/sessions/od-$1.json"
+}
+od_tx() { printf '{"type":"user","message":{"role":"user","content":"start"}}\n' > "$ODTX/$1.jsonl"; }
+od_row() { # alias field [list args...] → that field of the alias's row in list --json
+  local alias="$1" key="$2"; shift 2
+  "$SMINOS" list "$@" --json | python3 -c 'import json, sys
+rows = [d for d in json.load(sys.stdin) if d["alias"] == sys.argv[1]]
+v = rows[0].get(sys.argv[2]) if rows else "<no row>"
+print(v if isinstance(v, str) else json.dumps(v))' "$alias" "$key"
+}
+
+# board:646: a session the engine records as idle, listed as stopped. The
+# session's hook joined it where its turn ran (the payload's cwd), while its
+# record names the directory it started in, which is no project: the word was
+# taken only from records whose cwd resolves to the project, so it fell to
+# `stopped`. Liveness is the record naming the session, its process running.
+OD_S1=0d000001-0000-4000-8000-0000000000d1
+od_peer s1 devcloud-setup "$OD_S1" interactive idle "$ODH"
+od_tx "$OD_S1"
+hook_run Stop "$OD_S1" "$ODA" "$ODTX/$OD_S1.jsonl"
+cd "$ODA"
+assert_equals "$(od_row devcloud-setup state)" "idle" "a member whose record names a directory of no project reads the record's word, never stopped (board:646)"
+assert_equals "$(od_row devcloud-setup kind)" "interactive" "and its kind, from the record"
+
+# A seat whose inbox socket is closed while its process runs reads the
+# record's word, and a tagged message to it is recorded, never a resume.
+OD_SEAT=0d000002-0000-4000-8000-0000000000d2
+od_peer seat quiet-seat "$OD_SEAT" bg idle "$ODA"
+od_tx "$OD_SEAT"
+"$SMINOS" seat add od-alpha quiet-seat --session "$OD_SEAT" >/dev/null
+assert_equals "$(od_row quiet-seat state)" "idle" "a running seat whose inbox does not answer reads the record's word, never stopped"
+assert_equals "$(od_row quiet-seat kind)" "seat" "a seat's kind is seat"
+: > "$STUB_STATE/log/calls.log"
+run "$SMINOS" say "@quiet-seat are you there"
+assert_contains "$OUT" "quiet-seat: recorded" "a tagged say to it is recorded"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no claude --bg --resume of the running process"
+run "$SMINOS" send od-alpha/quiet-seat "are you there"
+assert_rc 4 "$RC" "send to a running seat whose inbox does not answer is refused (exit 4)"
+assert_contains "$OUT" "runs, but its inbox does not answer" "saying why"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and resumes nothing either"
+
+# The row: alias [short] always, kind, word, @machine, repo@branch, the
+# in-charge line with its age, the record's last activity.
+"$SMINOS" charge od-alpha/quiet-seat "watching the schema migration" >/dev/null
+run "$SMINOS" list
+ROW="$(grep 'quiet-seat' <<<"$OUT")"
+assert_equals "$(head -1 <<<"$OUT")" "odalpha" "one project shown: its heading"
+assert_contains "$ROW" "quiet-seat [0d000002]" "a row carries the short, always"
+assert_contains "$ROW" "  seat  " "its kind"
+assert_contains "$ROW" "  idle  " "its word"
+assert_contains "$ROW" "@testhost" "its machine"
+assert_contains "$ROW" "od-alpha@main" "repo@branch, read live"
+assert_equals "$(grep -Eo 'in charge: watching the schema migration \([0-9]+s\)' <<<"$ROW" | wc -l | tr -d ' ')" "1" "the in-charge line with its age"
+assert_contains "$ROW" "· active 2m" "the record's last activity"
+assert_contains "$(grep devcloud-setup <<<"$OUT")" "devcloud-setup [0d000001]  interactive" "a seat-less member's kind"
+assert_equals "$(od_row quiet-seat repo)" "od-alpha" "--json carries repo"
+assert_equals "$(od_row quiet-seat branch)" "main" "branch"
+assert_equals "$(od_row quiet-seat cwd)" "$(cd "$ODA" && pwd -P)" "cwd"
+assert_equals "$(od_row quiet-seat project_kind)" "local" "project_kind"
+assert_equals "$(od_row quiet-seat project)" "odalpha" "project"
+assert_equals "$(python3 -c 'import sys; print(0 <= float(sys.argv[1]) < 60)' "$(od_row quiet-seat charge_age)")" "True" "charge_age in seconds"
+assert_equals "$(python3 -c 'import sys; print(100 <= float(sys.argv[1]) < 300)' "$(od_row quiet-seat active_age)")" "True" "active_age in seconds, from the record's updatedAt"
+
+# joined carries session_kind, repo and branch, and still projects as joined.
+J="$(grep '"kind": "joined"' "$ODALOG/testhost.$OD_SEAT.jsonl" | tail -1)"
+assert_contains "$J" '"session_kind": "seat"' "a joined written now carries session_kind"
+assert_contains "$J" '"repo": "od-alpha"' "and repo"
+assert_contains "$J" '"branch": "main"' "and branch"
+assert_contains "$(grep '"kind": "joined"' "$ODALOG/testhost.$OD_S1.jsonl" | tail -1)" '"session_kind": "interactive"' "a seat-less session's joined carries the record's kind"
+assert_equals "$(python3 - "$SMINOS_PY" "$ODALOG/testhost.$OD_SEAT.jsonl" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sminos_od", sys.argv[1])
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+evs = [json.loads(l) for l in open(sys.argv[2])]
+print(S.latest_membership(evs))
+PY
+)" "joined" "and projects as joined"
+
+# A second project, a waiting session in it on a branch of its own.
+OD_B1=0d000003-0000-4000-8000-0000000000d3
+OD_B2=0d000004-0000-4000-8000-0000000000d4
+od_peer b1 ci-gate-keeper "$OD_B1" bg waiting "$ODB"
+od_peer b2 b-idler "$OD_B2" interactive idle "$ODB"
+run_in "$ODB" "$SMINOS" charge ci-gate-keeper "tending the release gate"
+run "$SMINOS" list --state waiting,busy
+assert_contains "$OUT" "ci-gate-keeper" "--state from a project directory widens to every project known here"
+assert_not_contains "$OUT" "quiet-seat" "and narrows to the words named"
+assert_not_contains "$OUT" "b-idler" "in every project"
+run "$SMINOS" list --state idle
+assert_contains "$OUT" "  odbeta  " "several projects shown: the rows are flat, with the project column"
+assert_contains "$OUT" "  odalpha  " "each row naming its own"
+run "$SMINOS" list --state waiting,nosuch
+assert_rc 2 "$RC" "--state takes only the seven words"
+run "$SMINOS" list --project odbeta
+assert_contains "$OUT" "b-idler" "--project names a project"
+assert_not_contains "$OUT" "quiet-seat" "and only it"
+run "$SMINOS" list --machine test
+assert_contains "$OUT" "quiet-seat" "--machine matches a machine by prefix"
+assert_contains "$OUT" "b-idler" "across every project"
+run "$SMINOS" list --machine elsewhere
+assert_not_contains "$OUT" "quiet-seat" "and a machine that is not this one lists none of its sessions"
+run "$SMINOS" find release gate
+assert_contains "$OUT" "ci-gate-keeper" "find matches the in-charge line"
+assert_not_contains "$OUT" "b-idler" "every word"
+run "$SMINOS" find feature-x
+assert_contains "$OUT" "ci-gate-keeper" "find matches the branch"
+assert_contains "$OUT" "b-idler" "for every session on it"
+assert_not_contains "$OUT" "quiet-seat" "and no other"
+run "$SMINOS" list --org
+assert_contains "$OUT" "quiet-seat" "--org lists every project"
+assert_contains "$OUT" "b-idler" "both of them"
+run "$SMINOS" list odbeta
+assert_equals "$(head -1 <<<"$OUT")" "odbeta" "a project named positionally is still its own heading"
+
+# --here: this machine, and every running session in no project.
+OD_H1=0d000005-0000-4000-8000-0000000000d5
+od_peer h1 home-session "$OD_H1" interactive busy "$ODH"
+run_in "$ODH" "$SMINOS" list --here
+assert_contains "$OUT" "(no project)" "--here lists the sessions in no project under their own heading"
+assert_contains "$(sed -n '/(no project)/,$p' <<<"$OUT")" "home-session [0d000005]  interactive  busy" "with the row the engine's record gives"
+assert_not_contains "$(sed -n '/(no project)/,$p' <<<"$OUT")" "devcloud-setup" "a member of a project is not listed there again, whatever its record's directory"
+assert_contains "$OUT" "quiet-seat" "and the members on this machine"
+run_in "$ODA" "$SMINOS" list --here
+assert_contains "$OUT" "home-session" "wherever it runs"
+
+# Inside a session, the list ends with its subagents: live ones nested under
+# their parents, finished ones folded; --all shows them with their ids. With
+# no bridge for the session, the transcript tells.
+OD_AG="$ODTX/$OD_S1/subagents"
+mkdir -p "$OD_AG"
+python3 - "$ODTX/$OD_S1.jsonl" "$OD_AG" <<'PY'
+import json, sys
+main, d = sys.argv[1], sys.argv[2]
+def call(tid, desc, bg=False):
+    inp = {"description": desc, "prompt": "p"}
+    if bg:
+        inp["run_in_background"] = True
+    return {"type": "assistant", "uuid": "u-" + tid, "timestamp": "2026-10-18T10:00:00.000Z",
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "id": tid, "name": "Agent", "input": inp}]}}
+def result(tid, tur, text="done"):
+    return {"type": "user", "uuid": "r-" + tid, "timestamp": "2026-10-18T10:01:00.000Z", "toolUseResult": tur,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": text}]}}
+with open(main, "a") as f:
+    for row in (call("toolu_A", "scan the repo"), result("toolu_A", {"status": "completed"}),
+                call("toolu_B", "watch the build", True),
+                result("toolu_B", {"status": "async_launched", "agentId": "a2222222222222222"})):
+        f.write(json.dumps(row) + "\n")
+with open(d + "/agent-a2222222222222222.jsonl", "w") as f:
+    f.write(json.dumps(call("toolu_C", "review the diff")) + "\n")
+for name, meta in (("a1111111111111111", {"agentType": "Explore", "description": "scan the repo", "toolUseId": "toolu_A"}),
+                   ("a2222222222222222", {"agentType": "general-purpose", "description": "watch the build",
+                                          "toolUseId": "toolu_B", "requestShape": "background"}),
+                   ("a3333333333333333", {"agentType": "doperpowers:reviewer-low", "description": "review the diff",
+                                          "toolUseId": "toolu_C", "parentAgentId": "a2222222222222222"})):
+    json.dump(meta, open("%s/agent-%s.meta.json" % (d, name), "w"))
+PY
+run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list
+TREE="$(sed -n '/^subagents:/,$p' <<<"$OUT")"
+assert_equals "$TREE" "$(printf 'subagents:\n  a2222222222222222  general-purpose  running\n    a3333333333333333  doperpowers:reviewer-low  running\n  +1 finished — sminos list --all')" \
+  "inside a session the list ends with its live subagents, nested under their parents, the finished folded behind a count"
+run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --all
+assert_equals "$(sed -n '/^subagents:/,$p' <<<"$OUT")" "$(printf 'subagents:\n  a1111111111111111  Explore  completed\n  a2222222222222222  general-purpose  running\n    a3333333333333333  doperpowers:reviewer-low  running')" \
+  "--all shows the finished agent with its id"
+run_in "$ODA" "$SMINOS" list
+assert_not_contains "$OUT" "subagents" "outside a session there is no tree"
+run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --json
+assert_equals "$(python3 -c 'import json, sys; print(type(json.loads(sys.argv[1])).__name__)' "$OUT")" "list" "--json stays the rows' list"
+
+# Filters combine: a project named with --here keeps the sessions in no
+# project out, as it keeps every other project's.
+run_in "$ODH" "$SMINOS" list --project odalpha --here --json
+assert_contains "$OUT" '"alias": "quiet-seat"' "--project with --here lists the project's members on this machine"
+assert_not_contains "$OUT" "home-session" "and no session in no project"
+run_in "$ODH" "$SMINOS" list odalpha --here
+assert_not_contains "$OUT" "(no project)" "nor does a project named first"
+
+# A remote session's published title is searched whatever line it is in
+# charge of: its title is not its in-charge line when a higher source wins.
+OD_R1=0d000006-0000-4000-8000-0000000000d6
+python3 - "$SMINOS_PY" "$ODA" "$OD_R1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos_od", sys.argv[1])
+S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+p, sid = S.resolve_project(sys.argv[2]), sys.argv[3]
+S._append(p, "elsewhere/" + sid, [
+    {"kind": "joined", "session": sid, "alias": "far-one", "name_source": "user", "machine": "elsewhere",
+     "cwd": "/srv/x", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive",
+     "repo": "x", "branch": "main"},
+    {"kind": "titled", "session": sid, "title": "unique-remote-title"},
+    {"kind": "in-charge", "session": sid, "text": "an explicit line", "source": "set"}])
+PY
+run_in "$ODA" "$SMINOS" find unique-remote-title
+assert_contains "$OUT" "far-one [0d000006]" "find matches a remote session's published title under a set line"
+assert_contains "$OUT" "in charge: an explicit line" "while its row shows the line that wins"
+
+# A socket that answers the probe and is gone before the frame: the record
+# says the process runs, so nothing resumes it (a resume would copy it).
+OD_FLIP=0d000007-0000-4000-8000-0000000000d7
+cat > "$TEST_ROOT/oneshot.py" <<'PY'
+import os, socket, sys
+path = sys.argv[1]
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path)
+srv.listen(1)
+c, _ = srv.accept()   # the liveness probe: connect, then close
+c.close()
+srv.close()
+os.unlink(path)
+PY
+python3 "$TEST_ROOT/oneshot.py" "$TEST_ROOT/od-flip.sock" & EXTRA_PIDS+=("$!")
+for _ in $(seq 1 50); do [ -S "$TEST_ROOT/od-flip.sock" ] && break; sleep 0.05; done
+od_peer flip flipper "$OD_FLIP" bg idle "$ODA" "$TEST_ROOT/od-flip.sock"
+od_tx "$OD_FLIP"
+"$SMINOS" seat add od-alpha flipper --session "$OD_FLIP" >/dev/null
+: > "$STUB_STATE/log/calls.log"
+run_in "$ODA" "$SMINOS" send od-alpha/flipper "are you there"
+assert_rc 4 "$RC" "send whose inbox vanished after the probe, its process running, is refused (exit 4)"
+assert_contains "$OUT" "runs, but its inbox does not answer" "saying why"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and resumes nothing"
+# resume itself never launches over a running process it cannot stop: here
+# the harness lists no row and the seat records no short to stop.
+STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
+assert_rc 1 "$RC" "resume of a running seat it cannot stop is refused"
+assert_contains "$OUT" "still runs" "saying the session still runs"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
+# With a recorded short, the stop command succeeds, yet the process its
+# record names still runs: the turn is not down, so nothing is launched.
+"$SMINOS" meta set od-alpha/quiet-seat short 0d00ab02 >/dev/null
+: > "$STUB_STATE/log/calls.log"
+SMINOS_STOP_TIMEOUT=0.5 STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
+assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop 0d00ab02" "resume stops the running seat's recorded turn"
+assert_rc 1 "$RC" "and, its process still running after a stop that succeeded, refuses"
+assert_contains "$OUT" "is still running" "saying the turn is still running"
+assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
+cd "$WORK"
+rm -f "$HOME/.claude/sessions/od-"*.json
+
 # ---- messages to the host and the in-charge line --------------------------------
 # A session's <message> marks and async asks reach the project's log through
 # the Stop / SessionStart hook (§4); every member has one in-charge line, set,
@@ -4201,6 +4495,19 @@ fi
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "codes parity: ${line#ok }" ;; *) fail "codes parity: ${line#FAIL }" ;; esac
 done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx1-codes.json" 2>&1)
+# A machine's own project has the id the hub computes: its shared vectors pin it (machine_project_parity.py).
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "machine project id parity: ${line#ok }" ;; *) fail "machine project id parity: ${line#FAIL }" ;; esac
+done < <(python3 "$SCRIPT_DIR/machine_project_parity.py" "$REPO_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/machine-project-id.json" 2>&1)
+# The installed engine still stamps and reads `relocated` as launch_cwd reads
+# it (engine_relocated_shape.py); where no engine is installed (CI) it says SKIP.
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*) pass "engine relocated shape: ${line#ok }" ;;
+    "SKIP "*) echo "  skip engine relocated shape: ${line#SKIP }" ;;
+    *) fail "engine relocated shape: ${line#FAIL }" ;;
+  esac
+done < <(python3 "$SCRIPT_DIR/engine_relocated_shape.py" 2>&1)
 
 # Transcript records as the harness stores them (the shapes the ask design and
 # a live 2.1.296 transcript record).
@@ -4823,7 +5130,7 @@ run "$SMINOS" list --json
 assert_equals "$(json_row ha charge)" "ha" "a user-named member's line is its name"
 assert_equals "$(json_row ha charge_source)" "name" "sourced from the name"
 run "$SMINOS" list
-assert_equals "$(printf '%s\n' "$OUT" | grep '^  ha ')" "  ha   idle" "list does not print the name twice"
+assert_equals "$(printf '%s\n' "$OUT" | grep '^  ha ' | grep -c 'in charge' || true)" "0" "list does not print the name twice"
 python3 - "$SMINOS_PY" "$HP" "$HA" <<'PY_DERIVED'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
@@ -5108,7 +5415,8 @@ run env "${H1[@]}" "$SMINOS" list
 tscript "env \$H1 sminos list" "$OUT"
 assert_contains "$OUT" "demo" "after one h2 tick and one h1 tick, list under h1 shows the project"
 B_ROW="$(printf '%s\n' "$OUT" | grep '^  b ' || true)"
-assert_contains "$B_ROW" "busy @h2 " "with b on h2, its state, and the state's age"
+assert_contains "$B_ROW" "  busy  @h2  " "with b on h2, its state"
+assert_contains "$B_ROW" "· active " "and the state's age"
 assert_contains "$(printf '%s\n' "$OUT" | grep '^  a ' || true)" "idle" "and a, local, by its live word"
 CLAUDE_CODE_SESSION_ID="$A" run env "${H1[@]}" "$SMINOS" say "@b hello"
 tscript "env \$H1 CLAUDE_CODE_SESSION_ID=<a> sminos say \"@b hello\"" "$OUT"
@@ -5138,7 +5446,7 @@ run env "${H1[@]}" "$SMINOS" daemon tick
 tscript "env \$H1 sminos daemon tick" "$OUT"
 run env "${H1[@]}" "$SMINOS" list
 tscript "env \$H1 sminos list" "$OUT"
-assert_contains "$(printf '%s\n' "$OUT" | grep '^  b ' || true)" "idle @h2 " "after b went idle for two h2 ticks and one h1 tick, list under h1 shows b idle @h2"
+assert_contains "$(printf '%s\n' "$OUT" | grep '^  b ' || true)" "  idle  @h2  " "after b went idle for two h2 ticks and one h1 tick, list under h1 shows b idle @h2"
 
 # M2's status across homes, through the mirror: a status set under h1 is in
 # h2's list --json after a sync.

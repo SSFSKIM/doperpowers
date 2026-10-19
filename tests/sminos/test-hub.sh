@@ -10,7 +10,7 @@
 # is refused and told to pick another with --name; the enrolled name is the
 # writer host, and a rename leaves this machine's seats and members its own
 # while another machine enrolled under the old name stays another;
-# `project init --hub` writes the field; a hub project, a malformed hub
+# `project init --hub` writes the org; a hub project, a malformed hub
 # included, runs no git phase and `project attach` refuses it.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per installation;
 # `claude` is a stub; nothing reaches a network beyond 127.0.0.1.
@@ -454,8 +454,8 @@ gitq init -q "$PH"
 cd "$PH"
 run "$SMINOS" project init --hub --name hubproj --remote "$T/archive-h.git"
 assert_rc 0 "$RC" "project init --hub makes a hub project"
-assert_equals "$(json_get "$PH/.smns" 'd["hub"]')" "{\"url\": \"$HUB\", \"org\": \"org-1\"}" ".smns names the hub and the org"
-assert_contains "$OUT" "a hub project of $HUB" "and says so"
+assert_equals "$(json_get "$PH/.smns" 'd["hub"]')" '{"org": "org-1"}' ".smns names the org alone: the URL is each machine's enrollment's"
+assert_contains "$OUT" "a hub project of org org-1 (through $HUB here)" "and says so"
 run "$SMINOS" project show
 assert_contains "$OUT" "hub      $HUB (org org-1)" "project show names the hub"
 PG="$T/a/gp"
@@ -470,7 +470,7 @@ SMNS_BEFORE="$(json_get "$PG/.smns" '{k: v for k, v in d.items() if k != "hub"}'
 run "$SMINOS" project init --hub
 assert_rc 0 "$RC" "--hub on an existing .smns adds the field"
 assert_equals "$(json_get "$PG/.smns" '{k: v for k, v in d.items() if k != "hub"}')" "$SMNS_BEFORE" "keeping every other field"
-assert_equals "$(json_get "$PG/.smns" 'd["hub"]["url"]')" "\"$HUB\"" "with the hub"
+assert_equals "$(json_get "$PG/.smns" 'd["hub"]')" '{"org": "org-1"}' "with the org"
 assert_contains "$OUT" "no longer synced" "saying its remote is no longer the live path"
 run "$SMINOS" project init --hub
 assert_rc 0 "$RC" "--hub again changes nothing"
@@ -506,7 +506,7 @@ python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["hub"] = None;
 "$SMINOS" say "under a null hub" >/dev/null 2>&1
 run "$SMINOS" daemon tick
 assert_not_contains "$OUT" "nullhub: synced" "a .smns whose hub is null gets no git phase"
-assert_contains "$OUT" "its hub is not {url, org}" "with a warning"
+assert_contains "$OUT" "its hub names no org" "with a warning"
 assert_equals "$(git -C "$T/archive-n.git" rev-parse --verify -q main || echo none)" none "its remote is never pushed"
 run "$SMINOS" project attach
 assert_rc 1 "$RC" "project attach refuses it"
@@ -529,8 +529,9 @@ pid = json.load(open(os.path.join(sys.argv[2], ".smns")))["project"]
 print("imports" if sminos_uplink.hub_project(pid, {"org": "org-1"}) else "refuses")
 PY
 }
-assert_equals "$(importable "$PO" 2>/dev/null)" refuses "the uplink imports nothing into a project whose hub carries only an org"
-assert_equals "$(importable "$PH" 2>/dev/null)" imports "and imports into a well-formed hub project of its org"
+assert_equals "$(importable "$PO" 2>/dev/null)" imports "the uplink imports into a project whose hub carries only its org"
+assert_equals "$(importable "$PH" 2>/dev/null)" imports "and into one made by init --hub"
+assert_equals "$(importable "$PN" 2>/dev/null)" refuses "and nothing into one whose hub names no org"
 cd "$T"
 
 # ---- the conversion against a tick that syncs the project through git
@@ -662,7 +663,7 @@ HELD_HEAD="$(git -C "$T/heldproj.git" rev-parse main)"
 run python3 "$T/race.py" "$SCRIPTS" "$T/a/heldproj" held
 assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys; print(json.load(sys.stdin)["converted during the fetch"])')" \
   False "a conversion started while a tick fetches waits for that sync to end"
-assert_equals "$(json_get "$T/a/heldproj/.smns" 'd["hub"]["url"]')" "\"$HUB\"" "then converts the project"
+assert_equals "$(json_get "$T/a/heldproj/.smns" 'd["hub"]')" '{"org": "org-1"}' "then converts the project"
 assert_equals "$(printf '%s' "$OUT" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tick"]["pushed"])')" \
   False "the rest of the tick, after the switch, pushes nothing"
 assert_equals "$(git -C "$T/heldproj.git" rev-parse main)" "$HELD_HEAD" "the remote is where it was"

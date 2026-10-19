@@ -71,7 +71,7 @@ def due(project, record):
     archive on here, and a confirmation naming this machine that came after
     the last run began, at least half a period after it."""
     every = archive_every()
-    if every <= 0 or not project.remote or not sminos.hub_wellformed(project.hub):
+    if every <= 0 or not project.remote or not sminos.hub_synced(project.hub):
         return False
     designated, at = designation(project)
     last = float((record.get("archive") or {}).get("started") or 0)

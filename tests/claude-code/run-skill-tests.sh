@@ -82,6 +82,8 @@ tests=(
     "test-kairos-hook.sh"
     # The to-human MessageDisplay hook — hermetic, drives the hook by payload.
     "test-to-human-stream-hook.sh"
+    # The sminos guidance SessionStart hook — hermetic, temporary HOME and SMINOS_HOME.
+    "test-smns-guide-hook.sh"
     "test-subagent-driven-execution.sh"
     # board-api (A2): hermetic and fast — every suite below drives the toolkit's
     # verbs against the fixture mock in board-api/mock-server.py, no network and
