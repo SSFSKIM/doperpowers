@@ -7930,17 +7930,19 @@ def _roster_exchanges(session, projects):
             to = e.get("to")
             if e["kind"] != "say" or e.get("wake") or not isinstance(to, list):
                 continue
+            sender = writer_session(e["writer"])
+            if "copy" in e and sender not in mine:
+                continue   # a copy counts only as the session's own message out; a peer's would hide its delivery
             ref = str(e.get("copy") or "%s:%s:%d" % (p.id, e["writer"], e["seq"]))
             if ref in seen:
                 continue
             seen.add(ref)
-            sender = writer_session(e["writer"])
             to = [r for r in to if isinstance(r, dict) and UUID_RE.match(str(r.get("session") or ""))]
             if sender in mine:
                 for r in to:
                     if r["session"] not in mine:
                         note((str(r.get("project") or p.id), r["session"]), "out", e["ts"], str(r.get("alias") or ""))
-            elif sender and "copy" not in e and any(r["session"] in mine for r in to):
+            elif sender and any(r["session"] in mine for r in to):
                 note((str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
     return out
 
@@ -7975,16 +7977,22 @@ def _roster_peer(pid, sid, all_seats):
 def _roster_tag(p, m, here, info):
     """The tag that reaches member `m` of `p` from a session of `here`:
     `@alias` in its own project, `@<project>/<alias>` from another (§5), with
-    `#short` when another member there holds the alias too; `@<short>` for
-    an alias no tag can spell."""
+    `#short` when another member there holds the alias too; quoted when the
+    bare form would not parse back whole (leading_tags), and `@<short>` when
+    neither form does."""
     alias = m.alias
-    if not alias or alias == m.short or '"' in alias or "/" in alias:
+    if not alias or alias == m.short:
         return "@" + m.short
-    body = ("" if here is not None and p.id == here.id else tag_project(p) + "/") + alias
-    tag = "@" + body if re.fullmatch(r"[\w.-]+", alias) else '@"%s"' % body
+    project = "" if here is not None and p.id == here.id else tag_project(p)
+    body = (project + "/" if project else "") + alias
     shared = any(s != m.session and r["latest"] and r["latest"]["kind"] == "joined"
                  and logged_alias(s, info)[0] == alias for s, r in info.items())
-    return tag + ("#" + m.short if shared else "")
+    short = m.short if shared else ""
+    for tag in ("@" + body, '@"%s"' % body):
+        tag += "#" + short if short else ""
+        if [(t["raw"], t["project"], t["name"], t["short"]) for t in leading_tags(tag)] == [(tag, project, alias, short)]:
+            return tag
+    return "@" + m.short
 
 
 def _roster_when(ts):
