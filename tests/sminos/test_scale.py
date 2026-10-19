@@ -181,9 +181,13 @@ class Scale(unittest.TestCase):
 
     def test_a_transcript_that_appears_is_found_by_a_poller(self):
         sid = str(uuid.uuid4())
-        self.assertFalse(sminos.transcript_contains(sid, '"hi"', fresh=True))
+        self.assertFalse(sminos.transcript_contains(sid, '"hi"'))
         transcript(self.root, sid)
-        self.assertTrue(sminos.transcript_contains(sid, '"hi"', fresh=True))
+        self.assertTrue(sminos.transcript_contains(sid, '"hi"'))
+        sid = str(uuid.uuid4())
+        self.assertEqual(sminos.transcript_rows(sid), [])
+        transcript(self.root, sid)
+        self.assertEqual(len(sminos.transcript_rows(sid)), 1, "a one-shot reader finds what appeared since")
 
 
 class StaleResolution(unittest.TestCase):

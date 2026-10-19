@@ -4299,7 +4299,7 @@ def derive_line(project, m):
         if gate_w != -1:
             os.close(gate_w)
         for sid in {fork, str((obj or {}).get("session_id") or "")}:
-            path = transcript_path(sid) if UUID_RE.match(sid) and sid != m.session else ""
+            path = transcript_now(sid) if UUID_RE.match(sid) and sid != m.session else ""
             if path:
                 os.unlink(path)
         if marker:
@@ -5376,8 +5376,8 @@ def status_for_state(state):
 _TRANSCRIPTS = {}
 # How stale the index may be when a new cache generation (forget_caches) first
 # asks it: a long-lived process forgets every few seconds, and a refresh is a
-# stat of every project directory. A caller waiting for a transcript to appear
-# asks with `fresh` (transcript_contains, the session plane's locate).
+# stat of every project directory. A caller reading or waiting for one
+# session's transcript, which may have appeared since, asks transcript_now.
 TRANSCRIPT_FRESH = 5.0
 TRANSCRIPT_GLOBS = 4   # a process's asks answered by a glob for the one id, before it builds the index
 
@@ -5468,7 +5468,8 @@ def transcript_path(session_id, fresh=False):
     A session found under two project dirs (a repository that moved) answers
     with the one written last. `fresh`: the projects directory read as it is
     now — for a transcript that may have appeared since (a poller), or one
-    found missing since it was looked up (the engine moved it)."""
+    found missing since it was looked up (the engine moved it); see
+    transcript_now."""
     if not session_id:
         return ""
     hit = None if fresh else _TRANSCRIPTS.get(session_id)   # one lookup: the plane's threads ask while the uplink forgets
@@ -5482,8 +5483,16 @@ def transcript_path(session_id, fresh=False):
     return path
 
 
+def transcript_now(session_id):
+    """transcript_path, a miss looked for again as the directories are now:
+    for a caller that reads or acts on one session's transcript once — a
+    reply, a poll, a fork's cleanup — which may have appeared since the
+    index was read; never a pass over every session."""
+    return transcript_path(session_id) or transcript_path(session_id, fresh=True)
+
+
 def transcript_rows(session_id):
-    f = transcript_path(session_id)
+    f = transcript_now(session_id)
     rows = []
     if not f:
         return rows
@@ -5502,10 +5511,8 @@ def transcript_rows(session_id):
     return rows
 
 
-def transcript_contains(session_id, marker, fresh=False):
-    """Whether the session's transcript holds `marker`; `fresh`, for a poller:
-    a transcript not found is looked for as the directories are now."""
-    f = transcript_path(session_id) or (transcript_path(session_id, fresh=True) if fresh else "")
+def transcript_contains(session_id, marker):
+    f = transcript_now(session_id)
     if not f:
         return False
     try:
@@ -5589,7 +5596,7 @@ def reply_stale(seat_id, turn_id):
     without any sminos verb in it: nothing marks the record working, nothing
     finalizes it, and the recorded reply keeps describing the PREVIOUS turn.
     The transcript's mtime is the evidence that a turn happened anyway."""
-    tx = transcript_path(turn_id)
+    tx = transcript_now(turn_id)
     if not tx:
         return False
     return _mtime(tx) > _mtime(reply_path(seat_id))
@@ -6708,7 +6715,7 @@ def wait_socket_turn(s, marker, was_idle, guard):
     deadline = time.time() + float(os.environ.get("SMINOS_ACK_TIMEOUT", "120"))
     seen = False
     while time.time() < deadline:
-        if transcript_contains(cur, marker, fresh=True):
+        if transcript_contains(cur, marker):
             seen = True
             break
         if was_idle:

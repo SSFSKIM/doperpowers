@@ -1909,8 +1909,7 @@ class Plane:
             reader.start()
         self.subs[sub] = Subscription(
             project.id, self.machine, sid, agent, sub, reader=reader,
-            # Asked until found, every LOCATE_EVERY: one not found is looked for as the directories are now.
-            locate=lambda: sminos.transcript_path(sid) or sminos.transcript_path(sid, fresh=True),
+            locate=lambda: sminos.transcript_now(sid),   # asked until found, every LOCATE_EVERY
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
             transcripts=self.transcripts, wake=self.wake, disk=self.disk)
         return out + self.pump_one(sub)
