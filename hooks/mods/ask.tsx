@@ -836,9 +836,6 @@ function conversationOf(rows: readonly Row[]): Row[] {
  * to follow, and all count.
  */
 export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { isWholeFile?: boolean } = {}): OpenAsk[] {
-  const calls: { id: string; input: Record<string, unknown> }[] = []
-  const results = new Map<string, { content: unknown; is_error?: boolean }>()
-  const answers = new Map<string, string>()
   const parsed = lines.flatMap((line) => {
     try {
       const row: unknown = JSON.parse(line)
@@ -848,7 +845,15 @@ export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { 
     }
   })
   const isRewound = parsed.some((row) => row.type === 'last-prompt' && row.rewound === true)
-  for (const row of isWholeFile && isRewound ? conversationOf(parsed) : parsed) {
+  return asksIn(isWholeFile && isRewound ? conversationOf(parsed) : parsed)
+}
+
+/** The async asks rows in the transcript's shape hold, every row counting. */
+function asksIn(rows: readonly Row[]): OpenAsk[] {
+  const calls: { id: string; input: Record<string, unknown> }[] = []
+  const results = new Map<string, { content: unknown; is_error?: boolean }>()
+  const answers = new Map<string, string>()
+  for (const row of rows) {
     const message = isRecord(row.message) ? row.message : {}
     for (const block of Array.isArray(message.content) ? message.content : []) {
       // A call from the model's own row: the engine's wire copy of a request's message (`api-request-blob`) repeats it.
@@ -1216,6 +1221,58 @@ async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
   return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
 }
 
+/**
+ * A hook's context as the model reads it (the engine's `ROe`, 2.1.302):
+ * `<system-reminder>\n<hook> hook additional context: <entries, a line
+ * apart>\n</system-reminder>`, an answer given as a tool result's context
+ * sitting inside that result.
+ */
+const HOOK_CONTEXT = /<system-reminder>\n[^\n]*? hook additional context: ([\s\S]*?)\n<\/system-reminder>/g
+
+/**
+ * The async asks of the conversation the engine holds. A copy of a session
+ * (`--fork-session`, a `--bg --resume` while another process holds it,
+ * `/branch`) starts under an id of its own, its transcript not written yet
+ * (the engine writes the conversation there with the copy's first row), and
+ * nothing a module can reach names the session it copied. The calls and
+ * their results are the rows'; an answer given as a tool result's context
+ * is not a row, and is read from the model's form. What a copy holds starts
+ * at the last compaction, and each form keeps its newest 4096 messages: an
+ * ask from before either is not rebuilt.
+ */
+async function historyAsks($: EngineInterface): Promise<OpenAsk[]> {
+  const [messages, api] = await Promise.all([$.session.messages(), $.session.messages({ as: 'api' })])
+  const rows: Row[] = []
+  const prompt = (text: string) => {
+    if (text.startsWith(PLUGIN_PROMPT)) {
+      rows.push({ type: 'user', message: { content: text } })
+    }
+  }
+  for (const m of messages) {
+    if (m.role === 'user') {
+      prompt(m.text)
+      continue
+    }
+    if (m.toolUses.length === 0) {
+      continue
+    }
+    rows.push({ type: 'assistant', message: { content: m.toolUses.map((use) => ({ type: 'tool_use', id: use.tool_use_id, name: use.tool, input: use.input })) } })
+    const results = m.toolUses.filter((use) => use.text !== undefined)
+    rows.push({ type: 'user', message: { content: results.map((use) => ({ type: 'tool_result', tool_use_id: use.tool_use_id, content: use.text, is_error: use.isError })) } })
+  }
+  for (const { role, content } of api) {
+    const blocks = role !== 'user' ? [] : typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content.filter(isRecord) : []
+    for (const block of blocks) {
+      const text = block.type === 'text' ? textOf([block]) : block.type === 'tool_result' ? textOf(block.content) : ''
+      prompt(text)
+      for (const [, entries] of text.matchAll(HOOK_CONTEXT)) {
+        rows.push({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [entries] } })
+      }
+    }
+  }
+  return asksIn(rows)
+}
+
 const ANSWER_KEY = 'ask-answer:'
 /** A button's own press does nothing: the `ui.press` hook answers it, where the engine can be reached. */
 const noop = () => {}
@@ -1343,15 +1400,24 @@ export function registerAsk(on: On) {
 
   // Every SessionStart (agents.tsx holds the one registration a module may
   // make without a matcher): where this session's pasted pictures are kept.
-  // A resumed session's async asks are read back from its transcript; a
-  // cleared one has none, and a compaction keeps them.
+  // A resumed session's async asks are read back from its transcript, a
+  // copy's from the conversation it copied; a cleared one has none, and a
+  // compaction keeps them.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
     store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
     if (e.source !== 'compact') {
       forgetAsyncAsks()
     }
     if (e.source === 'resume' || e.source === 'fork') {
-      asks = await readAsks($, e.transcript_path)
+      // A copy's transcript is unwritten, but for /branch's, written whole
+      // before the session starts and read with no cap on its length.
+      asks =
+        e.source === 'fork' && !(await $.fs.exists(e.transcript_path))
+          ? await historyAsks($).catch((error: unknown) => {
+              $.ui.log(`ask: the conversation could not be read (${message(error)}); no async ask is rebuilt`, { to: 'debug' })
+              return []
+            })
+          : await readAsks($, e.transcript_path)
       $.ui.invalidate('ui.render')
       for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
         note({ kind: 'open', id: ask.id, questions: ask.questions })

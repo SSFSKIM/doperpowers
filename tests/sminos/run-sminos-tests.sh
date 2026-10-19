@@ -4661,6 +4661,36 @@ hook_run Stop "$HA" "$R3" "$TA"
 assert_contains "$(grep '"src": "toolu_async2"' "$HPLOG/testhost.$HA.jsonl" | grep answered)" '=\"Postgres\". You can now continue with these answers in mind."' \
   "a plugin-submitted delivery records its answer without the engine's framing"
 assert_equals "$(grep -c 'This is how Claude Code' "$HPLOG/testhost.$HA.jsonl" || true)" "0" "the framing is not part of it"
+# A copy of the session (a resume the engine starts under a new id, source
+# fork) starts with its transcript unwritten; with its first row the engine
+# writes there the conversation it copied, the original's records with their
+# own times. The copy exports none of them, and its answer to a question the
+# original asked goes under the asker's writer; the original's own later
+# answer to it appends nothing.
+tx "$TA" ask a3000009 toolu_async3 async "$Q1"
+tx "$TA" result a300000a toolu_async3 ASYNC
+tx "$TA" asst a300000b "Asked a third."
+hook_run Stop "$HA" "$R3" "$TA"
+HCOPY=5a000009-0000-4000-8000-0000000000c5
+TCOPY="$TXD/$HCOPY.jsonl"
+hp_peer hcopy "$HCOPY" user interactive
+hook_run SessionStart "$HCOPY" "$R3" "$TCOPY" fork
+python3 -c 'import json, sys
+with open(sys.argv[2], "a") as out:
+    for l in open(sys.argv[1]):
+        out.write(json.dumps({**json.loads(l), "timestamp": "2026-01-01T00:00:00.000Z"}) + "\n")' "$TA" "$TCOPY"
+tx "$TCOPY" deliver-att c1000001 toolu_async3 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.'
+tx "$TCOPY" deliver-att c1000002 toolu_orphan2 'Your questions have been answered: "Old?"="No".'
+tx "$TCOPY" asst c1000003 '<message>taking SQLite</message>'
+hook_run Stop "$HCOPY" "$R3" "$TCOPY"
+assert_equals "$(hp_events "$HCOPY")" "joined answered:toolu_orphan2 message:c1000003#0 " \
+  "a copy exports none of what it copied, nor its answer to its original's question; an answer no session asked stays its own"
+assert_contains "$(grep '"kind": "answered"' "$HPLOG/testhost.$HA.jsonl" | grep toolu_async3)" '"from": "ha", "src": "toolu_async3", "text": "Your questions have been answered: \"Which backend?\"=\"SQLite\".' \
+  "it is under the asker's writer, as the asker's"
+tx "$TA" deliver-att a300000c toolu_async3 'Your questions have been answered: "Which backend?"="Postgres". You can now continue with these answers in mind.'
+tx "$TA" asst a300000d "Taking Postgres."
+hook_run Stop "$HA" "$R3" "$TA"
+assert_equals "$(grep -c '"src": "toolu_async3"' "$HPLOG/testhost.$HA.jsonl")" "2" "the original's own later answer to it appends nothing"
 
 # A session under MAWS asks through MAWS's own tool (mcp__maws__ask, blocking
 # false), whose shape MAWS owns: maws-ask-async.jsonl is a live transcript of

@@ -324,16 +324,21 @@ assert_equals "$(events_of "$SA")" "$LIVE answered:toolu_ex_tag message:e9#0" \
   "and a Stop replayed appends nothing"
 # The same answer rows in a session no bridge exported: the Stop hook alone
 # reads each as the bridge's export did, under the same src with the same text.
+# toolu_ex_async is a question SA asked, so this session's answer to it is
+# SA's, as a copy's answer to its original's question is, and SA's file
+# already holds it.
 SF=5b000001-0000-4000-8000-0000000000e8
 TF="$HOME/.claude/projects/x/$SF.jsonl"
 peer "$SF" exstop interactive cli
 hook SessionStart "$SF" "$TF"
 rows transcript "$TF" prompt answers quoted
 hook Stop "$SF" "$TF"
-assert_equals "$(events_of "$SF")" "joined answered:toolu_ex_async answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid" \
+assert_equals "$(events_of "$SF")" "joined answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid" \
   "without the bridge, the Stop hook reads the same answer rows as the same answered events, and the quoting message as none"
+assert_equals "$(events_of "$SA")" "$LIVE answered:toolu_ex_tag message:e9#0" \
+  "and its answer to the question another session asked goes to that session's writer, which holds it once"
 same_texts=yes
-for src in toolu_ex_async toolu_ex_ctx toolu_ex_maws toolu_ex_mid; do
+for src in toolu_ex_ctx toolu_ex_maws toolu_ex_mid; do
   [[ "$(text_of "$SA" answered "$src")" == "$(text_of "$SF" answered "$src")" ]] || same_texts="no: $src"
 done
 assert_equals "$same_texts" yes "and with the texts the bridge's export logged"

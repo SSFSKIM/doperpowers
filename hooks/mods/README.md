@@ -491,6 +491,18 @@ read takes is searched for the stored forms resume reads, by one `perl` pass
 whose output is cut at the same 4 MiB, rebuilds nothing, with a debug-log
 line. `/clear` forgets the asks; a compaction keeps them.
 
+A copy of a session (`--fork-session`, a `--bg --resume` while another
+process holds the session, `/branch`; the payload's source `fork`) starts
+under an id of its own, its transcript unwritten until its first row, and
+nothing a module reaches names the session it copied. Its asks are rebuilt
+from the conversation the engine holds: the calls and their results from
+`$.session.messages()`, and an answer given as a tool result's context, which
+is no row there, from the model's form (`{ as: "api" }`), inside that result.
+That conversation starts at the last compaction, and each form keeps its
+newest 4096 messages, so an ask from before either is not rebuilt in the copy;
+the original keeps it. `/branch` writes the copy's transcript whole before the
+session starts, and that file is read as a resumed session's is.
+
 Known limits: a tool already running in parallel with the ask when the human
 declines it finishes, where the built-in's abort would cut it; the refusal
 reaches the model inside `<tool_use_error>`, the form every hook refusal takes,

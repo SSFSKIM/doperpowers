@@ -3671,10 +3671,14 @@ def _trailing_run(f, end):
     return 0
 
 
-def position_init(project, session, tpath):
+def position_init(project, session, tpath, since=None):
     """At SessionStart, set the export position to the transcript's current
     end — only when the session has none, so a resume keeps it and a mark
-    written before the process died is still exported."""
+    written before the process died is still exported. With `since` (a
+    copy's start), the records written before it are not the session's: a
+    copy of a session (source `fork`) starts with its transcript unwritten,
+    and the engine writes the conversation it copied there, the original's
+    records with their own times, ahead of the copy's first."""
     with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
         path = _position_path(project, session)
         if os.path.exists(path):
@@ -3690,6 +3694,8 @@ def position_init(project, session, tpath):
                     pos = {"uuid": uid, "offset": last[0]}
         except OSError:
             pass
+        if since:
+            pos["since"] = since
         write_json(path, pos)
 
 
@@ -3697,8 +3703,10 @@ def _records_past(project, session, tpath):
     """(records, start, held): the transcript's complete main-chain records
     past the session's export position, as (offset, record), the offset they
     start at, and whether the position held (else the trailing run, §4);
-    None when the transcript cannot be opened."""
+    None when the transcript cannot be opened. A record older than the
+    position's `since` is a copy's of its original's (position_init)."""
     pos = _position_load(project, session)
+    since = pos.get("since") if pos else None
     try:
         f = open(tpath, "rb")
     except OSError:
@@ -3714,7 +3722,7 @@ def _records_past(project, session, tpath):
         while at < end:
             line = f.readline()
             r = _record(line)
-            if r is not None and not r.get("isSidechain"):
+            if r is not None and not r.get("isSidechain") and not (since and str(r.get("timestamp") or since) < since):
                 records.append((at, r))
             at += len(line)
     return records, start, held
@@ -3792,7 +3800,7 @@ def export_host(project, session, tpath, alias):
         records, start, held = past
         events = host_events([r for _, r in records], alias)
         if events:
-            log_append_batch(project, writer_id(session), events)
+            append_host(project, session, events)
         new, pending = None, set()
         for at, r in records:
             for b in _blocks(r, "tool_use"):
@@ -3833,7 +3841,56 @@ def _own_events(project, session):
     return _former_events(project, session) + _writer_events(project, host_name(), session)
 
 
-def record_session(project, session, tpath, event, last_message=""):
+def _askers(project, session, srcs):
+    """{src: (writer, question)} for each src whose question another session
+    of this machine holds under its own writer, and the session's own does
+    not. Each file is read only if it holds one of the srcs."""
+    srcs = srcs - {e.get("src") for e in _own_events(project, session) if e["kind"] == "question"}
+    log, prefix = project_path(project, "log"), host_name() + "."
+    try:
+        names = os.listdir(log) if srcs else []
+    except OSError:
+        return {}
+    found = {}
+    for name in names:
+        other = name[len(prefix):-len(".jsonl")] if name.startswith(prefix) and name.endswith(".jsonl") else ""
+        if other == session or not UUID_RE.match(other):
+            continue
+        try:
+            with open(os.path.join(log, name), "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        if any(s.encode() in data for s in srcs):
+            for e in map(parse_event, data.decode("utf-8", "replace").split("\n")):
+                if e and e["kind"] == "question" and e.get("src") in srcs:
+                    found.setdefault(e["src"], (writer_id(other), e))
+    return found
+
+
+def append_host(project, session, events):
+    """Appends a session's host events under its writer, except an answer to
+    a question another session of this machine asked: that goes under the
+    asker's writer, as its alias's. A copy of a session (a resume the engine
+    starts under a new id) answers the questions its original asked, and
+    the hub counts a question open by (session, ask) from the writer its
+    question came under; under the same writer and src, the original's own
+    later export of that answer appends nothing. Returns the events
+    appended."""
+    asked = {e["src"] for e in events if e["kind"] == "question"}
+    answers = {e["src"] for e in events if e["kind"] == "answered" and e.get("src") and e["src"] not in asked}
+    askers = _askers(project, session, answers) if answers else {}
+    batches = {writer_id(session): []}
+    for e in events:
+        writer, question = askers.get(e.get("src"), (None, None)) if e["kind"] == "answered" else (None, None)
+        if writer is None:
+            batches[writer_id(session)].append(e)
+        else:
+            batches.setdefault(writer, []).append({**e, "from": question.get("from", e.get("from"))})
+    return [x for writer, batch in batches.items() if batch for x in log_append_batch(project, writer, batch)]
+
+
+def record_session(project, session, tpath, event, last_message="", source=""):
     """The hook's work for one session (§4). Membership on sight, as
     reconciliation decides it: a seat whose record is not retired, or a
     session the harness records as `interactive` or `bg` (an SDK run only
@@ -3846,20 +3903,22 @@ def record_session(project, session, tpath, event, last_message=""):
     has not registered yet at its start is not joined on no evidence, but its
     position is set, so its first turn counts whole at its Stop. A session
     that is not a member records nothing. At Stop, the export first waits a
-    little for the turn's last message to reach the transcript (await_flush)."""
+    little for the turn's last message to reach the transcript (await_flush).
+    A copy's position (source `fork`) leaves out what it copied."""
     seen = _on_sight(project, session)
     if seen is None:
         return
     seat, peer = seen
+    since = now(ms=True) if source == "fork" else None
     if seat is None and peer is None:
         if event == "SessionStart":
-            position_init(project, session, tpath)
+            position_init(project, session, tpath, since)
         return
     marked = member_mark(peer)
     if not joinable(seat, peer, marked):
         return
     if event == "SessionStart":
-        position_init(project, session, tpath)
+        position_init(project, session, tpath, since)
     alias = _member_alias(project, session, seat, peer, marked)
     if event != "Stop" or alias is None:
         return
@@ -3926,7 +3985,7 @@ def export_live(cwd, session, records):
         return []
     alias = _member_alias(project, session, *seen, marked)
     events = host_events(records, alias) if alias is not None else []
-    return log_append_batch(project, writer_id(session), events) if events else []
+    return append_host(project, session, events) if events else []
 
 
 # The hook is bounded in time (§4: it never blocks a turn): its waits are,
@@ -4016,7 +4075,8 @@ def cmd_record(_a):
         # is its launch directory's, which the transcript names (§1c).
         project = session_project(session, launch_cwd(session, tpath, fallback=cwd))
         if project is not None:
-            record_session(project, session, tpath, event, str(payload.get("last_assistant_message") or ""))
+            record_session(project, session, tpath, event, str(payload.get("last_assistant_message") or ""),
+                           str(payload.get("source") or ""))
     except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
         try:
             daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
