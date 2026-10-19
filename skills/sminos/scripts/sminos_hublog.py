@@ -273,11 +273,20 @@ class HubLog:
         return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
             if isinstance(raw, dict) else {}
 
-    def writers(self):
+    def writers(self, own=False):
         """{writer: (last seq, path)} of the writer files the log holds (each
-        read from its end, again only once it changed)."""
+        read from its end, again only once it changed); `own`: only the files
+        named as this machine's writers would be (and the legacy ones, while
+        it writes the archive) — every UPLOAD_EVERY, the others' are no
+        upload's, and a project another machine is busy in holds hundreds."""
+        if own:
+            prefixes = [self.machine.replace("/", ".") + "."] + ([LEGACY.replace("/", ".")] if self.archive else [])
+            paths = [p for prefix in prefixes
+                     for p in glob.glob(os.path.join(glob.escape(self.log_dir), glob.escape(prefix) + "*.jsonl"))]
+        else:
+            paths = glob.glob(os.path.join(glob.escape(self.log_dir), "*.jsonl"))
         out, seen = {}, set()
-        for path in glob.glob(os.path.join(glob.escape(self.log_dir), "*.jsonl")):
+        for path in paths:
             seen.add(path)
             try:
                 st = os.stat(path)
@@ -288,8 +297,9 @@ class HubLog:
                 held = self.files[path] = (st.st_size, st.st_mtime_ns, *writer_and_last(path))
             if held[2]:
                 out[held[2]] = (held[3], path)
-        for path in set(self.files) - seen:
-            del self.files[path]
+        if not own:
+            for path in set(self.files) - seen:
+                del self.files[path]
         return out
 
     def vector(self):
@@ -428,7 +438,7 @@ class HubLog:
                 out.append(({"t": "events", "project": self.project.id, "events": batch}, reach))
             batch, reach, size = [], {}, 0
 
-        for writer, (last, path) in sorted(self.writers().items()):
+        for writer, (last, path) in sorted(self.writers(own=True).items()):
             if not self.own(writer) or writer in self.stuck or last <= self.sent.get(writer, 0):
                 continue
             for e in sorted((e for e in read_events(path) if e["seq"] > self.sent.get(writer, 0)),

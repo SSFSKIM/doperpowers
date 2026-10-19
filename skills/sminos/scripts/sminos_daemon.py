@@ -681,10 +681,11 @@ def deliver_owed(project, view):
         sminos.daemon_log("delivery: what is owed to closed sessions of %s could not be reported: %s" % (
             project.name, e))
     total, reached = 0, []
+    to = sminos.addressees(view.events)
     for m in view.members:
-        if not (m.local and m.session):
+        if not (m.local and m.session) or m.session not in to:
             continue
-        if not sminos._owed(view.events, m.session, sminos.delivered_load(project, m.session)):
+        if not sminos._owed(to[m.session], m.session, sminos.delivered_load(project, m.session)):
             continue
         got = sminos.deliver_next(project, m)["delivered"]
         if got:
@@ -919,13 +920,15 @@ def sweep_bridges():
     nobody listens on it, which the child removes itself unless it was
     killed. A delivery key the file forgets is an event the daemon settled
     when the bridge took it, which is never pushed again. Read through the
-    main loop's caches, which tick_all has just forgotten."""
+    main loop's caches, which tick_all has just forgotten, the transcripts
+    as they are now (sminos.transcripts_now)."""
     bridge = sminos.sibling_module("sminos_bridge")
     d = bridge.bridge_dir()
     try:
         names = os.listdir(d)
     except OSError:
         return
+    sminos.transcripts_now()
     now = time.time()
     for name in names:
         sid, ext = os.path.splitext(name)
@@ -963,6 +966,7 @@ def sweep_overrides():
     naming the session and the target; the session itself already resolves
     as though it were absent (session_project). A cached launch directory
     (`launch/<id>.json`) goes by the transcript's rule alone."""
+    sminos.transcripts_now()
     now = time.time()
     for sub in ("sessions", "launch"):
         d = os.path.join(sminos.root(), sub)

@@ -273,8 +273,10 @@ def heartbeat_at(data):
 
 class Stream(threading.Thread):
     """One connection's reader: everything it reads goes to `items` as
-    ("frame", event, data), and its end as ("closed", why). It calls nothing
-    of sminos.
+    ("frame", event, data), and its end as ("closed", why), but for the
+    `org` frame, the latest of which waits aside (take_org) for the main
+    thread to handle ahead of what is queued: it is the whole directory, and
+    nothing queued depends on its order. It calls nothing of sminos.
 
     The heartbeats are answered here, not on the main thread: the hub renews
     the machine's lease only with an `hb-ack` of the stream's generation, and
@@ -291,6 +293,8 @@ class Stream(threading.Thread):
         self.cred = cred
         self.ended = ended
         self.items = queue.Queue()
+        self.org_lock = threading.Lock()
+        self.org = None           # the latest `org` frame read and not yet taken (take_org)
         self.conn = None
         self.sock = None
         self.closing = threading.Event()
@@ -324,6 +328,14 @@ class Stream(threading.Thread):
                         continue
                 elif event == "welcome":
                     self.welcomed(data)
+                elif event == "org":
+                    # The whole directory, each frame replacing the last: kept
+                    # aside for the main thread to take ahead of the queue
+                    # (take_org), the item only waking it.
+                    with self.org_lock:
+                        self.org = data
+                    self.items.put(("org",))
+                    continue
                 self.items.put(("frame", event, data))
             self.items.put(("closed", "the hub ended the stream"))
         except Exception as e:  # noqa: BLE001 — a connection closed from this end raises from deep inside http.client
@@ -375,6 +387,12 @@ class Stream(threading.Thread):
                 self.items.put(("closed", "an hb-ack was not delivered (%s)" % e))
                 self.shut()
                 return
+
+    def take_org(self):
+        """The latest `org` frame's data not yet taken, or None."""
+        with self.org_lock:
+            data, self.org = self.org, None
+        return data
 
     def shut(self):
         self.closing.set()
@@ -690,7 +708,7 @@ class Link:
 
     def dispatch(self, frame, stream):
         t = frame.get("t") if isinstance(frame, dict) else None
-        if t not in ("events", "hb", "part"):
+        if t not in ("events", "hb", "part", "org"):
             # Whatever this frame does comes after what the events before it
             # imported reached their members, as the frames came.
             self.deliver_imports()
@@ -745,7 +763,12 @@ class Link:
             self.upload(hl)
 
     def on_events(self, frame, _stream):
-        hl = self.log_of(frame.get("project"))
+        # A project open on this stream as the tick last registered it: each
+        # frame of a burst looking every project over again (hub_projects)
+        # was most of an import's cost, and an `org` frame taken ahead of the
+        # queue must not drop the events the hub sent before it.
+        pid = frame.get("project")
+        hl = self.logs[pid] if isinstance(pid, str) and pid in self.opened else self.log_of(pid)
         if hl is None:
             log("events for project %r, which is no hub project of org %s known here: ignored"
                 % (frame.get("project"), self.cred["org"]))
@@ -944,9 +967,10 @@ class Link:
 
     def bridged(self, pids):
         """{session: project id}: the members of these projects with a bridge
-        endpoint here, whose requests are read."""
-        return {sid: pid for pid in pids for sid in self.plane.members.get(pid, ())
-                if os.path.exists(plane.bridge.endpoint(sid))}
+        endpoint here, whose requests are read: one listing of the bridges'
+        directory, every POLL, rather than a look per member."""
+        socks = plane.bridge_socks()
+        return {sid: pid for pid in pids for sid in self.plane.members.get(pid, ()) if sid in socks}
 
     def relay_requests(self):
         """The requests of the open projects' bridged sessions: readers for
@@ -1052,8 +1076,18 @@ def serve_link(link, stream, ended, woken):
     is queued when the main thread looks up is one batch (DRAIN_FRAMES,
     DRAIN_FOR), its imports delivered once, then one tick: a tick can be
     slow (its POSTs, its reads of the fleet), and one a frame would let a
-    burst from the hub queue for minutes."""
+    burst from the hub queue for minutes. The org's directory is handled
+    before each item, ahead of whatever is queued (Stream.take_org)."""
     welcomed = False
+
+    def org_now():
+        data = stream.take_org()
+        if data is not None:
+            try:
+                link.dispatch(codes.loads(data), stream)
+            except ValueError as e:
+                log("an org frame that is not JSON (%s): ignored" % e)
+
     while True:
         # Before every frame, not only when the stream is quiet: a hub that
         # never pauses must not keep an orphan or a stopped uplink alive.
@@ -1067,11 +1101,14 @@ def serve_link(link, stream, ended, woken):
             try:
                 taken, until = 0, time.monotonic() + DRAIN_FOR
                 while item is not None:
+                    org_now()
                     if item[0] == "closed":
                         log("the stream closed: %s" % item[1])
                         return welcomed
                     if item[0] == "wake":
                         woken.clear()
+                    elif item[0] == "org":
+                        pass   # taken just now
                     else:
                         try:
                             frame = codes.loads(item[2])
