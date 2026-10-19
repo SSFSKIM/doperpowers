@@ -385,6 +385,8 @@ run_suites() {
     fail "addressing across the org and the sender's copy (test-address.sh)"; fi
   if "$SCRIPT_DIR/test-guide.sh"; then pass "the SessionStart guidance (test-guide.sh)"; else
     fail "the SessionStart guidance (test-guide.sh)"; fi
+  if "$SCRIPT_DIR/test-who.sh"; then pass "a session's address and who reads it back (test-who.sh)"; else
+    fail "a session's address and who reads it back (test-who.sh)"; fi
   echo
   if python3 "$SCRIPT_DIR/test_session_plane.py"; then pass "the session plane: presence and subscriptions (test_session_plane.py)"; else
     fail "the session plane: presence and subscriptions (test_session_plane.py)"; fi

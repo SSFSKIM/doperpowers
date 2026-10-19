@@ -87,6 +87,10 @@ member too, seat-less, from the first call that reads its project.
                    @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
                    it ends with the session's subagents (the ids SendMessage takes; --all: finished too)
     sminos find     <words..>                             # list --org <words>: every session they match
+    sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
+                   or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
+                   was made by, as it is now: alias, project, machine, state, the session it went on as,
+                   how to reach or resume it. Alone, inside a session: the line its commits carry
     sminos projects [--all]                               # every project known here: kind (hub, machine,
                    local), live and waiting sessions, their machines; --all: a retired machine's too
     sminos machines                                       # every machine enrolled in the org: online or
@@ -716,7 +720,7 @@ HINT_EVERY = 86400
 # Set by main() for the verbs a person reads: only they print the daily hint,
 # so a hook or the daemon never spends it.
 HINTS = {"on": False}
-READING_VERBS = ("list", "find", "chat", "projects", "machines", "project", "chart")
+READING_VERBS = ("list", "find", "who", "chat", "projects", "machines", "project", "chart")
 _ENROLLED = []   # [the enrollment or None], per invocation
 _ORG_DIR = []    # [daemon/org.json as read or None], per invocation
 _SAID = set()    # (marker, project id) said or checked in this invocation
@@ -2173,16 +2177,23 @@ def continued_in(session):
     return found
 
 
+COMMAND_ROW_TAGS = ("<local-command-stdout>", "<local-command-stderr>", "<command-name>", "<command-message>")
+
+
 def is_turn_record(r):
     """Whether a transcript record is part of a turn, as the harness tells
     one after a hand-off: a finished assistant message (not an API error), or
-    a prompt the human typed."""
+    a prompt the human typed. A slash command's echo or output is none: the
+    engine (2.1.303) writes `/background`'s empty `<local-command-stdout>`
+    right after the hand-off record."""
     if r.get("type") == "assistant":
         msg = r.get("message") if isinstance(r.get("message"), dict) else {}
         return r.get("isApiErrorMessage") is not True and isinstance(msg.get("stop_reason"), str)
     if r.get("type") != "user" or r.get("isMeta"):
         return False
     content = (r.get("message") or {}).get("content") if isinstance(r.get("message"), dict) else None
+    if isinstance(content, str) and content.lstrip().startswith(COMMAND_ROW_TAGS):
+        return False
     return (isinstance(content, str) and bool(content.strip())) or (
         isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "text" for b in content))
 
@@ -7680,6 +7691,7 @@ def guide_text(session, launch):
         "To find one or tell it something, use sminos (not on PATH):",
         "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
         "  %s find <words>    sessions whose repository, branch, alias or in-charge line match" % cli,
+        "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches only your project" % cli,
     ] + join + [
@@ -7714,6 +7726,218 @@ def cmd_guide(_a):
         return
     if text:
         print(text)
+
+
+# ------------------------------------------- a session's address in what it writes
+#
+# Every commit and pull request a member writes carries its address — a commit
+# as a git trailer, a PR body as its last line — so a reader of the artifact
+# reaches the session that made it in one step (`who`). The doperpowers mod
+# hooks/mods/address.tsx hands the line to the engine's attribution text; the
+# line is composed here, where the session's identity is.
+
+ADDRESS_KEY = "Sminos-Session"
+ADDRESS_RE = re.compile(r"Sminos-Session:[ \t]*(?:(?P<alias>\S.*?)#)?(?P<short>[0-9a-f]{8})[ \t]+"
+                        r"\((?P<project>[^\s()]+) on (?P<machine>[^\s()]+)\)[ \t]*")
+ADDRESS_ALIAS_RE = re.compile(r"[^\s#()][^\n#()]{0,63}")   # one short line, no character the line's form uses
+
+
+def session_address(session, fallback_cwd=""):
+    """The `Sminos-Session: <alias>#<short> (<project> on <machine>)` line of a
+    session of this machine — `<short>` alone for a session with no name fit
+    for it — or "" when it has none: in no project, an internal fork, or no
+    member (its log holds no membership and it is no member on sight,
+    joinable). The alias is the one its own `say` signs with (guide_text's)."""
+    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.match(session or ""):
+        return ""
+    project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
+    if project is None:
+        return ""
+    seen = _on_sight(project, session)
+    if seen is None:
+        return ""
+    seat, peer = seen
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined" and not joinable(seat, peer, member_mark(peer)):
+        return ""
+    alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session)[0]
+    # A name that is no name — a `claude --bg "<prompt>"` job joins under its
+    # prompt, the harness's first name for it — would make the line a
+    # paragraph the model rewrites: the short goes alone.
+    who = "%s#%s" % (alias, session[:8]) if ADDRESS_ALIAS_RE.fullmatch(alias or "") and alias != session[:8] \
+        else session[:8]
+    return "%s: %s (%s on %s)" % (ADDRESS_KEY, who, project.name, host_name())
+
+
+def parse_addresses(text, last_paragraph=False):
+    """The addresses a text carries, [{line, alias, short, project, machine}]
+    in order, each line once (alias "" for a line naming the short alone); with last_paragraph, only its last paragraph's
+    (where a commit's trailers stand)."""
+    if last_paragraph:
+        paras = [p for p in re.split(r"\n[ \t]*\n", (text or "").strip()) if p.strip()]
+        text = paras[-1] if paras else ""
+    out, seen = [], set()
+    for line in (text or "").splitlines():
+        m = ADDRESS_RE.fullmatch(line.strip())
+        if m and line.strip() not in seen:
+            seen.add(line.strip())
+            out.append(dict(m.groupdict(), alias=m.group("alias") or "", line=line.strip()))
+    return out
+
+
+PR_RE = re.compile(r"https?://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+(?:[/?#].*)?|#?\d+")
+
+
+def is_pr_target(target):
+    """Whether `who`'s target names a pull request: its URL, `#N`, or a plain
+    number — one of seven digits or more only when no commit here is
+    abbreviated by it."""
+    if not PR_RE.fullmatch(target):
+        return False
+    if target.isdigit() and len(target) >= 7:
+        r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", target + "^{commit}"],
+                           capture_output=True, text=True)
+        return r.returncode != 0
+    return True
+
+
+def addresses_of(target):
+    """(what the addresses were read from, [addresses]) for `who`'s target: a
+    commit's trailers (git, in the working directory's repository); a PR's
+    body line, else its commits' trailers (gh)."""
+    if is_pr_target(target):
+        try:
+            r = subprocess.run(["gh", "pr", "view", target.lstrip("#"), "--json", "number,body,commits"],
+                               capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            die("who: gh could not read pull request %s: %s" % (target, e), 1)
+        if r.returncode != 0:
+            die("who: gh could not read pull request %s: %s" % (target, r.stderr.strip() or "exit %d" % r.returncode), 1)
+        pr = json.loads(r.stdout)
+        found = parse_addresses(pr.get("body") or "")
+        if found:
+            return "pull request #%s's body" % pr.get("number"), found[-1:]
+        found, seen = [], set()
+        for c in pr.get("commits") or []:
+            for addr in parse_addresses(c.get("messageBody") or "", last_paragraph=True):
+                if addr["line"] not in seen:
+                    seen.add(addr["line"])
+                    found.append(addr)
+        return "pull request #%s's commits" % pr.get("number"), found
+    r = subprocess.run(["git", "log", "-1", "--format=%H%n%(trailers:key=" + ADDRESS_KEY + ",unfold)", target, "--"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        why = (r.stderr.strip().splitlines() or ["git log failed"])[-1]
+        die("who: %s is no commit here and no pull request (%s)" % (target, why), EXIT_UNKNOWN)
+    sha, _, trailers = r.stdout.partition("\n")
+    return "commit %s" % sha[:12], parse_addresses(trailers)
+
+
+def who_matches(short):
+    """(project, member, how) for each session of the org known here a short
+    names, one per session: the member that is that session (`how` ""), the
+    member that continues it (`continued`: it went to the background, or on
+    in another process; `former`), or a session whose membership the log
+    holds as retired — its process ended, it was retired, or it moved to a
+    project not known here (`how` the retirement's reason, "retired" for
+    none) — drawn as a member would be, so its state is list's word. A
+    session handed off to one that has since ended too answers as the last
+    session of its hand-offs (`continued`); as itself ("handed off") when
+    no successor joined in its project."""
+    best = {}
+    scope = org_scope()
+    known = {p.id for p in scope}
+    for p in scope:
+        view = view_of(p)
+        for m in view.members + view.rows:
+            if not m.session:
+                continue
+            if m.short == short:
+                best.setdefault(m.session, (p, m, ""))
+            elif any(s[:8] == short for s in m.former):
+                best.setdefault(m.session, (p, m, "continued"))
+    for p in scope:
+        view = view_of(p)
+        for sid, r in view.info.items():
+            latest = r["latest"] or {}
+            if sid[:8] != short or sid in best or latest.get("kind") != "retired" or not r["joined"] \
+                    or (latest.get("reason") == "moved" and latest.get("project") in known):
+                continue
+            how = str(latest.get("reason") or "retired")
+            if how == "continued" and r["to"]:
+                if any(sid in m.former for _, m, _ in best.values()):
+                    continue
+                last, seen = sid, {sid}
+                while True:
+                    c = view.info.get(last) or {}
+                    nxt = c.get("to") or ""
+                    if (c.get("latest") or {}).get("reason") != "continued" or not nxt or nxt in seen \
+                            or not (view.info.get(nxt) or {}).get("joined"):
+                        break
+                    seen.add(nxt)
+                    last = nxt
+                if last in best:
+                    continue
+                best[last] = (p, _member(last, view.info[last], None, None, False, True, view.info),
+                              "continued" if last != sid else "handed off")
+                continue
+            best[sid] = (p, _member(sid, r, None, None, False, True, view.info), how)
+    return list(best.values())
+
+
+def who_lines(addr):
+    """What `who` says of one address: the line as the artifact carries it,
+    then who that session is now and how to reach it — or what the line
+    says, when no session known here answers to its short."""
+    out = [addr["line"]]
+    hits = who_matches(addr["short"])
+    if not hits:
+        out.append("  no session %s in the org's directory known here: the line is all there is — %s in "
+                   "project %s on machine %s" % (addr["short"], addr["alias"] or addr["short"], addr["project"],
+                                                 addr["machine"]))
+        return out
+    for p, m, how in hits:
+        label = "%s#%s" % (m.alias, m.short)
+        if how == "continued":
+            out.append("  went on as %s (%s), %s on %s: %s" % (label, m.kind or "?", p.name, m.machine, m.state or "?"))
+        elif how == "moved":
+            out.append("  %s left %s for a project not known here (%s on %s)" % (label, p.name, m.state or "?", m.machine))
+        else:
+            out.append("  now %s, %s on %s: %s%s" % (label, p.name, m.machine, m.state or "?",
+                                                     " (its session %s)" % how if how else ""))
+        if addr["alias"] and m.alias != addr["alias"]:
+            out.append("  (the line names it %s; it goes by %s now)" % (addr["alias"], m.alias))
+        if charge_shown(m):
+            out.append("  in charge: %s" % charge_shown(m))
+        if m.state in FILLED or (m.seat and m.state != "retired"):
+            out.append('  reach: sminos say "@%s ..."%s' % (m.short, "" if m.state in FILLED else
+                                                             "  (the stopped seat is resumed)"))
+        elif m.state != "gone" or not m.local:
+            where = "here" if m.local else "on %s" % m.machine
+            out.append("  resume it %s: cd %s && claude --resume %s" % (where, shlex.quote(m.cwd or "."), m.session))
+            out.append('  or leave it a note it reads when resumed: sminos say --in %s "..."' % tag_project(p))
+    return out
+
+
+def cmd_who(a):
+    """`who [<commit|PR>]`: the session a commit or pull request names in its
+    Sminos-Session line, as it is now and how to reach it. Without a target,
+    the line this session's commits carry (`--session` names another of this
+    machine's: the address mod's call), nothing when it has none."""
+    if not a.target:
+        sid = a.session or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        if not sid:
+            die("usage: sminos who <commit|PR>  (inside a session, alone: the line its commits carry)")
+        line = session_address(sid, os.getcwd())
+        if line:
+            print(line)
+        return
+    what, found = addresses_of(a.target)
+    if not found:
+        die("who: %s carries no %s line" % (what, ADDRESS_KEY), EXIT_UNKNOWN)
+    print("%s:" % what)
+    for addr in found:
+        print("\n".join(who_lines(addr)))
 
 
 def cmd_attach(a):
@@ -8104,6 +8328,11 @@ def build_parser():
     list_flags(fd)
     fd.set_defaults(fn=cmd_find, find=True)
 
+    wh = sub.add_parser("who", add_help=False)
+    wh.add_argument("target", nargs="?", default="")
+    wh.add_argument("--session", default="")
+    wh.set_defaults(fn=cmd_who)
+
     pjs = sub.add_parser("projects", add_help=False)
     pjs.add_argument("--all", action="store_true")
     pjs.set_defaults(fn=cmd_projects)
@@ -8171,6 +8400,11 @@ def main(argv=None):
         # A SessionStart hook's: the record hook beside it migrates, bounded;
         # a session's start never waits here on the registry's lock.
         cmd_guide(a)
+        return
+    if a.cmd == "who" and not a.target:
+        # The address mod's, before a session's model requests: it reads and
+        # never migrates, and never waits on the registry's lock.
+        cmd_who(a)
         return
     if not getattr(a, "fn", None):
         if a.cmd == "seat":

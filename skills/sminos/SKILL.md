@@ -32,6 +32,7 @@ session sminos spawned fills; it outlives its process.
     sminos list --here              # this machine, every project (the harness's ListAgents, and more)
     sminos list --org               # every session in the org
     sminos find <words..>           # every session the words match: alias, short, project, repo, branch, in-charge line
+    sminos who <commit|PR>          # the session its Sminos-Session line names, as it is now, and how to reach it
     sminos list --machine mini --state waiting   # filters combine, comma lists; any filter widens to the org first
     sminos projects | machines      # the org's projects and machines
 
