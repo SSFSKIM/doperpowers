@@ -44,6 +44,8 @@ reload still run.
       prepend tier, `devcloud` inner. Pending in M0: the `sminos@doperpowers` entry (§8).
 - [ ] P0 — the bridge raises a permission request's input in the handle form it captured (§4; a
       separate change, in flight, lands before M1).
+- [ ] The devcloud hosts' placement (§8, I8): the devcloud setup session's route, in verification in
+      a Linux container; a precondition for enrolling a host, not a milestone here.
 - [ ] Second review round on the revised sections.
 - [ ] M1 — doperpowers' readers accept both names; the reload mod installs a plugin's new
       dependencies before it reloads.
@@ -110,8 +112,9 @@ SMINOS_HOME unless it names another machine or the real HOME.
   `to-human@doperpowers`, `sminos@doperpowers`, `doperpowers@doperpowers`, each `tier prepend`,
   before every other plugin's module (`tier user`), and `sminos@doperpowers`'s line lists
   `session.start`, `tool.call`, `session.append`, `attribution.text`, `tool.describe` among its
-  events. On a devcloud host the same holds on an image built from M3 or later with no
-  `/etc/claude-code/managed-settings.json` (§8).
+  events. On a devcloud host the same holds once its managed settings carry the copied lists (§8,
+  the devcloud session's route), the three in `tier prepend` from the policy and
+  `cc-plugin-sec-default@builtin` not among the loaded modules.
 - **A2 — The ask round trip under the new name.** In an interactive session in a project (this
   repository), the model calls `mcp__sminos__AskUserQuestion` with `async: true`; the call returns at
   once with the waiting text; the question shows behind `[ answer ]` and in the `N open questions`
@@ -289,12 +292,17 @@ both from the day M2 is deployed.
    needed); an unmet one leaves the dependent unloaded ("Dependency … is not installed").
 5. The user's tier keys count only where no managed settings, organization seat or hosted session
    places mods: `E5` reads the user's `prependPlugins` only when `Vee()` — any non-empty
-   `/etc/claude-code/managed-settings.json` — is false. On a managed machine the engine also gates
-   whole events for plugins a person installs (`Mir`: `prompt.section`, `prompt.context`,
-   `prompt.attachment`, `prompt.compose`, `skill.prompt`, `attribution.text`, `session.compact`,
-   `settings.read`, every `classic.*` event and `session.append` on named doors "pass over the
-   plugins you install, and only a plugin the organization lists in managed settings runs them").
-   The order is recomputed at a reload as at a start.
+   `/etc/claude-code/managed-settings.json` — is false; on a managed machine the policy's
+   `prependPlugins` is read instead, and it seats only plugins the policy enables (its own
+   `enabledPlugins`). On a managed machine with no policy `prependPlugins`, the built-in
+   `cc-plugin-sec-default@builtin` is seated outermost (since 2.1.287) and passes the plugins a
+   person installs over on `prompt.*`, `session.compact`, `settings.read`, every `classic.*` event
+   and `session.append`'s attachment, hook-context and compaction doors (`Mir`, the note the
+   validate diagnostic appends, names the list: "these events pass over the plugins you install, and
+   only a plugin the organization lists in managed settings runs them"); a policy `prependPlugins`
+   that does not list sec-default leaves it unseated, and the pass-over most likely goes with it.
+   Read from the source, not yet observed; the devcloud session is confirming it (§8). The order is
+   recomputed at a reload as at a start.
 
 **What this did to today's doperpowers.** `to-human` depends on `doperpowers`, so rule 2 pushed
 doperpowers' module behind `cua` and `devcloud`: the live order on 2026-10-19 was `prompt-autosave,
@@ -525,35 +533,52 @@ each devcloud host once one is enrolled.
    this step the daemon runs through the shim (§7).
 6. Verify A1 and A7 on the machine.
 
-**devcloud hosts — a precondition for enrolling one at the desk.** A host keeps `~/.claude` as a
-clone it only receives (`git reset --hard` every 30 minutes, then `devcloud reconcile`, boot steps
-5–11), so the owner's `settings.json` with M0's lines reaches every host by itself. What stops it from
-counting there is `/etc/claude-code/managed-settings.json`, which boot step 10 writes from the
-profile: today a four-key `env` block (the gateway's base URL and the gateway's feature switches),
-and any non-empty managed settings make the engine ignore the user's `prependPlugins` and gate the
-events of rule 5 for every plugin a person installs — `attribution.text` (the address line),
-`session.compact` and the `classic.*` events (the bridge, the ask, compact) and devcloud's own
-`prompt.*` hooks among them. So a host carries **no managed settings**, and its four values travel
-another way.
+**devcloud hosts — owned by the devcloud setup session; a precondition for enrolling one at the
+desk.** A host receives the owner's `~/.claude` (the configuration repository, reset to its remote
+every 30 minutes and reconciled, design §5; the owner describes the hosts as mounting the Mac's
+file), so `settings.json` with M0's lines reaches every host by itself. What stops it from counting
+there is `/etc/claude-code/managed-settings.json`, which boot step 10 writes from the profile —
+seven keys today: the gateway's base URL, its feature switches, and blanks for the Mac-only
+`CLAUDE_CODE_PLUGIN_DIRS` and the browser-extension token — and any non-empty managed settings make
+the engine ignore the user's `prependPlugins` (rule 5). Managed is the only tier above user that
+every launch path on a host reads.
 
-The way the first review proposed — the host's process environment, set by boot for every launcher —
-does not carry them: the engine overlays the settings scopes' `env` on the process environment
-(`jp`, cli.pretty.js 481468: `{ ...dte(), ...KL(WL()) }`, written back by `o0r`), and the synced
-`settings.json` carries all four keys with the Macs' values (observed in the owner's file:
-`ANTHROPIC_BASE_URL`, `ENABLE_TOOL_SEARCH`, `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`,
-`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`), so a process-environment value loses to them. The
-carrier that works is the received file itself: boot step 10 becomes **the host's overlay** — after
-every pull, `devcloud reconcile` rewrites `~/.claude/settings.json` from the received copy with the
-profile's four `env` values merged in (user scope, the same mechanism as on the Macs) and the Mac-only
-keys emptied as the managed file empties them today, and it removes `/etc/claude-code/managed-settings.json`.
-Machine-local differences still live only where git does not reach — the overlay is reapplied by the
-reconcile that follows every pull, and the host never pushes. Until a host boots an image with this
-step, it does not enroll at the desk (`sminos hub enroll` on a host is refused by the operator's
-checklist, not by code). The fallback, if the overlay proves unworkable on the image: place the three
-plugins in managed settings (`enabledPlugins` plus the policy's `prependPlugins`), accepting that the
-host then runs under the managed-plugin semantics of rule 5 — chosen only on evidence from the
-devcloud gate. This is devcloud's change (`devcloudlib/steps.py` step 10, `profile.py`), versioned
-with devcloud in M3, proved by the devcloud gate's containers (A1 on the image).
+**The route**, chosen and built by the devcloud setup session, which owns boot: step 10 and its
+reconcile write into `managed-settings.json` the profile's env as now, **`prependPlugins` copied from
+the synced `settings.json`**, and **`enabledPlugins` true for exactly those ids** (the policy seats
+only plugins it enables). The Macs' `settings.json` stays the single list; once sminos is in it (M0),
+a host places sminos by copying. It is being verified in a Linux container before it lands, and
+what decides it is the pass-over of rule 5: whether `cc-plugin-sec-default@builtin` is unseated by
+a policy `prependPlugins` that does not list it, and whether the plugins a person installs are
+still passed over on `prompt.*`, `session.compact`, `settings.read`, `classic.*` and
+`attribution.text` once it is — the events the bridge (`classic.PermissionRequest`, the path that
+raises permission prompts to the desk; `session.compact`), the ask (`classic.SessionStart`), the
+address line (`attribution.text`), compact (`classic.Stop`) and devcloud's own guard
+(`prompt.compose`, `prompt.context`, `prompt.attachment`, `session.compact`) need. The reading so
+far: `Mir` is `passedOverNoteOf`, exported from the registry module that also holds the seat
+(`cPr`), `PASSED_OVER_EVENTS` / `DOORS` and sec-default's `registerPlugin`, and its one call site
+appends a note to a module's `hooks:` diagnostic line — so the pass-over is most likely carried out
+by sec-default's own hooks module and ends when that module is unseated; not yet observed. The
+container run watches hooks fire under the candidate managed file and under today's env-only one:
+devcloud's and cua's `prompt.*` and `session.compact` (plugins the policy does not list), to-human's
+`classic.SessionStart` and the bridge's `classic.PermissionRequest` (plugins it lists). If hooks of
+unlisted user-tier plugins are still passed over, the fallback is a different design — every plugin
+policy-listed in managed settings — which the devcloud session would then own too. This spec
+defers to that result. Until a host boots an image carrying the route, the host does not enroll at
+the desk (`sminos hub enroll` is refused by the operator's checklist, not by code); no host is
+enrolled today.
+
+Two routes lost. The host's process environment, set by boot for every launcher: settings `env`
+overwrites the process environment tier by tier (`applySafeConfigEnvironmentVariables`, verified on
+2.1.303 by the devcloud session; the same reading as `jp` at cli.pretty.js 481468), and the synced
+file sets `ANTHROPIC_BASE_URL` to the Mac's loopback relay `127.0.0.1:8641`, which nothing serves on
+a host, so a process value would lose to it. An overlay that rewrites the received `settings.json`
+after each pull (this spec's second draft): on a host `~/.claude` is a receive-only clone of the
+configuration repository — a timer runs `git reset --hard origin/<branch>` every 30 minutes, the
+push URL is invalid, and `devcloud reconcile` re-applies boot steps 5–11 when the fetched commit
+changes — so a host-side rewrite is undone at every reset, running sessions hot-reload the Mac's
+values (the `127.0.0.1:8641` base URL) between the reset and the re-apply, and the clone is left
+dirty. Only the managed tier is the host's to write.
 
 The order across machines does not matter: the hub reads events, not plugin versions, and both
 daemons speak the same protocol.
@@ -649,7 +674,8 @@ daemons speak the same protocol.
   bridge and address sections move to `sminos/hooks/mods/README.md`, the intro names the plugin's mods
   as they are. `skills/sminos/SKILL.md` and `references/setup.md`: the CLI sentence names the sminos
   plugin. `devcloud/README.md` and the devcloud spec's §5, §6 and §8 are not rewritten; dated lines
-  in this spec's Decision Log record the path change and the managed-settings change they describe.
+  in this spec's Decision Log record the path change they describe and the placement lists the
+  hosts' managed settings gain (the devcloud session's change, documented there when it lands).
   Old specs (`2026-10-13-ask-async-design.md` and the rest) are history and keep the old name.
 
 ### 11. MAWS's side
@@ -689,6 +715,9 @@ and the app rebuilt on each machine that runs the desk — not merely merged.
 - Any change to DX5 (the bridge protocol) or to what the stream carries; the hub and the desk are
   readers of names only here. P0 changes what the bridge raises, not the protocol's shape.
 - A marker of cua's own for its vendored guard (residue, §4).
+- The devcloud hosts' placement (boot step 10 writing the copied lists into managed settings, §8,
+  I8): the devcloud setup session's change, on its own schedule; this spec relies on its result and
+  names it as a precondition for enrolling a host.
 - Re-cutting the old specs under the new name.
 - The `qa-loop`, the board's dispatch, and the worker protocols' behaviour, which stay dormant and
   unarmed; this work changes only how their scripts find the CLI.
@@ -800,9 +829,9 @@ The PR URL and the deployment on each machine are recorded in Progress.
 of §2, the tool `mcp__sminos__AskUserQuestion`, the channel of §5, the bridge's order verdict of §4
 (I1's `OrderVerdict`), the shim of §7; `doperpowers` 7.189.0 without sminos, reading the asks through the channel,
 with the board resolver of §9; `to-human` 0.2.0 depending on sminos; `devcloud` 0.5.0 with step 11
-looking for the CLI at the new path and step 10 writing the host's overlay instead of managed
-settings (§8). Every gate green in the new layout; the rehearsal of §10 passed; the documents of §10
-say what is.
+looking for the CLI at the new path (the hosts' placement, step 10, is the devcloud session's own
+change, §8, and lands on its own schedule). Every gate green in the new layout; the rehearsal of §10
+passed; the documents of §10 say what is.
 
 **What it touches.** The moves of §1 (`git mv`, so history follows); `sminos/.claude-plugin/plugin.json`,
 `sminos/hooks/hooks.json`, `sminos/hooks/mods/register.tsx`, `sminos/types/sminos.d.ts`,
@@ -815,8 +844,8 @@ the shape-1 fallback, `isDialogUp` and `answered` in the snapshot); `bridge.tsx`
 three worker-protocol references and the issue-tracker and board-api tests of §9;
 `skills/sminos/scripts/sminos_daemon.py` (`installed_cli`), the two service templates,
 `skills/sminos/scripts/sminos.py` (the shim, in doperpowers, new) and the `sminos` launcher beside it;
-`devcloud/boot/devcloudlib/sminos_host.py`, `steps.py` (step 10), `profile.py`,
-`devcloud/tests/unit/test_sminos_host.py`, `devcloud/tests/integration.py`; `.claude-plugin/marketplace.json`,
+`devcloud/boot/devcloudlib/sminos_host.py`, `devcloud/tests/unit/test_sminos_host.py`,
+`devcloud/tests/integration.py`; `.claude-plugin/marketplace.json`,
 `.version-bump.json`, `to-human/.claude-plugin/plugin.json`, `.github/ci-kit.yml`,
 `tests/codex/test-marketplace-manifest.sh`, `tests/claude-code/run-skill-tests.sh`;
 `sminos/tests/run-sminos-tests.sh` and every moved test file (the `PLUGIN_ROOT` name of §2, the cache
@@ -837,9 +866,7 @@ contract declares the key it reads. The bridge's verdict reads devcloud's key wi
 writes its own (I1's `OrderVerdict`). The shim is Python 3.9-safe (it may run under macOS's own `python3` before the
 real CLI's version check). The board resolver reads `known_marketplaces.json` with `python3 -c` or
 `jq`, whichever `_lib.sh` already uses. The `sminos/README.md` is short: what the plugin is, the
-install lines with `prependPlugins`, pointers. The host overlay (§8) is one reconcile step writing
-one file; its unit test fakes a received `settings.json` with the Macs' env keys and shows the
-written file carrying the profile's values and no managed file left.
+install lines with `prependPlugins`, pointers.
 
 **What it does not touch.** `~/.claude/*` on any machine; MAWS; the old specs; the dormant board
 doctrine's behaviour; DX5.
@@ -855,8 +882,7 @@ row by row, with a fake `$.state` whose marker appears before or after `next` an
 moves or not, and the kept verdict reused; `installed_cli` returns the new clone path and its refusal
 names it; the shim forwards to the sibling, else the installed plugin, else exits 1 naming `daemon
 install`, and writes its line to stderr; the suite fails on that line; `sminos_host.py` finds the new
-path, then the old; the overlay step's unit test; the resolver finds the CLI in each of its three
-places and `lib.sh` beside it. The issue-tracker and board-api gates run the board scripts against
+path, then the old; the resolver finds the CLI in each of its three places and `lib.sh` beside it. The issue-tracker and board-api gates run the board scripts against
 the checkout's CLI through `SMINOS_CLI`.
 
 ### M4 — The roll and each machine's migration
@@ -1017,10 +1043,11 @@ that source it; the worker-protocol templates take `{{SMINOS_CLI}}`.
 **I7 — The gates.** `sminos`, `sminos-suites`, `sminos-mods` as §10 names them, with their `paths`;
 the `mods` gate's added paths.
 
-**I8 — The host overlay** (devcloud, §8): reconcile step 10 reads the received `~/.claude/settings.json`
-and the profile's env values, writes the file back with those values merged into `env` and the
-Mac-only keys emptied, and removes `/etc/claude-code/managed-settings.json`; `devcloud reconcile`
-runs it after every pull.
+**I8 — The hosts' managed placement** (devcloud's, owned by the devcloud setup session, §8; what this
+spec relies on, not what it builds): `/etc/claude-code/managed-settings.json` on a host carries the
+profile's `env`, `prependPlugins` copied from the synced `~/.claude/settings.json`, and
+`enabledPlugins` true for exactly those ids; boot step 10 and `devcloud reconcile` write it after
+every pull, so a change to the Macs' list reaches every host by itself.
 
 **Dependencies.** The engine at 2.1.303 (hooks modules, `$.state` with `state.set` and versions,
 `prependPlugins`); bun and `claude plugin test` for the mods' tests; P0 on `main`; MAWS
@@ -1089,14 +1116,32 @@ runs it after every pull.
   `Z8r` (949946: the event list); `devcloud/boot/devcloudlib/steps.py` 34 (`MANAGED_SETTINGS`) and
   the devcloud spec's §6; the owner's account of the hosts' managed file (2026-10-19).
 - Observation: a process-environment value cannot override a key the synced `settings.json` carries:
-  the engine overlays the settings scopes' `env` on the process environment. So the hosts' four
-  values move into the received settings file by an overlay step, not into the environment.
-  Evidence: `cli.pretty.js` 481455–481468 (`KL` merges each scope's `env`; `jp` returns
-  `{ ...dte(), ...KL(WL()) }`), 1037482–1037490 (`o0r` writes the computed env back into
-  `process.env`); the owner's `~/.claude/settings.json` `env` holds `ANTHROPIC_BASE_URL`,
-  `ENABLE_TOOL_SEARCH`, `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING` and
-  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` (key names read on 2026-10-19; values not read).
-  Not yet probed live on a host: the devcloud gate's container is the proof (M3).
+  settings `env` overwrites the process environment tier by tier. So the hosts' values stay in the
+  managed file (seven keys, not four: the gateway's base URL and switches, and blanks for
+  `CLAUDE_CODE_PLUGIN_DIRS` and the extension token), and the placement lists join them there (§8).
+  Evidence: `applySafeConfigEnvironmentVariables`, verified on 2.1.303 by the devcloud setup session
+  (2026-10-19); the same reading in `cli.pretty.js` 481455–481468 (`KL` merges each scope's `env`;
+  `jp` returns `{ ...dte(), ...KL(WL()) }`) and 1037482–1037490 (`o0r` writes the computed env back
+  into `process.env`); the synced file's `ANTHROPIC_BASE_URL` is the Mac's loopback relay
+  `127.0.0.1:8641` (the owner, 2026-10-19).
+- Observation: a host-side rewrite of the received `settings.json` (this spec's second draft) cannot
+  stand: `~/.claude` on a host is a receive-only clone reset to its remote every 30 minutes, with an
+  invalid push URL and a reconcile that re-applies boot steps 5–11 on a new commit; a rewrite is
+  undone at every reset, sessions hot-reload the Mac's values in between, and the clone is left
+  dirty.
+  Evidence: the devcloud spec's §5; `devcloudlib/steps.py` `home()` (the files written into the
+  user's home) and the devcloud setup session's account (2026-10-19).
+- Observation: on a managed machine with no policy `prependPlugins`, the built-in
+  `cc-plugin-sec-default@builtin` is seated outermost and passes the plugins a person installs over
+  on `prompt.*`, `session.compact`, `settings.read`, `classic.*` and three `session.append` doors; a
+  policy `prependPlugins` that does not list it leaves it unseated, and the pass-over most likely
+  goes with it, `Mir` being only the note the diagnostic appends. A reading of the source, not yet
+  observed; the devcloud session's container run decides it, hooks watched under the candidate
+  managed file and under today's env-only one (§8).
+  Evidence: `cli.pretty.js` ~191161 (the registry module exporting `passedOverNoteOf` = `Mir`,
+  `cPr` the seat, `PASSED_OVER_EVENTS` / `DOORS`, sec-default's `registerPlugin`), ~246146 (its one
+  call site, on the `hooks:` diagnostic line), 949943–949952 (`Z8r`, the event list); present since
+  2.1.287 (the devcloud session, 2026-10-19).
 - Observation: a daemon whose scripts vanish re-executes itself at its original path and exits when
   that fails; the service then restarts it every 60 s against the same missing path; and devcloud's
   boot runs the image's copy of `sminos_host.py`, not the plugin's.
@@ -1152,9 +1197,10 @@ runs it after every pull.
   Rationale: §10. The owner may name another starting version; nothing depends on the number.
   Date/Author: 2026-10-19, the spec's author.
 - Decision: `devcloud/README.md` and the devcloud spec's §5, §6 and §8 describe the CLI at
-  `<clone>/skills/sminos/scripts/sminos.py` and the hosts' values in managed settings; from M3 the CLI
-  is `<clone>/sminos/skills/sminos/scripts/sminos.py` and the values are an overlay on the received
-  `settings.json` (§8). Recorded here rather than rewriting that spec.
+  `<clone>/skills/sminos/scripts/sminos.py` and the hosts' managed settings as an `env` block alone;
+  from M3 the CLI is `<clone>/sminos/skills/sminos/scripts/sminos.py`, and the managed file gains
+  the placement lists when the devcloud session's route lands (§8, I8). Recorded here rather than
+  rewriting that spec.
   Date/Author: 2026-10-19, the spec's author.
 - Decision (first review round): the order probe decides by the marker's version moving during
   `next` and keeps its verdict under `sminos.order` across reloads; `prependPlugins` changes take
@@ -1175,15 +1221,20 @@ runs it after every pull.
   input it captured (P0, a prerequisite), not placement alone.
   Rationale: the permission path carries the restored input past every `tool.call` hook (§4).
   Date/Author: 2026-10-19, the spec's author, after the adversarial reviewer.
-- Decision (first review round): devcloud hosts carry no managed settings; their four env values are
-  an overlay on the received `settings.json` written by `devcloud reconcile` (I8); a host enrolls at
-  the desk only once it boots an image with that step. The managed-settings placement is the fallback.
-  Rationale: §8 — any managed settings shadow the user's `prependPlugins` and gate the events the
-  bridge, the ask, the address line and devcloud's own guard need. The coordinator's process-environment
-  route was checked against the engine and does not carry the keys the synced file holds
-  (Surprises); the overlay carries them by the same mechanism the Macs use.
-  Date/Author: 2026-10-19, the spec's author, after the adversarial reviewer and the owner's account
-  of the hosts' settings.
+- Decision (first review round, superseded the same day): devcloud hosts' placement is the devcloud
+  setup session's route — the managed file keeps the profile's env and gains `prependPlugins` copied
+  from the synced `settings.json` and `enabledPlugins` for those ids (I8) — owned and built by that
+  session, pending its container result, with the sec-default seat and the pass-over of unlisted
+  plugins' hooks as what decides it and "every plugin policy-listed" as the fallback if unlisted
+  hooks are still passed over; a host enrolls at the desk only once it boots an image carrying the
+  route. This spec defers to it.
+  Rationale: §8. Rejected: the process-environment route (settings `env` overwrites it tier by
+  tier; the synced base URL would win); this spec's second-draft overlay on the received
+  `settings.json` (undone at every 30-minute reset, the Mac's values hot-reloaded in between, the
+  clone left dirty — the file is the Mac's, and only the managed tier is the host's to write). Both
+  in Surprises.
+  Date/Author: 2026-10-19, the spec's author, after the adversarial reviewer, the owner's account of
+  the hosts' settings, and the devcloud setup session's decision.
 - Decision (first review round): `ASK_TOOL` and `PLUGIN_PROMPT` stay the registered name and the
   plugin's own framing, with `ASK_TOOLS` and `PLUGIN_PROMPTS` beside them for readers; the shim tries
   the sibling first; every moved test file names its root `PLUGIN_ROOT` and the suite fails on the
