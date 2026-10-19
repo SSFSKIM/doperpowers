@@ -580,6 +580,8 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, the orchestrator; folded by the plan-executor.
 - Decision (M7 close, the plan-executor): M7's last fix round (e3585955: the read-only guard restored to the body, the guide's bounded wait for the engine record, two wording fixes) answered the second task review's findings, which were text and Minor; it goes to the whole-branch review rather than a third task-review round, since that panel reads the whole branch next and the task reviewer's sol pin is at its usage limit. The merge of origin/main (aa1e7155) keeps 7.186.0 and both sides' behavior: `join_on_sight`/`joinable` take main's `marked` beside this branch's `recheck`, the guide honours `SMNS_MEMBER` as `record` does, SKILL.md takes main's dormant-board text.
   Date/Author: 2026-10-19, the plan-executor.
+- Decision (whole-branch review, 2026-10-19): the xhigh panel on e24c3fd4..363f6348 (opus deriver and finders, fable verifier; sol and astra at their usage limits) verified six findings, all fixed in 28340ded with a test that fails before each (ci-gate 39199569301): (1) a session entering a project carries the furthest export position it holds in any project here (`position_carry`, called where `join_on_sight` writes a `joined`), rather than seeking to the transcript's end, which would drop a mid-turn `.smns` move's `<message>`; this also removes the first move's re-export of the previous turn; (2) a `--bg` successor's own `joined` carries its predecessor's alias from the start (`handed_to`) — the closing review confirmed the alias already survived through the hand-off lineage and `publish_renames`, the panel's "never retried" not holding; (3) `list --here` matches this machine exactly; (4) the record hook's cheap look also admits a session holding a join override; (5) a tag `@<project>/<alias>` into a project `org.json` retires is refused; (6) an "elsewhere" label names a project by name only when the name resolves to it, else by id. A closing opus review of the fix commit found it correct; its one P3 (`find_target`'s verb route still reaches a retired project) and two accepted edges are in `docs/doperpowers/TECH-DEBT.md`.
+  Date/Author: 2026-10-19, the plan-executor.
 
 ## Outcomes & Retrospective
 
@@ -587,7 +589,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - M2 merged as SSFSKIM/MAWS#54, deployed as hub@e1653e58.
 - M6 merged as SSFSKIM/MAWS#63, deployed as hub@8aa45e3b web@master.8aa45e3b.
 - ci-kit's org-only `.smns` is commit 91492fd on its `smns-org-directory` branch.
-- The doperpowers branch is at 7.186.0, with origin/main merged in, and ci-gate is green on its head (MERGE_GATE).
+- The doperpowers branch is at 7.186.0, with origin/main merged in. The whole-branch xhigh panel's six findings are fixed (28340ded), and ci-gate is green on the fix (https://github.com/SSFSKIM/doperpowers/actions/runs/39199569301). ci-kit's PR is SSFSKIM/ci-kit#56.
 
 What the build shows against the purpose:
 - Every session on an enrolled machine is in a project the hub syncs.
@@ -616,7 +618,7 @@ The task reviews earned their keep. Every milestone but one needed at least one 
   - The read-only scenario has not been re-run with the guard restored to the body.
   - The cause of the before arm's SendMessage "Failed to send" in the fixture is not established.
   - All of this was held under the 2026-10-19 06:30Z slot freeze. Re-run after it: a guide-less arm against the old body, ablations of identity, `list`, `say` and `find`, and 3 or more samples of the misfiled and multi-repo scenarios.
-- **The evals' home.** The scenarios (836fef1f, c361a68b and later, on `sminos-org-directory` in the `evals/` clone) are unpushed: prime-radiant-inc/superpowers-evals refused the push and SSFSKIM has no fork. Where fork-local evals live is the owner's call.
+- **The evals' home** (settled 2026-10-19): the owner chose a public fork; the scenarios and their runner are on `SSFSKIM/superpowers-evals`, branch `sminos-org-directory` at 9ddb82ab. Their follow-ups are board #98; the live `/clear`, fork and compaction check of the guide is #99.
 - **`/clear` and fork.** Whether the guide reaches a `/clear` or a fork (a new session id, possibly before its engine record exists) is bounded by a short wait but not observed live.
 - **The real two-machine run of acceptance 1–9.** This is the orchestrating session's, after the merge, the ci-kit merge and the roll. Its transcript lands here.
 - **The owner's `permissions.deny` entry for `ListAgents`,** with its CLAUDE.md note, is the owner's step once the evals hold.
