@@ -3,10 +3,11 @@
 **Date.** 2026-10-19. **Status.** Outline approved by the owner on 2026-10-19 (split, same marketplace;
 AskUserQuestion moves and is renamed; the peer roster is a separate initiative); this document is the
 design and its execution, written against the code and the engine (2.1.302 bundle, 2.1.303 installed);
-revised 2026-10-19 after the first independent review round (Decision Log). Rebased on `origin/main`
-5395bbc2 (#270, 7.188.10: the copy/fork resume rebuilding async asks, which the first draft waited
-on). **Prior art, reference only.** `docs/doperpowers/specs/2026-10-15-devcloud-design.md` (the second
-plugin carved out of this repository, and the `$.state` marker another plugin reads);
+revised 2026-10-19 after two independent review rounds and the devcloud setup session's container
+results (Decision Log). Rebased on `origin/main` 0176e090 (#273, doperpowers 7.189.0; #274, devcloud
+0.4.2; #270, the copy/fork resume rebuilding async asks, which the first draft waited on). **Prior
+art, reference only.** `docs/doperpowers/specs/2026-10-15-devcloud-design.md` (the second plugin
+carved out of this repository, and the `$.state` marker another plugin reads);
 `docs/doperpowers/specs/2026-10-13-ask-async-design.md` (the ask tool);
 `docs/doperpowers/specs/2026-10-13-smns-project-log-design.md` and
 `docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md` (the bridge, DX5).
@@ -35,25 +36,30 @@ reload still run.
 
 - [x] (2026-10-19 15:30Z) Design and execution written against the code and the engine; the live
       hooks-module order probed (Surprises & Discoveries).
-- [x] (2026-10-19 18:00Z) First independent review round (two reviewers) absorbed: the order probe
-      redesigned for reloads, M0 and the roll's reload path, MAWS's plugin-name readers, devcloud
-      hosts' managed settings, the permission-prompt leak as a prerequisite, the board files, the
-      drift against main (Decision Log, 2026-10-19).
-- [x] (2026-10-19, the owner) **M0 on the Macs**: `prependPlugins` applied in `~/.claude/settings.json`
-      on the MacBook and the Mac mini; probe sessions show `to-human` and `doperpowers` in the
-      prepend tier, `devcloud` inner. Pending in M0: the `sminos@doperpowers` entry (§8).
+- [x] (2026-10-19 18:00Z) First independent review round (two reviewers) absorbed: the roll's reload
+      path, MAWS's plugin-name readers, devcloud hosts' managed settings, the permission-prompt leak
+      as a prerequisite, the board files, the drift against main (Decision Log, 2026-10-19).
+- [x] (2026-10-19 21:00Z) Second round and the devcloud container results absorbed: the order probe
+      moved to `next.trace` as a spike at the head of M3, the ask's `PLUGIN` literal, the rehearsal's
+      git remote, the reload mod's trigger, the versions, M0's `enabledPlugins` as a precondition, the
+      hosts' current state (Decision Log, 2026-10-19).
+- [x] (2026-10-19, the owner) **M0, first step, on the Macs**: `prependPlugins` applied in
+      `~/.claude/settings.json` on the MacBook and the Mac mini; probe sessions show `to-human` and
+      `doperpowers` in the prepend tier, `devcloud` inner.
+- [ ] M0, second step (owner, needs their explicit OK): `enabledPlugins["sminos@doperpowers"]` on
+      each Mac — a precondition of the roll (§8).
 - [ ] P0 — the bridge raises a permission request's input in the handle form it captured (§4; a
       separate change, in flight, lands before M1).
-- [ ] The devcloud hosts' placement (§8, I8): the devcloud setup session's route, in verification in
-      a Linux container; a precondition for enrolling a host, not a milestone here.
-- [ ] Second review round on the revised sections.
 - [ ] M1 — doperpowers' readers accept both names; the reload mod installs a plugin's new
-      dependencies before it reloads.
+      dependencies and updates whenever an installed version differs from the clone's.
 - [ ] M2 — MAWS's readers accept both names and both plugin names (a PR in MAWS; the app rebuilt on
       each machine).
-- [ ] M3 — The carve-out and the rename, rehearsed on a local marketplace.
+- [ ] M3 — The carve-out and the rename, opened by the `next.trace` spike (M3a), rehearsed on a local
+      git remote.
 - [ ] M4 — The roll and each machine's migration (owner steps).
 - [ ] M5 — Cleanup and acceptance.
+- Not a milestone here: the devcloud hosts' placement (§8, I8), the devcloud setup session's; a
+  precondition for enrolling a host, blocked today.
 
 ## Terms
 
@@ -64,11 +70,14 @@ reload still run.
   (`./sminos`). A plugin is addressed as `<name>@<marketplace>`: `sminos@doperpowers`.
 - **Hooks module.** A plugin's function hooks: the `modules` entry of its `hooks/hooks.json` (here
   always `./mods/register.tsx`), loaded only under `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. A **mod** is
-  one file of it that registers hooks on `on(...)`.
+  one file of it that registers hooks on `on(...)`. A **module instance** is one load of it: the
+  process's first, or a reload's.
 - **Outer and inner.** The engine runs every plugin's hooks on an event as nested wrappers: the
   module registered first is outermost, sees the event first and the result last; the one registered
   last is innermost, closest to the engine's own action. The order is decided per session at load
-  and again at a reload (§4).
+  and again at a reload (§4). A hook sees what settled beneath it on its last `next()` in
+  `next.trace`: one entry per link beneath, nearest first, each with the link's `plugin`, `tier` and
+  `index` (0 the outermost), ending at the engine's own entry.
 - **A guard.** A mod that keeps secrets out of what the model reads: devcloud's (`devcloud/hooks/mods/secrets.tsx`)
   and `cua`'s vendored copy of it (`cua` 0.15.0, `hooks/mods/guard/`), which acts only when
   devcloud's is absent. In `tool.call` a guard restores a handle's secret bytes into a Bash or Write
@@ -92,8 +101,7 @@ reload still run.
   clone's `sminos.py`.
 - **`$.state`.** Named values the engine holds for the session in memory: they survive a hot reload
   of a plugin's code, not a new process; addressed `{ plugin, key }`; any plugin reads any value,
-  only its owner writes it; `state.set` is a hookable event any plugin may observe; a read answers
-  `{ value, version }`, the version moving by one per write.
+  only its owner writes it; `state.set` is a hookable event any plugin may observe.
 - **The roll.** The moment a machine's marketplace clone and installed plugins move to the M3
   release and its live sessions reload — unattended: the reload mod (`hooks/mods/reload.tsx`)
   fetches the `autoUpdate` marketplaces every five minutes, updates the enabled plugins installed from
@@ -105,23 +113,22 @@ Numbered so milestones can point at them. Each is checked on this machine in a t
 SMINOS_HOME unless it names another machine or the real HOME.
 
 - **A1 — The plugin exists and is placed.** In a HOME with `sminos@doperpowers` enabled and the
-  settings of §8 applied (a temporary one in M3 with a local marketplace named `doperpowers`; the
-  real one on each machine in M4), `HOME=<that> claude --debug -p "reply ok" --max-turns 1` in an
-  empty directory with `SMNS_INTERNAL=1` writes a debug log (`<that HOME>/.claude/debug/<session>.txt`)
-  whose `hooks module … loaded (worker, environment N, tier …)` lines come in the order
-  `to-human@doperpowers`, `sminos@doperpowers`, `doperpowers@doperpowers`, each `tier prepend`,
-  before every other plugin's module (`tier user`), and `sminos@doperpowers`'s line lists
-  `session.start`, `tool.call`, `session.append`, `attribution.text`, `tool.describe` among its
-  events. On a devcloud host the same holds once its managed settings carry the copied lists (§8,
-  the devcloud session's route), the three in `tier prepend` from the policy and
-  `cc-plugin-sec-default@builtin` not among the loaded modules.
+  settings of §8 applied (a temporary one in M3 with the rehearsal's marketplace; the real one on each
+  machine in M4), `HOME=<that> claude --debug -p "reply ok" --max-turns 1` in an empty directory with
+  `SMNS_INTERNAL=1` writes a debug log (`<that HOME>/.claude/debug/<session>.txt`) whose `hooks
+  module … loaded (worker, environment N, tier …)` lines come in the order `to-human@doperpowers`,
+  `sminos@doperpowers`, `doperpowers@doperpowers`, each `tier prepend`, before every other plugin's
+  module (`tier user`), and `sminos@doperpowers`'s line lists `session.start`, `tool.call`,
+  `session.append`, `attribution.text`, `tool.describe` among its events. On a devcloud host it
+  holds only once the hosts' placement (§8) exists; none is enrolled today.
 - **A2 — The ask round trip under the new name.** In an interactive session in a project (this
   repository), the model calls `mcp__sminos__AskUserQuestion` with `async: true`; the call returns at
   once with the waiting text; the question shows behind `[ answer ]` and in the `N open questions`
   band; after the answer, the model's next message quotes it, and `sminos chat --host` lists the
   `question` and `answered` events; the desk (MAWS, with M2 deployed) shows the question card and its
   answer. The transcript's user row opens `The sminos plugin sent a message:` when the session was
-  idle.
+  idle. A blocking call (`async` absent) opens the engine's dialog with every question of the call,
+  not the first alone (the ask's own raise is claimed and widened under the plugin's real name, §3).
 - **A3 — A transcript from before the rename resumes whole.** A session resumed from a transcript that
   holds an `mcp__doperpowers__AskUserQuestion` call with `async: true`, accepted and unanswered, shows
   that question open within seconds of the resume (`sminos/tests/mods/live-ask-resume-check.py`, run
@@ -136,16 +143,17 @@ SMINOS_HOME unless it names another machine or the real HOME.
   kairos button draws, no error names sminos in the debug log, and a session under the `to-human`
   output style asks through the native AskUserQuestion (the style's own fallback sentence) rather
   than failing on the tool the style names.
-- **A5 — The bridge refuses to sit inside devcloud's guard, and stays on across reloads.** In a
-  temporary HOME with `devcloud` and `sminos` enabled, with the local marketplace of A1:
-  (a) no `prependPlugins`: the debug log carries a line opening `sminos: the bridge is off` naming
-  `prependPlugins` (an interactive session shows it as a toast too) and `$SMINOS_HOME/bridge/<session>.sock`
-  never appears; (b) with `prependPlugins`: the socket appears and the line is absent; (c) with
-  `prependPlugins`, after `/reload-plugins` reloading sminos alone (a sminos version bump in the
-  marketplace), the socket is served again and the line is absent; (d) with `prependPlugins`, after
-  a reload of both devcloud and sminos, the same; (e) without `prependPlugins`, after a reload of
-  both, the bridge stays off. The verdict's record (§4; I1's `OrderVerdict`) names its evidence in
-  each case.
+- **A5 — The bridge knows its place among the guards, per module instance.** In the rehearsal's HOME
+  with `devcloud` and `sminos` enabled, if M3a promoted the probe: (a) no `prependPlugins`: after the
+  session's first tool call the debug log carries a line opening `sminos: the bridge is off` naming
+  `prependPlugins` (an interactive session shows it as a toast too), the `tool` events posted before
+  it carried no `input` or `text`, and `$SMINOS_HOME/bridge/<session>.sock` serves nothing after it;
+  (b) with `prependPlugins`: the first tool call's `tool` events carry their payloads once the verdict
+  is in, and the line is absent; (c) with `prependPlugins`, after `claude plugin update
+  sminos@doperpowers` (a version bump in the marketplace) and `/reload-plugins`, the new module
+  reaches the same verdict on its first tool call and the socket is served; (d) the same after
+  updating both devcloud and sminos; (e) as (a) after updating both: still off. If M3a discarded the
+  probe, A5 is: the rehearsal's debug log shows the order of A1 and no verdict line exists.
 - **A6 — appeal and reload read the asks through the channel.** `tests/mods/appeal.test.ts` passes
   with the judge's evidence carrying an answered ask read from `{ plugin: 'sminos', key: 'ask' }`,
   a pass ending when that value's `answered` count grows, and a block devcloud's guard turned into a
@@ -160,9 +168,10 @@ SMINOS_HOME unless it names another machine or the real HOME.
   on macOS, `systemctl --user cat sminos-daemon.service` on Linux).
 - **A8 — Every suite is green in the new layout.** `ci-gate` on the M3 commit is GREEN with the gates
   of §10, `claude plugin validate sminos/.claude-plugin/plugin.json` and
-  `claude plugin validate .claude-plugin/plugin.json` both pass, and the M3 rehearsal (§10, "The
-  rehearsal") ends with its open question still open, the bridge's socket served, to-human folding
-  the transcript and `sminos chat --host` listing the question.
+  `claude plugin validate .claude-plugin/plugin.json` both pass, and the rehearsal (§10) ends with
+  the reload mod having rolled the HOME on its own, its open question still open, the bridge's socket
+  served, to-human folding the transcript, `sminos chat --host` listing the question, and the
+  reload's answer recorded (applied, or held for `--force`).
 - **A9 — The documents name what is.** `/usr/bin/grep -rn "mcp__doperpowers__AskUserQuestion"`
   outside `docs/`, `archive/`, test fixtures and the readers that accept both names returns nothing;
   `CLAUDE.md`'s repo map has a `sminos/` row; `README.md` lists the plugins and their install lines.
@@ -242,7 +251,7 @@ it: `mcp__sminos__AskUserQuestion`. The plugin prompt framing follows the same w
 submits. None of the old forms can be rewritten out of existing transcripts, and a session may be
 resumed, compacted or forked across the roll, so **every reader accepts both names, both framings and
 both origin names, for good** — not for a transition. The readers, from the grep of 2026-10-19 on
-`origin/main` 5395bbc2 (the ones that match on the name rather than merely mention it):
+`origin/main` (the ones that match on the name rather than merely mention it):
 
 | Reader | What it matches today | After |
 |---|---|---|
@@ -250,7 +259,7 @@ both origin names, for good** — not for a transition. The readers, from the gr
 | `hooks/mods/appeal-judge.tsx`: `PLUGIN_PROMPT = /^The \S+ plugin sent a message:\n/` | any plugin | unchanged |
 | `to-human/hooks/mods/to-human.tsx`: `ASK_TOOL`, `ASK_DELIVERY` | the one name, the one framing | both |
 | `skills/sminos/scripts/sminos.py`: `ASK_TOOL` (3306; read at 3452 and 3807), `PLUGIN_PROMPT` (3312; read at 3367) | the one name, the one framing | both; `tests/sminos/test-bridge-export.sh` 137 and 153 follow |
-| `hooks/mods/bridge.tsx`: `isDialog` by `next.origin.plugin === PLUGIN`; `bridge-rows.tsx`: `origin.name !== PLUGIN` | the plugin's own name | the plugin's own name, which is `sminos` once the mods move together — correct as is |
+| `hooks/mods/ask.tsx`: `PLUGIN = 'doperpowers'` (12), **a literal, not `$.plugin.name`** — read by `claim()` (the ask's own `$.ui.ask` raise, claimed only when `origin.plugin === PLUGIN`), the widening hook on `AskUserQuestion`, the bridge's `isDialog` (`bridge.tsx`) and `enteredRow` (`bridge-rows.tsx`, `origin.name !== PLUGIN`) | the plugin's name as the string `doperpowers` | the plugin's real name: M3 sets `PLUGIN` from `$.plugin.name` at `session.start` (or changes the literal to `sminos` explicitly), and a test asserts it equals `sminos/.claude-plugin/plugin.json`'s `name`. Left as is, the ask's own raise would pass unwidened and unclaimed (a blocking ask would show one question), `isDialog` would be false and `enteredRow` would never match — and the suites would stay green, because the fixtures hard-code the same string (`ask.test.ts` 154; `bridge.test.ts` 177, 2123, 3171, 3219, 3407): they import `PLUGIN` instead |
 | MAWS (§11) | the one name and the one plugin name | both |
 
 The mid-turn framing (`The <plugin> plugin sent a message while you were working:`) is matched by no
@@ -258,11 +267,11 @@ reader in either repository — the ask submits only when the session is idle �
 
 `ASK_TOOL` stays the one registered name: `bridge.tsx`, `bridge-rows.tsx`, `bridge-requests.tsx`,
 `bridge.test.ts` and `test-ask-search.sh` import it as such, and the `tool.describe` / `tool.call`
-matchers, `WITHDRAWN`'s sentence and the `AskSnapshot` key read it. M3 changes only its value (and
-`PLUGIN_PROMPT`'s), with the readers already dual. The nine agent definitions' `disallowedTools` name
-the new tool beside the old through M4 (an entry naming no tool is inert, and a session resumed
-mid-roll may still see the old one); M5 drops the old. The output style names the new tool and keeps
-its fallback sentence for a session without it. The owner's own `~/.claude/agents/astra.md` and
+matchers, `WITHDRAWN`'s sentence and the `AskSnapshot` key read it. M3 changes its value, `PLUGIN_PROMPT`'s
+and `PLUGIN`'s, with the readers already dual. The nine agent definitions' `disallowedTools` name the
+new tool beside the old through M4 (an entry naming no tool is inert, and a session resumed mid-roll
+may still see the old one); M5 drops the old. The output style names the new tool and keeps its
+fallback sentence for a session without it. The owner's own `~/.claude/agents/astra.md` and
 `sol-xhigh.md` carry the old name in `disallowedTools`; until the owner edits them (M4, an owner
 step), an `astra` or `sol-xhigh` subagent is offered the renamed tool and a call of it is refused by
 the ask's own `SUBAGENT_REFUSAL` — a refusal, not a hang.
@@ -289,20 +298,30 @@ both from the day M2 is deployed.
    key order — install order.
 4. A dependency is enabled with its dependent (`rootRequiredByDependent`, 779611) and installed
    with it (the install closure, 779586; `claude plugin prune` removes dependencies no longer
-   needed); an unmet one leaves the dependent unloaded ("Dependency … is not installed").
+   needed); an unmet one leaves the dependent unloaded ("Dependency … is not installed"), and the
+   engine's own session-start pass resolves missing dependencies on its own (~157455). `claude plugin
+   install` writes the plugin's `enabledPlugins` entry into the user's `settings.json`
+   (779613–779620).
 5. The user's tier keys count only where no managed settings, organization seat or hosted session
    places mods: `E5` reads the user's `prependPlugins` only when `Vee()` — any non-empty
    `/etc/claude-code/managed-settings.json` — is false; on a managed machine the policy's
-   `prependPlugins` is read instead, and it seats only plugins the policy enables (its own
-   `enabledPlugins`). On a managed machine with no policy `prependPlugins`, the built-in
-   `cc-plugin-sec-default@builtin` is seated outermost (since 2.1.287) and passes the plugins a
-   person installs over on `prompt.*`, `session.compact`, `settings.read`, every `classic.*` event
-   and `session.append`'s attachment, hook-context and compaction doors (`Mir`, the note the
-   validate diagnostic appends, names the list: "these events pass over the plugins you install, and
-   only a plugin the organization lists in managed settings runs them"); a policy `prependPlugins`
-   that does not list sec-default leaves it unseated, and the pass-over most likely goes with it.
-   Read from the source, not yet observed; the devcloud session is confirming it (§8). The order is
-   recomputed at a reload as at a start.
+   `prependPlugins` is read instead. On a managed machine with no policy `prependPlugins`, the
+   built-in `cc-plugin-sec-default@builtin` is seated outermost (since 2.1.287) and every hook of a
+   person-installed plugin on `prompt.*`, `session.compact`, `settings.read`, `classic.*` and
+   `session.append`'s attachment, hook-context and compaction doors settles in sec-default alone (the
+   validate note `Mir` names the list); a policy `prependPlugins` that does not list sec-default
+   leaves it unseated, and then every such hook runs, for listed and unlisted plugins alike (`Mir`
+   is a note, not a second gate — observed in a container, §8). The tier a policy list gives goes
+   today only to a plugin read in place from a local-folder marketplace; a policy-enabled plugin
+   installed from a remote source lands in tier `user` ("gains the tier in a later release", the
+   engine's own words).
+6. The process's first start raises one nested `session.start` chain through every module (`Ko`,
+   381344–381356); a module loaded later gets a `session.start` of its own, filtered to that plugin
+   (`Vo` 381331–381341, `yse({ only })`, `_vs(…, { only })` 795273). So at a reload, the reloaded
+   module's `next` on `session.start` contains no other plugin's hook, and nothing it observes
+   there tells it where it stands. The order is recomputed at a reload as at a start, and every
+   ordinary dispatch after it — `tool.call`, `session.append` — runs through every module in that
+   order, each hook's `next.trace` naming the links beneath it.
 
 **What this did to today's doperpowers.** `to-human` depends on `doperpowers`, so rule 2 pushed
 doperpowers' module behind `cua` and `devcloud`: the live order on 2026-10-19 was `prompt-autosave,
@@ -340,7 +359,10 @@ which puts them in the `prepend` tier in that order, outside every user-tier plu
 dependency, on `sminos` instead of `doperpowers` (it needs the ask's rows; enabling to-human then
 enables and installs sminos, rule 4) — it has no ordering effect inside the prepend tier and
 documents the need. `sminos` depends on nothing; `doperpowers` depends on nothing. Applied on both
-Macs on 2026-10-19 (M0), ahead of every milestone, so the roll lands sminos placed.
+Macs on 2026-10-19 (M0), ahead of every milestone, so the roll lands sminos placed. **Placement is
+what holds the invariant**; the runtime probe below, if M3a promotes it, is the backstop that turns
+a misplaced machine into a loud refusal, and without it the rehearsal (§10) and M0's precondition are
+the whole proof.
 
 Why not dependencies alone: the engine's only dependency rule puts the *dependent* outside, so
 sminos outside doperpowers would need `sminos` to depend on `doperpowers` — the opposite of a
@@ -352,7 +374,7 @@ two entries would hold the guard invariant; the third restores the nesting the m
 for, at the cost of one more name in the same line. Why the settings file and not a manifest key:
 the engine offers no manifest key for placement; `prependPlugins` is its one lever for "a mod above
 the user tier", and the owner edits the same file for `enabledPlugins` anyway (§8). On a devcloud
-host the user's key is shadowed by any managed settings (rule 5); §8 makes the hosts carry none.
+host the user's key is shadowed by any managed settings (rule 5); §8 is the hosts' state.
 
 **What placement alone does not cover.** Two paths carry a call's input past the bridge's own
 `tool.call` hook whatever the order: the engine's permission check runs after every `tool.call` hook
@@ -364,31 +386,48 @@ keyed by `tool_use_id`, with the pending-request digest kept consistent (the des
 digest of what was raised). That capture is the handle form only when the bridge is outside the
 guard, so the invariant is the two together: placement, and the bridge raising only what it captured.
 
-**The bridge proves its place before it streams**, and keeps the verdict across reloads. devcloud
-writes its marker in its `session.start` hook before calling `next` (`secretsStart`), `$.state`
-starts empty in every process, and a reload of one plugin reruns that plugin's `session.start` only.
-So the bridge's `session.start` hook, which today calls `next` first and then `bridgeStart`, reads
-the marker `{ value, version }` before `next` and again after, and decides:
+**The bridge's probe of its own place — a spike (M3a), from `next.trace`.** A hook sees, after its
+`next()` settles, every link beneath it with the link's `plugin`, `tier` and `index` (Terms). So the
+bridge can decide where it stands from the first settled dispatch of an event both it and a guard
+hook — `tool.call` (every call) or `session.append` (every row): the links beneath name `devcloud`
+or `cua` or neither. The rule: a guard is **loaded** when devcloud's marker is present (devcloud's
+guard) or, the marker absent, when `cua@cua` is among the enabled plugins (cua's copy acts then; read
+from the user settings through `$.settings.read`, as appeal reads them); the bridge is **safe** when
+every loaded guard has an entry beneath it, **off** when a loaded guard has none (it is outside the
+bridge). Until the first verdict the bridge posts tool events without their payloads (`input`,
+`text`, `denied` held back, the event's shape otherwise whole) and raises no permission request's
+input; a `safe` verdict releases the held payloads, an `off` verdict drops them, says why — a toast
+and a debug line, `sminos: the bridge is off — sminos must load outside devcloud and cua; set
+prependPlugins in ~/.claude/settings.json to ["to-human@doperpowers", "sminos@doperpowers",
+"doperpowers@doperpowers"]` — and ends the child, so the session is unreachable from the desk for
+the life of that module instance. The verdict is recomputed by each module instance from its own first
+dispatch — no kept state, nothing to carry across a reload, nothing that a reload's filtered
+`session.start` could mislead (rule 6) — and it covers cua's guard, which writes no marker. What the
+spike settles, nobody having used `next.trace` in a mod yet: that a hooks module's `next.trace` lists
+the other plugins' links beneath it on `tool.call` and `session.append` with their `plugin` names as
+documented; that it does so for the first dispatch after a reload; what the engine's own entry looks
+like at the bottom; and whether `session.append` or `tool.call` comes first in a session so the
+verdict lands before the first payload matters. Promote: the rule above, in `bridge.tsx`, with
+`bridge.test.ts` cases for each row of the table below. Discard: no runtime probe at all — the
+invariant rests on M0's precondition (the `prependPlugins` line on every machine before the roll),
+the rehearsal's debug-log order (A1) and A7's per-machine check; the `off` line and the payload hold
+do not exist, and A5 reads as its last sentence says.
 
-| Before `next` | After `next` | Meaning | Verdict |
-|---|---|---|---|
-| absent | present | devcloud's hook ran inside this one: devcloud is inner | `outside` (fresh evidence `moved`) |
-| absent | absent | no devcloud loaded | `outside` (`absent`) |
-| present, version v | version > v | devcloud reloaded with sminos, inside | `outside` (`moved`) |
-| present, version v | version v | devcloud ran before this hook: at the process's first start that means devcloud is outer; at a reload of sminos alone it means nothing | the kept verdict if one exists (`kept`), else `inside` (`present-first`) |
+| Loaded guards (marker; cua enabled) | Links beneath the bridge name | Verdict |
+|---|---|---|
+| devcloud (marker present) | `devcloud` | safe |
+| devcloud (marker present) | no `devcloud` | off |
+| cua's copy (marker absent, `cua@cua` enabled) | `cua` | safe |
+| cua's copy (marker absent, `cua@cua` enabled) | no `cua` | off |
+| none (marker absent, cua not enabled) | anything | safe |
 
-The verdict and its evidence are written once per start under sminos's own key, `{ plugin: 'sminos',
-key: 'order' }` (I1's `OrderVerdict`), which the next start of the same process reads back. `outside`: the bridge
-starts. `inside`: it starts no child and says why — a toast and a debug line, `sminos: the bridge is
-off — sminos must load outside devcloud; set prependPlugins in ~/.claude/settings.json to
-["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"]` — and the session is
-unreachable from the desk for its life, as a session without function hooks is; the ask, the address
-and the shell hooks serve either way. A `prependPlugins` change takes effect for the verdict at the
-next process, not at a reload (the kept verdict stands when the evidence is ambiguous). cua's
-vendored guard writes no marker and cannot be probed; placement alone covers it, and a marker of
-cua's own — written only while its guard acts — would extend the probe (a cua change, recorded as
-residue, not in scope). The alternative, streaming and hoping, was the state before M0; a loud
-refusal on one machine beats a quiet leak to the hub.
+The design the second draft carried — devcloud's marker *version* moving during the bridge's
+`session.start` `next`, a verdict kept under a sminos key across reloads — is not the plan: at a
+reload the bridge's `session.start` `next` holds no other plugin's hook (rule 6), so every live
+session's new sminos module at the roll would read the marker as present-first and switch itself
+off on a machine the owner had already placed; and with no `prependPlugins` the version can move
+between the two reads by a race across workers, reading `outside` while the bridge sits inside the
+guard — the unsafe direction. Recorded in Surprises & Discoveries.
 
 **appeal outside the guard.** With doperpowers in the prepend tier, appeal's `tool.call` hook sits
 outside devcloud's: a call the guard refuses (`{ deny: WITHHELD }` when the guard fails) reaches
@@ -450,8 +489,9 @@ shape-1 value up as shape 2 (`isDialogUp: false`, `answered: 0`). M5 removes the
 plugin for the reason it was made one: the engine runs none of a plugin's render hooks on a row that
 plugin submitted, and sminos submits the ask's deliveries and the bridge's sminos deliveries while
 doperpowers submits the compact mod's resume prompt. Its readers accept both names (§3). Its version
-moves (0.1.1 → 0.2.0) in M3 with the dependency — which is what makes the roll install sminos on a
-machine that never ran `/plugin install sminos@doperpowers` (§10, "The roll").
+moves (the next minor above main's at the time) in M3 with the dependency — which is what makes
+the roll install sminos on a machine that never ran `/plugin install sminos@doperpowers` (§10, "The
+roll").
 
 ### 7. The daemon, the service, and the transition shim
 
@@ -510,15 +550,19 @@ owner, or by a session on the owner's explicit approval of that step on that mac
 names them so M0 and M4 can be run as a checklist. The machines: the MacBook `SK`, the Mac mini, and
 each devcloud host once one is enrolled.
 
-**M0 — before M1 (the Macs: done 2026-10-19 by the owner, except step 2):**
+**M0 — before the roll (the Macs):**
 
 1. `prependPlugins`: `["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"]` (§4).
    Safe ahead of the plugin's existence: a name that is not an enabled plugin with a hooks module is
-   skipped (§4, rule 1). Done on both Macs; probe sessions confirm the prepend tier.
-2. `enabledPlugins`: add `"sminos@doperpowers": true` now. An entry alone installs and loads nothing
-   (the engine lists it in `/plugin` as not installed); it makes the install explicit when the roll
-   brings sminos in as to-human's dependency, so a later `claude plugin prune` never reads sminos as
-   an auto-installed dependency nobody asked for. M3's rehearsal confirms both halves (§10).
+   skipped (§4, rule 1). **Done** on both Macs on 2026-10-19; probe sessions confirm the prepend tier.
+2. `enabledPlugins`: add `"sminos@doperpowers": true`. **A precondition of the roll, not optional**,
+   and an owner step that still needs their explicit OK (they approved step 1 alone): the engine's
+   own `claude plugin install` writes a plugin's `enabledPlugins` entry into the user's
+   `settings.json` (§4, rule 4), so the roll — the reload mod installing sminos as to-human's new
+   dependency (§10) — would otherwise write the owner's file on its own, on every Mac, unasked.
+   Written by the owner first, the entry is theirs, it installs and loads nothing by itself (the
+   engine lists it in `/plugin` as not installed), and the roll's install only confirms it. M3's
+   rehearsal confirms both halves (§10).
 
 **M4 — at the roll, per machine:**
 
@@ -526,59 +570,48 @@ each devcloud host once one is enrolled.
    (and keeps `mcp__doperpowers__compact`).
 4. Let the reload mod roll the machine, or run `/plugin marketplace update doperpowers` and
    `/reload-plugins` in a session; a session that must keep its open asks across the swap keeps them
-   (§5).
+   (§5). If the reload answers that it needs `--force` (a new plugin MCP server, §10), run
+   `/reload-plugins --force` when the session is idle.
 5. `sminos daemon install`, then reload the service: on macOS `launchctl bootout gui/$(id -u)/com.doperpowers.sminos-daemon`
    then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`;
    on Linux `systemctl --user daemon-reload && systemctl --user restart sminos-daemon.service`. Until
    this step the daemon runs through the shim (§7).
 6. Verify A1 and A7 on the machine.
 
-**devcloud hosts — owned by the devcloud setup session; a precondition for enrolling one at the
-desk.** A host receives the owner's `~/.claude` (the configuration repository, reset to its remote
-every 30 minutes and reconciled, design §5; the owner describes the hosts as mounting the Mac's
-file), so `settings.json` with M0's lines reaches every host by itself. What stops it from counting
-there is `/etc/claude-code/managed-settings.json`, which boot step 10 writes from the profile —
-seven keys today: the gateway's base URL, its feature switches, and blanks for the Mac-only
-`CLAUDE_CODE_PLUGIN_DIRS` and the browser-extension token — and any non-empty managed settings make
-the engine ignore the user's `prependPlugins` (rule 5). Managed is the only tier above user that
-every launch path on a host reads.
+**devcloud hosts — the devcloud setup session's, and a precondition for enrolling one at the desk.**
+A host receives the owner's `~/.claude` as a receive-only clone (reset to its remote every 30 minutes,
+reconciled on a new commit; design §5), so `settings.json` with M0's lines reaches every host by
+itself; what decides whether it counts there is `/etc/claude-code/managed-settings.json`, which boot
+step 10 writes from the profile (seven keys today: the gateway's base URL and switches, blanks for
+the Mac-only `CLAUDE_CODE_PLUGIN_DIRS` and the extension token). The devcloud setup session, which
+owns boot, settled the hosts' state in a Linux container on 2026-10-19 (2.1.303, Ubuntu 24.04):
 
-**The route**, chosen and built by the devcloud setup session, which owns boot: step 10 and its
-reconcile write into `managed-settings.json` the profile's env as now, **`prependPlugins` copied from
-the synced `settings.json`**, and **`enabledPlugins` true for exactly those ids** (the policy seats
-only plugins it enables). The Macs' `settings.json` stays the single list; once sminos is in it (M0),
-a host places sminos by copying. It is being verified in a Linux container before it lands, and
-what decides it is the pass-over of rule 5: whether `cc-plugin-sec-default@builtin` is unseated by
-a policy `prependPlugins` that does not list it, and whether the plugins a person installs are
-still passed over on `prompt.*`, `session.compact`, `settings.read`, `classic.*` and
-`attribution.text` once it is — the events the bridge (`classic.PermissionRequest`, the path that
-raises permission prompts to the desk; `session.compact`), the ask (`classic.SessionStart`), the
-address line (`attribution.text`), compact (`classic.Stop`) and devcloud's own guard
-(`prompt.compose`, `prompt.context`, `prompt.attachment`, `session.compact`) need. The reading so
-far: `Mir` is `passedOverNoteOf`, exported from the registry module that also holds the seat
-(`cPr`), `PASSED_OVER_EVENTS` / `DOORS` and sec-default's `registerPlugin`, and its one call site
-appends a note to a module's `hooks:` diagnostic line — so the pass-over is most likely carried out
-by sec-default's own hooks module and ends when that module is unseated; not yet observed. The
-container run watches hooks fire under the candidate managed file and under today's env-only one:
-devcloud's and cua's `prompt.*` and `session.compact` (plugins the policy does not list), to-human's
-`classic.SessionStart` and the bridge's `classic.PermissionRequest` (plugins it lists). If hooks of
-unlisted user-tier plugins are still passed over, the fallback is a different design — every plugin
-policy-listed in managed settings — which the devcloud session would then own too. This spec
-defers to that result. Until a host boots an image carrying the route, the host does not enroll at
-the desk (`sminos hub enroll` is refused by the operator's checklist, not by code); no host is
-enrolled today.
+- With today's env-only managed file, `cc-plugin-sec-default@builtin` is seated outermost, and
+  `classic.PermissionRequest`, `classic.SessionStart`, devcloud's `prompt.*` and `session.compact`
+  settle in sec-default alone: a stand-in token went raw to the gateway. True since 2.1.287; no host
+  is running today.
+- `Mir` is not a second gate: with sec-default unseated, every passed-over hook ran, for listed and
+  unlisted plugins alike.
+- With the candidate lists (`prependPlugins` and `enabledPlugins` copied from the synced
+  `settings.json` into the managed file), sec-default is unseated — but a policy-enabled plugin
+  installed from the cache lands in tier `user` (rule 5), so the bridge stays inside the guard. The
+  Mac layout is reproduced only by managed `extraKnownMarketplaces` declaring doperpowers as a local
+  directory (a root-owned clone) with no GitHub record; a leftover GitHub record loses every
+  doperpowers-marketplace plugin until a reconcile.
+- **The decision**: boot now always writes a managed `prependPlugins` that seats no sec-default
+  (`[]` first; the copied lists as the fallback), which stops the raw-token path; the
+  directory-marketplace route is deferred until a host must enroll, or until the engine gives
+  cache-installed policy plugins the tier. **Enrolling a devcloud host at the desk stays blocked on
+  it** (`sminos hub enroll` on a host is refused by the operator's checklist, not by code).
 
-Two routes lost. The host's process environment, set by boot for every launcher: settings `env`
-overwrites the process environment tier by tier (`applySafeConfigEnvironmentVariables`, verified on
-2.1.303 by the devcloud session; the same reading as `jp` at cli.pretty.js 481468), and the synced
-file sets `ANTHROPIC_BASE_URL` to the Mac's loopback relay `127.0.0.1:8641`, which nothing serves on
-a host, so a process value would lose to it. An overlay that rewrites the received `settings.json`
-after each pull (this spec's second draft): on a host `~/.claude` is a receive-only clone of the
-configuration repository — a timer runs `git reset --hard origin/<branch>` every 30 minutes, the
-push URL is invalid, and `devcloud reconcile` re-applies boot steps 5–11 when the fetched commit
-changes — so a host-side rewrite is undone at every reset, running sessions hot-reload the Mac's
-values (the `127.0.0.1:8641` base URL) between the reset and the re-apply, and the clone is left
-dirty. Only the managed tier is the host's to write.
+Two routes lost on the way. The host's process environment, set by boot for every launcher: settings
+`env` overwrites the process environment tier by tier (`applySafeConfigEnvironmentVariables`,
+verified on 2.1.303; the same reading as `jp` at cli.pretty.js 481468), and the synced file sets
+`ANTHROPIC_BASE_URL` to the Mac's loopback relay `127.0.0.1:8641`, which nothing serves on a host.
+An overlay rewriting the received `settings.json` after each pull (this spec's second draft): the
+clone is reset every 30 minutes with an invalid push URL and re-applied on a new commit, so a rewrite
+is undone at every reset, running sessions hot-reload the Mac's values in between, and the clone is
+left dirty — the file is the Mac's, and only the managed tier is the host's to write.
 
 The order across machines does not matter: the hub reads events, not plugin versions, and both
 daemons speak the same protocol.
@@ -614,7 +647,7 @@ daemons speak the same protocol.
   and `live-stop-check.py` `SCRIPTS`): after the move `REPO` is the sminos plugin root and
   `PLUGIN_PARTS` names its parts (`.claude-plugin`, `hooks`, `skills`, `types`). A `--plugin-dir`
   load registers as `<name>@inline`, which `prependPlugins` never matches; the live checks stage one
-  plugin, so nothing orders them, and the rehearsal (§10) uses a local marketplace for that reason.
+  plugin, so nothing orders them, and the rehearsal (§10) uses a marketplace for that reason.
 
 ### 10. Versioning, marketplace, gates, the roll, documents
 
@@ -623,35 +656,49 @@ daemons speak the same protocol.
   (`plugins[name=sminos].version`), audit root `sminos`; doperpowers' audit `exclude` gains `sminos`.
   `scripts/bump-version.sh --plugin sminos` then works. Starting version **1.0.0**: the component is
   mature and its protocol (DX5) is pinned by MAWS; a 0.x would misstate it (devcloud and to-human
-  started at 0.1.0 as new work). doperpowers moves to 7.189.0, to-human to 0.2.0, devcloud to 0.5.0,
+  started at 0.1.0 as new work). doperpowers, to-human and devcloud each move to the next minor
+  above `main`'s at the time (main moves under this spec: 7.189.0, 0.1.1 and 0.4.2 at this writing),
   each by the script, in the same M3 commit as the change: the marketplace updates by version number
-  alone.
+  alone. M1's bumps are the next patch above `main`'s at the time.
 - **The marketplace entry.** `.claude-plugin/marketplace.json` adds `sminos`, source `./sminos`, the
   description of what it is (the orchestration interface: the machine side of the MAWS desk, and how
   sessions and humans reach each other). `tests/codex/test-marketplace-manifest.sh`'s
   `expected_sources` gains `"sminos": "./sminos"`.
 - **The roll** (§Terms) is unattended, so the M3 release must survive it with no owner present. The
   reload mod's update path runs `claude plugin marketplace update doperpowers` and then `claude
-  plugin update <key> --scope user` for each enabled plugin installed from it — only installed ones.
-  Left as it is, a machine's roll would update doperpowers to 7.189.0 (the ask and the bridge gone),
-  update to-human to 0.2.0 (depending on a sminos that is not installed, so unloaded), and reload;
-  whether `plugin update` installs a plugin's new dependency closure as `plugin install` does is what
-  the rehearsal must show, and the mod must not rely on it. **M1 changes the reload mod**: before
-  updating, it reads each enabled plugin's manifest in the refreshed clone, installs every dependency
-  not yet installed (`claude plugin install <dep>@<marketplace> --scope user`) and refuses the whole
-  batch, with a debug line, when one cannot be installed; it updates the batch; then it reloads once.
-  M1 ships this because M1's code is what runs on the machines during the roll. With M0's
-  `prependPlugins` already in place, sminos lands placed.
-- **The rehearsal** (M3's proof of the roll): a temporary HOME with a local marketplace named
-  `doperpowers` (`claude plugin marketplace add <a clone of this repository at the M1 commit>`; the
-  name must be `doperpowers`, because `prependPlugins` names `<plugin>@doperpowers` and a
-  `--plugin-dir` load registers as `@inline`), the settings of §8 applied there, doperpowers,
-  to-human and devcloud installed at M1, the gateway keys for a model call, one interactive session
-  with an async ask open; then the clone is moved to the M3 commit, the reload mod is let act (or its
-  fetch is forced), and after the reload: the ask is still open behind `[ answer ]` and answers,
-  `$SMINOS_HOME/bridge/<session>.sock` is served, to-human folds the transcript, `sminos chat --host`
-  lists the question, and the debug log shows the order of A1. The rehearsal spends model calls; it
-  runs inside `/tmp/maws-review/with-slot.sh`.
+  plugin update <key> --scope user` for each enabled plugin installed from it — only installed ones,
+  and only when the clone's head moved (`fetchOne` returns early once the local head equals the
+  remote's). Left as it is, a machine's roll would update doperpowers (the ask and the bridge gone),
+  update to-human (depending on a sminos that is not installed, so unloaded), and reload; whether
+  `plugin update` installs a plugin's new dependency closure as `plugin install` does is what the
+  rehearsal must show, and the mod must not rely on it. **M1 changes the reload mod**: its step runs
+  whenever an enabled plugin's installed version differs from its manifest in the clone (not only
+  when the head moved — a fetch that found the head in place but a plugin behind still acts, so a
+  refused batch is retried); before updating, it reads each enabled plugin's manifest in the clone,
+  installs every dependency not yet installed (`claude plugin install <dep>@<marketplace> --scope
+  user`) and refuses the whole batch, with a debug line, when one cannot be installed; it updates the
+  batch; then it reloads once. The engine's own session-start pass resolving missing dependencies
+  (§4, rule 4) is the same intent at a different moment. M1 ships this because M1's code is what runs
+  on the machines during the roll. With M0 in place, sminos lands placed and already enabled by the
+  owner's hand.
+- **The rehearsal** (M3's proof of the roll), in a temporary HOME: a clone of this repository at
+  the M1 commit served as a git remote over loopback (`git daemon` or `git http-backend` behind
+  `http://127.0.0.1:<port>/doperpowers.git`), added with `claude plugin marketplace add <that url>`
+  so `known_marketplaces.json` records a `git` source named `doperpowers` with `autoUpdate` true —
+  not `marketplace add <path>`, which records `source: "directory"` (817032), which `reload.tsx`'s
+  `autoUpdating` (only `github` or `git`) never fetches; the name must be `doperpowers`, because
+  `prependPlugins` names `<plugin>@doperpowers` and a `--plugin-dir` load registers as `@inline`.
+  The settings of §8 applied there (both M0 steps), doperpowers, to-human and devcloud installed at
+  M1, the gateway keys for a model call, one interactive session with an async ask open; then the
+  served clone is moved to the M3 commit, the reload mod's fetch is forced (remove
+  `<config>/autoreload/fetch.stamp` and wait past `ROLLING_MS`), and after the reload: the ask is
+  still open behind `[ answer ]` and answers, `$SMINOS_HOME/bridge/<session>.sock` is served,
+  to-human folds the transcript, `sminos chat --host` lists the question, `installed_plugins.json`
+  holds `sminos@doperpowers`, and the debug log shows the order of A1. Recorded with the result:
+  whether the reload applied or answered that it needs `--force` — a new plugin's `$.tool.register`
+  server may count as an added MCP server (`L8`, 940925–940940), in which case the mod's own
+  "/reload-plugins --force applies it" line is the expected answer and M4's step 4 says so. The
+  rehearsal spends model calls; it runs inside `/tmp/maws-review/with-slot.sh`.
 - **Gates** (`.github/ci-kit.yml`): `sminos` and `sminos-suites` run `sminos/tests/run-sminos-tests.sh`
   with paths `["sminos/**", "skills/sminos/**", ".github/**"]` (the second for the shim, which the
   suite pins); a new `sminos-mods` gate installs claude-code and bun as `mods` does and runs
@@ -674,9 +721,9 @@ daemons speak the same protocol.
   bridge and address sections move to `sminos/hooks/mods/README.md`, the intro names the plugin's mods
   as they are. `skills/sminos/SKILL.md` and `references/setup.md`: the CLI sentence names the sminos
   plugin. `devcloud/README.md` and the devcloud spec's §5, §6 and §8 are not rewritten; dated lines
-  in this spec's Decision Log record the path change they describe and the placement lists the
-  hosts' managed settings gain (the devcloud session's change, documented there when it lands).
-  Old specs (`2026-10-13-ask-async-design.md` and the rest) are history and keep the old name.
+  in this spec's Decision Log record the path change they describe and the hosts' managed
+  `prependPlugins` (the devcloud session's change, documented there when it lands). Old specs
+  (`2026-10-13-ask-async-design.md` and the rest) are history and keep the old name.
 
 ### 11. MAWS's side
 
@@ -713,11 +760,13 @@ and the app rebuilt on each machine that runs the desk — not merely merged.
 - A repository of its own for sminos, or a change to the marketplace's name (`doperpowers`), which
   `known_marketplaces.json` and every daemon's service file name.
 - Any change to DX5 (the bridge protocol) or to what the stream carries; the hub and the desk are
-  readers of names only here. P0 changes what the bridge raises, not the protocol's shape.
-- A marker of cua's own for its vendored guard (residue, §4).
-- The devcloud hosts' placement (boot step 10 writing the copied lists into managed settings, §8,
-  I8): the devcloud setup session's change, on its own schedule; this spec relies on its result and
-  names it as a precondition for enrolling a host.
+  readers of names only here. P0 changes what the bridge raises, not the protocol's shape; the
+  probe's payload hold (§4) withholds fields an event already has, adding none.
+- A marker of cua's own for its vendored guard: no longer needed by the `next.trace` probe; not
+  pursued.
+- The devcloud hosts' placement (boot step 10's managed `prependPlugins`, §8, I8): the devcloud
+  setup session's change, on its own schedule; this spec relies on its result and names it as a
+  precondition for enrolling a host.
 - Re-cutting the old specs under the new name.
 - The `qa-loop`, the board's dispatch, and the worker protocols' behaviour, which stay dormant and
   unarmed; this work changes only how their scripts find the CLI.
@@ -726,11 +775,12 @@ and the app rebuilt on each machine that runs the desk — not merely merged.
 
 ### Constraints that bind every milestone
 
-- M1 is based on `origin/main` at or after 5395bbc2 (#270). #269 (`smns-guide-fork`) and #271
-  (`smns-guide-roster`), open at this writing, change `cmd_guide` and `smns-guide.sh`; M3's move
+- M1 is based on `origin/main` at or after 0176e090 (#273, #274). #269 (`smns-guide-fork`) and
+  #271 (`smns-guide-roster`), open at this writing, change `cmd_guide` and `smns-guide.sh`; M3's move
   takes whatever of them has merged and rebases on the rest.
 - P0 — the bridge raising a request's input in the handle form it captured — lands on `main` before
   M1; M1's base carries it.
+- M0's two steps are preconditions of the roll (§8): no machine rolls (M4) before both are on it.
 - Every reader of the tool name, the framing and the plugin name accepts both, for good; no milestone
   removes the old name from a reader (§3). M1 and M2 ship — M2 deployed — before M3's roll.
 - No milestone edits `~/.claude/settings.json`, `~/.claude/agents/*.md`, or the service files on any
@@ -741,8 +791,9 @@ and the app rebuilt on each machine that runs the desk — not merely merged.
   against that HOME, reading `<HOME>/.claude/debug/`, never the real one. Heavy commands run one at a
   time inside `/tmp/maws-review/with-slot.sh`; `grep` is ugrep on this machine, use `/usr/bin/grep`.
 - Version bumps go through `scripts/bump-version.sh` (one plugin per call), in the same commit as the
-  change (CLAUDE.md, working conventions). Commit messages carry no attribution trailer other than
-  the `Sminos-Session:` line the engine adds.
+  change (CLAUDE.md, working conventions), to the next patch (M1) or minor (M3) above `main`'s at
+  the time. Commit messages carry no attribution trailer other than the `Sminos-Session:` line the
+  engine adds.
 - Each plugin's module respects the engine's limits as the code does today: one unmatched
   registration of an event per module; `$` passed only to functions in the module's own file; the
   state reference's `plugin` and `key` as literals.
@@ -754,19 +805,23 @@ and the app rebuilt on each machine that runs the desk — not merely merged.
 
 ### Plan of Work
 
-M0 (owner, mostly done), then five milestones, ordered so no live session breaks: readers first in
-both repositories with the reload mod made safe for the roll, then the carve-out with the rename in
-one release, rehearsed, then the roll with each machine's steps, then cleanup. M1 and M2 are
-independent of each other and may run side by side; M3 waits for both; M4 waits for M3's release and
-M2's deployment; M5 waits for every machine of M4.
+M0 (owner; its first step done, its second awaiting their OK), then five milestones, ordered so no
+live session breaks: readers first in both repositories with the reload mod made safe for the roll,
+then the carve-out with the rename in one release — opened by the `next.trace` spike (M3a), whose
+verdict decides whether the bridge carries a runtime probe — rehearsed on a served git remote, then
+the roll with each machine's steps, then cleanup. M1 and M2 are independent of each other and may run
+side by side; M3a may run beside them (it reads the engine, changes nothing that ships); M3 waits for
+all three; M4 waits for M3's release, M2's deployment and M0 complete; M5 waits for every machine of
+M4.
 
-### M1 — doperpowers' readers accept both names; the reload mod installs new dependencies
+### M1 — doperpowers' readers accept both names; the reload mod rolls a machine whole
 
-**What exists at its end.** A doperpowers release (7.188.x, bumped) whose ask, to-human and sminos
-record export read a transcript carrying either tool name and either framing, whose appeal judge
-already does, and whose reload mod installs a plugin's new dependencies before it reloads a machine.
-A session on it, resumed later from a transcript written by sminos 1.0.0, sees its asks; a machine on
-it rolls to M3 without a reload that lacks sminos.
+**What exists at its end.** A doperpowers release (the next patch above main's) whose ask, to-human
+and sminos record export read a transcript carrying either tool name and either framing, whose
+appeal judge already does, and whose reload mod installs a plugin's new dependencies before it
+reloads a machine and acts whenever an installed version is behind the clone's. A session on it,
+resumed later from a transcript written by sminos 1.0.0, sees its asks; a machine on it rolls to M3
+without a reload that lacks sminos.
 
 **What it touches.** `hooks/mods/ask.tsx` (`ASK_TOOLS` and `PLUGIN_PROMPTS` beside `ASK_TOOL` and
 `PLUGIN_PROMPT`; `asksIn`, `deliveryTexts`, `historyAsks`' `prompt()`, `STORED_FORMS`, `searchArgs` /
@@ -778,14 +833,16 @@ their tests (`tests/mods/ask.test.ts`, `tests/mods/test-ask-search.sh`, `tests/m
 `tests/sminos/test-bridge-export.sh` 137 and 153). Versions: doperpowers and to-human.
 
 **Decisions.** The registered name stays `mcp__doperpowers__AskUserQuestion` here: `ASK_TOOL`'s
-value, the `tool.describe` / `tool.call` matchers, `WITHDRAWN`, and the bridge's `PLUGIN` do not
-change in M1. The new name and framing are spelled once each, as the first member of each set, so M3
-changes `ASK_TOOL` and `PLUGIN_PROMPT` to `ASK_TOOLS[0]` and `PLUGIN_PROMPTS[0]` and nothing else.
-The search's `STORED_FORMS` gets one literal per name and per framing so a transcript over 4 MiB is
-still found by `grep -F` (a5bc8c15). The record export's Python mirrors the TypeScript sets. The
-reload mod's dependency step reads the refreshed clone's manifests by the marketplace's `source`
-paths (`.claude-plugin/marketplace.json` in the clone), installs with the engine's CLI as it updates
-with it, and treats a refusal as "this fetch applies nothing", logged, retried at the next fetch.
+value, `PLUGIN`, the `tool.describe` / `tool.call` matchers and `WITHDRAWN` do not change in M1. The
+new name and framing are spelled once each, as the first member of each set, so M3 changes
+`ASK_TOOL` and `PLUGIN_PROMPT` to `ASK_TOOLS[0]` and `PLUGIN_PROMPTS[0]`, and `PLUGIN` to the
+plugin's real name (§3), and nothing else of the names. The search's `STORED_FORMS` gets one literal
+per name and per framing so a transcript over 4 MiB is still found by `grep -F` (a5bc8c15). The
+record export's Python mirrors the TypeScript sets. The reload mod's step is triggered by a version
+difference between `installed_plugins.json` and the clone's manifests (the marketplace's `source`
+paths in the clone's `.claude-plugin/marketplace.json`), installs with the engine's CLI as it updates
+with it, and treats a refusal as "this fetch applies nothing", logged, acted on again at the next
+fetch because the difference remains.
 
 **What it does not touch.** No file moves; no manifest, gate or document changes beyond the
 version bump.
@@ -795,9 +852,10 @@ whose delivery carries the new framing, and the reverse, each rebuilt as one ope
 `asksIn`, and the same pair rebuilt by `historyAsks` from a fake `$.session.messages()`; to-human's
 `promptRow` reads both framings as the person's answer; `sminos record` exports a `question` and
 `answered` from each. The reload mod: a fake clone whose to-human manifest names a dependency not
-installed makes the mod install it before `plugin update`, and a failing install applies nothing.
-`tests/mods/run-mods-tests.sh`, `to-human/tests/mods/run.sh`, `tests/sminos/run-sminos-tests.sh`
-green; `ci-gate` GREEN.
+installed makes the mod install it before `plugin update`; a failing install applies nothing and the
+next fetch, the head unchanged but the version still behind, tries again; a clone whose head is
+unchanged and whose versions match applies nothing. `tests/mods/run-mods-tests.sh`,
+`to-human/tests/mods/run.sh`, `tests/sminos/run-sminos-tests.sh` green; `ci-gate` GREEN.
 
 ### M2 — MAWS's readers accept both names
 
@@ -823,67 +881,102 @@ may name both); no doperpowers file.
 test` in MAWS, the files' suites); `e2e/to-human-live.spec.ts` keeps passing with its filter widened.
 The PR URL and the deployment on each machine are recorded in Progress.
 
+### M3a — Spike: the bridge's place from `next.trace`
+
+**The question.** Does a hooks module's `next.trace` tell the bridge which plugins sit beneath it,
+reliably enough to carry the verdict of §4's table — on `tool.call` and on `session.append`, at the
+process's first start and on the first dispatch after a reload — and which of the two events a
+session dispatches first?
+
+**What to build and run.** A throwaway mod (not shipped) in a temporary plugin folder loaded beside
+`devcloud` and `cua` in a temporary HOME, placed outside them by `prependPlugins` in one run and
+inside them in another (a served marketplace as the rehearsal uses, §10, or a `--plugin-dir` load
+with a dependency-free order, whichever reaches both placements); it hooks `tool.call` and
+`session.append` and logs, after `next`, `next.trace.map(({ plugin, tier, index, outcome }) => …)` to
+the debug log, then reloads itself (`claude plugin update` on the served marketplace, or a save under
+`--plugin-dir`'s hot reload) and logs the same on its first dispatch as a new instance. Run inside
+`/tmp/maws-review/with-slot.sh`; one prompt that makes one tool call is enough per run.
+
+**What to observe.** In each run and after each reload: the entries beneath the mod name `devcloud`
+and `cua` when it is outside them and name neither when it is inside; the engine's entry closes the
+list; the first dispatch after a reload reads the same; which event fires first after a prompt.
+
+**Promote or discard.** Promote when every observation holds: M3 builds the probe of §4 as written
+(the table's five rows in `bridge.test.ts` against a fake `next.trace`, the payload hold, the `off`
+line), and A5 reads as its first form. Discard when any fails — the trace empty or missing plugin
+names in a hooks module, a reload's first dispatch misleading, the hold's window unsafe: M3 builds no
+runtime probe, the invariant rests on M0's precondition, the rehearsal's A1 and A7's per-machine
+check, A5 reads as its last sentence, and the `order` of the verdict is never kept anywhere. The
+verdict and its evidence go to Surprises & Discoveries, dated.
+
 ### M3 — The carve-out and the rename
 
 **What exists at its end.** One release of four plugins: `sminos` 1.0.0 at `sminos/` with the layout
-of §2, the tool `mcp__sminos__AskUserQuestion`, the channel of §5, the bridge's order verdict of §4
-(I1's `OrderVerdict`), the shim of §7; `doperpowers` 7.189.0 without sminos, reading the asks through the channel,
-with the board resolver of §9; `to-human` 0.2.0 depending on sminos; `devcloud` 0.5.0 with step 11
-looking for the CLI at the new path (the hosts' placement, step 10, is the devcloud session's own
-change, §8, and lands on its own schedule). Every gate green in the new layout; the rehearsal of §10
-passed; the documents of §10 say what is.
+of §2, the tool `mcp__sminos__AskUserQuestion`, `PLUGIN` as the plugin's real name (§3), the channel
+of §5, the bridge's probe of §4 if M3a promoted it, the shim of §7; `doperpowers` (the next minor)
+without sminos, reading the asks through the channel, with the board resolver of §9; `to-human` (the
+next minor) depending on sminos; `devcloud` (the next minor) with step 11 looking for the CLI at the
+new path (the hosts' placement, step 10, is the devcloud session's own change, §8, and lands on its
+own schedule). Every gate green in the new layout; the rehearsal of §10 passed; the documents of §10
+say what is.
 
 **What it touches.** The moves of §1 (`git mv`, so history follows); `sminos/.claude-plugin/plugin.json`,
 `sminos/hooks/hooks.json`, `sminos/hooks/mods/register.tsx`, `sminos/types/sminos.d.ts`,
 `sminos/README.md`, `sminos/tests/mods/run.sh`; `hooks/hooks.json` and `hooks/mods/register.tsx`
 (doperpowers' remaining mods and shell hooks); `hooks/mods/appeal.tsx`, `reload.tsx`, `compact.tsx`
-(§5; appeal's fake-guard case, §4); `ask.tsx` (the values of `ASK_TOOL` and `PLUGIN_PROMPT`, `KEPT`,
-the shape-1 fallback, `isDialogUp` and `answered` in the snapshot); `bridge.tsx` (the verdict);
-`agents/*.md` (nine), `output-styles/to-human.md`; `skills/issue-tracker/scripts/_lib.sh`,
-`execute-dispatch.sh`, `board-sweep.sh`, `review-dispatch.sh`, `_sweep_api.sh`, `board-gc.sh`, the
-three worker-protocol references and the issue-tracker and board-api tests of §9;
-`skills/sminos/scripts/sminos_daemon.py` (`installed_cli`), the two service templates,
-`skills/sminos/scripts/sminos.py` (the shim, in doperpowers, new) and the `sminos` launcher beside it;
-`devcloud/boot/devcloudlib/sminos_host.py`, `devcloud/tests/unit/test_sminos_host.py`,
-`devcloud/tests/integration.py`; `.claude-plugin/marketplace.json`,
-`.version-bump.json`, `to-human/.claude-plugin/plugin.json`, `.github/ci-kit.yml`,
-`tests/codex/test-marketplace-manifest.sh`, `tests/claude-code/run-skill-tests.sh`;
+(§5; appeal's fake-guard case, §4); `ask.tsx` (the values of `ASK_TOOL`, `PLUGIN_PROMPT` and
+`PLUGIN`, `KEPT`, the shape-1 fallback, `isDialogUp` and `answered` in the snapshot); `bridge.tsx`
+(the probe, if promoted); `agents/*.md` (nine), `output-styles/to-human.md`;
+`skills/issue-tracker/scripts/_lib.sh`, `execute-dispatch.sh`, `board-sweep.sh`,
+`review-dispatch.sh`, `_sweep_api.sh`, `board-gc.sh`, the three worker-protocol references and the
+issue-tracker and board-api tests of §9; `skills/sminos/scripts/sminos_daemon.py` (`installed_cli`),
+the two service templates, `skills/sminos/scripts/sminos.py` (the shim, in doperpowers, new) and the
+`sminos` launcher beside it; `devcloud/boot/devcloudlib/sminos_host.py`,
+`devcloud/tests/unit/test_sminos_host.py`, `devcloud/tests/integration.py`;
+`.claude-plugin/marketplace.json`, `.version-bump.json`, `to-human/.claude-plugin/plugin.json`,
+`.github/ci-kit.yml`, `tests/codex/test-marketplace-manifest.sh`, `tests/claude-code/run-skill-tests.sh`;
 `sminos/tests/run-sminos-tests.sh` and every moved test file (the `PLUGIN_ROOT` name of §2, the cache
-fixture and the shim's pin of §7, the hook paths, the live checks' staging of §9); `CLAUDE.md`,
-`README.md`, `hooks/mods/README.md` → `sminos/hooks/mods/README.md`, `sminos/skills/sminos/SKILL.md`,
-`references/setup.md`.
+fixture and the shim's pin of §7, the hook paths, the live checks' staging of §9, the fixtures that
+import `PLUGIN`); `CLAUDE.md`, `README.md`, `hooks/mods/README.md` → `sminos/hooks/mods/README.md`,
+`sminos/skills/sminos/SKILL.md`, `references/setup.md`.
 
 **Decisions.** One milestone, one release: the rename, the move, the manifests and the gates must land
 in the same cutover (a half state — a tool registered under one name by two plugins, or a gate
-pointing at a path that moved — is invalid). The sminos tests' root variable is `PLUGIN_ROOT`, the
-plugin root. The doperpowers types file keeps the `types` key only while it declares a value (it
-declares none after the move; drop the key or keep an empty contract — the executor's call, with
-`claude plugin validate` as the judge). The appeal's read of `{ plugin: 'sminos', key: 'ask' }` types
-through `import type` from `../../sminos/types/sminos` (erased at run time; `devcloud/types/devcloud.d.ts`
-shows the read form); if `claude plugin validate` on doperpowers refuses a read of a contract that is
-not enabled in the staged test plugin, the validate output is the authority and the doperpowers types
-contract declares the key it reads. The bridge's verdict reads devcloud's key with the same form and
-writes its own (I1's `OrderVerdict`). The shim is Python 3.9-safe (it may run under macOS's own `python3` before the
-real CLI's version check). The board resolver reads `known_marketplaces.json` with `python3 -c` or
-`jq`, whichever `_lib.sh` already uses. The `sminos/README.md` is short: what the plugin is, the
-install lines with `prependPlugins`, pointers.
+pointing at a path that moved — is invalid). `PLUGIN` is read from `$.plugin.name` at the ask's
+`session.start` and handed to the bridge's modules through `bridge-state` (or set as the literal
+`sminos` — the executor's call, with the manifest-equality test as the judge); the fixtures import
+it. The sminos tests' root variable is `PLUGIN_ROOT`, the plugin root. The doperpowers types file
+keeps the `types` key only while it declares a value (it declares none after the move; drop the key
+or keep an empty contract — the executor's call, with `claude plugin validate` as the judge). The
+appeal's read of `{ plugin: 'sminos', key: 'ask' }` types through `import type` from
+`../../sminos/types/sminos` (erased at run time; `devcloud/types/devcloud.d.ts` shows the read form);
+if `claude plugin validate` on doperpowers refuses a read of a contract that is not enabled in the
+staged test plugin, the validate output is the authority and the doperpowers types contract declares
+the key it reads. The probe, if promoted, reads devcloud's key and the user settings' `enabledPlugins`
+with the forms appeal uses. The shim is Python 3.9-safe (it may run under macOS's own `python3`
+before the real CLI's version check). The board resolver reads `known_marketplaces.json` with
+`python3 -c` or `jq`, whichever `_lib.sh` already uses. The `sminos/README.md` is short: what the
+plugin is, the install lines with `prependPlugins`, pointers.
 
 **What it does not touch.** `~/.claude/*` on any machine; MAWS; the old specs; the dormant board
-doctrine's behaviour; DX5.
+doctrine's behaviour; DX5; devcloud's boot step 10.
 
 **What it proves.** A1 (the module loads with the events listed; the order of the `loaded` lines, in
-the rehearsal's HOME; on a devcloud image through the devcloud gate), A5 (all five cases, in the
-rehearsal's HOME), A6 (`tests/mods/appeal.test.ts` with the channel and the fake guard,
+the rehearsal's HOME), A2's blocking-dialog clause (a blocking ask's dialog carries every question),
+A5 (in its promoted or discarded form, in the rehearsal's HOME, (c) and (d) through `claude plugin
+update` then `/reload-plugins`), A6 (`tests/mods/appeal.test.ts` with the channel and the fake guard,
 `tests/mods/reload.test.ts` with a fake `$.state` seeded at start), A8 (every gate; both validates;
-the rehearsal). Tests pin: the ask tool registers under the new name; the snapshot carries
-`isDialogUp` and `answered`, and a shape-1 value under doperpowers' key is taken up once; the bridge
-names a compact-tool compaction's rows through its `session.compact` hook; the verdict table of §4,
-row by row, with a fake `$.state` whose marker appears before or after `next` and whose version
-moves or not, and the kept verdict reused; `installed_cli` returns the new clone path and its refusal
-names it; the shim forwards to the sibling, else the installed plugin, else exits 1 naming `daemon
+the rehearsal, its reload answer recorded). Tests pin: the ask tool registers under the new name;
+`PLUGIN` equals the manifest's name, the ask's own raise is claimed and widened, `isDialog` and
+`enteredRow` match under it; the snapshot carries `isDialogUp` and `answered`, and a shape-1 value
+under doperpowers' key is taken up once; the bridge names a compact-tool compaction's rows through
+its `session.compact` hook; the probe's table row by row against a fake `next.trace`, the payload
+hold and its release, if promoted; `installed_cli` returns the new clone path and its refusal names
+it; the shim forwards to the sibling, else the installed plugin, else exits 1 naming `daemon
 install`, and writes its line to stderr; the suite fails on that line; `sminos_host.py` finds the new
-path, then the old; the resolver finds the CLI in each of its three places and `lib.sh` beside it. The issue-tracker and board-api gates run the board scripts against
-the checkout's CLI through `SMINOS_CLI`.
+path, then the old; the resolver finds the CLI in each of its three places and `lib.sh` beside it.
+The issue-tracker and board-api gates run the board scripts against the checkout's CLI through
+`SMINOS_CLI`.
 
 ### M4 — The roll and each machine's migration
 
@@ -893,11 +986,12 @@ installed at the new path, and the owner's agents name the new tool. The desk sh
 **What it touches.** Nothing in the repository but this spec's Progress and record. The owner's
 files and services of §8, by the owner or on their explicit approval, one machine at a time.
 
-**Decisions.** The steps of §8 (M4's) in that order on each machine; A1 and A7 checked on each; a
-session with an open async ask at the swap is the test of §5's fallback (ask on one session before
-the reload, answer after). M2 is deployed before the first machine rolls. The executor of this
-milestone is the session the owner works with: it prepares each step's exact command and waits for
-the owner's word per machine.
+**Decisions.** M0 complete and M2 deployed before the first machine rolls. The steps of §8 (M4's)
+in that order on each machine; A1 and A7 checked on each; a session with an open async ask at the
+swap is the test of §5's fallback (ask on one session before the reload, answer after); the reload's
+answer (applied, or `--force` needed) noted per machine. The executor of this milestone is the
+session the owner works with: it prepares each step's exact command and waits for the owner's word
+per machine.
 
 **What it does not touch.** The code.
 
@@ -947,14 +1041,26 @@ d=$(mktemp -d) && cd "$d" && HOME=$H SMNS_INTERNAL=1 /tmp/maws-review/with-slot.
 #   hooks module <others> loaded (worker, environment N, tier user); ...
 # (the engine logs a "hooks module order: dependencies register ..." line only when the dependency sort changed the order)
 
-# A5 — the verdict, in the rehearsal's HOME with devcloud and sminos enabled
-#   (a) no prependPlugins: a debug line opening "sminos: the bridge is off" (a toast in an interactive session), no $SMINOS_HOME/bridge/<session>.sock
-#   (b) prependPlugins set: the socket; no line
-#   (c) then bump sminos's version in the local marketplace, /reload-plugins: the socket served again; the verdict record says kept
-#   (d) bump devcloud's and sminos's: the socket; the record says moved
-#   (e) as (a), bump both, /reload-plugins: still off
+# The rehearsal (M3) — §10: a clone at M1 served over loopback as a git remote
+git clone --bare <this repository at the M1 commit> $H/served/doperpowers.git
+git -C $H/served/doperpowers.git update-server-info     # then: python3 -m http.server <port> --directory $H/served  (or git daemon)
+HOME=$H claude plugin marketplace add http://127.0.0.1:<port>/doperpowers.git     # known_marketplaces.json: source git, name doperpowers; set autoUpdate true
+# ... install doperpowers, to-human, devcloud at user scope; apply §8's settings in $H; open a session, ask async ...
+# move the served clone to the M3 commit; then force the fetch:
+rm $H/.claude/autoreload/fetch.stamp           # (the mod's <config>/autoreload/fetch.stamp)
+# wait past ROLLING_MS (60 s); the mod updates and reloads, or answers that --force is needed — record which
+# expect after the reload: the ask still open and answerable; $SMINOS_HOME/bridge/<session>.sock served;
+#   to-human folding; `sminos chat --host` listing the question; installed_plugins.json holding sminos@doperpowers;
+#   the debug log's order as in A1
 
-# The rehearsal (M3) — see §10; its end state is checked as A2's terminal half plus A1 and A5(b)
+# A5 — the probe, in the rehearsal's HOME with devcloud and sminos enabled (promoted form)
+#   (a) no prependPlugins: after the first tool call, a debug line opening "sminos: the bridge is off" (a toast in an interactive session);
+#       the tool events before it carried no input/text; no $SMINOS_HOME/bridge/<session>.sock afterwards
+#   (b) prependPlugins set: the first tool call's events carry their payloads once the verdict is in; no line
+#   (c) bump sminos's version in the served clone; HOME=$H claude plugin update sminos@doperpowers; /reload-plugins: (b) again from the new instance's first call
+#   (d) bump devcloud's and sminos's; update both; /reload-plugins: (b) again
+#   (e) as (a); update both; /reload-plugins: still off
+#   (discarded form: the debug log shows A1's order and no verdict line exists)
 
 # A7 — on each machine, after the roll
 sminos daemon status                         # running; the hub lists the machine
@@ -969,8 +1075,8 @@ systemctl --user cat sminos-daemon.service | /usr/bin/grep ExecStart            
 
 ### Interfaces and Dependencies
 
-**I1 — The ask snapshot, `sminos/types/sminos.d.ts`** (the one value sminos publishes about asks;
-read by appeal and reload in doperpowers, written by the ask alone, on every change of any field):
+**I1 — The ask snapshot, `sminos/types/sminos.d.ts`** (the one value sminos publishes; read by
+appeal and reload in doperpowers, written by the ask alone, on every change of any field):
 
 ```ts
 export type AskSnapshot = {
@@ -993,37 +1099,34 @@ export type AskSnapshot = {
   store?: { slug: string; sessionId: string; root?: string | null }
 }
 
-/** The bridge's place among the guards, decided at the process's first start and kept across reloads (§4). */
-export type OrderVerdict = {
-  verdict: 'outside' | 'inside'
-  /** What decided it: devcloud's marker moved during `next` (inside sminos), was absent throughout, was present before the first `next`, or the kept verdict was reused. */
-  evidence: 'moved' | 'absent' | 'present-first' | 'kept'
-  at: number
-}
-
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; order: OrderVerdict }
+    sminos: { ask: AskSnapshot }
   }
 }
 ```
 
-The references, written as literals in each reader: `{ plugin: 'sminos', key: 'ask' } as const` and
-`{ plugin: 'sminos', key: 'order' } as const`. A reader hooks writes with `on('state.set', { plugin:
-'sminos', key: 'ask' }, ($, e, next) => ...)` and reads `e.value` as an `AskSnapshot`;
-`$.state.get(ref)` answers `{ value, version }`, `undefined` at version 0 where sminos is not loaded.
+The reference, written as a literal in each reader: `{ plugin: 'sminos', key: 'ask' } as const`.
+A reader hooks writes with `on('state.set', { plugin: 'sminos', key: 'ask' }, ($, e, next) => ...)`
+and reads `e.value` as an `AskSnapshot`; `$.state.get(ref)` answers `{ value, version }`, `undefined`
+at version 0 where sminos is not loaded. sminos keeps no other state value: the bridge's verdict,
+if M3a promotes it, lives in the module instance alone.
 
-**I2 — The order probe's input** (sminos reads, devcloud writes; defined by devcloud, `types/devcloud.d.ts`):
-`{ plugin: 'devcloud', key: 'secrets-guard' }` → `{ owner: 'devcloud'; version: 1 } | undefined`,
-with its `version`. Read twice in the bridge's `session.start` hook, before and after `next`.
+**I2 — The probe's inputs** (§4, if promoted): `next.trace` after the bridge's `next()` on
+`tool.call` or `session.append` — `readonly TraceEntry[]`, each `{ index, plugin, tier, event,
+outcome, … }`, nearest link first, the engine's entry last (`.claude/types/claude-code.d.ts`
+6732–6740, 13881); devcloud's marker `{ plugin: 'devcloud', key: 'secrets-guard' }` →
+`{ owner: 'devcloud'; version: 1 } | undefined` (its `types/devcloud.d.ts`); and the user settings'
+`enabledPlugins["cua@cua"]` through `$.settings.read({ source: 'user' })`.
 
 **I3 — The names.** In each reader, beside the registered name:
 `ASK_TOOLS = ['mcp__sminos__AskUserQuestion', 'mcp__doperpowers__AskUserQuestion']` and
 `PLUGIN_PROMPTS = ['The sminos plugin sent a message:\n', 'The doperpowers plugin sent a message:\n']`
 (ask.tsx, to-human.tsx, sminos.py, and the equivalents in MAWS's readers of §11, which also hold the
 plugin-name set `['sminos', 'doperpowers']`) — no shared module crosses plugins or repositories.
-`ASK_TOOL` and `PLUGIN_PROMPT` stay the one registered name and this plugin's own framing: in M1
-their values are the old ones; from M3, `ASK_TOOLS[0]` and `PLUGIN_PROMPTS[0]`.
+`ASK_TOOL`, `PLUGIN_PROMPT` and `PLUGIN` stay the one registered name, this plugin's own framing and
+this plugin's own name: in M1 their values are the old ones; from M3, `ASK_TOOLS[0]`,
+`PLUGIN_PROMPTS[0]` and `$.plugin.name` (asserted equal to the manifest's `name`).
 
 **I4 — The CLI's stable path.** `<installLocation>/sminos/skills/sminos/scripts/sminos.py` where
 `installLocation` is `known_marketplaces.json`'s `doperpowers.installLocation`; the launcher beside it
@@ -1045,13 +1148,15 @@ the `mods` gate's added paths.
 
 **I8 — The hosts' managed placement** (devcloud's, owned by the devcloud setup session, §8; what this
 spec relies on, not what it builds): `/etc/claude-code/managed-settings.json` on a host carries the
-profile's `env`, `prependPlugins` copied from the synced `~/.claude/settings.json`, and
-`enabledPlugins` true for exactly those ids; boot step 10 and `devcloud reconcile` write it after
-every pull, so a change to the Macs' list reaches every host by itself.
+profile's `env` and a managed `prependPlugins` that seats no sec-default — `[]` today; the lists
+copied from the synced `~/.claude/settings.json` as the fallback — written by boot step 10 and
+`devcloud reconcile` after every pull. The placement that puts the three plugins in the prepend tier
+on a host waits on the directory-marketplace route or on the engine giving cache-installed policy
+plugins the tier; until then no host enrolls.
 
-**Dependencies.** The engine at 2.1.303 (hooks modules, `$.state` with `state.set` and versions,
-`prependPlugins`); bun and `claude plugin test` for the mods' tests; P0 on `main`; MAWS
-`origin/master` at or after M2's merge, deployed, for A2's desk half and the roll.
+**Dependencies.** The engine at 2.1.303 (hooks modules, `$.state` with `state.set`, `next.trace`,
+`prependPlugins`); bun and `claude plugin test` for the mods' tests; P0 on `main`; M0 on each
+machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk half and the roll.
 
 ## Surprises & Discoveries
 
@@ -1075,73 +1180,88 @@ every pull, so a change to the Macs' list reaches every host by itself.
   `doperpowers@doperpowers … cua@cua … devcloud@doperpowers`; `Ubn` / `rSr` (744519–744552) sort only
   by tier and dependency.
 - Observation: `$.state` is in-memory per process and any plugin reads any value; `state.set` is a
-  hookable event, so a plugin can observe another's writes; and because the values survive a hot
-  reload while a reload reruns only the reloaded plugin's `session.start`, a marker's mere presence
-  cannot tell order at a reload — its version moving during `next` can, and otherwise a kept verdict
-  must.
+  hookable event, so a plugin can observe another's writes.
   Evidence: `.claude/types/claude-code.d.ts` 3460 ("held by the host for the session … survives a hot
   reload … Any plugin reads any value; its owner alone writes it. Persist through `$.store`"), 12648
-  (`on("state.set", DRIVE, …)`), and the `StateRead` type's version ("goes up by one on every write
-  that lands"); `ask.tsx`'s own `session.start` ("A module loaded into a running session (a reload)
-  takes up the asks the one before it kept"); `cua`'s `one-guard.tsx` reads devcloud's marker. The
-  first draft's probe would have switched the bridge off at every `/reload-plugins` (first review,
-  both reviewers).
+  (`on("state.set", DRIVE, …)`); `cua`'s `one-guard.tsx` reads devcloud's marker.
+- Observation: a reloaded module cannot learn its place from `session.start`: only the process's
+  first start raises one nested chain through every module; a module loaded later gets a raise of
+  its own, filtered to its plugin. So the first draft's probe (the marker's presence at
+  `session.start`) would have switched the bridge off at every `/reload-plugins`, and the second
+  draft's (the marker's version moving during `next`, a verdict kept across reloads) would have
+  read every live session's new module at the roll as `present-first` and switched it off on a
+  machine already placed, while with no `prependPlugins` a version moving between the two reads by a
+  race across workers could read `outside` from inside the guard. The third design reads
+  `next.trace` on an ordinary dispatch instead (§4, M3a).
+  Evidence: `cli.pretty.js` 381344–381356 (`Ko`, the one nested `session.start` at first start),
+  381331–381341 (`Vo`, `yse({ only: s.name })`), 795273 (`_vs(…, { only })`); `ask.tsx`'s own
+  `session.start` ("A module loaded into a running session (a reload) takes up the asks the one
+  before it kept"); the second review round, 2026-10-19. `next.trace`'s shape:
+  `.claude/types/claude-code.d.ts` 6732–6740 and `TraceEntry` 13881 (`index`, `plugin`, `tier`);
+  no mod uses it yet, hence the spike.
 - Observation: cua 0.15.0 carries devcloud's guard as a vendored copy that acts when devcloud is
-  absent and writes no marker, so no probe sees it; only placement covers it.
+  absent and writes no marker; a marker-based probe could not see it, a trace-based one can.
   Evidence: `~/.claude/plugins/cache/cua/cua/0.15.0/hooks/mods/guard/secrets.tsx` 280–291 ("cua
   adaptation: devcloud's marker write is removed") and `one-guard.tsx` ("cua never writes it, nor any
   marker of its own").
+- Observation: the ask's `PLUGIN` is the literal `'doperpowers'`, not `$.plugin.name`, and the
+  fixtures hard-code the same string, so a move under a new plugin name would silently stop the ask's
+  own raise being claimed and widened and the bridge's `isDialog` and `enteredRow` matching, with
+  every suite green.
+  Evidence: `hooks/mods/ask.tsx` 12 (`export const PLUGIN = 'doperpowers'`), `claim()` (~1319), the
+  widening hook (~1615), `bridge.tsx` (~1409), `bridge-rows.tsx` 380; `tests/mods/ask.test.ts` 154,
+  `bridge.test.ts` 177, 2123, 3171, 3219, 3407; the second review round, 2026-10-19.
 - Observation: a call's input reaches the bridge's permission-request path in the restored form
   whatever the order: the engine's permission check runs after every `tool.call` hook has rewritten
   the input.
   Evidence: `bridge.tsx` `tool.check` (`input: e.input`) and `classic.PermissionRequest`
   (`capped(e.tool_input)`, `rawInput`); the adversarial review of 2026-10-19; P0 in flight.
-- Observation: the roll is unattended and updates only installed plugins, so a release that moves
-  the ask into a plugin nobody installed would reload sessions without it; the engine installs a
-  plugin's dependency closure on install and tracks auto-installed dependencies (`claude plugin
-  prune`), which M1's reload mod makes explicit for updates.
+- Observation: the roll is unattended and updates only installed plugins, and only when the clone's
+  head moved, so a release that moves the ask into a plugin nobody installed would reload sessions
+  without it and a refused batch would never be retried; the engine installs a plugin's dependency
+  closure on install, tracks auto-installed dependencies (`claude plugin prune`), resolves missing
+  dependencies in its own session-start pass, and writes a plugin's `enabledPlugins` entry into the
+  user's `settings.json` on `plugin install` — which is why M0's second step is the owner's hand,
+  before the roll's.
   Evidence: `reload.tsx` 293–300 and 407–414 (`claude plugin marketplace update <name>`, then
-  `claude plugin update <key> --scope user` per enabled installed plugin); `cli.pretty.js` 779586
-  (the closure walked at install), 410058 ("auto-installed dependencies no longer needed … `claude
-  plugin prune`"), 239075 ("Dependency … is not installed").
+  `claude plugin update <key> --scope user` per enabled installed plugin), `fetchOne`'s early return
+  on an unmoved head; `cli.pretty.js` 779586 (the closure walked at install), 410058 ("auto-installed
+  dependencies no longer needed … `claude plugin prune`"), 239075 ("Dependency … is not installed"),
+  ~157455 (the session-start pass), 779613–779620 (`enabledPlugins` written at install); the second
+  review round, 2026-10-19.
+- Observation: `claude plugin marketplace add <path>` records `source: "directory"`, which the reload
+  mod never fetches; a rehearsal of the roll needs a `git` source — a clone served over loopback —
+  with `autoUpdate` true, and the fetch forced by removing the mod's stamp; and a reload that adds
+  a plugin MCP server may answer that it needs `--force`.
+  Evidence: `cli.pretty.js` 817032 (the directory source), `reload.tsx` `autoUpdating` (`github` or
+  `git` only), `FETCH_MS` / `ROLLING_MS` / the stamp, 149 ("A plugin update is not applied: this
+  reload would add or remove a plugin MCP or LSP server … /reload-plugins --force applies it"),
+  `L8` 940925–940940; the second review round, 2026-10-19.
 - Observation: a `prependPlugins` name may be listed before its plugin exists.
   Evidence: `rSr` (744547): `names ${K}, which is not an enabled plugin with a hooks module; skipped`
   — a debug line, not a refusal; the owner's probe sessions after M0 on 2026-10-19 show to-human and
   doperpowers in the prepend tier with sminos not yet installed.
-- Observation: on a managed machine the engine ignores the user's tier keys and gates whole events
-  for plugins a person installs, and devcloud hosts are managed today by a four-key `env` block.
-  Evidence: `E5` (410255: the user's `prependPlugins` read only when `Vee() || s8n()` is false),
-  `Vee` (409728: any non-empty `policySettings`), `Mir` (949953: the gated events "pass over the
-  plugins you install, and only a plugin the organization lists in managed settings runs them"),
-  `Z8r` (949946: the event list); `devcloud/boot/devcloudlib/steps.py` 34 (`MANAGED_SETTINGS`) and
-  the devcloud spec's §6; the owner's account of the hosts' managed file (2026-10-19).
+- Observation: on a managed machine the engine ignores the user's tier keys; with no policy
+  `prependPlugins` the built-in sec-default is seated outermost and every hook of a person-installed
+  plugin on `prompt.*`, `session.compact`, `settings.read`, `classic.*` and three `session.append`
+  doors settles in it alone — a token went raw to the gateway in a container with today's env-only
+  managed file (true since 2.1.287; no host running). `Mir` is not a second gate: with sec-default
+  unseated by a policy `prependPlugins` that does not list it, every such hook ran, listed and
+  unlisted alike. But a policy-enabled plugin installed from the cache lands in tier `user`; the
+  prepend tier reaches only a plugin read in place from a local-folder marketplace ("a plugin
+  delivered from a remote source gains the tier in a later release"), reproduced only by managed
+  `extraKnownMarketplaces` naming doperpowers as a root-owned local directory with no GitHub record.
+  Evidence: `E5` (410255), `Vee` (409728), `Mir` (949953; `passedOverNoteOf`, the note appended to
+  the `hooks:` diagnostic line), `Z8r` (949946); the devcloud setup session's container run,
+  2.1.303 on Ubuntu 24.04, 2026-10-19, and its decision (§8).
 - Observation: a process-environment value cannot override a key the synced `settings.json` carries:
-  settings `env` overwrites the process environment tier by tier. So the hosts' values stay in the
-  managed file (seven keys, not four: the gateway's base URL and switches, and blanks for
-  `CLAUDE_CODE_PLUGIN_DIRS` and the extension token), and the placement lists join them there (§8).
-  Evidence: `applySafeConfigEnvironmentVariables`, verified on 2.1.303 by the devcloud setup session
-  (2026-10-19); the same reading in `cli.pretty.js` 481455–481468 (`KL` merges each scope's `env`;
-  `jp` returns `{ ...dte(), ...KL(WL()) }`) and 1037482–1037490 (`o0r` writes the computed env back
-  into `process.env`); the synced file's `ANTHROPIC_BASE_URL` is the Mac's loopback relay
-  `127.0.0.1:8641` (the owner, 2026-10-19).
-- Observation: a host-side rewrite of the received `settings.json` (this spec's second draft) cannot
-  stand: `~/.claude` on a host is a receive-only clone reset to its remote every 30 minutes, with an
-  invalid push URL and a reconcile that re-applies boot steps 5–11 on a new commit; a rewrite is
-  undone at every reset, sessions hot-reload the Mac's values in between, and the clone is left
-  dirty.
-  Evidence: the devcloud spec's §5; `devcloudlib/steps.py` `home()` (the files written into the
-  user's home) and the devcloud setup session's account (2026-10-19).
-- Observation: on a managed machine with no policy `prependPlugins`, the built-in
-  `cc-plugin-sec-default@builtin` is seated outermost and passes the plugins a person installs over
-  on `prompt.*`, `session.compact`, `settings.read`, `classic.*` and three `session.append` doors; a
-  policy `prependPlugins` that does not list it leaves it unseated, and the pass-over most likely
-  goes with it, `Mir` being only the note the diagnostic appends. A reading of the source, not yet
-  observed; the devcloud session's container run decides it, hooks watched under the candidate
-  managed file and under today's env-only one (§8).
-  Evidence: `cli.pretty.js` ~191161 (the registry module exporting `passedOverNoteOf` = `Mir`,
-  `cPr` the seat, `PASSED_OVER_EVENTS` / `DOORS`, sec-default's `registerPlugin`), ~246146 (its one
-  call site, on the `hooks:` diagnostic line), 949943–949952 (`Z8r`, the event list); present since
-  2.1.287 (the devcloud session, 2026-10-19).
+  settings `env` overwrites the process environment tier by tier; and a host-side rewrite of the
+  received `settings.json` cannot stand, the clone being receive-only and reset every 30 minutes. The
+  managed file stays the hosts' one place to write.
+  Evidence: `applySafeConfigEnvironmentVariables`, verified on 2.1.303 by the devcloud setup session;
+  the same reading in `cli.pretty.js` 481455–481468 (`KL`, `jp`) and 1037482–1037490 (`o0r`); the
+  synced file's `ANTHROPIC_BASE_URL` is `127.0.0.1:8641` (the owner); the devcloud spec's §5 and
+  `devcloudlib/steps.py` `home()`; the devcloud setup session's account (2026-10-19).
 - Observation: a daemon whose scripts vanish re-executes itself at its original path and exits when
   that fails; the service then restarts it every 60 s against the same missing path; and devcloud's
   boot runs the image's copy of `sminos_host.py`, not the plugin's.
@@ -1176,8 +1296,8 @@ every pull, so a change to the Macs' list reaches every host by itself.
   reviewed by MAWS's own rule.
   Rationale: the stakes, not the size; the owner named xhigh.
   Date/Author: 2026-10-19, the spec's author.
-- Decision: the plugins' order is placed by the owner's `prependPlugins` (three entries), and the
-  bridge refuses to stream when it finds itself inside devcloud's guard; sminos declares no dependency.
+- Decision: the plugins' order is placed by the owner's `prependPlugins` (three entries); sminos
+  declares no dependency.
   Rationale: §4 — the engine's dependency rule puts the dependent outside and pushes the depended-upon
   inward, so no declaration gives a standalone sminos the outer place; install order gives a fresh
   install the innermost. Rejected: `sminos` depending on `doperpowers` (not standalone, and still
@@ -1193,24 +1313,20 @@ every pull, so a change to the Macs' list reaches every host by itself.
   Rationale: §7 — the Mac mini and the devcloud hosts update unattended; without it their daemons
   crash-loop until someone reruns `daemon install`. Rejected: accepting the loop.
   Date/Author: 2026-10-19, the spec's author.
-- Decision: sminos starts at 1.0.0; doperpowers 7.189.0, to-human 0.2.0, devcloud 0.5.0, one commit.
+- Decision: sminos starts at 1.0.0; the other three plugins move to the next minor above `main`'s
+  at the time, one commit.
   Rationale: §10. The owner may name another starting version; nothing depends on the number.
+  Literal numbers for the others were dropped in the second round: `main` moves under this spec
+  (7.189.0 by #273 while it was reviewed).
   Date/Author: 2026-10-19, the spec's author.
 - Decision: `devcloud/README.md` and the devcloud spec's §5, §6 and §8 describe the CLI at
   `<clone>/skills/sminos/scripts/sminos.py` and the hosts' managed settings as an `env` block alone;
-  from M3 the CLI is `<clone>/sminos/skills/sminos/scripts/sminos.py`, and the managed file gains
-  the placement lists when the devcloud session's route lands (§8, I8). Recorded here rather than
-  rewriting that spec.
+  from M3 the CLI is `<clone>/sminos/skills/sminos/scripts/sminos.py`, and the managed file carries
+  a `prependPlugins` that seats no sec-default (§8, I8). Recorded here rather than rewriting that
+  spec.
   Date/Author: 2026-10-19, the spec's author.
-- Decision (first review round): the order probe decides by the marker's version moving during
-  `next` and keeps its verdict under `sminos.order` across reloads; `prependPlugins` changes take
-  effect at a new process.
-  Rationale: a marker's presence is ambiguous at a reload (Surprises); the first draft's probe would
-  have switched the bridge off at every `/reload-plugins`, the roll's included. Rejected: probing at
-  every start by presence alone; clearing devcloud's marker (not sminos's to write).
-  Date/Author: 2026-10-19, the spec's author, after both reviewers.
 - Decision (first review round): M0 — `prependPlugins` and the `sminos@doperpowers` entry before
-  M1; M1's reload mod installs new dependencies before it reloads; M3 is rehearsed on a local
+  the roll; M1's reload mod installs new dependencies before it reloads; M3 is rehearsed on a
   marketplace named `doperpowers`.
   Rationale: the roll is unattended and updates only installed plugins (§10). Rejected: relying on
   `plugin update` to install a new dependency (unverified; the rehearsal checks it, the mod does not
@@ -1221,20 +1337,19 @@ every pull, so a change to the Macs' list reaches every host by itself.
   input it captured (P0, a prerequisite), not placement alone.
   Rationale: the permission path carries the restored input past every `tool.call` hook (§4).
   Date/Author: 2026-10-19, the spec's author, after the adversarial reviewer.
-- Decision (first review round, superseded the same day): devcloud hosts' placement is the devcloud
-  setup session's route — the managed file keeps the profile's env and gains `prependPlugins` copied
-  from the synced `settings.json` and `enabledPlugins` for those ids (I8) — owned and built by that
-  session, pending its container result, with the sec-default seat and the pass-over of unlisted
-  plugins' hooks as what decides it and "every plugin policy-listed" as the fallback if unlisted
-  hooks are still passed over; a host enrolls at the desk only once it boots an image carrying the
-  route. This spec defers to it.
-  Rationale: §8. Rejected: the process-environment route (settings `env` overwrites it tier by
-  tier; the synced base URL would win); this spec's second-draft overlay on the received
-  `settings.json` (undone at every 30-minute reset, the Mac's values hot-reloaded in between, the
-  clone left dirty — the file is the Mac's, and only the managed tier is the host's to write). Both
-  in Surprises.
-  Date/Author: 2026-10-19, the spec's author, after the adversarial reviewer, the owner's account of
-  the hosts' settings, and the devcloud setup session's decision.
+- Decision (first review round, settled the same day by the devcloud setup session): the devcloud
+  hosts' placement is that session's — a managed `prependPlugins` that seats no sec-default now, the
+  directory-marketplace route deferred until a host must enroll or the engine gives cache-installed
+  policy plugins the tier; enrolling a host stays blocked. This spec relies on it (I8) and builds
+  nothing for it.
+  Rationale: §8 and Surprises — any managed settings shadow the user's `prependPlugins`; the
+  env-only file seats sec-default, which ate the guard's and the bridge's hooks; the copied lists
+  unseat it but give cache-installed plugins no tier. Rejected: the process-environment route
+  (settings `env` overwrites it; the synced base URL would win); this spec's second-draft overlay on
+  the received `settings.json` (undone at every reset, the Mac's values hot-reloaded in between, the
+  clone left dirty — the file is the Mac's).
+  Date/Author: 2026-10-19, the spec's author, after the adversarial reviewer, the owner's account,
+  and the devcloud setup session's container results and decision.
 - Decision (first review round): `ASK_TOOL` and `PLUGIN_PROMPT` stay the registered name and the
   plugin's own framing, with `ASK_TOOLS` and `PLUGIN_PROMPTS` beside them for readers; the shim tries
   the sibling first; every moved test file names its root `PLUGIN_ROOT` and the suite fails on the
@@ -1245,9 +1360,26 @@ every pull, so a change to the Macs' list reaches every host by itself.
   reload seeds its dialog mirror at `session.start`; A1 and the rehearsal run against a temporary
   HOME; appeal outside the guard is pinned, not reordered.
   Rationale: the buildability and adversarial findings of 2026-10-19, each checked against
-  `origin/main` 5395bbc2 and MAWS `origin/master`. Nothing rejected in that round; one finding
-  (the M3 proof's "the old name is refused with `WITHDRAWN`") was dropped as unprovable — no plugin
-  registers the old name after M3.
+  `origin/main` and MAWS `origin/master`. Nothing rejected in that round; one finding (the M3 proof's
+  "the old name is refused with `WITHDRAWN`") was dropped as unprovable — no plugin registers the old
+  name after M3.
+  Date/Author: 2026-10-19, the spec's author.
+- Decision (second review round): the bridge's probe of its place reads `next.trace` on the first
+  settled `tool.call` or `session.append`, per module instance, with no kept state, holding tool
+  payloads until the verdict; built only if the spike M3a confirms the trace's shape in a hooks
+  module and across a reload; discarded otherwise, the invariant then resting on M0's precondition,
+  the rehearsal and A7. The marker-version design is withdrawn.
+  Rationale: §4 and Surprises — a reloaded module's `session.start` holds no other plugin's hook,
+  and the version read races across workers in the unsafe direction. Rejected: keeping a verdict in
+  `$.state` across reloads (misreads the roll); any probe at `session.start`.
+  Date/Author: 2026-10-19, the spec's author, after the second round.
+- Decision (second review round): `PLUGIN` is the plugin's real name from M3 (`$.plugin.name`, or
+  the literal changed), the fixtures import it, and a test pins it to the manifest's name; the
+  rehearsal serves the M1 clone as a loopback git remote with `autoUpdate` true, forces the mod's
+  fetch, and records the reload's answer; M1's reload mod acts on a version difference, not on a
+  moved head alone; version numbers are "the next patch/minor above `main`'s at the time"; M0's
+  `enabledPlugins` entry is a precondition of the roll, an owner step awaiting their explicit OK.
+  Rationale: the second round's findings 2–6, each checked (Surprises). Nothing rejected.
   Date/Author: 2026-10-19, the spec's author.
 
 ## Outcomes & Retrospective
