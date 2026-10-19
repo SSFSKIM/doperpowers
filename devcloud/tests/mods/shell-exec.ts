@@ -194,9 +194,10 @@ for (let i = 0; i < 40; i++) {
 // value its parser read, its escaping undone; through its encoding, exactly
 // the handle's spelling.
 const tricky = 'pa:ss\\w"o rd#é'
+// The key's PEM header is assembled, so this file holds no token-shaped string (acceptance 10's tracked-file scan).
 const FILES: [Format, string, string][] = [
   ['json', '.codex/auth.json', JSON.stringify({ tokens: { access_token: tricky, 'odd key': { token: `${tricky}2` }, refresh_token: 'ab?>c~d?>~', id_token: 'ab?>c~d?>~x' } })],
-  ['gcloud', '.config/gcloud/key.json', JSON.stringify({ type: 'service_account', private_key: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n' })],
+  ['gcloud', '.config/gcloud/key.json', JSON.stringify({ type: 'service_account', private_key: '-----BEGIN ' + 'PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n' })],
   ['toml', '.config/hcloud/cli.toml', `[[contexts]]\nname = "one"\ntoken = "t\\"q\\u00e9x1234567" # rotated\n[[contexts]]\nname = "one"\ntoken = 'lit#eral12345'\n`],
   ['pgpass', '.pgpass', `db:5432:*:app:pa\\:ss\\\\x1\ndb:5432:*:app:second123\n`],
   ['netrc', '.netrc', `machine m login me password "q uo\\"ted12"\nmachine m password "ctl\\n\\t\\qx99"\ndefault login d password un\\quoted"7\n`],

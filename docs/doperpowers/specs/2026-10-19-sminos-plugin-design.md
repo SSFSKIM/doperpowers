@@ -96,8 +96,11 @@ reload still run.
   and `cua`'s vendored copy of it (`cua` 0.15.0, `hooks/mods/guard/`), which acts only when
   devcloud's is absent. In `tool.call` a guard restores a handle's secret bytes into a Bash or Write
   call's input before calling `next`, and scrubs the result on the way out; in `session.append` it
-  scrubs a row before calling `next`. devcloud's writes a marker, `{ plugin: 'devcloud', key:
-  'secrets-guard' }`, in its `session.start`; cua's writes none.
+  scrubs a row before calling `next`. devcloud's loaded module answers a marker, `{ plugin:
+  'devcloud', key: 'secrets-guard' }`, at version 0 through its own `state.get` hook, and stores
+  nothing: only that version-0 answer means devcloud's guard is loaded now, and a stored value at
+  version 1 or more is one an older devcloud left, which can outlive its module (board #101).
+  cua's writes none.
 - **The ask tool.** The MCP tool the ask mod registers, the built-in AskUserQuestion's input plus
   `async`; its name carries its plugin's name, `mcp__<plugin>__AskUserQuestion`.
 - **The plugin prompt framing.** How the engine stores a prompt a plugin submits between turns:
@@ -1147,7 +1150,10 @@ if M3a promotes it, lives in the module instance alone.
 `tool.call` or `session.append` — `readonly TraceEntry[]`, each `{ index, plugin, tier, event,
 outcome, … }`, nearest link first, the engine's entry last (`.claude/types/claude-code.d.ts`
 6732–6740, 13881); devcloud's marker `{ plugin: 'devcloud', key: 'secrets-guard' }` →
-`{ owner: 'devcloud'; version: 1 } | undefined` (its `types/devcloud.d.ts`); and the user settings'
+`{ value: { owner: 'devcloud'; version: 1 } | undefined, version }` (its `types/devcloud.d.ts`),
+which devcloud's loaded module answers at version 0 and never stores: only the version-0 answer
+means devcloud's guard is loaded now, and a stored value at version 1 or more is one an older
+devcloud left, which can outlive its module (board #101); and the user settings'
 `enabledPlugins["cua@cua"]` through `$.settings.read({ source: 'user' })`.
 
 **I3 — The names.** In each reader, beside the registered name:

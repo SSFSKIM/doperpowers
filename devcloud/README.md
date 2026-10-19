@@ -127,14 +127,19 @@ it; a compaction's instructions and its summary.
   engine writing it and the guard rewriting it.
 
 **With `cua`.** `/secret` — the command, its masked pane, the store and the
-system-prompt section listing the stored keys — stays in `cua`. When a
-session starts, devcloud sets its guard marker in `$.state`
-(`{ plugin: 'devcloud', key: 'secrets-guard' }` → `{ owner: 'devcloud',
-version: 1 }`, typed in `types/devcloud.d.ts`): every plugin in the session
-reads it, only devcloud writes it, and a `claude` a tool call starts has a
-session of its own. `cua`'s scrubbing stands down while it is set, so one
-guard decides every handle. (A `globalThis` symbol does not work: the engine
-evaluates each plugin's module in a realm of its own.)
+system-prompt section listing the stored keys — stays in `cua`, and so does a
+vendored copy of this guard, which acts when devcloud's does not. devcloud's
+guard marker (`{ plugin: 'devcloud', key: 'secrets-guard' }` →
+`{ owner: 'devcloud', version: 1 }`, typed in `types/devcloud.d.ts`) is the
+loaded module's own answer to a `$.state.get`, at version 0, and never a
+value the host stores: any plugin in the session reads it while devcloud's
+module is loaded, whichever of the two sits outside the other, and nothing
+once devcloud is disabled and the plugins are reloaded. `cua`'s copy stands
+down only on that answer, so one guard decides every handle, and from the
+reload on `cua`'s acts. (A stored marker outlived the module, and no guard
+acted, until 0.5.0. A `globalThis` symbol does not work: the engine evaluates
+each plugin's module in a realm of its own. A `claude` a tool call starts has
+a session of its own.)
 
 ## The host (`image/`, `boot/`)
 

@@ -90,14 +90,113 @@ const tool = (on: On, answer: (e: Record<string, unknown>) => unknown) => {
 
 const bash = (stdout: string, extra: Record<string, unknown> = {}) => ({ stdout, stderr: '', interrupted: false, ...extra })
 
-test('a started session sets the guard marker every plugin can read (Interfaces I9)', async ($, on) => {
-  const set: unknown[] = []
-  on('state.set', (_, e) => {
-    set.push({ plugin: e.plugin, key: e.key, value: e.value })
-    return { value: { isSet: true, version: 1 } }
+/**
+ * A second guard beside devcloud's, as Interfaces I9 asks one to behave
+ * (cua's vendored copy): each hook reads devcloud's marker and passes the
+ * event on untouched when it reads the marker at version 0, the loaded
+ * module's answer; otherwise it acts, and marks what it touched. In the
+ * prepend tier it sits outside devcloud, in append inside it. An inline
+ * plugin's hooks run in a module of their own, so what they did is read off
+ * what they return.
+ */
+const secondGuard = (tier: 'prepend' | 'append') => ({
+  name: 'cua',
+  tier,
+  register: (on: On) => {
+    on('tool.call', async ($, e, next) => {
+      const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
+      const ran = await next(e)
+      return version === 0 && value?.owner === 'devcloud' && value.version === 1 ? ran : { result: 'second guard acted' as never }
+    })
+    on('session.append', async ($, e, next) => {
+      const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
+      if (version === 0 && value?.owner === 'devcloud' && value.version === 1) return next(e)
+      return next({ ...e, message: { ...e.message, content: [{ type: 'text', text: 'second guard acted' }] } } as never)
+    })
+    on('session.compact', async ($, e, next) => {
+      const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
+      if (version === 0 && value?.owner === 'devcloud' && value.version === 1) return next(e)
+      return next({ ...e, instructions: 'second guard acted' })
+    })
+    on('prompt.compose', async ($, e, next) => {
+      const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
+      const composed = await next(e)
+      if (version === 0 && value?.owner === 'devcloud' && value.version === 1) return composed
+      return { sections: [...composed.sections, { id: 'cua:acted', scope: 'session' as const, text: 'second guard acted' }] }
+    })
+    on('prompt.context', async ($, e, next) => {
+      const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
+      const context = await next(e)
+      return version === 0 && value?.owner === 'devcloud' && value.version === 1 ? context : { ...context, blocks: [{ name: 'acted', text: 'second guard acted' }] }
+    })
+    on('prompt.attachment', async ($, e, next) => {
+      const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
+      const attached = await next(e)
+      return version === 0 && value?.owner === 'devcloud' && value.version === 1 ? attached : { text: 'second guard acted' }
+    })
+  },
+})
+
+// Another plugin reading the marker: a Bash call answers with what it read.
+const markerReader = {
+  name: 'reader',
+  tier: 'prepend' as const,
+  register: (on: On) => {
+    on('tool.call', async ($, e, next) => {
+      await next(e)
+      return { result: (await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })) as never }
+    })
+  },
+}
+
+describe("Interfaces I9: one guard per session, devcloud's while its module is loaded", () => {
+  test("another plugin's read of the marker is the loaded module's answer, at version 0, and nothing is stored", { plugins: [markerReader] }, async ($, on) => {
+    const set: unknown[] = []
+    on('state.set', (_, e) => {
+      set.push({ plugin: e.plugin, key: e.key, value: e.value })
+      return { value: { isSet: true, version: 1 } }
+    })
+    tool(on, () => bash(''))
+    await start($, on, {})
+    expect((await $.tool.call({ tool: 'Bash', command: 'true' })).result).toEqual({ value: { owner: 'devcloud', version: 1 }, version: 0 })
+    // Nothing for the host to keep, so nothing outlives the module (board #101).
+    expect(set).toEqual([])
   })
-  await start($, on, {})
-  expect(set).toEqual([{ plugin: 'devcloud', key: 'secrets-guard', value: { owner: 'devcloud', version: 1 } }])
+
+  for (const [tier, place] of [['prepend', 'outside'], ['append', 'inside']] as const) {
+    test(`a second guard ${place} devcloud passes every event on, and devcloud alone scrubs`, { plugins: [secondGuard(tier)] }, async ($, on) => {
+      tool(on, () => bash(STORED))
+      const session = mock.session(on)
+      let told: string | undefined
+      on('session.compact', (_, e) => {
+        told = e.instructions
+        return { messages: [{ role: 'user' as const, text: `summary ${STORED}`, toolUses: [], handle: 'h1' }] }
+      })
+      on('prompt.compose', () => ({ sections: [{ id: 'other:notes', text: `use ${STORED}`, scope: 'session' as const }] }))
+      on('prompt.context', () => ({ blocks: [{ name: 'claudeMd', text: `KEY=${STORED}` }] }))
+      on('prompt.attachment', () => ({ text: `changed: ${STORED}` }))
+      await start($, on, { [`${STORE}/API_KEY`]: STORED })
+      expect((await $.tool.call({ tool: 'Bash', command: 'env' })).result).toEqual(bash('[secret:API_KEY]'))
+      await $.session
+        .append({
+          message: { type: 'user', role: 'user', content: [{ type: 'text', text: `the key ${STORED}` }] },
+          door: 'prompt',
+          origin: { kind: 'engine' },
+          uuid: 'row-1',
+        } as never)
+        .catch(() => undefined)
+      expect(session.appended().map((row) => row.message.content)).toEqual([[{ type: 'text', text: 'the key [secret:API_KEY]' }]])
+      const conversation = [{ role: 'user' as const, text: 'earlier', toolUses: [], handle: 'h0' }]
+      const compacted = await $.session.compact({ trigger: 'manual', instructions: `keep ${STORED}`, messages: conversation } as never)
+      expect(told).toBe('keep [secret:API_KEY]')
+      expect('messages' in compacted && compacted.messages?.map((m) => m.text)).toEqual(['summary [secret:API_KEY]'])
+      const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] })
+      expect(composed.sections.map((s) => s.id)).toEqual(['other:notes', 'devcloud:secrets'])
+      expect(composed.sections[0]?.text).toBe('use [secret:API_KEY]')
+      expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([{ name: 'claudeMd', text: 'KEY=[secret:API_KEY]' }])
+      expect((await $.prompt.attachment({ type: 'edited_text_file', origin: { kind: 'engine' }, text: '' } as never)).text).toBe('changed: [secret:API_KEY]')
+    })
+  }
 })
 
 describe('redact, never refuse', () => {
