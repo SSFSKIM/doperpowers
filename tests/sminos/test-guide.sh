@@ -43,7 +43,7 @@ assert_not_contains() {
 }
 gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 
-unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR
+unset CLAUDE_CODE_SESSION_ID CLAUDE_PID SMNS_INTERNAL DAEMON_HOME AGORA_HOME CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR
 export HOME="$T/home" SMINOS_HOME="$T/s" DAEMON_HOST=alpha DAEMON_BOOT_ID=boot-current SMINOS_DERIVE_EVERY=0
 mkdir -p "$HOME/.claude/sessions" "$SMINOS_HOME"
 
@@ -160,6 +160,46 @@ guide "$(payload "$S4" "$REPO" "$TX")"
 assert_contains "$(head -1 <<<"$OUT")" "helper [4d000004]" "the seat is told who it is"
 assert_not_contains "$OUT" "join <project>" "and not offered a join"
 assert_contains "$OUT" 'charge "<line>"' "the rest stands"
+
+echo "a fork is told the guidance above it was its parent's:"
+S10=0a00000a-0000-4000-8000-00000000000a
+record forked "$S10" "$REPO"
+guide "$(payload "$S10" "$REPO" "$T/none.jsonl" | sed 's/"startup"/"fork"/')"
+assert_contains "$(head -1 <<<"$OUT")" "forked [0a00000a]" "the fork is named"
+assert_contains "$(head -1 <<<"$OUT")" "You are a fork" "and told it is one"
+guide "$(payload "$S10" "$REPO" "$T/none.jsonl")"
+assert_not_contains "$OUT" "You are a fork" "a session that is no fork is not told so"
+
+echo "a session that replaces another in the same engine (/branch, an in-session /resume):"
+# The engine rewrites its record to the new session only after the SessionStart
+# hooks return: while the hook runs, its own engine's record (CLAUDE_PID's)
+# still names the session it left. An engine of its own, so no other record shares the pid.
+sleep 60 &
+ENGINE=$!
+S11=1b00000b-0000-4000-8000-00000000000b
+S12=2c00000c-0000-4000-8000-00000000000c
+printf '{"pid":%s,"sessionId":"%s","name":"left-one","nameSource":"derived","kind":"interactive","status":"busy","cwd":"%s","entrypoint":"cli"}\n' \
+  "$ENGINE" "$S11" "$REPO" > "$HOME/.claude/sessions/engine.json"
+transcript "$S12" "$REPO"
+branch="$(payload "$S12" "$REPO" "$TX" | sed 's/"startup"/"fork","session_title":"left-one (Branch)"/')"
+set +e; OUT="$(printf '%s' "$branch" | CLAUDE_CODE_SESSION_ID=$S12 CLAUDE_PID=$ENGINE "$SMINOS" guide 2>"$T/err")"; set -e
+first="$(head -1 <<<"$OUT")"
+assert_contains "$first" "left-one (Branch) [2c00000c]" "the branch is named by its own id and the title the engine gives it"
+assert_contains "$first" "project teamproj" "in its project"
+assert_contains "$first" "You are a fork" "and told it is a fork"
+resumed="$(payload "$S12" "$REPO" "$TX" | sed 's/"startup"/"resume"/')"
+set +e; OUT="$(printf '%s' "$resumed" | CLAUDE_CODE_SESSION_ID=$S12 CLAUDE_PID=$ENGINE "$SMINOS" guide 2>"$T/err")"; set -e
+assert_contains "$(head -1 <<<"$OUT")" "left-one [2c00000c]" "with no title, the engine's own name stands (it names the process)"
+set +e; OUT="$(printf '%s' "$branch" | CLAUDE_CODE_SESSION_ID=$S11 CLAUDE_PID=$ENGINE "$SMINOS" guide 2>"$T/err")"; set -e
+assert_equals "$OUT" "" "an environment written for another session (an outer engine's, inherited) stands for nothing"
+printf '{"pid":%s,"sessionId":"%s","name":"left-one","kind":"sdk","status":"busy","cwd":"%s","entrypoint":"sdk-cli"}\n' \
+  "$ENGINE" "$S11" "$REPO" > "$HOME/.claude/sessions/engine.json"
+set +e; OUT="$(printf '%s' "$branch" | CLAUDE_CODE_SESSION_ID=$S12 CLAUDE_PID=$ENGINE "$SMINOS" guide 2>"$T/err")"; set -e
+assert_equals "$OUT" "" "an engine that is no member on sight (claude -p) gets nothing"
+kill "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null || true
+set +e; OUT="$(printf '%s' "$branch" | CLAUDE_CODE_SESSION_ID=$S12 CLAUDE_PID=$ENGINE "$SMINOS" guide 2>"$T/err")"; set -e
+assert_equals "$OUT" "" "an engine whose process has ended stands for nothing"
+rm -f "$HOME/.claude/sessions/engine.json"
 
 echo "nothing for an internal fork, or a payload naming no session:"
 OUT="$(printf '%s' "$(payload "$S1" "$STRAY" "$TX")" | SMNS_INTERNAL=1 "$SMINOS" guide 2>&1)"
