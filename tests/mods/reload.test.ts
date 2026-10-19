@@ -470,25 +470,21 @@ describe("a reload's rows", () => {
     registerReload(((event: string, matcher: unknown, handler: (...args: unknown[]) => unknown) => {
       hooks.push({ event, matcher, handler })
     }) as unknown as On)
-    const appended: unknown[] = []
+    const logged: unknown[][] = []
     const $ = {
       plugin: { name: 'doperpowers' },
-      session: { append: async (args: unknown) => (appended.push(args), { message: {}, uuid: 'n1' }) },
-      ui: { log: () => {} },
+      ui: { log: (...args: unknown[]) => logged.push(args) },
     }
     const hook = hooks.find((h) => h.event === 'session.append')!
     expect(hook.matcher).toEqual({ door: 'command' })
     const stored: unknown[] = []
     const append = async (message: Record<string, unknown>, origin: unknown) => {
       await hook.handler($, { message, door: 'command', origin, uuid: 'u' }, async (e: { message: unknown }) => (stored.push(e.message), { message: e.message, uuid: 'u' }))
-      for (let i = 0; i < 8; i++) {
-        await Promise.resolve()
-      }
     }
-    return { append, stored, appended }
+    return { append, stored, logged }
   }
 
-  test("each row of this plugin's reload is kept empty, and the output reaches the person as a notice", async () => {
+  test("each row of this plugin's reload is kept empty, and the output reaches the person as the plugin's line", async () => {
     const h = rowsHarness()
     await h.append(CAVEAT, SELF)
     await h.append(COMMAND, SELF)
@@ -498,9 +494,7 @@ describe("a reload's rows", () => {
       { ...COMMAND, content: [] },
       { ...OUTPUT, content: [] },
     ])
-    expect(h.appended).toEqual([
-      { message: { type: 'system', content: [{ type: 'text', text: '/reload-plugins, run by doperpowers: Reloaded: 10 plugins · 24 skills' }] } },
-    ])
+    expect(h.logged).toEqual([['/reload-plugins: Reloaded: 10 plugins · 24 skills']])
   })
 
   test("the person's own reload passes whole, its output too", async () => {
@@ -509,7 +503,7 @@ describe("a reload's rows", () => {
     await h.append(COMMAND, PERSON)
     await h.append(OUTPUT, ENGINE)
     expect(h.stored).toEqual([CAVEAT, COMMAND, OUTPUT])
-    expect(h.appended).toEqual([])
+    expect(h.logged).toEqual([])
   })
 
   test('an output after any other row than the reload line passes', async () => {

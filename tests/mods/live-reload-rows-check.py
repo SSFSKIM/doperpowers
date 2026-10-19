@@ -4,8 +4,8 @@
 The reload mod runs `/reload-plugins` itself when installed_plugins.json
 shows a new install of a plugin the session runs. Its `session.append` hook
 (door `command`) keeps that command's three rows (the caveat, the command
-line, the `local_command` output) empty, and appends the output's text as a
-system notice of the plugin's. What only a running engine shows, pinned so a
+line, the `local_command` output) empty, and logs the output's text as the
+plugin's transcript line (`$.ui.log`), a system notice. What only a running engine shows, pinned so a
 release that breaks it fails loudly:
 - the transcript rows such a reload leaves (A): the three kept empty, the
   notice a system row, in that order;
@@ -77,7 +77,8 @@ PROBE = "rlprobe"
 QUESTION = "RLCHECK-ECHO"
 # Text that is the reload's own, in any of its rows.
 RELOAD_TEXT = ("<local-command-caveat>", "<command-name>/reload-plugins", "<local-command-stdout>", "Reloaded:")
-NOTICE = "/reload-plugins, run by doperpowers: "
+# The notice's text, which the screen draws after the plugin's name.
+NOTICE = "/reload-plugins: "
 DEBUG_WORDS = ("loaded (worker", "unloaded", "session.append", "command.run", "reload:", "refreshActivePlugins",
                "$.ui.", "re-entry")
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers",
@@ -469,8 +470,8 @@ class ReloadRows(LB.Live):
         caveat = [i for i in users if rows[i].get("isMeta")]
         command = [i for i in users if not rows[i].get("isMeta")]
         output = [i for i, r in enumerate(rows) if is_output(r)]
-        notice = [i for i, r in enumerate(rows) if r.get("type") == "system" and row_text(r).startswith(NOTICE)]
-        held = sorted({t for r in rows if not row_text(r).startswith(NOTICE) for t in RELOAD_TEXT if t in row_text(r)})
+        notice = [i for i, r in enumerate(rows) if r.get("type") == "system" and NOTICE in row_text(r)]
+        held = sorted({t for r in rows if NOTICE not in row_text(r) for t in RELOAD_TEXT if t in row_text(r)})
         texts = {"caveat": [row_text(rows[i]) for i in caveat], "command": [row_text(rows[i]) for i in command],
                  "output": [row_text(rows[i]) for i in output]}
         screen_no_content = [l for l in drawn + tview if "(no content)" in l]
@@ -486,7 +487,7 @@ class ReloadRows(LB.Live):
             self.check("%s: neither the screen nor the transcript view draws a (no content) line" % label,
                        not screen_no_content,
                        "lines: %r" % screen_no_content)
-            self.check("%s: the screen draws the notice" % label, any("run by doperpowers" in l for l in settled),
+            self.check("%s: the screen draws the notice" % label, any(NOTICE in l for l in settled),
                        "settled lines: %r" % [l.strip()[:100] for l in settled][:8])
         else:
             self.check("%s: without the hook the three rows keep their text" % label,
@@ -535,15 +536,15 @@ class ReloadRows(LB.Live):
                 print("       %-9s %s" % (m.get("role"), json.dumps((t or "")[:200], ensure_ascii=False)), flush=True)
         whole = json.dumps(messages, ensure_ascii=False)
         system = json.dumps(body.get("system", ""), ensure_ascii=False)
-        found = {t: whole.count(t) for t in RELOAD_TEXT + ("(no content)", "run by doperpowers")}
-        found_system = {t: system.count(t) for t in RELOAD_TEXT + ("run by doperpowers",) if t in system}
+        found = {t: whole.count(t) for t in RELOAD_TEXT + ("(no content)", NOTICE)}
+        found_system = {t: system.count(t) for t in RELOAD_TEXT + (NOTICE,) if t in system}
         if self.variant == "after":
             self.check("the request after the reloads carries none of their text, nor the notice",
-                       not any(found[t] for t in RELOAD_TEXT + ("run by doperpowers",)) and not found_system,
+                       not any(found[t] for t in RELOAD_TEXT + (NOTICE,)) and not found_system,
                        "counts in the messages %s, in the system prompt %s; blocks before the question %s" % (
                            found, found_system, json.dumps(before, ensure_ascii=False)[:300]))
             self.check("the model repeats none of the reload's text",
-                       not any(t in reply for t in RELOAD_TEXT + ("run by doperpowers",)), reply.strip()[:200])
+                       not any(t in reply for t in RELOAD_TEXT + (NOTICE,)), reply.strip()[:200])
         else:
             self.check("without the hook the request carries the reloads' caveat, command line and output",
                        all(found[t] for t in RELOAD_TEXT), "counts in the messages %s" % found)

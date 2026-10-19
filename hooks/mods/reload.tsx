@@ -1,7 +1,6 @@
-import type { EngineInterface, On } from 'claude-code'
+import type { On } from 'claude-code'
 
 import { isAskDialogUp, isMainTurnRunning } from './ask'
-import { noticeRow } from './bridge-rows'
 
 /**
  * Plugin updates reach a running session on their own. The engine reads
@@ -513,16 +512,6 @@ export function outputText(content: readonly unknown[]): string {
     .trim()
 }
 
-/** The reload's output as the person's notice: a system row, which no request carries. */
-async function noticeReload($: EngineInterface, text: string) {
-  const stored = await $.session.append({ message: { type: 'system', content: [{ type: 'text', text: `/reload-plugins, run by ${$.plugin.name}: ${text}` }] } })
-  if (stored.deny !== undefined) {
-    $.ui.log(`reload: the reload's notice was refused: ${stored.deny}`, { to: 'debug' })
-    return
-  }
-  noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
-}
-
 /**
  * Registers the watch and the fetch, in interactive sessions only: headless
  * runs refuse a plugin's `/reload-plugins`. `DOPERPOWERS_AUTORELOAD=off` (or
@@ -531,8 +520,11 @@ async function noticeReload($: EngineInterface, text: string) {
  */
 export function registerReload(on: On) {
   // The reload's rows, emptied: none can be refused, and each is kept and
-  // sent as `(no content)`, which the screen does not draw; the output's
-  // text goes to the person as this plugin's notice instead.
+  // sent as `(no content)`, which the screen does not draw. The output's
+  // text goes to the person as this plugin's transcript line, a notice no
+  // request carries: a system row `$.session.append` makes is drawn only in
+  // the transcript view (its level is `info`), a `$.ui.log` line on the
+  // main screen too (live, 2.1.303).
   let isOutputDue = false
   on('session.append', { door: 'command' }, async ($, e, next) => {
     const row = reloadRow(e.message, e.origin, $.plugin.name, isOutputDue)
@@ -542,9 +534,7 @@ export function registerReload(on: On) {
     }
     const stored = await next({ ...e, message: { ...e.message, content: [] } })
     if (row === 'output') {
-      void noticeReload($, outputText(e.message.content)).catch((error: unknown) =>
-        $.ui.log(`reload: the reload's notice was not appended: ${message(error)}`, { to: 'debug' }),
-      )
+      $.ui.log(`/reload-plugins: ${outputText(e.message.content)}`)
     }
     return stored
   })
