@@ -344,6 +344,7 @@ export type FetchWhere = {
 }
 
 const firstLine = (s: string) => s.trim().split('\n')[0] ?? ''
+const lastLine = (s: string) => s.trim().split('\n').at(-1) ?? ''
 
 export function createFetcher(io: FetchIo, where: FetchWhere) {
   const stamp = `${where.state}/fetch.stamp`
@@ -407,7 +408,8 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     const keys = Object.keys(installed).filter((key) => key.endsWith(`@${m.name}`) && enabled.has(key) && installed[key]?.some((r) => r.scope === 'user'))
     for (const key of keys) {
       const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', 'user'], 120_000)
-      io.log(`reload: ${key}: ${firstLine(updated.stdout) || firstLine(updated.stderr) || `exit ${updated.exitCode}`}`)
+      // The outcome is the CLI's last line, after its "Checking for updates…".
+      io.log(`reload: ${key}: ${lastLine(updated.stdout) || lastLine(updated.stderr) || `exit ${updated.exitCode}`}`)
     }
   }
 
