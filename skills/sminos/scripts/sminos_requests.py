@@ -24,10 +24,14 @@ they reported it:
   subagent's `deadline` (epoch ms on DX5) as ISO 8601 UTC with
   milliseconds, after which the hub marks the request `terminal_only`;
 - DX4 `settled` `{request, winner, outcome, by}` as the bridge settled it,
-  once each: every settlement a bridge reports, live or in a snapshot's
+  once per raise: every settlement a bridge reports, live or in a snapshot's
   recent list, goes up unless it went before (the ones the hub took are
   kept in `daemon/requests.json` across restarts; the hub records each it
-  is sent as a decision);
+  is sent as a decision). A request raised again after its settlement (the
+  open ask a resumed session raises under its call's id) is held here
+  again, and its next settlement goes too; a snapshot that lists the
+  request pending again holds the settlement before that raise, which is
+  passed by;
 - DX2 `pending` `{project, raised}`: the machine's complete set for the
   project, after every connect, and whenever a request left the set with no
   settlement the bridge reported (its bridge gone, a snapshot without it):
@@ -343,8 +347,10 @@ class Requests:
         if draft is None:
             log("a settled from %s's bridge without request, winner, outcome, or by: passed by" % sid)
             return
-        self.pending.get(sid, {}).pop(draft["request"], None)
-        if self.seen(sid, draft["request"]):
+        # A request held here is pending at the hub, or will be: this settles
+        # that raise, though the id was settled before it.
+        held = self.pending.get(sid, {}).pop(draft["request"], None)
+        if held is None and self.seen(sid, draft["request"]):
             return
         body = self.seal("settled", pid, draft)
         if body is not None:
@@ -355,13 +361,14 @@ class Requests:
         """A snapshot or a resync: the session's pending set as the bridge
         holds it now, and its recent settlements. Every settlement not yet
         relayed goes up (one raised and settled while no reader was there
-        too); a request held here and gone there with none sends the complete
-        set again; new ones are raised."""
-        for s in settled:
-            if isinstance(s, dict):
-                self.settled(sid, pid, s)
+        too), but not one of a request pending there again, which came before
+        that raise; a request held here and gone there with none sends the
+        complete set again; new ones are raised."""
         now = [r for r in pending if isinstance(r, dict) and isinstance(r.get("request"), str)]
         ids = {r["request"] for r in now}
+        for s in settled:
+            if isinstance(s, dict) and not (isinstance(s.get("request"), str) and s["request"] in ids):
+                self.settled(sid, pid, s)
         for rid in [rid for rid in self.pending.get(sid, {}) if rid not in ids]:
             self.pending[sid].pop(rid, None)
             self.stale.add(pid)

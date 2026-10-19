@@ -965,6 +965,68 @@ class Requests(unittest.TestCase):
         finally:
             again.close()
 
+    ASK = {"tool": "mcp__doperpowers__AskUserQuestion", "input_": {"questions": [{"question": "Ship it?", "options": []}]},
+           "async": True}
+
+    def test_a_request_raised_again_after_its_settlement_is_settled_again(self):
+        """A resumed session's open ask: its first process withdrew it as it
+        ended, and the resumed one's bridge (a new child) raises it again
+        under the same call id. Its answer goes up though the hub took a
+        settlement of that id before: raise, settle, raise again, settle are
+        two settlements relayed, each once."""
+        relayed = []
+
+        def send(test):
+            frames = self.due(test)
+            relayed.extend((m["body"]["request"], m["body"]["outcome"]) for m in messages(frames, "settled"))
+            self.r.sent(frames)
+
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        send(lambda fs: messages(fs, "raised"))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        send(lambda fs: messages(fs, "settled"))
+        old, self.bridge = self.bridge, Bridge(self.sid)
+        self.assertIsNotNone(wait_for(lambda: old.proc.poll() is not None), "the old child leaves")
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        send(lambda fs: messages(fs, "raised"))
+        self.assertEqual([x["request"] for x in self.r.pending_frame(self.PID)["raised"]], ["toolu_ask"])
+        self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
+        send(lambda fs: messages(fs, "settled"))
+        self.assertEqual(relayed, [("toolu_ask", "withdrawn"), ("toolu_ask", "answered")])
+        self.assertEqual(self.r.pending_frame(self.PID)["raised"], [])
+        again = requests.Requests(KEY, "testhost")
+        try:
+            again.follow({self.sid: self.PID})
+            self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
+            self.assertEqual(messages(again.due({self.PID})), [], "a restart sends neither again")
+        finally:
+            again.close()
+
+    def test_a_snapshot_listing_a_request_pending_again_passes_its_settlement_by(self):
+        """One child that settled a request and holds it pending again (the
+        mod's resync put it back) lists both: the settlement came before the
+        raise, and the request stays pending at the hub."""
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        first = self.r.readers[self.sid]
+        ask = {"request": "toolu_ask", "tool": self.ASK["tool"], "input": self.ASK["input_"], "agentId": None,
+               "async": True, "t": 1}
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                          "delivered": {}, "pending": [ask], "settled": []})
+        self.assertTrue(wait_for(lambda: self.r.take() or (self.r.readers.get(self.sid) not in (None, first)
+                                                            and self.r.readers[self.sid] in self.r.read)),
+                        "the next reader read the snapshot")
+        self.assertEqual(self.r.due({self.PID}), [], "no settlement, no raise again")
+        self.assertEqual([x["request"] for x in self.r.pending_frame(self.PID)["raised"]], ["toolu_ask"])
+        self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
+        frames = self.due(lambda fs: messages(fs, "settled"))
+        self.assertEqual([(m["body"]["request"], m["body"]["outcome"]) for m in messages(frames, "settled")],
+                         [("toolu_ask", "answered")])
+
     def test_the_outbox_keeps_every_settlement(self):
         with mock.patch.object(requests, "OUTBOX_MAX", 4):
             for i in range(3):
