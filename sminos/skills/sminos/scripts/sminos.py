@@ -8195,7 +8195,7 @@ def cmd_guide(_a):
 #
 # Every commit and pull request a member writes carries its address — a commit
 # as a git trailer, a PR body as its last line — so a reader of the artifact
-# reaches the session that made it in one step (`who`). The doperpowers mod
+# reaches the session that made it in one step (`who`). The sminos plugin's mod
 # hooks/mods/address.tsx hands the line to the engine's attribution text; the
 # line is composed here, where the session's identity is.
 

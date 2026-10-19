@@ -212,7 +212,14 @@ async function instructions($: EngineInterface): Promise<{ name: string; text: s
 
 /** The evidence the judge reads for this block, gathered from the engine. */
 async function evidence($: EngineInterface, block: Block, argument: string): Promise<EvidenceParts> {
-  const { value } = await $.state.get(ASK)
+  // sminos's value, read as another plugin's: whatever the engine does with
+  // the read, the appeal goes on, with no answers if none can be read.
+  let value: unknown
+  try {
+    value = (await $.state.get(ASK)).value
+  } catch (error) {
+    $.ui.log(`appeal: the asks could not be read: ${message(error)}`)
+  }
   const answers = (isSnapshot(value) ? value.asks : [])
     .filter((ask) => ask.status === 'answered' && ask.answer !== undefined)
     .map((ask) => ({ questions: ask.questions.map((q) => q.question), answer: ask.answer ?? '' }))

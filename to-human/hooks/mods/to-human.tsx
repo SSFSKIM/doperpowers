@@ -824,7 +824,7 @@ export function registerToHuman(on: On) {
         $.ui.log(`to-human: the transcript's order could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
       }
     }
-    // The hooks beneath run while this searches: doperpowers' ask mod reads
+    // The hooks beneath run while this searches: sminos' ask mod reads
     // the same transcript for the questions it draws.
     const [result] = await Promise.all([next(e), place()])
     return result

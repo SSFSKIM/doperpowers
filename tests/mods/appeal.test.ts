@@ -352,6 +352,8 @@ function harness(
     relay?: Record<string, unknown> | Error
     /** sminos's ask snapshot as `$.state` holds it at the start (undefined: sminos not loaded). */
     ask?: AskSnapshot
+    /** `$.state.get` throws this, as an engine might on another plugin's key. */
+    stateFail?: string
   } = {},
 ) {
   let askValue: AskSnapshot | undefined = options.ask
@@ -445,8 +447,12 @@ function harness(
     ui: { toast: record('ui.toast'), log: record('ui.log') },
     // The host's named values: sminos's ask snapshot, which only sminos writes.
     state: {
-      get: async (ref: { plugin: string; key: string }) =>
-        ref.plugin === 'sminos' && ref.key === 'ask' && askValue !== undefined ? { value: askValue, version: 1 } : { value: undefined, version: 0 },
+      get: async (ref: { plugin: string; key: string }) => {
+        if (options.stateFail !== undefined) {
+          throw new Error(options.stateFail)
+        }
+        return ref.plugin === 'sminos' && ref.key === 'ask' && askValue !== undefined ? { value: askValue, version: 1 } : { value: undefined, version: 0 }
+      },
     },
   }
   resetAppeal()
@@ -890,6 +896,20 @@ describe('registerAppeal', () => {
     await alone.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
     const none = alone.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
     expect(none.prompt).toContain("# The user's answers to the agent's questions (the user's words)\n(none)\n")
+  })
+
+  test("an engine that refuses the read of sminos's snapshot leaves the appeal whole: the judge rules with no answers, and the debug log says why", async () => {
+    const h = harness({ judge: '<verdict>uphold</verdict><response>x</response>', stateFail: 'no such plugin' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toContain('Upheld (block b1)')
+    const request = h.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
+    expect(request.prompt).toContain("# The user's answers to the agent's questions (the user's words)\n(none)\n")
+    expect(h.calls.filter((c) => c.op === 'ui.log').map((c) => String(c.args))).toEqual([
+      'appeal: the asks could not be read: no such plugin',
+      'appeal: the asks could not be read: no such plugin',
+    ])
   })
 
   test('a Bash block is stale once another Bash command ran in its loop; two passes, the one not running is void when the other starts', async () => {
