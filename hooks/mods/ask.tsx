@@ -1165,8 +1165,8 @@ const SEARCH =
 /**
  * The search for the stored forms in the transcript at `path`. Not grep: the
  * macOS one slows with each `-e`, and on a transcript of 144 MiB took 7 s
- * for these five where perl takes 0.3 s (2026-10-19), while a resumed
- * session's questions waited for it.
+ * for the five forms there were then, where perl takes 0.3 s (2026-10-19),
+ * while a resumed session's questions waited for it.
  */
 export function searchArgs(path: string): string[] {
   return ['perl', '-e', SEARCH, '--', ...STORED_FORMS, path]
