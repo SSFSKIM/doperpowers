@@ -40,7 +40,8 @@ const rows = [
 const lines = rows.map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : \`u\${i - 1}\`, uuid: \`u\${i}\`, ...row }))
 const path = '$work/transcript.jsonl'
 writeFileSync(path, lines.join('\n') + '\n')
-const run = ([command, ...args]: string[]) => execFileSync(command as string, args, { encoding: 'utf8' }).split('\n')
+const run = ([command, ...args]: string[], env?: NodeJS.ProcessEnv) =>
+  execFileSync(command as string, args, { encoding: 'utf8', env: env ? { ...process.env, ...env } : process.env }).split('\n')
 const found = run(searchArgs(path))
 const grepped = run(grepArgs(path))
 const whole = rebuildAsks(lines).map((a) => [a.id, a.status])
@@ -56,6 +57,14 @@ check('the full read rebuilds every ask', JSON.stringify(whole) === JSON.stringi
 check('the search rebuilds what the full read does', JSON.stringify(searched) === JSON.stringify(whole), searched)
 check('the search leaves out the prompt snapshot and the human quote', leftOut.length === 0, leftOut)
 check('grep finds the lines perl does', JSON.stringify(grepped) === JSON.stringify(found), grepped)
+// perl's output bytes are grep's whatever PERL_UNICODE says: with S it would put a :utf8 layer on STDOUT and
+// double-encode the non-ASCII text of every line it prints.
+const koreanPath = '$work/korean.jsonl'
+writeFileSync(koreanPath, JSON.stringify({ uuid: 'k0', ...use('t-ko', '어떤 백엔드를 쓸까요? \u00e9')}) + '\n')
+const [grepCommand, ...grepRest] = grepArgs(koreanPath)
+const koreanGrep = execFileSync(grepCommand as string, grepRest)
+const koreanPerl = execFileSync('perl', searchArgs(koreanPath).slice(1), { env: { ...process.env, PERL_UNICODE: 'S' } })
+check('perl prints a line of non-ASCII text as grep does under PERL_UNICODE=S', koreanPerl.length > 0 && koreanPerl.equals(koreanGrep), [koreanPerl.toString(), koreanGrep.toString()])
 // Exit codes are grep's: 1 when no line holds a form, 2 when the file cannot be read.
 const status = (argv: string[]) => {
   try {

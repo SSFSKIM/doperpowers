@@ -1137,10 +1137,12 @@ const STORED_FORMS = [
 /**
  * Prints each line holding one of the forms, as `grep -F` does, its exit code
  * grep's: 0 lines found, 1 none, 2 the file unreadable. Every form is one
- * literal of a single alternation, which perl matches in one pass.
+ * literal of a single alternation, which perl matches in one pass. The file
+ * is read and the lines printed as bytes, as grep does, whatever PERL_UNICODE
+ * or PERL5OPT puts on the handles.
  */
 const SEARCH =
-  'my $path = pop @ARGV; my $re = join "|", map { quotemeta } @ARGV; open(my $fh, "<", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /$re/o) { print $line; $found = 1 } } exit($found ? 0 : 1);'
+  'binmode STDOUT; my $path = pop @ARGV; my $re = join "|", map { quotemeta } @ARGV; open(my $fh, "<:raw", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /$re/o) { print $line; $found = 1 } } exit($found ? 0 : 1);'
 
 /**
  * The search for the stored forms in the transcript at `path`. Not grep: the
@@ -1152,7 +1154,12 @@ export function searchArgs(path: string): string[] {
   return ['perl', '-e', SEARCH, '--', ...STORED_FORMS, path]
 }
 
-/** The same search through grep, on a host where perl does not start. */
+/**
+ * The same search through grep, for a host where perl does not start. The
+ * fallback also follows a perl timeout, and then grep, the slower of the two,
+ * is all but sure to time out too, so a search that slow fails after two
+ * timeouts.
+ */
 export function grepArgs(path: string): string[] {
   return ['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path]
 }
