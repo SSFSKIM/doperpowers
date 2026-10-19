@@ -440,6 +440,9 @@ describe('promptRow', () => {
     const answer = 'The human responded to your async AskUserQuestion (call toolu_01): User has answered your questions: "Which?"="A". Notes: prefer B'
     expect(promptRow({ origin: { kind: 'plugin' }, text: answer })).toBe('user')
     expect(promptRow({ origin: { kind: 'plugin' }, text: `The doperpowers plugin sent a message:\n${answer}` })).toBe('user')
+    // The ask moves to the sminos plugin; a transcript holds its framing or doperpowers'.
+    expect(promptRow({ origin: { kind: 'plugin' }, text: `The sminos plugin sent a message:\n${answer}` })).toBe('user')
+    expect(promptRow({ origin: { kind: 'plugin' }, text: `The cua plugin sent a message:\n${answer}` })).toBe('record')
     // Any other plugin prompt is the model's business.
     expect(promptRow({ origin: { kind: 'plugin' }, text: 'Continue from the summary.' })).toBe('record')
     expect(promptRow({ origin: { kind: 'plugin' }, text: 'The doperpowers plugin sent a message:\nContinue from the summary.' })).toBe('record')
@@ -881,7 +884,7 @@ describe('file links', () => {
 
 describe('isRead', () => {
   test('questions and agent spawns stay visible while messaging is working record', async () => {
-    expect(['AskUserQuestion', 'mcp__doperpowers__AskUserQuestion', 'Agent', 'Workflow'].map(isRead)).toEqual([true, true, true, true])
+    expect(['AskUserQuestion', 'mcp__doperpowers__AskUserQuestion', 'mcp__sminos__AskUserQuestion', 'Agent', 'Workflow'].map(isRead)).toEqual([true, true, true, true, true])
     expect(['SendMessage', 'Bash', 'Read', 'Monitor', 'TaskOutput'].map(isRead)).toEqual([false, false, false, false, false])
   })
 })

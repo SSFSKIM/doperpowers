@@ -18,7 +18,10 @@ import { ASK_TOOL, ASYNC_RESULT, deliveryText, grepArgs, rebuildAsks, searchArgs
 
 const answered = (q: string, a: string) => \`Your questions have been answered: "\${q}"="\${a}". You can now continue with these answers in mind.\`
 const question = (q: string) => ({ question: q, header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] })
-const use = (id: string, q: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: ASK_TOOL, input: { questions: [question(q)], async: true } }] } })
+const use = (id: string, q: string, name = ASK_TOOL) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: { questions: [question(q)], async: true } }] } })
+// The tool and its delivery under the plugin the ask moves to: a transcript holds either.
+const SMINOS_TOOL = 'mcp__sminos__AskUserQuestion'
+const SMINOS_PROMPT = 'The sminos plugin sent a message:\\n'
 const result = (id: string) => ({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: ASYNC_RESULT }] } })
 const context = (hookName: string, content: string[]) => ({ type: 'attachment', attachment: { type: 'hook_additional_context', content, hookName } })
 const rows = [
@@ -27,13 +30,16 @@ const rows = [
   use('t-prompt', 'Which layout?'), result('t-prompt'),
   use('t-plugin', 'Which store?'), result('t-plugin'),
   use('t-open', 'Which port?'), result('t-open'),
+  use('t-sminos', 'Which queue?', SMINOS_TOOL), result('t-sminos'),
+  use('t-sminos-open', 'Which region?', SMINOS_TOOL), result('t-sminos-open'),
   // A delivery opening the context, and one behind another hook's context on each route.
   context('tool.call', [deliveryText('t-first', answered('Which backend?', 'A'))]),
   context('tool.call', ['other context, "quoted"\\\\', deliveryText('t-tool', answered('Which features?', 'B'))]),
   context('prompt.submit', ['other context', deliveryText('t-prompt', answered('Which layout?', 'A'))]),
   { type: 'user', message: { role: 'user', content: \`The doperpowers plugin sent a message:\n\${deliveryText('t-plugin', answered('Which store?', 'B'))}\` } },
+  { type: 'user', message: { role: 'user', content: \`\${SMINOS_PROMPT}\${deliveryText('t-sminos', answered('Which queue?', 'A'))}\` } },
   // Rows the search must leave out: a prompt snapshot naming the tool, a human quoting a delivery.
-  { type: 'attachment', attachment: { type: 'prompt_snapshot', tools: [{ name: ASK_TOOL, description: 'd' }] } },
+  { type: 'attachment', attachment: { type: 'prompt_snapshot', tools: [{ name: ASK_TOOL, description: 'd' }, { name: SMINOS_TOOL, description: 'd' }] } },
   { type: 'user', message: { role: 'user', content: \`see \${deliveryText('t-open', 'quoted')}\` } },
 ]
 // One conversation, each row the child of the one before it, as the engine stores them.
@@ -46,7 +52,7 @@ const found = run(searchArgs(path))
 const grepped = run(grepArgs(path))
 const whole = rebuildAsks(lines).map((a) => [a.id, a.status])
 const searched = rebuildAsks(found, { isWholeFile: false }).map((a) => [a.id, a.status])
-const expected = [['t-first', 'answered'], ['t-tool', 'answered'], ['t-prompt', 'answered'], ['t-plugin', 'answered'], ['t-open', 'open']]
+const expected = [['t-first', 'answered'], ['t-tool', 'answered'], ['t-prompt', 'answered'], ['t-plugin', 'answered'], ['t-open', 'open'], ['t-sminos', 'answered'], ['t-sminos-open', 'open']]
 const leftOut = found.filter((line) => line.includes('prompt_snapshot') || line.includes('"see '))
 let failed = 0
 const check = (name: string, ok: boolean, detail: unknown) => {

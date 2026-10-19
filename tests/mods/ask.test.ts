@@ -1294,6 +1294,67 @@ describe('a resumed session', () => {
     expect(rebuildAsks(['not json', ''])).toEqual([])
   })
 
+  // The tool and the plugin prompt under both plugins' names: the ask moves
+  // from doperpowers to sminos, and a transcript holds whichever wrote it.
+  const SMINOS_TOOL = 'mcp__sminos__AskUserQuestion'
+  const DOPERPOWERS_TOOL = 'mcp__doperpowers__AskUserQuestion'
+  const SMINOS_PROMPT = 'The sminos plugin sent a message:\n'
+  const DOPERPOWERS_PROMPT = 'The doperpowers plugin sent a message:\n'
+  const named = (id: string, name: string, q: AskQuestion) =>
+    row({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: { questions: [q], async: true } }] } })
+  const submitted = (framing: string, id: string) => row({ type: 'user', message: { role: 'user', content: `${framing}${deliveryText(id, ANSWER)}` } })
+  const crossed = [
+    named('t-old', DOPERPOWERS_TOOL, BACKEND),
+    result('t-old', ASYNC_RESULT),
+    named('t-new', SMINOS_TOOL, FEATURES),
+    result('t-new', ASYNC_RESULT),
+    named('t-new-open', SMINOS_TOOL, BACKEND),
+    result('t-new-open', ASYNC_RESULT),
+    submitted(SMINOS_PROMPT, 't-old'),
+    submitted(DOPERPOWERS_PROMPT, 't-new'),
+  ]
+
+  test('a call under either tool name, answered under either framing, rebuilds as one ask', async () => {
+    expect(rebuildAsks(crossed)).toEqual([
+      { id: 't-old', questions: [BACKEND], status: 'answered', answer: ANSWER },
+      { id: 't-new', questions: [FEATURES], status: 'answered', answer: ANSWER },
+      { id: 't-new-open', questions: [BACKEND], status: 'open' },
+    ])
+    // Another plugin's prompt carrying a delivery is not the ask's.
+    expect(rebuildAsks([...crossed.slice(0, 6), submitted('The cua plugin sent a message:\n', 't-old')]).map((a) => a.status)).toEqual(['open', 'open', 'open'])
+  })
+
+  test("a copy's asks are read under either tool name and either framing", async () => {
+    const ask = (id: string, tool: string) => ({ tool_use_id: id, tool, input: { questions: [BACKEND], async: true }, text: ASYNC_RESULT })
+    const rows: SessionMessage[] = [
+      { role: 'assistant', text: '', toolUses: [ask('t-old', DOPERPOWERS_TOOL), ask('t-new', SMINOS_TOOL), ask('t-api', SMINOS_TOOL), ask('t-open', SMINOS_TOOL)] },
+      { role: 'user', text: `${SMINOS_PROMPT}${deliveryText('t-old', ANSWER)}`, toolUses: [] },
+      { role: 'user', text: `${DOPERPOWERS_PROMPT}${deliveryText('t-new', ANSWER)}`, toolUses: [] },
+    ]
+    const api = [{ role: 'user', content: [{ type: 'text', text: `${SMINOS_PROMPT}${deliveryText('t-api', ANSWER)}` }] }]
+    const h = harness({ history: { rows, api } })
+    await h.start()
+    await h.classicStart('/p/-repo/copy.jsonl', 'copy', 'fork')
+    expect(asyncAsks().map((a) => [a.id, a.status])).toEqual([
+      ['t-old', 'answered'],
+      ['t-new', 'answered'],
+      ['t-api', 'answered'],
+      ['t-open', 'open'],
+    ])
+  })
+
+  test('the search finds the stored forms under either tool name and either framing', async () => {
+    const h = harness({ run: async () => ({ exitCode: 1, stdout: '', isStdoutTruncated: false }) })
+    await h.start()
+    await h.classicStart(T, 's', 'resume')
+    const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
+    const patterns = argv.slice(argv.indexOf('--') + 1, -1)
+    const found = (stored: string) => patterns.some((pattern) => stored.includes(pattern))
+    expect(crossed.map(found)).toEqual(crossed.map(() => true))
+    const snapshot = line({ type: 'attachment', attachment: { type: 'prompt_snapshot', tools: [{ name: SMINOS_TOOL, description: 'd' }] } })
+    expect(found(snapshot)).toBe(false)
+  })
+
   test('at a resumed SessionStart the asks are read back from the transcript', async () => {
     const h = harness({ files: { [T]: lines.join('\n') } })
     await h.start()

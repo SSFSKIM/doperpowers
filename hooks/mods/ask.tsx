@@ -8,6 +8,14 @@ import type { AskSnapshot } from '../../types/doperpowers'
  */
 export const ASK_TOOL = 'mcp__doperpowers__AskUserQuestion'
 
+/**
+ * The tool's names a transcript may hold, as each plugin that registered it
+ * named it: sminos's, where the ask moves, then doperpowers', where it was
+ * first. A session is resumed, compacted and copied across the move, so what
+ * reads a stored call reads either, for good.
+ */
+export const ASK_TOOLS: readonly string[] = ['mcp__sminos__AskUserQuestion', 'mcp__doperpowers__AskUserQuestion']
+
 /** The plugin's name as a dispatch's origin carries it. */
 export const PLUGIN = 'doperpowers'
 
@@ -572,8 +580,13 @@ export const ASYNC_RESULT =
   'Your questions are waiting for the human; this call does not wait for them. Their answer will reach you in a later message that quotes each question. Go on with work that does not depend on it.'
 
 export const DELIVERY_HEAD = 'The human responded to your async AskUserQuestion'
-/** How the engine frames a prompt this plugin submitted, in the user row it stores. */
-const PLUGIN_PROMPT = 'The doperpowers plugin sent a message:\n'
+/**
+ * How the engine frames a prompt the ask's plugin submitted, in the user row
+ * it stores: under either plugin's name, in the order of `ASK_TOOLS`.
+ */
+export const PLUGIN_PROMPTS: readonly string[] = ['The sminos plugin sent a message:\n', 'The doperpowers plugin sent a message:\n']
+/** A text the ask's plugin submitted, under either plugin's framing. */
+const isPluginPrompt = (text: string) => PLUGIN_PROMPTS.some((framing) => text.startsWith(framing))
 const DELIVERY = /The human responded to your async AskUserQuestion \(call ([^)\s]+)\): /g
 
 /** The text a delivery carries: which call it answers, then what the blocking call would have returned. */
@@ -857,7 +870,7 @@ function asksIn(rows: readonly Row[]): OpenAsk[] {
     const message = isRecord(row.message) ? row.message : {}
     for (const block of Array.isArray(message.content) ? message.content : []) {
       // A call from the model's own row: the engine's wire copy of a request's message (`api-request-blob`) repeats it.
-      if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && block.name === ASK_TOOL && isRecord(block.input) && block.input.async === true) {
+      if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && ASK_TOOLS.includes(String(block.name)) && isRecord(block.input) && block.input.async === true) {
         calls.push({ id: String(block.id), input: block.input })
       } else if (isRecord(block) && block.type === 'tool_result') {
         results.set(String(block.tool_use_id), block as { content: unknown; is_error?: boolean })
@@ -901,7 +914,7 @@ function deliveryTexts(row: Record<string, unknown>): string[] {
           .filter((block): block is { type: 'text'; text: string } => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
           .map((block) => block.text)
   // The plugin's own prompt, by the engine's framing; the human quoting a delivery is not one.
-  return texts.filter((text) => text.startsWith(PLUGIN_PROMPT))
+  return texts.filter(isPluginPrompt)
 }
 
 /** An answer on its way to the model: its ask and the delivery text. */
@@ -1130,13 +1143,13 @@ async function answerAsk($: EngineInterface, id: string) {
  * tool (the tool list a prompt snapshot carries).
  */
 const STORED_FORMS = [
-  `"name":"${ASK_TOOL}","input":`,
+  ...ASK_TOOLS.map((name) => `"name":"${name}","input":`),
   ASYNC_RESULT,
   // A context attachment's entries: the first, or one behind another hook's
   // context (both routes append to what is there).
   `"type":"hook_additional_context","content":["${DELIVERY_HEAD}`,
   `","${DELIVERY_HEAD}`,
-  `"content":${JSON.stringify(PLUGIN_PROMPT + DELIVERY_HEAD).slice(0, -1)}`,
+  ...PLUGIN_PROMPTS.map((framing) => `"content":${JSON.stringify(framing + DELIVERY_HEAD).slice(0, -1)}`),
 ]
 
 /**
@@ -1152,8 +1165,8 @@ const SEARCH =
 /**
  * The search for the stored forms in the transcript at `path`. Not grep: the
  * macOS one slows with each `-e`, and on a transcript of 144 MiB took 7 s
- * for these five where perl takes 0.3 s (2026-10-19), while a resumed
- * session's questions waited for it.
+ * for the five forms there were then, where perl takes 0.3 s (2026-10-19),
+ * while a resumed session's questions waited for it.
  */
 export function searchArgs(path: string): string[] {
   return ['perl', '-e', SEARCH, '--', ...STORED_FORMS, path]
@@ -1244,7 +1257,7 @@ async function historyAsks($: EngineInterface): Promise<OpenAsk[]> {
   const [messages, api] = await Promise.all([$.session.messages(), $.session.messages({ as: 'api' })])
   const rows: Row[] = []
   const prompt = (text: string) => {
-    if (text.startsWith(PLUGIN_PROMPT)) {
+    if (isPluginPrompt(text)) {
       rows.push({ type: 'user', message: { content: text } })
     }
   }
@@ -1492,9 +1505,10 @@ export function registerAsk(on: On) {
   })
 
   // The tool's row draws what the engine draws for the built-in's, and an
-  // open async ask with its `[ answer ]`; its result row draws nothing beside it.
+  // open async ask with its `[ answer ]`; its result row draws nothing beside
+  // it. A resumed session's rows may name the tool under either plugin.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool !== ASK_TOOL) {
+    if (!ASK_TOOLS.includes(e.props.tool)) {
       return next(e)
     }
     const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
@@ -1532,7 +1546,7 @@ export function registerAsk(on: On) {
     )
   })
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.tool !== ASK_TOOL) {
+    if (!ASK_TOOLS.includes(e.props.tool)) {
       return next(e)
     }
     const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)

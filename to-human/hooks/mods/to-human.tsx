@@ -1,7 +1,11 @@
 import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
 
-/** The doperpowers ask mod's tool, the model's one way to ask the human in an interactive session. */
-const ASK_TOOL = 'mcp__doperpowers__AskUserQuestion'
+/**
+ * The ask mod's tool, the model's one way to ask the human in an interactive
+ * session, under each plugin that registered it: sminos, where it moves, and
+ * doperpowers, where it was first. A transcript holds either, for good.
+ */
+const ASK_TOOLS: readonly string[] = ['mcp__sminos__AskUserQuestion', 'mcp__doperpowers__AskUserQuestion']
 
 /**
  * The mark the `to-human` output style asks the model to write: a message
@@ -360,14 +364,14 @@ function deliverySender(text: string): string | undefined {
 }
 
 /**
- * How the doperpowers ask mod opens the plugin prompt that hands the model
- * the person's answer to an async question (its `deliveryText`), possibly
- * after the framing the engine stores before a plugin prompt. It stays the
- * person's: the ask's own row does not draw the feedback a person gives with
- * "Chat about this" or the notes added to an answer, so this row carries
- * their words whole.
+ * How the ask mod opens the plugin prompt that hands the model the person's
+ * answer to an async question (its `deliveryText`), possibly after the
+ * framing the engine stores before a plugin prompt, under either plugin that
+ * submits it (`ASK_TOOLS`). It stays the person's: the ask's own row does
+ * not draw the feedback a person gives with "Chat about this" or the notes
+ * added to an answer, so this row carries their words whole.
  */
-const ASK_DELIVERY = /^(?:The doperpowers plugin sent a message:\s*)?The human responded to your async AskUserQuestion \(call /
+const ASK_DELIVERY = /^(?:The (?:sminos|doperpowers) plugin sent a message:\s*)?The human responded to your async AskUserQuestion \(call /
 
 /** The props of a prompt row that say what it is. */
 export type PromptRowProps = {
@@ -554,7 +558,7 @@ const MODE = 'to-human-mode'
 const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 
 /** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
-export const isRead = (tool: string) => tool === 'AskUserQuestion' || tool === ASK_TOOL || isSpawn(tool)
+export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool)
 
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked

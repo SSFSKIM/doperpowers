@@ -46,14 +46,32 @@ reload still run.
 - [x] (2026-10-19, the owner) **M0, first step, on the Macs**: `prependPlugins` applied in
       `~/.claude/settings.json` on the MacBook and the Mac mini; probe sessions show `to-human` and
       `doperpowers` in the prepend tier, `devcloud` inner.
-- [ ] M0, second step (owner, needs their explicit OK): `enabledPlugins["sminos@doperpowers"]` on
-      each Mac — a precondition of the roll (§8).
-- [ ] P0 — the bridge raises a permission request's input in the handle form it captured (§4; a
-      separate change, in flight, lands before M1).
-- [ ] M1 — doperpowers' readers accept both names; the reload mod installs a plugin's new
-      dependencies and updates whenever an installed version differs from the clone's.
-- [ ] M2 — MAWS's readers accept both names and both plugin names (a PR in MAWS; the app rebuilt on
-      each machine).
+- [x] (2026-10-19, the owner) **M0, second step**: `enabledPlugins["sminos@doperpowers"] = true` on
+      the MacBook and the Mac mini, each `settings.json` backed up as `settings.json.bak-*` before
+      the edit (the owner approved both one-time edits). A debug-log probe confirmed to-human and
+      doperpowers in the prepend tier with cua and devcloud inside them; until the plugin exists the
+      engine logs "Skipping orphaned enabledPlugins entry" for sminos at debug level. M0 is complete
+      on both Macs.
+- [x] (2026-10-19) P0 — the bridge raises a permission request's input in the handle form it
+      captured: #276, merge 02ef424f, doperpowers 7.189.3, rolled to both Macs. Its residue is in
+      `docs/doperpowers/TECH-DEBT.md` ("the bridge's raise and the secrets guard"); a separate change
+      fixes that section's second item (the bridge's tool result event carries no text for a result
+      devcloud scrubbed) in `bridge.tsx`, merged into the milestone branches once it lands.
+- (2026-10-19) #269 (`smns-guide-fork`) merged as 2018dab2; #271 (`smns-guide-roster`) merged as
+  cf8a3b26 (7.189.4), #278 (the reload's rows) as 457d2367 (7.189.5) and #279 (the bridge's text for
+  a scrubbed result, P0's residue) as 92387afa (7.189.6), each taken into M1 by a merge of main.
+- [x] (2026-10-19 17:30Z) M3a — the `next.trace` spike: **promote**, amended to a verdict on every
+      dispatch (Surprises & Discoveries, Decision Log; report in the run's SDE workspace,
+      `task-3-report.md`; temp tree `/tmp/m3a-spike.cX0Q8E`).
+- [x] (2026-10-19 17:50Z) M2 — MAWS PR https://github.com/SSFSKIM/MAWS/pull/74, merge 9fd93735e
+      (gate run 39295926848 green; task review approved), deployed by the author 17:53Z
+      (hub@9fd93735, web@master.9fd93735). Residue: MAWS #75 (the live spec's to-human path).
+- [x] (2026-10-19 21:40Z) M1 — doperpowers' readers accept both names; the reload mod installs a
+      plugin's new dependencies and updates whenever an installed version differs from the clone's,
+      holding back a failed dependency's closure and every reload that would load a plugin over a
+      missing dependency (doperpowers 7.189.7, to-human 0.1.2). Reviewed clean: task review (opus)
+      and branch review (reviewer-high on fable), two fix waves (Decision Log, M1 review and fix
+      waves); its PR and merge are recorded with M3.
 - [ ] M3 — The carve-out and the rename, opened by the `next.trace` spike (M3a), rehearsed on a local
       git remote.
 - [ ] M4 — The roll and each machine's migration (owner steps).
@@ -258,7 +276,7 @@ both origin names, for good** — not for a transition. The readers, from the gr
 
 | Reader | What it matches today | After |
 |---|---|---|
-| `hooks/mods/ask.tsx`: `asksIn` (`block.name === ASK_TOOL`), `deliveryTexts` and `historyAsks`' `prompt()` (`text.startsWith(PLUGIN_PROMPT)`), `STORED_FORMS` (the search's literals) | the one name, the one framing | the sets `ASK_TOOLS` and `PLUGIN_PROMPTS` beside `ASK_TOOL` and `PLUGIN_PROMPT`, which stay the registered name and this plugin's own framing; `STORED_FORMS` carries one literal per name and per framing |
+| `hooks/mods/ask.tsx`: `asksIn` (`block.name === ASK_TOOL`), `deliveryTexts` and `historyAsks`' `prompt()` (`text.startsWith(PLUGIN_PROMPT)`), `STORED_FORMS` (the search's literals) | the one name, the one framing | the sets `ASK_TOOLS` and `PLUGIN_PROMPTS` beside `ASK_TOOL`, which stays the registered name (`PLUGIN_PROMPT`, a reader's constant only, removed in M1); `STORED_FORMS` carries one literal per name and per framing |
 | `hooks/mods/appeal-judge.tsx`: `PLUGIN_PROMPT = /^The \S+ plugin sent a message:\n/` | any plugin | unchanged |
 | `to-human/hooks/mods/to-human.tsx`: `ASK_TOOL`, `ASK_DELIVERY` | the one name, the one framing | both |
 | `skills/sminos/scripts/sminos.py`: `ASK_TOOL` (3306; read at 3452 and 3807), `PLUGIN_PROMPT` (3312; read at 3367) | the one name, the one framing | both; `tests/sminos/test-bridge-export.sh` 137 and 153 follow |
@@ -270,8 +288,9 @@ reader in either repository — the ask submits only when the session is idle �
 
 `ASK_TOOL` stays the one registered name: `bridge.tsx`, `bridge-rows.tsx`, `bridge-requests.tsx`,
 `bridge.test.ts` and `test-ask-search.sh` import it as such, and the `tool.describe` / `tool.call`
-matchers, `WITHDRAWN`'s sentence and the `AskSnapshot` key read it. M3 changes its value, `PLUGIN_PROMPT`'s
-and `PLUGIN`'s, with the readers already dual. The nine agent definitions' `disallowedTools` name the
+matchers, `WITHDRAWN`'s sentence and the `AskSnapshot` key read it. M3 changes its value and
+`PLUGIN`'s, with the readers already dual (`PLUGIN_PROMPT` went in M1: it had readers only, the engine
+writing the framing, so the set replaced it; Decision Log, M1). The nine agent definitions' `disallowedTools` name the
 new tool beside the old through M4 (an entry naming no tool is inert, and a session resumed mid-roll
 may still see the old one); M5 drops the old. The output style names the new tool and keeps its
 fallback sentence for a session without it. The owner's own `~/.claude/agents/astra.md` and
@@ -393,9 +412,13 @@ guard, so the invariant is the two together: placement, and the bridge raising o
 `next()` settles, every link beneath it with the link's `plugin`, `tier` and `index` (Terms). So the
 bridge can decide where it stands from the first settled dispatch of an event both it and a guard
 hook — `tool.call` (every call) or `session.append` (every row): the links beneath name `devcloud`
-or `cua` or neither. The rule: a guard is **loaded** when devcloud's marker is present (devcloud's
-guard) or, the marker absent, when `cua@cua` is among the enabled plugins (cua's copy acts then; read
-from the user settings through `$.settings.read`, as appeal reads them); the bridge is **safe** when
+or `cua` or neither. The rule: a guard is **loaded** when devcloud's marker is **live** —
+`$.state.get({ plugin: 'devcloud', key: 'secrets-guard' })` answers `{ owner: 'devcloud', version: 1 }`
+at state version 0, which only devcloud's loaded module gives, through its own `state.get` hook
+(devcloud 0.5.0, #101); `undefined`, or a stored value at version 1 or more that devcloud 0.4.x or
+older left behind, is no live marker (devcloud's guard), or, with no live marker, when `cua@cua` is
+among the enabled plugins (cua's copy acts then; read from the user settings through
+`$.settings.read`, as appeal reads them); the bridge is **safe** when
 every loaded guard has an entry beneath it, **off** when a loaded guard has none (it is outside the
 bridge). Until the first verdict the bridge posts tool events without their payloads (`input`,
 `text`, `denied` held back, the event's shape otherwise whole) and raises no permission request's
@@ -403,9 +426,20 @@ input; a `safe` verdict releases the held payloads, an `off` verdict drops them,
 and a debug line, `sminos: the bridge is off — sminos must load outside devcloud and cua; set
 prependPlugins in ~/.claude/settings.json to ["to-human@doperpowers", "sminos@doperpowers",
 "doperpowers@doperpowers"]` — and ends the child, so the session is unreachable from the desk for
-the life of that module instance. The verdict is recomputed by each module instance from its own first
-dispatch — no kept state, nothing to carry across a reload, nothing that a reload's filtered
-`session.start` could mislead (rule 6) — and it covers cua's guard, which writes no marker. What the
+the life of that module instance. The rule is evaluated on **every** settled `tool.call` and
+`session.append`, not once per instance (M3a: `/reload-plugins` re-instantiates only the modules that
+changed, so a guard enabled mid-session can load outside a bridge instance that lives on): `off` is
+terminal for the instance; the hold-and-release applies to the first verdict only, and after it each
+event posts under the verdict standing at that moment. No kept state, nothing to carry across a
+reload, nothing that a reload's filtered `session.start` could mislead (rule 6), and it covers cua's
+guard, which writes no marker. **The residual window, accepted:** a guard newly loaded outside a
+living bridge instance, followed by a tool call whose `call` phase (its `input`, posted before the
+bridge's own `next`) comes before any row is appended; a typed `/reload-plugins` appends command
+rows, which close it (M3a). Its bound: it needs an unplaced machine (no `prependPlugins`) that
+enables a guard mid-session — on a placed machine a guard loaded mid-session lands in tier `user`,
+inside the bridge — and M4 places every machine. Holding every call's input until its own `next`
+settles would close it at the cost of the desk's live input streaming for every long-running call;
+declined. What the
 spike settles, nobody having used `next.trace` in a mod yet: that a hooks module's `next.trace` lists
 the other plugins' links beneath it on `tool.call` and `session.append` with their `plugin` names as
 documented; that it does so for the first dispatch after a reload; what the engine's own entry looks
@@ -418,11 +452,14 @@ do not exist, and A5 reads as its last sentence says.
 
 | Loaded guards (marker; cua enabled) | Links beneath the bridge name | Verdict |
 |---|---|---|
-| devcloud (marker present) | `devcloud` | safe |
-| devcloud (marker present) | no `devcloud` | off |
-| cua's copy (marker absent, `cua@cua` enabled) | `cua` | safe |
-| cua's copy (marker absent, `cua@cua` enabled) | no `cua` | off |
-| none (marker absent, cua not enabled) | anything | safe |
+| devcloud (live marker: the version-0 answer) | `devcloud` | safe |
+| devcloud (live marker: the version-0 answer) | no `devcloud` | off |
+| cua's copy (no live marker — absent, or stored at version ≥ 1 — and `cua@cua` enabled) | `cua` | safe |
+| cua's copy (no live marker — absent, or stored at version ≥ 1 — and `cua@cua` enabled) | no `cua` | off |
+| none (no live marker, cua not enabled) | anything | safe |
+
+`bridge.test.ts` pins the stale case too: a stored marker at version 1 with no `devcloud` beneath and
+cua not enabled is `safe`, and with cua enabled reads as cua's row.
 
 The design the second draft carried — devcloud's marker *version* moving during the bridge's
 `session.start` `next`, a verdict kept under a sminos key across reloads — is not the plan: at a
@@ -571,8 +608,10 @@ each devcloud host once one is enrolled.
 
 3. `~/.claude/agents/astra.md` and `sol-xhigh.md`: `disallowedTools` names `mcp__sminos__AskUserQuestion`
    (and keeps `mcp__doperpowers__compact`).
-4. Let the reload mod roll the machine, or run `/plugin marketplace update doperpowers` and
-   `/reload-plugins` in a session; a session that must keep its open asks across the swap keeps them
+4. Let the reload mod roll the machine, or run `/plugin marketplace update doperpowers`, then
+   `/plugin install sminos@doperpowers` (before any reload: a reload after the marketplace update
+   loads the new doperpowers, without the ask, at once — Surprises, M1), then `/reload-plugins` in a
+   session; a session that must keep its open asks across the swap keeps them
    (§5). If the reload answers that it needs `--force` (a new plugin MCP server, §10), run
    `/reload-plugins --force` when the session is idle.
 5. `sminos daemon install`, then reload the service: on macOS `launchctl bootout gui/$(id -u)/com.doperpowers.sminos-daemon`
@@ -643,7 +682,7 @@ daemons speak the same protocol.
   `bridge.tsx` and `address.tsx`, resolve to the sminos plugin's root once the files live there; the
   `skills/sminos/scripts/sminos` suffix holds. `reload.tsx`'s `$.plugin.root` is doperpowers' own.
 - **The sminos CLI's own references to its plugin**: `installed_cli`'s clone path (§7) and its error
-  text; `sminos.py`'s `ASK_TOOL` / `PLUGIN_PROMPT` (§3). Its `.smns`, registry and log layout do not
+  text; `sminos.py`'s `ASK_TOOLS` / `PLUGIN_PROMPTS` sets (§3, dual since M1). Its `.smns`, registry and log layout do not
   change.
 - **The live checks** stage a plugin folder from `REPO` two levels above themselves and launch it
   with `--plugin-dir` (`live-bridge-check.py` `REPO`, `PLUGIN_PARTS`, `sminos()`; `live-resume-check.py`
@@ -679,8 +718,10 @@ daemons speak the same protocol.
   when the head moved — a fetch that found the head in place but a plugin behind still acts, so a
   refused batch is retried); before updating, it reads each enabled plugin's manifest in the clone,
   installs every dependency not yet installed (`claude plugin install <dep>@<marketplace> --scope
-  user`) and refuses the whole batch, with a debug line, when one cannot be installed; it updates the
-  batch; then it reloads once. The engine's own session-start pass resolving missing dependencies
+  user`) and, with a debug line, holds back every plugin whose dependency chain reaches one that cannot
+  be installed (Decision Log, M1 review); it updates the rest of the batch; then it reloads once. The
+  reloader in every session holds a due reload on the same rule, so a reload never loads a plugin
+  over a missing dependency whoever applied the update. The engine's own session-start pass resolving missing dependencies
   (§4, rule 4) is the same intent at a different moment. M1 ships this because M1's code is what runs
   on the machines during the roll. With M0 in place, sminos lands placed and already enabled by the
   owner's hand.
@@ -838,14 +879,14 @@ their tests (`tests/mods/ask.test.ts`, `tests/mods/test-ask-search.sh`, `tests/m
 **Decisions.** The registered name stays `mcp__doperpowers__AskUserQuestion` here: `ASK_TOOL`'s
 value, `PLUGIN`, the `tool.describe` / `tool.call` matchers and `WITHDRAWN` do not change in M1. The
 new name and framing are spelled once each, as the first member of each set, so M3 changes
-`ASK_TOOL` and `PLUGIN_PROMPT` to `ASK_TOOLS[0]` and `PLUGIN_PROMPTS[0]`, and `PLUGIN` to the
-plugin's real name (§3), and nothing else of the names. The search's `STORED_FORMS` gets one literal
+`ASK_TOOL` to `ASK_TOOLS[0]` and `PLUGIN` to the plugin's real name (§3), and nothing else of the
+names (`PLUGIN_PROMPT` is gone, Decision Log, M1). The search's `STORED_FORMS` gets one literal
 per name and per framing so a transcript over 4 MiB is still found by `grep -F` (a5bc8c15). The
 record export's Python mirrors the TypeScript sets. The reload mod's step is triggered by a version
 difference between `installed_plugins.json` and the clone's manifests (the marketplace's `source`
 paths in the clone's `.claude-plugin/marketplace.json`), installs with the engine's CLI as it updates
-with it, and treats a refusal as "this fetch applies nothing", logged, acted on again at the next
-fetch because the difference remains.
+with it, and treats a refusal as holding back the plugins whose dependency chain reaches it, logged,
+acted on again at the next fetch because the difference remains (Decision Log, M1 review).
 
 **What it does not touch.** No file moves; no manifest, gate or document changes beyond the
 version bump.
@@ -855,8 +896,9 @@ whose delivery carries the new framing, and the reverse, each rebuilt as one ope
 `asksIn`, and the same pair rebuilt by `historyAsks` from a fake `$.session.messages()`; to-human's
 `promptRow` reads both framings as the person's answer; `sminos record` exports a `question` and
 `answered` from each. The reload mod: a fake clone whose to-human manifest names a dependency not
-installed makes the mod install it before `plugin update`; a failing install applies nothing and the
-next fetch, the head unchanged but the version still behind, tries again; a clone whose head is
+installed makes the mod install it before `plugin update`; a failing install holds back the plugins
+whose chain reaches it, and the next fetch, the head unchanged but the version still behind, tries
+again; a reload is held while what it would load lacks a dependency; a clone whose head is
 unchanged and whose versions match applies nothing. `tests/mods/run-mods-tests.sh`,
 `to-human/tests/mods/run.sh`, `tests/sminos/run-sminos-tests.sh` green; `ci-gate` GREEN.
 
@@ -927,7 +969,7 @@ say what is.
 `sminos/hooks/hooks.json`, `sminos/hooks/mods/register.tsx`, `sminos/types/sminos.d.ts`,
 `sminos/README.md`, `sminos/tests/mods/run.sh`; `hooks/hooks.json` and `hooks/mods/register.tsx`
 (doperpowers' remaining mods and shell hooks); `hooks/mods/appeal.tsx`, `reload.tsx`, `compact.tsx`
-(§5; appeal's fake-guard case, §4); `ask.tsx` (the values of `ASK_TOOL`, `PLUGIN_PROMPT` and
+(§5; appeal's fake-guard case, §4); `ask.tsx` (the values of `ASK_TOOL` and
 `PLUGIN`, `KEPT`, the shape-1 fallback, `isDialogUp` and `answered` in the snapshot); `bridge.tsx`
 (the probe, if promoted); `agents/*.md` (nine), `output-styles/to-human.md`;
 `skills/issue-tracker/scripts/_lib.sh`, `execute-dispatch.sh`, `board-sweep.sh`,
@@ -1130,9 +1172,11 @@ devcloud left, which can outlive its module (board #101); and the user settings'
 `PLUGIN_PROMPTS = ['The sminos plugin sent a message:\n', 'The doperpowers plugin sent a message:\n']`
 (ask.tsx, to-human.tsx, sminos.py, and the equivalents in MAWS's readers of §11, which also hold the
 plugin-name set `['sminos', 'doperpowers']`) — no shared module crosses plugins or repositories.
-`ASK_TOOL`, `PLUGIN_PROMPT` and `PLUGIN` stay the one registered name, this plugin's own framing and
-this plugin's own name: in M1 their values are the old ones; from M3, `ASK_TOOLS[0]`,
-`PLUGIN_PROMPTS[0]` and `$.plugin.name` (asserted equal to the manifest's `name`).
+`ASK_TOOL` and `PLUGIN` stay the one registered name and this plugin's own name, in `ask.tsx` alone:
+in M1 their values are the old ones; from M3, `ASK_TOOLS[0]` and `$.plugin.name` (asserted equal to
+the manifest's `name`). No reader keeps a single framing constant: the engine writes the framing, so
+from M1 every reader holds only the set (`PLUGIN_PROMPT` in `ask.tsx`, `ASK_TOOL` and `PLUGIN_PROMPT`
+in `sminos.py`, `ASK_TOOL` in `to-human.tsx` were replaced by the sets).
 
 **I4 — The CLI's stable path.** `<installLocation>/sminos/skills/sminos/scripts/sminos.py` where
 `installLocation` is `known_marketplaces.json`'s `doperpowers.installLocation`; the launcher beside it
@@ -1209,7 +1253,10 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   absent and writes no marker; a marker-based probe could not see it, a trace-based one can.
   Evidence: `~/.claude/plugins/cache/cua/cua/0.15.0/hooks/mods/guard/secrets.tsx` 280–291 ("cua
   adaptation: devcloud's marker write is removed") and `one-guard.tsx` ("cua never writes it, nor any
-  marker of its own").
+  marker of its own"). Since #101 (doperpowers #280, devcloud 0.5.0; cua#173, cua 0.16.0; both Macs
+  on them, 2026-10-19) devcloud stores no marker: its loaded module answers the read at state version
+  0 through a `state.get` hook, and cua's copy counts only that version-0 answer as devcloud loaded,
+  so a stored marker an older devcloud left no longer stands cua down.
 - Observation: the ask's `PLUGIN` is the literal `'doperpowers'`, not `$.plugin.name`, and the
   fixtures hard-code the same string, so a move under a new plugin name would silently stop the ask's
   own raise being claimed and widened and the bridge's `isDialog` and `enteredRow` matching, with
@@ -1291,6 +1338,46 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   the first draft named.
   Evidence: `git grep -n "sminos/scripts" origin/main -- skills/issue-tracker tests` on 2026-10-19
   (the list in §9).
+- Observation (M3a, 2026-10-19): a hooks module's `next.trace` names the plugins beneath it by their
+  bare names, one entry per module, on `tool.call` and on `session.append`: outside the guards it
+  names `devcloud` and `cua`, inside it names neither; the engine's `{ plugin: "engine", tier: "core",
+  outcome: "returned" }` closes every list; a reloaded module's first dispatch reads the same (sminos
+  updated alone, sminos and devcloud together, and the inside case — A5's (c), (d), (e)), and its own
+  `session.start` trace holds the engine alone (rule 6 confirmed); `session.append` always fires
+  before the first `tool.call` (the prompt row, or after a reload the `/reload-plugins` command rows).
+  Evidence: the spike's report `task-3-report.md` in the run's SDE workspace, temp tree
+  `/tmp/m3a-spike.cX0Q8E` (`logs/`: the debug logs and tmux panes; the probe
+  `mkt/doperpowers/sminos/hooks/mods/register.tsx`, a plugin named `sminos` in a marketplace named
+  `doperpowers`, loaded from a directory marketplace; reloads typed in interactive sessions, headless
+  refusing `/reload-plugins`).
+- Observation (M3a): `/reload-plugins` re-instantiates only the modules that changed, so the chain
+  changes around a bridge instance that lives on: devcloud enabled mid-session in an unplaced HOME
+  loaded at index 0, outside a probe that was not reloaded, whose next trace changed from
+  `["1:engine/core/returned"]` to `["2:engine/core/returned"]` behind devcloud with the marker
+  present. A verdict taken once per instance would have stayed safe from inside the guard — hence the
+  verdict on every dispatch (§4).
+  Evidence: the spike's runC, debug-log lines 188, 261, 374, 575; runA and runB the reverse (devcloud
+  unloaded, sminos not re-instantiated).
+- Observation (M3a): devcloud's `$.state` marker outlives devcloud's module; with devcloud disabled
+  and the session reloaded, cua's vendored guard reads it and stands down, so no guard acts (a
+  token-shaped test string reached the transcript raw while the pane drew a handle). For the bridge's
+  probe it errs only toward `off`. Outside this split: routed to the guards' owners as board #101,
+  fixed by doperpowers #280 (devcloud 0.5.0, the marker answered live at version 0 and never stored)
+  and cua#173 (cua 0.16.0); §4's rule reads only the version-0 answer as live.
+  Evidence: the spike's runB lines 435 and 600, runF.
+- Observation (M3a): a directory-source marketplace reloads its plugins in place from the source
+  folder; `claude plugin update` keeps a plugin's place in `installed_plugins.json`, so an update does
+  not push it innermost. Not observed: a subagent's `tool.call`, a `--resume` start, and whether the
+  reload mod's `$.command.run({ command: 'reload-plugins' })` appends rows as a typed one does.
+  Evidence: the spike's report, Surprises 3 and Not covered.
+- Observation (M1): `/reload-plugins` loads a path-sourced plugin at its clone manifest's version
+  whatever its record says, so after the marketplace update any reload loads the new doperpowers and
+  to-human; the record writes are what make the reload mod's watchers fire, and only the dependency's
+  install makes the new dependency load. A person typing `/reload-plugins` between the marketplace
+  update and that install gets the new doperpowers without the ask; the mod cannot prevent it, only
+  not reload into it itself. A dependency named without `@` resolves to the dependent's marketplace.
+  Evidence: `hooks/mods/README.md` (reload section), 2.1.302 `NMe({ cacheOnly: false })`, `RF`
+  (`cli.pretty.js` 409801); M1's report.
 
 ## Decision Log
 
@@ -1387,6 +1474,94 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   `enabledPlugins` entry is a precondition of the roll, an owner step awaiting their explicit OK.
   Rationale: the second round's findings 2–6, each checked (Surprises). Nothing rejected.
   Date/Author: 2026-10-19, the spec's author.
+- Decision (execution pre-flight): each milestone ships as its own branch off `origin/main` and its
+  own PR, opened, gated, reviewed and merged by the plan's executor (M2 the same in MAWS, off
+  `origin/master`); this spec's living sections ride the milestone PRs. The executor merges only
+  once `origin/main` is an ancestor of the head and the gate's tree equals the head's, with
+  `--match-head-commit`; after each merge it tells the spec's author, who rolls the Macs and deploys
+  the desk, and waits for that before building on the merge as live (M1 rolled before M3's
+  rehearsal relies on it; M2 deployed before M3's roll). M2's ticket on MAWS's board is not
+  registered by the executor (it writes no board): the PR carries §11 as its body, and a ticket, if
+  wanted, is the author's to register. M1 is built beside #278 (`reload-rows-out-of-context`), open
+  on `reload.tsx` at this writing; whichever lands second merges `origin/main`.
+  Rationale: the author's dispatch of 2026-10-19 (the split of hands).
+  Date/Author: 2026-10-19, the plan's executor.
+- Decision (revises the verification entry above): M1's and M5's branch reviews are
+  `doperpowers:reviewer-high` dispatched with `model: fable`, after each milestone's task review
+  (`doperpowers:task-reviewer` with `model: opus`); M3 keeps the xhigh panel, run by the spec's
+  author from the main session with Claude models in every lane, on the range the executor sends
+  once M3's PR is gated green. M2 stays under MAWS's rule.
+  Rationale: sol and astra are at their usage limit until 2026-10-24 13:40 PDT, and the panel
+  workflow runs only from the main session; the carve-out and the rename are where an adequate
+  review costs the most, so M3 alone keeps the panel.
+  Date/Author: 2026-10-19, the plan's executor, on the author's ruling.
+- Decision (M3a): promote the bridge's probe, amended: the rule is evaluated on every settled
+  `tool.call` and `session.append`, `off` terminal for the instance, the hold-and-release on the first
+  verdict only; the residual window (§4) is accepted and documented with its bound.
+  Rationale: the spike's four observations held; a module that is not reloaded keeps its instance
+  while the chain changes around it (Surprises, M3a), so a once-per-instance verdict errs in the
+  unsafe direction. Rejected: holding every call's input until its own `next` settles (closes the
+  window at the cost of the desk's live input streaming for every long-running call, a window M4
+  closes on every machine).
+  Date/Author: 2026-10-19, the plan's executor, accepted by the spec's author.
+- Decision (M1): the readers hold only the sets of I3; `PLUGIN_PROMPT` is removed from `ask.tsx` (it
+  had readers only — the engine writes the framing), and `sminos.py` and `to-human.tsx` keep no
+  single-name constant; `ask.tsx` keeps `ASK_TOOL` (the registered name, imported by the bridge) and
+  `PLUGIN`, the two values M3 changes. The ask's `ToolUse` / `ToolResult` render hooks read both
+  names too (a resumed session draws its old rows through them, so an open ask keeps its
+  `[ answer ]`). The reload mod takes as its batch every enabled user-scope plugin of the marketplace
+  whose recorded version differs from its clone manifest's (`plugin.json` at the entry's string
+  `source`); a plugin with no such manifest version (a url source like ci-kit) updates only on a
+  moved head, as before. Before the batch it installs every dependency the enabled plugins' clone
+  manifests name that has no user or managed record (superseded in part by the two entries below:
+  the closure, the narrower hold, and the `fetch.applying` mark in place of `fetch.lock`). Every
+  session's reloader holds while the fetch applies, so a batch of installs and updates reloads once at
+  its end. `hooks/mods/README.md`'s reload section
+  describes the new path.
+  Rationale: M1's report — the sets make `PLUGIN_PROMPT` dead code; the render hooks match stored
+  rows by name; a batch's writes land more than one watcher period apart, and each gap would reload
+  every idle session (restarting the bridge's child) on a half-applied batch.
+  Date/Author: 2026-10-19, M1's executor, folded by the plan's executor.
+- Decision (M1 review, revises §10's "refuses the whole batch"): the missing dependencies are
+  gathered from every enabled plugin of the marketplace and installed whoever wrote the records (the
+  mod's own fetch, a session's startup auto-update, a person's `claude plugin update`); a failed
+  install holds back only the plugins it affects, along the dependency closure — a changed plugin is
+  held when any plugin in its dependency chain is missing or itself held, so a dependent never
+  updates or reloads over a held dependency (to-human over a doperpowers held for sminos); the
+  reloader holds a due reload on the same rule and fires once the dependency is installed.
+  Rationale: the task review found the reloader reloading into a missing dependency when another
+  actor applied the update, with the fetcher never repairing it (it returned when nothing was
+  behind); the branch review (fable, P3) found that one plugin's uninstallable dependency, outside the
+  batch, would block the roll of the whole marketplace on every fetch. Rejected: the whole-batch
+  refusal (P3's block).
+  Date/Author: 2026-10-19, the plan's executor, on the spec's author's ruling.
+- Decision (M1 fix wave): the reloader's hold reads what the reload would load, not only the changed
+  records: a path-sourced plugin counts as changing when its clone manifest's version differs from the
+  one the session runs (its dependencies read from the clone), any other plugin when its record moves
+  (its dependencies from its install's `plugin.json`); one held plugin holds the whole reload, since a
+  reload loads everything; a plugin that already lacked a dependency holds nothing. The reloads wait on
+  a `fetch.applying` mark the fetch writes around its installs and updates (stale after
+  `APPLY_STALE_MS`, 3 minutes), not on `fetch.lock`, so a session that dies mid-fetch holds the
+  machine's reloads for 3 minutes rather than 30.
+  Rationale: M1's discovery — `/reload-plugins` loads a path-sourced plugin at the clone's version
+  whatever its record says — makes a records-only hold fail the real roll: with sminos not installed,
+  to-human held and doperpowers (depending on nothing) updated, that record change would reload
+  doperpowers at M3 without the ask and to-human without sminos. A reload held for a dependency that
+  never installs waits until the records change; M3's rehearsal checks the held reload's debug line.
+  Date/Author: 2026-10-19, M1's fixer, folded by the plan's executor.
+- Decision (M1 fix wave 2): the dependency hold is evaluated on the tick that would fire, just before
+  the reload, not when the records changed (a clone can move under a pending reload with no record
+  write — the fetcher's own marketplace update, or a person's); the `fetch.applying` mark is written
+  before each marketplace's refresh and at the top of each marketplace's pass once a batch has
+  started, so a two-marketplace batch stays under it; a held reload is told once per hold (plugin and
+  missing dependency) as a toast and a transcript line, as `FORCE_TEXT` is — "A plugin update is not
+  applied: <key> would load without <missing>, which is not installed. /plugin install <missing>
+  installs it, and the reload follows." — with the debug line kept.
+  Rationale: the branch re-review's P2 (a stale pending reload loading M3 from the clone without
+  sminos) and P3 (two reloads on a slow two-marketplace roll); the task re-review's minor that a
+  held reload, which holds every reload on the machine, was said only in the debug log, unseen on the
+  unattended Mac mini.
+  Date/Author: 2026-10-19, M1's fixer, folded by the plan's executor.
 
 ## Outcomes & Retrospective
 
