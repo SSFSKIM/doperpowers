@@ -1,7 +1,7 @@
 {
   "name": "to-human",
   "description": "The report view of a session under the to-human output style: assistant messages fold to their <message> spans, and tool calls, unmarked text and deliveries from agents and other sessions fold behind [ working record ] buttons",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"

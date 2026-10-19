@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The ask mod's search of a transcript too large to read whole, run for real:
-# grep, with the arguments the mod builds (searchArgs), over a fixture
-# transcript. What it finds must rebuild the asks a read of the whole file
-# rebuilds. The mods' own tests cannot reach a process; bun runs the mod's
+# perl, and grep where perl does not start, with the arguments the mod builds
+# (searchArgs, grepArgs), over a fixture transcript. What each finds must
+# rebuild the asks a read of the whole file rebuilds, and the two must find
+# the same lines. The mods' own tests cannot reach a process; bun runs the mod's
 # pure functions directly.
 set -euo pipefail
 
@@ -13,7 +14,7 @@ trap 'rm -rf "$work"' EXIT
 cat > "$work/check.ts" <<TS
 import { execFileSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
-import { ASK_TOOL, ASYNC_RESULT, deliveryText, rebuildAsks, searchArgs } from '$root/hooks/mods/ask.tsx'
+import { ASK_TOOL, ASYNC_RESULT, deliveryText, grepArgs, rebuildAsks, searchArgs } from '$root/hooks/mods/ask.tsx'
 
 const answered = (q: string, a: string) => \`Your questions have been answered: "\${q}"="\${a}". You can now continue with these answers in mind.\`
 const question = (q: string) => ({ question: q, header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] })
@@ -39,8 +40,10 @@ const rows = [
 const lines = rows.map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : \`u\${i - 1}\`, uuid: \`u\${i}\`, ...row }))
 const path = '$work/transcript.jsonl'
 writeFileSync(path, lines.join('\n') + '\n')
-const [command, ...args] = searchArgs(path)
-const found = execFileSync(command as string, args, { encoding: 'utf8' }).split('\n')
+const run = ([command, ...args]: string[], env?: NodeJS.ProcessEnv) =>
+  execFileSync(command as string, args, { encoding: 'utf8', env: env ? { ...process.env, ...env } : process.env }).split('\n')
+const found = run(searchArgs(path))
+const grepped = run(grepArgs(path))
 const whole = rebuildAsks(lines).map((a) => [a.id, a.status])
 const searched = rebuildAsks(found, { isWholeFile: false }).map((a) => [a.id, a.status])
 const expected = [['t-first', 'answered'], ['t-tool', 'answered'], ['t-prompt', 'answered'], ['t-plugin', 'answered'], ['t-open', 'open']]
@@ -53,6 +56,27 @@ const check = (name: string, ok: boolean, detail: unknown) => {
 check('the full read rebuilds every ask', JSON.stringify(whole) === JSON.stringify(expected), whole)
 check('the search rebuilds what the full read does', JSON.stringify(searched) === JSON.stringify(whole), searched)
 check('the search leaves out the prompt snapshot and the human quote', leftOut.length === 0, leftOut)
+check('grep finds the lines perl does', JSON.stringify(grepped) === JSON.stringify(found), grepped)
+// perl's output bytes are grep's whatever PERL_UNICODE says: with S it would put a :utf8 layer on STDOUT and
+// double-encode the non-ASCII text of every line it prints.
+const koreanPath = '$work/korean.jsonl'
+writeFileSync(koreanPath, JSON.stringify({ uuid: 'k0', ...use('t-ko', '어떤 백엔드를 쓸까요? \u00e9')}) + '\n')
+const [grepCommand, ...grepRest] = grepArgs(koreanPath)
+const koreanGrep = execFileSync(grepCommand as string, grepRest)
+const koreanPerl = execFileSync('perl', searchArgs(koreanPath).slice(1), { env: { ...process.env, PERL_UNICODE: 'S' } })
+check('perl prints a line of non-ASCII text as grep does under PERL_UNICODE=S', koreanPerl.length > 0 && koreanPerl.equals(koreanGrep), [koreanPerl.toString(), koreanGrep.toString()])
+// Exit codes are grep's: 1 when no line holds a form, 2 when the file cannot be read.
+const status = (argv: string[]) => {
+  try {
+    execFileSync(argv[0] as string, argv.slice(1), { stdio: 'ignore' })
+    return 0
+  } catch (error) {
+    return (error as { status: number }).status
+  }
+}
+writeFileSync('$work/none.jsonl', JSON.stringify(rows[rows.length - 1]) + '\n')
+check('a file with no form exits 1', status(searchArgs('$work/none.jsonl')) === 1, status(searchArgs('$work/none.jsonl')))
+check('a missing file exits 2', status(searchArgs('$work/missing.jsonl')) === 2, status(searchArgs('$work/missing.jsonl')))
 process.exit(failed === 0 ? 0 : 1)
 TS
 

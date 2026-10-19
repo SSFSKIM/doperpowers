@@ -802,7 +802,10 @@ export function registerToHuman(on: On) {
       unfolded.clear()
       $.ui.invalidate('ui.render')
     }
-    if (e.source === 'resume' || e.source === 'fork') {
+    if (e.source !== 'resume' && e.source !== 'fork') {
+      return next(e)
+    }
+    const place = async () => {
       try {
         const search = await $.process.run(placeArgs(e.transcript_path))
         // grep: 0 found, 1 none, anything else a failure.
@@ -817,7 +820,10 @@ export function registerToHuman(on: On) {
         $.ui.log(`to-human: the transcript's order could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
       }
     }
-    return next(e)
+    // The hooks beneath run while this searches: doperpowers' ask mod reads
+    // the same transcript for the questions it draws.
+    const [result] = await Promise.all([next(e), place()])
+    return result
   })
 
   // Each row the main conversation keeps, as its append resolves: placed
