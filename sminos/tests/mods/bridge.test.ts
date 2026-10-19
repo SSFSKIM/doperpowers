@@ -4609,6 +4609,33 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(resync.settled).toEqual([expect.objectContaining({ request: 'tu1', outcome: 'withdrawn', by: 'bridge' })])
   })
 
+  test('a permission whose hooks beneath were running when the bridge turned off is not raised: nothing pending to resync once it is back on', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.called('tu1', 'Bash', { command: 'ls' })
+    // The settings hooks beneath the bridge's PermissionRequest hook run while devcloud loads outside it.
+    let decide: (result: Record<string, unknown>) => void = () => undefined
+    const answered = h.hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
+      h.engine,
+      { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: SID, transcript_path: '/t', cwd: '/w' },
+      Object.assign(() => new Promise((resolve) => (decide = resolve)), { signal: new AbortController().signal }),
+    ) as Promise<Record<string, unknown>>
+    await h.settle()
+    h.setMarker(LIVE_MARKER)
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    decide({})
+    await h.settle()
+    expect(h.polls).toEqual([])
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    expectOn(h)
+    const after = await greetNewest(h, 'n1')
+    const resync = after()[0]!.events.find((e) => e.type === 'resync')!
+    expect(resync.pending).toEqual([])
+    expect(await answered).toEqual({})
+  })
+
   test('a dispatch that began before the off and reads safe does not turn the bridge back on', async () => {
     const h = harness()
     await h.ready()

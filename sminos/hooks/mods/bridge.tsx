@@ -1681,11 +1681,19 @@ export function registerBridge(on: On) {
       return next(e)
     }
     const id = claimed?.toolUseId ?? `request-${Date.now().toString(36)}-${++state.minted}`
+    const transitionsAt = state.transitions
     const beneath = await next(e)
     const now = await $.clock.now()
     // Decided after the last await, so a record that came meanwhile is seen:
-    // a call already decided is never raised.
+    // a call already decided is never raised. Nor is one the bridge went off
+    // (or off and back on) under while the hooks beneath ran: going off
+    // withdraws only what is raised already, and a dispatch that began
+    // before the last transition changes no state.
     if (beneath.decision !== undefined || state.records.has(id) || state.isEnding) {
+      return beneath
+    }
+    if (state.transitions !== transitionsAt) {
+      state.log?.(`bridge: a ${e.tool_name} ${isQuestion ? 'question' : 'permission'} is left to the terminal: the bridge turned ${state.place === 'off' ? 'off' : 'off and on'} while the hooks beneath it ran`)
       return beneath
     }
     const r: Request = {
@@ -1751,11 +1759,13 @@ export function registerBridge(on: On) {
     return stored
   }).catch((_, e, next) => next(e))
 
-  // Every compaction this plugin did not start (the person's /compact, a
-  // command run, the engine's own); this plugin's own pass no hook of its
-  // (runCompaction and the compact tool name theirs). One that stood writes
-  // its rows once the hooks are through: named from the transcript. A
-  // precompute installs nothing.
+  // Every compaction this plugin did not start: the person's /compact, a
+  // command run, the engine's own, and doperpowers' compact tool, whose rows
+  // reach the bridge only through this hook (filter it by origin and they are
+  // never named). This plugin's own compaction passes no hook of its, so
+  // runCompaction names its rows itself. One that stood writes its rows once
+  // the hooks are through: named from the transcript. A precompute installs
+  // nothing.
   // A failure here leaves the compaction as it settled: `next` in the catch
   // replays it, nothing beneath running again.
   on('session.compact', { trigger: /^/ }, async (_, e, next) => {
