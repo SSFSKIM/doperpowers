@@ -269,7 +269,7 @@ both origin names, for good** — not for a transition. The readers, from the gr
 
 | Reader | What it matches today | After |
 |---|---|---|
-| `hooks/mods/ask.tsx`: `asksIn` (`block.name === ASK_TOOL`), `deliveryTexts` and `historyAsks`' `prompt()` (`text.startsWith(PLUGIN_PROMPT)`), `STORED_FORMS` (the search's literals) | the one name, the one framing | the sets `ASK_TOOLS` and `PLUGIN_PROMPTS` beside `ASK_TOOL` and `PLUGIN_PROMPT`, which stay the registered name and this plugin's own framing; `STORED_FORMS` carries one literal per name and per framing |
+| `hooks/mods/ask.tsx`: `asksIn` (`block.name === ASK_TOOL`), `deliveryTexts` and `historyAsks`' `prompt()` (`text.startsWith(PLUGIN_PROMPT)`), `STORED_FORMS` (the search's literals) | the one name, the one framing | the sets `ASK_TOOLS` and `PLUGIN_PROMPTS` beside `ASK_TOOL`, which stays the registered name (`PLUGIN_PROMPT`, a reader's constant only, removed in M1); `STORED_FORMS` carries one literal per name and per framing |
 | `hooks/mods/appeal-judge.tsx`: `PLUGIN_PROMPT = /^The \S+ plugin sent a message:\n/` | any plugin | unchanged |
 | `to-human/hooks/mods/to-human.tsx`: `ASK_TOOL`, `ASK_DELIVERY` | the one name, the one framing | both |
 | `skills/sminos/scripts/sminos.py`: `ASK_TOOL` (3306; read at 3452 and 3807), `PLUGIN_PROMPT` (3312; read at 3367) | the one name, the one framing | both; `tests/sminos/test-bridge-export.sh` 137 and 153 follow |
@@ -594,8 +594,10 @@ each devcloud host once one is enrolled.
 
 3. `~/.claude/agents/astra.md` and `sol-xhigh.md`: `disallowedTools` names `mcp__sminos__AskUserQuestion`
    (and keeps `mcp__doperpowers__compact`).
-4. Let the reload mod roll the machine, or run `/plugin marketplace update doperpowers` and
-   `/reload-plugins` in a session; a session that must keep its open asks across the swap keeps them
+4. Let the reload mod roll the machine, or run `/plugin marketplace update doperpowers`, then
+   `/plugin install sminos@doperpowers` (before any reload: a reload after the marketplace update
+   loads the new doperpowers, without the ask, at once — Surprises, M1), then `/reload-plugins` in a
+   session; a session that must keep its open asks across the swap keeps them
    (§5). If the reload answers that it needs `--force` (a new plugin MCP server, §10), run
    `/reload-plugins --force` when the session is idle.
 5. `sminos daemon install`, then reload the service: on macOS `launchctl bootout gui/$(id -u)/com.doperpowers.sminos-daemon`
@@ -666,7 +668,7 @@ daemons speak the same protocol.
   `bridge.tsx` and `address.tsx`, resolve to the sminos plugin's root once the files live there; the
   `skills/sminos/scripts/sminos` suffix holds. `reload.tsx`'s `$.plugin.root` is doperpowers' own.
 - **The sminos CLI's own references to its plugin**: `installed_cli`'s clone path (§7) and its error
-  text; `sminos.py`'s `ASK_TOOL` / `PLUGIN_PROMPT` (§3). Its `.smns`, registry and log layout do not
+  text; `sminos.py`'s `ASK_TOOLS` / `PLUGIN_PROMPTS` sets (§3, dual since M1). Its `.smns`, registry and log layout do not
   change.
 - **The live checks** stage a plugin folder from `REPO` two levels above themselves and launch it
   with `--plugin-dir` (`live-bridge-check.py` `REPO`, `PLUGIN_PARTS`, `sminos()`; `live-resume-check.py`
@@ -861,8 +863,8 @@ their tests (`tests/mods/ask.test.ts`, `tests/mods/test-ask-search.sh`, `tests/m
 **Decisions.** The registered name stays `mcp__doperpowers__AskUserQuestion` here: `ASK_TOOL`'s
 value, `PLUGIN`, the `tool.describe` / `tool.call` matchers and `WITHDRAWN` do not change in M1. The
 new name and framing are spelled once each, as the first member of each set, so M3 changes
-`ASK_TOOL` and `PLUGIN_PROMPT` to `ASK_TOOLS[0]` and `PLUGIN_PROMPTS[0]`, and `PLUGIN` to the
-plugin's real name (§3), and nothing else of the names. The search's `STORED_FORMS` gets one literal
+`ASK_TOOL` to `ASK_TOOLS[0]` and `PLUGIN` to the plugin's real name (§3), and nothing else of the
+names (`PLUGIN_PROMPT` is gone, Decision Log, M1). The search's `STORED_FORMS` gets one literal
 per name and per framing so a transcript over 4 MiB is still found by `grep -F` (a5bc8c15). The
 record export's Python mirrors the TypeScript sets. The reload mod's step is triggered by a version
 difference between `installed_plugins.json` and the clone's manifests (the marketplace's `source`
