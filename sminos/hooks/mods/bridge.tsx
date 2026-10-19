@@ -1101,8 +1101,11 @@ function startChild($: EngineInterface, session: string) {
           onLine($, generation, line)
         }
       }
-      const ended = await child.result
-      $.ui.log(`bridge: the child ended (${ended.signal ?? ended.code})`, { to: 'debug' })
+      // A child this module stopped (`stopChild`: a /clear, going off, a
+      // retirement) reports no exit: the engine settles the result with
+      // nothing, where its types say it rejects.
+      const ended = await child.result.catch(() => undefined)
+      $.ui.log(ended ? `bridge: the child ended (${ended.signal ?? ended.code})` : 'bridge: the child was stopped', { to: 'debug' })
     } catch (error) {
       $.ui.log(`bridge: the child failed: ${message(error)}`, { to: 'debug' })
     }

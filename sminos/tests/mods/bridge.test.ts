@@ -82,7 +82,11 @@ function fakeChild(argv: readonly string[]) {
     },
     write: (text: string) => push({ stream: 'stdout', text }),
     end: () => push(null),
-    result: Promise.resolve({ code: 0, signal: null }),
+    // A child the stream's `return()` stopped has no exit to report: the
+    // engine (2.1.304) settles the result with nothing then.
+    get result() {
+      return Promise.resolve(killed ? undefined : { code: 0, signal: null })
+    },
     async next(): Promise<IteratorResult<Piece>> {
       for (;;) {
         if (ended) {
@@ -657,8 +661,10 @@ describe('the child', () => {
     await h.settle()
     expect(h.children[0]!.killed).toBe(true)
     expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
-    // The stopped child is not respawned.
+    // The stopped child is not respawned, and is said to be stopped, not to have failed.
     expect(h.timers.filter((t) => t.kind === 'after').length).toBe(0)
+    expect(h.logs).toContain('bridge: the child was stopped')
+    expect(h.logs.filter((l) => l.startsWith('bridge: the child failed'))).toEqual([])
   })
 
   test("every post carries the nonce of the child's hello; a restarted child's posts carry its own", async () => {
