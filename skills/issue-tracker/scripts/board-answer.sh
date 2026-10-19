@@ -127,8 +127,9 @@ PY
 fi
 [ -z "$to" ] || die "--to is api-binding-only: in gh mode the return state comes from the ticket's pre-park meta (or the bound worker's lane)"
 
-# SMINOS_CLI is resolved and the registry migrated by _lib.sh, sourced above:
-# it fails closed there, once per process, before any script reads the root.
+# The registry was migrated by _lib.sh, sourced above: it fails closed there,
+# once per process, before any script reads the root.
+sminos_cli
 [ -x "$SMINOS_CLI" ] || die "the sminos CLI is not executable at $SMINOS_CLI (set SMINOS_CLI)"
 
 # Normalize a lingering finished Claude owner before the status gate. A real

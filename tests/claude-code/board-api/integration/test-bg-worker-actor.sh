@@ -45,7 +45,7 @@ drill_start
 # The REAL sminos CLI, on this drill's scratch registry root. drill_start left
 # SMINOS_CLI pointing at the stub every other drill uses; the stub spawns
 # nothing, which is exactly what this drill may not do.
-SMINOS_CLI="$REPO_ROOT/skills/sminos/scripts/sminos"
+SMINOS_CLI="$REPO_ROOT/sminos/skills/sminos/scripts/sminos"
 SMINOS_HOME="$DAEMON_HOME"; export SMINOS_HOME
 MODEL="${A2_BG_WORKER_MODEL:-haiku}"
 WORK="$DRILL_TMP/worker"; mkdir -p "$WORK"

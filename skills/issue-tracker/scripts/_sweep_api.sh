@@ -189,7 +189,9 @@ _sentinel() {
 DAEMON_HOME="${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}"
 SMINOS_HOME="$DAEMON_HOME"
 export SMINOS_HOME DAEMON_HOME
-SMINOS_CLI="${SMINOS_CLI:-$(cd "$SCRIPT_DIR/../../sminos/scripts" && pwd)/sminos}"
+# shellcheck source=_sminos_cli.sh
+. "$SCRIPT_DIR/_sminos_cli.sh"
+sminos_cli
 # The registry root moved to ~/.claude/sminos and this script scans it
 # directly, so it must never be the first process to look at an empty new
 # root: let sminos fold the old root in first. Idempotent, and FAIL CLOSED

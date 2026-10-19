@@ -143,6 +143,8 @@ cat > "$STUB/sminos" <<'EOF'
 exit 0
 EOF
 chmod +x "$STUB/sminos"
+# review-dispatch sources lib.sh from beside the CLI it resolved: the real one.
+ln -s "$REPO_ROOT/sminos/skills/sminos/scripts/lib.sh" "$STUB/lib.sh"
 tick() {  # tick <entrypoint> [args...] — run one from the repo-less checkout
   ( cd "$r7" && env PATH="$STUB:$PATH" GH_STUB_MARKER="$MARKER" \
       CLAUDE_CODE_SESSION_ID="$WSESS" SMINOS_CLI="$STUB/sminos" \

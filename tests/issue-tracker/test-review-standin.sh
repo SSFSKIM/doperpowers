@@ -159,7 +159,7 @@ assert_contains "$BOOTSTRAP" "<!-- mode:pr -->" "PR-only prose is fenced into a 
 assert_contains "$BOOTSTRAP" "<!-- mode:scale -->" "scale-only prose is fenced into a mode block"
 # Spec acceptance 5's roster, plus PROTOCOL_FILE. The per-mode split is
 # test-bootstrap-parity.sh's; this is the set the template may name at all.
-want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PR_NUMBER}} {{PR_URL}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{REVIEW_MODE}} {{ROLE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
+want_rboot="{{AUTO_MERGE}} {{BASE_REF}} {{BOARD_SCRIPTS}} {{CLOSURE_PACKAGE}} {{ENV_TRACKER_ISSUE}} {{HEAD_REF}} {{HEAD_SHA}} {{IMPLEMENT_PROTOCOL_FILE}} {{INTEGRATION_REF}} {{ISSUE_LIST}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PR_NUMBER}} {{PR_URL}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_CODE_DIR}} {{REVIEW_LEVEL}} {{REVIEW_MODE}} {{ROLE}} {{SMINOS_CLI}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}} {{WORKER_NAME}}"
 # Both sides go through the same sort: the set is what is pinned, and sort's
 # collation of "_" differs between macOS and glibc.
 want_rboot="$(printf '%s\n' $want_rboot | sort -u | tr '\n' ' ' | sed 's/ $//')"

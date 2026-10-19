@@ -100,7 +100,7 @@ echo "placeholders:"
 # AUTO_MERGE, REVIEW_LEVEL and TECH_DEBT_ISSUE joined the set with the QA
 # agent: the Executor relays them into the brief of the review it dispatches
 # on its own PR, and a spawned seat cannot read them from anywhere else.
-want="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}} {{REVIEW_LEVEL}} {{TECH_DEBT_ISSUE}}"
+want="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{REPO}} {{REVIEW_LEVEL}} {{SMINOS_CLI}} {{TECH_DEBT_ISSUE}}"
 got="$(grep -o '{{[A-Z_]*}}' "$PROTO" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got" = "$want" ]; then pass "protocol placeholder set is exactly: $want"; else
     fail "protocol placeholder set drifted"; echo "    expected: $want"; echo "    actual:   $got"; fi
@@ -131,7 +131,7 @@ assert_not_contains "$bootstrap" "EXECUTION_BLOCK" "bootstrap: no execution-bloc
 # review the owner runs on its own PR: the switch, the floor, and the sink for
 # a finding it logs rather than fixes — dispatcher-owned, like every other
 # name here, because none of them is the worker's to choose.
-want_boot="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_LEVEL}} {{ROLE}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}}"
+want_boot="{{AUTO_MERGE}} {{BOARD_SCRIPTS}} {{DECOMPOSE_DOC}} {{ENV_TRACKER_ISSUE}} {{ISSUE_NUMBER}} {{ISSUE_URL}} {{PARENT_PIN}} {{PROTOCOL_FILE}} {{REPO}} {{REVIEW_LEVEL}} {{ROLE}} {{SMINOS_CLI}} {{TECH_DEBT_ISSUE}} {{TICKET_BODY_FILE}}"
 got_boot="$(grep -o '{{[A-Z_]*}}' "$BOOTSTRAP" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$got_boot" = "$want_boot" ]; then pass "bootstrap placeholder set is exactly: $want_boot"; else
     fail "bootstrap placeholder set drifted"; echo "    expected: $want_boot"; echo "    actual:   $got_boot"; fi
@@ -239,7 +239,7 @@ assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-h
 assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + lane queues)"
 assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
 assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
-daemons="$(cat "$REPO_ROOT/skills/sminos/SKILL.md")"
+daemons="$(cat "$REPO_ROOT/sminos/skills/sminos/SKILL.md")"
 assert_not_contains "$daemons" "discriminant in doperpowers:executing" "sminos (seats): no stale pointer at the old vendored copy"
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
@@ -328,7 +328,7 @@ assert_contains "$arch" "your dispatcher answers escalations; return for them" \
 for _act in '**1. Take the review edge and say what this seat is doing**' '**2. Dispatch ONE `doperpowers:qa-loop` agent**' '**3. End your turn.**'; do
     assert_contains "$arch" "$_act" "architect: the closing turn is a numbered act — $_act"
 done
-assert_order "$ARCHITECT" 'sminos status <your alias> "reviewing: <PR URL>"' \
+assert_order "$ARCHITECT" '{{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"' \
     '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
     "architect: the status line comes BEFORE the dispatch"
 # ...and it rides the board write the seat never skips. Standing alone as its
@@ -336,7 +336,7 @@ assert_order "$ARCHITECT" 'sminos status <your alias> "reviewing: <PR URL>"' \
 # transition it now shares an act with is not droppable, and the two are one
 # block.
 assert_order "$ARCHITECT" 'in-review "<one-line>" --pr <PR URL> --branch <branch>' \
-    'sminos status <your alias> "reviewing: <PR URL>"' \
+    '{{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"' \
     "...paired with the in-review write, in that order"
 assert_contains "$arch" "two writes,
 together" "...as one act of two writes, not two acts"
@@ -372,7 +372,7 @@ assert_contains "$arch" "\`head branch:\` the integration ref" \
 # same omission act 1's pairing fixed for the PR path, on the one closing turn
 # that had not been paired.
 assert_order "$ARCHITECT" 'in-review "<summary>" --pr <package URL> --branch <integration ref>' \
-    'sminos status <your alias> "reviewing (scale): <package URL>"' \
+    '{{SMINOS_CLI}} status <your alias> "reviewing (scale): <package URL>"' \
     "...whose act 1 is the same two writes, the status line beside the board write"
 assert_contains "$arch" "corrective child #" "...and a scale design-gap becomes a corrective child"
 assert_contains "$arch" "never grade, triage, or merge" \
@@ -394,11 +394,11 @@ assert_contains "$proto" 'repo: "<absolute path of the checkout you fast-forward
     "executor: the panel's workflow call names the checkout it fast-forwarded"
 assert_contains "$proto" "your dispatcher answers escalations; return for them" \
     "...and the sentence that tells the agent where its escalations go"
-assert_order "$PROTO" 'sminos status <your alias> "reviewing: <PR URL>"' \
+assert_order "$PROTO" '{{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"' \
     '**2. Dispatch ONE `doperpowers:qa-loop` agent**' \
     "executor: the status line comes BEFORE the dispatch"
 assert_order "$PROTO" 'in-review "<one-line>" --pr <URL> --branch <branch>' \
-    'sminos status <your alias> "reviewing: <PR URL>"' \
+    '{{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"' \
     "...paired with the in-review write, in that order"
 assert_contains "$proto" "two writes,
 together" "...as one act of two writes, not two acts"

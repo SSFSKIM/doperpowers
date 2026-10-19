@@ -20,7 +20,7 @@ next wake.
 
 Before you dispatch, set your seat's status line once so the fleet view says
 what this seat is doing:
-`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status {{WORKER_NAME}}
+`{{SMINOS_CLI}} status {{WORKER_NAME}}
 "reviewing: <PR or epic>"` (the CLI is not on PATH).
 
 ## Position
