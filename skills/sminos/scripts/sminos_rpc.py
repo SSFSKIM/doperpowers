@@ -376,7 +376,7 @@ class Rpcs:
         facts = {"running": record is not None, "bg": control.bg_job(record or {}), "root": project.root,
                  "checkout": args.get("checkout"), "status": (record or {}).get("status")}
         if name == "stop":
-            facts["transcript"] = sminos.transcript_path(sid)
+            facts["transcript"] = sminos.transcript_path(sid) or sminos.transcript_path(sid, fresh=True)
         if name == "resume":
             seat = next((s for s in sminos.seats() if s["current"] == sid), None)
             facts.update(cwd=here.cwd(project, sid),

@@ -1695,9 +1695,13 @@ class Bridges:
         self.held = {}            # session → [socket inode, answered, probed at, probing]
         self.wake = lambda: None
 
-    def answers(self, sid, now):
-        path = bridge.endpoint(sid)
+    def answers(self, sid, now, socks=None):
+        """`socks`: the sessions with a socket in the bridges' directory as
+        just listed (bridge_socks), so a session with none costs no stat."""
         try:
+            if socks is not None and sid not in socks:
+                raise FileNotFoundError(sid)
+            path = bridge.endpoint(sid)
             ino = os.stat(path).st_ino
         except OSError:
             with self.lock:
@@ -1731,6 +1735,14 @@ class Bridges:
         with self.lock:
             h = self.held.get(sid)
             return bool(h and h[1])
+
+
+def bridge_socks():
+    """The sessions with a socket in the bridges' directory, from one listing."""
+    try:
+        return {n[:-len(".sock")] for n in os.listdir(bridge.bridge_dir()) if n.endswith(".sock")}
+    except OSError:
+        return set()
 
 
 def tombstone_path():
@@ -1805,10 +1817,10 @@ class Plane:
 
     # ---------------------------------------------------- presence
 
-    def presence_of(self, sid, now):
-        return {"record": record_body(self.live.get(sid)), "bridge": self.bridges.answers(sid, now)}
+    def presence_of(self, sid, now, socks=None):
+        return {"record": record_body(self.live.get(sid)), "bridge": self.bridges.answers(sid, now, socks)}
 
-    def presence(self, pid, force=False, now=None):
+    def presence(self, pid, force=False, now=None, socks=None):
         """DX4 presence for the project's sessions whose presence changed
         (every one when forced, after a connect); a member gone from the
         project is said once more as not running, then forgotten.
@@ -1835,8 +1847,9 @@ class Plane:
                                         {"record": None, "bridge": False}))
             if pid in self.read_at:
                 self.tombstoned[pid] = self.read_at[pid]
+        socks = bridge_socks() if socks is None else socks
         for sid in sorted(self.members.get(pid, ())):
-            body = self.presence_of(sid, now)
+            body = self.presence_of(sid, now, socks)
             if force or self.sent.get((pid, sid)) != body:
                 self.sent[(pid, sid)] = body
                 out.append(envelope(pid, self.machine, sid, "presence", None, None, body))
@@ -1895,7 +1908,9 @@ class Plane:
             reader = BridgeReader(bridge.endpoint(sid), self.wake)
             reader.start()
         self.subs[sub] = Subscription(
-            project.id, self.machine, sid, agent, sub, locate=lambda: sminos.transcript_path(sid), reader=reader,
+            project.id, self.machine, sid, agent, sub, reader=reader,
+            # Asked until found, every LOCATE_EVERY: one not found is looked for as the directories are now.
+            locate=lambda: sminos.transcript_path(sid) or sminos.transcript_path(sid, fresh=True),
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
             transcripts=self.transcripts, wake=self.wake, disk=self.disk)
         return out + self.pump_one(sub)
@@ -1979,8 +1994,9 @@ class Plane:
             for project in projects.values():
                 self.refresh(project)
             self.read_for, self.next_members = set(self.live), now + MEMBERS_EVERY
+        socks = bridge_socks()
         for pid in sorted(projects):
-            out += self.presence(pid, now=now)
+            out += self.presence(pid, now=now, socks=socks)
         for sub, s in list(self.subs.items()):
             if not s.bridged and not s.ended and s.n is not None and self.bridges.known(s.session) \
                     and self.running(s.session):

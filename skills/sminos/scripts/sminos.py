@@ -162,6 +162,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid as uuidlib
@@ -460,16 +461,33 @@ def load_seat(path):
     return m
 
 
+_SEAT_FILES = {}  # record file → ((st_ino, st_size, st_mtime_ns), the seat load_seat read)
+
+
 def seats(group=None):
     out = []
     for p in record_files():
-        try:
-            s = load_seat(p)
-        except Exception:
-            continue  # an unparsable or half-written record is not a seat
-        if group is None or s["group"] == group:
+        s = _seat_at(p)
+        if s is not None and (group is None or s["group"] == group):
             out.append(s)
     return out
+
+
+def _seat_at(path):
+    """load_seat, the file read again only once it changed (a record is
+    written by atomic replace: a new inode), as a copy the caller may change;
+    None for a file that is no seat (unparsable, or half-written). The
+    daemon and the uplink read every seat many times a minute."""
+    try:
+        st = os.stat(path)
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        held = _SEAT_FILES.get(path)
+        if held is None or held[0] != key:
+            held = _SEAT_FILES[path] = (key, load_seat(path))
+    except Exception:
+        _SEAT_FILES.pop(path, None)
+        return None
+    return {**held[1], "history": list(held[1]["history"])}
 
 
 def find_seat(q, scope=None):
@@ -562,6 +580,9 @@ MEMBER_MARK = "SMNS_MEMBER"
 # another live session held it. Any other source is a name someone gave.
 GENERATED_NAMES = ("derived", "auto", "collision")
 _PROJECTS = {}
+_SEAT_PROJECTS = {}  # (session, recorded cwd) → a seat's project, per cache generation (seat_project)
+_RECORD_PROJECTS = {}  # (session, record's cwd) → its project, per cache generation (record_project)
+_REPO_BRANCH = {}    # cwd → (repository, branch), per cache generation (repo_branch)
 _HOMES = set()
 _VIEWS = {}  # project id → View, per invocation; a lifecycle append drops it
 
@@ -879,13 +900,14 @@ def smns_at(cwd):
     return (repo, smns) if smns else None
 
 
-def resolve_project(cwd):
+def resolve_project(cwd, fresh=False):
     """The project of a directory: the first .smns walking up (a linked
     worktree without one, its main checkout's); else, on an enrolled
     machine, the machine's own project; else the local project of the owning
-    git repository; else None (no project)."""
+    git repository; else None (no project). Kept for the cache generation;
+    `fresh` reads the directory as it is now."""
     cwd = os.path.abspath(os.path.expanduser(cwd or "."))
-    if cwd in _PROJECTS:
+    if not fresh and cwd in _PROJECTS:
         return _PROJECTS[cwd]
     project = None
     found = smns_at(cwd)
@@ -903,7 +925,7 @@ def resolve_project(cwd):
     return project
 
 
-def seat_project(seat):
+def seat_project(seat, fresh=False):
     """A seat's project, from its recorded cwd. A seat spawned where there is
     no project belongs to the local project named after that directory: the
     seat record is the explicit registration automatic discovery never makes.
@@ -911,17 +933,27 @@ def seat_project(seat):
     belongs to the local project named after its group, so it stays in view.
     Its directory is its session's launch directory (seat_cwd: where the
     engine last moved it, the recorded cwd until its transcript names one);
-    a seat cannot join elsewhere."""
+    a seat cannot join elsewhere.
+
+    Kept for the cache generation (forget_caches): a reconciliation asks it
+    of every seat for every project, and the daemon reconciles every project
+    each tick. What a stale answer would decide is written only once the
+    write's guard has asked again with `fresh` — the .smns, the transcript
+    and the join override read as they are now (_reconcile)."""
     if not seat:
         return None
     cwd = str(seat.get("cwd") or "")
     if not cwd:
         name = safe_name(str(seat.get("group") or "")) or "fleet"
         return make_project("local-" + name, name, "", "")
-    project = session_project(str(seat.get("current") or ""), seat_cwd(seat))
+    key = (str(seat.get("current") or ""), cwd)
+    if not fresh and key in _SEAT_PROJECTS:
+        return _SEAT_PROJECTS[key]
+    project = session_project(key[0], seat_cwd(seat), fresh)
     if project is None:
         name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
         project = make_project("local-" + name, name, "", os.path.abspath(cwd))
+    _SEAT_PROJECTS[key] = project
     return project
 
 
@@ -1190,8 +1222,7 @@ def launch_cwd(session, transcript="", fallback=""):
     except OSError:
         st = None
     if st is None and not transcript and path:
-        _TRANSCRIPTS.pop(session, None)   # moved since it was found: look again
-        path = transcript_path(session)
+        path = transcript_path(session, fresh=True)   # moved since it was found: look again
         try:
             st = os.stat(path) if path else None
         except OSError:
@@ -1208,12 +1239,12 @@ def launch_cwd(session, transcript="", fallback=""):
         if not (isinstance(hit, dict) and isinstance(hit.get("transcript"), str)
                 and isinstance(hit.get("size"), int) and isinstance(hit.get("launch"), str) and hit["launch"]):
             hit = None
+    if hit and hit["transcript"] == path and hit["size"] == st.st_size:
+        _LAUNCH[session] = hit
+        return hit["launch"]
     try:
         with open(path, "rb") as f:
-            if hit and hit["transcript"] == path and hit["size"] <= st.st_size:
-                if hit["size"] == st.st_size:
-                    _LAUNCH[session] = hit
-                    return hit["launch"]
+            if hit and hit["transcript"] == path and hit["size"] < st.st_size:
                 moved, size = _relocated_in(f, max(hit["size"], st.st_size - LAUNCH_REACH), st.st_size)
                 launch = moved or hit["launch"]
             else:
@@ -1292,24 +1323,29 @@ def join_refusal(project):
     return ""
 
 
-def session_project(session, launch_cwd):
+def session_project(session, launch_cwd, fresh=False):
     """A session's project (§1): its join override, when the file names a
     project known here that it may be in (join_refusal; an ineligible one is
     read as absent, so the session moves back); else its launch directory's
-    (resolve_project). None for a session in no project."""
+    (resolve_project; `fresh`: as it is now). None for a session in no
+    project."""
     pid = override_of(session) if session else ""
     if pid:
         target = known_project(pid)
         if target is not None and not join_refusal(target):
             return target
-    return resolve_project(launch_cwd) if launch_cwd else None
+    return resolve_project(launch_cwd, fresh) if launch_cwd else None
 
 
-def record_project(rec):
+def record_project(rec, fresh=False):
     """The project of the session an engine record names, from its launch
-    directory (the record's cwd only until its transcript names one)."""
-    sid = str(rec.get("sessionId") or "")
-    return session_project(sid, launch_cwd(sid, fallback=str(rec.get("cwd") or "")))
+    directory (the record's cwd only until its transcript names one). Kept
+    for the cache generation, as seat_project is, `fresh` reading it anew."""
+    sid, cwd = str(rec.get("sessionId") or ""), str(rec.get("cwd") or "")
+    if not fresh and (sid, cwd) in _RECORD_PROJECTS:
+        return _RECORD_PROJECTS[(sid, cwd)]
+    project = _RECORD_PROJECTS[(sid, cwd)] = session_project(sid, launch_cwd(sid, fallback=cwd), fresh)
+    return project
 
 
 # Writers: one appender each. `<machine>/<session-uuid>` for a session,
@@ -1482,23 +1518,37 @@ def addressed_to(e, session):
             and any(isinstance(r, dict) and r.get("session") == session for r in to))
 
 
+_LOG_FILES = {}  # writer file → ((st_ino, st_size, st_mtime_ns), its well-formed events)
+
+
+def _log_file_events(path):
+    """A writer file's well-formed events, parsed again only once its inode,
+    size or mtime moved: the daemon and the uplink read every project's
+    whole log many times a minute. [] for a file that cannot be read."""
+    try:
+        st = os.stat(path)
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        held = _LOG_FILES.get(path)
+        if held is None or held[0] != key:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                held = _LOG_FILES[path] = (key, [e for e in map(parse_event, f) if e is not None])
+    except OSError:
+        _LOG_FILES.pop(path, None)
+        return []
+    return held[1]
+
+
 def log_read(project, since=None, kinds=(), to_session=None):
     """The project's events: each writer's stream in seq order (authoritative
     within a writer), merged by taking the next line from whichever stream's
     head has the earlier (ts, writer). Only the top-level *.jsonl are read."""
     streams = {}
     for path in sorted(glob.glob(os.path.join(project.home, "log", "*.jsonl"))):
-        try:
-            f = open(path, encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        with f:
-            for line in f:
-                e = parse_event(line)
-                if (e is None or (since and e["seq"] <= int(since.get(e["writer"], 0)))
-                        or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
-                    continue
-                streams.setdefault(e["writer"], []).append(e)
+        for e in _log_file_events(path):
+            if ((since and e["seq"] <= int(since.get(e["writer"], 0)))
+                    or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
+                continue
+            streams.setdefault(e["writer"], []).append(dict(e))
     for stream in streams.values():
         stream.sort(key=lambda e: e["seq"])
     return list(heapq.merge(*streams.values(), key=lambda e: (e["ts"], e["writer"])))
@@ -1704,10 +1754,13 @@ def caller_alias():
 
 def repo_branch(cwd):
     """(the owning repository's basename, the branch checked out at `cwd`),
-    each "" when there is none: what a row shows as repo@branch."""
+    each "" when there is none: what a row shows as repo@branch. Kept for
+    the cache generation: every view reads it for every member."""
     if not cwd:
         return "", ""
-    return os.path.basename(owning_repo(cwd)), sibling_module("sminos_policy").git_branch(cwd)
+    if cwd not in _REPO_BRANCH:
+        _REPO_BRANCH[cwd] = os.path.basename(owning_repo(cwd)), sibling_module("sminos_policy").git_branch(cwd)
+    return _REPO_BRANCH[cwd]
 
 
 def joined_fields(alias, name_source, cwd, worktree="", role="", seat="", by="", session_kind=""):
@@ -1837,7 +1890,10 @@ def _reconcile(project, events, local, by_session):
     `moved`, naming the project it moved to; that project's reconciliation
     joins it (§1a). One may join before the other retires: a dual membership
     of one tick. A member the engine relocated within the project is joined
-    again where it runs now (refresh_joined)."""
+    again where it runs now (refresh_joined). Which project a session is in
+    is read from the cache generation's resolution (seat_project); a move or
+    a join it decides is written only if the session's project, resolved
+    afresh under the lock, still says so (here_now, retire_moved)."""
     latest, joined = {}, {}
     for e in events:
         if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
@@ -1851,12 +1907,12 @@ def _reconcile(project, events, local, by_session):
         seat = by_session.get(sid)
         if seat is not None:
             if seat["current"] == sid:
-                out += retire_moved(project, sid, seat_project(seat))
+                out += retire_moved(project, sid, seat_project(seat), lambda seat=seat: seat_project(seat, fresh=True))
             continue
         rec = session_running(sid)
         if rec is not None:
             if str(rec.get("pid")) not in internal_pids():
-                out += retire_moved(project, sid, record_project(rec), lambda rec=rec: record_project(rec))
+                out += retire_moved(project, sid, record_project(rec), lambda rec=rec: record_project(rec, fresh=True))
             continue
         successor = continued_in(sid)
         if successor:
@@ -1878,14 +1934,28 @@ def _reconcile(project, events, local, by_session):
             if latest.get(sid) == "joined":
                 out += refresh_joined(project, sid, joined[sid])
             continue
-        out += join_on_sight(project, sid, seat, peer, bool(peer),
-                             recheck=None if seat or not peer else lambda peer=peer: record_project(peer),
+        out += join_on_sight(project, sid, seat, peer, bool(peer), recheck=lambda ev=ev: here_now(project, ev),
                              marked=sid == own and member_mark(peer))
     for sid, ev in local.items():
         seat = ev.get("seat")
         if seat and "peer" not in ev and seat["status"] != "retired" and (successor := continued_in(sid)):
             out += hand_off(project, sid, successor)
     return out
+
+
+def here_now(project, ev):
+    """The project, when what made a session this machine's in it (`ev`, its
+    _local_sessions entry: a seat, a running engine record) still resolves
+    to it as the directories, the transcript and the join override are now;
+    else None. A join's recheck: a reconciliation decides on the cache
+    generation's resolution, which may predate a .smns written or a join
+    made since (a re-join after a move, F3 of the org directory's
+    acceptance run)."""
+    seat, peer = ev.get("seat"), ev.get("peer")
+    for p in (seat_project(seat, fresh=True) if seat else None, record_project(peer, fresh=True) if peer else None):
+        if p is not None and p.id == project.id:
+            return project
+    return None
 
 
 def retire_moved(project, sid, where, recheck=None):
@@ -2590,6 +2660,21 @@ def _owed(events, session, record):
             if not e["writer"].startswith("legacy/")
             and writer_session(e["writer"]) != session and addressed_to(e, session)
             and e["seq"] > _delivery(record, e["writer"])["settled"]]
+
+
+def addressees(events):
+    """{session: the events addressed to it, in the log's order}: the part of
+    the log _owed reads for each session, read once for all of them (the
+    daemon asks for every member of every project each tick)."""
+    out = {}
+    for e in events:
+        to = e.get("to")
+        if not isinstance(to, list) or not to or "copy" in e:
+            continue
+        for s in dict.fromkeys(r.get("session") for r in to if isinstance(r, dict)):
+            if isinstance(s, str) and s:
+                out.setdefault(s, []).append(e)
+    return out
 
 
 def owed(project, member):
@@ -4603,7 +4688,11 @@ def forget_caches():
     _SELF = None
     _PSTART.clear()
     _TRANSCRIPTS.clear()
+    _TINDEX.stale()
     _PROJECTS.clear()
+    _SEAT_PROJECTS.clear()
+    _RECORD_PROJECTS.clear()
+    _REPO_BRANCH.clear()
     _HOMES.clear()
     _VIEWS.clear()
     _ENROLLED.clear()
@@ -5283,29 +5372,113 @@ def status_for_state(state):
 
 
 # session -> its transcript's path, per invocation: reconciliation and state()
-# ask for the same stopped sessions' each pass. Only a hit is kept — spawn and
-# resume poll for a transcript to appear.
+# ask for the same stopped sessions' each pass.
 _TRANSCRIPTS = {}
+# How stale the index may be when a new cache generation (forget_caches) first
+# asks it: a long-lived process forgets every few seconds, and a refresh is a
+# stat of every project directory. A caller waiting for a transcript to appear
+# asks with `fresh` (transcript_contains, the session plane's locate).
+TRANSCRIPT_FRESH = 5.0
+TRANSCRIPT_GLOBS = 4   # a process's asks answered by a glob for the one id, before it builds the index
 
 
-def transcript_path(session_id):
-    """Munging-agnostic: the harness mangles the cwd into the project-dir name,
-    so glob for the transcript by its unique session id instead. A session's
-    transcript sits directly in its project dir (projects/<dir>/<id>.jsonl;
-    only subagent files nest deeper), so one level is searched — a recursive
-    glob walks every subagent file on the machine, ~0.6 s a call on a busy
-    one, and state() asks this for every seat without a live peer. A session
-    found under two project dirs (a repository that moved) answers with the
-    one written last."""
+class TranscriptIndex:
+    """Every session's transcript under ~/.claude/projects, by session id. A
+    transcript sits directly in its project directory (projects/<dir>/<id>.jsonl;
+    only subagent files nest deeper), and the harness mangles the cwd into the
+    directory's name, so a session is found by its id, not by its cwd. One
+    look per id was a glob, one lstat per project directory — 1,500 of them on
+    the owner's Macs, 6 to 36 ms — and a session with no transcript here (an
+    old seat's, which the engine cleaned up) paid it on every ask: thousands
+    a tick once every machine followed every org project. The index lists a
+    directory again only when its mtime moved (a transcript created, moved or
+    removed there), so a refresh costs one stat per directory; it is built
+    once a process has asked more than a few times (paths), and refreshed
+    when asked `fresh` and when a cache generation first asks it once it is
+    TRANSCRIPT_FRESH old. Shared with the session plane's threads: one lock."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.base = None
+        self.dirs = {}       # directory name → (its mtime_ns as listed, the session ids of its transcripts)
+        self.by = {}         # session → [directory name]
+        self.at = None       # when it was last refreshed (monotonic)
+        self.forgot = False  # a cache generation began since (forget_caches)
+        self.globbed = 0     # asks answered by a glob, before the index was first built
+        self.refreshes = 0
+
+    def stale(self):
+        self.forgot = True
+
+    def refresh(self, base):
+        held = self.dirs if base == self.base else {}
+        dirs = {}
+        try:
+            entries = list(os.scandir(base))
+        except OSError:
+            entries = []
+        for e in entries:
+            try:
+                if not e.is_dir():
+                    continue
+                mtime = e.stat().st_mtime_ns   # before the listing: a file made after it moves the mtime again
+                d = held.get(e.name)
+                if d is None or d[0] != mtime:
+                    d = (mtime, tuple(n[:-6] for n in os.listdir(e.path) if n.endswith(".jsonl")))
+            except OSError:
+                continue
+            dirs[e.name] = d
+        by = {}
+        for name, (_, sids) in dirs.items():
+            for sid in sids:
+                by.setdefault(sid, []).append(name)
+        self.base, self.dirs, self.by, self.at, self.forgot = base, dirs, by, time.monotonic(), False
+        self.refreshes += 1
+
+    def paths(self, session_id, fresh=False):
+        """The transcripts of a session found under the projects directory;
+        `fresh`: the directories read as they are now. A process's first
+        TRANSCRIPT_GLOBS asks glob for the one id instead: a verb asks a few,
+        and building the index costs as much as several globs."""
+        base = os.path.join(home_dir(), ".claude", "projects")
+        with self.lock:
+            if self.at is None and self.globbed < TRANSCRIPT_GLOBS:
+                self.globbed += 1
+                return glob.glob(os.path.join(glob.escape(base), "*", session_id + ".jsonl"))
+            if fresh or self.at is None or base != self.base or (
+                    self.forgot and time.monotonic() - self.at >= TRANSCRIPT_FRESH):
+                self.refresh(base)
+            return [os.path.join(base, d, session_id + ".jsonl") for d in self.by.get(session_id, ())]
+
+
+_TINDEX = TranscriptIndex()
+
+
+def transcripts_now():
+    """The transcripts read as the directories are now, for what follows: a
+    caller about to act on a transcript's absence or its age (the daemon's
+    sweeps, which remove what a session left once its transcript is gone)."""
+    _TRANSCRIPTS.clear()
+    with _TINDEX.lock:
+        _TINDEX.refresh(os.path.join(home_dir(), ".claude", "projects"))
+
+
+def transcript_path(session_id, fresh=False):
+    """The path of a session's transcript on this machine, or "" (TranscriptIndex).
+    A session found under two project dirs (a repository that moved) answers
+    with the one written last. `fresh`: the projects directory read as it is
+    now — for a transcript that may have appeared since (a poller), or one
+    found missing since it was looked up (the engine moved it)."""
     if not session_id:
         return ""
-    hit = _TRANSCRIPTS.get(session_id)   # one lookup: the session plane's threads ask while the uplink forgets
+    hit = None if fresh else _TRANSCRIPTS.get(session_id)   # one lookup: the plane's threads ask while the uplink forgets
     if hit:
         return hit
-    hits = glob.glob(os.path.join(home_dir(), ".claude", "projects", "*", session_id + ".jsonl"))
+    hits = _TINDEX.paths(session_id, fresh)
     if not hits:
+        _TRANSCRIPTS.pop(session_id, None)
         return ""
-    _TRANSCRIPTS[session_id] = path = max(hits, key=_mtime)
+    _TRANSCRIPTS[session_id] = path = max(hits, key=_mtime) if len(hits) > 1 else hits[0]
     return path
 
 
@@ -5329,8 +5502,10 @@ def transcript_rows(session_id):
     return rows
 
 
-def transcript_contains(session_id, marker):
-    f = transcript_path(session_id)
+def transcript_contains(session_id, marker, fresh=False):
+    """Whether the session's transcript holds `marker`; `fresh`, for a poller:
+    a transcript not found is looked for as the directories are now."""
+    f = transcript_path(session_id) or (transcript_path(session_id, fresh=True) if fresh else "")
     if not f:
         return False
     try:
@@ -6533,7 +6708,7 @@ def wait_socket_turn(s, marker, was_idle, guard):
     deadline = time.time() + float(os.environ.get("SMINOS_ACK_TIMEOUT", "120"))
     seen = False
     while time.time() < deadline:
-        if transcript_contains(cur, marker):
+        if transcript_contains(cur, marker, fresh=True):
             seen = True
             break
         if was_idle:
