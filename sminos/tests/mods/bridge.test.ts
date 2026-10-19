@@ -8,6 +8,7 @@ import {
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
   OFF_LINE,
+  ON_LINE,
   RECORD_WAIT_MS,
   ROWS_POLLS,
   ROWS_POLL_MS,
@@ -181,6 +182,8 @@ function harness(
   const guardReads: { op: string; args: unknown }[] = []
   let marker = options.marker ?? { value: undefined, version: 0 }
   let isCuaEnabled = options.cua === true
+  /** While held (`holdGuardReads`), `$.state.get` waits. */
+  let readGate: Promise<void> = Promise.resolve()
   /** What the control ops asked of the engine, in order. */
   const calls: { op: string; args: unknown }[] = []
   const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
@@ -345,6 +348,7 @@ function harness(
     state: {
       get: async (ref: { plugin: string; key: string }) => {
         guardReads.push({ op: 'state.get', args: ref })
+        await readGate
         if (options.stateFails) {
           throw new Error('$.state.get: the host did not answer')
         }
@@ -571,6 +575,12 @@ function harness(
     guardReads,
     setMarker: (read: { value: unknown; version: number }) => (marker = read),
     setCua: (isEnabled: boolean) => (isCuaEnabled = isEnabled),
+    /** Holds the guard reads until the returned function is called. */
+    holdGuardReads: () => {
+      let release: () => void = () => undefined
+      readGate = new Promise((resolve) => (release = resolve))
+      return release
+    },
     settle,
     events,
     ofType,
@@ -4269,10 +4279,24 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(h.logs).not.toContain(OFF_LINE)
     expect(h.children[0]!.killed).toBe(false)
   }
-  const expectOff = (h: Harness) => {
-    expect(h.logs.filter((l) => l === OFF_LINE)).toHaveLength(1)
-    expect(h.toasts).toEqual([OFF_LINE])
-    expect(h.children[0]!.killed).toBe(true)
+  /** Off: said once per transition, as a toast and a debug line; the child it had, stopped. */
+  const expectOff = (h: Harness, transitions = 1) => {
+    expect(h.logs.filter((l) => l === OFF_LINE)).toHaveLength(transitions)
+    expect(h.toasts.filter((t) => t === OFF_LINE)).toHaveLength(transitions)
+    expect(h.children.at(-1)!.killed).toBe(true)
+  }
+  /** Back on: said once per transition; a new child for the session, as a reload starts one. */
+  const expectOn = (h: Harness, transitions = 1) => {
+    expect(h.logs.filter((l) => l === ON_LINE)).toHaveLength(transitions)
+    expect(h.toasts.filter((t) => t === ON_LINE)).toHaveLength(transitions)
+    expect(h.children.at(-1)!.killed).toBe(false)
+  }
+  /** The newest child says hello under a nonce of its own; what it is posted from then on. */
+  const greetNewest = async (h: Harness, nonce: string) => {
+    const at = h.posts.length
+    h.children.at(-1)!.write(hello(SID, SOCK, undefined, nonce))
+    await h.settle()
+    return () => h.posts.slice(at)
   }
 
   test('the off line says what to set, in the words the spec gives', () => {
@@ -4294,6 +4318,8 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     ["a stored marker with cua enabled reads as cua's row: no cua beneath", { marker: STORED_MARKER, cua: true }, ['doperpowers'], 'off'],
     ["a stored marker with cua enabled reads as cua's row: cua beneath", { marker: STORED_MARKER, cua: true }, ['doperpowers', 'cua'], 'safe'],
     ["devcloud's live marker with cua enabled (cua's copy stands down): devcloud beneath alone", { marker: LIVE_MARKER, cua: true }, ['devcloud'], 'safe'],
+    // Exactly the two keys devcloud answers, as cua's own check reads them: anything else is no live marker.
+    ['a marker at version 0 with a key devcloud never answers, cua not enabled, no devcloud beneath', { marker: { value: { owner: 'devcloud', version: 1, extra: true }, version: 0 } }, ['doperpowers'], 'safe'],
   ]
   for (const [name, options, plugins, verdict] of table) {
     test(`${name}: ${verdict}`, async () => {
@@ -4324,9 +4350,20 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     await rowBeneath(off, ['doperpowers'])
     expectOff(off)
     const posts = off.posts.length
-    await callBeneath(off, ['doperpowers', 'devcloud'])
+    await callBeneath(off, ['doperpowers'])
     await off.settle()
     expect(off.posts.length).toBe(posts)
+  })
+
+  test("a row's notice goes out before its dispatch is judged: the guard reads never delay the notices' write order", async () => {
+    const h = harness()
+    await h.ready()
+    const release = h.holdGuardReads()
+    const kept = rowBeneath(h, ['doperpowers'])
+    await h.settle()
+    expect(h.ofType('block-row').length + h.ofType('row-seen').length).toBe(1)
+    release()
+    await kept
   })
 
   test('until the first verdict a tool event waits, and every event behind it; a safe verdict posts them whole, in order', async () => {
@@ -4348,7 +4385,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expectSafe(h)
   })
 
-  test('a first verdict of off drops what waits: no tool event is ever posted, the line is said once, and the child is ended for good', async () => {
+  test('a first verdict of off drops what waits: no tool event is posted, the line is said once, and no child is started while it stands', async () => {
     const h = harness({ marker: LIVE_MARKER, verdictPending: true })
     await h.ready()
     const call = await runningBeneath(h, ['doperpowers'])
@@ -4358,13 +4395,26 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(h.ofType('tool')).toEqual([])
     expect(posted(h)).not.toContain(CALL.command)
     expect(posted(h)).not.toContain(OUTPUT)
-    // No heartbeat, and no child again: not when it ends, not at a session start.
-    expect(h.timers.filter((t) => t.kind === 'every').every((t) => t.cancelled)).toBe(true)
+    // No heartbeat posted, and no child again: not when it ends, not at a session start.
+    for (const t of h.timers.filter((t) => t.kind === 'every')) {
+      t.fn()
+    }
     h.children[0]!.end()
     await h.settle()
     await h.fire(1_000)
     await h.start()
+    expect(h.ofType('heartbeat')).toEqual([])
     expect(h.children).toHaveLength(1)
+  })
+
+  test('a native question before the first verdict is raised as the engine gave it: no guard restores into one', async () => {
+    const h = harness({ verdictPending: true })
+    await h.ready()
+    const questions = [{ question: 'Which?', header: 'Pick', options: [{ label: 'a', description: 'A' }, { label: 'b', description: 'B' }], multiSelect: false }]
+    void h.permission('AskUserQuestion', { questions })
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ tool: 'AskUserQuestion', input: { questions } })])
+    poll.respond(410)
   })
 
   test("until the first verdict a permission's input is not raised (the dialog is the terminal's); once safe, the next one is", async () => {
@@ -4385,7 +4435,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     poll.respond(410)
   })
 
-  test('the verdict is read on every dispatch: a guard loaded outside a living instance turns it off at the next one, for good', async () => {
+  test('the verdict is read on every dispatch: a guard loaded outside a living instance turns it off at the next one', async () => {
     const h = harness()
     await h.ready()
     await callBeneath(h, [])
@@ -4396,13 +4446,103 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     h.setMarker(LIVE_MARKER)
     await rowBeneath(h, ['doperpowers'])
     expectOff(h)
-    // Terminal for the instance: with devcloud gone again, a dispatch that would read safe changes nothing.
-    h.setMarker({ value: undefined, version: 0 })
-    await callBeneath(h, ['doperpowers', 'devcloud', 'cua'])
-    await rowBeneath(h, [])
+  })
+
+  test('outside a loaded guard it stays off across every dispatch: nothing posted, no child started, said once', async () => {
+    const h = harness({ marker: LIVE_MARKER, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'])
+    const posts = h.posts.length
+    for (let i = 0; i < 5; i++) {
+      await rowBeneath(h, ['doperpowers'])
+      await callBeneath(h, ['doperpowers'])
+      await h.turn(`t${i}`)
+      for (const t of h.timers.filter((t) => t.kind === 'every')) {
+        t.fn()
+      }
+    }
+    // A question too goes to the terminal unraised while the bridge is off.
+    expect(await h.permission('AskUserQuestion', { questions: [] })).toEqual({})
     await h.settle()
-    expect(h.ofType('tool')).toEqual(whole)
+    expect(h.posts.length).toBe(posts)
+    expect(h.children).toHaveLength(1)
     expectOff(h)
+  })
+
+  test('a guard loaded while a call was in flight reads off at its end, and the next dispatch, beneath it, turns the bridge back on as a reload would', async () => {
+    const h = harness()
+    await h.ready()
+    // The call's chain was taken before devcloud loaded: its trace has no devcloud.
+    const call = await runningBeneath(h, ['doperpowers'])
+    h.setMarker(LIVE_MARKER)
+    await call.end()
+    expectOff(h)
+    expect(h.ofType('tool').filter((e) => e.phase === 'result')).toEqual([])
+    // The next row's chain has devcloud beneath: safe, and it began after the off.
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    expectOn(h)
+    expect(h.children).toHaveLength(2)
+    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID])
+    // A new child, a new nonce: what an old instance still posts is turned away.
+    const after = await greetNewest(h, 'n1')
+    expect(after()[0]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+    await callBeneath(h, ['doperpowers', 'devcloud'])
+    await h.settle()
+    expect(after().every((p) => p.nonce === 'n1')).toBe(true)
+    expect(after().flatMap((p) => p.events).filter((e) => e.type === 'tool')).toEqual(whole)
+  })
+
+  test("cua enabled in the settings but not yet loaded reads off; the reload that seats cua beneath turns the bridge back on", async () => {
+    const h = harness({ cua: true, verdictPending: true })
+    await h.ready()
+    // The settings name cua before its module is in the chain: the leg reads intent.
+    await rowBeneath(h, ['doperpowers'])
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    // /reload-plugins: cua's module loads in tier user, beneath the bridge; its command rows say so.
+    await rowBeneath(h, ['doperpowers', 'cua'])
+    expectOn(h)
+    const after = await greetNewest(h, 'n1')
+    await callBeneath(h, ['doperpowers', 'cua'])
+    await h.settle()
+    expect(after().flatMap((p) => p.events).filter((e) => e.type === 'tool')).toEqual(whole)
+  })
+
+  test('a dispatch that began before the off and reads safe does not turn the bridge back on', async () => {
+    const h = harness()
+    await h.ready()
+    const call = await runningBeneath(h, ['doperpowers', 'devcloud'])
+    h.setMarker(LIVE_MARKER)
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    await call.end()
+    expect(h.logs).not.toContain(ON_LINE)
+    expect(h.children).toHaveLength(1)
+  })
+
+  test('off and on again, then off again: each transition said once, and a /clear while off starts no child', async () => {
+    const h = harness({ marker: LIVE_MARKER, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    // A /clear while off: the new session is found, but no child is started for it.
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await h.settle()
+    const NEW = '6c000002-0000-4000-8000-00000000006c'
+    h.setSession(NEW)
+    for (const t of h.timers.filter((t) => t.kind === 'after' && !t.cancelled)) {
+      t.cancelled = true
+      t.fn()
+    }
+    await h.settle()
+    expect(h.children).toHaveLength(1)
+    // Back on only through a safe dispatch, for the session the /clear moved to.
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    expectOn(h)
+    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h, 2)
+    expect(h.logs.filter((l) => l === ON_LINE)).toHaveLength(1)
   })
 
   test("off on a call's own dispatch: its result is never posted (its call event went out before it ran: the window §4 accepts)", async () => {
@@ -4467,13 +4607,17 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     ])
   })
 
-  test('a read that fails decides nothing, and the debug log says why', async () => {
+  test('a read that fails decides nothing: the debug log says why each time, a toast once for the module instance', async () => {
     const h = harness({ stateFails: true, verdictPending: true })
     await h.ready()
     await callBeneath(h, ['doperpowers'])
+    await rowBeneath(h, ['doperpowers'])
     await h.settle()
     expect(h.logs).not.toContain(OFF_LINE)
     expect(h.ofType('tool')).toEqual([])
-    expect(h.logs.some((l) => l.includes('$.state.get: the host did not answer'))).toBe(true)
+    expect(h.logs.filter((l) => l.includes('$.state.get: the host did not answer'))).toHaveLength(2)
+    expect(h.toasts).toHaveLength(1)
+    expect(h.toasts[0]).toContain('cannot read which secrets guard is loaded')
+    expect(h.toasts[0]).toContain('$.state.get: the host did not answer')
   })
 })

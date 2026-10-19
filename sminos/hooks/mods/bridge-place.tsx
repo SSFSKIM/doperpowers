@@ -11,7 +11,10 @@
  * the plugin of every link beneath it. Each settled `tool.call` and
  * `session.append` gives a verdict, since `/reload-plugins` re-instantiates
  * only the modules that changed, so a guard enabled mid-session can load
- * outside a bridge that lives on. `off` is terminal for the module instance.
+ * outside a bridge that lives on, or inside it. `off` lasts until a dispatch
+ * that began after it reads `safe` (bridge.tsx, judgePlace): the trace and
+ * the reads are taken at different moments, and cua's leg reads the
+ * settings' intent, so a verdict can be off for a while and then right again.
  */
 
 export type Place = 'safe' | 'off'
@@ -23,16 +26,22 @@ export type Guard = 'devcloud' | 'cua'
 export const OFF_LINE =
   'sminos: the bridge is off — sminos must load outside devcloud and cua; set prependPlugins in ~/.claude/settings.json to ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"]'
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+/** Said, as a toast and in the debug log, when an off bridge finds itself outside the guards again. */
+export const ON_LINE = 'sminos: the bridge is on again — sminos loads outside devcloud and cua now'
+
+const isRecord =(value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 
 /**
  * Whether devcloud's guard is loaded now. devcloud's loaded module answers a
  * read of its marker itself, at state version 0, and stores nothing. A value
  * at version 1 or more is one a devcloud before 0.5.0 stored, which outlives
- * its module (board #101), so it does not count.
+ * its module (board #101), so it does not count. The value is exactly the two
+ * keys devcloud answers, as cua's own check reads it (`isDevcloudMarker`), so
+ * the bridge and cua's copy never disagree on whether devcloud's guard acts.
  */
 export function isLiveMarker(read: { value: unknown; version: number }): boolean {
-  return read.version === 0 && isRecord(read.value) && read.value.owner === 'devcloud' && read.value.version === 1
+  const marker = read.value
+  return read.version === 0 && isRecord(marker) && Object.keys(marker).length === 2 && marker.owner === 'devcloud' && marker.version === 1
 }
 
 /** Whether the user settings enable `cua@cua`, whose copy of the guard acts when devcloud's is not loaded. */
@@ -46,8 +55,10 @@ export function isCuaEnabled(settings: unknown): boolean {
  * `loaded` reads which guard is loaded now. The reads are skipped when the
  * links beneath name both guards, which leaves no guard outside.
  *
- * Off needs proof that the loaded guard is outside. Two kinds of dispatch
- * give none, and so no verdict:
+ * `safe` needs no more than that: no guard is loaded, or the loaded one has
+ * a link beneath, whether or not the trace reaches the engine. `off` needs
+ * proof that the loaded guard is outside, and two kinds of dispatch that lack
+ * its link give none, and so no verdict:
  * - a trace cut short of the engine's entry, by a link that answered the
  *   call itself (a plugin's own tool, a refused row), lists nothing beneath
  *   that link;

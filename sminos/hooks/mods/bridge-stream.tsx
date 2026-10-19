@@ -35,12 +35,12 @@ export type Hold = BridgeEvent & {
 export const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@hold'
 
 /**
- * A tool event while the bridge does not know its place yet: its input or
- * result may hold what a guard outside the bridge restored. The poster posts
- * nothing past it until the place is known (bridge-place.tsx). Then a safe
- * bridge posts it whole, and an `off` bridge drops the queue.
+ * A tool event while the bridge is not known to be safe: its input or result
+ * may hold what a guard outside the bridge restored. The poster posts nothing
+ * past it until a `safe` verdict (bridge-place.tsx) posts it whole; an `off`
+ * verdict drops the queue, and queues nothing while it stands (`emit`).
  */
-const isWithheld = (e: BridgeEvent | undefined) => state.place === undefined && e?.type === 'tool'
+const isWithheld = (e: BridgeEvent | undefined) => state.place !== 'safe' && e?.type === 'tool'
 
 const BATCH_MAX = 500
 const QUEUE_MAX = 10_000
@@ -278,7 +278,7 @@ export function requeue(events: BridgeEvent[]) {
 
 /** Places a hold (Hold) at the queue's end. */
 export function hold(h: Hold) {
-  if (state.post === undefined || state.isEnding) {
+  if (state.post === undefined || state.isEnding || state.place === 'off') {
     return
   }
   state.queue.push(h)
@@ -292,7 +292,9 @@ export function emit(event: BridgeEvent) {
   }
   const stamped = { ...event, t: Date.now() }
   track(stamped)
-  if (state.isEnding) {
+  // A bridge that is off has no child to post to: the live state it keeps
+  // reaches the child a later safe verdict starts, as that child's resync.
+  if (state.isEnding || state.place === 'off') {
     return
   }
   state.queue.push(stamped)
@@ -364,7 +366,6 @@ export async function poster() {
     )
     state.isPosting = false
     if (isFenced) {
-      state.log?.('bridge: the child serves another module instance now; this one stops')
       retire()
       return
     }
@@ -379,12 +380,12 @@ export async function poster() {
 }
 
 /**
- * This module instance gives up the session's bridge, because a reload's new
- * instance owns it or because the bridge found itself inside a guard. It
- * posts nothing more, drops what is queued, stops its heartbeat, and stops
- * its child, if any is left, for good.
+ * This module instance no longer owns the session's bridge (a reload's new
+ * instance does): it posts nothing more, its heartbeat stops, and its child,
+ * if any is left, is stopped and never respawned.
  */
-export function retire() {
+function retire() {
+  state.log?.('bridge: the child serves another module instance now; this one stops')
   state.post = undefined
   state.queue = []
   state.heartbeat?.cancel()

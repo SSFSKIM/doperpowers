@@ -3,11 +3,11 @@ import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, Sess
 import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
-import { OFF_LINE, isCuaEnabled, isLiveMarker, placeOf } from './bridge-place'
+import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, placeOf } from './bridge-place'
 import type { Guard, Place } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
-import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, retire, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -26,7 +26,7 @@ import {
 import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 
-export { OFF_LINE } from './bridge-place'
+export { OFF_LINE, ON_LINE } from './bridge-place'
 export { TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
@@ -67,8 +67,9 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  *
  * The bridge must sit outside every secrets guard, and checks that it does on
  * each settled `tool.call` and `session.append`. Until the first check a tool
- * event waits and no permission is raised; a bridge that finds a guard outside
- * it turns itself off for the module instance (`judgePlace`).
+ * event waits, and no permission's input is raised (a native question is). A
+ * bridge that finds a guard outside it turns itself off, stopping its child,
+ * until a later dispatch finds it outside every guard again (`judgePlace`).
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
  * child and the session it serves, control, the wait for a decision, and the
@@ -1074,8 +1075,13 @@ function onLine($: EngineInterface, generation: number, line: string) {
  * ending at once, up to a minute.
  */
 function startChild($: EngineInterface, session: string) {
-  const generation = ++state.generation
   state.session = session
+  // An off bridge has no child: only a safe dispatch starts one again
+  // (judgePlace), never a /clear's restart, a respawn or a session start.
+  if (state.place === 'off') {
+    return
+  }
+  const generation = ++state.generation
   state.socket = undefined
   state.nonce = undefined
   const startedAt = Date.now()
@@ -1200,13 +1206,13 @@ async function loadedGuard($: EngineInterface): Promise<Guard | undefined> {
 
 /**
  * The bridge's place, judged again from what settled beneath one of its hooks
- * (bridge-place.tsx). The first `safe` posts the tool events that waited for
- * it. `off` ends the bridge for this module instance: what is queued is
- * dropped, the child is stopped and never started again, and the line says
- * why, as a toast and in the debug log. A dispatch that cannot tell (a trace
- * cut short, a read that failed) changes nothing.
+ * (bridge-place.tsx); `offsAt` is how many times it had turned off when that
+ * dispatch began. The first `safe` posts the tool events that waited for it.
+ * A dispatch that cannot tell (a trace cut short, a read that failed) changes
+ * nothing; a read that failed is said once as a toast, since a barrier that
+ * never lifts would otherwise be seen only in the debug log.
  */
-async function judgePlace($: EngineInterface, beneath: { readonly trace: readonly { readonly plugin: string }[]; readonly origin: { readonly plugin: string } }) {
+async function judgePlace($: EngineInterface, beneath: { readonly trace: readonly { readonly plugin: string }[]; readonly origin: { readonly plugin: string } }, offsAt: number) {
   if (state.post === undefined) {
     return
   }
@@ -1214,26 +1220,67 @@ async function judgePlace($: EngineInterface, beneath: { readonly trace: readonl
   try {
     place = await placeOf(beneath.trace, beneath.origin.plugin, () => loadedGuard($))
   } catch (error) {
-    $.ui.log(`bridge: its place among the secrets guards was not read: ${message(error)}`, { to: 'debug' })
+    const why = `bridge: its place among the secrets guards was not read: ${message(error)}`
+    $.ui.log(why, { to: 'debug' })
+    if (!state.isUnreadSaid) {
+      state.isUnreadSaid = true
+      $.ui.toast(`sminos: the bridge cannot read which secrets guard is loaded, so it cannot check its place: ${message(error)}`)
+    }
     return
   }
-  if (place === 'off' && state.post !== undefined) {
-    // Ended before it is said, so nothing the saying does can leave it running.
-    state.place = 'off'
-    retire()
-    $.ui.log(OFF_LINE, { to: 'debug' })
-    $.ui.toast(OFF_LINE)
+  if (state.post === undefined) {
+    return
+  }
+  if (place === 'off' && state.place !== 'off') {
+    turnOff($)
   } else if (place === 'safe' && state.place === undefined) {
     state.place = 'safe'
     pump()
+  } else if (place === 'safe' && state.place === 'off' && offsAt === state.offs) {
+    // Only a dispatch that began after the bridge turned off: one begun
+    // before read a chain that may no longer stand.
+    turnOn($)
+  }
+}
+
+/**
+ * The bridge found a guard outside it. What is queued is dropped, the child is
+ * stopped, and the requests it raised from the permission path are withdrawn
+ * (their inputs came through the guard); then the line says why, once, as a
+ * toast and in the debug log. While off, nothing is queued or raised, and no
+ * child is started (startChild).
+ */
+function turnOff($: EngineInterface) {
+  // Off before it is said, so nothing the saying does can leave it running.
+  state.place = 'off'
+  state.offs++
+  state.queue = []
+  stopChild()
+  for (const r of [...state.requests.values()]) {
+    if (!r.isAsync) {
+      settle(r, 'withdrawn', 'bridge')
+    }
+  }
+  $.ui.log(OFF_LINE, { to: 'debug' })
+  $.ui.toast(OFF_LINE)
+}
+
+/**
+ * The bridge is outside every guard again: a new child for the session, as a
+ * reload starts one, whose hello names a nonce of its own (so an older
+ * instance's posts are turned away) and opens with a resync of the live state
+ * kept while off.
+ */
+function turnOn($: EngineInterface) {
+  state.place = 'safe'
+  $.ui.log(ON_LINE, { to: 'debug' })
+  $.ui.toast(ON_LINE)
+  if (state.session !== undefined) {
+    state.restart?.(state.session)
   }
 }
 
 export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
-  // A bridge that found itself inside a guard stays off for the module instance.
-  if (state.place === 'off') {
-    return
-  }
   // derive's headless fork of a session is never a member, and needs no bridge.
   if ((await $.env.get('SMNS_INTERNAL')) !== undefined) {
     return
@@ -1489,6 +1536,7 @@ export function registerBridge(on: On) {
   })
 
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
+    const offsAt = state.offs
     const call = `${e.tool_use_id ?? ''}#${++state.toolCalls}`
     const base = { toolUseId: e.tool_use_id || null, tool: e.tool, agentId: e.agentId ?? null }
     const input = toolInput(e as Record<string, unknown>)
@@ -1520,7 +1568,7 @@ export function registerBridge(on: On) {
     try {
       const result = await next(e)
       // Where the bridge stands, judged before anything of the result is posted.
-      await judgePlace($, next)
+      await judgePlace($, next, offsAt)
       resultText = typeof result.text === 'string' ? result.text : undefined
       // A Bash call of a turn being interrupted: its result, which the record
       // names, goes back once the record is in, so the turn ends after it.
@@ -1583,7 +1631,9 @@ export function registerBridge(on: On) {
   // form stays on this machine, since an allow hands no input back. A
   // permission for a call this module did not see is the terminal's alone, as
   // is one before the bridge knows its place: the call it saw may already
-  // hold what a guard outside it restored. A question is raised as the
+  // hold what a guard outside it restored. While the bridge is off, every
+  // prompt is the terminal's, a question too (no child serves an answer). A
+  // question is otherwise raised as the
   // engine gave it: the ask mod widens its dialog's beneath this module, and
   // no guard restores into one.
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
@@ -1601,8 +1651,8 @@ export function registerBridge(on: On) {
       state.log?.(`bridge: a ${e.tool_name} permission for a call this module did not see is left to the terminal`)
       return next(e)
     }
-    if (!isQuestion && state.place === undefined) {
-      state.log?.(`bridge: a ${e.tool_name} permission before the bridge knows its place among the secrets guards is left to the terminal`)
+    if (state.place === 'off' || (!isQuestion && state.place === undefined)) {
+      state.log?.(`bridge: a ${e.tool_name} ${isQuestion ? 'question' : 'permission'} is left to the terminal: the bridge ${state.place === 'off' ? 'is off' : 'does not know its place among the secrets guards yet'}`)
       return next(e)
     }
     const id = claimed?.toolUseId ?? `request-${Date.now().toString(36)}-${++state.minted}`
@@ -1655,13 +1705,16 @@ export function registerBridge(on: On) {
   // file holds them in the order they resolve), then a call's result, a
   // main-loop row that may hold a message to the host or an answer to its
   // question. A row refused beneath is never written, and never named. Each
-  // row, refused or kept, says again where the bridge stands.
+  // row, refused or kept, then says again where the bridge stands: after its
+  // notice, so the guard reads never come between a row's write and its
+  // notice (DX5's notice order). That costs nothing: a guard scrubs a row
+  // before its own `next`, so a guard outside the bridge has scrubbed it.
   on('session.append', { door: /^/ }, async ($, e, next) => {
+    const offsAt = state.offs
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null
     const stored = await next(e)
-    await judgePlace($, next)
-    if (isLive && state.post !== undefined && stored.deny === undefined) {
+    if (isLive && stored.deny === undefined) {
       announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)
       observeRow(e.door, e.message, stored.uuid)
       if (agentId === null) {
@@ -1669,6 +1722,7 @@ export function registerBridge(on: On) {
         enteredRow(e.door, stored.message, stored.uuid, e.origin)
       }
     }
+    await judgePlace($, next, offsAt)
     return stored
   }).catch((_, e, next) => next(e))
 

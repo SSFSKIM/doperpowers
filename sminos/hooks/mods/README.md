@@ -230,16 +230,29 @@ rows read from the transcript, and the export to the host).
   beneath its hook. If the guard loaded now is not among them, the bridge is
   inside it. devcloud's guard counts as loaded when its marker reads live
   (the answer at state version 0). Otherwise cua's copy counts when the user
-  settings enable `cua@cua`. Two kinds of dispatch settle nothing: a trace
-  cut short of the engine (a link answered the call itself), and one the
-  guard's own plugin raised. Until the first verdict, tool events wait in
-  the post queue with everything behind them, and a permission is left to
-  the terminal. `safe` posts what waited. `off` drops it and stops the
-  child for the life of the module instance. A toast and a debug line
-  opening `sminos: the bridge is off` name the `prependPlugins` setting.
-  The check runs on every dispatch because `/reload-plugins` replaces only
-  the modules that changed: a guard enabled mid-session can load outside a
-  bridge that lives on. One window stays open, and is accepted: a call
+  settings enable `cua@cua`. A dispatch that lacks the loaded guard's link
+  says `off` only when its trace reaches the engine and the guard's own
+  plugin did not raise it: a trace cut short (a link answered the call
+  itself) still says `safe` when it names the guard or no guard is loaded,
+  and otherwise settles nothing; so does a read that fails, said once as a
+  toast. Until the first verdict, tool events wait in the post queue with
+  everything behind them, and a permission's input is left to the terminal
+  (a native question is raised). `safe` posts what waited. `off` drops it,
+  stops the child, and raises nothing, questions included; a toast and a
+  debug line opening `sminos: the bridge is off` name the `prependPlugins`
+  setting. The live state is still kept, and a later dispatch that began
+  after the off and reads `safe` turns the bridge back on, toasting so: a
+  new child, as a reload starts one, with a nonce of its own, whose hello
+  resyncs it. Nothing else starts a child while off, a `/clear` included.
+  Off is not final because the trace and the reads are taken at different
+  moments, and cua's leg reads the settings' intent: a guard enabled before
+  its module loads, or one loaded while a call was in flight, reads `off`
+  until the reload that seats it beneath. The check runs on every dispatch
+  because `/reload-plugins` replaces only the modules that changed: a guard
+  enabled mid-session can load outside a bridge that lives on, or inside it.
+  A row's notice goes out before its dispatch is judged, so the reads never
+  reorder the notices; a guard has scrubbed the row whichever side of the
+  bridge it sits. One window stays open, and is accepted: a call
   whose input is posted before its own dispatch settles, right after a
   guard loaded outside the bridge with no row appended in between. It needs
   an unplaced machine.

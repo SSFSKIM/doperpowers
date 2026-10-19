@@ -167,10 +167,16 @@ export type BridgeState = {
   /**
    * The bridge's place among the secrets guards (bridge-place.tsx), this
    * module instance's alone: none until a dispatch first settles it. Until
-   * then a tool event waits in the queue and no permission is raised; `off`
-   * ends the bridge for the instance.
+   * then a tool event waits in the queue and no permission's input is raised.
+   * While `off` there is no child, nothing is queued (the live state is still
+   * kept, for the resync of the child a later `safe` starts), and nothing is
+   * raised.
    */
   place?: Place
+  /** How many times the bridge turned off: a dispatch begun before the last of them cannot turn it back on. */
+  offs: number
+  /** A read of which guard is loaded failed, and the person was told (once per module instance). */
+  isUnreadSaid: boolean
   /** Bumped whenever a child is started or stopped on purpose; a loop of an older one does nothing more. */
   generation: number
   respawnMs: number
@@ -325,6 +331,8 @@ const fresh = (): BridgeState => ({
   submissions: [],
   deliveredRows: [],
   refusals: [],
+  offs: 0,
+  isUnreadSaid: false,
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,
   queue: [],
