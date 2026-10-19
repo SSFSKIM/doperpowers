@@ -435,7 +435,10 @@ once per instance (M3a: `/reload-plugins` re-instantiates only the modules that 
 enabled mid-session can load outside a bridge instance that lives on). **`off` is recoverable**
 (Decision Log, M3.2 review): while off nothing is posted, what waits is dropped, the barrier is
 re-armed and no permission input is raised, and a `/clear`'s restart refuses; the bridge comes back
-only through a dispatch that began after the transition to off and reads `safe`, by the same path as
+only through a dispatch that began after the transition to off and reads `safe` on positive
+evidence — a guard the reads report as loaded has its link beneath, or the trace names both
+`devcloud` and `cua`; "no guard loaded" never turns an off bridge back on, and a dispatch that began
+before the last transition changes nothing (Decision Log, M3.2 re-review) — by the same path as
 a reload (a new child and a new hello nonce, so the old instance is refused); each transition, off and
 back on, is toasted once and logged. A bridge inside a loaded guard reads `off` on every dispatch,
 since the guard is never beneath it, so it does not flap. The hold-and-release applies to the first
@@ -1666,11 +1669,27 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   reads the settings' intent (`enabledPlugins['cua@cua']` is written before cua's module loads, so
   an install or enable reads cua loaded and not beneath, deterministically), and the trace and the
   reads are taken at different moments (a guard loaded while a call is in flight). Safety comes from
-  never posting while off; terminality adds none, and the re-evaluation reads with the first
-  verdict's rules, so it opens no new false safe. Rejected: confirm-before-terminal (off terminal
+  never posting while off; terminality adds none. (The claim first written here, that the
+  re-evaluation reads with the first verdict's rules and so opens no new false safe, was wrong —
+  see the next entry.) Rejected: confirm-before-terminal (off terminal
   only once a later dispatch also reads off) — it heals the second case but not the first, which
   reads off on every dispatch until a reload; a marker of cua's own (out of scope).
   Date/Author: 2026-10-19, the plan's executor, on the spec's author's ruling.
+- Decision (M3.2 re-review): an off bridge turns back on only on positive evidence: a guard the
+  reads report as loaded has its link beneath, or the trace names both `devcloud` and `cua`. "No
+  guard loaded" settles a first verdict, never a recovery. A dispatch that began before the last
+  transition (either way) changes no state and posts nothing, so calls in flight across a
+  transition do not flap the bridge. Turning off withdraws an async ask's answer dialog without
+  settling the ask, which stays open and rides the resync after recovery.
+  Rationale: the re-review found that recovery through "no guard loaded" reopens the leak direction:
+  cua's leg reads the settings' intent, so a person who disables cua after the off toast, without
+  reloading, leaves cua's module outside the bridge while the reads say no guard — the first
+  verdict meets that gap only before a module instance's first dispatch, an off bridge sits in it
+  for as long as the fix takes, and the toast invites the fix. devcloud's leg is a fact (its loaded
+  module answers the marker), not a setting. Cost accepted: a bridge whose guard is truly removed
+  stays off until sminos reloads. The stale-dispatch rule and the async ask's survival are the same
+  review's minors.
+  Date/Author: 2026-10-19, the plan's executor, within the author's ruling (its premise restored).
 
 ## Outcomes & Retrospective
 
