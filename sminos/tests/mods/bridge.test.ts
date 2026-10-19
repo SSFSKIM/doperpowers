@@ -7,6 +7,7 @@ import {
   BACKGROUND_WINDOW_MS,
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
+  OFF_LINE,
   RECORD_WAIT_MS,
   ROWS_POLLS,
   ROWS_POLL_MS,
@@ -34,6 +35,22 @@ const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
 /** A steer's row and a delivered message's, as a wake counts them. */
 const NOTE = {}
 const MESSAGE = (frame?: string) => ({ isDelivery: true, ...(frame !== undefined && { frame }) })
+/**
+ * A `next` as the engine hands it to a hook, once it settled: `next.trace`
+ * lists the links beneath, one per plugin's module, nearest first, and the
+ * engine's own entry last, unless a link answered the call itself (`short`);
+ * `next.origin` names the plugin that raised the dispatch, the engine when
+ * none did. A `next` that names its origin already keeps it.
+ */
+const beneath = <T extends object>(next: T, plugins: readonly string[], options: { short?: boolean; origin?: string } = {}) => {
+  const links = [...plugins, ...(options.short === true ? [] : ['engine'])]
+  const trace = links.map((plugin, i) => ({ index: i + 1, plugin, tier: plugin === 'engine' ? 'core' : 'user', event: 'tool.call', outcome: 'returned', ms: 0, received: {}, returned: undefined }))
+  const origin = options.origin === undefined ? { plugin: 'engine', tier: 'core' } : { plugin: options.origin, tier: 'user' }
+  return Object.assign(next, { trace }, 'origin' in next && options.origin === undefined ? {} : { origin })
+}
+/** devcloud's marker as its loaded module answers it (at version 0), and as an older devcloud stored it (version 1), which outlives its module. */
+const LIVE_MARKER = { value: { owner: 'devcloud', version: 1 }, version: 0 }
+const STORED_MARKER = { value: { owner: 'devcloud', version: 1 }, version: 1 }
 
 describe('splitLines', () => {
   test('cuts whole lines and keeps the unfinished rest', async () => {
@@ -119,6 +136,18 @@ function harness(
     submitDrops?: string
     /** `$.prompt.submit` waits until the test settles it (`submits`), as a prompt taken does until its turn starts. */
     holdSubmit?: boolean
+    /**
+     * No row of the session has been kept when it starts, so the bridge has no
+     * verdict on its place. Otherwise `start` lands one, as a placed session's
+     * first row does.
+     */
+    verdictPending?: boolean
+    /** What devcloud's marker reads as (`$.state.get`): by default nothing, at version 0, as with devcloud not loaded. */
+    marker?: { value: unknown; version: number }
+    /** The user settings enable `cua@cua`. */
+    cua?: boolean
+    /** `$.state.get` rejects. */
+    stateFails?: boolean
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -147,6 +176,11 @@ function harness(
   const polls: { url: string; socketPath?: string; respond: (status: number, body?: unknown) => void; fail: () => void }[] = []
   const timers: { kind: 'after' | 'every'; ms: number; fn: () => void; cancelled: boolean }[] = []
   const logs: string[] = []
+  const toasts: string[] = []
+  /** What the bridge read to learn which secrets guard is loaded: devcloud's marker, the user settings. */
+  const guardReads: { op: string; args: unknown }[] = []
+  let marker = options.marker ?? { value: undefined, version: 0 }
+  let isCuaEnabled = options.cua === true
   /** What the control ops asked of the engine, in order. */
   const calls: { op: string; args: unknown }[] = []
   const compactions: { args: unknown; finish: (outcome: Record<string, unknown>) => void; fail: (error: Error) => void }[] = []
@@ -307,7 +341,22 @@ function harness(
         return clockNow
       },
     },
-    ui: { log: (text: string) => logs.push(text) },
+    ui: { log: (text: string) => logs.push(text), toast: (text: string) => toasts.push(text) },
+    state: {
+      get: async (ref: { plugin: string; key: string }) => {
+        guardReads.push({ op: 'state.get', args: ref })
+        if (options.stateFails) {
+          throw new Error('$.state.get: the host did not answer')
+        }
+        return ref.plugin === 'devcloud' && ref.key === 'secrets-guard' ? marker : { value: undefined, version: 0 }
+      },
+    },
+    settings: {
+      read: async (args?: { source?: string }) => {
+        guardReads.push({ op: 'settings.read', args })
+        return args?.source === 'user' && isCuaEnabled ? { enabledPlugins: { 'cua@cua': true } } : {}
+      },
+    },
     fs: {
       read: async (path: string) => {
         if (files[path] === undefined) {
@@ -325,7 +374,13 @@ function harness(
     if (found.length !== 1) {
       throw new Error(`${found.length} hooks for ${event}`)
     }
-    return found[0]!.handler
+    const handler = found[0]!.handler
+    if (event !== 'tool.call' && event !== 'session.append') {
+      return handler
+    }
+    // The engine's `next` always carries what settled beneath it: a test's
+    // own names no plugin's link, only the engine's.
+    return (engine: unknown, input: unknown, next: unknown) => handler(engine, input, typeof next === 'function' && !('trace' in next) ? beneath(next, []) : next)
   }
   const settle = async () => {
     for (let i = 0; i < 30; i++) {
@@ -336,6 +391,13 @@ function harness(
   const ofType = (type: string) => events().filter((e) => e.type === type)
   const start = async () => {
     await hook('session.start', { cwd: '/w' })(engine, { cwd: '/w', surface: 'terminal', isInteractive: true }, async () => ({ cwd: '/w' }))
+    if (!options.verdictPending) {
+      // The session's first row, kept beneath both guards, lands the bridge's
+      // verdict on its place. Refused here, so it posts no notice and each
+      // test's posts start where they did.
+      const firstRow = { door: 'prompt', message: { type: 'user', content: [] }, uuid: 'first-row', origin: { kind: 'composer' } }
+      await hook('session.append', { door: 'prompt' })(engine, firstRow, beneath(async () => ({ deny: 'the harness' }), ['devcloud', 'cua'], { short: true }))
+    }
     await settle()
   }
   const ready = async () => {
@@ -505,6 +567,10 @@ function harness(
     posts,
     timers,
     logs,
+    toasts,
+    guardReads,
+    setMarker: (read: { value: unknown; version: number }) => (marker = read),
+    setCua: (isEnabled: boolean) => (isCuaEnabled = isEnabled),
     settle,
     events,
     ofType,
@@ -4165,5 +4231,249 @@ describe('the seed: each loop cut at load', () => {
     expect((resync.streaming as { agentId: string }[]).map((m) => m.agentId)).toEqual(['a-new'])
     await fresh.end()
     await old.end()
+  })
+})
+
+describe("the bridge's place among the secrets guards (next.trace)", () => {
+  const CALL = { tool: 'Bash', tool_use_id: 'tu1', command: 'cat notes.txt' }
+  const OUTPUT = 'the contents of notes.txt'
+  type Harness = ReturnType<typeof harness>
+  type Beneath = { short?: boolean; origin?: string }
+  /** A Bash call through the bridge's hook, these plugins' links settled beneath it. */
+  const callBeneath = (h: Harness, plugins: string[], options: Beneath = {}) =>
+    h.hook('tool.call', { tool: 'Bash' })(h.engine, CALL, beneath(async () => ({ text: OUTPUT }), plugins, options)) as Promise<Record<string, unknown>>
+  /** A call through the bridge's hook that runs until the test ends it. */
+  const runningBeneath = async (h: Harness, plugins: string[]) => {
+    let end: (result: Record<string, unknown>) => void = () => undefined
+    const ran = h.hook('tool.call', { tool: 'Bash' })(h.engine, CALL, beneath(() => new Promise((resolve) => (end = resolve)), plugins))
+    await h.settle()
+    return {
+      end: async () => {
+        end({ text: OUTPUT })
+        await ran
+        await h.settle()
+      },
+    }
+  }
+  /** A model's row kept through the bridge's hook, these plugins' links settled beneath it. */
+  const rowBeneath = (h: Harness, plugins: string[], options: Beneath = {}) =>
+    h.append(
+      'response',
+      { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+      { origin: { kind: 'model', model: 'm' }, next: beneath(async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid }), plugins, options) },
+    )
+  const posted = (h: Harness) => JSON.stringify(h.posts.map((p) => p.events))
+  const whole = [expect.objectContaining({ phase: 'call', input: { command: CALL.command } }), expect.objectContaining({ phase: 'result', text: OUTPUT })]
+  const expectSafe = (h: Harness) => {
+    expect(h.ofType('tool')).toEqual(whole)
+    expect(h.logs).not.toContain(OFF_LINE)
+    expect(h.children[0]!.killed).toBe(false)
+  }
+  const expectOff = (h: Harness) => {
+    expect(h.logs.filter((l) => l === OFF_LINE)).toHaveLength(1)
+    expect(h.toasts).toEqual([OFF_LINE])
+    expect(h.children[0]!.killed).toBe(true)
+  }
+
+  test('the off line says what to set, in the words the spec gives', () => {
+    expect(OFF_LINE).toBe(
+      'sminos: the bridge is off — sminos must load outside devcloud and cua; set prependPlugins in ~/.claude/settings.json to ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"]',
+    )
+  })
+
+  // The design's table (§4), row by row, and the stale marker pinned below
+  // it: each the first verdict, from the session's first call.
+  const table: [string, Parameters<typeof harness>[0], string[], 'safe' | 'off'][] = [
+    ["devcloud's guard loaded (its live marker), devcloud beneath", { marker: LIVE_MARKER }, ['doperpowers', 'devcloud'], 'safe'],
+    ["devcloud's guard loaded, no devcloud beneath", { marker: LIVE_MARKER }, ['doperpowers'], 'off'],
+    ["cua's copy loaded (no marker, cua enabled), cua beneath", { cua: true }, ['doperpowers', 'cua'], 'safe'],
+    ["cua's copy loaded, no cua beneath", { cua: true }, ['doperpowers'], 'off'],
+    ['no guard loaded (no marker, cua not enabled), nothing beneath', {}, [], 'safe'],
+    ['no guard loaded, anything beneath', {}, ['doperpowers', 'devcloud', 'cua'], 'safe'],
+    ['a stored marker (version 1, which outlives an older devcloud), cua not enabled, no devcloud beneath', { marker: STORED_MARKER }, ['doperpowers'], 'safe'],
+    ["a stored marker with cua enabled reads as cua's row: no cua beneath", { marker: STORED_MARKER, cua: true }, ['doperpowers'], 'off'],
+    ["a stored marker with cua enabled reads as cua's row: cua beneath", { marker: STORED_MARKER, cua: true }, ['doperpowers', 'cua'], 'safe'],
+    ["devcloud's live marker with cua enabled (cua's copy stands down): devcloud beneath alone", { marker: LIVE_MARKER, cua: true }, ['devcloud'], 'safe'],
+  ]
+  for (const [name, options, plugins, verdict] of table) {
+    test(`${name}: ${verdict}`, async () => {
+      const h = harness({ ...options, verdictPending: true })
+      await h.ready()
+      await callBeneath(h, plugins)
+      await h.settle()
+      if (verdict === 'safe') {
+        expectSafe(h)
+      } else {
+        // The call's events waited for the verdict, which dropped them.
+        expect(h.ofType('tool')).toEqual([])
+        expect(posted(h)).not.toContain(CALL.command)
+        expectOff(h)
+      }
+    })
+  }
+
+  test("a kept row decides as a call does, so the session's first row decides before its first call", async () => {
+    const safe = harness({ marker: LIVE_MARKER, verdictPending: true })
+    await safe.ready()
+    await rowBeneath(safe, ['doperpowers', 'devcloud'])
+    await callBeneath(safe, ['doperpowers', 'devcloud'])
+    await safe.settle()
+    expectSafe(safe)
+    const off = harness({ marker: LIVE_MARKER, verdictPending: true })
+    await off.ready()
+    await rowBeneath(off, ['doperpowers'])
+    expectOff(off)
+    const posts = off.posts.length
+    await callBeneath(off, ['doperpowers', 'devcloud'])
+    await off.settle()
+    expect(off.posts.length).toBe(posts)
+  })
+
+  test('until the first verdict a tool event waits, and every event behind it; a safe verdict posts them whole, in order', async () => {
+    const h = harness({ verdictPending: true })
+    await h.ready()
+    await h.turn('t1')
+    await h.settle()
+    const call = await runningBeneath(h, [])
+    h.timers.find((t) => t.kind === 'every')!.fn()
+    await h.settle()
+    // The turn went out before the call; the call's event, and the heartbeat behind it, wait.
+    expect(h.ofType('turn')).toHaveLength(1)
+    expect(h.ofType('tool')).toEqual([])
+    expect(h.ofType('heartbeat')).toEqual([])
+    await rowBeneath(h, [])
+    expect(h.events().flatMap((e) => (e.type === 'tool' || e.type === 'heartbeat' ? [e.type] : []))).toEqual(['tool', 'heartbeat'])
+    expect(h.ofType('tool')).toEqual([whole[0]])
+    await call.end()
+    expectSafe(h)
+  })
+
+  test('a first verdict of off drops what waits: no tool event is ever posted, the line is said once, and the child is ended for good', async () => {
+    const h = harness({ marker: LIVE_MARKER, verdictPending: true })
+    await h.ready()
+    const call = await runningBeneath(h, ['doperpowers'])
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    await call.end()
+    expect(h.ofType('tool')).toEqual([])
+    expect(posted(h)).not.toContain(CALL.command)
+    expect(posted(h)).not.toContain(OUTPUT)
+    // No heartbeat, and no child again: not when it ends, not at a session start.
+    expect(h.timers.filter((t) => t.kind === 'every').every((t) => t.cancelled)).toBe(true)
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(1_000)
+    await h.start()
+    expect(h.children).toHaveLength(1)
+  })
+
+  test("until the first verdict a permission's input is not raised (the dialog is the terminal's); once safe, the next one is", async () => {
+    const h = harness({ verdictPending: true })
+    await h.ready()
+    await h.turn('t1')
+    const first = await h.called('tu1', 'Bash', { command: 'ls' })
+    expect(await h.permission('Bash', { command: 'ls' })).toEqual({})
+    expect(h.ofType('raised')).toEqual([])
+    expect(h.polls).toEqual([])
+    // The call's own dispatch settles safe (no guard is loaded).
+    await first.end()
+    await h.settle()
+    await h.called('tu2', 'Bash', { command: 'pwd' })
+    void h.permission('Bash', { command: 'pwd' })
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'tu2', tool: 'Bash', input: { command: 'pwd' } })])
+    poll.respond(410)
+  })
+
+  test('the verdict is read on every dispatch: a guard loaded outside a living instance turns it off at the next one, for good', async () => {
+    const h = harness()
+    await h.ready()
+    await callBeneath(h, [])
+    await h.settle()
+    expectSafe(h)
+    // devcloud enabled mid-session on an unplaced machine: its module loads
+    // outside this instance, which the reload does not replace.
+    h.setMarker(LIVE_MARKER)
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    // Terminal for the instance: with devcloud gone again, a dispatch that would read safe changes nothing.
+    h.setMarker({ value: undefined, version: 0 })
+    await callBeneath(h, ['doperpowers', 'devcloud', 'cua'])
+    await rowBeneath(h, [])
+    await h.settle()
+    expect(h.ofType('tool')).toEqual(whole)
+    expectOff(h)
+  })
+
+  test("off on a call's own dispatch: its result is never posted (its call event went out before it ran: the window §4 accepts)", async () => {
+    const h = harness()
+    await h.ready()
+    h.setMarker(LIVE_MARKER)
+    await callBeneath(h, ['doperpowers'])
+    await h.settle()
+    expect(h.ofType('tool').filter((e) => e.phase === 'result')).toEqual([])
+    expect(posted(h)).not.toContain(OUTPUT)
+    expectOff(h)
+  })
+
+  test('a guard loaded beneath a living instance (a placed machine) leaves it safe', async () => {
+    const h = harness()
+    await h.ready()
+    h.setMarker(LIVE_MARKER)
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    await callBeneath(h, ['doperpowers', 'devcloud'])
+    await h.settle()
+    expectSafe(h)
+  })
+
+  test('only a trace that reaches the engine says a guard is missing: one cut short by a link beneath that answered itself decides nothing', async () => {
+    const h = harness({ marker: LIVE_MARKER, verdictPending: true })
+    await h.ready()
+    // A plugin's own tool answered by its hook, a row a hook refused: what lies beneath that link is not listed.
+    await callBeneath(h, ['doperpowers'], { short: true })
+    await h.settle()
+    expect(h.logs).not.toContain(OFF_LINE)
+    expect(h.ofType('tool')).toEqual([])
+    // Cut short at the guard itself (it refused the call), the trace names it: safe, and what waited goes out.
+    await callBeneath(h, ['doperpowers', 'devcloud'], { short: true })
+    await h.settle()
+    expect(h.ofType('tool')).toEqual([...whole, ...whole])
+    expect(h.logs).not.toContain(OFF_LINE)
+  })
+
+  test("a dispatch a guard's own plugin raised says nothing of that guard, whose hooks do not run on it", async () => {
+    const h = harness({ cua: true, verdictPending: true })
+    await h.ready()
+    // cua's /secret appends its note: cua's hooks are not in that row's chain.
+    await rowBeneath(h, ['doperpowers'], { origin: 'cua' })
+    expect(h.logs).not.toContain(OFF_LINE)
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+  })
+
+  test("which guard is loaded is read only when the links beneath do not name both: devcloud's marker, then cua in the user settings", async () => {
+    const both = harness({ verdictPending: true })
+    await both.ready()
+    await callBeneath(both, ['doperpowers', 'devcloud', 'cua'])
+    await both.settle()
+    expect(both.guardReads).toEqual([])
+    expectSafe(both)
+    const neither = harness({ verdictPending: true })
+    await neither.ready()
+    await rowBeneath(neither, ['doperpowers'])
+    expect(neither.guardReads).toEqual([
+      { op: 'state.get', args: { plugin: 'devcloud', key: 'secrets-guard' } },
+      { op: 'settings.read', args: { source: 'user' } },
+    ])
+  })
+
+  test('a read that fails decides nothing, and the debug log says why', async () => {
+    const h = harness({ stateFails: true, verdictPending: true })
+    await h.ready()
+    await callBeneath(h, ['doperpowers'])
+    await h.settle()
+    expect(h.logs).not.toContain(OFF_LINE)
+    expect(h.ofType('tool')).toEqual([])
+    expect(h.logs.some((l) => l.includes('$.state.get: the host did not answer'))).toBe(true)
   })
 })

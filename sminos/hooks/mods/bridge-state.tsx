@@ -1,5 +1,7 @@
 import type { HookStream, HttpResponse, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
 
+import type { Place } from './bridge-place'
+
 /**
  * The bridge's state: one object for the session, which each of the bridge's
  * modules reads and writes (bridge.tsx names them), the types they share, and
@@ -162,6 +164,13 @@ export type BridgeState = {
   /** The child's, from its hello: every post carries it (DX5 fence). */
   nonce?: string
   child?: HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+  /**
+   * The bridge's place among the secrets guards (bridge-place.tsx), this
+   * module instance's alone: none until a dispatch first settles it. Until
+   * then a tool event waits in the queue and no permission is raised; `off`
+   * ends the bridge for the instance.
+   */
+  place?: Place
   /** Bumped whenever a child is started or stopped on purpose; a loop of an older one does nothing more. */
   generation: number
   respawnMs: number

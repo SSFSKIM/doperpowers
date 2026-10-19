@@ -1,9 +1,13 @@
 import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, SessionStartInput } from 'claude-code'
+// devcloud's contract, for the read of its guard's marker (erased at run time).
+import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
+import { OFF_LINE, isCuaEnabled, isLiveMarker, placeOf } from './bridge-place'
+import type { Guard, Place } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
-import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, retire, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -22,6 +26,7 @@ import {
 import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 
+export { OFF_LINE } from './bridge-place'
 export { TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
@@ -60,11 +65,18 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * is given again. What must outlive a module reload (the model chosen, the keys
  * delivered) the child keeps on disk: its hello hands it back.
  *
+ * The bridge must sit outside every secrets guard, and checks that it does on
+ * each settled `tool.call` and `session.append`. Until the first check a tool
+ * event waits and no permission is raised; a bridge that finds a guard outside
+ * it turns itself off for the module instance (`judgePlace`).
+ *
  * Code that takes `$` stays in this file: the hooks, the session start, the
- * child and the session it serves, control, and the wait for a decision. The
- * modules beside it take none, and reach the engine only through the calls
- * the session start keeps in the state (`post`, `read`, `log`, `after`).
- * Each imports only those listed before it:
+ * child and the session it serves, control, the wait for a decision, and the
+ * reads of which guard is loaded. The modules beside it take none, and reach
+ * the engine only through the calls the session start keeps in the state
+ * (`post`, `read`, `log`, `after`). Each imports only those listed before it:
+ * - bridge-place.tsx: the rule that judges the bridge's place among the
+ *   guards from what settled beneath its hook;
  * - bridge-state.tsx: the one state object, its types, and `resetBridge`;
  * - bridge-stream.tsx: the mod's copy of the session's live state, which
  *   every resync carries, and the poster;
@@ -1174,7 +1186,54 @@ async function beat($: EngineInterface) {
   await refreshAgents()
 }
 
+/**
+ * Which secrets guard is loaded now: devcloud's when its marker is live, else
+ * cua's copy when the user settings enable cua. The same reads appeal makes,
+ * of another plugin's state and of the user settings.
+ */
+async function loadedGuard($: EngineInterface): Promise<Guard | undefined> {
+  if (isLiveMarker(await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' }))) {
+    return 'devcloud'
+  }
+  return isCuaEnabled(await $.settings.read({ source: 'user' })) ? 'cua' : undefined
+}
+
+/**
+ * The bridge's place, judged again from what settled beneath one of its hooks
+ * (bridge-place.tsx). The first `safe` posts the tool events that waited for
+ * it. `off` ends the bridge for this module instance: what is queued is
+ * dropped, the child is stopped and never started again, and the line says
+ * why, as a toast and in the debug log. A dispatch that cannot tell (a trace
+ * cut short, a read that failed) changes nothing.
+ */
+async function judgePlace($: EngineInterface, beneath: { readonly trace: readonly { readonly plugin: string }[]; readonly origin: { readonly plugin: string } }) {
+  if (state.post === undefined) {
+    return
+  }
+  let place: Place | undefined
+  try {
+    place = await placeOf(beneath.trace, beneath.origin.plugin, () => loadedGuard($))
+  } catch (error) {
+    $.ui.log(`bridge: its place among the secrets guards was not read: ${message(error)}`, { to: 'debug' })
+    return
+  }
+  if (place === 'off' && state.post !== undefined) {
+    // Ended before it is said, so nothing the saying does can leave it running.
+    state.place = 'off'
+    retire()
+    $.ui.log(OFF_LINE, { to: 'debug' })
+    $.ui.toast(OFF_LINE)
+  } else if (place === 'safe' && state.place === undefined) {
+    state.place = 'safe'
+    pump()
+  }
+}
+
 export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
+  // A bridge that found itself inside a guard stays off for the module instance.
+  if (state.place === 'off') {
+    return
+  }
   // derive's headless fork of a session is never a member, and needs no bridge.
   if ((await $.env.get('SMNS_INTERNAL')) !== undefined) {
     return
@@ -1248,9 +1307,10 @@ const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestM
  * A result's text as the desk draws it. Core sets `text` (the record as the
  * model reads it); a hook's own `{ result }` has none, and the record it
  * returns is the only form the bridge may post. That covers any hook's own
- * answer: the secrets guard's scrubbed record (with doperpowers seated
- * outside devcloud, core's text, which holds the values, never comes up) and
- * this plugin's own tools (ask, compact, appeal). The record is drawn as it
+ * answer: the secrets guard's scrubbed record (with the bridge outside the
+ * guard, where prependPlugins seats it and judgePlace holds it, core's text,
+ * which holds the values, never comes up) and the tools plugins register
+ * (this plugin's ask, doperpowers' compact and appeal). The record is drawn as it
  * is: a string whole, an array of content blocks as its text blocks joined
  * (an image's data is not text), any other record as JSON.
  */
@@ -1281,7 +1341,8 @@ function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean }
  * Registered first in register.tsx, so its hooks are the outermost of the
  * plugin's, and the plugin sits outside doperpowers' and every user-tier
  * plugin's (the owner's prependPlugins): what they report is what the session
- * showed and recorded. Each event is taken with a matcher that matches every
+ * showed and recorded. Its `tool.call` and `session.append` hooks check that
+ * place on every dispatch (judgePlace). Each event is taken with a matcher that matches every
  * input, since the engine admits one unmatched registration per event per
  * module, which a mod beside it may need.
  */
@@ -1458,6 +1519,8 @@ export function registerBridge(on: On) {
     let resultText: string | undefined
     try {
       const result = await next(e)
+      // Where the bridge stands, judged before anything of the result is posted.
+      await judgePlace($, next)
       resultText = typeof result.text === 'string' ? result.text : undefined
       // A Bash call of a turn being interrupted: its result, which the record
       // names, goes back once the record is in, so the turn ends after it.
@@ -1516,9 +1579,11 @@ export function registerBridge(on: On) {
   // A permission is raised with its call as this module's tool.call hook saw
   // it. The engine's check and this hook's input come after every tool.call
   // hook beneath, where a secrets guard restores its handles to the values
-  // (devcloud's, with doperpowers seated outside it); that form stays on this
-  // machine, since an allow hands no input back. A permission for a call this
-  // module did not see is the terminal's alone. A question is raised as the
+  // (devcloud's, or cua's copy, beneath the bridge where it must sit); that
+  // form stays on this machine, since an allow hands no input back. A
+  // permission for a call this module did not see is the terminal's alone, as
+  // is one before the bridge knows its place: the call it saw may already
+  // hold what a guard outside it restored. A question is raised as the
   // engine gave it: the ask mod widens its dialog's beneath this module, and
   // no guard restores into one.
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
@@ -1534,6 +1599,10 @@ export function registerBridge(on: On) {
     const input = isQuestion ? capped(e.tool_input) : claimed?.shown
     if (input === undefined) {
       state.log?.(`bridge: a ${e.tool_name} permission for a call this module did not see is left to the terminal`)
+      return next(e)
+    }
+    if (!isQuestion && state.place === undefined) {
+      state.log?.(`bridge: a ${e.tool_name} permission before the bridge knows its place among the secrets guards is left to the terminal`)
       return next(e)
     }
     const id = claimed?.toolUseId ?? `request-${Date.now().toString(36)}-${++state.minted}`
@@ -1585,12 +1654,14 @@ export function registerBridge(on: On) {
   // engine's appends may resolve in another order than they began, and the
   // file holds them in the order they resolve), then a call's result, a
   // main-loop row that may hold a message to the host or an answer to its
-  // question. A row refused beneath is never written, and never named.
-  on('session.append', { door: /^/ }, async (_, e, next) => {
+  // question. A row refused beneath is never written, and never named. Each
+  // row, refused or kept, says again where the bridge stands.
+  on('session.append', { door: /^/ }, async ($, e, next) => {
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null
     const stored = await next(e)
-    if (isLive && stored.deny === undefined) {
+    await judgePlace($, next)
+    if (isLive && state.post !== undefined && stored.deny === undefined) {
       announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)
       observeRow(e.door, e.message, stored.uuid)
       if (agentId === null) {

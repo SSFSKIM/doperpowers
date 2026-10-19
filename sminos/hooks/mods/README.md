@@ -213,14 +213,36 @@ what it reports is what the session showed and kept, after every other mod. Neve
 with `SMNS_INTERNAL` set (derive's headless fork).
 
 `bridge.tsx` holds the hooks and the code that takes `$`: the session start,
-the child and the session it serves, control, and the wait for a decision.
-The rest sits beside it in modules that take no `$`, each importing only the
-ones listed before it: `bridge-state.tsx` (the one state object, its types,
+the child and the session it serves, control, the wait for a decision, and
+the reads of which secrets guard is loaded. The rest sits beside it in
+modules that take no `$`, each importing only the ones listed before it:
+`bridge-place.tsx` (the rule that judges the bridge's place among the
+guards), `bridge-state.tsx` (the one state object, its types,
 and `resetBridge`), `bridge-stream.tsx` (the mod's copy of the live state and
 the poster), `bridge-requests.tsx` (requests from outside and their
 settlement), and `bridge-rows.tsx` (each kept row's notice, a compaction's
 rows read from the transcript, and the export to the host).
 
+- **Its place among the guards.** Placement is what keeps the bridge outside
+  the guards; this check turns a misplaced bridge off rather than let it
+  stream what a guard restored. After every `tool.call` and
+  `session.append` settles, the bridge reads `next.trace`, the plugins
+  beneath its hook. If the guard loaded now is not among them, the bridge is
+  inside it. devcloud's guard counts as loaded when its marker reads live
+  (the answer at state version 0). Otherwise cua's copy counts when the user
+  settings enable `cua@cua`. Two kinds of dispatch settle nothing: a trace
+  cut short of the engine (a link answered the call itself), and one the
+  guard's own plugin raised. Until the first verdict, tool events wait in
+  the post queue with everything behind them, and a permission is left to
+  the terminal. `safe` posts what waited. `off` drops it and stops the
+  child for the life of the module instance. A toast and a debug line
+  opening `sminos: the bridge is off` name the `prependPlugins` setting.
+  The check runs on every dispatch because `/reload-plugins` replaces only
+  the modules that changed: a guard enabled mid-session can load outside a
+  bridge that lives on. One window stays open, and is accepted: a call
+  whose input is posted before its own dispatch settles, right after a
+  guard loaded outside the bridge with no row appended in between. It needs
+  an unplaced machine.
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and
   results, turns, subagents, usage, a heartbeat, and the requests below.
@@ -277,9 +299,10 @@ rows read from the transcript, and the export to the host).
   restores its handles to the values, and an allow hands no input back, so
   the values stay on the machine and the request's digest is over the handle
   form end to end. That holds with sminos seated outside devcloud
-  (`prependPlugins`); seated inside it, the bridge is handed the restored
-  call, and its events and raises carry what it was handed. A permission for
-  a call the bridge did not see stays the terminal's. A question is raised as
+  (`prependPlugins`). Seated inside it, the bridge would be handed the
+  restored call, so the check above turns it off. A permission for a call
+  the bridge did not see stays the terminal's, as does one raised before the
+  bridge knows its place. A question is raised as
   the engine gave it (the ask mod widens its dialog's beneath the bridge).
 - **Messages to the host.** The main loop's rows that may carry one — a text
   row with a mark, an async ask with its result, a row that may answer one

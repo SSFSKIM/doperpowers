@@ -34,6 +34,14 @@ export type Hold = BridgeEvent & {
 }
 export const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@hold'
 
+/**
+ * A tool event while the bridge does not know its place yet: its input or
+ * result may hold what a guard outside the bridge restored. The poster posts
+ * nothing past it until the place is known (bridge-place.tsx). Then a safe
+ * bridge posts it whole, and an `off` bridge drops the queue.
+ */
+const isWithheld = (e: BridgeEvent | undefined) => state.place === undefined && e?.type === 'tool'
+
 const BATCH_MAX = 500
 const QUEUE_MAX = 10_000
 /** After a post that failed, the next waits this long. */
@@ -310,7 +318,7 @@ export function pump() {
 export async function poster() {
   for (;;) {
     const { post, socket: socketPath, nonce } = state
-    if (post === undefined || socketPath === undefined || state.isWaiting || state.queue.length === 0) {
+    if (post === undefined || socketPath === undefined || state.isWaiting || state.queue.length === 0 || isWithheld(state.queue[0])) {
       await new Promise<void>((resolve) => (state.wake = resolve))
       state.wake = undefined
       continue
@@ -324,7 +332,7 @@ export async function poster() {
       }
       continue
     }
-    const held = state.queue.findIndex(isHold)
+    const held = state.queue.findIndex((e) => isHold(e) || isWithheld(e))
     const batch = state.queue.splice(0, held === -1 ? BATCH_MAX : Math.min(held, BATCH_MAX))
     const generation = state.generation
     let failed = false
@@ -356,6 +364,7 @@ export async function poster() {
     )
     state.isPosting = false
     if (isFenced) {
+      state.log?.('bridge: the child serves another module instance now; this one stops')
       retire()
       return
     }
@@ -370,12 +379,12 @@ export async function poster() {
 }
 
 /**
- * This module instance no longer owns the session's bridge (a reload's new
- * instance does): it posts nothing more, its heartbeat stops, and its child,
- * if any is left, is stopped and never respawned.
+ * This module instance gives up the session's bridge, because a reload's new
+ * instance owns it or because the bridge found itself inside a guard. It
+ * posts nothing more, drops what is queued, stops its heartbeat, and stops
+ * its child, if any is left, for good.
  */
-function retire() {
-  state.log?.('bridge: the child serves another module instance now; this one stops')
+export function retire() {
   state.post = undefined
   state.queue = []
   state.heartbeat?.cancel()
