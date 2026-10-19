@@ -74,7 +74,10 @@ reload still run.
       waves). PR https://github.com/SSFSKIM/doperpowers/pull/281, merge 359c71a6 (ci-gate GREEN,
       run 39303896510).
 - [ ] M3 — The carve-out and the rename, opened by the `next.trace` spike (M3a), rehearsed on a local
-      git remote.
+      git remote. Built and task-reviewed clean on `sminos-m3-carveout`: M3.1 (2026-10-19 21:10Z,
+      the carve-out and the rename), M3.2 (2026-10-20 00:40Z, the probe, three fix waves), M3.3
+      (2026-10-20 06:00Z, the rehearsal: the roll applied on its own, no `--force`; A1, A2's blocking
+      clause, A5 (a)–(f), A8's rehearsal half all held). Awaiting the xhigh panel and the merge.
 - [ ] M4 — The roll and each machine's migration (owner steps).
 - [ ] M5 — Cleanup and acceptance.
 - Not a milestone here: the devcloud hosts' placement (§8, I8), the devcloud setup session's; a
@@ -175,8 +178,12 @@ SMINOS_HOME unless it names another machine or the real HOME.
   sminos@doperpowers` (a version bump in the marketplace) and `/reload-plugins`, the new module
   reaches the same verdict on its first tool call and the socket is served; (d) the same after
   updating both devcloud and sminos; (e) as (a) after updating both: still off; (f) off recovers: in
-  (a)'s HOME, with `prependPlugins` then set and `/reload-plugins` run, the next dispatch reads safe,
-  a toast says the bridge is back, and the socket is served again. If M3a discarded the
+  (a)'s HOME, setting `prependPlugins` and running `/reload-plugins` re-instantiates sminos at its new
+  tier, so a new module's first verdict is safe and the socket is served again, with no off line and
+  no "back" toast (a replaced instance is not a recovered one); the in-instance recovery is seen when
+  the guard moves inward instead — with sminos off, `appendPlugins: ["devcloud@doperpowers"]` and
+  `/reload-plugins` reload devcloud alone, and the living sminos instance logs and toasts `sminos: the
+  bridge is on again`, serves the socket, and posts the next call's payloads. If M3a discarded the
   probe, A5 is: the rehearsal's debug log shows the order of A1 and no verdict line exists.
 - **A6 — appeal and reload read the asks through the channel.** `tests/mods/appeal.test.ts` passes
   with the judge's evidence carrying an answered ask read from `{ plugin: 'sminos', key: 'ask' }`,
@@ -447,8 +454,8 @@ moment. No kept state, nothing to carry across a
 reload, nothing that a reload's filtered `session.start` could mislead (rule 6), and it covers cua's
 guard, which writes no marker. **The residual window, accepted:** a guard newly loaded outside a
 living bridge instance, followed by a tool call whose `call` phase (its `input`, posted before the
-bridge's own `next`) comes before any row is appended; a typed `/reload-plugins` appends command
-rows, which close it (M3a). Its bound: it needs an unplaced machine (no `prependPlugins`) that
+bridge's own `next`) comes before any row is appended; a reload appends command rows, typed (M3a)
+or run by the reload mod's `$.command.run` (M3.3), after the new modules are in, which close it. Its bound: it needs an unplaced machine (no `prependPlugins`) that
 enables a guard mid-session — on a placed machine a guard loaded mid-session lands in tier `user`,
 inside the bridge — and M4 places every machine. Holding every call's input until its own `next`
 settles would close it at the cost of the desk's live input streaming for every long-running call;
@@ -632,8 +639,11 @@ each devcloud host once one is enrolled.
    `/plugin install sminos@doperpowers` (before any reload: a reload after the marketplace update
    loads the new doperpowers, without the ask, at once — Surprises, M1), then `/reload-plugins` in a
    session; a session that must keep its open asks across the swap keeps them
-   (§5). If the reload answers that it needs `--force` (a new plugin MCP server, §10), run
-   `/reload-plugins --force` when the session is idle.
+   (§5). The rehearsal's roll applied without `--force` (the ask's `$.tool.register` server is not
+   counted as an added plugin MCP server; M3.3); if a machine's reload answers that it needs
+   `--force` all the same, run `/reload-plugins --force` when the session is idle. The first
+   interactive session opened after the merge may roll itself before the reload mod acts (Surprises,
+   M3.3); that converges.
 5. `sminos daemon install`, then reload the service: on macOS `launchctl bootout gui/$(id -u)/com.doperpowers.sminos-daemon`
    then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`;
    on Linux `systemctl --user daemon-reload && systemctl --user restart sminos-daemon.service`. Until
@@ -1414,6 +1424,40 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   dispatch raised by a guard's own plugin gives no verdict for that guard) relies on it.
   Evidence: M3.2's report, Concerns and Decisions.
 
+- Observation (M3.3): the roll rehearsed whole on a served git remote (M1 359c71a6 → the M3
+  head): the reload mod installed `sminos@doperpowers` headless (about 4 s, no prompt), then updated
+  doperpowers 7.190.0, devcloud 0.6.0 and to-human 0.2.0, and reloaded once — `Reloaded: 4 plugins …
+  0 plugin MCP servers`, no `--force`; the open async ask stayed open, was answered after the roll
+  and delivered under `The sminos plugin sent a message:`; the bridge's socket was served by a new
+  child from `sminos/1.0.0`; `installed_plugins.json` ended at sminos 1.0.0 beside devcloud 0.6.0.
+  With sminos made uninstallable, to-human was held back, the reload waited with the debug line and
+  the toast and transcript line naming `/plugin install sminos@doperpowers`, and the next fetch
+  repaired it. The post barrier lifted promptly after a mod-run reload, at a `--resume` start, and
+  for a subagent's first call after a reload; the reload mod's `$.command.run` reload appends its
+  command rows after the new modules load. The bridge names a compact-tool compaction's rows through
+  its own `session.compact` hook (the live compact-offer check, 7 of 7). Guard reads, with devcloud
+  alone, settle in 0.3–0.8 ms each; with both guards beneath, none are made.
+  Evidence: M3.3's report `task-6-report.md`; temp tree `/tmp/m33-rehearsal.TPq6oL` (`logs/`, pane
+  snapshots), `/tmp/brl.83ey8dsh`.
+- Observation (M3.3): a new interactive session on an M0 machine rolls itself before the reload mod
+  acts: M0's `enabledPlugins["sminos@doperpowers"]` names a plugin the M1 catalog lacks, so the
+  engine refreshes the marketplace at start (`refresh-on-miss`), loads every plugin at the clone's
+  manifest version, sminos placed, and leaves `installed_plugins.json` unchanged; the reload mod's
+  next fetch then installs sminos and updates the records, and the other sessions reload. It
+  converges. A headless start does not do this. Until M3 is on the remote, every interactive start
+  on the Macs refreshes the clone once.
+  Evidence: `logs/fresh2.debug.txt` in the rehearsal's tree.
+- Observation (M3.3): a tier change re-instantiates a module at `/reload-plugins` (setting or removing
+  `prependPlugins` reloaded to-human, sminos and doperpowers, whose versions had not changed).
+  `$.process.spawn`'s `result` settles with nothing after `return()`, where the types say it rejects
+  (the bridge logged a false "child failed" on every stop; fixed). A resumed session logs `Tool
+  mcp__sminos__AskUserQuestion not found in render-time tools` while history rows render before the
+  tool registers (harmless, any plugin tool). After the roll the bridge raises an open ask under the
+  registered new name while the transcript's call row keeps the old one; the desk joins a raise to
+  its row by the request id and reads both names, and to-human reads the rows, never the raise, so
+  neither is affected. The engine here is 2.1.304; nothing in §4, §5 or §10 behaved differently on it.
+  Evidence: M3.3's report, Discoveries 2–7.
+
 ## Decision Log
 
 - Decision: verification — one independent spec review by the `doperpowers:adversarial-reviewer`
@@ -1693,6 +1737,21 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   stays off until sminos reloads. The stale-dispatch rule and the questions' exemption are the same
   review's minors.
   Date/Author: 2026-10-19, the plan's executor, within the author's ruling (its premise restored).
+
+- Decision (M3.3, A5 (f)): (f) is worded to the observed paths: a tier change re-instantiates the
+  module, so `prependPlugins` set mid-session brings the bridge back as a new instance whose first
+  verdict is safe, silently; the in-instance recovery, toast included, is the one shown when the guard
+  moves inward (`appendPlugins` for devcloud). No code change; a new instance remembering that its
+  predecessor was off would need state across instances, which I1 rules out.
+  Rationale: M3.3's rehearsal, Discoveries 2; the author's ruling.
+  Date/Author: 2026-10-20, the plan's executor, on the spec's author's ruling.
+- Decision (M3.3): the rehearsal served the remotes over smart HTTP (`git http-backend` behind a
+  loopback server), since the engine's marketplace clone is shallow and dumb HTTP refuses shallow
+  fetches; the live compact-offer check ran through a wrapper that keeps no key on disk. A child the
+  bridge stopped is logged as stopped (`7bd8276f`). Left as they are, on the author's ruling: the
+  repository's live checks write the gateway keys to a 0600 env file (residue); the value a committed
+  doc carries is the local relay's marker, not a credential.
+  Date/Author: 2026-10-20, M3.3's executor and the spec's author, folded by the plan's executor.
 
 ## Outcomes & Retrospective
 
