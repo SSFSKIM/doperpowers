@@ -35,14 +35,14 @@ describe('thresholdOf', () => {
 
 describe('offerDue', () => {
   test('nothing under the floor, the first offer at the floor', async () => {
-    expect(offerDue(200_000, 0, OFFER_GATE)).toBe(false)
-    expect(offerDue(220_000, 0, OFFER_GATE)).toBe(true)
+    expect(offerDue(280_000, 0, OFFER_GATE)).toBe(false)
+    expect(offerDue(300_000, 0, OFFER_GATE)).toBe(true)
     expect(offerDue(undefined, 0, OFFER_GATE)).toBe(false)
   })
 
   test('after an offer, the next waits for a step of growth', async () => {
-    expect(offerDue(387_000, 312_400, OFFER_GATE)).toBe(false)
-    expect(offerDue(387_400, 312_400, OFFER_GATE)).toBe(true)
+    expect(offerDue(382_000, 312_400, OFFER_GATE)).toBe(false)
+    expect(offerDue(382_400, 312_400, OFFER_GATE)).toBe(true)
   })
 
   test('a gate of zeros offers at every turn', async () => {
@@ -77,8 +77,8 @@ describe('texts', () => {
 
   test('the compact description tells the model when it is told its size, by the gate', async () => {
     const gated = describeCompact(967_000)
-    expect(gated).toContain("at the end of each turn from 220,000 tokens on, once it has grown 75,000 since the last time (a Stop hook's additional context")
-    expect(gated).toContain('Until the first time, you are under 220,000.')
+    expect(gated).toContain("at the end of each turn from 300,000 tokens on, once it has grown 70,000 since the last time (a Stop hook's additional context")
+    expect(gated).toContain('Until the first time, you are under 300,000.')
     expect(gated).toContain('compact unasked at any checkpoint, mid-turn included')
     expect(gated).not.toContain('context_usage')
     const every = describeCompact(967_000, { floor: 0, step: 0 })
@@ -207,7 +207,7 @@ describe('registerCompact', () => {
     expect(h.registered()).toEqual(['compact'])
     const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
     expect(spec.description).toContain('at about 967,000')
-    expect(spec.description).toContain('from 220,000 tokens on')
+    expect(spec.description).toContain('from 300,000 tokens on')
   })
 
   test('a compaction window smaller than the model window is the one measured against', async () => {
