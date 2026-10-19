@@ -434,6 +434,61 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Observation (M5): the old early "one message, one project" check resolved an unqualified tag's project as the sender's, which with org-wide `@short` would refuse `@projB/rb @<rb's short>` as two projects; it now runs after resolution. `find_target`'s bare match never matched a member by its eight-hex short, only its full id (unlike tags'); seats answer to their harness short through `find_seat`, so the org pass matches session shorts only.
   Evidence: task-5 report, Discoveries.
 
+- Observation (M7): the eval harness (`superpowers-evals`, quorum) cannot run these scenarios as written, here or
+  on its appliance: its Claude launcher needs `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a Bedrock bearer
+  (this host has a gateway token only), its conversation role needs Gauntlet, and its launcher pins the agent's
+  HOME to the run's throwaway home, which `setup.sh` cannot see — so a world's SMINOS_HOME and its peers' engine
+  records cannot be placed where the session under test reads them. The scenarios are committed in quorum's
+  layout (`status: draft`, `quorum check` clean) with a host runner, `fixtures/sminos-world/run-local.sh`: the
+  scenario's own `setup.sh` builds a two-machine org (macbook, mini) on doperpowers' hub stand-in with both
+  daemons and live peers whose inboxes record each frame; a real interactive Claude Code 2.1.303 session (Opus 5.5,
+  `--plugin-dir`, `--dangerously-skip-permissions`, stubs for `claude`, `launchctl`, `systemctl`, `loginctl`)
+  is driven in tmux; the scenario's `post()` grades the world and the transcript. "Before" is the plugin at
+  c2fcf81b (no guide, the 7,541-token skill); "after" is M7. One run per scenario per arm.
+  Evidence: `/tmp/m7-eval/runs/{before-1,after-1}/<scenario>/` (pane, transcript, inboxes, checks).
+- Observation (M7): results, before → after (checks passed / total; tool calls; whether the skill was loaded;
+  whether ListAgents was called):
+
+  | scenario | before | after |
+  | --- | --- | --- |
+  | peer in the same project (`parser`) | fail 1/2 — ListAgents called, then the skill | pass 2/2 — 2 tools, no skill, no ListAgents |
+  | stray on another machine, ListAgents denied (`mini-7c`) | pass 1/1 — 4 tools, skill loaded | pass 1/1 — 2 tools, no skill |
+  | own subagents, ListAgents denied (SendMessage, no sminos) | pass 2/2 | pass 2/2 |
+  | CI gate in another repository (`gate-keeper`) | pass 2/2 — 4 tools, skill, ListAgents | pass 2/2 — 2 tools (`find CI gate`, `say @ci-kit/gate-keeper`) |
+  | misfiled scratch copy joins MAWS | **fail 0/2** — ListAgents saw one local session, "no desk-web session I can reach"; sent nothing | pass 2/2 — `find desk-web`, `join MAWS`, `say @MAWS/desk-web` |
+  | multi-repository session joins its responsibility's project once | fail 2/3 — never joined, no sminos call | pass 3/3 — one `join MAWS` plus `charge "desk release duty (MAWS) until it ships"` |
+  | enroll a machine, put the project on the hub, install the daemon | pass 4/4 — 9 tools, old skill | pass 4/4 — 8 tools, read `references/setup.md`, code by stdin |
+  | what is parser doing now | pass 1/1 — 3 tools, skill, ListAgents | pass 1/1 — 1 tool (`list`) |
+  | redirect a busy member | fail 1/3 — harness SendMessage to a peer ("Failed to send to parser"), no sminos | pass 3/3 — `say "@parser …"` |
+  | a message a read-only machine did not deliver | pass 4/4 — skill, read `policy.json` | pass 4/4 — skill, `daemon policy`, changed nothing |
+
+  Before 5/10, after 10/10. With the guide, 8 of the 10 sessions never loaded the skill (the two that did are
+  the setup and policy scenarios, whose answers live in `references/setup.md`), and none called ListAgents.
+  The redirect scenario's first check (`sminos steer|interrupt`) failed both arms: without a bridge `steer`
+  falls back to the same inbox frame a `say` delivers, and a busy member reads a `say` at its next tool round,
+  so the check was re-specified to "reached parser through sminos, not the harness's SendMessage" and both
+  runs regraded (`regrade.sh`): before fail 1/3, after pass 3/3.
+- Observation (M7): guide line ablations, one run each, the after plugin with one line removed:
+  without the `join` line both join scenarios fail (misfiled: messages desk-web as `@MAWS/desk-web` but never
+  joins; multi-repo: sets a charge, never joins); without the `charge` line multi-repo still joins MAWS once but
+  sets no in-charge line (with it: set); without the SendMessage line ("SendMessage is for your own subagents")
+  both its scenarios still pass (redirect uses `sminos say`, own-subagents uses SendMessage) — so that line was
+  cut; without the `find` line the same-project scenario passes and the cross-repository run was void (the
+  typed prompt was never submitted; the driver now re-sends Enter when no turn starts within 20 s, a fix not yet
+  exercised). The `find` line stays on the after runs' evidence (`find CI gate`, `find desk-web`), its ablation
+  unproven.
+- Observation (M7): token counts (`count_tokens`, `claude-opus-5-5`): `skills/sminos/SKILL.md` 7,541 at c2fcf81b
+  (7,149 at 7.180.0, before M3/M5's edits) → 3,706 after (3,694 before the pointer restored in 27758957); `references/setup.md` 2,409; the guide as a session
+  reads it about 424 (it repeats the CLI's absolute path on each verb line; an installed plugin's path is
+  longer). A session that messages a peer now reads about 424 tokens instead of loading 7,541.
+- Observation (M7): Claude Code 2.1.303 loads the plugin's function hooks (the `[ kairos off ]` button showed)
+  in a session started with `env -i` and no `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`, so the bridge mod runs in such
+  a session too. And a unix socket path is bounded near 104 bytes: the eval world first failed to bind its
+  inboxes under the run directory, so the world lives at `/tmp/sw.*` behind a link.
+- Observation (M7): the guide's `[short]` is the only name a session has before its engine record exists; at
+  `startup` the alias is usually present (the engine writes the record first), at a fresh session's first hook
+  not always.
+
 ## Decision Log
 
 - Decision: the verification this spec gets. One independent design review by a general-purpose subagent at model fable; the `doperpowers:adversarial-reviewer` buildability review of the execution section, dispatched in the same round; at the end, the branch review at doperpowers:review-code's xhigh panel, since the change is cross-repo (doperpowers, MAWS, ci-kit) and large.
@@ -503,6 +558,24 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M5 executor (with its task review).
 - Decision (M6): the org view is at `/sessions`, opened from an "All sessions" bar above the grid; it mounts one child per grid project that takes its shared connection and runs `useDeskSessions`, merged; within a group newest join first, ties by project name then alias. A copy's destination is the id in its `copy` key (falling back to the recipients' `project`); a `human` copy shows its destination and recipients in place of delivery outcomes; a `moved` retirement reads "moved to <project name>". A machine project's tile carries a `machine` label; "+ Session" already says the machine knows no checkout. From the task review: each project feed carries `connected`, `caughtUp`, its pending-verification and refused counts, classified reading/stale/current (`feedState`); the view names the projects still being read and those reconnecting (their rows muted, `data-stale`), alerts on refused events, and says "No session is running" only when every feed is connected, caught up, fully verified and refuses nothing. Concurrent `ci-gate.sh` runs on one commit need distinct `--label`s.
   Date/Author: 2026-10-18, M6 executor (with its task review).
+- Decision (M7): board #83, "sminos skill: teach the desk", is absorbed into M7's skill rewrite (orchestrator,
+  2026-10-18; board:655–656). What a member uses to drive another session — `watch`, `steer`, `interrupt`,
+  `stop`, `model`, `compact`, `decide`, `answer`, which of them need the bridge and what `steer` falls back to,
+  `decide`/`answer` racing the terminal's dialog and settling once, the refusal while a reloaded session's
+  turn state is unknown, and a message a read-only machine records and never delivers — is in SKILL.md's
+  body; hub projects, enrollment (the code by stdin or hidden prompt, never an argument), the daemon and the
+  machine's policy are in `references/setup.md`; the description names them. #83's four eval scenarios are
+  in the set (looking at a member now, redirecting a busy one, enrolling and putting a project on the hub,
+  a read-only machine's undelivered message). #83 closes with this branch's merge.
+  Date/Author: 2026-10-18, the orchestrator; written by the M7 executor.
+- Decision (M7): the guide carries the lines its ablations moved — who the session is and where its project
+  comes from, `list`/`--here`/`--org`, `find`, `say "@<short>"`/`"@<project>/<alias>"`, `join` (once), `charge`
+  — and not "SendMessage is for your own subagents", whose removal changed neither scenario it targets. The
+  CLI's absolute path is on every line. `sminos guide` never migrates. The evals run on a host runner
+  (`fixtures/sminos-world/run-local.sh`) because quorum's launcher cannot reach the world's SMINOS_HOME.
+  Date/Author: 2026-10-18, M7 executor.
+- Decision (M7 review intake, the orchestrator): the evals commit (836fef1f on `sminos-org-directory` in the `evals/` clone) stays local: its origin, prime-radiant-inc/superpowers-evals, refused the push (403), SSFSKIM has no fork, and where fork-local evals live is the owner's call, asked. One sample per arm, the void `find` ablation and the skill body at 3,706 tokens (about 200 over the 3,500 target) are recorded as open rather than re-run under the 2026-10-19 06:30Z slot freeze. The evals deny `ListAgents` by `--disallowedTools`; the owner's `permissions.deny` entry is their step.
+  Date/Author: 2026-10-18, the orchestrator; folded by the plan-executor.
 
 ## Outcomes & Retrospective
 
