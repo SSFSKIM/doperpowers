@@ -139,7 +139,7 @@ class Contract(unittest.TestCase):
         self.assertTrue(wait_for(lambda: os.path.exists(self.received + ".held")), "the frame never arrived")
         self.assertFalse(done.wait(0.3), "send_frame returned before the inbox closed")
         os.unlink(self.received + ".hold")
-        self.assertTrue(done.wait(5), "send_frame did not return at the close")
+        self.assertTrue(done.wait(2), "send_frame did not return at the close")
         self.assertEqual(len(self.frames()), 1)
 
 

@@ -344,7 +344,7 @@ PY
 rm -f "$INBOX.held"
 touch "$INBOX.hold" "$SMINOS_HOME/daemon/nudge"
 until_true 200 test -f "$INBOX.held" || true
-assert_contains "$(cat "$INBOX")" "a say the tick delivers" "a tick is pushing an owed say to m, its ack held"
+assert_contains "$(cat "$INBOX")" "a say the tick delivers" "a tick is pushing an owed say to m, its close held"
 # Seq 4: the forgeries above spent hub/$MEMBER's position 3, a tombstone nothing is appended at.
 ctl send "$(seal ok 4 "said from the web mid-delivery")" >/dev/null
 until_true 100 grep -q "said from the web mid-delivery" "$HPLOG/hub.$MEMBER.jsonl" || true
@@ -691,7 +691,7 @@ ACKS="$(ctl acks "$GEN")"
 rm -f "$INBOX.held"
 touch "$INBOX.hold"
 # Seqs 307 on: hub/$MEMBER's 1-306 are taken above. m's inbox holds each
-# frame's ack, which a push waits 5 s for: three take the main thread 15 s.
+# frame's close, which a push waits 5 s for: three take the main thread 15 s.
 for seq in 307 308 309; do ctl send "$(seal ok "$seq" "said while m holds its frames, $seq")" >/dev/null; done
 until_true 200 test -f "$INBOX.held" || true
 assert_equals "$(test -f "$INBOX.held" && echo held)" held "a delivery to m waits on m's inbox"

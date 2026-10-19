@@ -31,8 +31,17 @@ try:
 except FileNotFoundError:
     pass
 srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(path)
+# The path appears only once the socket is listening: waiters treat the file
+# as "listening". Bound under a short temporary name beside it (a unix socket
+# path is limited to about 104 bytes), then renamed.
+tmp = os.path.join(os.path.dirname(path) or ".", ".inbox-%d" % os.getpid())
+try:
+    os.unlink(tmp)
+except FileNotFoundError:
+    pass
+srv.bind(tmp)
 srv.listen(8)
+os.rename(tmp, path)
 while True:
     c, _ = srv.accept()
     buf = b""
