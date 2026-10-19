@@ -66,8 +66,12 @@ reload still run.
 - [x] (2026-10-19 17:50Z) M2 — MAWS PR https://github.com/SSFSKIM/MAWS/pull/74, merge 9fd93735e
       (gate run 39295926848 green; task review approved), deployed by the author 17:53Z
       (hub@9fd93735, web@master.9fd93735). Residue: MAWS #75 (the live spec's to-human path).
-- [ ] M1 — doperpowers' readers accept both names; the reload mod installs a plugin's new
-      dependencies and updates whenever an installed version differs from the clone's.
+- [x] (2026-10-19 21:40Z) M1 — doperpowers' readers accept both names; the reload mod installs a
+      plugin's new dependencies and updates whenever an installed version differs from the clone's,
+      holding back a failed dependency's closure and every reload that would load a plugin over a
+      missing dependency (doperpowers 7.189.7, to-human 0.1.2). Reviewed clean: task review (opus)
+      and branch review (reviewer-high on fable), two fix waves (Decision Log, M1 review and fix
+      waves); its PR and merge are recorded with M3.
 - [ ] M3 — The carve-out and the rename, opened by the `next.trace` spike (M3a), rehearsed on a local
       git remote.
 - [ ] M4 — The roll and each machine's migration (owner steps).
