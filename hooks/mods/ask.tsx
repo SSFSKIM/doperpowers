@@ -1237,7 +1237,8 @@ const HOOK_CONTEXT = /<system-reminder>\n[^\n]*? hook additional context: ([\s\S
  * nothing a module can reach names the session it copied. The calls and
  * their results are the rows'; an answer given as a tool result's context
  * is not a row, and is read from the model's form. What a copy holds starts
- * at the last compaction: an ask from before it is not rebuilt.
+ * at the last compaction, and each form keeps its newest 4096 messages: an
+ * ask from before either is not rebuilt.
  */
 async function historyAsks($: EngineInterface): Promise<OpenAsk[]> {
   const [messages, api] = await Promise.all([$.session.messages(), $.session.messages({ as: 'api' })])
@@ -1408,8 +1409,10 @@ export function registerAsk(on: On) {
       forgetAsyncAsks()
     }
     if (e.source === 'resume' || e.source === 'fork') {
+      // A copy's transcript is unwritten, but for /branch's, written whole
+      // before the session starts and read with no cap on its length.
       asks =
-        e.source === 'fork'
+        e.source === 'fork' && !(await $.fs.exists(e.transcript_path))
           ? await historyAsks($).catch((error: unknown) => {
               $.ui.log(`ask: the conversation could not be read (${message(error)}); no async ask is rebuilt`, { to: 'debug' })
               return []

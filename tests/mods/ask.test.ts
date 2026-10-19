@@ -1352,6 +1352,15 @@ describe('a resumed session', () => {
     expect(h.calls.some((c) => c.op === 'fs.read' || c.op === 'process.run')).toBe(false)
     expect(h.calls.some((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toBe(true)
 
+    // /branch writes the copy's transcript whole before the session starts: it is read, as a resumed one's is.
+    const branch = harness({ files: { [T]: lines.join('\n') }, dirs: { [T]: [] }, history: { rows: [], api: [] } })
+    await branch.start()
+    await branch.classicStart(T, 'branch', 'fork')
+    expect(asyncAsks().map((a) => [a.id, a.status])).toEqual([
+      ['t-open', 'open'],
+      ['t-done', 'answered'],
+    ])
+
     const failing = harness({
       history: () => {
         throw new Error('no conversation')

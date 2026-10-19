@@ -498,8 +498,10 @@ nothing a module reaches names the session it copied. Its asks are rebuilt
 from the conversation the engine holds: the calls and their results from
 `$.session.messages()`, and an answer given as a tool result's context, which
 is no row there, from the model's form (`{ as: "api" }`), inside that result.
-That conversation starts at the last compaction, so an ask from before it is
-not rebuilt in the copy; the original keeps it.
+That conversation starts at the last compaction, and each form keeps its
+newest 4096 messages, so an ask from before either is not rebuilt in the copy;
+the original keeps it. `/branch` writes the copy's transcript whole before the
+session starts, and that file is read as a resumed session's is.
 
 Known limits: a tool already running in parallel with the ask when the human
 declines it finishes, where the built-in's abort would cut it; the refusal
