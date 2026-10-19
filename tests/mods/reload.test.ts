@@ -102,6 +102,7 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
   const state = {
     clock: 0,
     asks: 0,
+    isTurnRunning: false,
     answer: (): Promise<{ text?: string }> => Promise.resolve({ text: 'Reloaded: 4 plugins · 30 skills' }),
   }
   const reloader = createReloader(
@@ -112,6 +113,7 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
       enabled: async () => new Set(options.enabled ?? Object.keys(plugins)),
       reload: () => (calls.push({ op: 'reload' }), state.answer()),
       asksInFlight: () => state.asks,
+      isTurnRunning: () => state.isTurnRunning,
       now: () => state.clock,
       toast: (text) => calls.push({ op: 'toast', text }),
       log: (text, to) => calls.push({ op: `log:${to}`, text }),
@@ -183,6 +185,22 @@ describe('createReloader', () => {
     h.state.asks = 1
     h.install('doperpowers@dp', '7.2.0')
     await h.ticks(4)
+    expect(h.reloads()).toBe(0)
+    h.state.asks = 0
+    await h.ticks(1)
+    expect(h.reloads()).toBe(1)
+  })
+
+  test("a running turn holds the reload until it ends: queued then, it would run at the turn's end, past a question the turn asked meanwhile", async () => {
+    const h = harness()
+    await h.reloader.start()
+    h.state.isTurnRunning = true
+    h.install('doperpowers@dp', '7.2.0')
+    await h.ticks(4)
+    expect(h.reloads()).toBe(0)
+    h.state.asks = 1
+    h.state.isTurnRunning = false
+    await h.ticks(2)
     expect(h.reloads()).toBe(0)
     h.state.asks = 0
     await h.ticks(1)
