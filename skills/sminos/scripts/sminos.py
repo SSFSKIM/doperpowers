@@ -7840,9 +7840,14 @@ def who_matches(short):
     in another process; `former`), or a session whose membership the log
     holds as retired — its process ended, it was retired, or it moved to a
     project not known here (`how` the retirement's reason, "retired" for
-    none) — drawn as a member would be, so its state is list's word."""
+    none) — drawn as a member would be, so its state is list's word. A
+    session handed off to one that has since ended too answers as the last
+    session of its hand-offs (`continued`); as itself ("handed off") when
+    no successor joined in its project."""
     best = {}
-    for p in org_scope():
+    scope = org_scope()
+    known = {p.id for p in scope}
+    for p in scope:
         view = view_of(p)
         for m in view.members + view.rows:
             if not m.session:
@@ -7851,14 +7856,32 @@ def who_matches(short):
                 best.setdefault(m.session, (p, m, ""))
             elif any(s[:8] == short for s in m.former):
                 best.setdefault(m.session, (p, m, "continued"))
-    for p in org_scope():
+    for p in scope:
         view = view_of(p)
         for sid, r in view.info.items():
             latest = r["latest"] or {}
             if sid[:8] != short or sid in best or latest.get("kind") != "retired" or not r["joined"] \
-                    or (latest.get("reason") == "continued" and r["to"]):
+                    or (latest.get("reason") == "moved" and latest.get("project") in known):
                 continue
-            best[sid] = (p, _member(sid, r, None, None, False, True, view.info), str(latest.get("reason") or "retired"))
+            how = str(latest.get("reason") or "retired")
+            if how == "continued" and r["to"]:
+                if any(sid in m.former for _, m, _ in best.values()):
+                    continue
+                last, seen = sid, {sid}
+                while True:
+                    c = view.info.get(last) or {}
+                    nxt = c.get("to") or ""
+                    if (c.get("latest") or {}).get("reason") != "continued" or not nxt or nxt in seen \
+                            or not (view.info.get(nxt) or {}).get("joined"):
+                        break
+                    seen.add(nxt)
+                    last = nxt
+                if last in best:
+                    continue
+                best[last] = (p, _member(last, view.info[last], None, None, False, True, view.info),
+                              "continued" if last != sid else "handed off")
+                continue
+            best[sid] = (p, _member(sid, r, None, None, False, True, view.info), how)
     return list(best.values())
 
 

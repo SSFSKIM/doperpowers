@@ -7,8 +7,9 @@
 # internal fork, or one that is no member (a headless run). `who <commit>`
 # reads the commit's trailer and says who that session is now: its alias
 # (the current one when renamed), project, machine and state; the session it
-# went on as when it went to the background (a hand-off); how to reach it,
-# or to resume it once stopped. An address no session known here answers to
+# went on as when it went to the background (a hand-off), stopped too once
+# that one ended; the project it moved to, when known here; how to reach
+# it, or to resume it once stopped. An address no session known here answers to
 # is still said as the line says it. A commit without the line exits 4.
 # Hermetic: HOME and SMINOS_HOME are temporary; the enrollment is a file
 # written by hand; `gh` is never called (PRs are the mod's live check's).
@@ -170,6 +171,36 @@ assert_contains "$OUT" "went on as handy#3c000003 (bg), teamproj on alpha: idle"
 assert_contains "$OUT" 'reach: sminos say "@3c000003' "reached at the successor's short"
 who --session "$S3"
 assert_equals "$OUT" "Sminos-Session: handy#3c000003 (teamproj on alpha)" "the job's own commits carry its new short"
+
+echo "the job has ended too: the hand-off is followed to it, to resume"
+rm "$HOME/.claude/sessions/handyjob.json"
+(cd "$REPO" && "$SMINOS" list >/dev/null 2>&1)
+who "$H_SHA"
+assert_contains "$OUT" "went on as handy#3c000003 (bg), teamproj on alpha: stopped" "the ended successor, stopped"
+assert_contains "$OUT" "claude --resume $S3" "resume the successor by its id"
+assert_not_contains "$OUT" "no session 2b000002" "not said as unknown"
+
+echo "moved to a project known here, and ended there: found there"
+REPO2="$T/repo2"
+gitq init -q "$REPO2"
+# Its id sorts after teamproj's, so teamproj's `moved` retirement is met first.
+python3 -c 'import json
+print(json.dumps({"project": "ffffffff-ffff-4fff-bfff-ffffffffffff", "name": "otherproj", "remote": "", "hub": {"org": "org-1"}}))' > "$REPO2/.smns"
+(cd "$REPO2" && "$SMINOS" say "a project" >/dev/null 2>&1)
+S8=8d000008-0000-4000-8000-000000000008
+transcript "$S8" "$REPO"
+record mover "$S8" "$REPO"
+(cd "$REPO" && "$SMINOS" list >/dev/null 2>&1)
+who --session "$S8"
+LINE8="$OUT"
+commit_with "$(printf 'move\n\n%s' "$LINE8")"
+(cd "$REPO" && CLAUDE_CODE_SESSION_ID=$S8 "$SMINOS" join otherproj >/dev/null)
+rm "$HOME/.claude/sessions/mover.json"
+(cd "$REPO" && "$SMINOS" list >/dev/null 2>&1)
+(cd "$REPO2" && "$SMINOS" list >/dev/null 2>&1)
+who "$SHA"
+assert_contains "$OUT" "now mover#8d000008, otherproj on alpha: stopped" "in the project it moved to"
+assert_not_contains "$OUT" "for a project not known here" "not as gone to a project unknown here"
 
 echo "an address no session here answers to: what the line says"
 commit_with "$(printf 'chore\n\nSminos-Session: ghost#deadbeef (elsewhere on mini)')"
