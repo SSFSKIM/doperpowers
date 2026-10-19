@@ -4,7 +4,9 @@ The one-time work: a project's `.smns` and its mirror, a machine's
 enrollment at the desk hub, the daemon, and the machine's policy. The CLI
 is `skills/sminos/scripts/sminos` (not on PATH); `sminos help` describes
 every verb, the operator's rare ones (`meta`, `seat add`, `sync`,
-`remove`, `migrate`, `chart`, `tui`) included.
+`remove`, `migrate`, `chart`, `tui`) included. It runs on the first
+`python3` on PATH, which must be 3.10 or newer; an older one (macOS's
+own `/usr/bin/python3` is 3.9) stops, saying what fixes it.
 
 ## The project
 

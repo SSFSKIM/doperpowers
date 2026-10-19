@@ -32,6 +32,9 @@ run
 if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "prints nothing, exits 0"; else fail "rc=$RC printed: $OUT"; fi
 
 printf '{"hub":"http://127.0.0.1:9","org":"org-1","machine":"alpha"}\n' > "$SMINOS_HOME/daemon/hub.json"
+# The engine's record of the session: guidance goes only to a member on sight.
+printf '{"pid":%s,"sessionId":"%s","name":"s1","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","entrypoint":"cli"}\n' \
+  "$$" "$SID" "$T/dir" > "$HOME/.claude/sessions/s1.json"
 echo "an enrolled machine:"
 run
 want="$(printf '%s' "$PAYLOAD" | "$SMINOS" guide)"

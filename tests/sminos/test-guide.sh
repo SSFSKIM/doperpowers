@@ -66,9 +66,9 @@ transcript() { # session cwd... — a transcript whose rows ran in each cwd in t
       "${sid:0:8}" "$n" "$sid" "$d" "$n" >> "$TX"
   done
 }
-record() { # name session cwd — an engine record (a running process: this shell)
-  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
-    "$$" "$2" "$1" "$3" > "$HOME/.claude/sessions/$1.json"
+record() { # name session cwd [entrypoint] — an engine record (a running process: this shell)
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","entrypoint":"%s"}\n' \
+    "$$" "$2" "$1" "$3" "${4:-cli}" > "$HOME/.claude/sessions/$1.json"
 }
 write_smns() { # dir name — a hub .smns naming only the org
   python3 -c 'import json, sys, uuid
@@ -127,14 +127,34 @@ guide "$(payload "$S1" "$STRAY" "$TX")"
 first="$(head -1 <<<"$OUT")"
 assert_contains "$first" "project teamproj" "the joined project is the session's"
 assert_contains "$OUT" "join --cwd" "and the way back is named"
-assert_contains "$OUT" "alpha" "with the launch directory's own project"
+assert_contains "$OUT" "is in alpha;" "with the launch directory's own project"
 
 echo "before the transcript exists the payload's directory stands in:"
 S3=3c000003-0000-4000-8000-000000000003
+record fresh "$S3" "$REPO"
 guide "$(payload "$S3" "$REPO" "$T/none.jsonl")"
 first="$(head -1 <<<"$OUT")"
-assert_contains "$first" "[3c000003]" "a session with no record yet is named by its short"
+assert_contains "$first" "fresh [3c000003]" "a session with no transcript yet is named"
 assert_contains "$first" "project teamproj" "in the payload directory's project"
+
+echo "only a session that is a member on sight, as the record hook decides it:"
+S5=5e000005-0000-4000-8000-000000000005
+record headless "$S5" "$REPO" sdk-cli
+guide "$(payload "$S5" "$REPO" "$T/none.jsonl")"
+assert_equals "$OUT|$RC" "|0" "a headless or SDK run (claude -p) gets nothing"
+S6=6f000006-0000-4000-8000-000000000006
+guide "$(payload "$S6" "$REPO" "$T/none.jsonl")"
+assert_equals "$OUT|$RC" "|0" "a session the engine has not recorded gets nothing"
+
+echo "a seat: no join line (a seat stays where it was spawned):"
+S4=4d000004-0000-4000-8000-000000000004
+record helper "$S4" "$REPO"
+transcript "$S4" "$REPO"
+(cd "$REPO" && "$SMINOS" seat add teamproj helper --session "$S4" >/dev/null 2>&1)
+guide "$(payload "$S4" "$REPO" "$TX")"
+assert_contains "$(head -1 <<<"$OUT")" "helper [4d000004]" "the seat is told who it is"
+assert_not_contains "$OUT" "join <project>" "and not offered a join"
+assert_contains "$OUT" 'charge "<line>"' "the rest stands"
 
 echo "nothing for an internal fork, or a payload naming no session:"
 OUT="$(printf '%s' "$(payload "$S1" "$STRAY" "$TX")" | SMNS_INTERNAL=1 "$SMINOS" guide 2>&1)"

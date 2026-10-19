@@ -12,17 +12,22 @@ a seat, board pipeline workers included. A session the human opened is a
 member too, seat-less, from the first call that reads its project.
 
     sminos spawn    <alias> <task> [--role R] [--brief B] [--cwd C] [--worktree W]
-                   [--model M] [--settings S] [--effort E] [--wait]
-    sminos seat add <group> <alias> [--role R] [--brief B] [--session S]
+                   [--model M] [--settings S] [--effort E] [--wait]   # a background session in a seat
+                   of this project (--cwd's); --brief is its in-charge line; --wait prints the reply.
+                   --wait only watches, for DAEMON_TIMEOUT (default 18000 s): the seat works on after,
+                   and `reply` reads its live transcript
+    sminos seat add <group> <alias> [--role R] [--brief B] [--session S]   # register a vacant seat for a
+                   later fill, or, with --session, give a running session a seat
     sminos fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
+                   # a fresh session in the seat; --resume continues its saved one
     sminos resume   <seat> <msg> [--wait]                 # process-level continuation (stops a live turn first)
                    A resumed background session keeps its SAVED options (name, permission
                    mode, model, settings, effort): --model/--settings/--effort are accepted
                    on resume for argv compatibility but ignored — use fill without --resume
                    to change them.
     sminos send     <member|session name|codex thread> <msg> [--wait] [--from F]
-                   # a live member: inbox socket; a stopped seat: resumed. A live session by
-                   # name, or a codex thread (its id, or codex:<id|exact name>, through
+                   # a live member: inbox socket; a stopped seat: resumed. On a machine not
+                   # enrolled, a live session in no project by its name; a codex thread (its id, or codex:<id|exact name>, through
                    # codex's queue); --wait needs a seat.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
                    @short / @project/alias: delivered; @all: every live member
@@ -90,14 +95,18 @@ member too, seat-less, from the first call that reads its project.
     sminos attach   <seat>                                # claude attach <short>
     sminos migrate  [--quiet]                             # (also runs implicitly)
     sminos meta     get <seat> <field> | set <seat> <field> <value> [<field> <value>...]
+                   # read or write a seat record's fields under the record lock (the board pipeline's
+                   ticket, role, run_id...); never a credential
 
 A member's name is its alias: a seat's alias (a seat sminos spawns runs under
 it as its harness name), or a seat-less session's harness name. Aliases are
 display names and can collide; `alias#short` (the session's first eight hex
-digits) tells two apart. A bare name resolves in the working directory's
-project (a seat's own, for a seat), `project/alias` in another, and from a
-directory that is no project across every project known here; a seat also
-answers to `group/alias`. Scripts may pass a full seat id or session id.
+digits) tells two apart. A bare name resolves only in the caller's project (a
+seat's own, for a seat); `@short` and `alias#short` reach a session in any
+project known here, `project/alias` (a stray: `machine/alias`) one in another;
+on a machine not enrolled, from a directory that is no project, a bare name
+resolves across every project known here. A seat also answers to
+`group/alias`. Scripts may pass a full seat id or session id.
 
 Messaging is one verb, `send`: to a live seat it writes a frame to the
 session's inbox socket — the socket the harness's native cross-session
@@ -116,7 +125,8 @@ State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
 writes them directly under the shared flock file .metalock. A project (a
-committed .smns, else the owning git repository) keeps its append-only event
+committed .smns; else, on an enrolled machine, the machine's own project; else
+the owning git repository) keeps its append-only event
 log, one file per writer, at projects/<id>/log/, with each reader's cursor and
 each recipient's delivery record beside it. Names are [A-Za-z0-9._-]{1,64};
 `human` is the reserved operator identity.
@@ -7422,27 +7432,24 @@ def cmd_join(a):
         me, target.name, now_in.name if now_in else "no project", home.name if home else "no project"))
 
 
-def session_alias(project, session):
-    """The alias a session of this machine goes by in `project`, as its own
-    say would sign it (default_from, for a session named by its id rather
-    than the environment): its seat's, else held_alias; "" for none yet."""
-    seat = next((s for s in seats() if s["current"] == session), None)
-    if seat:
-        return seat["alias"]
-    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
-    return held_alias(*own_alias(_own_events(project, session), session), peer, session)[0]
-
-
 def guide_text(session, launch):
     """The SessionStart guidance (§9) for a session launched in `launch` on
     this enrolled machine: who it is and where its project comes from, then
-    the verbs that find and reach the org's other sessions. Only facts the
-    model cannot derive, and only lines the evals showed move behavior."""
+    the verbs that find and reach the org's other sessions. Only for a
+    session that is a member on sight, as the record hook decides it
+    (joinable: a headless or SDK run, or one the engine has not recorded, is
+    told nothing it is not), and no `join` for a seat, which cannot. Only
+    facts the model cannot derive, and only lines the evals showed move
+    behavior."""
     project = session_project(session, launch)
-    if project is None:
+    seen = _on_sight(project, session) if project is not None else None
+    if seen is None or not joinable(*seen):
         return ""
+    seat, peer = seen
     home = resolve_project(launch)
-    alias = session_alias(project, session)
+    # The alias it goes by, as its own say would sign it (default_from).
+    alias = seat["alias"] if seat else \
+        held_alias(*own_alias(_own_events(project, session), session), peer, session)[0]
     who = "%s [%s]" % (alias, session[:8]) if alias and alias != session[:8] else "[%s]" % session[:8]
     cli = os.path.join(SCRIPT_DIR, "sminos")
     if home is not None and home.id != project.id:
@@ -7452,6 +7459,8 @@ def guide_text(session, launch):
         where = "this machine's own project, since no .smns claims your launch directory, %s" % launch
     else:
         where = "the project of your launch directory, %s" % launch
+    join = [] if seat else ["  %s join <project>  when your standing work belongs to another project"
+                            " (once, not per repository you visit)" % cli]
     return "\n".join([
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project."
         % (who, project.name, enrollment()["machine"], where),
@@ -7461,8 +7470,7 @@ def guide_text(session, launch):
         "  %s find <words>    sessions whose repository, branch, alias or in-charge line match" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches only your project" % cli,
-        "  %s join <project>  when your standing work belongs to another project"
-        " (once, not per repository you visit)" % cli,
+    ] + join + [
         '  %s charge "<line>" what you are in charge of, shown beside you in every list' % cli,
     ])
 

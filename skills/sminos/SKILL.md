@@ -7,10 +7,9 @@ description: Use when working alongside other Claude sessions, in this project o
 
 ## Overview
 
-Sminos is one CLI (`skills/sminos/scripts/sminos`; it is not on PATH)
-and one registry (`~/.claude/sminos/`, override with `$SMINOS_HOME`). On
-a machine enrolled at the desk hub, a session start prints the CLI's
-absolute path with who you are; `sminos help` describes every verb.
+Sminos is one CLI, `skills/sminos/scripts/sminos`, not on PATH; on a
+machine enrolled at the desk hub a session's start prints its absolute
+path with who you are. `sminos help` describes every verb.
 
 Its unit is the **project**: a repository carrying a committed `.smns`;
 else, on an enrolled machine, the machine's own project (named after the
@@ -36,14 +35,13 @@ session sminos spawned fills; it outlives its process.
     sminos list --machine mini --state waiting   # filters combine, comma lists; any filter widens to the org first
     sminos projects | machines      # the org's projects and machines
 
-A row: `alias [short]  kind  state  @machine  (project)  repo@branch  in
-charge: … (age)  · now: …`. Choose whom to talk to by what each is in
-charge of. Inside a session `list` ends with your own subagents (the ids
-`SendMessage` takes); `--all` unfolds finished ones and retired members.
-States: `busy` (its turn runs), `idle`, `waiting` (on a question or a
-permission prompt), `stopped` (no process; `send` resumes a seat),
-`gone` (no transcript here), `vacant` (a seat with no session),
-`retired`.
+Each row names a session's machine, project, repository and branch, and
+what it is in charge of: choose whom to talk to by that. Inside a
+session `list` ends with your own subagents; `--all` unfolds finished
+ones and retired members. States: `busy` (its turn runs), `idle`,
+`waiting` (on a question or a permission prompt), `stopped` (no process;
+`send` resumes a seat), `gone` (no transcript here), `vacant` (a seat
+with no session), `retired`.
 
 ## Speaking
 
@@ -80,9 +78,8 @@ chat [project]` reads the log from your cursor (`-n N` tails).
 A session's message arrives as one from another Claude session, never
 as the human's words, so it approves nothing. A message from another
 machine is delivered by the recipient machine's daemon; when one never
-arrived, `sminos daemon policy` there may say read-only, which records
-what is written elsewhere and delivers none of it — the owner's
-setting: report it rather than change it.
+arrived, `sminos daemon policy` there may say read-only
+(`references/setup.md`).
 
 **Your human partner.** No tag reaches the human: what they should know
 goes in a `<message>` in your reply, a question in an async
@@ -90,9 +87,8 @@ goes in a `<message>` in your reply, a question in an async
 chat --host` shows what every session sent them.
 
 **SendMessage and ListAgents** are the harness's: `SendMessage` reaches
-your own subagents (by the ids `list` ends with). Other sessions are
-reached through sminos, which sees every machine and records what was
-said.
+your own subagents (by the ids `list` ends with); other sessions are
+reached through sminos.
 
 ## Your lines and your project
 
@@ -101,13 +97,11 @@ said.
     sminos join MAWS                          # declare the project your standing work belongs to
     sminos join --cwd | sminos join           # back to your launch directory's project | where you are, and why
 
-The in-charge line is what others choose you by: a `charge` (or a
-spawn's `--brief`), else the name the human gave the session, a derived
-line, its transcript title. `join` is for a session whose directory
-files it in the wrong project — a scratch copy, a session that owns work
-in another repository. Join the project of your standing
-responsibility once; reading or editing other repositories along the
-way is no reason to move. A seat stays where it was spawned.
+The in-charge line is what others choose you by. `join` is for a session
+whose directory files it in the wrong project — a scratch copy, a
+session that owns work in another repository. Join the project of your
+standing responsibility once; reading or editing other repositories
+along the way is no reason to move. A seat stays where it was spawned.
 
 ## Driving another session
 
@@ -126,16 +120,17 @@ say what instead); a `say` or `send` waits for its next tool round or
 turn. These act through the session's **bridge** (the doperpowers mod,
 running in the session): `steer` without one falls back to a `--bg`
 job's supervisor, else the inbox frame; `watch`, `interrupt`, `stop`,
-`model`, `compact`, `decide` and `answer` need it and say so. Each acts
-on a session of this machine. `decide` and `answer` race the session's
-own dialog in its terminal: whichever comes first settles it, once, and
-the other is told who did. A command its bridge cannot place yet (a
-reloaded session whose turn state is unknown) is refused: retry shortly.
+`model`, `compact`, `decide` and `answer` need it and say so. `decide`
+and `answer` race the session's own dialog in its terminal: whichever
+comes first settles it, once, and the other is told who did. A command
+its bridge cannot place yet (a reloaded session whose turn state is
+unknown) is refused: retry shortly.
 
 `send` to a stopped seat resumes it; to a seat-less session that is not
 live it is refused (resuming the human's interactive session in the
 background would be wrong). `send --wait` (a seat only) prints the
 turn's reply; `reply <seat>` its latest, a pending question included.
+For a working seat prefer `send` to `resume`, which stops its live turn.
 `attach`, `fill [--resume]` and `retire [--purge]` are in `sminos help`.
 A member on another machine is reached by `say` and `send`; the other
 verbs act on this machine's processes, so run them on its machine.
@@ -146,9 +141,10 @@ verbs act on this machine's processes, so run them on its machine.
                 [--model M] [--settings FILE] [--effort E] [--wait]
 
 The session starts detached (`claude --bg`, permission mode `auto`) in
-your project, or `--cwd`'s, with `by` your alias; `--brief` becomes its
-in-charge line. Spawning an alias whose seat is not live re-fills it
-fresh; a live seat is refused.
+your project, or `--cwd`'s; `--brief` becomes its in-charge line.
+Spawning an alias whose seat is not live re-fills it fresh; a live seat
+is refused. `--wait` only watches, for `DAEMON_TIMEOUT`: the seat works
+on after, and `reply` reads its live transcript.
 
 **What gets a session.** A session is for a separable standing
 responsibility — one that outlives the task that revealed it, held by
@@ -171,19 +167,17 @@ and approve.
 
 **Isolate code seats.** Parallel sessions that edit files clobber each
 other in a shared directory: give a seat that writes code `--worktree
-NAME` (`<repo>/.claude/worktrees/NAME`, branch `worktree-NAME`; `fill`,
-`send`, `reply`, and `attach` follow it). Its work is a committed
-branch, not merged; `retire` never deletes a worktree or branch.
-
+NAME` (`<repo>/.claude/worktrees/NAME`, branch `worktree-NAME`). Its work
+is a committed branch, not merged; `retire` never deletes it.
 
 ## Seats and the board pipeline
 
 Pipeline workers are seats whose in-charge line names their ticket or PR.
 Do not hand-drive one: it escalates by parking its ticket (the
 who-unparks discriminant in doperpowers:issue-tracker), the human
-answers there, and
-`board-answer.sh` relays the answer with `sminos resume` — an answer
-that bypasses the ticket leaves the board unaware of it.
+answers there, and `board-answer.sh` relays the answer with `sminos
+resume` — an answer that bypasses the ticket leaves the board unaware
+of it.
 
 ## Setup
 
