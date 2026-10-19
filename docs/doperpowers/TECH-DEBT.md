@@ -616,7 +616,7 @@ Residue of rebuilding a copy's asks from the conversation it copied (`historyAsk
 - **A copy's export leaves out records older than its SessionStart hook's clock.** The copied records keep their own times and every later one is newer, except a record entered before the hook ran (a prompt the human typed within its first instant), which is not exported. A prompt is no host event; only an answer or a mark in that instant would be lost. The filter also takes every copied record as exported by the original, which holds once the original reached a Stop after it or the bridge exported it live: a tail the original never exported (it crashed mid-turn without the bridge, or its bridge's child had not taken the rows when it exited) is exported by no one until the original is resumed and stops. The fix, if it matters: export the copied records' events whose (kind, src) no other writer of the machine holds, as `_askers` looks up questions (the copied records keep the original's uuids and call ids). T3. Trigger: a copy's first mark or answer missing from the log, or an original's last turn missing after a fork.
 - **An answer a copy gives does not close the ask in the original.** The original's transcript never holds it, so the original, resumed, offers the ask again. An answer given there has the same (kind, src) key and is dropped from the log, which keeps the copy's answer. This follows from the engine's fork, which splits one conversation into two. T3. Trigger: an ask answered twice, once in a copy and once in the original.
 
-## sminos guide on the engine's start paths (2026-10-19, 7.188.11)
+## sminos guide on the engine's start paths (2026-10-19, 7.189.1)
 
 Residue of board #99's fix (the guide on `/branch` and an in-session `/resume`; PR #269).
 
