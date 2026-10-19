@@ -85,34 +85,14 @@ STUB
 chmod +x "$T/bin/claude"
 export PATH="$T/bin:$PATH"
 
-# A live session's inbox: appends each frame it receives and answers ok.
-cat > "$T/inbox.py" <<'PY'
-import socket, sys
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(sys.argv[1])
-srv.listen(8)
-while True:
-    c, _ = srv.accept()
-    buf = b""
-    while True:
-        chunk = c.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    with open(sys.argv[2], "ab") as f:
-        f.write(buf)
-    try:
-        c.sendall(b"ok\n")
-    except OSError:
-        pass
-    c.close()
-PY
-# A running session with an inbox: its engine record (the inbox's pid is the
-# session's process), its transcript launched in `dir`. Frames land in $T/<name>.received.
+# A running session with an inbox (inbox_standin.py, which appends each frame
+# it receives and answers nothing, as the engine's does): its engine record
+# (the inbox's pid is the session's process), its transcript launched in
+# `dir`. Frames land in $T/<name>.received.
 live_session() { # name session dir [entrypoint] [inbox, else the name]
   local box=${5:-$1}
   : > "$T/$box.received"
-  python3 "$T/inbox.py" "$T/$box.sock" "$T/$box.received" & PIDS+=("$!")
+  python3 "$SCRIPT_DIR/inbox_standin.py" "$T/$box.sock" "$T/$box.received" & PIDS+=("$!")
   local pid=$!
   until_true test -S "$T/$box.sock"
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s","entrypoint":"%s"}\n' \

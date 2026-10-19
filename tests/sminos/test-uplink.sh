@@ -100,38 +100,13 @@ STUB
 chmod +x "$T/bin/claude"
 export PATH="$T/bin:$PATH"
 
-# A live session's inbox: appends each frame; while <received>.hold exists a
-# frame is written and marked (<received>.held) and its ack waits (a
-# connection that sends nothing, a liveness probe, is answered at once).
-cat > "$T/inbox.py" <<'PY'
-import os, socket, sys, time
-path, out = sys.argv[1], sys.argv[2]
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(path)
-srv.listen(8)
-while True:
-    c, _ = srv.accept()
-    buf = b""
-    while True:
-        chunk = c.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    with open(out, "ab") as f:
-        f.write(buf)
-    if buf and os.path.exists(out + ".hold"):  # a liveness probe sends nothing: never held
-        open(out + ".held", "w").close()
-        while os.path.exists(out + ".hold"):
-            time.sleep(0.02)
-    try:
-        c.sendall(b"ok\n")
-    except OSError:
-        pass
-    c.close()
-PY
+# A live session's inbox (inbox_standin.py): appends each frame and answers
+# nothing; while <received>.hold exists a frame is written and marked
+# (<received>.held) and its close waits (a connection that sends nothing, a
+# liveness probe, is closed at once).
 INBOX="$T/in-m.received"
 : > "$INBOX"
-python3 "$T/inbox.py" "$T/in-m.sock" "$INBOX" & INBOX_PID=$!
+python3 "$SCRIPT_DIR/inbox_standin.py" "$T/in-m.sock" "$INBOX" & INBOX_PID=$!
 PIDS+=("$INBOX_PID")
 until_true 100 test -S "$T/in-m.sock"
 
@@ -369,7 +344,7 @@ PY
 rm -f "$INBOX.held"
 touch "$INBOX.hold" "$SMINOS_HOME/daemon/nudge"
 until_true 200 test -f "$INBOX.held" || true
-assert_contains "$(cat "$INBOX")" "a say the tick delivers" "a tick is pushing an owed say to m, its ack held"
+assert_contains "$(cat "$INBOX")" "a say the tick delivers" "a tick is pushing an owed say to m, its close held"
 # Seq 4: the forgeries above spent hub/$MEMBER's position 3, a tombstone nothing is appended at.
 ctl send "$(seal ok 4 "said from the web mid-delivery")" >/dev/null
 until_true 100 grep -q "said from the web mid-delivery" "$HPLOG/hub.$MEMBER.jsonl" || true
@@ -716,7 +691,7 @@ ACKS="$(ctl acks "$GEN")"
 rm -f "$INBOX.held"
 touch "$INBOX.hold"
 # Seqs 307 on: hub/$MEMBER's 1-306 are taken above. m's inbox holds each
-# frame's ack, which a push waits 5 s for: three take the main thread 15 s.
+# frame's close, which a push waits 5 s for: three take the main thread 15 s.
 for seq in 307 308 309; do ctl send "$(seal ok "$seq" "said while m holds its frames, $seq")" >/dev/null; done
 until_true 200 test -f "$INBOX.held" || true
 assert_equals "$(test -f "$INBOX.held" && echo held)" held "a delivery to m waits on m's inbox"

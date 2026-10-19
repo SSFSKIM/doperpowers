@@ -5066,7 +5066,9 @@ def send_frame(path, text, sender="", reply_to="", project=""):
         except OSError as e:
             raise SendFailed("after", e)
         try:
-            s.recv(4096)  # an optional ack; nothing rides on it
+            # The engine's inbox writes nothing back (tests/sminos/inbox_standin.py):
+            # this returns at its close, which follows our end, or at the timeout.
+            s.recv(4096)
         except OSError:
             pass
     finally:

@@ -96,31 +96,11 @@ SSH
 chmod +x "$T/bin/fake-ssh"
 export PATH="$T/bin:$PATH" GIT_SSH_COMMAND="$T/bin/fake-ssh" GIT_SSH_VARIANT=simple
 
-# A live session's inbox: appends each frame it receives and answers ok.
-cat > "$T/inbox.py" <<'PY'
-import socket, sys
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(sys.argv[1])
-srv.listen(8)
-while True:
-    c, _ = srv.accept()
-    buf = b""
-    while True:
-        chunk = c.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    with open(sys.argv[2], "ab") as f:
-        f.write(buf)
-    try:
-        c.sendall(b"ok\n")
-    except OSError:
-        pass
-    c.close()
-PY
+# A live session's inbox (inbox_standin.py): appends each frame it receives
+# and answers nothing, as the engine's does.
 inbox() { # name → INBOX_PID; the socket $T/<name>.sock, the frames in $T/<name>.received
   : > "$T/$1.received"
-  python3 "$T/inbox.py" "$T/$1.sock" "$T/$1.received" & INBOX_PID=$!
+  python3 "$SCRIPT_DIR/inbox_standin.py" "$T/$1.sock" "$T/$1.received" & INBOX_PID=$!
   PIDS+=("$INBOX_PID")
   until_true 100 test -S "$T/$1.sock"
 }
