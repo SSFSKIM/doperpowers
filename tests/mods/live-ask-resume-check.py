@@ -23,7 +23,6 @@ import importlib.util
 import json
 import os
 import sys
-import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 _spec = importlib.util.spec_from_file_location("live_control_check", os.path.join(HERE, "live-control-check.py"))
@@ -36,6 +35,14 @@ ASK_TOOL = "mcp__doperpowers__AskUserQuestion"
 PROMPT = ("Call your question tool once, with async true: which color do I prefer, Red or Blue. "
           "Then end your turn saying waiting.")
 DELIVERY = "The human responded to your async AskUserQuestion (call %s)"
+
+
+def text_of(row):
+    """A user row's text: its string content, or its text blocks joined."""
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    return "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
 
 
 class AskResume(LC.Control):
@@ -101,17 +108,19 @@ class AskResume(LC.Control):
         if not again:
             return
 
-        t = time.time()
+        # `sminos answer … 2` takes the second option, whatever its label: the
+        # delivery quotes the question too, so it is matched as `="<label>"`.
+        label = asked[0]["input"]["questions"][0]["options"][1]["label"]
         r = self.cli("answer", NAME, rid, "2")
         settled = wait_for("its settlement", 60, lambda: [
             s for s in (self.bridge(sock, "/requests") or {}).get("settled") or [] if s.get("request") == rid])
         delivered = wait_for("the answer delivered to the model", 120, lambda: [
             row for row in self.transcript_rows(sid) if row.get("type") == "user"
-            and DELIVERY % rid in json.dumps(row.get("message")) and "Blue" in json.dumps(row.get("message"))])
+            and DELIVERY % rid in text_of(row) and '="%s"' % label in text_of(row)])
         self.check("answered from outside after the resume, it is settled answered and reaches the model",
                    r.returncode == 0 and settled[-1].get("outcome") == "answered" and settled[-1].get("by") == "cli"
-                   and delivered and time.time() >= t,
-                   "%s; settled %s" % (r.stdout.strip(), settled[-1]))
+                   and delivered,
+                   "%s; option 2 %r; settled %s" % (r.stdout.strip(), label, settled[-1]))
 
 
 def main():
