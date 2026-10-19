@@ -16,6 +16,7 @@ import {
   onAskNote,
   raise,
   settle,
+  shownCall,
   withdrawAll,
 } from './bridge-requests'
 import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
@@ -1421,6 +1422,7 @@ export function registerBridge(on: On) {
       owner,
       done,
       settle,
+      shown: input,
       ...(base.toolUseId !== null && { toolUseId: base.toolUseId }),
       ...(e.tool === ASK_TOOL && { question: first }),
     })
@@ -1462,11 +1464,13 @@ export function registerBridge(on: On) {
   }).catch((_, e, next) => next(e))
 
   // A call the engine puts to the dialog: its PermissionRequest, next, names
-  // no call, so the check's id is kept for it.
+  // no call, so the check's id is kept for it, with the call as this
+  // module's tool.call hook saw it (it runs on, beneath, until the check).
   on('tool.check', { tool: /^/ }, async (_, e, next) => {
     const verdict = await next(e)
     if (verdict.decision === 'ask' && typeof e.tool_use_id === 'string' && e.tool_use_id !== '' && state.post !== undefined) {
-      state.checks.push({ toolUseId: e.tool_use_id, tool: e.tool, agentId: e.agentId ?? null, input: e.input })
+      const shown = shownCall(e.tool_use_id)
+      state.checks.push({ toolUseId: e.tool_use_id, tool: e.tool, agentId: e.agentId ?? null, input: e.input, ...(shown !== undefined && { shown }) })
       if (state.checks.length > CHECKS_KEPT) {
         state.checks.shift()
       }
@@ -1478,6 +1482,15 @@ export function registerBridge(on: On) {
   // answerable from outside while the dialog stays up. The settings hooks
   // beneath decide first; one that did, or the person answering meanwhile,
   // leaves nothing to raise.
+  //
+  // A permission is raised with its call as this module's tool.call hook saw
+  // it. The engine's check and this hook's input come after every tool.call
+  // hook beneath, where a secrets guard restores its handles to the values
+  // (devcloud's, with doperpowers seated outside it); that form stays on this
+  // machine, since an allow hands no input back. A permission for a call this
+  // module did not see is the terminal's alone. A question is raised as the
+  // engine gave it: the ask mod widens its dialog's beneath this module, and
+  // no guard restores into one.
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
     if (state.post === undefined) {
       return next(e)
@@ -1485,6 +1498,12 @@ export function registerBridge(on: On) {
     const agentId = e.agent_id ?? null
     const claimed = claimCheck(e.tool_name, agentId, e.tool_input)
     if (claimed?.isDecided) {
+      return next(e)
+    }
+    const isQuestion = e.tool_name === 'AskUserQuestion'
+    const input = isQuestion ? capped(e.tool_input) : claimed?.shown
+    if (input === undefined) {
+      state.log?.(`bridge: a ${e.tool_name} permission for a call this module did not see is left to the terminal`)
       return next(e)
     }
     const id = claimed?.toolUseId ?? `request-${Date.now().toString(36)}-${++state.minted}`
@@ -1495,7 +1514,6 @@ export function registerBridge(on: On) {
     if (beneath.decision !== undefined || state.records.has(id) || state.isEnding) {
       return beneath
     }
-    const input = capped(e.tool_input)
     const r: Request = {
       id,
       tool: e.tool_name,
@@ -1506,7 +1524,7 @@ export function registerBridge(on: On) {
       // A background subagent's dialog waits for this hook: bounded, and said so.
       ...(agentId !== null && isBackground(agentId) && { deadline: now + BACKGROUND_WINDOW_MS }),
       isAsync: false,
-      isQuestion: e.tool_name === 'AskUserQuestion',
+      isQuestion,
       t: now,
       turnId: state.loopTurns.get(loopKey(agentId)),
       isAborted: false,

@@ -186,12 +186,12 @@ so the button reads `off` there, as the shell hooks do.
 One tool the model can call, registered at `session.start` under the
 plugin's name, `mcp__doperpowers__compact`: the model compacting its own
 context at a checkpoint of its choosing. And its offer: at the end of each
-main-conversation turn from 220k tokens on, once the context has grown 75k
+main-conversation turn from 300k tokens on, once the context has grown 70k
 since the last offer, the model is told its size and offered the
-compaction, through the Stop hook. Below 300k the offer adds that
-compacting is not necessarily recommended unless this is a clean
-checkpoint, with no execution, decision or design pending that needs the
-prior context whole.
+compaction, through the Stop hook. Below 300k, which only a launch that
+lowers the floor reaches, the offer adds that compacting is not
+necessarily recommended unless this is a clean checkpoint, with no
+execution, decision or design pending that needs the prior context whole.
 
 The engine compacts only between turns (`$.session.compact` is refused while
 a turn runs), so the tool defers: its handler keeps the request
@@ -239,10 +239,11 @@ turn's end compacts as above) or replies "Not compacting." (a line, asked
 for because an answer with no text costs the engine's "no visible output"
 nudge, a step more); the Stop after that step carries `stop_hook_active`
 and passes, so an offer is one step and no loop (the engine caps
-consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 220k, below the 300k
-where the tool's guidance turns to "any reasonable checkpoint"
-(`EARLY_BELOW`, under which the offer carries that caveat), so a clean
-checkpoint before it is not missed, and step 75k, so a
+consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 300k, where
+the tool's guidance turns to "any reasonable checkpoint" (`EARLY_BELOW`,
+under which an offer carries that caveat), so below it the model compacts
+unasked once the work at hand is done and no step is spent on an offer,
+and step 70k, so a
 conversation adding a few k a turn is not asked every turn while a working
 turn, tens of k, is asked each time. The offer's baseline resets when a
 main-conversation `session.compact` stands (not a skip or a `precompute`,
@@ -599,6 +600,16 @@ rows read from the transcript, and the export to the host).
   the side whose answer the engine used, read from the engine's
   `tool_decision` record of the call (raised to the mod through
   `telemetry.log`), else the transcript's mark of a hook's decision.
+  A permission is raised with its call as the bridge's own `tool.call` hook
+  was handed it, never the input the engine's check and dialog hold: those
+  come after every `tool.call` hook beneath, where devcloud's secrets guard
+  restores its handles to the values, and an allow hands no input back, so
+  the values stay on the machine and the request's digest is over the handle
+  form end to end. That holds with doperpowers seated outside devcloud
+  (`prependPlugins`); seated inside it, the bridge is handed the restored
+  call, and its events and raises carry what it was handed. A permission for
+  a call the bridge did not see stays the terminal's. A question is raised as
+  the engine gave it (the ask mod widens its dialog's beneath the bridge).
 - **Messages to the host.** The main loop's rows that may carry one — a text
   row with a mark, an async ask with its result, a row that may answer one
   (the ask mod's delivery, as its prompt row or a context attachment; a MAWS

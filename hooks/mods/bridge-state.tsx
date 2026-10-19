@@ -18,16 +18,20 @@ export type Command = Record<string, unknown> & { id: string; op: string }
 export type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string }
 /** The model and effort chosen for this session through the bridge; null keeps the session's own. */
 export type Override = { model: string | null; effort: Effort | null }
+/** A value as an event carries it (`capped`): every string held to TEXT_CAP, and whether any was. */
+export type Capped = { value: unknown; cut: boolean }
 /**
  * A tool call running now: `owner` is the main turn it belongs to (a main-loop
  * call's turn, or the turn a foreground subagent it runs in was spawned in);
- * `done` resolves with its result's text once it settles.
+ * `done` resolves with its result's text once it settles; `shown`, its input
+ * as the bridge's `tool.call` hook was handed it, the form its events carry.
  */
 export type Call = {
   tool: string
   owner: string | undefined
   done: Promise<string | undefined>
   settle: (text: string | undefined) => void
+  shown: Capped
   toolUseId?: string
   /** An ask call's first question: what pairs it with the dialog the ask mod opens inside it. */
   question?: unknown
@@ -81,7 +85,11 @@ export type Outcome = 'allow' | 'deny' | 'answered' | 'withdrawn'
 export type Request = {
   id: string
   tool: string
-  /** The tool's input as `raised` carries it (capped), and as the engine gave it. */
+  /**
+   * The tool's input as `raised` carries it (capped): a permission's call as
+   * the bridge's `tool.call` hook saw it, a question's as the engine gave it.
+   * `rawInput`, as the engine gave it, never leaves the machine.
+   */
   input: unknown
   rawInput: unknown
   isTruncated: boolean
@@ -105,8 +113,12 @@ export type Request = {
 export type TranscriptRecord =
   | { type: 'assistant' | 'user'; uuid: string; origin?: unknown; message: { content: Record<string, unknown>[] } }
   | { type: 'attachment'; uuid: string; attachment: Record<string, unknown> }
-/** A call the engine's check put to the dialog. */
-export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
+/**
+ * A call the engine's check put to the dialog: `input` as the check holds it,
+ * which pairs the call with its PermissionRequest; `shown`, the running call's
+ * input as the bridge's `tool.call` hook saw it, none when it saw no such call.
+ */
+export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown; shown?: Capped }
 /** One agent of the session as `$.agent.list()` gives it (the fields the bridge reads). */
 export type ListedAgent = { id: string; description: string; type: string; status: string; parentId?: string; name?: string }
 /** A log event's key: its project (absent from a CLI older than the project in the key), writer and seq. */
@@ -240,7 +252,7 @@ export type BridgeState = {
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
   requests: Map<string, Request>
   settled: Record<string, unknown>[]
-  /** Request ids minted for a prompt no check named. */
+  /** Request ids minted for a question no check named. */
   minted: number
   /** The agents `$.agent.list()` has named: only a finished agent leaves the list. */
   listed: Set<string>
@@ -349,7 +361,7 @@ export const parsed = (text: string): Record<string, unknown> | undefined => {
  * A value with every string in it, at any depth, held to TEXT_CAP; `cut`
  * says whether any was.
  */
-export function capped(value: unknown): { value: unknown; cut: boolean } {
+export function capped(value: unknown): Capped {
   if (typeof value === 'string') {
     return value.length > TEXT_CAP ? { value: value.slice(0, TEXT_CAP), cut: true } : { value, cut: false }
   }
