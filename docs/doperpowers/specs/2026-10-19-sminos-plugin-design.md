@@ -704,8 +704,10 @@ daemons speak the same protocol.
   when the head moved — a fetch that found the head in place but a plugin behind still acts, so a
   refused batch is retried); before updating, it reads each enabled plugin's manifest in the clone,
   installs every dependency not yet installed (`claude plugin install <dep>@<marketplace> --scope
-  user`) and refuses the whole batch, with a debug line, when one cannot be installed; it updates the
-  batch; then it reloads once. The engine's own session-start pass resolving missing dependencies
+  user`) and, with a debug line, holds back every plugin whose dependency chain reaches one that cannot
+  be installed (Decision Log, M1 review); it updates the rest of the batch; then it reloads once. The
+  reloader in every session holds a due reload on the same rule, so a reload never loads a plugin
+  over a missing dependency whoever applied the update. The engine's own session-start pass resolving missing dependencies
   (§4, rule 4) is the same intent at a different moment. M1 ships this because M1's code is what runs
   on the machines during the roll. With M0 in place, sminos lands placed and already enabled by the
   owner's hand.
@@ -1497,6 +1499,33 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   rows by name; a batch's writes land more than one watcher period apart, and each gap would reload
   every idle session (restarting the bridge's child) on a half-applied batch.
   Date/Author: 2026-10-19, M1's executor, folded by the plan's executor.
+- Decision (M1 review, revises §10's "refuses the whole batch"): the missing dependencies are
+  gathered from every enabled plugin of the marketplace and installed whoever wrote the records (the
+  mod's own fetch, a session's startup auto-update, a person's `claude plugin update`); a failed
+  install holds back only the plugins it affects, along the dependency closure — a changed plugin is
+  held when any plugin in its dependency chain is missing or itself held, so a dependent never
+  updates or reloads over a held dependency (to-human over a doperpowers held for sminos); the
+  reloader holds a due reload on the same rule and fires once the dependency is installed.
+  Rationale: the task review found the reloader reloading into a missing dependency when another
+  actor applied the update, with the fetcher never repairing it (it returned when nothing was
+  behind); the branch review (fable, P3) found that one plugin's uninstallable dependency, outside the
+  batch, would block the roll of the whole marketplace on every fetch. Rejected: the whole-batch
+  refusal (P3's block).
+  Date/Author: 2026-10-19, the plan's executor, on the spec's author's ruling.
+- Decision (M1 fix wave): the reloader's hold reads what the reload would load, not only the changed
+  records: a path-sourced plugin counts as changing when its clone manifest's version differs from the
+  one the session runs (its dependencies read from the clone), any other plugin when its record moves
+  (its dependencies from its install's `plugin.json`); one held plugin holds the whole reload, since a
+  reload loads everything; a plugin that already lacked a dependency holds nothing. The reloads wait on
+  a `fetch.applying` mark the fetch writes around its installs and updates (stale after
+  `APPLY_STALE_MS`, 3 minutes), not on `fetch.lock`, so a session that dies mid-fetch holds the
+  machine's reloads for 3 minutes rather than 30.
+  Rationale: M1's discovery — `/reload-plugins` loads a path-sourced plugin at the clone's version
+  whatever its record says — makes a records-only hold fail the real roll: with sminos not installed,
+  to-human held and doperpowers (depending on nothing) updated, that record change would reload
+  doperpowers at M3 without the ask and to-human without sminos. A reload held for a dependency that
+  never installs waits until the records change; M3's rehearsal checks the held reload's debug line.
+  Date/Author: 2026-10-19, M1's fixer, folded by the plan's executor.
 
 ## Outcomes & Retrospective
 
