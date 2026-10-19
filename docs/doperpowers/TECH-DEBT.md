@@ -551,3 +551,11 @@ the spec's Decision Log entry "the branch review round"
   follows whatever `pushurl` the worktree's config names. T3. Trigger: a
   worktree whose `remote.origin.pushurl` differs from `remote.origin.url`;
   then push to the resolved `url` explicitly.
+
+## sminos org directory (2026-10-19)
+
+Residue from the whole-branch review of `docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md` and its closing review.
+
+- **`find_target` still reaches a retired project.** The fix wave filtered `org_retired` from `resolve_tag`, so a tag `@<project>/<alias>` into a project the org retired is refused. `find_target`, which `send`, `status` and `retire` use, still builds its passes from unfiltered `project_tiers(proj)` and `known_projects()` (sminos.py ~4433–4438). `send pr/stale4` therefore records a message for a remote member in a retired project's log, and the uplink never uploads it. Reaching it takes a revoked machine's project still registered here. T3. Trigger: the first revocation of an enrolled machine. Then apply the same `org_retired` filter to `find_target`'s tiers and its no-project scope.
+- **`position_carry` compares positions by offset.** A position without a uuid (one `position_init` wrote on a transcript whose last row has none) can compare one row short. The cost is at most one re-exported row, never a lost one. T3. Trigger: a duplicate export observed after a move.
+- **A one-tick gap in a `--bg` hand-off with a join override.** Between `hand_off` retiring the predecessor in the override's project and the successor joining there, the log alone holds no member under the predecessor's alias. A sender on another machine is refused for that interval; a local verb reconciles and finds the successor. T3. Trigger: a refused cross-machine tag during a hand-off.
