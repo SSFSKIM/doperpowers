@@ -1679,15 +1679,18 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   reads report as loaded has its link beneath, or the trace names both `devcloud` and `cua`. "No
   guard loaded" settles a first verdict, never a recovery. A dispatch that began before the last
   transition (either way) changes no state and posts nothing, so calls in flight across a
-  transition do not flap the bridge. Turning off withdraws an async ask's answer dialog without
-  settling the ask, which stays open and rides the resync after recovery.
+  transition do not flap the bridge. Turning off withdraws only permission requests, never a
+  question (an ask's answer dialog or a native AskUserQuestion): a question's input never came
+  through the guard, and an ask's dialog is mapped only once it has its answer, so its own record,
+  or the `RECORD_WAIT_MS` fallback, settles the dialog and the ask together (a wave that withdrew
+  the dialog and kept the ask open stranded an answered ask as pending; reversed).
   Rationale: the re-review found that recovery through "no guard loaded" reopens the leak direction:
   cua's leg reads the settings' intent, so a person who disables cua after the off toast, without
   reloading, leaves cua's module outside the bridge while the reads say no guard — the first
   verdict meets that gap only before a module instance's first dispatch, an off bridge sits in it
   for as long as the fix takes, and the toast invites the fix. devcloud's leg is a fact (its loaded
   module answers the marker), not a setting. Cost accepted: a bridge whose guard is truly removed
-  stays off until sminos reloads. The stale-dispatch rule and the async ask's survival are the same
+  stays off until sminos reloads. The stale-dispatch rule and the questions' exemption are the same
   review's minors.
   Date/Author: 2026-10-19, the plan's executor, within the author's ruling (its premise restored).
 
