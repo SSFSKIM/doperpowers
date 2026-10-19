@@ -328,14 +328,42 @@ the spec's Decision Log entry "the branch review round"
   marker of its own on every launch to tell its sessions from another
   TypeScript SDK tool's. Trigger: the owner's call on whether MAWS sessions
   are members.
-- **T3 — an answer reaches the log only at the session's next Stop.** The
+- ~~**T3 — an answer reaches the log only at the session's next Stop.** The
   bridge exports an async question as its call and acceptance are written,
   but no answer row (the plugin's delivery, MAWS's steer): an answer taken
   into a long running turn shows on the desk, and in `chat --host`, as open
   until that turn ends. Fix: export the delivery and steer rows in
   `exportRow` too (the `prompt` row, and the attachment rows as the
   bridge's doors present them). Trigger: an answered question seen open on
-  the desk for long.
+  the desk for long.~~ **Resolved in 7.185.0**: the owner ruled an open
+  async question counts on the desk until it is answered (2026-10-18), so
+  `exportRow` now hands the child every main-loop row that may answer one,
+  as it is kept: the `prompt` row (the plugin's delivery submitted while
+  idle, MAWS's steer as the human's prompt) as kept, and the
+  `hook_additional_context` (door `hook-context`) and `queued_command`
+  (door `delivery`) attachments, their payload read back from their
+  renderings, the only form the hook is handed (`answerRecord`): the
+  engine's exact framing stripped, the queued prompt whole, so a message
+  that quotes a steer is read as written and answers nothing. The child's
+  `host_events` decides, under the Stop hook's `(kind, src)`, so the Stop
+  appends nothing more (`tests/sminos/test-bridge-export.sh`). What still
+  waits for the Stop: an answer past 65,536 characters; a prompt row the
+  transcript keeps with no origin (the hook reads it as `unclassified`,
+  which sminos does not take for the human); an attachment whose rendering
+  is not in that framing, or holds `&lt;` (the engine's escape of a
+  system-reminder tag, which a literal one typed by the human reads the
+  same as). Residual: a context attachment's entries
+  reach the hook joined a line apart, so a line another hook appended after
+  a delivery in the same attachment would ride in that answer's `text` (its
+  `src` is right); none of the 66 delivery attachments in this machine's
+  transcripts (2.1.300–2.1.302) held one. This plugin can write one: in
+  auto mode, when the call that carries a held answer is blocked, the
+  appeal mod (outer to the ask's `tool.call`) appends its block notice
+  after the answer, and the live `answered` text then ends with that notice
+  and wins the `(answered, src)` key over the Stop hook's clean reading.
+  Fix: the ask mod records the exact entries it attached and the bridge
+  exports those, or skips the live export when anything follows them.
+  Trigger: an `answered` seen in the log ending with an appeal notice.
 
 ## to-human style (2026-10-15, 7.158.0)
 

@@ -579,11 +579,16 @@ rows read from the transcript, and the export to the host).
   `tool_decision` record of the call (raised to the mod through
   `telemetry.log`), else the transcript's mark of a hook's decision.
 - **Messages to the host.** The main loop's rows that may carry one — a text
-  row with a mark, an async ask with its result — go to the child as the
-  transcript keeps them, and the child appends their `message` and
-  `question` events to the project's log through `sminos record`'s own
-  writer and `(kind, src)` keys, so they reach the log as they are written
-  and the Stop hook's export finds them there.
+  row with a mark, an async ask with its result, a row that may answer one
+  (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
+  steer, as the human's prompt or taken into a running turn) — go to the
+  child in the shape the transcript keeps them (an attachment's payload read
+  back from its rendering, all the hook is handed of it, by stripping the
+  engine's exact framing; one not so framed, or holding the engine's `&lt;`
+  escape, is left to the Stop hook), and the child appends their
+  `message`, `question` and `answered` events to the project's log through
+  `sminos record`'s own writer and `(kind, src)` keys, so they reach the log
+  as they are written and the Stop hook's export finds them there.
 
 From another terminal: `sminos watch|steer|interrupt|model|compact|decide|answer
 <member>`. Live checks under `tests/mods/live-*-check.py` run real sessions
@@ -600,7 +605,7 @@ does not know whether a turn runs, and those three verbs are refused with
 "turn state unknown since the bridge reloaded; retry after the next model
 request" (exit 1), never answered as idle; calls begun before the reload are
 not the new module's (an interrupt's abort stops them, but none the abort
-moved to the background is stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
+moved to the background is stopped after it); a text row or an answer past 65,536 characters is left to the Stop hook's export;
 a `--bg` job starts in permission mode `auto`, where most calls raise no
 request; the plugin's own append passes no hook of the plugin's, so the
 steer's row is named from the append's answer, after it is written; a

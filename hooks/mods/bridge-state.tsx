@@ -102,7 +102,9 @@ export type Request = {
   toolUseId?: string
 }
 /** A row as the session's transcript keeps it, in the shape the Stop hook's export reads (`sminos record`). */
-export type TranscriptRecord = { type: 'assistant' | 'user'; uuid: string; message: { content: Record<string, unknown>[] } }
+export type TranscriptRecord =
+  | { type: 'assistant' | 'user'; uuid: string; origin?: unknown; message: { content: Record<string, unknown>[] } }
+  | { type: 'attachment'; uuid: string; attachment: Record<string, unknown> }
 /** A call the engine's check put to the dialog. */
 export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
 /** One agent of the session as `$.agent.list()` gives it (the fields the bridge reads). */
