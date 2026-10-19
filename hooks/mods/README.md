@@ -496,11 +496,11 @@ where the built-in's is bare text; an image sits inside the tool result, where
 the built-in puts it beside it, which reads the same to the model; a store that
 cannot be placed leaves the answer text only, with a debug-log line; two
 pictures kept in one answer, or a picture on a multi-select question (whose
-answer the engine does not mark), are not sent; after a hot reload of the
-plugin the store is not known until the next session start, and pictures go
-as text only, and the async asks are forgotten (a resume reads them back); an
-answer held when the session ends is lost with the process, and its ask reads
-open on resume; an async picture reaches the model as a path it has to Read,
+answer the engine does not mark), are not sent; a reload of the plugin
+takes up the asks, the undelivered answers and the store from `$.state`, and
+an answer on its way to the model at the reload is held again, so it may
+reach the model twice but is never lost; an answer held when the session
+ends is lost with the process, and its ask reads open on resume; an async picture reaches the model as a path it has to Read,
 and the store is the engine's temp directory, cleaned with old sessions, so a
 path delivered long after can be gone; the row reads its answers back from the
 engine's text, so a question text that also appears inside an earlier answer
@@ -821,10 +821,11 @@ per state of the file, so a person reading after an Esc sees it once, and
 each retry goes to the debug log. A reload that would add or remove a
 plugin MCP or LSP server is aborted by the engine, since the next message
 would re-read the whole conversation; the module never passes
-`--force`, and says so in the transcript instead. An open async question,
-or an answer not yet delivered to the model, holds the reload until it is
-delivered: the ask mod keeps its asks in module memory, and a reload of this
-plugin would forget them. An uninstall is not acted on, nor a newly
+`--force`, and says so in the transcript instead. The reload waits while an
+ask's dialog is up: the module that raised the dialog takes its answer, and a
+module the reload started meanwhile would show the ask open still. Open
+async questions and undelivered answers no longer hold it, since the ask mod
+keeps them across the reload. An uninstall is not acted on, nor a newly
 installed plugin; a copy run from outside the plugin cache (`--plugin-dir`)
 is not watched, since the engine watches that folder itself.
 
