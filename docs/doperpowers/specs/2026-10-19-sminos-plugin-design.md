@@ -1753,6 +1753,21 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   doc carries is the local relay's marker, not a credential.
   Date/Author: 2026-10-20, M3.3's executor and the spec's author, folded by the plan's executor.
 
+- Decision (M3 xhigh panel, 2026-10-20; verdict incorrect, every finding confirmed by the verifier):
+  (1) reload's turn tracking must be outer to compact's `turn.complete`, or its flag drops before the
+  compact tool's compaction runs and a reload tick can fire mid-compaction — `registerReload` now runs
+  ahead of `registerCompact` in doperpowers' `register.tsx` (every reload hook is matched, so the
+  one-unmatched-registration limit holds); (2) the bridge's PermissionRequest hook rechecks the
+  transition count after its `await next`, so a request whose window saw an off is not raised; (3)
+  the ask takes up doperpowers' shape-1 snapshot only when its `store.sessionId` is this session's
+  (none taken without a `store`); (4) the bridge's `session.compact` comment names the compact tool's
+  compaction as reaching it only through that hook; (5) appeal's `carriesHandle` drops the pass for
+  any grant quoting a handle, also for tools the guard never restores — safe and narrow, logged in
+  `docs/doperpowers/TECH-DEBT.md` rather than fixed (fixing it would copy devcloud's restore set into
+  doperpowers). Re-review of the fix range by a task reviewer (opus); no second panel.
+  Date/Author: 2026-10-20, the spec's author's panel, fixed by the M3 fixer, folded by the plan's
+  executor.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
