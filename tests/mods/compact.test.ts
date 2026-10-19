@@ -103,11 +103,11 @@ describe('texts', () => {
     expect(text).toContain('reply "Not compacting."')
   })
 
-  test('below 300k the offer says compacting is not necessary', async () => {
+  test('below 300k the offer says compacting is not necessarily recommended', async () => {
     const early = offerText({ tokens: 240_000, window: 1_000_000 }, 967_000)
-    expect(early).toContain('Below 300,000 tokens, compacting is not necessary unless this is a\nclean checkpoint')
+    expect(early).toContain('Below 300,000 tokens, compacting is not necessarily recommended unless this is a\nclean checkpoint')
     expect(early).toContain("needs the prior context's information and nuance as a whole.\nIf you truly think")
-    expect(offerText({ tokens: 300_000, window: 1_000_000 }, 967_000)).not.toContain('not necessary')
+    expect(offerText({ tokens: 300_000, window: 1_000_000 }, 967_000)).not.toContain('not necessarily recommended')
   })
 
   test('the scheduled text tells the model to end its turn and what comes next', async () => {
