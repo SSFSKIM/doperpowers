@@ -5386,6 +5386,10 @@ _TRANSCRIPTS = {}
 # session's transcript, which may have appeared since, asks transcript_now.
 TRANSCRIPT_FRESH = 5.0
 TRANSCRIPT_GLOBS = 4   # a process's asks answered by a glob for the one id, before it builds the index
+# A `fresh` ask this soon after a refresh began takes that listing as now: the
+# writes of one pass (a .smns landing moves every seat under it at once) share
+# a refresh rather than pay one each.
+TRANSCRIPT_SHARED = 0.25
 
 
 class TranscriptIndex:
@@ -5403,12 +5407,13 @@ class TranscriptIndex:
     when asked `fresh` and when a cache generation first asks it once it is
     TRANSCRIPT_FRESH old. Shared with the session plane's threads: one lock."""
 
-    def __init__(self):
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
         self.lock = threading.Lock()
         self.base = None
         self.dirs = {}       # directory name → (its mtime_ns as listed, the session ids of its transcripts)
         self.by = {}         # session → [directory name]
-        self.at = None       # when it was last refreshed (monotonic)
+        self.at = None       # when the last refresh began (self.clock)
         self.forgot = False  # a cache generation began since (forget_caches)
         self.globbed = 0     # asks answered by a glob, before the index was first built
         self.refreshes = 0
@@ -5417,6 +5422,7 @@ class TranscriptIndex:
         self.forgot = True
 
     def refresh(self, base):
+        began = self.clock()
         held = self.dirs if base == self.base else {}
         dirs = {}
         try:
@@ -5438,12 +5444,13 @@ class TranscriptIndex:
         for name, (_, sids) in dirs.items():
             for sid in sids:
                 by.setdefault(sid, []).append(name)
-        self.base, self.dirs, self.by, self.at, self.forgot = base, dirs, by, time.monotonic(), False
+        self.base, self.dirs, self.by, self.at, self.forgot = base, dirs, by, began, False
         self.refreshes += 1
 
     def paths(self, session_id, fresh=False):
         """The transcripts of a session found under the projects directory;
-        `fresh`: the directories read as they are now. A process's first
+        `fresh`: the directories read as they are now (a refresh begun
+        within TRANSCRIPT_SHARED counts). A process's first
         TRANSCRIPT_GLOBS asks glob for the one id instead: a verb asks a few,
         and building the index costs as much as several globs."""
         base = os.path.join(home_dir(), ".claude", "projects")
@@ -5451,8 +5458,9 @@ class TranscriptIndex:
             if self.at is None and self.globbed < TRANSCRIPT_GLOBS:
                 self.globbed += 1
                 return glob.glob(os.path.join(glob.escape(base), "*", session_id + ".jsonl"))
-            if fresh or self.at is None or base != self.base or (
-                    self.forgot and time.monotonic() - self.at >= TRANSCRIPT_FRESH):
+            age = None if self.at is None else self.clock() - self.at
+            if age is None or base != self.base or (fresh and age >= TRANSCRIPT_SHARED) or (
+                    self.forgot and age >= TRANSCRIPT_FRESH):
                 self.refresh(base)
             return [os.path.join(base, d, session_id + ".jsonl") for d in self.by.get(session_id, ())]
 

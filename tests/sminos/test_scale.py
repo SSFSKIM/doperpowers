@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 
@@ -99,6 +100,11 @@ def remote_member(project, sid, i):
                 {"kind": "titled", "title": "remote %d" % i}], 1):
             f.write(json.dumps({"ts": "2026-10-18T00:00:%02d.000Z" % i, "writer": w, "seq": seq, "session": sid, **e})
                     + "\n")
+
+
+def settle():
+    """Past TRANSCRIPT_SHARED: a `fresh` ask after this lists the directories again."""
+    time.sleep(sminos.TRANSCRIPT_SHARED + 0.05)
 
 
 def quietly(fn, *args, **kwargs):
@@ -186,10 +192,12 @@ class Scale(unittest.TestCase):
         sid = str(uuid.uuid4())
         self.assertFalse(sminos.transcript_contains(sid, '"hi"'))
         transcript(self.root, sid)
+        settle()
         self.assertTrue(sminos.transcript_contains(sid, '"hi"'))
         sid = str(uuid.uuid4())
         self.assertEqual(sminos.transcript_rows(sid), [])
         transcript(self.root, sid)
+        settle()
         self.assertEqual(len(sminos.transcript_rows(sid)), 1, "a one-shot reader finds what appeared since")
 
 
@@ -242,6 +250,7 @@ class FreshDecisions(unittest.TestCase):
             f.write(json.dumps({"type": "continued-in", "continuedInSessionId": job}) + "\n")
         PROCS[sid].kill()
         PROCS[sid].wait()
+        settle()
         quietly(daemon.tick_all)   # within TRANSCRIPT_FRESH of the last listing
         last = next(e for e in reversed(sminos._own_events(own, sid)) if e["kind"] in sminos.MEMBERSHIP)
         self.assertEqual((last["kind"], last.get("reason"), last.get("to")), ("retired", "continued", job))
@@ -253,8 +262,29 @@ class FreshDecisions(unittest.TestCase):
         sminos.forget_caches()
         sminos.transcript_path(str(uuid.uuid4()))   # the generation's listing, before the transcript
         transcript(a, sid)
+        settle()
         self.assertNotEqual(sminos.record_project(rec).id, sminos.resolve_project(a).id)
         self.assertEqual(sminos.record_project(rec, fresh=True).id, sminos.resolve_project(a).id)
+
+
+class SharedRefresh(unittest.TestCase):
+    def test_a_passs_fresh_asks_share_one_listing(self):
+        """Many writes of one pass (every seat under a .smns that just landed)
+        each ask `fresh`: one refresh serves them all for TRANSCRIPT_SHARED."""
+        index, now = sminos._TINDEX, [1000.0]
+        index.clock = lambda: now[0]
+        try:
+            sminos.transcripts_now()
+            before = index.refreshes
+            for _ in range(50):
+                sminos.transcript_path(str(uuid.uuid4()), fresh=True)
+            self.assertEqual(index.refreshes, before)
+            now[0] += sminos.TRANSCRIPT_SHARED
+            sminos.transcript_path(str(uuid.uuid4()), fresh=True)
+            self.assertEqual(index.refreshes, before + 1)
+        finally:
+            index.clock = time.monotonic
+            sminos.transcripts_now()
 
 
 class OrgAhead(unittest.TestCase):
