@@ -965,6 +965,206 @@ class Requests(unittest.TestCase):
         finally:
             again.close()
 
+    ASK = {"tool": "mcp__doperpowers__AskUserQuestion", "input_": {"questions": [{"question": "Ship it?", "options": []}]},
+           "async": True}
+
+    def test_a_request_raised_again_after_its_settlement_is_settled_again(self):
+        """A resumed session's open ask: its first process withdrew it as it
+        ended, and the resumed one's bridge (a new child) raises it again
+        under the same call id. Its answer goes up though the hub took a
+        settlement of that id before: raise, settle, raise again, settle are
+        two settlements relayed, each once."""
+        relayed = []
+
+        def send(test):
+            frames = self.due(test)
+            relayed.extend((m["body"]["request"], m["body"]["outcome"]) for m in messages(frames, "settled"))
+            self.r.sent(frames)
+
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        send(lambda fs: messages(fs, "raised"))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        send(lambda fs: messages(fs, "settled"))
+        old, self.bridge = self.bridge, Bridge(self.sid)
+        self.assertIsNotNone(wait_for(lambda: old.proc.poll() is not None), "the old child leaves")
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        send(lambda fs: messages(fs, "raised"))
+        self.assertEqual([x["request"] for x in self.r.pending_frame(self.PID)["raised"]], ["toolu_ask"])
+        self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
+        send(lambda fs: messages(fs, "settled"))
+        self.assertEqual(relayed, [("toolu_ask", "withdrawn"), ("toolu_ask", "answered")])
+        self.assertEqual(self.r.pending_frame(self.PID)["raised"], [])
+        again = requests.Requests(KEY, "testhost")
+        try:
+            again.follow({self.sid: self.PID})
+            self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
+            self.assertEqual(messages(again.due({self.PID})), [], "a restart sends neither again")
+        finally:
+            again.close()
+
+    def test_a_snapshot_listing_a_request_pending_again_passes_its_settlement_by(self):
+        """One child that settled a request and holds it pending again (the
+        mod's resync put it back) lists both: the settlement came before the
+        raise, and the request stays pending at the hub."""
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        first = self.r.readers[self.sid]
+        ask = {"request": "toolu_ask", "tool": self.ASK["tool"], "input": self.ASK["input_"], "agentId": None,
+               "async": True, "t": 1}
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                          "delivered": {}, "pending": [ask], "settled": []})
+        self.assertTrue(wait_for(lambda: self.r.take() or (self.r.readers.get(self.sid) not in (None, first)
+                                                            and self.r.readers[self.sid] in self.r.read)),
+                        "the next reader read the snapshot")
+        self.assertEqual(self.r.due({self.PID}), [], "no settlement, no raise again")
+        self.assertEqual([x["request"] for x in self.r.pending_frame(self.PID)["raised"]], ["toolu_ask"])
+        self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
+        frames = self.due(lambda fs: messages(fs, "settled"))
+        self.assertEqual([(m["body"]["request"], m["body"]["outcome"]) for m in messages(frames, "settled")],
+                         [("toolu_ask", "answered")])
+
+    def settled_by(self, frames):
+        return [(m["body"]["request"], m["body"]["outcome"]) for m in messages(frames, "settled")]
+
+    def resubscribe(self):
+        """The reader's stream ends here, with no resync, and the next reader
+        reads the child's snapshot."""
+        first = self.r.readers[self.sid]
+        first.close()
+        self.assertTrue(wait_for(lambda: self.r.take() or (self.r.readers.get(self.sid) not in (None, first)
+                                                            and self.r.readers[self.sid] in self.r.read)),
+                        "the next reader read the snapshot")
+
+    def test_a_raise_again_answered_while_unread_is_relayed_once(self):
+        """The resumed session's ask raised again and answered while no
+        Requests read the session (a daemon restart): the first raise's
+        withdrawal went before, and the answer is another settlement of that
+        id, relayed once."""
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        self.r.close()
+        old, self.bridge = self.bridge, Bridge(self.sid)
+        self.assertIsNotNone(wait_for(lambda: old.proc.poll() is not None), "the old child leaves")
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
+        self.r = requests.Requests(KEY, "testhost")
+        self.r.follow({self.sid: self.PID})
+        frames = self.due(lambda fs: messages(fs, "settled"))
+        self.assertEqual(self.settled_by(frames), [("toolu_ask", "answered")])
+        self.r.sent(frames)
+        again = requests.Requests(KEY, "testhost")
+        try:
+            again.follow({self.sid: self.PID})
+            self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
+            self.assertEqual(messages(again.due({self.PID})), [], "once")
+        finally:
+            again.close()
+
+    def test_a_resubscribe_sends_no_settlement_from_before_a_raise_again(self):
+        """One child told of a raise again of a request it settled (an
+        in-process /resume back to an ask withdrawn earlier): it refuses the
+        raise but passes it on, so the raise is held here while the child's
+        snapshots list only the withdrawal. A reader that subscribes again
+        with no resync between sends that withdrawal no second time, and the
+        answer still goes."""
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        self.resubscribe()
+        self.assertEqual(self.settled_by(self.r.due({self.PID})), [], "the withdrawal went before")
+        self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
+        self.assertEqual(self.settled_by(self.due(lambda fs: messages(fs, "settled"))), [("toolu_ask", "answered")])
+
+    def test_a_settlement_unsent_when_its_request_is_raised_again_never_goes(self):
+        """The hub out of reach while the outbox gathers a withdrawal and then
+        a raise again of its request: the withdrawal never goes, not on this
+        stream, not after the next connect, and no later snapshot or restart
+        brings it back. The hub holds the request pending under the same id.
+        A POST that carried it before the raise again is answered after."""
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        posted = self.due(lambda fs: messages(fs, "settled"))
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        frames = self.due(lambda fs: messages(fs, "raised"))
+        self.assertEqual(self.settled_by(frames), [], "the raise again supersedes it")
+        self.r.sent(posted)
+        self.assertEqual([m["kind"] for m in messages(self.r.due({self.PID}))], ["raised"],
+                         "the POST answered late takes nothing else")
+        frames = self.r.opening(self.PID)
+        self.assertEqual([f.get("t") for f in frames], ["pending"], "the next connect: the set alone")
+        self.assertEqual([x["request"] for x in frames[0]["raised"]], ["toolu_ask"])
+        self.r.sent(frames)
+        self.resubscribe()
+        self.assertEqual(self.settled_by(self.r.due({self.PID})), [], "the snapshot lists it: not sent")
+        again = requests.Requests(KEY, "testhost")
+        try:
+            again.follow({self.sid: self.PID})
+            self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
+            self.assertEqual(self.settled_by(again.due({self.PID})), [], "nor after a restart")
+        finally:
+            again.close()
+
+    def test_a_settlement_passed_by_never_goes_later(self):
+        """A snapshot lists a settlement this daemon never had beside its
+        request pending again: passed by, and done with, so a later snapshot
+        without the request (the mod forgot it, as a /clear does) sends no
+        settlement from before that raise."""
+        self.r.close()
+        self.bridge.raise_("toolu_ask", **self.ASK)
+        self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
+        ask = {"request": "toolu_ask", "tool": self.ASK["tool"], "input": self.ASK["input_"], "agentId": None,
+               "async": True, "t": 1}
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                          "delivered": {}, "pending": [ask], "settled": []})
+        self.r = requests.Requests(KEY, "testhost")
+        self.r.follow({self.sid: self.PID})
+        frames = self.due(lambda fs: messages(fs, "raised"))
+        self.assertEqual(self.settled_by(frames), [])
+        self.r.sent(frames)
+        first = self.r.readers[self.sid]
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
+                          "delivered": {}, "pending": [], "settled": []})
+        self.assertTrue(wait_for(lambda: self.r.take() or (self.r.readers.get(self.sid) not in (None, first)
+                                                            and self.r.readers[self.sid] in self.r.read)))
+        self.assertEqual(self.settled_by(self.r.due({self.PID})), [])
+
+    def test_the_ledgers_older_form_is_no_settlement(self):
+        """requests.json as it was kept before settlements were told apart by
+        `t`: bare request ids. It loads, and none reads as a settlement, so
+        one a live bridge still lists goes again (a resend at the hub)."""
+        path = requests.relayed_path()
+        try:
+            with open(path) as f:
+                kept = f.read()
+        except FileNotFoundError:
+            kept = None
+        self.r.close()
+        try:
+            self.bridge.raise_("toolu_old")
+            self.bridge.settle("toolu_old", outcome="allow", winner="other", by="cli")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            sminos.write_json(path, {self.sid: ["toolu_old"]})
+            self.r = requests.Requests(KEY, "testhost")
+            self.r.follow({self.sid: self.PID})
+            frames = self.due(lambda fs: messages(fs, "settled"))
+            self.assertEqual(self.settled_by(frames), [("toolu_old", "allow")])
+        finally:
+            if kept is None:
+                os.unlink(path)
+            else:
+                with open(path, "w") as f:
+                    f.write(kept)
+
     def test_the_outbox_keeps_every_settlement(self):
         with mock.patch.object(requests, "OUTBOX_MAX", 4):
             for i in range(3):
