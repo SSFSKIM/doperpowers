@@ -1247,10 +1247,12 @@ const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestM
 /**
  * A result's text as the desk draws it. Core sets `text` (the record as the
  * model reads it); a hook's own `{ result }` has none, and the record it
- * returns is the only form the bridge may post: with doperpowers seated
- * outside devcloud, the guard beneath answers its scrubbed record, while
- * core's text, which holds the values, never comes up. That record is drawn
- * as it is, a string whole and any other record as JSON.
+ * returns is the only form the bridge may post. That covers any hook's own
+ * answer: the secrets guard's scrubbed record (with doperpowers seated
+ * outside devcloud, core's text, which holds the values, never comes up) and
+ * this plugin's own tools (ask, compact, appeal). The record is drawn as it
+ * is: a string whole, an array of content blocks as its text blocks joined
+ * (an image's data is not text), any other record as JSON.
  */
 function shownText(result: { result?: unknown; text?: unknown }): string | undefined {
   if (typeof result.text === 'string') {
@@ -1259,8 +1261,12 @@ function shownText(result: { result?: unknown; text?: unknown }): string | undef
   if (typeof result.result === 'string') {
     return result.result
   }
+  const record = result.result
+  if (Array.isArray(record) && record.every((b) => typeof b === 'object' && b !== null && typeof (b as { type?: unknown }).type === 'string')) {
+    return record.flatMap((b: { type: string; text?: unknown }) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
+  }
   try {
-    return JSON.stringify(result.result, null, 2)
+    return JSON.stringify(record, null, 2)
   } catch {
     return undefined
   }

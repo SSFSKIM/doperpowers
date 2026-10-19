@@ -3140,6 +3140,22 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     expect(posted(h)).not.toContain(VALUE)
   })
 
+  test('a hook beneath answering content blocks (text and an image): the result event draws the text blocks, none of the image data', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const IMAGE = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
+    const answer = [
+      { type: 'text', text: 'the picture:' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: IMAGE } },
+    ]
+    await bridge(h)(CALL, async () => ({ result: answer, context: undefined }))
+    await h.settle()
+    const result = h.ofType('tool').find((e) => e.phase === 'result')
+    expect(result?.text).toBe('the picture:')
+    expect(posted(h)).not.toContain(IMAGE)
+  })
+
   test('the guard outside the bridge (no prependPlugins): the bridge is handed the restored call, so its raise carries the value, as its call event and result do', async () => {
     const h = harness()
     await h.ready()
