@@ -1134,10 +1134,38 @@ const STORED_FORMS = [
   `"content":${JSON.stringify(PLUGIN_PROMPT + DELIVERY_HEAD).slice(0, -1)}`,
 ]
 
-/** The search for the stored forms in the transcript at `path`. */
+/**
+ * Prints each line holding one of the forms, as `grep -F` does, its exit code
+ * grep's: 0 lines found, 1 none, 2 the file unreadable. Every form is one
+ * literal of a single alternation, which perl matches in one pass. The file
+ * is read and the lines printed as bytes, as grep does, whatever PERL_UNICODE
+ * or PERL5OPT puts on the handles.
+ */
+const SEARCH =
+  'binmode STDOUT; my $path = pop @ARGV; my $re = join "|", map { quotemeta } @ARGV; open(my $fh, "<:raw", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /$re/o) { print $line; $found = 1 } } exit($found ? 0 : 1);'
+
+/**
+ * The search for the stored forms in the transcript at `path`. Not grep: the
+ * macOS one slows with each `-e`, and on a transcript of 144 MiB took 7 s
+ * for these five where perl takes 0.3 s (2026-10-19), while a resumed
+ * session's questions waited for it.
+ */
 export function searchArgs(path: string): string[] {
+  return ['perl', '-e', SEARCH, '--', ...STORED_FORMS, path]
+}
+
+/**
+ * The same search through grep, for a host where perl does not start. The
+ * fallback also follows a perl timeout, and then grep, the slower of the two,
+ * is all but sure to time out too, so a search that slow fails after two
+ * timeouts.
+ */
+export function grepArgs(path: string): string[] {
   return ['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path]
 }
+
+/** What `$.fs.read` takes whole: it refuses a file over 4 MiB. */
+const READ_LIMIT = 4 * 1024 * 1024
 
 /**
  * The async asks the transcript at `path` holds. One too large to read whole
@@ -1147,33 +1175,45 @@ export function searchArgs(path: string): string[] {
  * the newest asks), rebuilds nothing rather than a part, with a debug line.
  */
 async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
-  let text: string
-  try {
-    text = await $.fs.read(path)
-  } catch (error) {
-    const failed = (why: string) => {
-      $.ui.log(`ask: the transcript could not be read whole (${message(error)}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
-      return []
-    }
-    let search: Awaited<ReturnType<typeof $.process.run>>
+  // A file past what one read takes goes straight to the search: the read's
+  // refusal costs a round trip of its own, while the questions wait to draw.
+  const size = await $.fs.stat(path).then(
+    (stat) => stat.size,
+    () => undefined,
+  )
+  let text: string | undefined
+  let unread = `${size} bytes, past what one read takes`
+  if (size === undefined || size <= READ_LIMIT) {
     try {
-      search = await $.process.run(searchArgs(path))
-    } catch (searchError) {
-      return failed(`could not be searched (${message(searchError)})`)
+      text = await $.fs.read(path)
+    } catch (error) {
+      unread = message(error)
     }
-    // grep: 0 lines found, 1 none, anything else a failure.
-    if (search.exitCode === 1) {
-      return []
-    }
-    if (search.exitCode !== 0) {
-      return failed(`could not be searched (grep exited ${search.exitCode})`)
-    }
-    if (search.isStdoutTruncated === true) {
-      return failed('its asks run past what one search returns')
-    }
-    return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
   }
-  return rebuildAsks(text.split('\n'))
+  if (text !== undefined) {
+    return rebuildAsks(text.split('\n'))
+  }
+  const failed = (why: string) => {
+    $.ui.log(`ask: the transcript could not be read whole (${unread}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
+    return []
+  }
+  let search: Awaited<ReturnType<typeof $.process.run>>
+  try {
+    search = await $.process.run(searchArgs(path)).catch(() => $.process.run(grepArgs(path)))
+  } catch (searchError) {
+    return failed(`could not be searched (${message(searchError)})`)
+  }
+  // 0 lines found, 1 none, anything else a failure.
+  if (search.exitCode === 1) {
+    return []
+  }
+  if (search.exitCode !== 0) {
+    return failed(`could not be searched (the search exited ${search.exitCode})`)
+  }
+  if (search.isStdoutTruncated === true) {
+    return failed('its asks run past what one search returns')
+  }
+  return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
 }
 
 const ANSWER_KEY = 'ask-answer:'
