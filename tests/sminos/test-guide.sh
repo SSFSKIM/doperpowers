@@ -161,6 +161,169 @@ assert_contains "$(head -1 <<<"$OUT")" "helper [4d000004]" "the seat is told who
 assert_not_contains "$OUT" "join <project>" "and not offered a join"
 assert_contains "$OUT" 'charge "<line>"' "the rest stands"
 
+echo "after a compaction or a resume: the roster of the peers it exchanged messages with, from the logs:"
+emit() { # project-dir writer kind fields-json minutes-ago — one log event, as sminos appends it, at a given age
+  python3 - "$SCRIPTS" "$@" <<'PY'
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+import sminos
+p = sminos.resolve_project(sys.argv[2])
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 60 * float(sys.argv[6])))
+sminos.log_append_batch(p, sys.argv[3], [dict(json.loads(sys.argv[5]), kind=sys.argv[4], ts=ts)])  # a field may be `project`
+PY
+}
+member() { # project-dir session alias machine minutes-ago — a member's joined, as its own writer wrote it
+  emit "$1" "$4/$2" joined "{\"session\":\"$2\",\"alias\":\"$3\",\"name_source\":\"user\",\"machine\":\"$4\",\"cwd\":\"$REPO\"}" "$5"
+}
+say() { # project-dir writer to-json from minutes-ago [extra-json] — a say event
+  emit "$1" "$2" say "{\"from\":\"$4\",\"to\":$3,\"text\":\"hi\"${6:+,$6}}" "$5"
+}
+OTHER="$T/other"
+gitq init -q "$OTHER"
+write_smns "$OTHER" otherproj
+OTHER_ID="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$OTHER/.smns")"
+ME=e0000e00-0000-4000-8000-0000000000e0
+A=e1000e01-0000-4000-8000-0000000000e1   # here, running; its message to me is unanswered
+B=e2000e02-0000-4000-8000-0000000000e2   # another machine's, busy, with an in-charge line; I answered it
+C=e3000e03-0000-4000-8000-0000000000e3   # in another project, written through the copy my log keeps
+D=e4000e04-0000-4000-8000-0000000000e4   # its session ended
+E=e5000e05-0000-4000-8000-0000000000e5   # handed off to E2
+E2=e6000e06-0000-4000-8000-0000000000e6
+F=e7000e07-0000-4000-8000-0000000000e7   # spoke only untagged, and @all
+record me "$ME" "$REPO"
+record peer-a "$A" "$REPO"
+transcript "$ME" "$REPO"
+ME_TX="$TX"
+member "$REPO" "$ME" me alpha 120
+member "$REPO" "$A" peer-a alpha 120
+member "$REPO" "$B" peer-b beta 120
+emit "$REPO" "beta/$B" state "{\"session\":\"$B\",\"state\":\"busy\"}" 1
+emit "$REPO" "beta/$B" in-charge "{\"session\":\"$B\",\"text\":\"the CI gate\",\"source\":\"set\"}" 100
+member "$OTHER" "$C" peer-c beta 120
+member "$REPO" "$D" peer-d alpha 120
+emit "$REPO" "alpha/$D" retired "{\"session\":\"$D\",\"reason\":\"ended\"}" 25
+member "$REPO" "$E" peer-e beta 120
+emit "$REPO" "beta/$E" retired "{\"session\":\"$E\",\"reason\":\"continued\",\"to\":\"$E2\"}" 35
+member "$REPO" "$E2" peer-e beta 34
+member "$REPO" "$F" peer-f alpha 120
+say "$REPO" "alpha/$A" "[{\"session\":\"$ME\",\"alias\":\"me\"}]" peer-a 5
+say "$REPO" "alpha/$ME" "[{\"session\":\"$B\",\"alias\":\"peer-b\"}]" me 10
+say "$REPO" "beta/$B" "[{\"session\":\"$ME\",\"alias\":\"me\"}]" peer-b 20
+say "$REPO" "alpha/$ME" "[{\"session\":\"$C\",\"alias\":\"peer-c\",\"project\":\"$OTHER_ID\"}]" me 15 "\"copy\":\"$OTHER_ID:alpha/$ME:1\""
+say "$REPO" "alpha/$D" "[{\"session\":\"$ME\",\"alias\":\"me\"}]" peer-d 30
+say "$REPO" "alpha/$ME" "[{\"session\":\"$E\",\"alias\":\"peer-e\"}]" me 40
+say "$REPO" "alpha/$F" '"*"' peer-f 2
+say "$REPO" "alpha/$F" "[{\"session\":\"$ME\",\"alias\":\"me\"}]" peer-f 3 '"wake":true'
+say "$REPO" "alpha/$A" "[{\"session\":\"$B\",\"alias\":\"peer-b\"}]" peer-a 1
+compact="$(payload "$ME" "$REPO" "$ME_TX" | sed 's/"startup"/"compact"/')"
+guide "$compact"
+roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
+assert_contains "$roster" "as the logs hold them now" "a compaction's guidance ends with the roster"
+assert_equals "$(tail -n +2 <<<"$roster" | grep -o 'peer-[a-f] \[' | tr -d ' [' | tr '\n' ' ')" \
+  "peer-a peer-b peer-c peer-d peer-e " "the peers it exchanged messages with, newest exchange first, and no one else"
+line() { grep -F "$1 [" <<<"$roster"; }
+assert_contains "$(line peer-a)" "@peer-a " "a peer in its project is reached by its alias"
+assert_contains "$(line peer-a)" "it wrote you" "the last exchange's direction"
+assert_contains "$(line peer-a)" "unanswered" "a message to the session it has not answered"
+assert_contains "$(line peer-b)" "teamproj on beta, busy" "another machine's peer, with its project, machine and state"
+assert_contains "$(line peer-b)" 'in charge: "the CI gate"' "and its in-charge line"
+assert_contains "$(line peer-b)" "you wrote it" "the session's own reply is the last exchange"
+assert_not_contains "$(line peer-b)" "unanswered" "an answered message is not called unanswered"
+assert_contains "$(line peer-c)" "@otherproj/peer-c " "a peer in another project is tagged with its project"
+assert_contains "$(line peer-d)" "its session ended, no tag reaches it" "a peer whose session ended is named so"
+assert_contains "$(line peer-e)" "[${E2:0:8}]" "a handed-off peer is the session it continues in"
+resumed="$(payload "$ME" "$REPO" "$ME_TX" | sed 's/"startup"/"resume"/')"
+guide "$resumed"
+assert_contains "$OUT" "who you exchanged sminos messages with" "a resume reads the roster too"
+for src in startup clear fork; do
+  guide "$(payload "$ME" "$REPO" "$ME_TX" | sed "s/\"startup\"/\"$src\"/")"
+  assert_not_contains "$OUT" "who you exchanged sminos messages with" "$src: no roster"
+done
+guide "$(payload "$A" "$REPO" "$T/none.jsonl" | sed 's/"startup"/"compact"/')"
+assert_contains "$(sed -n '/who you exchanged/,$p' <<<"$OUT")" "peer-b [" "each session's own roster"
+
+echo "the roster across projects, moves, hand-offs, a shared alias and a project name with a space:"
+REPO_ID="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$REPO/.smns")"
+ME2=f0000f00-0000-4000-8000-0000000000f0   # launched in teamproj, since joined otherproj
+G=f1000f01-0000-4000-8000-0000000000f1    # in otherproj; wrote me2 while me2 was in teamproj
+record me2 "$ME2" "$REPO"
+transcript "$ME2" "$REPO"
+ME2_TX="$TX"
+member "$REPO" "$ME2" me2 alpha 60
+member "$OTHER" "$G" peer-g beta 60
+# The delivering event in teamproj's log (its writer's first there: seq 1), and its copy in otherproj's.
+say "$REPO" "beta/$G" "[{\"session\":\"$ME2\",\"alias\":\"me2\"}]" peer-g 8 "\"from_project\":\"$OTHER_ID\""
+say "$OTHER" "beta/$G" "[{\"session\":\"$ME2\",\"alias\":\"me2\",\"project\":\"$REPO_ID\"}]" peer-g 8 \
+  "\"copy\":\"$REPO_ID:beta/$G:1\""
+(cd "$REPO" && CLAUDE_CODE_SESSION_ID=$ME2 "$SMINOS" join otherproj >/dev/null 2>&1)
+guide "$(payload "$ME2" "$REPO" "$ME2_TX" | sed 's/"startup"/"compact"/')"
+roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
+assert_contains "$(head -1 <<<"$OUT")" "project otherproj" "me2 is in otherproj by its join, so that log is read first"
+assert_contains "$(line peer-g)" "it wrote you" "a message from another project is the peer's, its copy read first"
+assert_contains "$(line peer-g)" "unanswered" "and is unanswered"
+M=f2000f02-0000-4000-8000-0000000000f2    # moved from teamproj to otherproj
+J=f3000f03-0000-4000-8000-0000000000f3    # handed off to J2; both exchanged with me
+J2=f4000f04-0000-4000-8000-0000000000f4
+W=f5000f05-0000-4000-8000-0000000000f5    # shares its alias with W2, joined here too
+W2=f6000f06-0000-4000-8000-0000000000f6
+Q=f7000f07-0000-4000-8000-0000000000f7    # in a project whose name has a space
+member "$REPO" "$M" peer-m beta 60
+say "$REPO" "alpha/$ME" "[{\"session\":\"$M\",\"alias\":\"peer-m\"}]" me 6
+emit "$REPO" "beta/$M" retired "{\"session\":\"$M\",\"reason\":\"moved\",\"project\":\"$OTHER_ID\"}" 5
+member "$OTHER" "$M" peer-m beta 5
+member "$REPO" "$J" peer-j beta 60
+say "$REPO" "beta/$J" "[{\"session\":\"$ME\",\"alias\":\"me\"}]" peer-j 9
+emit "$REPO" "beta/$J" retired "{\"session\":\"$J\",\"reason\":\"continued\",\"to\":\"$J2\"}" 8
+member "$REPO" "$J2" peer-j beta 8
+say "$REPO" "alpha/$ME" "[{\"session\":\"$J2\",\"alias\":\"peer-j\"}]" me 7
+member "$REPO" "$W" twin alpha 60
+member "$REPO" "$W2" twin beta 60
+say "$REPO" "alpha/$W" "[{\"session\":\"$ME\",\"alias\":\"me\"}]" twin 3
+SPACED="$T/spaced"
+gitq init -q "$SPACED"
+write_smns "$SPACED" "team proj"
+SPACED_ID="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$SPACED/.smns")"
+member "$SPACED" "$Q" peer-q beta 60
+say "$SPACED" "alpha/$ME" "[{\"session\":\"$Q\",\"alias\":\"peer-q\"}]" me 2 "\"from_project\":\"$REPO_ID\""
+say "$REPO" "alpha/$ME" "[{\"session\":\"$Q\",\"alias\":\"peer-q\",\"project\":\"$SPACED_ID\"}]" me 2 \
+  "\"copy\":\"$SPACED_ID:alpha/$ME:1\""
+guide "$compact"
+roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
+assert_contains "$(line peer-m)" "otherproj on beta" "a peer that moved is named in the project it moved to"
+assert_contains "$(line peer-m)" "@otherproj/peer-m " "and tagged with that project"
+assert_equals "$(grep -c 'peer-j \[' <<<"$roster")" "1" "two sessions of one peer, both exchanged with: one row"
+assert_contains "$(line peer-j)" "[${J2:0:8}]" "the session it continues in"
+assert_contains "$(line peer-j)" "@peer-j " "an alias no other joined member holds takes no #short"
+assert_contains "$(line twin)" "@twin#${W:0:8} " "an alias another joined member holds takes #short"
+tag="$(python3 -c 'import sys; print(sys.argv[1].strip().split("  ")[0])' "$(line peer-q)")"
+assert_equals "$tag" '@"team proj/peer-q"' "a project name with a space is quoted"
+assert_equals "$(python3 - "$SCRIPTS" "$tag" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+print(" ".join("%s|%s|%s" % (t["project"], t["name"], t["short"]) for t in sminos.leading_tags(sys.argv[2])))
+PY
+)" "team proj|peer-q|" "and the tag parses back to its project and name"
+ME3=f8000f08-0000-4000-8000-0000000000f8   # continues OLD3 (a hand-off only teamproj's log holds), since joined otherproj
+OLD3=f9000f09-0000-4000-8000-0000000000f9
+P=fa000f0a-0000-4000-8000-0000000000fa     # in otherproj; OLD3 wrote it from teamproj
+record me3 "$ME3" "$REPO"
+transcript "$ME3" "$REPO"
+ME3_TX="$TX"
+member "$REPO" "$OLD3" me3 alpha 60
+member "$OTHER" "$P" peer-p beta 60
+# OLD3's message into otherproj (its writer's first event there: seq 1), and its copy in teamproj's log.
+say "$OTHER" "alpha/$OLD3" "[{\"session\":\"$P\",\"alias\":\"peer-p\"}]" me3 30 "\"from_project\":\"$REPO_ID\""
+say "$REPO" "alpha/$OLD3" "[{\"session\":\"$P\",\"alias\":\"peer-p\",\"project\":\"$OTHER_ID\"}]" me3 30 \
+  "\"copy\":\"$OTHER_ID:alpha/$OLD3:1\""
+emit "$REPO" "alpha/$OLD3" retired "{\"session\":\"$OLD3\",\"reason\":\"continued\",\"to\":\"$ME3\"}" 20
+member "$REPO" "$ME3" me3 alpha 20
+(cd "$REPO" && CLAUDE_CODE_SESSION_ID=$ME3 "$SMINOS" join otherproj >/dev/null 2>&1)
+guide "$(payload "$ME3" "$REPO" "$ME3_TX" | sed 's/"startup"/"compact"/')"
+roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
+assert_contains "$(head -1 <<<"$OUT")" "project otherproj" "me3 is in otherproj by its join, whose log does not hold its hand-off"
+assert_contains "$(line peer-p)" "you wrote it" "a message the session it continues sent there counts, read off the copy at home"
+
 echo "a fork is told the guidance above it was its parent's:"
 S10=0a00000a-0000-4000-8000-00000000000a
 record forked "$S10" "$REPO"
