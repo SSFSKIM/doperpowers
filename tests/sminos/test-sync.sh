@@ -411,10 +411,15 @@ export SKIP
 echo "a member joined as betaold on an open stream:"
 B_GEN="$(ctl gen beta)"
 python3 - "$RB" "$OB" <<'PY'
-import os, sys
+import os, sys, time
 sys.path.insert(0, os.environ["SCRIPTS"])
 import sminos
 project, ob = sminos.resolve_project(sys.argv[1]), sys.argv[2]
+# The enrollment is stamped in whole seconds, and the daemon names a former
+# name's writer only for an event a second past that stamp: written after it.
+since = sminos.daemon_module().enrolled_at()
+if since is not None:
+    time.sleep(max(0.0, since + 1.05 - time.time()))
 sminos._append(project, "betaold/" + ob, [{"kind": "joined", "session": ob, "alias": "ob", "name_source": "derived",
                                             "machine": "betaold", "cwd": sys.argv[1], "worktree": "", "role": "",
                                             "seat": "", "by": ""}])
