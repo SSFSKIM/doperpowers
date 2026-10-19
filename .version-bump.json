@@ -32,7 +32,8 @@
           ".claude",
           ".worktrees",
           "devcloud",
-          "to-human"
+          "to-human",
+          "sminos"
         ]
       }
     },
@@ -67,6 +68,23 @@
       ],
       "audit": {
         "root": "to-human",
+        "exclude": []
+      }
+    },
+    {
+      "name": "sminos",
+      "files": [
+        {
+          "path": "sminos/.claude-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/marketplace.json",
+          "field": "plugins[name=sminos].version"
+        }
+      ],
+      "audit": {
+        "root": "sminos",
         "exclude": []
       }
     }

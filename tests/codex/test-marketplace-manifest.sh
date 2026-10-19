@@ -80,7 +80,7 @@ def entry(name):
         raise AssertionError(f"{name}: expected one marketplace entry, found {len(found)}")
     return found[0]
 
-expected_sources = {"doperpowers": "./", "devcloud": "./devcloud"}
+expected_sources = {"doperpowers": "./", "devcloud": "./devcloud", "sminos": "./sminos"}
 for name, source in expected_sources.items():
     if entry(name).get("source") != source:
         raise AssertionError(f"{name}: source {entry(name).get('source')!r}, expected {source!r}")

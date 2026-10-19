@@ -58,6 +58,13 @@ def check_role(user, role, env):
                         f"a mount or a run of `sminos daemon` here: remove it")
 
 
+#: Where the doperpowers marketplace clone holds the sminos CLI, in the order
+#: looked for: the sminos plugin's folder (sminos@doperpowers), then the path
+#: from before sminos was a plugin of its own, which a clone not yet moved
+#: still has (doperpowers keeps a shim there that forwards, through the roll).
+CLI_PATHS = ("sminos/skills/sminos/scripts/sminos.py", "skills/sminos/scripts/sminos.py")
+
+
 def cli(user):
     """The doperpowers marketplace clone's sminos.py (the path `daemon
     install` keeps across plugin updates), or None."""
@@ -68,8 +75,11 @@ def cli(user):
         return None
     if not isinstance(location, str) or not location:
         return None
-    path = pathlib.Path(location) / "skills/sminos/scripts/sminos.py"
-    return path if path.is_file() else None
+    for relative in CLI_PATHS:
+        path = pathlib.Path(location) / relative
+        if path.is_file():
+            return path
+    return None
 
 
 def _read(path):

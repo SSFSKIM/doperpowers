@@ -621,9 +621,11 @@ def under_systemd():
 
 @case("once enrolled, a reconcile installs the sminos daemon as a lingering user unit (acceptance 7)")
 def enrolled_daemon():
-    scripts = f"{MARKETPLACE}/skills/sminos/scripts"
-    sh(VM, f"install -d -o {USER} -g {USER} {HOME}/.claude/plugins {MARKETPLACE} {MARKETPLACE}/skills "
-           f"{MARKETPLACE}/skills/sminos {scripts} {HOME}/.claude/sminos {HOME}/.claude/sminos/daemon")
+    # The clone's sminos CLI where the sminos plugin keeps it (its sminos/ folder).
+    scripts = f"{MARKETPLACE}/sminos/skills/sminos/scripts"
+    sh(VM, f"install -d -o {USER} -g {USER} {HOME}/.claude/plugins {MARKETPLACE} {MARKETPLACE}/sminos "
+           f"{MARKETPLACE}/sminos/skills {MARKETPLACE}/sminos/skills/sminos {scripts} {HOME}/.claude/sminos "
+           f"{HOME}/.claude/sminos/daemon")
     docker("cp", str(HERE / "fixtures/sminos.py"), f"{VM}:{scripts}/sminos.py")
     known = json.dumps({"doperpowers": {"source": {"source": "github", "repo": "example/doperpowers"},
                                         "installLocation": MARKETPLACE}})

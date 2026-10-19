@@ -5,7 +5,7 @@ model: opus
 effort: high
 autoCompactWindow: 750000
 color: yellow
-disallowedTools: Skill, mcp__doperpowers__compact, mcp__doperpowers__AskUserQuestion
+disallowedTools: Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__doperpowers__AskUserQuestion
 ---
 
 ## Role

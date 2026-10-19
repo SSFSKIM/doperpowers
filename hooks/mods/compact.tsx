@@ -1,7 +1,5 @@
 import type { EngineInterface, On, SessionStartInput, ToolDescribeResult, TurnCompleteInput } from 'claude-code'
 
-import { compacted } from './bridge-rows'
-
 /**
  * The tool as the model names it, `mcp__<plugin>__<name>` with the plugin's
  * manifest name; written out so the engine's scan reads the matchers (the
@@ -321,10 +319,10 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
     if (outcome.skip !== undefined) {
       $.ui.toast(`compact: not compacted · ${outcome.skip}`)
     } else {
+      // Its rows reach the bridge (the sminos plugin's) through its own
+      // session.compact hook, as the person's /compact does: the re-entry
+      // rule skips only this plugin's hooks.
       lastOffered = 0
-      // Its rows pass no hook of this plugin's, the bridge's included: the
-      // bridge names them, ahead of the resume prompt's.
-      compacted(null, outcome.messages)
     }
   } catch (error) {
     $.ui.toast(`compact: ${message(error)}`)

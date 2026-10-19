@@ -10,13 +10,13 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
-mkdir -p "$stage/.claude-plugin" "$stage/hooks" "$stage/tests"
+mkdir -p "$stage/.claude-plugin" "$stage/hooks" "$stage/tests" "$stage/sminos"
 printf '{ "name": "doperpowers-mods", "version": "0.0.0" }\n' > "$stage/.claude-plugin/plugin.json"
 printf '{ "modules": ["./mods/register.tsx"] }\n' > "$stage/hooks/hooks.json"
 cp -R "$root/hooks/mods" "$stage/hooks/mods"
 cp -R "$root/tests/mods" "$stage/tests/mods"
+# sminos's contract, which appeal and reload read the ask's snapshot by
+# (sminos/types/sminos.d.ts), where the repository keeps it.
+cp -R "$root/sminos/types" "$stage/sminos/types"
 
 claude plugin test "$stage"
-
-# What the mods' tests cannot reach (a process, a file): run beside them.
-"$root/tests/mods/test-ask-search.sh"

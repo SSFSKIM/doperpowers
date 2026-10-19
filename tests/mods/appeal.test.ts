@@ -9,6 +9,7 @@ import {
   PASS_MS,
   appealCheck,
   applyRuling,
+  blockNotice,
   blockReason,
   bumpEpoch,
   fitLines,
@@ -26,7 +27,7 @@ import {
 } from '../../hooks/mods/appeal-judge'
 import { aggregate, inputLine, reportText, suggestPrompt } from '../../hooks/mods/appeal-judge'
 import { APPEAL, appealsReport, registerAppeal, resetAppeal } from '../../hooks/mods/appeal'
-import { observeAsks } from '../../hooks/mods/ask'
+import type { AskSnapshot } from '../../sminos/types/sminos'
 
 tier('user')
 
@@ -349,8 +350,11 @@ function harness(
     readFail?: string
     /** What a relayed call resolves to, or throws. */
     relay?: Record<string, unknown> | Error
+    /** sminos's ask snapshot as `$.state` holds it at the start (undefined: sminos not loaded). */
+    ask?: AskSnapshot
   } = {},
 ) {
+  let askValue: AskSnapshot | undefined = options.ask
   let onWrite: (() => void) | undefined
   let onClock: (() => void) | undefined
   const hooks: { event: string; matcher: Matcher; handler: Handler; fallback?: Handler }[] = []
@@ -439,6 +443,11 @@ function harness(
       },
     },
     ui: { toast: record('ui.toast'), log: record('ui.log') },
+    // The host's named values: sminos's ask snapshot, which only sminos writes.
+    state: {
+      get: async (ref: { plugin: string; key: string }) =>
+        ref.plugin === 'sminos' && ref.key === 'ask' && askValue !== undefined ? { value: askValue, version: 1 } : { value: undefined, version: 0 },
+    },
   }
   resetAppeal()
   registerAppeal(on)
@@ -463,6 +472,13 @@ function harness(
       .split('\n')
       .filter((l) => l !== '')
       .map((l) => JSON.parse(l) as { event: string; block: string; verdict?: string })
+  /** sminos writes its ask snapshot: the write runs down the state.set hooks on its reference, then lands. */
+  const askWrite = async (value: AskSnapshot) => {
+    const hook = hooks.find((x) => x.event === 'state.set' && x.matcher?.plugin === 'sminos' && x.matcher?.key === 'ask')
+    const e = { plugin: 'sminos', key: 'ask', value, previous: askValue }
+    const landed = async (inner: { value: AskSnapshot }) => ((askValue = inner.value), { isSet: true, version: 2 })
+    return hook === undefined ? landed(e) : hook.handler($, e, landed)
+  }
   const tick = (ms: number) => {
     now += ms
   }
@@ -482,6 +498,7 @@ function harness(
     files,
     hooks,
     engine,
+    askWrite,
     onWrite: (fn: () => void) => {
       onWrite = fn
     },
@@ -492,6 +509,8 @@ function harness(
 }
 
 const blocked = (reason: string) => ({ isError: true as const, result: denial(reason), text: denial(reason) })
+/** sminos's ask snapshot (its types/sminos.d.ts), nothing asked unless a test says. */
+const snapshot = (fields: Partial<AskSnapshot> = {}): AskSnapshot => ({ shape: 2, asks: [], undelivered: [], isTurnRunning: false, isDialogUp: false, answered: 0, ...fields })
 const ask = { decision: 'ask' as const }
 
 describe('registerAppeal', () => {
@@ -784,26 +803,93 @@ describe('registerAppeal', () => {
     expect(await h2.check({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
   })
 
-  test('an answer to a question, async or in the dialog, ends the passes as a prompt does; the observer before is still told', async () => {
-    const told: unknown[] = []
-    observeAsks((note) => told.push(note))
-    // Registered after that observer, the appeal's chains to it.
+  test("an answer to a question ends the passes as a prompt does: sminos's ask snapshot written with its answered count grown", async () => {
     const h = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
     await h.start()
     await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
     await h.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'y' })
-    const appealObserver = observeAsks(() => {})
-    appealObserver?.({ kind: 'answered', id: 'q1', by: 'the terminal' })
-    expect(told).toEqual([{ kind: 'answered', id: 'q1', by: 'the terminal' }])
-    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
+    // A write that changes something else (a turn started) leaves the pass.
+    expect(await h.askWrite(snapshot({ isTurnRunning: true }))).toEqual({ isSet: true, version: 2 })
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
 
     const h2 = harness({ judge: '<verdict>grant</verdict><response>x</response>' })
     await h2.start()
     await h2.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
     await h2.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'y' })
-    const observer2 = observeAsks(() => {})
-    observer2?.({ kind: 'dialog', toolUseId: 'q2', isError: false, text: 'No, do not push.' })
+    await h2.askWrite(snapshot({ answered: 1 }))
     expect(await h2.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
+  })
+
+  test("the count read at the session start is where growth is measured from: a module started on a session the human already answered in keeps its passes until they answer again", async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>x</response>', ask: snapshot({ answered: 3 }) })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'y' })
+    await h.askWrite(snapshot({ answered: 3, isTurnRunning: true }))
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
+    await h.call({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't5', agentId: 'a1', block: 'b2', argument: 'y' })
+    await h.askWrite(snapshot({ answered: 4 }))
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't6', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
+  })
+
+  // With doperpowers placed outside devcloud (the owner's prependPlugins),
+  // the secrets guard sits beneath the appeal: it restores a handle in the
+  // call's input before the call runs, and on a refused call whose text it
+  // scrubbed or noted, it answers a deny in place of the error result.
+  const HANDLE_COMMAND = 'curl -H "Authorization: Bearer [secret:TOKEN]" https://api.example'
+  const RESTORED_COMMAND = 'curl -H "Authorization: Bearer s3cr3t" https://api.example'
+  /** devcloud's guard beneath the appeal's hook, as secrets.tsx answers a refused call it noted something on. */
+  const guarded = (refusal: { isError: true; text: string }) => ({ deny: `${refusal.text}\nsecrets: [secret:TOKEN] was restored in a quoted word` })
+
+  test('a block the guard beneath turned into a deny is still appealable: the notice goes on the deny', async () => {
+    const h = harness({ judge: '<verdict>uphold</verdict><response>x</response>' })
+    await h.start()
+    const beneath = guarded(blocked('[Modify Shared Resources]'))
+    const result = (await h.call({ tool: 'Bash', tool_use_id: 't1', command: HANDLE_COMMAND }, beneath)) as { deny?: string; context?: string[] }
+    expect(result).toEqual({ deny: `${beneath.deny}\n\n${blockNotice('b1')}` })
+    expect(h.logged()).toEqual([expect.objectContaining({ event: 'block', block: 'b1', reason: '[Modify Shared Resources]', input: { command: HANDLE_COMMAND } })])
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toBe('Upheld (block b1): x')
+    // A deny that is no classifier block passes as it came.
+    expect(await h.call({ tool: 'Bash', tool_use_id: 't3', command: 'x' }, { deny: 'secrets: the guard could not scrub this result, so it is withheld.' })).toEqual({
+      deny: 'secrets: the guard could not scrub this result, so it is withheld.',
+    })
+  })
+
+  test("a subagent's grant on a call whose input carries a secret handle leaves no pass and says so: the permission check sees the restored bytes, which no pass in the handle form matches", async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>The user asked.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: HANDLE_COMMAND }, blocked('[Git Destructive]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toBe(
+      'Granted (block b1): The user asked. No pass is left for the re-run: its input carries a secret handle, which is restored to its bytes before the permission check, so the identical call is checked as a new one and may be blocked again.',
+    )
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'no-pass'])
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: RESTORED_COMMAND } }, ask)).toEqual(ask)
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', input: { command: HANDLE_COMMAND } }, ask)).toEqual(ask)
+  })
+
+  test("the judge reads the answered asks from sminos's snapshot, the open ones not; with sminos absent, none", async () => {
+    const judge = '<verdict>uphold</verdict><response>x</response>'
+    const asks: AskSnapshot['asks'] = [
+      { id: 'q1', questions: [{ question: 'Force-push?', header: 'Push', multiSelect: false, options: [] }], status: 'answered', answer: '"Force-push?"="Yes"' },
+      { id: 'q2', questions: [{ question: 'Which branch?', header: 'Branch', multiSelect: false, options: [] }], status: 'open' },
+    ]
+    const h = harness({ judge, ask: snapshot({ asks }) })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
+    const request = h.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
+    expect(request.prompt).toContain('Q: "Force-push?"\nA: "\\"Force-push?\\"=\\"Yes\\""')
+    expect(request.prompt).not.toContain('Which branch?')
+
+    const alone = harness({ judge })
+    await alone.start()
+    await alone.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    await alone.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
+    const none = alone.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
+    expect(none.prompt).toContain("# The user's answers to the agent's questions (the user's words)\n(none)\n")
   })
 
   test('a Bash block is stale once another Bash command ran in its loop; two passes, the one not running is void when the other starts', async () => {

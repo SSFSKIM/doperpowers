@@ -1,9 +1,13 @@
 # mods
 
 Function hooks of the doperpowers plugin: one module (`register.tsx`, named
-by `hooks/hooks.json` under `modules`) that registers each mod below. The
+by `hooks/hooks.json` under `modules`) that registers its mods — agents,
+kairos, compact, appeal, interim and reload, each described below. The
 engine loads it only where `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set and
-ignores it elsewhere; the shell hooks beside this folder run everywhere.
+ignores it elsewhere; the shell hooks beside this folder run everywhere. The
+ask tool, the bridge and the session's sminos address are the sminos
+plugin's mods (`sminos/hooks/mods/README.md`); the to-human view, described
+first here, is the to-human plugin's (`to-human/hooks/mods/to-human.tsx`).
 
 ## to-human (`to-human.tsx`)
 
@@ -65,8 +69,8 @@ a mark, so a session without the output style is left alone. From then on:
   engine's attachment renderer raises no `ui.render`, `session.append` can
   rewrite an engine row's text but not drop it, and `prompt.attachment`
   changes only what the model reads.
-- A question asked through `AskUserQuestion`, or through the ask mod's
-  `mcp__doperpowers__AskUserQuestion` (an open async ask with its
+- A question asked through `AskUserQuestion`, or through the sminos ask
+  mod's `mcp__sminos__AskUserQuestion` (an open async ask with its
   `[ answer ]` included), draws as it would unfolded (the question and the
   answer given) in the report itself: the answer is the human's own words,
   and they read it as they read a mark.
@@ -266,7 +270,7 @@ A subagent's call to `compact` is refused (its turn ends are not the main
 conversation's). A headless (`-p` / SDK) session gets no tool: the engine
 has no compactor a plugin can call there yet. The shared session and turn
 events are taken with matchers (`isInteractive: true`, `trigger: /^/`,
-`reason: "answer"`) because kairos, agents and bridge register them too,
+`reason: "answer"`) because kairos and agents register them too,
 and the engine admits one
 unmatched registration of an event per module.
 
@@ -314,8 +318,9 @@ claim, the instruction files (`~/.claude/CLAUDE.md` as the user's own, the
 project's as in the repository), the `autoMode` and `permissions.deny` of
 the settings sources the classifier itself trusts — `user`, `policy`,
 `flag`, read one at a time, never the merged ones a repository's
-`.claude/settings.json` feeds — the answered async asks (the ask mod's
-`asyncAsks()`: an answer delivered as a tool result's context is not the
+`.claude/settings.json` feeds — the answered async asks (the sminos ask
+mod's snapshot, read from `$.state` at `{ plugin: 'sminos', key: 'ask' }`,
+none where sminos is not loaded: an answer delivered as a tool result's context is not the
 user's words to the classifier, which is how this very feature's spec was
 blocked as `[Auto-Mode Bypass]` after the human chose it in one), and the
 main conversation as lines — `[user]` rows with `<system-reminder>` spans
@@ -341,7 +346,19 @@ once, and for Bash before any other Bash call in that loop. The
 overrides a deny rule, a settings ask rule, a classic hook, or a host. Any
 `prompt.submit`, and any answer to a question, ends every pass and makes a
 judge call in flight no ruling: the ruling was on the conversation as it
-was. One appeal per block; a judge call that fails leaves the appeal open
+was. An answer reaches the model through no prompt, so the mod hooks
+`state.set` on the sminos ask's snapshot and ends the passes when its
+`answered` count grows past the one read at the session start.
+
+With doperpowers seated outside devcloud (`prependPlugins`), the secrets
+guard sits beneath this mod's `tool.call` hook: it restores a handle in the
+call's input before the call runs, and answers a refusal it scrubbed or
+noted something on as a `{ deny }`, which the mod reads a block out of as it
+reads an error result, putting its notice on the deny's text. A pass is keyed
+on the input as this mod saw it, the handle form, while the permission check
+sees the restored bytes, so a non-relayed grant on a call that carries a
+handle leaves no pass and says so in its ruling (`no-pass` in the log): the
+re-run is checked as a new call. One appeal per block; a judge call that fails leaves the appeal open
 once more. Every event is logged to
 `~/.claude/appeals/<session-id>.jsonl` (seeded from the file at start, the
 writes chained), and `/appeals` prints the last 30 days — counts, the grants,
@@ -351,300 +368,6 @@ person to apply by hand; nothing here writes settings.
 Tests: `tests/mods/appeal.test.ts`; the live check
 `tests/mods/live-appeal-check.py` drives a headless auto-mode session
 through a real block, ruling and pass (it spends model calls; run by hand).
-
-## ask (`ask.tsx`)
-
-The model asks the human through one tool, `mcp__doperpowers__AskUserQuestion`:
-the built-in AskUserQuestion's input plus `async`. A blocking ask (`async`
-false or absent) is AskUserQuestion: Claude Code's own dialog opens at once,
-with the tab bar across the questions, previews, notes with `n`, "Type
-something", "Chat about this" and the review page, and the call returns the
-engine's own answer text, byte for byte what the built-in returns for the same
-answers. The built-in is withdrawn while the tool exists: it waits behind tool
-search, its name alone in the model's view, and a call of it is refused with a
-sentence naming the new tool. An async ask (`async` true) returns at once and
-the model works on; the questions wait in the transcript behind an `[ answer ]`
-button, and pressing it opens the same dialog.
-
-A plugin cannot call AskUserQuestion; it reaches the dialog through
-`$.ui.ask`, which takes one question and raises an AskUserQuestion call that
-every hook of the plugin but the calling one sees. The tool's hook raises it
-with the first question and a token unique in the session as the header; the
-mod's own `tool.call` hook on AskUserQuestion claims the call whose one header
-is a pending token, only when the dispatch's origin is this plugin (an origin
-the host sets and no plugin can write), and widens it to the whole question
-set before the engine draws it. What that call's `next` resolves (the answer
-text, or the refusal) is the tool's outcome. Every other AskUserQuestion call
-from the model, or a stray one from this plugin, is refused; another plugin's
-own `$.ui.ask` passes.
-
-The tool's description is the built-in's own, as the engine computes it for
-its `tool.describe` while the session starts, followed by one paragraph on
-`async`; `$.tool.list()` gives only a tool's first 300 characters, which
-stand in should the built-in not have been described yet. The tool is
-registered at `session.start` of an interactive session and kept inline with a
-`tool.describe` answer of `isDeferred: false`; the built-in's `tool.describe`
-answers `isDeferred: true` with the withdrawal sentence, from the moment such
-a session starts (the engine describes the built-in then, and caches the
-answer for the session), and the built-in is put back should the tool fail to
-register. A headless session gets neither, and neither does a MAWS launch
-(`MAWS_NATIVE_TO_HUMAN` set), whatever its kind: MAWS offers its own ask tool,
-`mcp__maws__ask`, and withholds the built-in on its launch line.
-
-Every ask is validated before any dialog against the built-in's rules (1–4
-questions, 2–4 options, the required strings, unique question texts and option
-labels; never the header length, which the built-in does not check), and a
-broken one gets the error the built-in's own validation would print, steer
-for a lone option included; the engine does not check a plugin tool's input
-against its schema, so this is the error the model reads. A subagent's call is
-refused (subagents never have the built-in), and the agent definitions under
-`agents/` withhold the tool.
-
-Declining a blocking ask ends the model's turn, as declining the built-in's
-does. Esc, Cancel on the review page, or Enter on an empty "Type something"
-returns the engine's refusal as the call's error result; the rest of the turn's
-model calls (one queued behind the ask in its batch, a second ask) are refused
-before they run with `Not run: the human declined the question asked in this
-turn.`, and the turn's next model request is not sent: a `turn.step` hook
-aborts the turn there (`$.turn.abort`), which records nothing and draws
-nothing beyond the call's row. "Chat about this" returns its refusal, with
-what the human answered so far, and the turn goes on. The next turn starts
-clear.
-
-Pictures pasted into "Type something" reach the model as images. The engine
-writes each paste into the session's pasted-image store
-(`<temp root>/<project slug>/<session id>/images/<n>.png`, the folder prompt
-pastes use) and marks the answer `(Image attached)`; the mod lists that
-folder before and after the dialog. The store keeps a paste the human then
-removed in the dialog, so the files alone do not say what was kept: the
-engine's marks do, at least one picture per marked answer. When the marked
-answers account for every new file, all were kept, and the tool returns the
-engine's text block followed by one base64 image block per file, in number
-order; when they do not (a picture removed, or two kept in one answer), which
-were kept is unknown and none is sent, with a debug-log line. "Chat about
-this" keeps its refusal, which is text, and appends one `[Image source:
-<path>]` line per kept picture (the file's real path) for the model to Read.
-The temp root is `claude-<uid>` under `CLAUDE_CODE_TMPDIR` or `/tmp`, found
-as the one such folder this process can read; the slug and session id come
-from the classic `SessionStart` payload.
-
-Every call of the tool draws in the transcript as the engine draws the
-built-in's: nothing while a blocking dialog is up, `⏺ User answered Claude's
-questions:` with one `· <question> → <answer>` row per answer once answered,
-`⏺ User declined to answer questions` with each question and its options once
-refused. (The engine's own row is out of reach: a `ToolUse` rewrite to the
-built-in's name draws a generic `AskUserQuestion(…)` line, and a `ToolResult`
-rewrite of the tool draws nothing; so the mod draws the same lines itself,
-reading the answers back from the engine's result text.) An open async ask,
-which the built-in never has, draws `⏺ Claude asked (answer when ready):`, one
-`· <header> — <question>` row per question and `[ answer ]`; once answered it
-draws the answers, with `not delivered yet` under them until the answer has
-reached the model. Above the prompt, while any ask is open, `2 open questions ·
-[ answer ]` opens the oldest, since the ask's own row scrolls away while the
-model works. That line is registered before the to-human view, whose band
-draws without passing on, so it draws above it; the rows are registered after
-the view, which keeps a question in the report.
-
-Answering an async ask runs the blocking path from the press: the dialog is
-raised inside the `ui.press` dispatch, as `$.ui.ask` requires, and queues
-behind any dialog already up. Esc there means "not now": nothing is delivered
-and the ask stays open. An answer, or "Chat about this" (its refusal text, the
-human asking to talk the questions over), closes the ask and is delivered as
-`The human responded to your async AskUserQuestion (call <id>): <the text the
-blocking call would have returned>`, with one `[Image source: <path>]` line per
-kept picture, since no route carries image bytes. While the session is idle it
-goes as a prompt of the plugin's at once (`$.prompt.submit`), which the model
-reads framed as the plugin's message. While a main-conversation turn runs it is
-held, and every held answer goes out together, once, by the first of: the
-result of the model's next call in the main loop (as `context`, which the model
-reads right after the result; never a plugin's own call, whose context the
-model never reads, nor a deny, nor a call the human's interrupt cut, whose
-context the engine drops); the turn's end when the model answered (one prompt
-carrying them all). A turn the human stopped (an interrupt, or a declined
-blocking ask, which ends the turn with reason `aborted`) or that an error ended
-keeps them: they ride with the human's next prompt as context, so a stop is not
-undone by a prompt the mod submits. Each route takes the held answers in one
-step; one that fails (a submission dropped or refused, the human's prompt
-dropped beneath) puts them back ahead of any answered meanwhile, toasts why, and
-leaves the next route to try.
-
-An async ask can also be answered from outside the terminal (`sminos answer`,
-later the web): the bridge hands the answers to `answerAsync`, which refuses
-one already answered or whose dialog is up, and otherwise delivers them by the
-same routes as a press's.
-
-A resumed session rebuilds its async asks from the transcript (the classic
-`SessionStart` payload's path). Without a rewind every row of the file is
-the conversation. Once the human rewound (the engine records it), only the
-conversation the engine resumes counts, rebuilt as the engine rebuilds it:
-back from its leaf parent by parent, across a compaction by the boundary's
-logical parent, with the rows the engine restores beside that chain (the
-results of a response's earlier calls, parented to their own call, and the
-attachments under them); a branch the human rewound past, which stays in the
-file, is left out. Every call of the tool with `async` true whose
-result is the async one and whose input is valid is an ask; it reads answered
-when a row the model read names its call in a delivery (a context attachment,
-a prompt the plugin submitted, known by the engine's framing; never the
-human's own prompt quoting one), else open. A transcript over the 4 MiB a
-read takes is searched for the stored forms resume reads, by one `perl` pass
-(macOS's `grep` slows with each pattern: 7 s against 0.3 s on a transcript of
-144 MiB), or by `grep` where perl does not start; a search that fails, or
-whose output is cut at the same 4 MiB, rebuilds nothing, with a debug-log
-line. `/clear` forgets the asks; a compaction keeps them.
-
-A copy of a session (`--fork-session`, a `--bg --resume` while another
-process holds the session, `/branch`; the payload's source `fork`) starts
-under an id of its own, its transcript unwritten until its first row, and
-nothing a module reaches names the session it copied. Its asks are rebuilt
-from the conversation the engine holds: the calls and their results from
-`$.session.messages()`, and an answer given as a tool result's context, which
-is no row there, from the model's form (`{ as: "api" }`), inside that result.
-That conversation starts at the last compaction, and each form keeps its
-newest 4096 messages, so an ask from before either is not rebuilt in the copy;
-the original keeps it. `/branch` writes the copy's transcript whole before the
-session starts, and that file is read as a resumed session's is.
-
-Known limits: a tool already running in parallel with the ask when the human
-declines it finishes, where the built-in's abort would cut it; the refusal
-reaches the model inside `<tool_use_error>`, the form every hook refusal takes,
-where the built-in's is bare text; an image sits inside the tool result, where
-the built-in puts it beside it, which reads the same to the model; a store that
-cannot be placed leaves the answer text only, with a debug-log line; two
-pictures kept in one answer, or a picture on a multi-select question (whose
-answer the engine does not mark), are not sent; a reload of the plugin
-takes up the asks, the undelivered answers and the store from `$.state`, and
-an answer on its way to the model at the reload is held again, so it may
-reach the model twice but is never lost; an answer held when the session
-ends is lost with the process, and its ask reads open on resume; an async picture reaches the model as a path it has to Read,
-and the store is the engine's temp directory, cleaned with old sessions, so a
-path delivered long after can be gone; the row reads its answers back from the
-engine's text, so a question text that also appears inside an earlier answer
-can misplace a row; the lines a search of a transcript over 4 MiB finds carry
-no ancestry, so there a branch the human rewound past counts as the
-conversation (its asks come back, its deliveries close theirs); and a rewind
-inside a running session raises no event a hook sees, so the asks of the
-branch it left stay in the row's and the band's view until the session is
-resumed.
-
-## bridge (`bridge.tsx`)
-
-The session, reachable from outside it on this machine: its live stream for
-a reader, and its control for a client, through an endpoint of its own. At
-`session.start` the mod spawns a child for the session's life, `sminos
-bridge --session <id>` (`skills/sminos/scripts/sminos_bridge.py`), which
-serves HTTP on `$SMINOS_HOME/bridge/<id>.sock`; the socket answering is the
-session's bridge presence. The mod posts the session's events to it and
-reads commands from the child's stdout, one JSON line each. The protocol,
-routes, events and their fields are DX5, in
-`docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md`. It registers
-first in `register.tsx`, so its hooks are the outermost: what it reports is
-what the session showed and kept, after every other mod. Never in a session
-with `SMNS_INTERNAL` set (derive's headless fork).
-
-`bridge.tsx` holds the hooks and the code that takes `$`: the session start,
-the child and the session it serves, control, and the wait for a decision.
-The rest sits beside it in modules that take no `$`, each importing only the
-ones listed before it: `bridge-state.tsx` (the one state object, its types,
-and `resetBridge`), `bridge-stream.tsx` (the mod's copy of the live state and
-the poster), `bridge-requests.tsx` (requests from outside and their
-settlement), and `bridge-rows.tsx` (each kept row's notice, a compaction's
-rows read from the transcript, and the export to the host).
-
-- **The stream.** Each chunk of every model request, the main loop's and
-  every subagent's (tagged with its turn, loop and index), tool calls and
-  results, turns, subagents, usage, a heartbeat, and the requests below.
-  Every row the session keeps is named once, as it is written (so in write
-  order): a response row by its `block-row` (which settles its block), any
-  other by `row-seen`, and a step's end follows every `block-row` of its step
-  (held, a second at most, for a row the engine appends after the request's
-  result); each loop's last notice is the snapshot's `cut`, so a reader
-  joining the transcript on disk with the stream knows which rows are
-  accounted for. A manual compaction's rows (the person's `/compact`, the
-  bridge's `compact`, the compact tool's) pass no `session.append`: once the
-  compaction stands, a hold in the post queue keeps everything later back
-  while the child reads them from the transcript (`GET /rows`, past the
-  loop's cut, until the summary row the compaction's result names is on
-  disk), and their `row-seen`s take its place. A loop older than the module (a reload, a resume, a
-  subagent running at load) is cut first at its transcript's tail, which the
-  module's first child reads (its hello's `seed`), and a model request of it
-  begun before that hello streams to nobody: its rows reach a reader through
-  the transcript. A loop the module saw from its first row is cut by its
-  notices alone. The mod keeps its own copy of the live state and opens
-  every new child, and every post after a lost one, with a `resync`; the
-  child ends every subscription when a later one comes, and a subscriber
-  starts over from a fresh snapshot. Posts run from one loop started at
-  `session.start`: a fetch begun inside a hook dies with that hook's
-  dispatch (an Esc, an interrupt). Each carries the nonce the child's hello
-  named: a reload's old module, still posting to the session's path, is
-  turned away (409) and stops.
-- **Control.** `steer` appends a user row the loop reads at its next request,
-  the owner's words under the line `[sminos steer from human]`, by which a
-  reader of the transcript tells it from the bridge's other rows (the running
-  tool goes on; a turn that answers before reading it is woken once);
-  `interrupt` aborts the turn and stops each Bash call the abort moved
-  to the background, then appends a user row telling the model so (a
-  plugin's abort leaves no marker of its own, and the moved call's result
-  says it runs on), holding the turn's Bash calls until the row is in, since
-  a queued next turn takes its messages before it waits for any hook;
-  `model` rewrites the main loop's requests (never
-  `$.config.set`, which is the user's default); `compact` runs at once, or at
-  the end of a running turn; `deliver` submits a log event as the human's
-  words, once per `(writer, seq)`.
-- **Requests from outside.** A permission prompt or a question the engine
-  puts to its dialog is raised, and its `PermissionRequest` hook long-polls
-  the child for a decision while the terminal's dialog stays up; an async
-  question of the ask mod is raised as it opens, or as the bridge starts when
-  it was open before (a resumed session's, which the ask mod reads back while
-  the session is still starting; a reloaded module's), and answered through
-  the ask mod's external path (`answerAsync`). Each ends with one `settled` naming
-  the side whose answer the engine used, read from the engine's
-  `tool_decision` record of the call (raised to the mod through
-  `telemetry.log`), else the transcript's mark of a hook's decision.
-  A permission is raised with its call as the bridge's own `tool.call` hook
-  was handed it, never the input the engine's check and dialog hold: those
-  come after every `tool.call` hook beneath, where devcloud's secrets guard
-  restores its handles to the values, and an allow hands no input back, so
-  the values stay on the machine and the request's digest is over the handle
-  form end to end. That holds with doperpowers seated outside devcloud
-  (`prependPlugins`); seated inside it, the bridge is handed the restored
-  call, and its events and raises carry what it was handed. A permission for
-  a call the bridge did not see stays the terminal's. A question is raised as
-  the engine gave it (the ask mod widens its dialog's beneath the bridge).
-- **Messages to the host.** The main loop's rows that may carry one — a text
-  row with a mark, an async ask with its result, a row that may answer one
-  (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
-  steer, as the human's prompt or taken into a running turn) — go to the
-  child in the shape the transcript keeps them (an attachment's payload read
-  back from its rendering, all the hook is handed of it, by stripping the
-  engine's exact framing; one not so framed, or holding the engine's `&lt;`
-  escape, is left to the Stop hook), and the child appends their
-  `message`, `question` and `answered` events to the project's log through
-  `sminos record`'s own writer and `(kind, src)` keys, so they reach the log
-  as they are written and the Stop hook's export finds them there.
-
-From another terminal: `sminos watch|steer|interrupt|model|compact|decide|answer
-<member>`. Live checks under `tests/mods/live-*-check.py` run real sessions
-(they spend model calls; run by hand).
-
-Known limits: a module reload kills the child and starts the module's state
-empty, so no response streaming at that moment, nor one begun before the new
-child's hello, is streamed (its rows are named as they are written, and a
-reader takes them from the transcript); a turn running across a reload is
-taken back at its next model request (interrupt, steer and compact act on it
-from there, and the stream gets its start marked `recovered`); until then, or
-until the turn completes or the session's engine record says idle, the module
-does not know whether a turn runs, and those three verbs are refused with
-"turn state unknown since the bridge reloaded; retry after the next model
-request" (exit 1), never answered as idle; calls begun before the reload are
-not the new module's (an interrupt's abort stops them, but none the abort
-moved to the background is stopped after it); a text row or an answer past 65,536 characters is left to the Stop hook's export;
-a `--bg` job starts in permission mode `auto`, where most calls raise no
-request; the plugin's own append passes no hook of the plugin's, so the
-steer's row is named from the append's answer, after it is written; a
-compaction's rows whose summary row is not on disk within 1.5 seconds are
-named by none, and a reader emits them unnamed, on the next notice of their
-loop or after 2 seconds; a hook's success with nothing to say is raised to
-the hook but never written, so it is named by none.
 
 ## interim (`interim.ts`)
 
@@ -763,38 +486,6 @@ but refuses only a plugin's own append, and `session.receive`, which can
 take a delivery without a trace, sees deliveries from outside the process,
 never an agent's notification.
 
-## address (`address.tsx`)
-
-Every commit and pull request a session writes carries its sminos address, so
-whoever reads the artifact later — the owner, another session — reaches the
-session that made it in one step: `sminos who <commit|PR>` reads the line back
-and says who that session is now and how to reach or resume it. The engine
-composes the attribution text the model is told to end a commit message and a
-PR body with (the settings' `attribution`, and its own `Claude-Session:`
-trailer for a remote or bridged session) and passes each through
-`attribution.text`; the mod adds `Sminos-Session: <alias>#<short> (<project>
-on <machine>)` — to a commit as a git trailer (in the trailer block when the
-text ends in one, a paragraph of its own otherwise), to a PR body as its last
-line. With the settings' attribution empty the line stands alone, and the
-engine still tells the model to write it: the reminder is built whenever the
-composed text is non-empty (checked live on 2.1.303, in an interactive
-session, a `--bg` job and `claude -p`, the main loop and a subagent alike).
-
-The line is the CLI's, `sminos who --session <id>`, which composes it where
-the identity lives (the alias the session's own `say` signs with, its project,
-the machine's enrolled name; the short alone, `Sminos-Session: <short>
-(<project> on <machine>)`, for a session with no name fit for a line, such
-as a `claude --bg "<prompt>"` job that joined under its prompt) and prints
-nothing for a session in no project,
-an internal fork (`SMNS_INTERNAL`), or one that is no member (a headless run
-its host did not mark). The engine asks before every model request of every
-loop, twice (commit, then pr): the mod keeps the line and asks the CLI again
-only for a new session id (a session sent to the background goes on as a new
-one) or once the kept line is a minute old (an alias renamed mid-session); a
-CLI that cannot run keeps the line it had. A subagent's request reads the
-parent's session id, so a subagent's commits carry the session someone can
-reach. The engine re-sends its reminder only when the text changes.
-
 ## reload (`reload.tsx`)
 
 A plugin update reaches a running session without the person typing
@@ -854,8 +545,8 @@ the hook.
 A reload stops no running work: subagents, background shells,
 Monitors and the MCP servers of unchanged plugins carry on, and the old
 version's cache directory stays marked in use until the process exits. It
-does cost the bridge a restart: a reload into a new doperpowers starts its
-modules again, which kills the bridge's child and spawns the next, ending
+does cost the bridge a restart: a reload into a new sminos starts its
+module again, which kills the bridge's child and spawns the next, ending
 every subscription to the session with `discontinuity`, and the plane's
 subscriber subscribes again. Every idle session on the machine reloads
 within half a minute of one install, so each `sminos watch` and desk view of
@@ -872,9 +563,13 @@ plugin MCP or LSP server is aborted by the engine, since the next message
 would re-read the whole conversation; the module never passes
 `--force`, and says so in the transcript instead. The reload waits while an
 ask's dialog is up: the module that raised the dialog takes its answer, and a
-module the reload started meanwhile would show the ask open still. Open
-async questions and undelivered answers no longer hold it, since the ask mod
-keeps them across the reload. An uninstall is not acted on, nor a newly
+module the reload started meanwhile would show the ask open still. The ask is
+the sminos plugin's, so the mod reads that from the ask's snapshot
+(`{ plugin: 'sminos', key: 'ask' }`'s `isDialogUp`), seeded at the session
+start and kept by a `state.set` hook on it (nothing written, as where sminos
+is not loaded, reads as no dialog), and follows the main turn itself through
+`turn.start` and `turn.complete`. Open async questions and undelivered
+answers no longer hold it, since the ask mod keeps them across the reload. An uninstall is not acted on, nor a newly
 installed plugin; a copy run from outside the plugin cache (`--plugin-dir`)
 is not watched, since the engine watches that folder itself.
 

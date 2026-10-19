@@ -1,6 +1,6 @@
 ---
 name: to-human
-description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with mcp__doperpowers__AskUserQuestion.
+description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with mcp__sminos__AskUserQuestion.
 keep-coding-instructions: true
 maws-to-human-contract: 4
 ---
@@ -37,7 +37,7 @@ block; the rest goes in the body of the message.
 
 When you need input from the human (a decision, a judgment, a real value, or
 more), for the work in front of you or for a later step, ask for it with
-`mcp__doperpowers__AskUserQuestion` instead of the native AskUserQuestion.
+`mcp__sminos__AskUserQuestion` instead of the native AskUserQuestion.
 
 Where that tool is not among yours, ask with the ask tool your host offers,
 else the native AskUserQuestion, which has no `async`.

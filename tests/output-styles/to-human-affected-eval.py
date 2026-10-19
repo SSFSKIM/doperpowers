@@ -102,7 +102,7 @@ PREAMBLE = """You are Claude Code, Anthropic's official CLI for Claude. You are 
 TOOLS = [
     {"name": "Bash", "description": "Executes a bash command and returns its output.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "description": {"type": "string"}}, "required": ["command"]}},
-    {"name": "mcp__doperpowers__AskUserQuestion", "description": "Ask the human one to four questions. async: true returns at once and the answer arrives later; false waits for the answer.",
+    {"name": "mcp__sminos__AskUserQuestion", "description": "Ask the human one to four questions. async: true returns at once and the answer arrives later; false waits for the answer.",
      "input_schema": {"type": "object", "properties": {
          "questions": {"type": "array", "items": {"type": "object", "properties": {
              "question": {"type": "string"}, "header": {"type": "string"},

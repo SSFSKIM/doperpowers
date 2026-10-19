@@ -13,7 +13,7 @@ loudly, in a terminal session with the plugin:
 
 It spends model calls (haiku, short prompts, one compaction), so no suite
 runs it: run it by hand with the model gateway's keys in the environment.
-Isolation is live-bridge-check.py's (whose class it extends): a temporary
+Isolation is sminos/tests/mods/live-bridge-check.py's (whose class it extends): a temporary
 HOME whose .claude is the session's config dir, a temporary SMINOS_HOME, a
 copy of the worktree's plugin, a tmux server of its own, the gateway keys in
 a 0600 env file removed at the end. The gate is set to zero through
@@ -32,7 +32,10 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-_spec = importlib.util.spec_from_file_location("live_bridge_check", os.path.join(HERE, "live-bridge-check.py"))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+DOPERPOWERS_PARTS = (".claude-plugin", "hooks", "skills", "agents", "output-styles")
+_spec = importlib.util.spec_from_file_location("live_bridge_check", os.path.join(REPO, "sminos", "tests", "mods",
+                                                                                 "live-bridge-check.py"))
 LB = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(LB)
 wait_for = LB.wait_for
@@ -80,10 +83,15 @@ def is_compaction(row):
 class Offer(LB.Live):
     def setup(self):
         super().setup()
+        self.doperpowers = os.path.join(self.root, "doperpowers")
+        LB.stage(REPO, self.doperpowers, DOPERPOWERS_PARTS)
         with open(os.path.join(self.cfg, "settings.json"), "w") as f:
             json.dump({"permissions": {"allow": [COMPACT]}}, f)
         with open(self.envfile, "a") as f:
             f.write("export DOPERPOWERS_COMPACT_OFFER_FLOOR=0\nexport DOPERPOWERS_COMPACT_OFFER_STEP=0\n")
+
+    def plugin_dirs(self):
+        return [self.plugin, self.doperpowers]
 
     def rows(self):
         out = []

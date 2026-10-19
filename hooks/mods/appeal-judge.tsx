@@ -213,13 +213,26 @@ export function canRelay(block: Block): boolean {
 /** The tools `$.tool.call` refuses by redirect (`$.agent.spawn`, `$.ui.ask`): their grants are passes. */
 const NOT_RELAYED = new Set(['Agent', 'AskUserQuestion', 'Workflow'])
 
+/** A secrets guard's handle (devcloud's grammar, secrets-handles.tsx: `[secret:KEY]`, `[redacted:<kind>#<ns>.<n>]`). */
+const HANDLE = /\[(?:secret|superseded|redacted):[^\]\s]+\]/
+
+/**
+ * Whether the blocked call's input, as this plugin saw it, carries a guard's
+ * handle. With the guard beneath this plugin, the handle is restored to its
+ * bytes before the permission check, so a pass keyed on what this plugin saw
+ * never matches the re-run: such a grant leaves none, and says so.
+ */
+export function carriesHandle(input: unknown): boolean {
+  return HANDLE.test(JSON.stringify(input) ?? '')
+}
+
 /**
  * Records the ruling; a grant that is not relayed leaves the pass, for the
- * ledger's epoch now.
+ * ledger's epoch now, unless its re-run could not match it (carriesHandle).
  */
 export function applyRuling(ledger: Ledger, block: Block, verdict: Verdict, now: number): void {
   block.ruling = verdict
-  if (verdict === 'grant' && !canRelay(block)) {
+  if (verdict === 'grant' && !canRelay(block) && !carriesHandle(block.input)) {
     ledger.passes.set(passKey(block.agentId, block.tool, block.input), {
       block: block.id,
       expires: now + PASS_MS,
@@ -280,9 +293,16 @@ export type Relay =
   | { kind: 'refused'; deny: string }
   | { kind: 'stale' }
 
+/** What a grant that leaves no pass (carriesHandle) tells the model, and the log's reason. */
+export const NO_PASS =
+  'No pass is left for the re-run: its input carries a secret handle, which is restored to its bytes before the permission check, so the identical call is checked as a new one and may be blocked again.'
+
 export function rulingText(block: Block, verdict: Verdict, response: string, relay?: Relay): string {
   if (verdict !== 'grant') {
     return `Upheld (block ${block.id}): ${response}`
+  }
+  if (relay === undefined && carriesHandle(block.input)) {
+    return `Granted (block ${block.id}): ${response} ${NO_PASS}`
   }
   if (relay === undefined) {
     return `Granted (block ${block.id}): ${response} Run the identical call again; this grant covers that one call for the next 10 minutes.`
@@ -582,6 +602,7 @@ export type LogEvent =
   | { event: 'used'; block: string }
   | { event: 'relayed'; block: string; isError: boolean; text: string }
   | { event: 'no-relay'; block: string; reason: string }
+  | { event: 'no-pass'; block: string; reason: string }
 
 export function logLine(at: number, event: LogEvent): string {
   const capped =
