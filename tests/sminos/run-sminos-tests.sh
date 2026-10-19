@@ -301,45 +301,13 @@ export PATH="$STUB_BIN:$CODEX_BIN:$PATH"
 # What the stub's derive fork runs: the hook, and the CLI itself.
 export STUB_PLUGIN_ROOT="$REPO_ROOT" STUB_SMINOS="$SMINOS"
 
-# A stand-in for a live session's inbox socket: appends every frame it
-# receives to inbox.received, one connection at a time, forever. While
-# <received>.hold exists, a frame is written and marked (<received>.held), but
-# its ack waits for the hold to lift: a deliverer killed in that window has
-# pushed without settling. A connection that carries no frame (a liveness
-# probe connects and closes) is never held: the mark means a frame arrived.
-cat > "$TEST_ROOT/sockserver.py" <<'PY'
-import os, socket, sys, time
-path, out = sys.argv[1], sys.argv[2]
-try:
-    os.unlink(path)
-except FileNotFoundError:
-    pass
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(path)
-srv.listen(8)
-while True:
-    c, _ = srv.accept()
-    buf = b""
-    while True:
-        chunk = c.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    with open(out, "ab") as f:
-        f.write(buf)
-    if buf and os.path.exists(out + ".hold"):
-        open(out + ".held", "w").close()
-        while os.path.exists(out + ".hold"):
-            time.sleep(0.02)
-    try:
-        c.sendall(b"ok\n")
-    except OSError:
-        pass
-    c.close()
-PY
+# A stand-in for a live session's inbox socket (inbox_standin.py): appends
+# every frame it receives to inbox.received, one connection at a time,
+# forever, and writes nothing back, as the engine's inbox does. While
+# <received>.hold exists, a frame's close waits (<received>.held marks it).
 SOCK="$TEST_ROOT/inbox.sock"
 RECEIVED="$TEST_ROOT/inbox.received"
-python3 "$TEST_ROOT/sockserver.py" "$SOCK" "$RECEIVED" &
+python3 "$SCRIPT_DIR/inbox_standin.py" "$SOCK" "$RECEIVED" &
 SOCK_PID=$!
 disown "$SOCK_PID"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
@@ -1372,7 +1340,7 @@ assert_rc 0 "$RC" "send whose live socket vanished still exits 0 via the resume 
 assert_contains "$OUT" "via --bg --resume" "the vanished-socket send fell through to resume"
 rm -f "$HOME/.claude/sessions/flaky.json"; "$SMINOS" remove grp/flaky >/dev/null
 # restart the socket server for any later use / clean teardown
-python3 "$TEST_ROOT/sockserver.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
+python3 "$SCRIPT_DIR/inbox_standin.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
 
 # Legacy records remain read-only history: remove drops the record, not its
@@ -2682,7 +2650,7 @@ unset CLAUDE_CODE_SESSION_ID
 gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 # Each member gets an inbox of its own, so a test can tell who received what.
 start_inbox() { # name
-  python3 "$TEST_ROOT/sockserver.py" "$TEST_ROOT/in-$1.sock" "$TEST_ROOT/in-$1.received" &
+  python3 "$SCRIPT_DIR/inbox_standin.py" "$TEST_ROOT/in-$1.sock" "$TEST_ROOT/in-$1.received" &
   EXTRA_PIDS+=("$!"); disown "$!"
   for _ in $(seq 1 50); do [ -S "$TEST_ROOT/in-$1.sock" ] && break; sleep 0.05; done
   : > "$TEST_ROOT/in-$1.received"
@@ -4495,6 +4463,14 @@ if python3 "$SCRIPT_DIR/envelope_parity.py" >"$TEST_ROOT/envelope.out" 2>&1; the
   pass "the peer envelope matches the engine's serializer ($(tail -1 "$TEST_ROOT/envelope.out"))"
 else
   fail "the peer envelope matches the engine's serializer"; sed 's/^/    /' "$TEST_ROOT/envelope.out"
+fi
+# An inbox, as the engine serves one, writes nothing back and closes after the
+# sender's end: the suites' stand-in and send_frame are held to it.
+if python3 "$SCRIPT_DIR/test_inbox_contract.py" >"$TEST_ROOT/inbox-contract.out" 2>&1; then
+  pass "the inbox stand-in and send_frame keep the engine's receiver contract (test_inbox_contract.py)"
+else
+  fail "the inbox stand-in and send_frame keep the engine's receiver contract (test_inbox_contract.py)"
+  sed 's/^/    /' "$TEST_ROOT/inbox-contract.out"
 fi
 # The desk's codes are the hub's: DX1's shared vectors pin them (codes_parity.py).
 while IFS= read -r line; do

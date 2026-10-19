@@ -100,38 +100,13 @@ STUB
 chmod +x "$T/bin/claude"
 export PATH="$T/bin:$PATH"
 
-# A live session's inbox: appends each frame; while <received>.hold exists a
-# frame is written and marked (<received>.held) and its ack waits (a
-# connection that sends nothing, a liveness probe, is answered at once).
-cat > "$T/inbox.py" <<'PY'
-import os, socket, sys, time
-path, out = sys.argv[1], sys.argv[2]
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(path)
-srv.listen(8)
-while True:
-    c, _ = srv.accept()
-    buf = b""
-    while True:
-        chunk = c.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    with open(out, "ab") as f:
-        f.write(buf)
-    if buf and os.path.exists(out + ".hold"):  # a liveness probe sends nothing: never held
-        open(out + ".held", "w").close()
-        while os.path.exists(out + ".hold"):
-            time.sleep(0.02)
-    try:
-        c.sendall(b"ok\n")
-    except OSError:
-        pass
-    c.close()
-PY
+# A live session's inbox (inbox_standin.py): appends each frame and answers
+# nothing; while <received>.hold exists a frame is written and marked
+# (<received>.held) and its close waits (a connection that sends nothing, a
+# liveness probe, is closed at once).
 INBOX="$T/in-m.received"
 : > "$INBOX"
-python3 "$T/inbox.py" "$T/in-m.sock" "$INBOX" & INBOX_PID=$!
+python3 "$SCRIPT_DIR/inbox_standin.py" "$T/in-m.sock" "$INBOX" & INBOX_PID=$!
 PIDS+=("$INBOX_PID")
 until_true 100 test -S "$T/in-m.sock"
 

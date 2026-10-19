@@ -245,28 +245,10 @@ mkdir -p "$PB"
 gitq init -q "$PB"
 cd "$PB"
 "$SMINOS" project init --name bproj >/dev/null
-cat > "$T/inbox.py" <<'PY'
-import socket, sys
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(sys.argv[1])
-srv.listen(8)
-while True:
-    c, _ = srv.accept()
-    buf = b""
-    while chunk := c.recv(65536):
-        buf += chunk
-    with open(sys.argv[2], "ab") as f:
-        f.write(buf)
-    try:
-        c.sendall(b"ok\n")
-    except OSError:
-        pass
-    c.close()
-PY
 S1=5b000001-0000-4000-8000-0000000000b1
 S2=5b000002-0000-4000-8000-0000000000b2
 : > "$T/inbox.received"
-python3 "$T/inbox.py" "$T/in.sock" "$T/inbox.received" & INBOX=$!
+python3 "$SCRIPT_DIR/inbox_standin.py" "$T/in.sock" "$T/inbox.received" & INBOX=$!
 PIDS+=("$INBOX")
 until_true 100 test -S "$T/in.sock"
 sleep 600 & SLEEPER=$!
