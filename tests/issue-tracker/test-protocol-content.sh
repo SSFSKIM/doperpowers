@@ -611,8 +611,9 @@ assert_contains "$pexec" "disallowedTools: AskUserQuestion" "...and it runs deta
 assert_contains "$pexec" "opus at high effort, sol at xhigh" "...and it dispatches its workers at their pins whatever model wrote the spec: execution is close-frontier work"
 assert_contains "$pexec" "escalated to that
 session" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the session that dispatched it"
-assert_contains "$pexec" "## Checkpoints" "...and it messages its dispatcher at the checkpoints it judges meaningful"
-assert_contains "$pexec" "progressing as intended" "...asking it to confirm the execution is progressing as intended"
+assert_contains "$pexec" "## Checkpoints" "...and it messages its dispatcher when it holds something the dispatcher needs"
+assert_contains "$pexec" "needs no message" "...and a milestone that landed as the spec foresaw is no reason to message"
+assert_contains "$pexec" "no reply means proceed" "...and it asks for no confirmation: silence is proceed"
 assert_contains "$pexec" "Keep building" "...without stopping for the answer"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
