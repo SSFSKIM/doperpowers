@@ -1,6 +1,6 @@
 import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, SessionStartInput } from 'claude-code'
 
-import { ASK_TOOL, PLUGIN, observeAsks } from './ask'
+import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
@@ -1222,6 +1222,11 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   }
   // The agents running already, or over, learned before the first hello: its resync carries them.
   await refreshAgents()
+  // So do the async asks open already, which the ask mod told of before
+  // this bridge took notes: a reloaded module's, taken up from the last.
+  for (const ask of asyncAsks().filter((candidate) => candidate.status === 'open')) {
+    onAskNote({ kind: 'open', id: ask.id, questions: ask.questions })
+  }
   stopChild()
   startChild($, await $.session.id())
   if (!state.isPosterRunning) {
