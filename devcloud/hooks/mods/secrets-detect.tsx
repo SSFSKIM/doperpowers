@@ -51,6 +51,11 @@ const RULES: readonly { kind: string; pattern: RegExp }[] = [
   { kind: 'gitlab-pat', pattern: /glpat-[A-Za-z0-9_-]{20,}/g },
   { kind: 'huggingface', pattern: /hf_[A-Za-z0-9]{30,}/g },
   { kind: 'gcp-api-key', pattern: /AIza[0-9A-Za-z_-]{35}/g },
+  // Google OAuth: an access token, bare as `gcloud auth print-access-token`
+  // prints it (a service account's carries dotted segments, `ya29.c.…`), and
+  // a refresh token. A sentence's closing dot is not taken.
+  { kind: 'google-access-token', pattern: /ya29\.(?:[0-9A-Za-z_-]+\.)*[0-9A-Za-z_-]{20,}/g },
+  { kind: 'google-refresh-token', pattern: /1\/\/0[0-9A-Za-z_-]{40,}/g },
 ]
 const NOT_LEAD = /[A-Za-z0-9_]/
 
