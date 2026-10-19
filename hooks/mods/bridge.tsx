@@ -1244,6 +1244,28 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
 
 const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta'])
 
+/**
+ * A result's text as the desk draws it. Core sets `text` (the record as the
+ * model reads it); a hook's own `{ result }` has none, and the record it
+ * returns is the only form the bridge may post: with doperpowers seated
+ * outside devcloud, the guard beneath answers its scrubbed record, while
+ * core's text, which holds the values, never comes up. That record is drawn
+ * as it is, a string whole and any other record as JSON.
+ */
+function shownText(result: { result?: unknown; text?: unknown }): string | undefined {
+  if (typeof result.text === 'string') {
+    return result.text
+  }
+  if (typeof result.result === 'string') {
+    return result.result
+  }
+  try {
+    return JSON.stringify(result.result, null, 2)
+  } catch {
+    return undefined
+  }
+}
+
 /** A tool call's own arguments, every string in them held to TEXT_CAP. */
 function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean } {
   return capped(Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k))))
@@ -1439,7 +1461,8 @@ export function registerBridge(on: On) {
         await Promise.race([interrupted.recorded, new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
         held?.cancel()
       }
-      const text = capped(result.text)
+      const shown = result.deny === undefined ? shownText(result) : undefined
+      const text = capped(shown)
       const denied = capped(result.deny)
       if (isDialog) {
         return result
@@ -1450,7 +1473,7 @@ export function registerBridge(on: On) {
         ...base,
         isError: result.isError === true,
         ...(result.deny !== undefined && { denied: denied.value }),
-        ...(typeof result.text === 'string' && { text: text.value }),
+        ...(shown !== undefined && { text: text.value }),
         ...((text.cut || denied.cut) && { truncated: true }),
       })
       return result

@@ -3081,16 +3081,17 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
   const RESTORED = { ...MODEL, command: MODEL.command.replaceAll(HANDLE, VALUE) }
   type Next = (e: Record<string, unknown>) => Promise<Record<string, unknown>>
   /**
-   * devcloud's tool.call hook: the handle's bytes into the call before `next`,
-   * the result record scrubbed after it. It answers `{ result }` when it
-   * scrubbed something (no `text`: core sets that, never a hook's own result),
-   * and `ran` itself otherwise.
+   * devcloud's tool.call hook (devcloud/hooks/mods/secrets.tsx): the handle's
+   * bytes into the call before `next`, every string of the result record
+   * scrubbed after it. It answers `{ result, context }` when it scrubbed
+   * something (no `text`: core sets that, never a hook's own result), and
+   * `ran` itself otherwise.
    */
   const guard = async (e: Record<string, unknown>, next: Next) => {
     const ran = await next({ ...e, command: String(e.command).replaceAll(HANDLE, VALUE) })
-    const result = ran.result as { stdout?: string } | undefined
-    const scrubbed = typeof result?.stdout === 'string' ? result.stdout.replaceAll(VALUE, HANDLE) : undefined
-    return scrubbed !== undefined && scrubbed !== result?.stdout ? { result: { ...result, stdout: scrubbed } } : ran
+    const record = ran.result as Record<string, unknown>
+    const result = Object.fromEntries(Object.entries(record).map(([k, v]) => [k, typeof v === 'string' ? v.replaceAll(VALUE, HANDLE) : v]))
+    return Object.entries(result).some(([k, v]) => v !== record[k]) ? { result, context: ran.context } : ran
   }
   /**
    * The engine beneath every tool.call hook: its check and its dialog's
@@ -3106,7 +3107,7 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     answers.push(answer)
     const text = (answer.decision as { behavior?: string } | undefined)?.behavior === 'allow' ? `ran: ${String(e.command)}` : 'refused'
     // Core's shape: the result record and the text it renders.
-    return { result: { stdout: text }, text }
+    return { result: { stdout: text, stderr: '', interrupted: false }, text }
   }
   const bridge = (h: ReturnType<typeof harness>) => (e: Record<string, unknown>, next: Next) => h.hook('tool.call', { tool: 'Bash' })(h.engine, e, next) as Promise<Record<string, unknown>>
   const CALL = { tool: 'Bash', tool_use_id: 'toolu_s', ...MODEL }
@@ -3127,11 +3128,14 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     expect(h.ofType('resync').at(-1)).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_s', input: MODEL })] })
     poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
     // The allow hands no input back: the engine runs its own, restored.
-    // The guard beneath scrubbed the result: the bridge's return is its `{ result }`, no text.
-    expect(await ran).toEqual({ result: { stdout: `ran: ${MODEL.command}` } })
+    // The guard beneath scrubbed the result: the bridge's return is its `{ result, context }`, no text.
+    expect(await ran).toEqual({ result: { stdout: `ran: ${MODEL.command}`, stderr: '', interrupted: false }, context: undefined })
     expect(answers).toEqual([{ decision: { behavior: 'allow' } }])
-    // The call event carries the handle. Its result event's text is not asserted: a result the guard scrubbed has none (TECH-DEBT.md: the bridge's raise and the secrets guard).
+    // The call event carries the handle, and so does the result event's text, drawn from the scrubbed record.
     expect(h.ofType('tool').flatMap((e) => (e.input === undefined ? [] : [e.input]))).toEqual([MODEL])
+    const result = h.ofType('tool').find((e) => e.phase === 'result')
+    expect(typeof result?.text).toBe('string')
+    expect(JSON.parse(String(result?.text))).toEqual({ stdout: `ran: ${MODEL.command}`, stderr: '', interrupted: false })
     expect(posted(h)).toContain(HANDLE)
     expect(posted(h)).not.toContain(VALUE)
   })
