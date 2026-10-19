@@ -1402,6 +1402,15 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   on `reload.tsx` at this writing; whichever lands second merges `origin/main`.
   Rationale: the author's dispatch of 2026-10-19 (the split of hands).
   Date/Author: 2026-10-19, the plan's executor.
+- Decision (revises the verification entry above): M1's and M5's branch reviews are
+  `doperpowers:reviewer-high` dispatched with `model: fable`, after each milestone's task review
+  (`doperpowers:task-reviewer` with `model: opus`); M3 keeps the xhigh panel, run by the spec's
+  author from the main session with Claude models in every lane, on the range the executor sends
+  once M3's PR is gated green. M2 stays under MAWS's rule.
+  Rationale: sol and astra are at their usage limit until 2026-10-24 13:40 PDT, and the panel
+  workflow runs only from the main session; the carve-out and the rename are where an adequate
+  review costs the most, so M3 alone keeps the panel.
+  Date/Author: 2026-10-19, the plan's executor, on the author's ruling.
 
 ## Outcomes & Retrospective
 
