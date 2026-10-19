@@ -259,11 +259,10 @@ The mods' tests live under the plugin so `claude plugin test sminos` finds them 
 staged as `tests/mods/run-mods-tests.sh` must stage doperpowers' (the repository root holds
 `application-agents/`' TypeScript tests). The shell and Python suite reads nothing outside the
 plugin: its runner and each test file compute their own root as `$SCRIPT_DIR/../..` (today the
-repository root; after the move, by the same depth, the plugin root), `envelope_parity.py` and
+repository root; after the move the plugin root, one level up rather than two — Surprises, M3.1), `envelope_parity.py` and
 `fake_session.py` build `skills/sminos/scripts` from `__file__` the same way, and `test_rpcs.py`
 finds `mods/live-resume-check.py` beside itself. M3 gives every one of them one name,
-`PLUGIN_ROOT`, in place of the `REPO_ROOT` that no longer means the repository, so the depth
-coincidence is not what holds them up, and the suite fails if any run ever reaches the shim (§7).
+`PLUGIN_ROOT`, in place of the `REPO_ROOT` that no longer means the repository, and the suite fails if any run ever reaches the shim (§7).
 
 ### 3. The tool's new name, and every reader accepting both
 
@@ -1380,6 +1379,14 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   Evidence: `hooks/mods/README.md` (reload section), 2.1.302 `NMe({ cacheOnly: false })`, `RF`
   (`cli.pretty.js` 409801); M1's report.
 
+- Observation (M3.1): the moved tests are not at the same depth: `tests/sminos/X` →
+  `sminos/tests/X` sits one level below the plugin root, so every `../..` became `..` (§2's "by the
+  same depth" was wrong; the suite's RED run caught `test_rpcs.py`'s); files in `sminos/tests/mods`
+  kept their depth. `claude plugin validate` refuses a `$.state` reference const that is also handed
+  to `on`. `tests/skill-links/test-cross-doc-refs.sh` counts every directory under `skills/` as a
+  skill, so the shim-only `skills/sminos` counts as the fifteenth.
+  Evidence: M3.1's report, Discoveries.
+
 ## Decision Log
 
 - Decision: verification — one independent spec review by the `doperpowers:adversarial-reviewer`
@@ -1578,6 +1585,26 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   Rationale: M3 is several times any other milestone; the probe is separable code with its own case
   table, and the rehearsal is live, slot-bound, and needs the built release to roll onto.
   Date/Author: 2026-10-19, the plan's executor.
+
+- Decision (M3.1): `PLUGIN` is the literal `'sminos'`, not `$.plugin.name` (`claim()`, `isDialog`,
+  `enteredRow` and the bridge's modules run where `$` is not passed, and a value read at
+  `session.start` leaves a window with no name); `test-ask-search.sh` pins it, and `ASK_TOOL` as
+  `mcp__<name>__AskUserQuestion`, to the manifest's `name`. doperpowers' `types` key is dropped (it
+  declares no value; `claude plugin validate` passes, reporting the `sminos.ask` read as another
+  plugin's, not checked). appeal and reload write the `state.set` matcher as a literal, since
+  `validate` refuses a reference const also handed to `on`. `answered` counts once per human act (a
+  dialog's outcome, or an answer from outside); appeal ends its passes only when it grows against a
+  count seeded at `session.start`; a guard's `{ deny }` is appealable, the notice appended to its
+  text; a grant on input carrying a handle leaves no pass and says so (`NO_PASS`, the log's
+  `no-pass`). The shim prefers a user-scope install record to a managed one and ignores project
+  scope; the suite fails on the shim's forward line seen on its runner's stderr (output a test
+  captures itself is not seen) and reaches the shim at `$PLUGIN_ROOT/../skills/sminos/scripts`.
+  `maws-to-human-contract` stays 4 and the `dx4-jobs.*` vectors are untouched (MAWS vendors them);
+  old-name fixtures stay beside M1's new-name ones. The moved live checks stage `PLUGIN_ROOT`'s
+  parts; `live-compact-offer-check` and `live-reload-rows-check` stay in `tests/mods` and stage both
+  plugins. The cutover is one commit.
+  Rationale: M3.1's report; each is the executor's call M3 left open, or the spirit of §3–§10.
+  Date/Author: 2026-10-19, M3.1's executor, folded by the plan's executor.
 
 ## Outcomes & Retrospective
 
