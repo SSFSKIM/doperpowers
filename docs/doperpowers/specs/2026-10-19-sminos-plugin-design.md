@@ -408,9 +408,13 @@ guard, so the invariant is the two together: placement, and the bridge raising o
 `next()` settles, every link beneath it with the link's `plugin`, `tier` and `index` (Terms). So the
 bridge can decide where it stands from the first settled dispatch of an event both it and a guard
 hook — `tool.call` (every call) or `session.append` (every row): the links beneath name `devcloud`
-or `cua` or neither. The rule: a guard is **loaded** when devcloud's marker is present (devcloud's
-guard) or, the marker absent, when `cua@cua` is among the enabled plugins (cua's copy acts then; read
-from the user settings through `$.settings.read`, as appeal reads them); the bridge is **safe** when
+or `cua` or neither. The rule: a guard is **loaded** when devcloud's marker is **live** —
+`$.state.get({ plugin: 'devcloud', key: 'secrets-guard' })` answers `{ owner: 'devcloud', version: 1 }`
+at state version 0, which only devcloud's loaded module gives, through its own `state.get` hook
+(devcloud 0.5.0, #101); `undefined`, or a stored value at version 1 or more that devcloud 0.4.x or
+older left behind, is no live marker (devcloud's guard), or, with no live marker, when `cua@cua` is
+among the enabled plugins (cua's copy acts then; read from the user settings through
+`$.settings.read`, as appeal reads them); the bridge is **safe** when
 every loaded guard has an entry beneath it, **off** when a loaded guard has none (it is outside the
 bridge). Until the first verdict the bridge posts tool events without their payloads (`input`,
 `text`, `denied` held back, the event's shape otherwise whole) and raises no permission request's
@@ -444,11 +448,14 @@ do not exist, and A5 reads as its last sentence says.
 
 | Loaded guards (marker; cua enabled) | Links beneath the bridge name | Verdict |
 |---|---|---|
-| devcloud (marker present) | `devcloud` | safe |
-| devcloud (marker present) | no `devcloud` | off |
-| cua's copy (marker absent, `cua@cua` enabled) | `cua` | safe |
-| cua's copy (marker absent, `cua@cua` enabled) | no `cua` | off |
-| none (marker absent, cua not enabled) | anything | safe |
+| devcloud (live marker: the version-0 answer) | `devcloud` | safe |
+| devcloud (live marker: the version-0 answer) | no `devcloud` | off |
+| cua's copy (no live marker — absent, or stored at version ≥ 1 — and `cua@cua` enabled) | `cua` | safe |
+| cua's copy (no live marker — absent, or stored at version ≥ 1 — and `cua@cua` enabled) | no `cua` | off |
+| none (no live marker, cua not enabled) | anything | safe |
+
+`bridge.test.ts` pins the stale case too: a stored marker at version 1 with no `devcloud` beneath and
+cua not enabled is `safe`, and with cua enabled reads as cua's row.
 
 The design the second draft carried — devcloud's marker *version* moving during the bridge's
 `session.start` `next`, a verdict kept under a sminos key across reloads — is not the plan: at a
@@ -1242,7 +1249,10 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   absent and writes no marker; a marker-based probe could not see it, a trace-based one can.
   Evidence: `~/.claude/plugins/cache/cua/cua/0.15.0/hooks/mods/guard/secrets.tsx` 280–291 ("cua
   adaptation: devcloud's marker write is removed") and `one-guard.tsx` ("cua never writes it, nor any
-  marker of its own").
+  marker of its own"). Since #101 (doperpowers #280, devcloud 0.5.0; cua#173, cua 0.16.0; both Macs
+  on them, 2026-10-19) devcloud stores no marker: its loaded module answers the read at state version
+  0 through a `state.get` hook, and cua's copy counts only that version-0 answer as devcloud loaded,
+  so a stored marker an older devcloud left no longer stands cua down.
 - Observation: the ask's `PLUGIN` is the literal `'doperpowers'`, not `$.plugin.name`, and the
   fixtures hard-code the same string, so a move under a new plugin name would silently stop the ask's
   own raise being claimed and widened and the bridge's `isDialog` and `enteredRow` matching, with
@@ -1347,8 +1357,9 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
 - Observation (M3a): devcloud's `$.state` marker outlives devcloud's module; with devcloud disabled
   and the session reloaded, cua's vendored guard reads it and stands down, so no guard acts (a
   token-shaped test string reached the transcript raw while the pane drew a handle). For the bridge's
-  probe it errs only toward `off`. Outside this split: the author routes it to the guards' owners as
-  its own ticket.
+  probe it errs only toward `off`. Outside this split: routed to the guards' owners as board #101,
+  fixed by doperpowers #280 (devcloud 0.5.0, the marker answered live at version 0 and never stored)
+  and cua#173 (cua 0.16.0); §4's rule reads only the version-0 answer as live.
   Evidence: the spike's runB lines 435 and 600, runF.
 - Observation (M3a): a directory-source marketplace reloads its plugins in place from the source
   folder; `claude plugin update` keeps a plugin's place in `installed_plugins.json`, so an update does
