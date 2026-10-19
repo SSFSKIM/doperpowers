@@ -23,7 +23,10 @@ export function register(on: On) {
   // wraps what kairos drew there.
   registerAgents(on)
   registerKairos(on)
+  // Before compact: the reload's turn.complete wraps compact's, so the turn
+  // it waits on lasts until the compaction the model asked for at its end
+  // has run, and no reload lands in the middle of it.
+  registerReload(on)
   registerCompact(on)
   registerInterim(on)
-  registerReload(on)
 }

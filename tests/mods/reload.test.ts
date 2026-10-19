@@ -24,6 +24,8 @@ import {
   type InstallRecord,
   type Place,
 } from '../../hooks/mods/reload'
+import { resetCompact } from '../../hooks/mods/compact'
+import { register } from '../../hooks/mods/register'
 
 tier('user')
 
@@ -875,6 +877,42 @@ describe("what the reload waits for, read without the ask's module: sminos's ask
     await h.turn('turn.complete', 'a1')
     expect(isMainTurnRunning()).toBe(true)
     await h.turn('turn.complete')
+    expect(isMainTurnRunning()).toBe(false)
+  })
+})
+
+describe("the main turn the reload waits on, through the plugin's hooks in their registered order", () => {
+  test("it runs until the compaction the compact tool asked for at the turn's end has run", async () => {
+    resetReload()
+    resetCompact()
+    const hooks: { event: string; matcher: Record<string, unknown> | undefined; handler: (...args: unknown[]) => unknown }[] = []
+    register(((event: string, ...rest: unknown[]) => {
+      hooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Record<string, unknown>) : undefined, handler: rest[rest.length - 1] as (...args: unknown[]) => unknown })
+      return { catch: () => undefined }
+    }) as unknown as On)
+    let isRunningWhileCompacting: boolean | undefined
+    const $ = {
+      session: {
+        compact: async () => {
+          isRunningWhileCompacting = isMainTurnRunning()
+          return { messages: [] }
+        },
+      },
+      prompt: { submit: async () => ({}) },
+      ui: { log: () => undefined, toast: () => undefined },
+    }
+    /** `e` down every hook of `event` that matches it, the first registered outermost, as the engine nests one module's hooks. */
+    const dispatch = (event: string, e: Record<string, unknown>) => {
+      const chain = hooks.filter((h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v)))
+      const at = (i: number, input: Record<string, unknown>): unknown =>
+        i === chain.length ? {} : chain[i]!.handler($, input, async (inner: Record<string, unknown>) => at(i + 1, inner))
+      return at(0, e)
+    }
+    await dispatch('turn.start', { turnId: 't1', text: '' })
+    const tool = hooks.find((h) => h.event === 'tool.call' && h.matcher?.tool === 'mcp__doperpowers__compact')!
+    await tool.handler($, { tool: 'mcp__doperpowers__compact', resume: 'go on' }, async () => ({}))
+    await dispatch('turn.complete', { turnId: 't1', reason: 'answer' })
+    expect(isRunningWhileCompacting).toBe(true)
     expect(isMainTurnRunning()).toBe(false)
   })
 })
