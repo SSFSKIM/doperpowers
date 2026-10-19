@@ -282,6 +282,11 @@ class SharedRefresh(unittest.TestCase):
             now[0] += sminos.TRANSCRIPT_SHARED
             sminos.transcript_path(str(uuid.uuid4()), fresh=True)
             self.assertEqual(index.refreshes, before + 1)
+            # What this process just caused (derive's fork) is found by a one-shot look.
+            sid = str(uuid.uuid4())
+            transcript(os.path.join(T, "r", "app"), sid)
+            self.assertEqual(sminos.transcript_path(sid, fresh=True), "", "inside the shared window")
+            self.assertTrue(sminos.transcript_now(sid).endswith(sid + ".jsonl"))
         finally:
             index.clock = time.monotonic
             sminos.transcripts_now()

@@ -1211,15 +1211,15 @@ def _first_cwd(f):
 def launch_cwd(session, transcript="", fallback="", fresh=False):
     """The directory a session was launched in (or the engine last moved it
     to), from its transcript (`transcript`, else found by its id; `fresh`,
-    looked for as the directories are now when the index has none: for a
-    write that rests on it); `fallback`
+    looked for again when the index has none, transcript_path's `fresh`: for
+    a write that rests on it); `fallback`
     when the transcript does not exist yet or names none — before its first
     turn, when no tool has moved its shell, so the caller's current
     directory is the launch directory then. Cached under launch/<session>.json
     with the transcript's size read, so a later call reads only what the
     engine appended since; a transcript at another path (the engine moved
     it) or shorter than read is read again."""
-    path = transcript or (transcript_now(session) if fresh else transcript_path(session))
+    path = transcript or transcript_path(session) or (transcript_path(session, fresh=True) if fresh else "")
     try:
         st = os.stat(path) if path else None
     except OSError:
@@ -2220,8 +2220,8 @@ def continued_in(session, fresh=False):
     session (harness 2.1.300). Read as the harness reads it: the latest such
     record with no turn after it, so an old session resumed and worked in
     again is its own again. "" when there is none. `fresh`: a transcript
-    the index has not listed yet looked for (transcript_now)."""
-    path = transcript_now(session) if fresh else transcript_path(session)
+    the index has not listed yet looked for (transcript_path's `fresh`)."""
+    path = transcript_path(session) or (transcript_path(session, fresh=True) if fresh else "")
     try:
         st = os.stat(path) if path else None
     except OSError:
@@ -5447,10 +5447,10 @@ class TranscriptIndex:
         self.base, self.dirs, self.by, self.at, self.forgot = base, dirs, by, began, False
         self.refreshes += 1
 
-    def paths(self, session_id, fresh=False):
-        """The transcripts of a session found under the projects directory;
-        `fresh`: the directories read as they are now (a refresh begun
-        within TRANSCRIPT_SHARED counts). A process's first
+    def paths(self, session_id, within=None):
+        """The transcripts of a session found under the projects directory,
+        from a listing begun at most `within` seconds ago (None: the cache
+        generation's, up to TRANSCRIPT_FRESH old). A process's first
         TRANSCRIPT_GLOBS asks glob for the one id instead: a verb asks a few,
         and building the index costs as much as several globs."""
         base = os.path.join(home_dir(), ".claude", "projects")
@@ -5459,7 +5459,7 @@ class TranscriptIndex:
                 self.globbed += 1
                 return glob.glob(os.path.join(glob.escape(base), "*", session_id + ".jsonl"))
             age = None if self.at is None else self.clock() - self.at
-            if age is None or base != self.base or (fresh and age >= TRANSCRIPT_SHARED) or (
+            if age is None or base != self.base or (within is not None and age >= within) or (
                     self.forgot and age >= TRANSCRIPT_FRESH):
                 self.refresh(base)
             return [os.path.join(base, d, session_id + ".jsonl") for d in self.by.get(session_id, ())]
@@ -5480,16 +5480,20 @@ def transcripts_now():
 def transcript_path(session_id, fresh=False):
     """The path of a session's transcript on this machine, or "" (TranscriptIndex).
     A session found under two project dirs (a repository that moved) answers
-    with the one written last. `fresh`: the projects directory read as it is
-    now — for a transcript that may have appeared since (a poller), or one
-    found missing since it was looked up (the engine moved it); see
-    transcript_now."""
+    with the one written last. `fresh`: from a listing begun within
+    TRANSCRIPT_SHARED — for a write of a pass resting on a transcript that
+    may have appeared since, or one found missing since it was looked up
+    (the engine moved it); see transcript_now."""
+    return _transcript(session_id, TRANSCRIPT_SHARED if fresh else None)
+
+
+def _transcript(session_id, within):
     if not session_id:
         return ""
-    hit = None if fresh else _TRANSCRIPTS.get(session_id)   # one lookup: the plane's threads ask while the uplink forgets
+    hit = None if within is not None else _TRANSCRIPTS.get(session_id)   # one lookup: the plane's threads ask while the uplink forgets
     if hit:
         return hit
-    hits = _TINDEX.paths(session_id, fresh)
+    hits = _TINDEX.paths(session_id, within)
     if not hits:
         _TRANSCRIPTS.pop(session_id, None)
         return ""
@@ -5500,9 +5504,9 @@ def transcript_path(session_id, fresh=False):
 def transcript_now(session_id):
     """transcript_path, a miss looked for again as the directories are now:
     for a caller that reads or acts on one session's transcript once — a
-    reply, a poll, a fork's cleanup — which may have appeared since the
-    index was read; never a pass over every session."""
-    return transcript_path(session_id) or transcript_path(session_id, fresh=True)
+    reply, a poll, a fork's cleanup — which may have appeared a moment ago,
+    even by this process's own hand; never a pass over every session."""
+    return transcript_path(session_id) or _transcript(session_id, 0.0)
 
 
 def transcript_rows(session_id):
