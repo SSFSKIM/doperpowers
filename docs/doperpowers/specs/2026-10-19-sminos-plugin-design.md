@@ -46,10 +46,19 @@ reload still run.
 - [x] (2026-10-19, the owner) **M0, first step, on the Macs**: `prependPlugins` applied in
       `~/.claude/settings.json` on the MacBook and the Mac mini; probe sessions show `to-human` and
       `doperpowers` in the prepend tier, `devcloud` inner.
-- [ ] M0, second step (owner, needs their explicit OK): `enabledPlugins["sminos@doperpowers"]` on
-      each Mac — a precondition of the roll (§8).
-- [ ] P0 — the bridge raises a permission request's input in the handle form it captured (§4; a
-      separate change, in flight, lands before M1).
+- [x] (2026-10-19, the owner) **M0, second step**: `enabledPlugins["sminos@doperpowers"] = true` on
+      the MacBook and the Mac mini, each `settings.json` backed up as `settings.json.bak-*` before
+      the edit (the owner approved both one-time edits). A debug-log probe confirmed to-human and
+      doperpowers in the prepend tier with cua and devcloud inside them; until the plugin exists the
+      engine logs "Skipping orphaned enabledPlugins entry" for sminos at debug level. M0 is complete
+      on both Macs.
+- [x] (2026-10-19) P0 — the bridge raises a permission request's input in the handle form it
+      captured: #276, merge 02ef424f, doperpowers 7.189.3, rolled to both Macs. Its residue is in
+      `docs/doperpowers/TECH-DEBT.md` ("the bridge's raise and the secrets guard"); a separate change
+      fixes that section's second item (the bridge's tool result event carries no text for a result
+      devcloud scrubbed) in `bridge.tsx`, merged into the milestone branches once it lands.
+- (2026-10-19) #269 (`smns-guide-fork`) merged as 2018dab2; #271 (`smns-guide-roster`) is being
+  re-merged with main at 7.189.4 and lands before M3, whose move takes it from main.
 - [ ] M1 — doperpowers' readers accept both names; the reload mod installs a plugin's new
       dependencies and updates whenever an installed version differs from the clone's.
 - [ ] M2 — MAWS's readers accept both names and both plugin names (a PR in MAWS; the app rebuilt on
@@ -1381,6 +1390,18 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   `enabledPlugins` entry is a precondition of the roll, an owner step awaiting their explicit OK.
   Rationale: the second round's findings 2–6, each checked (Surprises). Nothing rejected.
   Date/Author: 2026-10-19, the spec's author.
+- Decision (execution pre-flight): each milestone ships as its own branch off `origin/main` and its
+  own PR, opened, gated, reviewed and merged by the plan's executor (M2 the same in MAWS, off
+  `origin/master`); this spec's living sections ride the milestone PRs. The executor merges only
+  once `origin/main` is an ancestor of the head and the gate's tree equals the head's, with
+  `--match-head-commit`; after each merge it tells the spec's author, who rolls the Macs and deploys
+  the desk, and waits for that before building on the merge as live (M1 rolled before M3's
+  rehearsal relies on it; M2 deployed before M3's roll). M2's ticket on MAWS's board is not
+  registered by the executor (it writes no board): the PR carries §11 as its body, and a ticket, if
+  wanted, is the author's to register. M1 is built beside #278 (`reload-rows-out-of-context`), open
+  on `reload.tsx` at this writing; whichever lands second merges `origin/main`.
+  Rationale: the author's dispatch of 2026-10-19 (the split of hands).
+  Date/Author: 2026-10-19, the plan's executor.
 
 ## Outcomes & Retrospective
 
