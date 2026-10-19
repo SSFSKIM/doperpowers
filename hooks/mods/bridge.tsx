@@ -1223,7 +1223,11 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   // The agents running already, or over, learned before the first hello: its resync carries them.
   await refreshAgents()
   // So do the async asks open already, which the ask mod told of before
-  // this bridge took notes: a reloaded module's, taken up from the last.
+  // this bridge took notes: a resumed session's, read back from its
+  // transcript in the SessionStart hooks, which the engine runs while this
+  // start still waits on the plugin's tool registrations (live, 2.1.303,
+  // tests/mods/live-ask-resume-check.py); a reloaded module's, taken up from
+  // the last.
   for (const ask of asyncAsks().filter((candidate) => candidate.status === 'open')) {
     onAskNote({ kind: 'open', id: ask.id, questions: ask.questions })
   }
