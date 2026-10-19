@@ -7737,17 +7737,17 @@ def cmd_guide(_a):
 # line is composed here, where the session's identity is.
 
 ADDRESS_KEY = "Sminos-Session"
-ADDRESS_RE = re.compile(r"Sminos-Session:[ \t]*(?P<alias>\S.*?)#(?P<short>[0-9a-f]{8})[ \t]+"
+ADDRESS_RE = re.compile(r"Sminos-Session:[ \t]*(?:(?P<alias>\S.*?)#)?(?P<short>[0-9a-f]{8})[ \t]+"
                         r"\((?P<project>[^\s()]+) on (?P<machine>[^\s()]+)\)[ \t]*")
 ADDRESS_ALIAS_RE = re.compile(r"[^\s#()][^\n#()]{0,63}")   # one short line, no character the line's form uses
 
 
 def session_address(session, fallback_cwd=""):
     """The `Sminos-Session: <alias>#<short> (<project> on <machine>)` line of a
-    session of this machine, or "" when it has none: in no project, an
-    internal fork, or no member (its log holds no membership and it is no
-    member on sight, joinable). The alias is the one its own `say` signs
-    with (guide_text's)."""
+    session of this machine — `<short>` alone for a session with no name fit
+    for it — or "" when it has none: in no project, an internal fork, or no
+    member (its log holds no membership and it is no member on sight,
+    joinable). The alias is the one its own `say` signs with (guide_text's)."""
     if os.environ.get("SMNS_INTERNAL") or not UUID_RE.match(session or ""):
         return ""
     project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
@@ -7763,15 +7763,15 @@ def session_address(session, fallback_cwd=""):
     alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session)[0]
     # A name that is no name — a `claude --bg "<prompt>"` job joins under its
     # prompt, the harness's first name for it — would make the line a
-    # paragraph the model rewrites: the short stands in.
-    if not ADDRESS_ALIAS_RE.fullmatch(alias or ""):
-        alias = session[:8]
-    return "%s: %s#%s (%s on %s)" % (ADDRESS_KEY, alias, session[:8], project.name, host_name())
+    # paragraph the model rewrites: the short goes alone.
+    who = "%s#%s" % (alias, session[:8]) if ADDRESS_ALIAS_RE.fullmatch(alias or "") and alias != session[:8] \
+        else session[:8]
+    return "%s: %s (%s on %s)" % (ADDRESS_KEY, who, project.name, host_name())
 
 
 def parse_addresses(text, last_paragraph=False):
     """The addresses a text carries, [{line, alias, short, project, machine}]
-    in order, each line once; with last_paragraph, only its last paragraph's
+    in order, each line once (alias "" for a line naming the short alone); with last_paragraph, only its last paragraph's
     (where a commit's trailers stand)."""
     if last_paragraph:
         paras = [p for p in re.split(r"\n[ \t]*\n", (text or "").strip()) if p.strip()]
@@ -7781,7 +7781,7 @@ def parse_addresses(text, last_paragraph=False):
         m = ADDRESS_RE.fullmatch(line.strip())
         if m and line.strip() not in seen:
             seen.add(line.strip())
-            out.append(dict(m.groupdict(), line=line.strip()))
+            out.append(dict(m.groupdict(), alias=m.group("alias") or "", line=line.strip()))
     return out
 
 
@@ -7870,7 +7870,8 @@ def who_lines(addr):
     hits = who_matches(addr["short"])
     if not hits:
         out.append("  no session %s in the org's directory known here: the line is all there is — %s in "
-                   "project %s on machine %s" % (addr["short"], addr["alias"], addr["project"], addr["machine"]))
+                   "project %s on machine %s" % (addr["short"], addr["alias"] or addr["short"], addr["project"],
+                                                 addr["machine"]))
         return out
     for p, m, how in hits:
         label = "%s#%s" % (m.alias, m.short)
@@ -7881,7 +7882,7 @@ def who_lines(addr):
         else:
             out.append("  now %s, %s on %s: %s%s" % (label, p.name, m.machine, m.state or "?",
                                                      " (its session %s)" % how if how else ""))
-        if m.alias != addr["alias"] and addr["alias"] != addr["short"]:
+        if addr["alias"] and m.alias != addr["alias"]:
             out.append("  (the line names it %s; it goes by %s now)" % (addr["alias"], m.alias))
         if charge_shown(m):
             out.append("  in charge: %s" % charge_shown(m))

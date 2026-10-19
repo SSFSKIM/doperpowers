@@ -103,8 +103,8 @@ transcript "$S7" "$REPO"
 record "Create a file a.txt and commit it. Then use the Agent tool to create b.txt and commit that too, then reply done." \
   "$S7" "$REPO" cli bg auto   # a `claude --bg "<prompt>"` job: the harness names it by its prompt first
 who --session "$S7"
-assert_equals "$OUT" "Sminos-Session: 7a000007#7a000007 (teamproj on alpha)" "a name that is no name (a job's prompt): the short stands in"
-rm "$HOME/.claude/sessions/Create a file a.txt and commit it. Then use the Agent tool to create b.txt and commit that too, then reply done..json"
+assert_equals "$OUT" "Sminos-Session: 7a000007 (teamproj on alpha)" "a name that is no name (a job's prompt): the short alone"
+LINE7="$OUT"
 
 echo "who <commit>: the session as it is now"
 (cd "$REPO" && "$SMINOS" list >/dev/null 2>&1)   # its membership in the log, as any verb run there reconciles it
@@ -116,6 +116,14 @@ assert_contains "$OUT" "commit ${SHA:0:12}" "names what it read"
 assert_contains "$OUT" "$LINE" "the line as the commit carries it"
 assert_contains "$OUT" "now fixer#1a000001, teamproj on alpha: idle" "alias, project, machine, state"
 assert_contains "$OUT" 'reach: sminos say "@1a000001' "how to reach it"
+F_SHA="$SHA"
+commit_with "$(printf 'job\n\n%s' "$LINE7")"
+who "$SHA"
+SHA="$F_SHA"
+assert_contains "$OUT" "$LINE7" "a line naming the short alone is read"
+assert_contains "$OUT" "#7a000007, teamproj on alpha: idle" "and resolved"
+assert_not_contains "$OUT" "the line names it" "with no alias of its own to compare"
+rm "$HOME/.claude/sessions/Create a file a.txt and commit it. Then use the Agent tool to create b.txt and commit that too, then reply done..json"
 
 echo "renamed since: the alias it goes by now"
 record fixer2 "$S1" "$REPO"

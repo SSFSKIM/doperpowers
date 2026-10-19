@@ -750,7 +750,10 @@ session, a `--bg` job and `claude -p`, the main loop and a subagent alike).
 
 The line is the CLI's, `sminos who --session <id>`, which composes it where
 the identity lives (the alias the session's own `say` signs with, its project,
-the machine's enrolled name) and prints nothing for a session in no project,
+the machine's enrolled name; the short alone, `Sminos-Session: <short>
+(<project> on <machine>)`, for a session with no name fit for a line, such
+as a `claude --bg "<prompt>"` job that joined under its prompt) and prints
+nothing for a session in no project,
 an internal fork (`SMNS_INTERNAL`), or one that is no member (a headless run
 its host did not mark). The engine asks before every model request of every
 loop, twice (commit, then pr): the mod keeps the line and asks the CLI again
