@@ -622,7 +622,7 @@ stop accidents, which arrive as plain text or a common encoding.
 - `cua` vendors devcloud's guard (`devcloud/hooks/mods/secrets*.tsx` and their tests). A change to
   those files that should reach `cua` files a `cua` resync ticket naming the doperpowers commit; a
   change to I9 reaches `cua` as a ticket before it ships. `cua`'s copy reads the I9 marker and never
-  writes it.
+  writes nor answers it.
 
 ### Plan of Work
 
@@ -918,9 +918,11 @@ key: "secrets-guard" })`, at hook time, on every event it would act on); nobody 
 `claude` started from a tool call has a session of its own and decides for itself. A reader that
 stands down on it — `cua` — stands down only on the marker at version 0, where the host holds
 nothing: a marker at any other version is one a devcloud before 0.5.0 stored at its session's
-start, which outlives its module. The engine runs a `$` call through every plugin's hooks but
-the caller's, outermost first, so the read reaches devcloud's hook whichever of the two plugins
-sits outside the other (their order is their install order, and both occur). Not a `globalThis`
+start, which outlives its module. The engine runs a `$` call through every hook on its op event
+but the one that made the call, outermost first, the calling plugin's other hooks included. So
+the read reaches devcloud's hook whichever of the two plugins sits outside the other (their order
+is their install order, and both occur), and a module that answered the marker would read its own
+answer: a guard that reads the marker to stand down must never answer it. Not a `globalThis`
 symbol, as first drafted: M1's check (2026-10-17, 2.1.302) found that the engine evaluates each
 plugin's module in a realm of its own, so `$.state` is the narrowest shared channel that stays out
 of child processes. Not a value devcloud stores, as 0.1.0 through 0.4.x had it: the host keeps
@@ -988,10 +990,12 @@ or how it is answered reaches `cua` as a ticket before it ships.
   and the transcript raw (its `tool_result` and `toolUseResult`), with devcloud installed before
   `cua` and after it alike (board #101; the sminos split's M3a spike found it first). The pane drew a
   handle either way.
-- (2026-10-19) A plugin's `$` call runs through every other plugin's hook on that op event, in
-  either order: a `state.get` hook of devcloud's answered `cua`'s read with devcloud outside
-  `cua` and inside it (kit tests across tiers, and the board #101 sessions after the fix), its answer's
-  `version` passed through as given. `next.trace` lists only the links beneath the hook that
+- (2026-10-19) A plugin's `$` call runs through every hook on that op event but the calling hook
+  alone, in either order, the calling plugin's own other hooks included: a `state.get` hook of
+  devcloud's answered `cua`'s read with devcloud outside `cua` and inside it (kit tests across
+  tiers, and the board #101 sessions after the fix), its answer's `version` passed through as given,
+  and a plugin's `tool.call` hook that read the marker got its own `state.get` hook's answer (kit
+  probe). `next.trace` lists only the links beneath the hook that
   reads it: a link in a tier outside the reader never appears there (kit probe, 2.1.303).
 
 ## Decision Log

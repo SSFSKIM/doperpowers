@@ -273,8 +273,11 @@ const notQuoted = (unquotable: readonly string[]) =>
  * disabled and the plugins reloaded), which then answers `undefined`. A marker
  * the host kept would outlive the module, and `cua`'s scrubbing, which stands
  * down on it, would leave the session with no guard (board #101). The engine runs a
- * `$` call through every plugin's hooks but the caller's, so the read reaches
- * this hook whichever plugin sits outside the other. A child process (a
+ * `$` call through every hook on its event but the one that made the call,
+ * the calling plugin's other hooks included: the read reaches this hook
+ * whichever plugin sits outside the other, and a module that answered the
+ * marker would read its own answer, so a guard that reads it to stand down
+ * must never answer it. A child process (a
  * `claude` a tool call starts) has its own session and decides for itself.
  * Its type is the plugin's contract (types/devcloud.d.ts). Not a `globalThis`
  * symbol: the engine evaluates each plugin's module in a realm of its own
