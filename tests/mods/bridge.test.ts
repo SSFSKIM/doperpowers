@@ -3080,10 +3080,17 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
   const MODEL = { command: `curl -H "Authorization: Bearer ${HANDLE}" https://api.example`, description: 'probe' }
   const RESTORED = { ...MODEL, command: MODEL.command.replaceAll(HANDLE, VALUE) }
   type Next = (e: Record<string, unknown>) => Promise<Record<string, unknown>>
-  /** devcloud's tool.call hook: the handle's bytes into the call before `next`, the result scrubbed after it. */
+  /**
+   * devcloud's tool.call hook: the handle's bytes into the call before `next`,
+   * the result record scrubbed after it. It answers `{ result }` when it
+   * scrubbed something (no `text`: core sets that, never a hook's own result),
+   * and `ran` itself otherwise.
+   */
   const guard = async (e: Record<string, unknown>, next: Next) => {
     const ran = await next({ ...e, command: String(e.command).replaceAll(HANDLE, VALUE) })
-    return typeof ran.text === 'string' ? { ...ran, text: ran.text.replaceAll(VALUE, HANDLE) } : ran
+    const result = ran.result as { stdout?: string } | undefined
+    const scrubbed = typeof result?.stdout === 'string' ? result.stdout.replaceAll(VALUE, HANDLE) : undefined
+    return scrubbed !== undefined && scrubbed !== result?.stdout ? { result: { ...result, stdout: scrubbed } } : ran
   }
   /**
    * The engine beneath every tool.call hook: its check and its dialog's
@@ -3097,7 +3104,9 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     await h.check('toolu_s', 'Bash', input)
     const answer = await h.permission('Bash', input)
     answers.push(answer)
-    return { text: (answer.decision as { behavior?: string } | undefined)?.behavior === 'allow' ? `ran: ${String(e.command)}` : 'refused' }
+    const text = (answer.decision as { behavior?: string } | undefined)?.behavior === 'allow' ? `ran: ${String(e.command)}` : 'refused'
+    // Core's shape: the result record and the text it renders.
+    return { result: { stdout: text }, text }
   }
   const bridge = (h: ReturnType<typeof harness>) => (e: Record<string, unknown>, next: Next) => h.hook('tool.call', { tool: 'Bash' })(h.engine, e, next) as Promise<Record<string, unknown>>
   const CALL = { tool: 'Bash', tool_use_id: 'toolu_s', ...MODEL }
@@ -3118,9 +3127,11 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     expect(h.ofType('resync').at(-1)).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_s', input: MODEL })] })
     poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
     // The allow hands no input back: the engine runs its own, restored.
-    expect(await ran).toEqual({ text: `ran: ${MODEL.command}` })
+    // The guard beneath scrubbed the result: the bridge's return is its `{ result }`, no text.
+    expect(await ran).toEqual({ result: { stdout: `ran: ${MODEL.command}` } })
     expect(answers).toEqual([{ decision: { behavior: 'allow' } }])
-    expect(h.ofType('tool').map((e) => e.input ?? e.text)).toEqual([MODEL, `ran: ${MODEL.command}`])
+    // The call event carries the handle. Its result event's text is not asserted: a result the guard scrubbed has none (tech debt, 7.189.2).
+    expect(h.ofType('tool').flatMap((e) => (e.input === undefined ? [] : [e.input]))).toEqual([MODEL])
     expect(posted(h)).toContain(HANDLE)
     expect(posted(h)).not.toContain(VALUE)
   })
@@ -3292,7 +3303,7 @@ describe('requests from outside: questions', () => {
     await h.check('toolu_plugin_1', 'AskUserQuestion', { questions: [FRUIT] })
     const answer = h.permission('AskUserQuestion', { questions: [FRUIT] })
     const poll = await h.nextPoll()
-    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', toolUseId: 'toolu_01outer', tool: 'AskUserQuestion' })])
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', toolUseId: 'toolu_01outer', tool: 'AskUserQuestion', input: { questions: [FRUIT] } })])
     poll.respond(200, { decision: { behavior: 'allow', updatedInput: { answers: { 'Which fruit?': 'Mango' } } }, by: 'm-7' })
     await answer
     endDialog({ text: answered('Mango') })
