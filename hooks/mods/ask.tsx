@@ -930,6 +930,11 @@ export function asksInFlight(): number {
   return asks.filter((ask) => ask.status === 'open').length + undelivered.size
 }
 
+/** Whether a main-conversation turn is running: a slash command run now waits for its end. */
+export function isMainTurnRunning(): boolean {
+  return isTurnRunning
+}
+
 /** Takes every held answer, in one synchronous step, so no other route takes them too. */
 const takeHeld = () => held.splice(0)
 

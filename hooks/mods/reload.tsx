@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 
-import { asksInFlight } from './ask'
+import { asksInFlight, isMainTurnRunning } from './ask'
 
 /**
  * Plugin updates reach a running session on their own. The engine reads
@@ -8,8 +8,8 @@ import { asksInFlight } from './ask'
  * installs a new version (`claude plugin update`, or a session's own
  * marketplace auto-update): each session runs the version it loaded until
  * `/reload-plugins`. This mod watches the file and, when a plugin the session
- * runs has a new install there, runs `/reload-plugins` itself, which the
- * engine queues until the session is idle; and one session per machine at a
+ * runs has a new install there, runs `/reload-plugins` itself while the
+ * session is idle; and one session per machine at a
  * time fetches the `autoUpdate` marketplaces' new versions, which the engine
  * does only at a session's start.
  */
@@ -158,6 +158,8 @@ export type ReloadIo = {
   /** `/reload-plugins`, queued until the session is idle; resolves to its output. */
   reload: () => Promise<{ text?: string }>
   asksInFlight: () => number
+  /** A main turn is running, so a reload run now would wait for its end. */
+  isTurnRunning: () => boolean
   now: () => number
   toast: (text: string) => void
   /** `transcript` for what the person must act on, `debug` for the rest. */
@@ -240,7 +242,11 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
         io.log(`reload: ${changeText(due.changes)} waits for the open async questions`, 'debug')
       }
     }
-    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.asksInFlight() > 0) {
+    // Only while the session is idle, where the reload runs at once: queued
+    // during a turn, it would run at the turn's end, past an async question
+    // the turn asked after this look, and ahead of a compaction the model
+    // asked for at that end, which then fails.
+    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.asksInFlight() > 0 || io.isTurnRunning()) {
       return
     }
     fire(mtimeMs, due.changes, due.next)
@@ -507,6 +513,7 @@ export function registerReload(on: On) {
         enabled,
         reload: () => $.command.run({ command: 'reload-plugins' }),
         asksInFlight,
+        isTurnRunning: isMainTurnRunning,
         now: () => Date.now(),
         toast: (line) => $.ui.toast(line, { timeoutMs: 8000 }),
         log: (line, to) => $.ui.log(line, { to }),
