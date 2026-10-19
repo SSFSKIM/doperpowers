@@ -101,7 +101,7 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
   const calls: { op: string; text?: string }[] = []
   const state = {
     clock: 0,
-    asks: 0,
+    isDialogUp: false,
     isTurnRunning: false,
     answer: (): Promise<{ text?: string }> => Promise.resolve({ text: 'Reloaded: 4 plugins · 30 skills' }),
   }
@@ -112,7 +112,7 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
       exists: async (path) => existing.has(path),
       enabled: async () => new Set(options.enabled ?? Object.keys(plugins)),
       reload: () => (calls.push({ op: 'reload' }), state.answer()),
-      asksInFlight: () => state.asks,
+      isAskDialogUp: () => state.isDialogUp,
       isTurnRunning: () => state.isTurnRunning,
       now: () => state.clock,
       toast: (text) => calls.push({ op: 'toast', text }),
@@ -179,30 +179,26 @@ describe('createReloader', () => {
     expect(h.calls.find((c) => c.op === 'toast')?.text).toBe('doperpowers 7.1.0 → 7.2.0, to-human 0.1.0 → 0.2.0: reloading plugins once the session is idle')
   })
 
-  test('an open async question holds the reload until it is answered and delivered', async () => {
+  test("an async question's dialog that is up holds the reload until it closes", async () => {
     const h = harness()
     await h.reloader.start()
-    h.state.asks = 1
+    h.state.isDialogUp = true
     h.install('doperpowers@dp', '7.2.0')
     await h.ticks(4)
     expect(h.reloads()).toBe(0)
-    h.state.asks = 0
+    h.state.isDialogUp = false
     await h.ticks(1)
     expect(h.reloads()).toBe(1)
   })
 
-  test("a running turn holds the reload until it ends: queued then, it would run at the turn's end, past a question the turn asked meanwhile", async () => {
+  test("a running turn holds the reload until it ends: queued then, it would run at the turn's end, ahead of a compaction asked for there", async () => {
     const h = harness()
     await h.reloader.start()
     h.state.isTurnRunning = true
     h.install('doperpowers@dp', '7.2.0')
     await h.ticks(4)
     expect(h.reloads()).toBe(0)
-    h.state.asks = 1
     h.state.isTurnRunning = false
-    await h.ticks(2)
-    expect(h.reloads()).toBe(0)
-    h.state.asks = 0
     await h.ticks(1)
     expect(h.reloads()).toBe(1)
   })

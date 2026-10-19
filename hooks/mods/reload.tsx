@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 
-import { asksInFlight, isMainTurnRunning } from './ask'
+import { isAskDialogUp, isMainTurnRunning } from './ask'
 
 /**
  * Plugin updates reach a running session on their own. The engine reads
@@ -157,7 +157,8 @@ export type ReloadIo = {
   enabled: () => Promise<ReadonlySet<string>>
   /** `/reload-plugins`, queued until the session is idle; resolves to its output. */
   reload: () => Promise<{ text?: string }>
-  asksInFlight: () => number
+  /** An async ask's dialog is up: the module that raised it takes its answer, and one a reload starts meanwhile would show it open still. */
+  isAskDialogUp: () => boolean
   /** A main turn is running, so a reload run now would wait for its end. */
   isTurnRunning: () => boolean
   now: () => number
@@ -238,15 +239,12 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
       const next = records === undefined ? undefined : await snapshotOf(records, loaded.keys(), place)
       const changes = next === undefined ? [] : changesOf(loaded, next)
       due = next !== undefined && changes.length > 0 ? { changes, next } : undefined
-      if (due !== undefined && io.asksInFlight() > 0) {
-        io.log(`reload: ${changeText(due.changes)} waits for the open async questions`, 'debug')
-      }
     }
     // Only while the session is idle, where the reload runs at once: queued
-    // during a turn, it would run at the turn's end, past an async question
-    // the turn asked after this look, and ahead of a compaction the model
-    // asked for at that end, which then fails.
-    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.asksInFlight() > 0 || io.isTurnRunning()) {
+    // during a turn, it would run at the turn's end, ahead of a compaction
+    // the model asked for at that end, which then fails. The ask mod keeps
+    // its open questions across the reload, but not a dialog it has up.
+    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning()) {
       return
     }
     fire(mtimeMs, due.changes, due.next)
@@ -512,7 +510,7 @@ export function registerReload(on: On) {
         exists: (path) => $.fs.exists(path),
         enabled,
         reload: () => $.command.run({ command: 'reload-plugins' }),
-        asksInFlight,
+        isAskDialogUp,
         isTurnRunning: isMainTurnRunning,
         now: () => Date.now(),
         toast: (line) => $.ui.toast(line, { timeoutMs: 8000 }),

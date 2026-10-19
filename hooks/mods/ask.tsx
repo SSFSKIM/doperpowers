@@ -1,5 +1,7 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
+import type { AskSnapshot } from '../../types/doperpowers'
+
 /**
  * The tool as the model names it, `mcp__<plugin>__<name>`; written out so the
  * engine's scan reads the matchers (the hooks below name it as a literal).
@@ -490,6 +492,7 @@ export function resetAsk() {
   forgetAsyncAsks()
   isTurnRunning = false
   external = undefined
+  keep = undefined
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -903,18 +906,44 @@ type Delivery = { id: string; text: string }
 let asks: OpenAsk[] = []
 /** Answers waiting for a route to the model, oldest first. */
 let held: Delivery[] = []
-/** Asks answered whose answer has not reached the model yet: held, or on a route that may still fail. */
-let undelivered = new Set<string>()
+/** Asks answered whose answer has not reached the model yet, held or on a route that may still fail, in the order answered. */
+let undelivered = new Map<string, Delivery>()
 /** Asks whose dialog is raised (open, or queued behind another), until its answer is the ask's. */
 let raisedAsks = new Set<string>()
 /** A main-conversation turn is running: an answer now is held, not submitted. */
 let isTurnRunning = false
 
+/**
+ * What the module keeps across a reload of itself, in `$.state`, which the
+ * host holds for the session: the engine loads the module afresh when its
+ * plugin changed (an update the human's `/reload-plugins` or the autoreload
+ * brings), and the module's own variables start over. An answer on its way
+ * to the model when the module was reloaded is held again, so it may reach
+ * the model twice, never not at all.
+ */
+const KEPT = { plugin: 'doperpowers', key: 'ask' } as const
+/** Writes the snapshot; set as the session starts. */
+let keep: ((snapshot: AskSnapshot) => void) | undefined
+
+/** Keeps the session's asks as they stand now; called on each change of them. */
+function save() {
+  keep?.({ shape: 1, asks, undelivered: [...undelivered.values()], isTurnRunning, ...(store !== undefined && { store }) })
+}
+
+/** Takes up the asks a module before this one kept: every answer it had not delivered is held, for the next route. */
+function restore(snapshot: AskSnapshot) {
+  asks = snapshot.asks
+  undelivered = new Map(snapshot.undelivered.map((item) => [item.id, item]))
+  held = [...snapshot.undelivered]
+  isTurnRunning = snapshot.isTurnRunning
+  store = snapshot.store
+}
+
 function forgetAsyncAsks() {
   const open = asks.filter((ask) => ask.status === 'open').map((ask) => ask.id)
   asks = []
   held = []
-  undelivered = new Set()
+  undelivered = new Map()
   raisedAsks = new Set()
   if (open.length > 0) {
     note({ kind: 'forgotten', ids: open })
@@ -926,9 +955,9 @@ export function asyncAsks(): readonly OpenAsk[] {
   return asks
 }
 
-/** What a reload of the module would lose: the open async asks, and the answers that have not reached the model. */
-export function asksInFlight(): number {
-  return asks.filter((ask) => ask.status === 'open').length + undelivered.size
+/** Whether an ask's dialog is up: the module that raised it answers it, so a reload waits for it. */
+export function isAskDialogUp(): boolean {
+  return raisedAsks.size > 0
 }
 
 /** Whether a main-conversation turn is running: a slash command run now waits for its end. */
@@ -964,6 +993,7 @@ let external: Out | undefined
 /** A route delivered `items`: their asks read delivered. */
 function delivered(out: Out, items: readonly Delivery[]) {
   items.forEach((item) => undelivered.delete(item.id))
+  save()
   out.invalidate()
 }
 
@@ -990,7 +1020,8 @@ async function submitDeliveries(out: Out, items: Delivery[]) {
 
 /** An ask answered: held while a turn runs, else submitted at once with whatever was held before it. */
 function deliver(out: Out, item: Delivery) {
-  undelivered.add(item.id)
+  undelivered.set(item.id, item)
+  save()
   if (isTurnRunning) {
     held.push(item)
     return
@@ -1252,6 +1283,19 @@ export function registerAsk(on: On) {
     // An answer from outside the terminal comes in no hook of this mod's: it
     // is delivered through the session's own `$`.
     external = outOf($)
+    // A module loaded into a running session (a reload) takes up the asks
+    // the one before it kept; one starting with the process finds none.
+    try {
+      const { value } = await $.state.get(KEPT)
+      if (isRecord(value) && value.shape === 1) {
+        restore(value as AskSnapshot)
+        $.ui.invalidate('ui.render')
+      }
+      keep = (snapshot) => void $.state.set(KEPT, snapshot).catch((error: unknown) => $.ui.log(`ask: the asks are not kept for a reload: ${message(error)}`, { to: 'debug' }))
+      save()
+    } catch (error) {
+      $.ui.log(`ask: the asks are not kept for a reload: ${message(error)}`, { to: 'debug' })
+    }
     const result = await next(e)
     await askStart($)
     return result
@@ -1273,6 +1317,7 @@ export function registerAsk(on: On) {
         note({ kind: 'open', id: ask.id, questions: ask.questions })
       }
     }
+    save()
     return next(e)
   }).catch((_, e, next) => next(e))
 
@@ -1285,6 +1330,7 @@ export function registerAsk(on: On) {
     if (e.agentId === undefined) {
       isLatched = false
       isTurnRunning = true
+      save()
     }
     return next(e)
   })
@@ -1298,6 +1344,7 @@ export function registerAsk(on: On) {
     const result = await next(e)
     if (e.agentId === undefined) {
       isTurnRunning = false
+      save()
       if (e.reason === 'answer' && !isLatched && held.length > 0) {
         void submitDeliveries(outOf($), takeHeld())
       } else if (held.length > 0 || isLatched) {
@@ -1491,6 +1538,7 @@ export function registerAsk(on: On) {
     if ((input as AskInput).async === true) {
       const ask: OpenAsk = { id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' }
       asks.push(ask)
+      save()
       $.ui.invalidate('ui.render')
       note({ kind: 'open', id: ask.id, questions })
       return { result: ASYNC_RESULT }
