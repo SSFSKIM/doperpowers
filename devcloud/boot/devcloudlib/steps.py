@@ -417,7 +417,7 @@ def host_env(identity, profile_env, secret_env):
 
 def settings_and_env(r):
     p = r.profile
-    settings_changed = write_file(MANAGED_SETTINGS, p.managed_settings, mode=0o644, dir_mode=0o755)
+    settings_changed = write_file(MANAGED_SETTINGS, p.host_settings, mode=0o644, dir_mode=0o755)
     pairs, ignored = host_env(_read_env(IDENTITY_ENV), p.env, r.secret_env)
     r.env_changed = _write_env_file(pairs.items(), r.user.gid)
     tz = p.env.get("TZ")
