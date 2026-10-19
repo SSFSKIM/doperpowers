@@ -1,4 +1,5 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 import {
   FETCH_MS,
@@ -10,7 +11,10 @@ import {
   changesOf,
   createFetcher,
   createReloader,
+  outputText,
   parseInstalled,
+  registerReload,
+  reloadRow,
   runningRecord,
   type InstallRecord,
   type Place,
@@ -425,5 +429,94 @@ describe('createFetcher', () => {
     const h = fetchHarness({ enabled: ['doperpowers@dp'] })
     await h.fetcher.tick()
     expect(h.claude()).toEqual(['claude plugin marketplace update dp', 'claude plugin update doperpowers@dp --scope user'])
+  })
+})
+
+// A plugin's `/reload-plugins` as the engine appends it (2.1.302/303): the
+// caveat and the command line from the plugin's origin, the output a
+// `local_command` notice from the engine's.
+const SELF = { kind: 'plugin', name: 'doperpowers' }
+const PERSON = { kind: 'composer' }
+const ENGINE = { kind: 'engine' }
+const userRow = (text: string, isMeta = false) => ({ type: 'user', role: 'user', ...(isMeta && { isMeta: true }), content: [{ type: 'text', text }] })
+const CAVEAT = userRow('<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>', true)
+const COMMAND = userRow('<command-name>/reload-plugins</command-name>\n<command-message>reload-plugins</command-message>\n<command-args></command-args>')
+const OUTPUT = { type: 'system', name: 'local_command', role: 'user', content: [{ type: 'text', text: '<local-command-stdout>Reloaded: 10 plugins · 24 skills</local-command-stdout>' }] }
+
+describe('reloadRow', () => {
+  test("reads this plugin's caveat and reload line, and the output that follows the line", async () => {
+    expect(reloadRow(CAVEAT, SELF, 'doperpowers', false)).toBe('caveat')
+    expect(reloadRow(COMMAND, SELF, 'doperpowers', false)).toBe('command')
+    expect(reloadRow(OUTPUT, ENGINE, 'doperpowers', true)).toBe('output')
+  })
+
+  test("leaves the person's, another plugin's, another command's, and an output no reload line went before", async () => {
+    expect(reloadRow(COMMAND, PERSON, 'doperpowers', false)).toBeUndefined()
+    expect(reloadRow(CAVEAT, { kind: 'plugin', name: 'cua' }, 'doperpowers', false)).toBeUndefined()
+    expect(reloadRow(userRow('<command-name>/kairos</command-name>'), SELF, 'doperpowers', false)).toBeUndefined()
+    expect(reloadRow(OUTPUT, ENGINE, 'doperpowers', false)).toBeUndefined()
+    expect(reloadRow({ ...OUTPUT, name: 'informational' }, ENGINE, 'doperpowers', true)).toBeUndefined()
+  })
+
+  test('the output text drops its tag, an error\'s too', async () => {
+    expect(outputText(OUTPUT.content)).toBe('Reloaded: 10 plugins · 24 skills')
+    expect(outputText([{ type: 'text', text: '<local-command-stderr>Failed to reload: boom</local-command-stderr>' }])).toBe('Failed to reload: boom')
+  })
+})
+
+describe("a reload's rows", () => {
+  function rowsHarness() {
+    const hooks: { event: string; matcher: unknown; handler: (...args: unknown[]) => unknown }[] = []
+    registerReload(((event: string, matcher: unknown, handler: (...args: unknown[]) => unknown) => {
+      hooks.push({ event, matcher, handler })
+    }) as unknown as On)
+    const appended: unknown[] = []
+    const $ = {
+      plugin: { name: 'doperpowers' },
+      session: { append: async (args: unknown) => (appended.push(args), { message: {}, uuid: 'n1' }) },
+      ui: { log: () => {} },
+    }
+    const hook = hooks.find((h) => h.event === 'session.append')!
+    expect(hook.matcher).toEqual({ door: 'command' })
+    const stored: unknown[] = []
+    const append = async (message: Record<string, unknown>, origin: unknown) => {
+      await hook.handler($, { message, door: 'command', origin, uuid: 'u' }, async (e: { message: unknown }) => (stored.push(e.message), { message: e.message, uuid: 'u' }))
+      for (let i = 0; i < 8; i++) {
+        await Promise.resolve()
+      }
+    }
+    return { append, stored, appended }
+  }
+
+  test("each row of this plugin's reload is kept empty, and the output reaches the person as a notice", async () => {
+    const h = rowsHarness()
+    await h.append(CAVEAT, SELF)
+    await h.append(COMMAND, SELF)
+    await h.append(OUTPUT, ENGINE)
+    expect(h.stored).toEqual([
+      { ...CAVEAT, content: [] },
+      { ...COMMAND, content: [] },
+      { ...OUTPUT, content: [] },
+    ])
+    expect(h.appended).toEqual([
+      { message: { type: 'system', content: [{ type: 'text', text: '/reload-plugins, run by doperpowers: Reloaded: 10 plugins · 24 skills' }] } },
+    ])
+  })
+
+  test("the person's own reload passes whole, its output too", async () => {
+    const h = rowsHarness()
+    await h.append(CAVEAT, PERSON)
+    await h.append(COMMAND, PERSON)
+    await h.append(OUTPUT, ENGINE)
+    expect(h.stored).toEqual([CAVEAT, COMMAND, OUTPUT])
+    expect(h.appended).toEqual([])
+  })
+
+  test('an output after any other row than the reload line passes', async () => {
+    const h = rowsHarness()
+    await h.append(COMMAND, SELF)
+    await h.append(userRow('<command-name>/context</command-name>'), PERSON)
+    await h.append(OUTPUT, ENGINE)
+    expect(h.stored).toEqual([{ ...COMMAND, content: [] }, userRow('<command-name>/context</command-name>'), OUTPUT])
   })
 })
