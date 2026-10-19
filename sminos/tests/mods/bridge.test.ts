@@ -4508,6 +4508,77 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(after().flatMap((p) => p.events).filter((e) => e.type === 'tool')).toEqual(whole)
   })
 
+  test("only a guard seen beneath turns an off bridge back on: cua disabled in the settings, its module still outside, keeps it off", async () => {
+    const h = harness({ cua: true, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    const posts = h.posts.length
+    // The person disables cua without reloading: its module stays loaded, outside the bridge.
+    h.setCua(false)
+    for (let i = 0; i < 5; i++) {
+      await rowBeneath(h, ['doperpowers'])
+      await callBeneath(h, ['doperpowers'])
+    }
+    await h.settle()
+    expect(h.logs).not.toContain(ON_LINE)
+    expect(h.children).toHaveLength(1)
+    expect(h.posts.length).toBe(posts)
+    expectOff(h)
+  })
+
+  test('a dispatch that began before the last transition and reads off changes nothing, and posts nothing of its own', async () => {
+    const h = harness()
+    await h.ready()
+    // Calls A and B are in flight when devcloud loads: neither chain has it.
+    let endA: (r: Record<string, unknown>) => void = () => undefined
+    let endB: (r: Record<string, unknown>) => void = () => undefined
+    const a = h.hook('tool.call', { tool: 'Bash' })(h.engine, { ...CALL, tool_use_id: 'tuA' }, beneath(() => new Promise((resolve) => (endA = resolve)), ['doperpowers']))
+    const b = h.hook('tool.call', { tool: 'Bash' })(h.engine, { ...CALL, tool_use_id: 'tuB' }, beneath(() => new Promise((resolve) => (endB = resolve)), ['doperpowers']))
+    await h.settle()
+    h.setMarker(LIVE_MARKER)
+    endA({ text: OUTPUT })
+    await a
+    await h.settle()
+    expectOff(h)
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    expectOn(h)
+    const after = await greetNewest(h, 'n1')
+    endB({ text: 'B output' })
+    await b
+    await h.settle()
+    // No second off, and B's result, read outside the guard, is not posted.
+    expect(h.toasts.filter((t) => t === OFF_LINE)).toHaveLength(1)
+    expectOn(h)
+    expect(h.children).toHaveLength(2)
+    expect(JSON.stringify(after().map((p) => p.events))).not.toContain('B output')
+  })
+
+  test("going off withdraws an async ask's answer dialog but not the ask: the resync after the bridge is back on still carries it open", async () => {
+    const FRUIT = { question: 'Which fruit?', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple', description: 'a' }, { label: 'Mango', description: 'm' }] }
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })
+    await h.check('toolu_plugin_9', 'AskUserQuestion', { questions: [FRUIT] })
+    const answer = h.permission('AskUserQuestion', { questions: [FRUIT] })
+    const poll = await h.nextPoll()
+    // A press on the ask's [ answer ] opened that dialog.
+    onAskNote({ kind: 'answered', id: 'toolu_a1', dialog: 'toolu_plugin_9' })
+    await h.settle()
+    h.setMarker(LIVE_MARKER)
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    poll.respond(410)
+    await answer
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    expectOn(h)
+    const after = await greetNewest(h, 'n1')
+    const resync = after()[0]!.events.find((e) => e.type === 'resync')!
+    expect(resync.pending).toEqual([expect.objectContaining({ request: 'toolu_a1', async: true })])
+    expect(resync.settled).toEqual([expect.objectContaining({ request: 'toolu_plugin_9', outcome: 'withdrawn' })])
+  })
+
   test('a dispatch that began before the off and reads safe does not turn the bridge back on', async () => {
     const h = harness()
     await h.ready()

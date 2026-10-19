@@ -173,8 +173,12 @@ export type BridgeState = {
    * raised.
    */
   place?: Place
-  /** How many times the bridge turned off: a dispatch begun before the last of them cannot turn it back on. */
-  offs: number
+  /**
+   * How many times the bridge turned off or back on. A dispatch begun before
+   * the last of them read a chain that may no longer stand: it neither turns
+   * the bridge back on nor, reading off, turns it off again.
+   */
+  transitions: number
   /** A read of which guard is loaded failed, and the person was told (once per module instance). */
   isUnreadSaid: boolean
   /** Bumped whenever a child is started or stopped on purpose; a loop of an older one does nothing more. */
@@ -331,7 +335,7 @@ const fresh = (): BridgeState => ({
   submissions: [],
   deliveredRows: [],
   refusals: [],
-  offs: 0,
+  transitions: 0,
   isUnreadSaid: false,
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,

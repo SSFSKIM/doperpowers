@@ -12,9 +12,11 @@
  * `session.append` gives a verdict, since `/reload-plugins` re-instantiates
  * only the modules that changed, so a guard enabled mid-session can load
  * outside a bridge that lives on, or inside it. `off` lasts until a dispatch
- * that began after it reads `safe` (bridge.tsx, judgePlace): the trace and
- * the reads are taken at different moments, and cua's leg reads the
- * settings' intent, so a verdict can be off for a while and then right again.
+ * that began after it sees a loaded guard beneath the bridge (`guarded`;
+ * bridge.tsx, judgePlace): the trace and the reads are taken at different
+ * moments, and cua's leg reads the settings' intent, so a verdict can be off
+ * for a while and then right again. A guard truly removed leaves the bridge
+ * off until sminos itself reloads.
  */
 
 export type Place = 'safe' | 'off'
@@ -50,29 +52,45 @@ export function isCuaEnabled(settings: unknown): boolean {
 }
 
 /**
- * One settled dispatch's verdict on the bridge's place. `trace` is the
- * dispatch's `next.trace`, `raisedBy` the plugin `next.origin` names, and
- * `loaded` reads which guard is loaded now. The reads are skipped when the
- * links beneath name both guards, which leaves no guard outside.
+ * What one dispatch says of the bridge's place:
+ * - `guarded`: a guard the reads report loaded has its link beneath, or both
+ *   guards' links are;
+ * - `unguarded`: the reads report no guard loaded;
+ * - `off`: the loaded guard is outside the bridge.
  *
- * `safe` needs no more than that: no guard is loaded, or the loaded one has
- * a link beneath, whether or not the trace reaches the engine. `off` needs
- * proof that the loaded guard is outside, and two kinds of dispatch that lack
- * its link give none, and so no verdict:
+ * Either of the first two settles the first verdict as safe. Only `guarded`
+ * turns an off bridge back on: cua's leg reads the settings' intent, not
+ * the modules loaded, so cua disabled in the settings without a reload
+ * leaves its module outside the bridge while the reads say no guard.
+ */
+export type Verdict = 'guarded' | 'unguarded' | 'off'
+
+/**
+ * One settled dispatch's verdict. `trace` is the dispatch's `next.trace`,
+ * `raisedBy` the plugin `next.origin` names, and `loaded` reads which guard
+ * is loaded now. The reads are skipped when the links beneath name both
+ * guards, which leaves no guard outside.
+ *
+ * `guarded` and `unguarded` need no more than that, whether or not the trace
+ * reaches the engine. `off` needs proof that the loaded guard is outside, and
+ * two kinds of dispatch that lack its link give none, and so no verdict:
  * - a trace cut short of the engine's entry, by a link that answered the
  *   call itself (a plugin's own tool, a refused row), lists nothing beneath
  *   that link;
  * - a guard's hooks do not run on a dispatch its own plugin raised (cua's
  *   `/secret` appending its note).
  */
-export async function placeOf(trace: readonly { plugin: string }[], raisedBy: string | undefined, loaded: () => Promise<Guard | undefined>): Promise<Place | undefined> {
+export async function verdictOf(trace: readonly { plugin: string }[], raisedBy: string | undefined, loaded: () => Promise<Guard | undefined>): Promise<Verdict | undefined> {
   const beneath = new Set(trace.map((link) => link.plugin))
   if (beneath.has('devcloud') && beneath.has('cua')) {
-    return 'safe'
+    return 'guarded'
   }
   const guard = await loaded()
-  if (guard === undefined || beneath.has(guard)) {
-    return 'safe'
+  if (guard === undefined) {
+    return 'unguarded'
+  }
+  if (beneath.has(guard)) {
+    return 'guarded'
   }
   return beneath.has('engine') && raisedBy !== guard ? 'off' : undefined
 }

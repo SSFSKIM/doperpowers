@@ -241,9 +241,13 @@ rows read from the transcript, and the export to the host).
   stops the child, and raises nothing, questions included; a toast and a
   debug line opening `sminos: the bridge is off` name the `prependPlugins`
   setting. The live state is still kept, and a later dispatch that began
-  after the off and reads `safe` turns the bridge back on, toasting so: a
-  new child, as a reload starts one, with a nonce of its own, whose hello
-  resyncs it. Nothing else starts a child while off, a `/clear` included.
+  after the off and sees a loaded guard beneath the bridge (never the reads'
+  "no guard" alone, since cua's leg reads the settings' intent) turns it
+  back on, toasting so: a new child, as a reload starts one, with a nonce of
+  its own, whose hello resyncs it. A guard truly removed leaves the bridge
+  off until sminos reloads. Nothing else starts a child while off, a
+  `/clear` included. A dispatch that began before the last transition and
+  reads `off` changes nothing and posts nothing of its own.
   Off is not final because the trace and the reads are taken at different
   moments, and cua's leg reads the settings' intent: a guard enabled before
   its module loads, or one loaded while a call was in flight, reads `off`
