@@ -1262,8 +1262,8 @@ async function judgePlace(
 
 /**
  * The bridge found a guard outside it. What is queued is dropped, the child is
- * stopped, and the requests it raised from the permission path are withdrawn
- * (their inputs came through the guard); then the line says why, once, as a
+ * stopped, and the permissions it raised are withdrawn (their inputs came
+ * through the guard; a question's never did); then the line says why, once, as a
  * toast and in the debug log. While off, nothing is queued or raised, and no
  * child is started (startChild).
  */
@@ -1273,11 +1273,11 @@ function turnOff($: EngineInterface) {
   state.transitions++
   state.queue = []
   stopChild()
+  // A question's input never came through a guard: its dialog settles as it
+  // would (its record, or the ask's note), and with it an async ask answered
+  // through that dialog.
   for (const r of [...state.requests.values()]) {
-    if (!r.isAsync) {
-      // An async ask answered through this dialog stays open: the dialog is
-      // withdrawn, not the ask, whose [ answer ] the person can press again.
-      state.askDialogs.delete(r.id)
+    if (!r.isAsync && !r.isQuestion) {
       settle(r, 'withdrawn', 'bridge')
     }
   }

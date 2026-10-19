@@ -4554,29 +4554,53 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(JSON.stringify(after().map((p) => p.events))).not.toContain('B output')
   })
 
-  test("going off withdraws an async ask's answer dialog but not the ask: the resync after the bridge is back on still carries it open", async () => {
+  test("going off leaves a question's dialog to settle as it does: an async ask answered through it settles answered with its winner, nothing stranded across the recovery", async () => {
     const FRUIT = { question: 'Which fruit?', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple', description: 'a' }, { label: 'Mango', description: 'm' }] }
     const h = harness()
     await h.ready()
     await h.turn('t1')
     onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })
+    // A press on the ask's [ answer ] opened this dialog.
     await h.check('toolu_plugin_9', 'AskUserQuestion', { questions: [FRUIT] })
     const answer = h.permission('AskUserQuestion', { questions: [FRUIT] })
     const poll = await h.nextPoll()
-    // A press on the ask's [ answer ] opened that dialog.
-    onAskNote({ kind: 'answered', id: 'toolu_a1', dialog: 'toolu_plugin_9' })
-    await h.settle()
     h.setMarker(LIVE_MARKER)
     await rowBeneath(h, ['doperpowers'])
     expectOff(h)
-    poll.respond(410)
+    // The person answers at the terminal; the ask mod's note follows the
+    // dialog's answer, and the engine's record of who decided follows it.
+    poll.respond(410, { reason: 'terminal' })
     await answer
+    onAskNote({ kind: 'answered', id: 'toolu_a1', dialog: 'toolu_plugin_9' })
+    await h.settle()
+    await h.recorded('toolu_plugin_9', 'user_temporary', 'accept', 'AskUserQuestion')
     await rowBeneath(h, ['doperpowers', 'devcloud'])
     expectOn(h)
     const after = await greetNewest(h, 'n1')
     const resync = after()[0]!.events.find((e) => e.type === 'resync')!
-    expect(resync.pending).toEqual([expect.objectContaining({ request: 'toolu_a1', async: true })])
-    expect(resync.settled).toEqual([expect.objectContaining({ request: 'toolu_plugin_9', outcome: 'withdrawn' })])
+    expect(resync.pending).toEqual([])
+    expect(resync.settled).toEqual([
+      expect.objectContaining({ request: 'toolu_plugin_9', winner: 'terminal', outcome: 'answered', by: 'terminal' }),
+      expect.objectContaining({ request: 'toolu_a1', winner: 'terminal', outcome: 'answered', by: 'terminal' }),
+    ])
+  })
+
+  test('going off withdraws a pending permission, whose input came through the guard', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.called('tu1', 'Bash', { command: 'ls' })
+    void h.permission('Bash', { command: 'ls' })
+    const poll = await h.nextPoll()
+    h.setMarker(LIVE_MARKER)
+    await rowBeneath(h, ['doperpowers'])
+    expectOff(h)
+    poll.respond(410)
+    await rowBeneath(h, ['doperpowers', 'devcloud'])
+    const after = await greetNewest(h, 'n1')
+    const resync = after()[0]!.events.find((e) => e.type === 'resync')!
+    expect(resync.pending).toEqual([])
+    expect(resync.settled).toEqual([expect.objectContaining({ request: 'tu1', outcome: 'withdrawn', by: 'bridge' })])
   })
 
   test('a dispatch that began before the off and reads safe does not turn the bridge back on', async () => {
