@@ -1164,6 +1164,9 @@ export function grepArgs(path: string): string[] {
   return ['grep', '-F', ...STORED_FORMS.flatMap((form) => ['-e', form]), path]
 }
 
+/** What `$.fs.read` takes whole: it refuses a file over 4 MiB. */
+const READ_LIMIT = 4 * 1024 * 1024
+
 /**
  * The async asks the transcript at `path` holds. One too large to read whole
  * (over 4 MiB) is searched for the lines that can name an ask, which carry no
@@ -1172,33 +1175,45 @@ export function grepArgs(path: string): string[] {
  * the newest asks), rebuilds nothing rather than a part, with a debug line.
  */
 async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
-  let text: string
-  try {
-    text = await $.fs.read(path)
-  } catch (error) {
-    const failed = (why: string) => {
-      $.ui.log(`ask: the transcript could not be read whole (${message(error)}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
-      return []
-    }
-    let search: Awaited<ReturnType<typeof $.process.run>>
+  // A file past what one read takes goes straight to the search: the read's
+  // refusal costs a round trip of its own, while the questions wait to draw.
+  const size = await $.fs.stat(path).then(
+    (stat) => stat.size,
+    () => undefined,
+  )
+  let text: string | undefined
+  let unread = `${size} bytes, past what one read takes`
+  if (size === undefined || size <= READ_LIMIT) {
     try {
-      search = await $.process.run(searchArgs(path)).catch(() => $.process.run(grepArgs(path)))
-    } catch (searchError) {
-      return failed(`could not be searched (${message(searchError)})`)
+      text = await $.fs.read(path)
+    } catch (error) {
+      unread = message(error)
     }
-    // 0 lines found, 1 none, anything else a failure.
-    if (search.exitCode === 1) {
-      return []
-    }
-    if (search.exitCode !== 0) {
-      return failed(`could not be searched (the search exited ${search.exitCode})`)
-    }
-    if (search.isStdoutTruncated === true) {
-      return failed('its asks run past what one search returns')
-    }
-    return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
   }
-  return rebuildAsks(text.split('\n'))
+  if (text !== undefined) {
+    return rebuildAsks(text.split('\n'))
+  }
+  const failed = (why: string) => {
+    $.ui.log(`ask: the transcript could not be read whole (${unread}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
+    return []
+  }
+  let search: Awaited<ReturnType<typeof $.process.run>>
+  try {
+    search = await $.process.run(searchArgs(path)).catch(() => $.process.run(grepArgs(path)))
+  } catch (searchError) {
+    return failed(`could not be searched (${message(searchError)})`)
+  }
+  // 0 lines found, 1 none, anything else a failure.
+  if (search.exitCode === 1) {
+    return []
+  }
+  if (search.exitCode !== 0) {
+    return failed(`could not be searched (the search exited ${search.exitCode})`)
+  }
+  if (search.isStdoutTruncated === true) {
+    return failed('its asks run past what one search returns')
+  }
+  return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
 }
 
 const ANSWER_KEY = 'ask-answer:'

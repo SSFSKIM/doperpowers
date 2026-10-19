@@ -189,6 +189,8 @@ function harness(
     run?: (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string; isStdoutTruncated: boolean }>
     /** Runs while `$.fs.stat` is awaited, before it answers. */
     whileStat?: (path: string) => void
+    /** File sizes `$.fs.stat` answers; 1 otherwise. */
+    sizes?: Record<string, number>
     /** The host's `$.state` for the session, which outlives a reload of the module: pass one harness's to the next. */
     kept?: Map<string, unknown>
   } = {},
@@ -222,7 +224,7 @@ function harness(
       // /tmp is a link to /private/tmp, as on macOS.
       stat: async (path: string, opts?: { resolve?: boolean }) => {
         options.whileStat?.(path)
-        return { kind: 'file', size: 1, mtimeMs: 0, isLink: false, ...(opts?.resolve === true && { realPath: `/private${path}` }) }
+        return { kind: 'file', size: options.sizes?.[path] ?? 1, mtimeMs: 0, isLink: false, ...(opts?.resolve === true && { realPath: `/private${path}` }) }
       },
       read: async (path: string, opts?: { as?: string }) => {
         calls.push({ op: 'fs.read', args: { path, ...opts } })
@@ -1303,6 +1305,15 @@ describe('a resumed session', () => {
     const argv = h.calls.find((c) => c.op === 'process.run')?.args as string[]
     expect(argv[0]).toBe('perl')
     expect(argv.at(-1)).toBe(T)
+  })
+
+  test('a transcript its size puts past one read is searched without a read', async () => {
+    const h = harness({ files: { [T]: lines.join('\n') }, sizes: { [T]: 5 * 1024 * 1024 }, run: async () => ({ exitCode: 0, stdout: lines.join('\n'), isStdoutTruncated: false }) })
+    await h.start()
+    await h.classicStart(T, 's', 'resume')
+    expect(asyncAsks().length).toBe(2)
+    expect(h.calls.some((c) => c.op === 'fs.read')).toBe(false)
+    expect(h.calls.some((c) => c.op === 'process.run')).toBe(true)
   })
 
   test('where perl does not start, grep searches for the same forms', async () => {
