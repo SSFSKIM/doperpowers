@@ -7882,15 +7882,14 @@ def guide_text(session, launch):
         where = "this machine's own project, since no .smns claims your launch directory, %s" % launch
     else:
         where = "the project of your launch directory, %s" % launch
-    join = [] if seat else ["  %s join <project>  when your standing work belongs to another project"
-                            " (once, not per repository you visit)" % cli]
+    join = [] if seat else ["  %s join <project>  when your directory files you in the wrong project (a scratch copy)"
+                            " or your standing work belongs to another; once, not per repository you visit" % cli]
     return "\n".join([
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project."
         % (who, project.name, enrollment()["machine"], where),
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
         "To find one or tell it something, use sminos (not on PATH):",
         "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
-        "  %s find <words>    sessions whose repository, branch, alias or in-charge line match" % cli,
         "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches only your project" % cli,
