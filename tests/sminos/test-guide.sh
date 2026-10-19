@@ -145,6 +145,11 @@ assert_equals "$OUT|$RC" "|0" "a headless or SDK run (claude -p) gets nothing"
 S6=6f000006-0000-4000-8000-000000000006
 guide "$(payload "$S6" "$REPO" "$T/none.jsonl")"
 assert_equals "$OUT|$RC" "|0" "a session the engine has not recorded gets nothing"
+S7=7a000007-0000-4000-8000-000000000007
+( sleep 0.5; record late "$S7" "$REPO" ) &
+guide "$(payload "$S7" "$REPO" "$T/none.jsonl")"
+wait
+assert_contains "$(head -1 <<<"$OUT")" "late [7a000007]" "a record the engine writes a moment after the hook starts is waited for"
 
 echo "a seat: no join line (a seat stays where it was spawned):"
 S4=4d000004-0000-4000-8000-000000000004

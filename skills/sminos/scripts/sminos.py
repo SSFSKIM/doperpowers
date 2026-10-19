@@ -27,8 +27,8 @@ member too, seat-less, from the first call that reads its project.
                    to change them.
     sminos send     <member|session name|codex thread> <msg> [--wait] [--from F]
                    # a live member: inbox socket; a stopped seat: resumed. On a machine not
-                   # enrolled, a live session in no project by its name; a codex thread (its id, or codex:<id|exact name>, through
-                   # codex's queue); --wait needs a seat.
+                   # enrolled, a live session in no project by its name; a codex thread (its id,
+                   # or codex:<id|exact name>, through codex's queue); --wait needs a seat.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
                    @short / @project/alias: delivered; @all: every live member
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
@@ -65,8 +65,9 @@ member too, seat-less, from the first call that reads its project.
                    # --hub: the project syncs through the desk hub of this machine's org, never git;
                    .smns names the org alone, each machine's enrollment the hub's URL
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
-    sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # what this machine admits
-                   from outside: read-only delivers nothing written elsewhere; the ceiling bounds a spawn
+    sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # the owner's setting: what this
+                   machine admits from outside. Read-only records what is written elsewhere and delivers
+                   none of it; the ceiling bounds a spawn. A session reports it, never changes it unasked
     sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
                    there is its name everywhere (the writer host of what it writes). The code is
                    pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
@@ -7432,6 +7433,9 @@ def cmd_join(a):
         me, target.name, now_in.name if now_in else "no project", home.name if home else "no project"))
 
 
+GUIDE_RECORD_WAIT = 1.5   # seconds the guide waits for the engine's record; the hook's bound is 10
+
+
 def guide_text(session, launch):
     """The SessionStart guidance (§9) for a session launched in `launch` on
     this enrolled machine: who it is and where its project comes from, then
@@ -7441,8 +7445,17 @@ def guide_text(session, launch):
     told nothing it is not), and no `join` for a seat, which cannot. Only
     facts the model cannot derive, and only lines the evals showed move
     behavior."""
+    global _PEERS
     project = session_project(session, launch)
     seen = _on_sight(project, session) if project is not None else None
+    # Neither a seat nor the engine's record names it yet: the engine may
+    # write the record a moment after the hook starts, so it is looked for
+    # again, briefly, before the session is left unguided for its whole run.
+    until = time.time() + GUIDE_RECORD_WAIT
+    while seen == (None, None) and time.time() < until:
+        time.sleep(0.1)
+        _PEERS = None
+        seen = _on_sight(project, session)
     if seen is None or not joinable(*seen):
         return ""
     seat, peer = seen
