@@ -168,8 +168,8 @@ SMINOS_HOME unless it names another machine or the real HOME.
 - **A5 — The bridge knows its place among the guards, per module instance.** In the rehearsal's HOME
   with `devcloud` and `sminos` enabled, if M3a promoted the probe: (a) no `prependPlugins`: after the
   session's first tool call the debug log carries a line opening `sminos: the bridge is off` naming
-  `prependPlugins` (an interactive session shows it as a toast too), the `tool` events posted before
-  it carried no `input` or `text`, and `$SMINOS_HOME/bridge/<session>.sock` serves nothing after it;
+  `prependPlugins` (an interactive session shows it as a toast too), no `tool` event was posted
+  before it (the hold is a barrier, §4), and `$SMINOS_HOME/bridge/<session>.sock` serves nothing after it;
   (b) with `prependPlugins`: the first tool call's `tool` events carry their payloads once the verdict
   is in, and the line is absent; (c) with `prependPlugins`, after `claude plugin update
   sminos@doperpowers` (a version bump in the marketplace) and `/reload-plugins`, the new module
@@ -420,9 +420,11 @@ older left behind, is no live marker (devcloud's guard), or, with no live marker
 among the enabled plugins (cua's copy acts then; read from the user settings through
 `$.settings.read`, as appeal reads them); the bridge is **safe** when
 every loaded guard has an entry beneath it, **off** when a loaded guard has none (it is outside the
-bridge). Until the first verdict the bridge posts tool events without their payloads (`input`,
-`text`, `denied` held back, the event's shape otherwise whole) and raises no permission request's
-input; a `safe` verdict releases the held payloads, an `off` verdict drops them, says why — a toast
+bridge). Until the first verdict the bridge's post queue holds a barrier at its first `tool` event:
+nothing past it is posted (a payload stripped and posted later would need a second event, a change to
+DX5), and no permission request other than a question or an async ask is raised (those go to the
+terminal unraised); a `safe` verdict posts the waiting events whole and in order, an `off` verdict
+drops them, says why — a toast
 and a debug line, `sminos: the bridge is off — sminos must load outside devcloud and cua; set
 prependPlugins in ~/.claude/settings.json to ["to-human@doperpowers", "sminos@doperpowers",
 "doperpowers@doperpowers"]` — and ends the child, so the session is unreachable from the desk for
@@ -1604,6 +1606,27 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   parts; `live-compact-offer-check` and `live-reload-rows-check` stay in `tests/mods` and stage both
   plugins. The cutover is one commit.
   Rationale: M3.1's report; each is the executor's call M3 left open, or the spirit of §3–§10.
+  Date/Author: 2026-10-19, M3.1's executor, folded by the plan's executor.
+
+- Decision (M3.2): the probe lives in `sminos/hooks/mods/bridge-place.tsx` (the pure rule) and
+  `bridge.tsx`. The first verdict's hold is a barrier in the post queue (§4), not stripped payloads.
+  `off` needs a trace that reaches the engine's entry, while `safe` does not: a trace cut short by a
+  link that answered itself (a plugin's own tool, a refused row) gives no verdict, so a placed
+  machine never turns itself off on one. A dispatch raised by a guard's own plugin gives no verdict
+  for that guard (cua's `/secret` note reaches the bridge without passing cua's hooks). When the
+  trace names both `devcloud` and `cua`, no host read is made (the placed Macs' case). A failed read
+  gives no verdict and a debug line. `off` retires the bridge before it toasts, so no later
+  `session.start` revives it. devcloud's contract is read through `import type`, appeal's form.
+  Rationale: M3.2's report; the barrier keeps DX5 unchanged, and since `session.append` fires
+  before the first `tool.call` (M3a), the barrier normally lasts until the session's first row.
+  Unobserved, for M3.3: the barrier's length after a reload made by the reload mod's
+  `$.command.run`, at a `--resume` start, and for a subagent's first call after a reload.
+  Date/Author: 2026-10-19, M3.2's executor, folded by the plan's executor.
+- Decision (M3.1, I6): the board resolver lives in `skills/issue-tracker/scripts/_sminos_cli.sh`,
+  which `_lib.sh` sources, because the dispatchers and the sweep need the CLI before they `cd` into
+  the consumer repository, where `_lib.sh` dies, and `board-gc.sh` never sources `_lib.sh`. Any
+  `SMINOS_CLI` override must point into a directory that also holds `lib.sh`, so the tests that stub
+  the CLI link the real `lib.sh` beside the stub.
   Date/Author: 2026-10-19, M3.1's executor, folded by the plan's executor.
 
 ## Outcomes & Retrospective
