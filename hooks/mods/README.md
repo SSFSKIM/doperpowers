@@ -600,6 +600,16 @@ rows read from the transcript, and the export to the host).
   the side whose answer the engine used, read from the engine's
   `tool_decision` record of the call (raised to the mod through
   `telemetry.log`), else the transcript's mark of a hook's decision.
+  A permission is raised with its call as the bridge's own `tool.call` hook
+  was handed it, never the input the engine's check and dialog hold: those
+  come after every `tool.call` hook beneath, where devcloud's secrets guard
+  restores its handles to the values, and an allow hands no input back, so
+  the values stay on the machine and the request's digest is over the handle
+  form end to end. That holds with doperpowers seated outside devcloud
+  (`prependPlugins`); seated inside it, the bridge is handed the restored
+  call, and its events and raises carry what it was handed. A permission for
+  a call the bridge did not see stays the terminal's. A question is raised as
+  the engine gave it (the ask mod widens its dialog's beneath the bridge).
 - **Messages to the host.** The main loop's rows that may carry one — a text
   row with a mark, an async ask with its result, a row that may answer one
   (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
