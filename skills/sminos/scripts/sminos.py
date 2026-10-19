@@ -3303,13 +3303,18 @@ def cmd_chat(a):
 # export appends nothing.
 
 HOST_KINDS = ("message", "question", "answered")
-ASK_TOOL = "mcp__doperpowers__AskUserQuestion"
+# The ask tool's names a transcript may hold (hooks/mods/ask.tsx ASK_TOOLS):
+# the sminos plugin's, where it moves, and the doperpowers plugin's, where it
+# was first. Sessions are resumed and copied across the move: read either.
+ASK_TOOLS = ("mcp__sminos__AskUserQuestion", "mcp__doperpowers__AskUserQuestion")
 # What the tool returns for an async call it accepted (hooks/mods/ask.tsx).
 ASYNC_RESULT = ("Your questions are waiting for the human; this call does not wait for them. Their answer will "
                 "reach you in a later message that quotes each question. Go on with work that does not depend on it.")
 # A delivery of the human's answer, in whichever row the engine stored it.
 DELIVERY_RE = re.compile(r"The human responded to your async AskUserQuestion \(call ([^)\s]+)\): ")
-PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
+# The engine's framing before a prompt the ask's plugin submitted, under
+# either plugin's name (ask.tsx PLUGIN_PROMPTS).
+PLUGIN_PROMPTS = ("The sminos plugin sent a message:\n", "The doperpowers plugin sent a message:\n")
 # The engine's framing after the text of a prompt a plugin submitted.
 PLUGIN_FRAMING = "\n\nThis is how Claude Code surfaces a prompt a plugin submits"
 # MAWS's ask tool, which a session under MAWS asks through instead (MAWS owns
@@ -3364,7 +3369,7 @@ def _delivery_texts(record):
     if record.get("type") != "user":
         return []
     return [t for t in (b.get("text") for b in _blocks(record, "text"))
-            if isinstance(t, str) and t.startswith(PLUGIN_PROMPT)]
+            if isinstance(t, str) and t.startswith(PLUGIN_PROMPTS)]
 
 
 def _deliveries(text):
@@ -3449,7 +3454,7 @@ def _ask_events(records):
         for b in _blocks(r, "tool_use"):
             inp, name = b.get("input"), b.get("name")
             if isinstance(inp, dict) and b.get("id") and (
-                    (name == ASK_TOOL and inp.get("async") is True) or (name == MAWS_ASK_TOOL and inp.get("blocking") is False)):
+                    (name in ASK_TOOLS and inp.get("async") is True) or (name == MAWS_ASK_TOOL and inp.get("blocking") is False)):
                 calls.append((i, str(b["id"]), name, inp))
         for b in _blocks(r, "tool_result"):
             results[str(b.get("tool_use_id") or "")] = b
@@ -3804,7 +3809,7 @@ def export_host(project, session, tpath, alias):
         new, pending = None, set()
         for at, r in records:
             for b in _blocks(r, "tool_use"):
-                if b.get("name") in (ASK_TOOL, MAWS_ASK_TOOL) and b.get("id"):
+                if b.get("name") in (*ASK_TOOLS, MAWS_ASK_TOOL) and b.get("id"):
                     pending.add(str(b["id"]))
             for b in _blocks(r, "tool_result"):
                 pending.discard(str(b.get("tool_use_id") or ""))

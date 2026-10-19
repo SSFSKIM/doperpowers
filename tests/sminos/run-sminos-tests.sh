@@ -4507,21 +4507,22 @@ elif kind == "asst":
 elif kind == "peer":
     rec = {"type": "user", "origin": {"kind": "peer", "name": "other"}, "message": {"role": "user", "content":
            '<cross-session-message from="uds:/tmp/x.sock" from-name="other">\n%s\n</cross-session-message>' % args[1]}}
-elif kind == "ask":   # uuid call async|blocking|native questions-json
+elif kind == "ask":   # uuid call async|blocking|native questions-json [tool name]
     inp = {"questions": json.loads(args[3])}
     if args[2] != "native":
         inp["async"] = args[2] == "async"
     rec = {"type": "assistant", "message": {"role": "assistant", "content": [
-        {"type": "tool_use", "id": args[1], "name": "AskUserQuestion" if args[2] == "native" else ASK, "input": inp}]}}
+        {"type": "tool_use", "id": args[1], "name": "AskUserQuestion" if args[2] == "native" else (args[4] if len(args) > 4 else ASK), "input": inp}]}}
 elif kind == "result":   # uuid call text|ASYNC
     rec = {"type": "user", "message": {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": args[1], "content": ASYNC_RESULT if args[2] == "ASYNC" else args[2]}]}}
 elif kind == "deliver-att":
     rec = {"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [HEAD % (args[1], args[2])],
                                                 "hookName": "tool.call", "hookEvent": "PostToolUse"}}
-elif kind == "deliver-prompt":
-    rec = {"type": "user", "origin": {"kind": "plugin", "name": "doperpowers"}, "message": {"role": "user", "content":
-           "The doperpowers plugin sent a message:\n" + HEAD % (args[1], args[2]) + "\n\nThis is how Claude Code "
+elif kind == "deliver-prompt":   # uuid call text [plugin that submitted it]
+    plugin = args[3] if len(args) > 3 else "doperpowers"
+    rec = {"type": "user", "origin": {"kind": "plugin", "name": plugin}, "message": {"role": "user", "content":
+           "The %s plugin sent a message:\n" % plugin + HEAD % (args[1], args[2]) + "\n\nThis is how Claude Code "
            "surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. "
            "Address the message above."}}
 elif kind == "asst-part":   # uuid message-id thinking|text text: one block of a message the harness writes per block
@@ -4661,6 +4662,26 @@ hook_run Stop "$HA" "$R3" "$TA"
 assert_contains "$(grep '"src": "toolu_async2"' "$HPLOG/testhost.$HA.jsonl" | grep answered)" '=\"Postgres\". You can now continue with these answers in mind."' \
   "a plugin-submitted delivery records its answer without the engine's framing"
 assert_equals "$(grep -c 'This is how Claude Code' "$HPLOG/testhost.$HA.jsonl" || true)" "0" "the framing is not part of it"
+# The ask moves from the doperpowers plugin to sminos, so a transcript holds
+# its calls and its deliveries under either plugin's name: each pairing exports.
+tx "$TA" ask a3100001 toolu_old_name async "$Q1" mcp__doperpowers__AskUserQuestion
+tx "$TA" result a3100002 toolu_old_name ASYNC
+tx "$TA" ask a3100003 toolu_new_name async "$Q1" mcp__sminos__AskUserQuestion
+tx "$TA" result a3100004 toolu_new_name ASYNC
+tx "$TA" ask a3100005 toolu_other_frame async "$Q1" mcp__sminos__AskUserQuestion
+tx "$TA" result a3100006 toolu_other_frame ASYNC
+tx "$TA" asst a3100007 "Asked three times."
+tx "$TA" deliver-prompt a3100008 toolu_old_name 'Your questions have been answered: "Which backend?"="SQLite".' sminos
+tx "$TA" deliver-prompt a3100009 toolu_new_name 'Your questions have been answered: "Which backend?"="Postgres".' doperpowers
+tx "$TA" deliver-prompt a310000a toolu_other_frame 'Your questions have been answered: "Which backend?"="Neither".' cua
+tx "$TA" asst a310000b "Taking two."
+hook_run Stop "$HA" "$R3" "$TA"
+for event in question:toolu_old_name answered:toolu_old_name question:toolu_new_name answered:toolu_new_name; do
+  assert_contains "$(hp_events "$HA")" "$event " "an async ask under either tool name, answered under either plugin's framing, records its question and its answer ($event)"
+done
+assert_contains "$(grep '"src": "toolu_old_name"' "$HPLOG/testhost.$HA.jsonl" | grep answered)" '=\"SQLite\"."' "the sminos framing's answer is the text after it"
+assert_contains "$(hp_events "$HA")" "question:toolu_other_frame " "an ask whose delivery came under another plugin's framing records its question"
+assert_not_contains "$(hp_events "$HA")" "answered:toolu_other_frame" "and no answer: another plugin's prompt carrying a delivery is not the ask's"
 # A copy of the session (a resume the engine starts under a new id, source
 # fork) starts with its transcript unwritten; with its first row the engine
 # writes there the conversation it copied, the original's records with their

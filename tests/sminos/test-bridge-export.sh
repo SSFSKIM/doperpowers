@@ -143,14 +143,17 @@ Q = [{"question": "Which backend?", "header": "Backend", "multiSelect": False,
 def text(uuid, t):
     return {"type": "assistant", "uuid": uuid, "message": {"content": [{"type": "text", "text": t}]}}
 
-def ask(uuid, call, is_async):
+def ask(uuid, call, is_async, name=ASK):
     return {"type": "assistant", "uuid": uuid, "message": {"content": [
-        {"type": "tool_use", "id": call, "name": ASK, "input": {"questions": Q, "async": is_async}}]}}
+        {"type": "tool_use", "id": call, "name": name, "input": {"questions": Q, "async": is_async}}]}}
 
 def result(uuid, call, t=ASYNC_RESULT):
     return {"type": "user", "uuid": uuid, "message": {"content": [{"type": "tool_result", "tool_use_id": call, "content": t}]}}
 
 PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
+# The tool and its framing under the plugin the ask moves to.
+SMINOS_ASK = "mcp__sminos__AskUserQuestion"
+SMINOS_PROMPT = "The sminos plugin sent a message:\n"
 PLUGIN_FRAMING = ("\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn "
                   "in the user's place. Address the message above.")
 
@@ -179,6 +182,17 @@ ROWS = {
         {"type": "user", "uuid": "a3", "origin": {"kind": "human"}, "message": {"content": [{"type": "text", "text": steer("toolu_ex_maws")}]}},
         {"type": "attachment", "uuid": "a4", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": steer("toolu_ex_mid"),
                                                             "origin": {"kind": "human"}}},
+    ],
+    # An ask under the sminos plugin's name answered under its framing, and
+    # one under doperpowers' answered under sminos's: a session resumed across
+    # the move holds both.
+    "renamed": [
+        ask("r1", "toolu_ex_sminos", True, SMINOS_ASK), result("r2", "toolu_ex_sminos"),
+        ask("r3", "toolu_ex_crossed", True), result("r4", "toolu_ex_crossed"),
+        {"type": "user", "uuid": "r5", "origin": {"kind": "plugin", "name": "sminos"},
+         "message": {"content": [{"type": "text", "text": SMINOS_PROMPT + delivery("toolu_ex_sminos") + PLUGIN_FRAMING}]}},
+        {"type": "user", "uuid": "r6", "origin": {"kind": "plugin", "name": "sminos"},
+         "message": {"content": [{"type": "text", "text": SMINOS_PROMPT + delivery("toolu_ex_crossed") + PLUGIN_FRAMING}]}},
     ],
     # The human's mid-turn message quoting a steer, which the mod hands over whole.
     "quoted": [
@@ -344,6 +358,18 @@ done
 assert_equals "$same_texts" yes "and with the texts the bridge's export logged"
 "$SMINOS" chat exdemo --host > "$T/host" 2>&1 || true
 assert_contains "$(cat "$T/host")" "exa: first to the host" "chat --host prints what the bridge exported"
+
+echo "the ask under either plugin's name:"
+SG=5b000001-0000-4000-8000-0000000000e9
+peer "$SG" exboth interactive cli
+start_child "$SG"
+ctl post "$SMINOS_HOME/bridge/$SG.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SG\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SG.sock" "$(rows export renamed)" >/dev/null
+until_true 100 has "$SG" "answered:toolu_ex_crossed" || true
+assert_equals "$(events_of "$SG")" "joined question:toolu_ex_sminos question:toolu_ex_crossed answered:toolu_ex_sminos answered:toolu_ex_crossed" \
+  "an ask under the sminos plugin's name, and one under doperpowers' answered under sminos's framing, each export a question and its answer"
+assert_equals "$(text_of "$SG" answered toolu_ex_sminos)" 'The user answered: "Which backend?"="Postgres".' \
+  "the answer under the sminos framing is the engine's result text, without the framing"
 
 echo "a recovery resync (the first post lost):"
 # The mod's first post, [session start, resync], never reached the child; its

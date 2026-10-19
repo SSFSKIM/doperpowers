@@ -20,6 +20,7 @@ tier('user')
 
 const CACHE = '/h/.claude/plugins/cache'
 const FILE = '/h/.claude/plugins/installed_plugins.json'
+const FETCH_LOCK = '/h/.claude/autoreload/fetch.lock'
 const at = (plugin: string, version: string) => `${CACHE}/dp/${plugin}/${version}`
 const user = (plugin: string, version: string): InstallRecord => ({ scope: 'user', installPath: at(plugin, version), version })
 
@@ -104,12 +105,22 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
     isDialogUp: false,
     isTurnRunning: false,
     answer: (): Promise<{ text?: string }> => Promise.resolve({ text: 'Reloaded: 4 plugins · 30 skills' }),
+    /** When the machine's fetch took its lock; undefined while no fetch holds it. */
+    lockedAt: undefined as number | undefined,
   }
   const reloader = createReloader(
     {
-      stat: async () => ({ mtimeMs: mtime }),
+      stat: async (path) => {
+        if (path !== FETCH_LOCK) {
+          return { mtimeMs: mtime }
+        }
+        if (state.lockedAt === undefined) {
+          throw new Error(`ENOENT: ${path}`)
+        }
+        return { mtimeMs: state.lockedAt }
+      },
       read: async () => JSON.stringify({ version: 2, plugins }),
-      exists: async (path) => existing.has(path),
+      exists: async (path) => (path === FETCH_LOCK ? state.lockedAt !== undefined : existing.has(path)),
       enabled: async () => new Set(options.enabled ?? Object.keys(plugins)),
       reload: () => (calls.push({ op: 'reload' }), state.answer()),
       isAskDialogUp: () => state.isDialogUp,
@@ -118,7 +129,7 @@ function harness(options: { root?: string; enabled?: string[]; records?: Record<
       toast: (text) => calls.push({ op: 'toast', text }),
       log: (text, to) => calls.push({ op: `log:${to}`, text }),
     },
-    { file: FILE, cacheDir: CACHE, cwd: '/w', self: { name: 'doperpowers', root: options.root ?? at('doperpowers', '7.1.0') } },
+    { file: FILE, cacheDir: CACHE, fetchLock: FETCH_LOCK, cwd: '/w', self: { name: 'doperpowers', root: options.root ?? at('doperpowers', '7.1.0') } },
   )
   const install = (key: string, version: string) => {
     const plugin = key.split('@')[0] as string
@@ -200,6 +211,31 @@ describe('createReloader', () => {
     expect(h.reloads()).toBe(0)
     h.state.isTurnRunning = false
     await h.ticks(1)
+    expect(h.reloads()).toBe(1)
+  })
+
+  test("the machine's fetch holding its lock holds the reload, so a batch it is installing and updating reloads once, at its end", async () => {
+    const h = harness()
+    await h.reloader.start()
+    h.state.lockedAt = h.state.clock
+    h.install('doperpowers@dp', '7.2.0')
+    await h.ticks(3)
+    h.install('to-human@dp', '0.2.0')
+    await h.ticks(3)
+    expect(h.reloads()).toBe(0)
+    h.state.lockedAt = undefined
+    await h.ticks(1)
+    expect(h.reloads()).toBe(1)
+    expect(h.calls.find((c) => c.op === 'toast')?.text).toBe('doperpowers 7.1.0 → 7.2.0, to-human 0.1.0 → 0.2.0: reloading plugins once the session is idle')
+  })
+
+  test('a fetch lock past its stale age, left by a session that died holding it, holds nothing', async () => {
+    const h = harness()
+    await h.reloader.start()
+    h.state.lockedAt = h.state.clock
+    h.state.clock += LOCK_STALE_MS + 1
+    h.install('to-human@dp', '0.2.0')
+    await h.ticks(2)
     expect(h.reloads()).toBe(1)
   })
 
@@ -291,13 +327,24 @@ describe('autoUpdating', () => {
  * clone's, the mtimes of the stamp and the lock, and every command run
  * written down.
  */
-function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
+function fetchHarness(
+  options: {
+    remote?: string
+    enabled?: string[]
+    /** The clone's files, by path inside it, as JSON; one not named is missing. */
+    clone?: Record<string, unknown>
+    /** Install records beside the default ones. */
+    records?: Record<string, InstallRecord[]>
+  } = {},
+) {
   const PLUGINS = '/h/.claude/plugins'
   const STATE = '/h/.claude/autoreload'
-  const state = { clock: 1_000_000_000, remote: options.remote ?? 'b'.repeat(40), failing: '' }
+  const CLONE = `${PLUGINS}/marketplaces/dp`
+  const state = { clock: 1_000_000_000, remote: options.remote ?? 'b'.repeat(40), local: 'a'.repeat(40), failing: '' }
   const files = new Map<string, number>()
   const runs: string[] = []
-  const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: `${PLUGINS}/marketplaces/dp`, autoUpdate: true } }
+  const logs: string[] = []
+  const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true } }
   const installed = {
     version: 2,
     plugins: {
@@ -305,7 +352,8 @@ function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
       'to-human@dp': [user('to-human', '0.1.0')],
       'old@dp': [{ scope: 'project', projectPath: '/r', installPath: '/x', version: '1' }],
       'other@else': [user('other', '1')],
-    },
+      ...options.records,
+    } as Record<string, InstallRecord[]>,
   }
   const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' })
   const fetcher = createFetcher(
@@ -317,7 +365,16 @@ function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
         }
         return { mtimeMs: mtime }
       },
-      read: async (path) => JSON.stringify(path.endsWith('known_marketplaces.json') ? known : installed),
+      read: async (path) => {
+        if (path.startsWith(`${CLONE}/`)) {
+          const file = options.clone?.[path.slice(CLONE.length + 1)]
+          if (file === undefined) {
+            throw new Error(`ENOENT: ${path}`)
+          }
+          return JSON.stringify(file)
+        }
+        return JSON.stringify(path.endsWith('known_marketplaces.json') ? known : installed)
+      },
       write: async (path) => void files.set(path, state.clock),
       run: async (argv) => {
         const line = argv.join(' ')
@@ -339,19 +396,106 @@ function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
           return ok(`${state.remote}\tHEAD\n`)
         }
         if (argv[3] === 'rev-parse') {
-          return ok(`${'a'.repeat(40)}\n`)
+          return ok(`${state.local}\n`)
+        }
+        // The marketplace's update brings the clone to the remote's head; an install records the plugin.
+        if (line.startsWith('claude plugin marketplace update')) {
+          state.local = state.remote
+        }
+        if (line.startsWith('claude plugin install ')) {
+          const key = argv[3] as string
+          installed.plugins[key] = [user(key.split('@')[0] as string, 'new')]
         }
         return ok()
       },
-      enabled: async () => new Set(options.enabled ?? ['doperpowers@dp', 'to-human@dp', 'old@dp', 'other@else']),
+      enabled: async () => new Set(options.enabled ?? ['doperpowers@dp', 'to-human@dp', 'old@dp', 'other@else', ...Object.keys(options.records ?? {})]),
       now: () => state.clock,
-      log: () => {},
+      log: (text) => void logs.push(text),
     },
     { plugins: PLUGINS, state: STATE },
   )
   const claude = () => runs.filter((r) => r.startsWith('claude '))
-  return { fetcher, state, files, runs, claude, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp` }
+  return { fetcher, state, files, runs, logs, claude, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp` }
 }
+
+/**
+ * A marketplace's clone as the engine checks it out: its marketplace.json,
+ * and each plugin with a folder of the clone its manifest there. A plugin
+ * from a url (ci-kit's) has no manifest in the clone.
+ */
+function cloneOf(plugins: Record<string, { version?: string; dependencies?: string[]; url?: string }>) {
+  const sourceOf = (name: string) => (name === 'doperpowers' ? './' : `./${name}`)
+  const files: Record<string, unknown> = {
+    '.claude-plugin/marketplace.json': {
+      name: 'dp',
+      plugins: Object.entries(plugins).map(([name, p]) => ({ name, source: p.url !== undefined ? { source: 'url', url: p.url } : sourceOf(name) })),
+    },
+  }
+  for (const [name, p] of Object.entries(plugins)) {
+    if (p.url === undefined) {
+      files[`${name === 'doperpowers' ? '' : `${name}/`}.claude-plugin/plugin.json`] = { name, ...(p.version !== undefined && { version: p.version }), ...(p.dependencies && { dependencies: p.dependencies }) }
+    }
+  }
+  return files
+}
+
+describe('createFetcher: the plugins behind their clone', () => {
+  const CI_KIT = { 'ci-kit@dp': [user('ci-kit', '892fccaa4429')] }
+  const IN_PLACE = 'a'.repeat(40)
+
+  test("a plugin behind its clone's manifest is updated though the remote's head has not moved; one at it, or one the clone holds no manifest of, is not", async () => {
+    const h = fetchHarness({ remote: IN_PLACE, records: CI_KIT, clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.1.0' }, 'ci-kit': { url: 'https://x/ci-kit.git' } }) })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin update doperpowers@dp --scope user'])
+  })
+
+  test('a clone whose head is in place and whose versions match applies nothing', async () => {
+    const h = fetchHarness({ remote: IN_PLACE, records: CI_KIT, clone: cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.1.0' }, 'ci-kit': { url: 'https://x/ci-kit.git' } }) })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual([])
+  })
+
+  test('a dependency the clone names that is not installed is installed first, then the plugins behind are updated, one the clone cannot tell on a moved head too', async () => {
+    const clone = cloneOf({
+      doperpowers: { version: '7.2.0' },
+      'to-human': { version: '0.2.0', dependencies: ['sminos', 'doperpowers'] },
+      sminos: { version: '1.0.0' },
+      'ci-kit': { url: 'https://x/ci-kit.git' },
+    })
+    const h = fetchHarness({ records: CI_KIT, clone })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual([
+      'claude plugin marketplace update dp',
+      'claude plugin install sminos@dp --scope user',
+      'claude plugin update doperpowers@dp --scope user',
+      'claude plugin update to-human@dp --scope user',
+      'claude plugin update ci-kit@dp --scope user',
+    ])
+  })
+
+  test("a dependency that cannot be installed applies nothing, and the next fetch, the head in place but the version still behind, tries again", async () => {
+    const clone = cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] }, sminos: { version: '1.0.0' } })
+    const h = fetchHarness({ clone })
+    h.state.failing = 'claude plugin install'
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin marketplace update dp', 'claude plugin install sminos@dp --scope user'])
+    expect(h.logs.some((line) => line.includes('sminos@dp') && line.includes('no plugin'))).toBe(true)
+    h.state.failing = ''
+    h.state.clock += FETCH_MS
+    await h.fetcher.tick()
+    expect(h.claude().slice(2)).toEqual([
+      'claude plugin install sminos@dp --scope user',
+      'claude plugin update doperpowers@dp --scope user',
+      'claude plugin update to-human@dp --scope user',
+    ])
+  })
+
+  test("a dependency in another marketplace is installed under that marketplace's name", async () => {
+    const h = fetchHarness({ remote: IN_PLACE, clone: cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.2.0', dependencies: ['tool@else'] } }) })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin install tool@else --scope user', 'claude plugin update to-human@dp --scope user'])
+  })
+})
 
 describe('createFetcher', () => {
   test('a moved remote updates the marketplace, then each enabled plugin installed from it at user scope', async () => {
@@ -382,7 +526,7 @@ describe('createFetcher', () => {
     expect(h.runs.length).toBe(once)
     h.state.clock += 1
     await h.fetcher.tick()
-    expect(h.claude().filter((r) => r.includes('marketplace update'))).toHaveLength(2)
+    expect(h.runs.filter((r) => r.includes('ls-remote'))).toHaveLength(2)
   })
 
   test('a lock another session holds is left alone; one past the stale age is cleared for the next look', async () => {

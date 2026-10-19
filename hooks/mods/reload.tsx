@@ -172,6 +172,8 @@ export type ReloadWhere = {
   file: string
   /** The plugin cache, where an installed plugin runs from. */
   cacheDir: string
+  /** The machine's fetch's lock (`createFetcher`), held while it installs and updates plugins. */
+  fetchLock: string
   cwd: string
   /** This plugin: its manifest name and the directory it runs from. */
   self: { name: string; root: string }
@@ -227,6 +229,20 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
     )
   }
 
+  /**
+   * The machine's fetch is installing and updating a batch of plugins: the
+   * file moves at each, maybe more than a period apart, and a reload in
+   * between would load the batch half applied. A lock past its stale age
+   * was left by a session that died holding it.
+   */
+  async function isFetching(): Promise<boolean> {
+    try {
+      return io.now() - (await io.stat(where.fetchLock)).mtimeMs < LOCK_STALE_MS
+    } catch {
+      return false
+    }
+  }
+
   async function step() {
     const { mtimeMs } = await io.stat(where.file)
     if (mtimeMs !== seen) {
@@ -243,8 +259,9 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
     // Only while the session is idle, where the reload runs at once: queued
     // during a turn, it would run at the turn's end, ahead of a compaction
     // the model asked for at that end, which then fails. The ask mod keeps
-    // its open questions across the reload, but not a dialog it has up.
-    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning()) {
+    // its open questions across the reload, but not a dialog it has up. And
+    // not while the machine's fetch is mid-batch, so a roll reloads once.
+    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning() || (await isFetching())) {
       return
     }
     fire(mtimeMs, due.changes, due.next)
@@ -294,9 +311,11 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
  * process, so a machine whose sessions run on gets nothing new until a session
  * starts or someone rolls it. One session per machine at a time, at most every
  * FETCH_MS and not while another actor rolls, asks each such marketplace's
- * remote for its head and, where it moved, updates the marketplace and the
- * enabled plugins installed from it at user scope; the watch above then
- * reloads every session on the machine.
+ * remote for its head and, where it moved, updates the marketplace; then,
+ * moved or not, updates the enabled plugins installed from it at user scope
+ * whose version is not their manifest's in the clone, having first installed
+ * every plugin their manifests depend on that is not installed. The watch
+ * above then reloads every session on the machine, once the batch is done.
  */
 export const FETCH_MS = 5 * 60_000
 /** A lock older than this was left by a session that died holding it. */
@@ -305,6 +324,44 @@ export const LOCK_STALE_MS = 30 * 60_000
 export const ROLLING_MS = 60_000
 
 export type Marketplace = { name: string; url: string; ref: string; clone: string }
+
+/** A plugin as a marketplace's clone holds it: the version its manifest names, and the plugins it depends on, by key. */
+export type CloneManifest = { version?: string; dependencies: string[] }
+
+/**
+ * The manifests a marketplace's clone holds, by plugin key: each plugin its
+ * marketplace.json lists from a folder of the clone. A plugin from elsewhere
+ * (a url) has none there, nor one whose manifest does not read. A dependency
+ * named without a marketplace is of the dependent's, as the engine reads it.
+ */
+export async function cloneManifests(m: Marketplace, read: (path: string) => Promise<string>): Promise<Map<string, CloneManifest>> {
+  const parsed = async (path: string): Promise<Record<string, unknown> | undefined> => {
+    try {
+      const data: unknown = JSON.parse(await read(path))
+      return isRecord(data) ? data : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const manifests = new Map<string, CloneManifest>()
+  const listing = await parsed(`${m.clone}/.claude-plugin/marketplace.json`)
+  for (const entry of Array.isArray(listing?.plugins) ? listing.plugins : []) {
+    if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.source !== 'string') {
+      continue
+    }
+    const folder = entry.source.replace(/^\.\/?/, '').replace(/\/+$/, '')
+    const manifest = await parsed(`${m.clone}${folder === '' ? '' : `/${folder}`}/.claude-plugin/plugin.json`)
+    if (manifest === undefined) {
+      continue
+    }
+    const version = text(manifest.version)
+    const dependencies = (Array.isArray(manifest.dependencies) ? manifest.dependencies : [])
+      .filter((dependency): dependency is string => typeof dependency === 'string')
+      .map((dependency) => (dependency.includes('@') ? dependency : `${dependency}@${m.name}`))
+    manifests.set(`${entry.name}@${m.name}`, { ...(version !== undefined && { version }), dependencies })
+  }
+  return manifests
+}
 
 /** The marketplaces known_marketplaces.json marks `autoUpdate` that come from a git remote, but none whose url or ref git would read as an option. */
 export function autoUpdating(source: string): Marketplace[] {
@@ -392,7 +449,12 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     return false
   }
 
-  /** One marketplace: nothing when its clone is at the remote's head, else the marketplace and then its plugins updated. */
+  /**
+   * One marketplace: updated where its clone is behind the remote's head;
+   * then its enabled plugins behind the clone, each dependency they name
+   * installed first. A dependency that will not install applies nothing,
+   * and the next fetch tries again, the plugins being behind still.
+   */
   async function fetchOne(m: Marketplace, installed: Installed, enabled: ReadonlySet<string>) {
     const remote = await io.run(['git', 'ls-remote', '--', m.url, m.ref], 30_000)
     const head = remote.exitCode === 0 ? firstLine(remote.stdout).split(/\s/)[0] : undefined
@@ -401,16 +463,36 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
       return
     }
     const local = await io.run(['git', '-C', m.clone, 'rev-parse', 'HEAD'], 10_000)
-    if (local.exitCode === 0 && local.stdout.trim() === head) {
-      return
-    }
-    const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], 120_000)
-    if (refreshed.exitCode !== 0) {
-      io.log(`reload: ${m.name}: the marketplace did not update (${firstLine(refreshed.stderr) || firstLine(refreshed.stdout)})`)
-      return
+    const isMoved = local.exitCode !== 0 || local.stdout.trim() !== head
+    if (isMoved) {
+      const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], 120_000)
+      if (refreshed.exitCode !== 0) {
+        io.log(`reload: ${m.name}: the marketplace did not update (${firstLine(refreshed.stderr) || firstLine(refreshed.stdout)})`)
+        return
+      }
     }
     const keys = Object.keys(installed).filter((key) => key.endsWith(`@${m.name}`) && enabled.has(key) && installed[key]?.some((r) => r.scope === 'user'))
-    for (const key of keys) {
+    const manifests = await cloneManifests(m, io.read)
+    // A plugin whose version the clone does not tell (one from a url) is
+    // updated when the head moved, as every plugin once was.
+    const behind = keys.filter((key) => {
+      const version = manifests.get(key)?.version
+      return version === undefined ? isMoved : installed[key]?.find((r) => r.scope === 'user')?.version !== version
+    })
+    if (behind.length === 0) {
+      return
+    }
+    const isInstalled = (key: string) => installed[key]?.some((r) => r.scope === 'user' || r.scope === 'managed') === true
+    const missing = [...new Set(keys.flatMap((key) => manifests.get(key)?.dependencies ?? []))].filter((key) => !isInstalled(key))
+    for (const key of missing) {
+      const added = await io.run(['claude', 'plugin', 'install', key, '--scope', 'user'], 120_000)
+      if (added.exitCode !== 0) {
+        io.log(`reload: ${m.name}: ${key}, which its plugins depend on, did not install (${lastLine(added.stderr) || lastLine(added.stdout) || `exit ${added.exitCode}`}); no plugin is updated until a later fetch installs it`)
+        return
+      }
+      io.log(`reload: ${key}: installed, as ${m.name}'s plugins depend on it`)
+    }
+    for (const key of behind) {
       const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', 'user'], 120_000)
       // The outcome is the CLI's last line, after its "Checking for updates…".
       io.log(`reload: ${key}: ${lastLine(updated.stdout) || lastLine(updated.stderr) || `exit ${updated.exitCode}`}`)
@@ -516,7 +598,7 @@ export function registerReload(on: On) {
         toast: (line) => $.ui.toast(line, { timeoutMs: 8000 }),
         log: (line, to) => $.ui.log(line, { to }),
       },
-      { file: `${plugins}/installed_plugins.json`, cacheDir: `${plugins}/cache`, cwd: e.cwd, self: { name: $.plugin.name, root: $.plugin.root } },
+      { file: `${plugins}/installed_plugins.json`, cacheDir: `${plugins}/cache`, fetchLock: `${config}/autoreload/fetch.lock`, cwd: e.cwd, self: { name: $.plugin.name, root: $.plugin.root } },
     )
     void reloader.start().then(
       () => $.clock.every(POLL_MS, () => void reloader.tick()),
