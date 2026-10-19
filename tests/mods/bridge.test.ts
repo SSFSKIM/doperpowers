@@ -159,6 +159,8 @@ function harness(
   const requests: (typeof conversation)[] = []
   /** The turns `$.turn.abort` cancelled. */
   const aborted = new Set<string>()
+  /** The calls `called` keeps running, each ended by the test or by an abort. */
+  const running: ((result: Record<string, unknown>) => void)[] = []
   /** Files `$.fs.read` reads (the session's transcripts). */
   const files: Record<string, string> = {}
   /** Each loop's rows on disk, as the child's GET /rows reads them; and the reads made. */
@@ -221,6 +223,10 @@ function harness(
           throw new Error(`$.turn.abort: ${args.turnId} is already ending`)
         }
         aborted.add(args.turnId)
+        // As the engine's abort ends the turn's running calls.
+        for (const end of running.splice(0)) {
+          end({ text: 'Interrupted by user', isError: true })
+        }
       },
     },
     tool: {
@@ -386,6 +392,27 @@ function harness(
   /** The engine's permission check for a call, answered `decision` beneath (ask: the dialog). */
   const check = async (toolUseId: string, tool: string, input: unknown, agentId?: string, decision = 'ask') =>
     hook('tool.check', { tool })(engine, { tool, input, tool_use_id: toolUseId, ...(agentId !== undefined && { agentId }) }, async () => ({ decision }))
+  /**
+   * A call as the model made it, through the bridge's tool.call hook, put to
+   * the dialog by the engine's check beneath it, which holds `checked` (the
+   * call's own input unless a hook beneath rewrote it). It runs on, as a call
+   * does while its dialog is up, until `end` or an abort.
+   */
+  const called = async (toolUseId: string, tool: string, input: Record<string, unknown>, agentId?: string, checked: unknown = input) => {
+    let end: (result: Record<string, unknown>) => void = () => undefined
+    const ran = hook('tool.call', { tool })(engine, { tool, tool_use_id: toolUseId, ...input, ...(agentId !== undefined && { agentId }) }, async () => {
+      await check(toolUseId, tool, checked, agentId)
+      return new Promise((resolve) => running.push((end = resolve)))
+    }) as Promise<Record<string, unknown>>
+    await settle()
+    return {
+      ran,
+      end: (result: Record<string, unknown> = { text: 'done' }) => {
+        end(result)
+        return ran
+      },
+    }
+  }
   /** The classic PermissionRequest hooks for a call; the settings hooks beneath answer `beneath`. */
   const permission = (tool: string, input: unknown, agentId?: string, beneath: Record<string, unknown> = {}) =>
     hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
@@ -450,6 +477,7 @@ function harness(
       return release
     },
     check,
+    called,
     permission,
     append,
     responseRow,
@@ -2699,7 +2727,7 @@ describe('requests from outside: a permission prompt', () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
-    await h.check('toolu_1', 'Bash', INPUT)
+    await h.called('toolu_1', 'Bash', INPUT)
     const answer = h.permission('Bash', INPUT)
     const poll = await h.nextPoll()
     return { h, answer, poll }
@@ -2847,7 +2875,7 @@ describe('requests from outside: a permission prompt', () => {
   test('the settings hooks beneath deciding: nothing is raised, their answer stands', async () => {
     const h = harness()
     await h.ready()
-    await h.check('toolu_1', 'Bash', INPUT)
+    await h.called('toolu_1', 'Bash', INPUT)
     expect(await h.permission('Bash', INPUT, undefined, { decision: { behavior: 'deny', message: 'policy' } })).toEqual({ decision: { behavior: 'deny', message: 'policy' } })
     expect(h.ofType('raised')).toEqual([])
     expect(h.polls).toEqual([])
@@ -2857,9 +2885,9 @@ describe('requests from outside: a permission prompt', () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
-    await h.check('toolu_1', 'Bash', INPUT)
+    await h.called('toolu_1', 'Bash', INPUT)
     await h.permission('Bash', INPUT, undefined, { decision: { behavior: 'allow' } })
-    await h.check('toolu_2', 'Bash', INPUT)
+    await h.called('toolu_2', 'Bash', INPUT)
     const answer = h.permission('Bash', INPUT)
     const poll = await h.nextPoll()
     expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_2' })])
@@ -2874,9 +2902,9 @@ describe('requests from outside: a permission prompt', () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
-    await h.check('toolu_1', 'Bash', INPUT)
+    await h.called('toolu_1', 'Bash', INPUT)
     await h.recorded('toolu_1', 'config')
-    await h.check('toolu_2', 'Bash', INPUT)
+    await h.called('toolu_2', 'Bash', INPUT)
     void h.permission('Bash', INPUT)
     ;(await h.nextPoll()).respond(410, { reason: 'settled' })
     expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_2' })])
@@ -2885,7 +2913,7 @@ describe('requests from outside: a permission prompt', () => {
   test('answered at the dialog while the settings hooks beneath still ran: nothing is raised', async () => {
     const h = harness()
     await h.ready()
-    await h.check('toolu_1', 'Bash', INPUT)
+    await h.called('toolu_1', 'Bash', INPUT)
     let beneath: (v: Record<string, unknown>) => void = () => undefined
     const answer = h.hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
       h.engine,
@@ -2903,7 +2931,7 @@ describe('requests from outside: a permission prompt', () => {
   test("answered at the dialog while the hook reads the clock, after the hooks beneath: still nothing is raised", async () => {
     const h = harness()
     await h.ready()
-    await h.check('toolu_1', 'Bash', INPUT)
+    await h.called('toolu_1', 'Bash', INPUT)
     const release = h.holdClock()
     const answer = h.permission('Bash', INPUT)
     await h.settle()
@@ -2939,10 +2967,22 @@ describe('requests from outside: a permission prompt', () => {
     poll.respond(410, { reason: 'settled' })
   })
 
-  test('a call no check named still raises a request, under an id of its own', async () => {
+  test("a permission for a call the bridge did not see is the terminal's: nothing is raised, and the debug log says why", async () => {
     const h = harness()
     await h.ready()
-    void h.permission('Bash', INPUT)
+    // No check named it, or one did whose call this module never saw (it began before a reload).
+    expect(await h.permission('Bash', INPUT)).toEqual({})
+    await h.check('toolu_9', 'Bash', INPUT)
+    expect(await h.permission('Bash', INPUT)).toEqual({})
+    expect(h.ofType('raised')).toEqual([])
+    expect(h.polls).toEqual([])
+    expect(h.logs.filter((l) => l.includes('did not see')).length).toBe(2)
+  })
+
+  test('a question no check named still raises a request, under an id of its own', async () => {
+    const h = harness()
+    await h.ready()
+    void h.permission('AskUserQuestion', { questions: [{ question: 'Which?', header: 'Q', multiSelect: false, options: [] }] })
     const poll = await h.nextPoll()
     const id = String(h.ofType('raised')[0]?.request)
     expect(id).toMatch(/^request-/)
@@ -2952,7 +2992,7 @@ describe('requests from outside: a permission prompt', () => {
 
   test('a resync carries the pending requests and the recent settlements', async () => {
     const { h, answer, poll } = await raised()
-    await h.check('toolu_2', 'Bash', { command: 'ls' })
+    await h.called('toolu_2', 'Bash', { command: 'ls' })
     void h.permission('Bash', { command: 'ls' })
     const second = await h.nextPoll()
     poll.respond(410, { reason: 'terminal' })
@@ -2980,7 +3020,7 @@ describe('requests from outside: subagents', () => {
     await h.ready()
     await spawn(h, 'a9', true)
     await h.turn('ts', 'a9')
-    await h.check('toolu_b', 'Bash', INPUT, 'a9')
+    await h.called('toolu_b', 'Bash', INPUT, 'a9')
     const answer = h.permission('Bash', INPUT, 'a9')
     const poll = await h.nextPoll()
     expect(h.ofType('raised')[0]).toMatchObject({ request: 'toolu_b', agentId: 'a9', deadline: h.now() + BACKGROUND_WINDOW_MS })
@@ -3003,7 +3043,7 @@ describe('requests from outside: subagents', () => {
     const h = harness()
     await h.ready()
     await spawn(h, 'a9', true)
-    await h.check('toolu_b', 'Bash', INPUT, 'a9')
+    await h.called('toolu_b', 'Bash', INPUT, 'a9')
     const answer = h.permission('Bash', INPUT, 'a9')
     ;(await h.nextPoll()).respond(200, { decision: { behavior: 'allow' }, by: 'cli' })
     await answer
@@ -3019,17 +3059,83 @@ describe('requests from outside: subagents', () => {
   test('a subagent the bridge does not know of is bounded the same way; a foreground one is not', async () => {
     const h = harness()
     await h.ready()
-    await h.check('toolu_u', 'Bash', INPUT, 'a-unknown')
+    await h.called('toolu_u', 'Bash', INPUT, 'a-unknown')
     void h.permission('Bash', INPUT, 'a-unknown')
     ;(await h.nextPoll()).respond(410, { reason: 'settled' })
     expect(h.ofType('raised')[0]).toHaveProperty('deadline')
     await h.turn('t1')
     await spawn(h, 'a5', false)
-    await h.check('toolu_f', 'Bash', INPUT, 'a5')
+    await h.called('toolu_f', 'Bash', INPUT, 'a5')
     void h.permission('Bash', INPUT, 'a5')
     ;(await h.nextPoll()).respond(410, { reason: 'settled' })
     expect(h.ofType('raised')[1]).toMatchObject({ request: 'toolu_f', agentId: 'a5' })
     expect(h.ofType('raised')[1]).not.toHaveProperty('deadline')
+  })
+})
+
+describe('requests from outside: a secrets guard that restores handles in tool.call', () => {
+  // Fake: never a real secret.
+  const HANDLE = '[secret:API_KEY]'
+  const VALUE = 'sk-fake-0123456789abcdef'
+  const MODEL = { command: `curl -H "Authorization: Bearer ${HANDLE}" https://api.example`, description: 'probe' }
+  const RESTORED = { ...MODEL, command: MODEL.command.replaceAll(HANDLE, VALUE) }
+  type Next = (e: Record<string, unknown>) => Promise<Record<string, unknown>>
+  /** devcloud's tool.call hook: the handle's bytes into the call before `next`, the result scrubbed after it. */
+  const guard = async (e: Record<string, unknown>, next: Next) => {
+    const ran = await next({ ...e, command: String(e.command).replaceAll(HANDLE, VALUE) })
+    return typeof ran.text === 'string' ? { ...ran, text: ran.text.replaceAll(VALUE, HANDLE) } : ran
+  }
+  /**
+   * The engine beneath every tool.call hook: its check and its dialog's
+   * PermissionRequest get the call as the hooks above handed it down (the
+   * check's input is pinned: no hook can hand it the handles); an allow runs
+   * the call, whose output echoes the command.
+   */
+  const engine = (h: ReturnType<typeof harness>, seen: unknown[], answers: unknown[]) => async (e: Record<string, unknown>) => {
+    const input = { command: e.command, description: e.description }
+    seen.push(input)
+    await h.check('toolu_s', 'Bash', input)
+    const answer = await h.permission('Bash', input)
+    answers.push(answer)
+    return { text: (answer.decision as { behavior?: string } | undefined)?.behavior === 'allow' ? `ran: ${String(e.command)}` : 'refused' }
+  }
+  const bridge = (h: ReturnType<typeof harness>) => (e: Record<string, unknown>, next: Next) => h.hook('tool.call', { tool: 'Bash' })(h.engine, e, next) as Promise<Record<string, unknown>>
+  const CALL = { tool: 'Bash', tool_use_id: 'toolu_s', ...MODEL }
+  const posted = (h: ReturnType<typeof harness>) => JSON.stringify(h.posts.map((p) => p.events))
+
+  test("the guard beneath the bridge (doperpowers seated outside it): the raise, a resync's pending and the call's events carry the handle, while the engine decides and runs the restored call", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const seen: unknown[] = []
+    const answers: unknown[] = []
+    const ran = bridge(h)(CALL, (e) => guard(e, engine(h, seen, answers)))
+    const poll = await h.nextPoll()
+    expect(seen).toEqual([RESTORED])
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_s', tool: 'Bash', input: MODEL })])
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_s', input: MODEL })] })
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
+    // The allow hands no input back: the engine runs its own, restored.
+    expect(await ran).toEqual({ text: `ran: ${MODEL.command}` })
+    expect(answers).toEqual([{ decision: { behavior: 'allow' } }])
+    expect(h.ofType('tool').map((e) => e.input ?? e.text)).toEqual([MODEL, `ran: ${MODEL.command}`])
+    expect(posted(h)).toContain(HANDLE)
+    expect(posted(h)).not.toContain(VALUE)
+  })
+
+  test('the guard outside the bridge (no prependPlugins): the bridge is handed the restored call, so its raise carries the value, as its call event and result do', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const seen: unknown[] = []
+    const ran = guard(CALL, (e) => bridge(h)(e, engine(h, seen, [])))
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_s', input: RESTORED })])
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
+    await ran
+    expect(h.ofType('tool').map((e) => e.input ?? e.text)).toEqual([RESTORED, `ran: ${RESTORED.command}`])
   })
 })
 

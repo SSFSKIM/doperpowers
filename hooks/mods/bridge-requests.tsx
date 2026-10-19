@@ -3,7 +3,7 @@ import type { PermissionRequestDecision } from 'claude-code'
 import { ASK_TOOL, answerAsync } from './ask'
 import type { AskNote } from './ask'
 import { capped, isRecord, parsed, state } from './bridge-state'
-import type { Answer, Check, Command, Decision, Outcome, Request } from './bridge-state'
+import type { Answer, Capped, Check, Command, Decision, Outcome, Request } from './bridge-state'
 import { emit, raisedFields } from './bridge-stream'
 
 /**
@@ -86,27 +86,38 @@ export function isBackground(agentId: string): boolean {
 }
 
 /**
+ * A running call's input as the bridge's `tool.call` hook was handed it (the
+ * latest call of that id); none for a call it did not see.
+ */
+export function shownCall(toolUseId: string): Capped | undefined {
+  return [...state.calls.values()].findLast((c) => c.toolUseId === toolUseId)?.shown
+}
+
+/**
  * The call a PermissionRequest is for: the hook's input names no call, so the
  * engine's check that put a call of that tool, in that loop, to the dialog
  * names it (the one with the same input first). Every PermissionRequest takes
  * its check, raised or not, so none is left for a later identical call. A
  * check whose decision the engine already recorded is taken as decided.
  */
-export function claimCheck(tool: string, agentId: string | null, input: unknown): { toolUseId: string; isDecided: boolean } | undefined {
+export function claimCheck(tool: string, agentId: string | null, input: unknown): { toolUseId: string; shown?: Capped; isDecided: boolean } | undefined {
   const same = (c: Check) => c.tool === tool && c.agentId === agentId
   const text = JSON.stringify(input)
   const exact = (c: Check) => same(c) && JSON.stringify(c.input) === text
-  const take = (list: Check[], at: number) => list.splice(at, 1)[0]?.toolUseId
+  const take = (list: Check[], at: number, isDecided: boolean) => {
+    const c = list.splice(at, 1)[0] as Check
+    return { toolUseId: c.toolUseId, ...(c.shown !== undefined && { shown: c.shown }), isDecided }
+  }
   let at = state.checks.findIndex(exact)
   if (at >= 0) {
-    return { toolUseId: take(state.checks, at) as string, isDecided: false }
+    return take(state.checks, at, false)
   }
   at = state.decidedChecks.findIndex(exact)
   if (at >= 0) {
-    return { toolUseId: take(state.decidedChecks, at) as string, isDecided: true }
+    return take(state.decidedChecks, at, true)
   }
   at = state.checks.findIndex(same)
-  return at < 0 ? undefined : { toolUseId: take(state.checks, at) as string, isDecided: false }
+  return at < 0 ? undefined : take(state.checks, at, false)
 }
 
 /** The decision as the engine takes it: a question's allow carries the dialog's own questions with the answers. */
