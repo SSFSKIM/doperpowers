@@ -68,6 +68,8 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
   enabled and restarted the sminos daemon with lingering, and it came back after a reboot. Left to
   the person: removing the machine from the sminos hub and its node from the tailnet. CI-opt never
   answered about mac-lane windows; the light acceptance traffic ran anyway, per the design session.
+- [x] (2026-10-19) Hosts seat no security default: boot step 10 adds `"prependPlugins": []` to the
+  managed settings unless the profile sets it (Decision Log, 2026-10-19).
 
 ## Terms
 
@@ -273,8 +275,8 @@ reaches the tailnet's services before step 6, because only the profile (step 5) 
 9. **Apply.** Run the config repository's `sync/apply.py` (plugins, marketplaces, MCP servers,
    `~/.claude.json` seeding, the `devenv` link) as the user.
 10. **Managed settings and environment.** Write `/etc/claude-code/managed-settings.json` from the
-    profile and `/etc/devcloud/env` from boot step 1, the profile, and `secrets.toml`'s `env`
-    targets (Design §6).
+    profile (with an empty `prependPlugins` unless the profile sets one) and `/etc/devcloud/env`
+    from boot step 1, the profile, and `secrets.toml`'s `env` targets (Design §6).
 11. **Services.** Install or start: the config pull job, the secrets refresh job, and the session
     store shipper (`session-mirror ship`); on an enrolled persistent host, the sminos daemon
     (Design §8). A service whose unit or environment changed is restarted.
@@ -318,6 +320,18 @@ shell rc reaches some of them and not others. Each setting goes where every read
   turns routing on and removes them when it turns routing off, so a commit taken while routing was
   off carries none; and empty values for Mac-only settings the synced file carries (a
   browser-extension token, `CLAUDE_CODE_PLUGIN_DIRS` pointing at an untracked directory).
+  Boot adds one more key unless the profile sets it: `"prependPlugins": []`. Managed settings of
+  any kind seat the engine's security default (`cc-plugin-sec-default@builtin`) outermost unless
+  managed `prependPlugins` is set and leaves it out, and the seated default passes the plugins a
+  person installs over on `classic.*`, the prompt's sections, context and attachments, and
+  `session.compact`: under it the guard (§9) scrubbed neither the system prompt, the context, the
+  attachments nor a compaction, and doperpowers' bridge never saw a permission prompt (Decision
+  Log, 2026-10-19). Managed `prependPlugins` also replaces the synced file's, so on a host the
+  plugins the Macs seat in the prepend tier (to-human, doperpowers) load in the user tier, the
+  bridge inside the guard rather than outside it; seating them as the Macs do is deferred
+  (Decision Log). None of these keys can move to the process environment, where no managed file
+  would be needed: a settings `env` overwrites the process environment, and the synced file sets
+  the same keys to Mac values.
 - **Credentials** go in files every process reads whatever its environment: gh's `hosts.yml`,
   hcloud's `cli.toml`, `~/.pgpass`, MCP configs (from `secrets.toml`), and gcloud's credential store
   and application default credentials (from the seed, boot step 8 — writing a key file is not
@@ -875,9 +889,9 @@ the foreground; `devenv start` runs it in tmux session `<name>`), `devenv/valida
 systemd user unit, enabled and started by boot). Under systemd: units named `devcloud-<service>`;
 otherwise `devcloud-services` runs the first three.
 
-**I8 — Profile** `~/.claude/devcloud/` (private): `managed-settings.json` (copied to
-`/etc/claude-code/managed-settings.json`; its `env.ANTHROPIC_BASE_URL` is the gateway step 6
-checks), `profile.env` (`KEY=value` lines appended to `/etc/devcloud/env`; `TZ` also sets the
+**I8 — Profile** `~/.claude/devcloud/` (private): `managed-settings.json` (written to
+`/etc/claude-code/managed-settings.json`, with `"prependPlugins": []` added unless it sets
+`prependPlugins`; its `env.ANTHROPIC_BASE_URL` is the gateway step 6 checks), `profile.env` (`KEY=value` lines appended to `/etc/devcloud/env`; `TZ` also sets the
 system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_UID`,
 `DEVCLOUD_HOME`, read where the image is built), `home/` (files copied into the user's home at
 boot step 8 and every reconcile; secret-free).
@@ -943,6 +957,10 @@ clears a plugin's state when it unloads is unverified).
   an earlier run. The refusal is the classifier's judgment, not noise: editing a redacted file can
   be refused in auto mode, and a refused action is reported, never rerun for a different verdict
   (a rerun that passed was voided).
+- (2026-10-19) A host's managed settings, env keys only, seated the engine's security default
+  outermost, which passed the guard's prompt and compaction hooks over: the system prompt, the
+  context, attachments and a compaction reached the gateway unscrubbed (container probe of
+  2.1.303; Decision Log, 2026-10-19).
 
 ## Decision Log
 
@@ -1243,6 +1261,55 @@ clears a plugin's state when it unloads is unverified).
   Rationale: a project's own secrets are known only to the runner; fixing at the source covers the
   Macs and hosts alike.
   Date/Author: 2026-10-17, M4 executor on review; folded by the plan executor.
+
+- Decision: A host's managed settings seat no security default. Boot step 10 and every reconcile
+  write the profile's `managed-settings.json` with `"prependPlugins": []` added, unless the
+  profile sets `prependPlugins` itself, which then stands (a profile can still seat the default
+  by listing it, or order plugins).
+  Findings: a Linux container ran Claude Code 2.1.303 with the person's synced settings and
+  plugins (secrets as stand-ins), a stand-in gateway, one made-up token in the project's
+  `CLAUDE.md`, and one debug line added to each probed hook handler. Each run had a headless turn,
+  a permission prompt and a `/compact`.
+  - No managed file: the Macs' layout. to-human and doperpowers in the prepend tier (the synced
+    `prependPlugins`), cua and devcloud in the user tier, the default not seated.
+  - The env-only file hosts had (B): the default "seated outermost: this machine has managed
+    settings", the synced `prependPlugins` ignored (managed settings own both tier keys), and
+    every plugin in the user tier. The default alone settled `classic.SessionStart`,
+    `classic.PermissionRequest`, `prompt.compose`, `prompt.context`, `prompt.attachment` and
+    `session.compact`; none of to-human's, doperpowers', devcloud's or cua's hooks on those events
+    ran, the bridge's permission raise among them. `prompt.submit`, `prompt.edit` and most
+    `session.append` rows still reached them. At the gateway the guard's system-prompt line was
+    absent and the made-up token arrived raw in every request, twice in the compaction's (the
+    context and the `/compact` instructions). In the engine bundles on hand the default passes
+    `classic.*` over from 2.1.270, the prompt events from 2.1.287 and `session.compact` by 2.1.300,
+    so every host so far has run this way.
+  - The env plus `prependPlugins` and `enabledPlugins` copied from the synced list (C): the
+    default not seated and every probed hook ran, but the engine refuses the prepend tier to a
+    policy-enabled plugin loaded from the plugin cache ("not read in place from a local folder its
+    marketplace is registered from … its hooks module runs in the user tier", one warning per
+    plugin), so all four plugins loaded in the user tier. The synced list's uninstalled
+    `sminos@doperpowers` was skipped in the debug log alone.
+  - C plus a managed `extraKnownMarketplaces` entry declaring the doperpowers marketplace as a
+    local directory (a root-owned copy) gave the Macs' layout (E), every hook running, the plugins
+    read in place, but only once `known_marketplaces.json` recorded that directory. With the GitHub
+    record a booted host keeps (D), the first session loaded no plugin of that marketplace, the
+    guard included, until its background reconcile re-recorded it.
+  - The env plus `"prependPlugins": []` (F): the default not seated, C's user-tier layout, every
+    probed hook run, the guard scrubbing at the gateway, and no warning beyond those the same
+    session logs with no managed file.
+  Rationale: F closes B's hole with one key that needs nothing from the synced file and names no
+  plugin, so it holds for any profile whose managed settings carry anything.
+  Rejected: moving the managed keys into the process environment and writing no managed settings,
+  which would seat nothing and honor the synced `prependPlugins` (the Macs' layout exactly): a
+  settings `env` overwrites the process environment (verified) and the synced `settings.json`
+  sets the same keys to Mac values, so sessions would call the Mac's loopback relay. C: the same
+  effect as F plus a warning per plugin and a copy of the synced list.
+  Deferred: E. Its costs are a host-side marketplace clone that Claude Code does not auto-update,
+  and a first session with no guard on a host that recorded the marketplace from GitHub. It pays
+  off only on a host enrolled at the desk, where the bridge's place outside the guard matters, and
+  none is; the engine's warning says a plugin delivered from a remote source gains the tier in a
+  later release. Revisit when a host must enroll or that release lands, whichever comes first.
+  Date/Author: 2026-10-19, the design session on a container probe's findings.
 
 ## Outcomes & Retrospective
 
