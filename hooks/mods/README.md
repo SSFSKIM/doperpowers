@@ -884,9 +884,21 @@ GitHub or a git URL; this machine's are doperpowers, cua, designer and
 ptc-tool), one session per machine at a time, at most every 5 minutes,
 reads the remote's head with `git ls-remote` (an entry whose URL or ref
 begins with `-` is skipped) and compares it with the marketplace clone's.
-Where it moved, it runs `claude plugin marketplace update <name>` and then
-`claude plugin update <key> --scope user` for each enabled plugin installed
-from it at user scope; the watch then reloads every session on the machine.
+Where it moved, it runs `claude plugin marketplace update <name>`. Then,
+moved or not, it reads the clone's `.claude-plugin/marketplace.json` and the
+manifest at each plugin's `source` folder, and acts on the enabled plugins
+installed from it at user scope whose recorded version is not the clone's
+(one the clone holds no manifest of, ci-kit's from a URL, only when the head
+moved): it first runs `claude plugin install <dep> --scope user` for every
+plugin those manifests depend on that is not installed (a name without
+`@<marketplace>` is of the dependent's), then `claude plugin update <key>
+--scope user` for each plugin behind. A dependency that will not install
+applies nothing, with a debug line, and since the versions still differ the
+next fetch tries again. The watch then reloads every session on the machine,
+once: a reload waits while the fetch holds its lock, so a batch whose
+installs and updates land more than a period apart is not loaded half
+applied. A release that moves mods into a new plugin that another comes
+to depend on thus lands whole.
 Each session looks once a minute whether the machine's fetch is due:
 `~/.claude/autoreload/fetch.stamp` is older than 5 minutes, and the lock
 directory beside it (`fetch.lock`, made with `mkdir`) is free. The lock
