@@ -187,6 +187,8 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
   let due: { changes: Change[]; next: Snapshot } | undefined
   /** The mtime a reload was run for: one run per state of the file, so a plugin that will not load is not reloaded again and again. */
   let firedFor: number | undefined
+  /** The mtime the person was told of: a reload the engine refused is tried again without telling them again. */
+  let toastedFor: number | undefined
   let retryAt = 0
   let isBusy = false
 
@@ -196,7 +198,10 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
 
   function fire(mtime: number, changes: Change[], next: Snapshot) {
     firedFor = mtime
-    io.toast(`${changeText(changes)}: reloading plugins once the session is idle`)
+    if (toastedFor !== mtime) {
+      toastedFor = mtime
+      io.toast(`${changeText(changes)}: reloading plugins once the session is idle`)
+    }
     // Where this plugin is among the changes, the reload retires this module
     // and neither branch runs; the new module starts from the file afresh.
     Promise.resolve().then(io.reload).then(
@@ -284,17 +289,20 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
  * Fetching: the engine refreshes a marketplace marked `autoUpdate` once per
  * process, so a machine whose sessions run on gets nothing new until a session
  * starts or someone rolls it. One session per machine at a time, at most every
- * FETCH_MS, asks each such marketplace's remote for its head and, where it
- * moved, updates the marketplace and the enabled plugins installed from it at
- * user scope; the watch above then reloads every session on the machine.
+ * FETCH_MS and not while another actor rolls, asks each such marketplace's
+ * remote for its head and, where it moved, updates the marketplace and the
+ * enabled plugins installed from it at user scope; the watch above then
+ * reloads every session on the machine.
  */
 export const FETCH_MS = 5 * 60_000
 /** A lock older than this was left by a session that died holding it. */
 export const LOCK_STALE_MS = 30 * 60_000
+/** A write to the engine's plugin state this recent is another actor rolling it, which the fetch waits out. */
+export const ROLLING_MS = 60_000
 
 export type Marketplace = { name: string; url: string; ref: string; clone: string }
 
-/** The marketplaces known_marketplaces.json marks `autoUpdate` that come from a git remote. */
+/** The marketplaces known_marketplaces.json marks `autoUpdate` that come from a git remote, but none whose url or ref git would read as an option. */
 export function autoUpdating(source: string): Marketplace[] {
   let data: unknown
   try {
@@ -312,7 +320,8 @@ export function autoUpdating(source: string): Marketplace[] {
     const { source: kind, repo, url, ref } = entry.source
     const remote = kind === 'github' && typeof repo === 'string' ? `https://github.com/${repo}.git` : kind === 'git' ? text(url) : undefined
     const clone = text(entry.installLocation)
-    return remote === undefined || clone === undefined ? [] : [{ name, url: remote, ref: text(ref) ?? 'HEAD', clone }]
+    const head = text(ref) ?? 'HEAD'
+    return remote === undefined || clone === undefined || remote.startsWith('-') || head.startsWith('-') ? [] : [{ name, url: remote, ref: head, clone }]
   })
 }
 
@@ -354,9 +363,33 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     return stamped !== undefined && stamped < FETCH_MS
   }
 
+  /**
+   * The lock serializes this mod's sessions only. The engine saves its two
+   * files by read-modify-write with no lock, and refreshes a marketplace by
+   * cloning beside it and renaming the clone in (2.1.283 on; before, a pull
+   * into the clone, which writes its FETCH_HEAD). The fetch is due exactly
+   * when the remote has just moved, which is when the person, the merging
+   * session or a new session's auto-update rolls as well: a write to any of
+   * these within ROLLING_MS is such an actor at work.
+   */
+  async function isRolling(marketplaces: readonly Marketplace[]): Promise<boolean> {
+    const paths = new Set([`${where.plugins}/installed_plugins.json`, `${where.plugins}/known_marketplaces.json`])
+    for (const m of marketplaces) {
+      paths.add(parentOf(m.clone))
+      paths.add(`${m.clone}/.git/FETCH_HEAD`)
+    }
+    for (const path of paths) {
+      const since = await age(path)
+      if (since !== undefined && since < ROLLING_MS) {
+        return true
+      }
+    }
+    return false
+  }
+
   /** One marketplace: nothing when its clone is at the remote's head, else the marketplace and then its plugins updated. */
   async function fetchOne(m: Marketplace, installed: Installed, enabled: ReadonlySet<string>) {
-    const remote = await io.run(['git', 'ls-remote', m.url, m.ref], 30_000)
+    const remote = await io.run(['git', 'ls-remote', '--', m.url, m.ref], 30_000)
     const head = remote.exitCode === 0 ? firstLine(remote.stdout).split(/\s/)[0] : undefined
     if (head === undefined || head === '') {
       io.log(`reload: ${m.name}: the remote's head could not be read (${firstLine(remote.stderr) || `exit ${remote.exitCode}`})`)
@@ -395,9 +428,15 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
       if (await isFresh()) {
         return
       }
+      // A machine without the file knows no marketplace, so has nothing to fetch.
+      const marketplaces = autoUpdating(await io.read(`${where.plugins}/known_marketplaces.json`).catch(() => ''))
+      // Unstamped, so a later look tries again once the other roll is done.
+      if (await isRolling(marketplaces)) {
+        io.log('reload: the plugin files changed within the minute; fetching at a later look')
+        return
+      }
       // Stamped before the fetch, so a fetch that fails is not retried by every session at once.
       await io.write(stamp, new Date(io.now()).toISOString())
-      const marketplaces = autoUpdating(await io.read(`${where.plugins}/known_marketplaces.json`))
       const installed = parseInstalled(await io.read(`${where.plugins}/installed_plugins.json`)) ?? {}
       const enabled = await io.enabled()
       for (const m of marketplaces) {

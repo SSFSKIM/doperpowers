@@ -5,6 +5,7 @@ import {
   FORCE_TEXT,
   LOCK_STALE_MS,
   RETRY_MS,
+  ROLLING_MS,
   autoUpdating,
   changesOf,
   createFetcher,
@@ -201,7 +202,7 @@ describe('createReloader', () => {
     expect(h.reloads()).toBe(2)
   })
 
-  test('a reload the engine refused is tried again after the retry period', async () => {
+  test('a reload the engine refused is tried again after the retry period, and the person told once', async () => {
     const h = harness()
     h.state.answer = () => Promise.reject(new Error('refused after a stop'))
     await h.reloader.start()
@@ -209,11 +210,20 @@ describe('createReloader', () => {
     await h.ticks(4)
     expect(h.reloads()).toBe(1)
     h.state.clock += RETRY_MS
-    h.state.answer = () => Promise.resolve({ text: 'Reloaded: 4 plugins' })
     await h.ticks(1)
     expect(h.reloads()).toBe(2)
+    h.state.clock += RETRY_MS
+    h.state.answer = () => Promise.resolve({ text: 'Reloaded: 4 plugins' })
+    await h.ticks(1)
+    expect(h.reloads()).toBe(3)
     await h.ticks(3)
-    expect(h.reloads()).toBe(2)
+    expect(h.reloads()).toBe(3)
+    const toasts = () => h.calls.filter((c) => c.op === 'toast')
+    expect(toasts()).toHaveLength(1)
+    expect(h.calls.filter((c) => c.op === 'log:debug')).toHaveLength(2)
+    h.install('to-human@dp', '0.3.0')
+    await h.ticks(2)
+    expect(toasts()).toHaveLength(2)
   })
 
   test('this plugin is watched from the directory it runs from, and only a later change of the file reloads it', async () => {
@@ -252,6 +262,14 @@ describe('autoUpdating', () => {
     ])
     expect(autoUpdating('{')).toEqual([])
   })
+
+  test('an entry whose url or ref git would read as an option is left out', async () => {
+    const known = {
+      url: { source: { source: 'git', url: '--upload-pack=touch /tmp/x' }, installLocation: '/m/u', autoUpdate: true },
+      ref: { source: { source: 'github', repo: 'o/r', ref: '-q' }, installLocation: '/m/r', autoUpdate: true },
+    }
+    expect(autoUpdating(JSON.stringify(known))).toEqual([])
+  })
 })
 
 /**
@@ -260,11 +278,12 @@ describe('autoUpdating', () => {
  * written down.
  */
 function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
+  const PLUGINS = '/h/.claude/plugins'
   const STATE = '/h/.claude/autoreload'
   const state = { clock: 1_000_000_000, remote: options.remote ?? 'b'.repeat(40), failing: '' }
   const files = new Map<string, number>()
   const runs: string[] = []
-  const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: '/m/dp', autoUpdate: true } }
+  const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: `${PLUGINS}/marketplaces/dp`, autoUpdate: true } }
   const installed = {
     version: 2,
     plugins: {
@@ -314,10 +333,10 @@ function fetchHarness(options: { remote?: string; enabled?: string[] } = {}) {
       now: () => state.clock,
       log: () => {},
     },
-    { plugins: '/h/.claude/plugins', state: STATE },
+    { plugins: PLUGINS, state: STATE },
   )
   const claude = () => runs.filter((r) => r.startsWith('claude '))
-  return { fetcher, state, files, runs, claude, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp` }
+  return { fetcher, state, files, runs, claude, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp` }
 }
 
 describe('createFetcher', () => {
@@ -336,7 +355,7 @@ describe('createFetcher', () => {
   test('a clone at the remote head updates nothing', async () => {
     const h = fetchHarness({ remote: 'a'.repeat(40) })
     await h.fetcher.tick()
-    expect(h.runs).toContain('git ls-remote https://github.com/o/dp.git HEAD')
+    expect(h.runs).toContain('git ls-remote -- https://github.com/o/dp.git HEAD')
     expect(h.claude()).toEqual([])
   })
 
@@ -363,6 +382,21 @@ describe('createFetcher', () => {
     expect(h.files.has(h.lock)).toBe(false)
     await h.fetcher.tick()
     expect(h.claude()).toHaveLength(3)
+  })
+
+  test("a write to the plugin state within the minute is another actor's roll: the round waits for a later look, unstamped", async () => {
+    // The two files; the clone's directory, where 2.1.283 on swaps a new clone in; its FETCH_HEAD, which a pull into it writes.
+    for (const written of ['installed_plugins.json', 'known_marketplaces.json', 'marketplaces', 'marketplaces/dp/.git/FETCH_HEAD']) {
+      const h = fetchHarness()
+      h.files.set(`${h.plugins}/${written}`, h.state.clock - ROLLING_MS + 1)
+      await h.fetcher.tick()
+      expect(h.runs.some((r) => r.includes('ls-remote'))).toBe(false)
+      expect(h.files.has(h.stamp)).toBe(false)
+      expect(h.files.has(h.lock)).toBe(false)
+      h.state.clock += 1
+      await h.fetcher.tick()
+      expect(h.claude()).toHaveLength(3)
+    }
   })
 
   test('a marketplace that will not update leaves its plugins alone, and the lock is released', async () => {
