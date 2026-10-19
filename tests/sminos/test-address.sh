@@ -482,6 +482,51 @@ assert_equals "$(resolve ps "@${D3:0:8} hi")" "pa stale3" \
   "a newer membership in a project the org's directory retires is passed over"
 assert_equals "$(resolve ps "@stale3#${D3:0:8} hi")" "pa stale3" "for alias#short too"
 assert_equals "$(resolve ps "@${D4:0:8} hi")" "exit 4" "a session only a retired project holds is reached by no short"
+assert_equals "$(resolve ps "@pr/stale4 hi")" "exit 4" "nor by @<project>/<alias> naming the retired project"
+assert_equals "$(python3 - "@stale4 hi" <<'PY' 2>/dev/null
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+try:
+    dest, to, _, _ = sminos.resolve_tags(None, sys.argv[1])
+    print(dest.name, " ".join(r["alias"] for r in to))
+except SystemExit as e:
+    print("exit", e.code)
+PY
+)" "exit 4" "nor by name from no project"
+# A local project named as a hub project is: its members' printed labels must reach them.
+LPA=0c0c0c04-1111-4222-8333-444455556664
+reg "$LPA" pa
+D5=0d0d0d05-0000-4000-8000-000000000005
+joined "$LPA" "$D5" lonely 2026-10-18T01:00:00.000Z
+LONELY="$(python3 - <<'PY' 2>&1
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+try:
+    sminos.resolve_tags(sminos.find_project("ps"), "@lonely hi")
+except SystemExit:
+    pass
+PY
+)"
+assert_contains "$LONELY" "@$LPA/lonely#${D5:0:8}" \
+  "a candidate in a project whose name resolves elsewhere is labelled by its project's id"
+assert_not_contains "$LONELY" "@pa/lonely" "never by the name, which reaches the hub project"
+assert_equals "$(resolve ps "@$LPA/lonely#${D5:0:8} hi")" "pa lonely" "and the label reaches it"
+assert_contains "$(resolve ps "@lonely#${D5:0:8} hi") " "pa lonely" "as its alias#short does"
+# --here is this machine, exactly: a machine whose name begins with this one's is another.
+python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+sid = "0d0d0d06-0000-4000-8000-000000000006"
+sminos.log_append(sminos.find_project("pb"), "gamma2/" + sid, "joined", session=sid, alias="neighbour",
+                  name_source="user", machine="gamma2", cwd="/g2", worktree="", role="", seat="", by="")
+PY
+run_in "$T/x" "$SMINOS" list --here --json --all
+assert_not_contains "$OUT" "neighbour" "list --here leaves out a machine whose name only begins with this one's"
+run_in "$T/x" "$SMINOS" list --machine gamma --json --all
+assert_contains "$OUT" "neighbour" "while --machine still matches by prefix"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

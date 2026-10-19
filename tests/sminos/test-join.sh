@@ -123,9 +123,9 @@ print(json.dumps({"project": str(uuid.uuid4()), "name": sys.argv[1], "remote": "
     "$2" > "$1/.smns"
 }
 live_pid() { sleep 600 & LIVE_PID=$!; PIDS+=("$LIVE_PID"); }
-session_record() { # name session pid cwd [kind] — an engine record for a running session
-  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"%s","status":"idle","cwd":"%s"}\n' \
-    "$3" "$2" "$1" "${5:-interactive}" "$4" > "$HOME/.claude/sessions/$1.json"
+session_record() { # name session pid cwd [kind] [nameSource] — an engine record for a running session
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"%s","status":"idle","cwd":"%s"}\n' \
+    "$3" "$2" "$1" "${6:-user}" "${5:-interactive}" "$4" > "$HOME/.claude/sessions/$1.json"
 }
 transcript() { # session cwd... — a transcript whose rows ran in each cwd in turn (the first: where it launched)
   local sid=$1; shift
@@ -364,6 +364,36 @@ assert_equals "$(override_of "$S1")" "none" "removes the override"
 assert_equals "$(events_of "$OPID" "$S1" | tail -1)" "retired moved $SPID - -" "and moves it back to its directory's project"
 assert_equals "$(events_of "$SPID" "$S1" | tail -1)" "joined - - join $R" "joined there again"
 
+echo "a session moving back into a project exports only what is new:"
+S16=1a000016-0000-4000-8000-000000000016
+B16="$T/a/bare16"
+mkdir -p "$B16"
+live_pid
+session_record s16 "$S16" "$LIVE_PID" "$B16"
+transcript "$S16" "$B16"
+S16_TX=$TX
+mark16() { # n text — an assistant row carrying a <message> mark
+  printf '{"type":"assistant","uuid":"s16-a%s","isSidechain":false,"cwd":"%s","message":{"role":"assistant","content":[{"type":"text","text":"<message>%s</message>"}]}}\n' \
+    "$1" "$B16" "$2" >> "$S16_TX"
+}
+stop16() { hook_payload Stop "$S16" "$B16" "$S16_TX" | CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$HOOK"; }
+count_in() { cat "$SMINOS_HOME/projects/$1/log/"*.jsonl 2>/dev/null | grep -c -- "$2" || true; }
+hook_payload SessionStart "$S16" "$B16" "$S16_TX" | CLAUDE_PLUGIN_ROOT="$REPO_ROOT" "$HOOK"
+mark16 1 "sixteen in alpha"
+stop16
+run_in "$T/x" in_session "$S16" "$SMINOS" join other
+mark16 2 "sixteen in other"
+stop16
+run_in "$T/x" in_session "$S16" "$SMINOS" join --cwd
+mark16 3 "sixteen back in alpha"
+stop16
+assert_equals "$(count_in "$AMP" "sixteen in alpha") $(count_in "$AMP" "sixteen back in alpha")" "1 1" \
+  "its machine project holds what it said there, before and after its stint in other"
+assert_equals "$(count_in "$AMP" "sixteen in other")" 0 \
+  "and nothing it said in other: back from a move, its export resumes where its last export stopped, wherever that ran"
+assert_equals "$(count_in "$OPID" "sixteen in other") $(count_in "$OPID" "sixteen in alpha")" "1 0" \
+  "the project it moved into holds what it said there, and nothing exported before the move"
+
 echo "an override survives a .smns appearing:"
 S4=1a000004-0000-4000-8000-000000000004
 B4="$T/a/bare4"
@@ -401,16 +431,25 @@ session_record s6 "$S6" "$S6_PID" "$B6"
 transcript "$S6" "$B6"
 S6_TX=$TX
 run_in "$T/x" in_session "$S6" "$SMINOS" join other
-kill "$S6_PID"; wait "$S6_PID" 2>/dev/null || true
-rm -f "$HOME/.claude/sessions/s6.json"
 printf '{"type":"continued-in","continuedInSessionId":"%s"}\n' "$S7" >> "$S6_TX"
 live_pid
-session_record s7 "$S7" "$LIVE_PID" "$B6" bg
+session_record s7 "$S7" "$LIVE_PID" "$B6" bg derived   # a background job's name is one the harness made up
 transcript "$S7" "$B6"
-"$SMINOS" daemon tick >/dev/null 2>&1 || true
-"$SMINOS" daemon tick >/dev/null 2>&1 || true
+"$SMINOS" daemon tick >/dev/null 2>&1 || true   # its predecessor still exiting, in the project it joined
+kill "$S6_PID"; wait "$S6_PID" 2>/dev/null || true
+rm -f "$HOME/.claude/sessions/s6.json"
+for _ in 1 2 3; do "$SMINOS" daemon tick >/dev/null 2>&1 || true; done
 assert_equals "$(override_of "$S7")" "$OPID" "the successor holds the override its predecessor held"
-assert_contains " $(members_of other) " " s7 " "and stands in the joined project"
+assert_contains " $(members_of other) " " s6 " "and stands in the joined project under the alias its predecessor held there"
+assert_not_contains " $(members_of other) " " s7 " "never under the name the harness made up for it"
+assert_equals "$(python3 - "$OPID" "$S7" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+p, sid = sminos.find_project(sys.argv[1]), sys.argv[2]
+print(" ".join(e["alias"] for e in sminos._own_events(p, sid) if e["kind"] in ("joined", "renamed")))
+PY
+)" "s6" "its joined there carries that alias from the start, no rename after it: the hand-off another tick finished is read at the join"
 
 echo "the override sweep:"
 for n in 8 9 10; do
@@ -442,6 +481,12 @@ hook_payload Stop "$S1" "$T/c/bare" /nowhere | CLAUDE_PLUGIN_ROOT="$FAKE" "$HOOK
 hook_payload Stop "$S1" "$T/c/bare" /nowhere | CLAUDE_PLUGIN_ROOT="$FAKE" CLAUDE_PROJECT_DIR="$T/c/repo" "$HOOK"
 [ -e "$T/python-started" ] && pass "unless the session's project directory has one: a cd elsewhere does not lose the export" \
   || fail "unless the session's project directory has one: a cd elsewhere does not lose the export"
+rm -f "$T/python-started"
+mkdir -p "$SMINOS_HOME/sessions"
+printf '{"project":"%s","at":"2026-10-18T00:00:00.000Z"}\n' "$OPID" > "$SMINOS_HOME/sessions/$S1.json"
+hook_payload Stop "$S1" "$T/c/bare" /nowhere | CLAUDE_PLUGIN_ROOT="$FAKE" "$HOOK"
+[ -e "$T/python-started" ] && pass "or the session holds a join override: one that joined a project from no repository still exports" \
+  || fail "or the session holds a join override: one that joined a project from no repository still exports"
 
 # ---- two machines: a move reaches the other; an override whose target retires
 echo "two machines:"

@@ -1032,10 +1032,21 @@ def project_tiers(q):
     the first (find_project); a tag `@<q>/<alias>` reads the next only when
     the first has no such member — a team names its project deliberately and
     a machine is named after a host, so the project is the likelier meaning."""
+    out, clash = _name_tiers(q)
+    if clash:
+        die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in clash))),
+            EXIT_UNKNOWN)
+    return out
+
+
+def _name_tiers(q):
+    """(tiers, clash): project_tiers' lookup, and the projects of the first
+    tier it consults that holds several (the tiers before it in `tiers`),
+    rather than an exit."""
     known = known_projects()
     hits = [p for p in known if p.id == q]
     if hits:
-        return hits[:1]
+        return hits[:1], []
     named = [p for p in known if p.name == q]
     out = []
     for kind in ("hub", "machine", "local"):
@@ -1043,10 +1054,19 @@ def project_tiers(q):
             break   # a tier never consulted: its ambiguity is no one's
         hits = [p for p in named if project_kind(p) == kind]
         if len(hits) > 1:
-            die("ambiguous project '%s': %s" % (q, ", ".join(sorted("%s (%s)" % (p.name, p.id) for p in hits))),
-                EXIT_UNKNOWN)
+            return out, hits
         out += hits
-    return out
+    return out, []
+
+
+def tag_project(p):
+    """How a tag names project `p`: by its name when the name reaches it (a
+    tier project_tiers consults for it; `@<name>/alias#short` reads them in
+    turn until one holds the member), else by its id — a `local-*` or
+    git-mirrored project named as a hub or machine project is, or one whose
+    name several projects share."""
+    tiers, clash = _name_tiers(p.name)
+    return p.name if not clash and any(t.id == p.id for t in tiers) else p.id
 
 
 def find_project(q, required=True):
@@ -2049,12 +2069,36 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
             old, old_peer = predecessor(project, sid)
             if old:
                 out += hand_off(project, old, sid, old_peer)
+            else:
+                old = handed_to(project, sid)
+            if old:
                 held = own_alias(_own_events(project, old), old)
         alias, source = held_alias(*held, peer, sid)
         fields = joined_fields(alias or sid[:8], source or "derived",
                                launch_cwd(sid, fallback=str(peer.get("cwd") or "")), by=by,
                                session_kind=str(peer.get("kind") or ""))
-    return out + lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+    joined = lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+    if joined:
+        position_carry(project, sid)
+    return out + joined
+
+
+def handed_to(project, session):
+    """The session of this machine whose membership of the project ended
+    handing it to `session` (hand_off: its latest membership a `continued`
+    retirement naming `session`), or None. A reconciliation finishes such a
+    hand-off before the job has joined here when the old session exited
+    before any tick saw the job beside it, or when the old one was in the
+    project only by a join override the job held only once the hand-off
+    carried it; the job then joins under the alias the old one held."""
+    for e in reversed(log_read(project, kinds=("retired",))):
+        old = str(e.get("session") or "")
+        if e.get("reason") != "continued" or e.get("to") != session or writer_session(e["writer"]) != old:
+            continue
+        last = next((x for x in reversed(_own_events(project, old)) if x["kind"] in MEMBERSHIP), None)
+        if last and last["kind"] == "retired" and last.get("reason") == "continued" and last.get("to") == session:
+            return old
+    return None
 
 
 def held_alias(logged, logged_source, peer, session):
@@ -2735,8 +2779,9 @@ def one_per_session(found, key=lambda m: m.session):
 def candidate_labels(found, qualify, at=""):
     """The candidates a name was ambiguous between, each as the name that tells
     it apart: alias#short, behind its project when they span projects
-    (`<at><project>/alias#short`, `at` "@" for a tag)."""
-    return ", ".join(sorted(("%s%s/" % (at, p.name) if qualify else "") + "%s#%s" % (m.alias, m.short)
+    (`<at><project>/alias#short`, `at` "@" for a tag; the project as a tag
+    reaches it, tag_project)."""
+    return ", ".join(sorted(("%s%s/" % (at, tag_project(p)) if qualify else "") + "%s#%s" % (m.alias, m.short)
                             for p, m in found))
 
 
@@ -2809,13 +2854,18 @@ def resolve_tag(project, t):
         tiers = project_tiers(t["project"])
         if not tiers:
             die("no project '%s' is known on this machine" % t["project"], EXIT_UNKNOWN)
+        # A project the org's directory retires is closed, as for @short: a
+        # message written into it would never leave this machine.
+        tiers = [p for p in tiers if not org_retired(p.id)]
+        if not tiers:
+            die("project '%s' is retired in the org's directory" % t["project"], EXIT_UNKNOWN)
         for p in tiers:
             found = match_members(name, short, [p])
             if found:
                 return one_member(raw, found, False)
         no_member(raw, name, short, tiers)
     if project is None:
-        scope = known_projects()
+        scope = org_scope()
         found = one_per_session(match_members(name, short, scope))
         return one_member(raw, found, True) if found else no_member(raw, name, short, scope)
     if short:
@@ -3451,15 +3501,40 @@ def _position_path(project, session):
     return project_path(project, "cursors", "export", reader_key(session) + ".json")
 
 
-def _position_load(project, session):
+def _position_load(project, session, path=None):
     try:
-        with open(_position_path(project, session)) as f:
+        with open(path or _position_path(project, session)) as f:
             pos = json.load(f)
     except (OSError, ValueError):
         return None
     if isinstance(pos, dict) and isinstance(pos.get("uuid"), str) and type(pos.get("offset")) is int:
         return pos
     return None
+
+
+def position_carry(project, session):
+    """A session that joins the project — a move, a `join`, a return to a
+    project it was in before — exports from where its exports stopped,
+    whichever project they ran in: the furthest export position it holds in
+    any project here becomes its position in this one, unless the one held
+    here is as far already. A position is per project, and the one a session
+    left here may be a stint old (A → B → A): resumed from there, its export
+    would append again to A what it sent its human while in B. What it wrote
+    before the move that no export took yet goes to the project it is in
+    now, not nowhere. (Other projects' positions are read in place, never
+    through project_path, which would register their homes.)"""
+    key = reader_key(session) + ".json"
+    best = None
+    for p in known_projects():
+        pos = _position_load(p, session, os.path.join(p.home, "cursors", "export", key))
+        if pos is not None and (best is None or pos["offset"] > best["offset"]):
+            best = pos
+    if best is None:
+        return
+    with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
+        here = _position_load(project, session)
+        if here is None or here["offset"] < best["offset"]:
+            write_json(_position_path(project, session), best)
 
 
 def _resume_at(f, pos, end):
@@ -7200,12 +7275,13 @@ def list_scope(a):
 
 
 def row_matches(m, project, a, words):
-    """Whether a row passes list's filters: its machine by prefix (--machine,
-    --here), its word (--state), and every word, case-insensitively, in its
-    alias, short, project, repository, branch, in-charge line, status line
-    or title."""
-    prefixes = [x.lower() for x in a.machine] + ([host_name().lower()] if a.here else [])
-    if prefixes and not any(m.machine.lower().startswith(x) for x in prefixes):
+    """Whether a row passes list's filters: its machine by prefix (--machine)
+    or this machine exactly (--here: `mini` is not `mini2`), its word
+    (--state), and every word, case-insensitively, in its alias, short,
+    project, repository, branch, in-charge line, status line or title."""
+    prefixes = [x.lower() for x in a.machine]
+    if (prefixes or a.here) and not ((a.here and m.local)
+                                     or any(m.machine.lower().startswith(x) for x in prefixes)):
         return False
     if a.state and m.state not in a.state:
         return False

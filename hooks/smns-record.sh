@@ -24,8 +24,10 @@ IFS= read -r -d '' input
 # looked at too: either admits. On a machine enrolled at a desk hub every
 # directory is a project (a directory nothing claims is in the machine's
 # own), so the enrollment's file admits them all; it is only looked for,
-# never read.
-enrolled=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}/daemon/hub.json
+# never read. So does the session's join override (`sminos join`), which
+# puts a session launched in no repository into a project.
+home=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}
+enrolled=$home/daemon/hub.json
 in_project() { # dir — whether a .smns or .git lies above it (a dir it cannot judge: yes)
   local d=$1
   [[ $d == /* && $d != *\\* ]] || return 0
@@ -39,7 +41,12 @@ if [[ ! -e $enrolled && $cwd != "$input" ]]; then
   cwd=${cwd#"${cwd%%[![:space:]]*}"}
   cwd=${cwd#\"}
   cwd=${cwd%%\"*}
-  in_project "$cwd" || { [[ -n ${CLAUDE_PROJECT_DIR:-} ]] && in_project "$CLAUDE_PROJECT_DIR"; } || exit 0
+  sid=${input#*\"session_id\":}
+  sid=${sid#"${sid%%[![:space:]]*}"}
+  sid=${sid#\"}
+  sid=${sid%%\"*}
+  in_project "$cwd" || { [[ -n ${CLAUDE_PROJECT_DIR:-} ]] && in_project "$CLAUDE_PROJECT_DIR"; } \
+    || { [[ $sid =~ ^[0-9a-fA-F-]+$ ]] && [[ -e $home/sessions/$sid.json ]]; } || exit 0
 fi
 
 root=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
