@@ -18,6 +18,7 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 - [x] (2026-10-19 06:27Z) Acceptance 1–8 live on both Macs at 7.186.0: 1, 7 and 8 pass, 4 passes slowly, 2, 5 and 6 are partial, 3 fails; findings F1–F6 (Outcomes & Retrospective)
 - [x] (2026-10-19 08:53Z) F1 and F3 fixed, and the uplink takes the org's directory ahead of its queued frames (doperpowers #257, merged 6be7bc4d, 7.188.1; the hub's push proven by MAWS #66); rolled to both Macs
 - [x] (2026-10-19 09:08Z) Acceptance 3–6 re-run live at 7.188.1: all four pass
+- [x] (2026-10-19 13:30Z) Board #98: the guide's and the skill split's eval record re-run on 7.188.2 — 155 runs in 12 arms (SSFSKIM/superpowers-evals `sminos-org-directory` at 3d8df79d); on that evidence the guide's `find` line is cut and its `join` line reworded (7.188.5); the skill body unchanged
 - [ ] Acceptance 9 and 10 live, 2's two-machine clause, ci-kit's registration (Outcomes & Retrospective, the live run's "What is left")
 
 ## Terms
@@ -495,6 +496,48 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 - Observation (M7 task review, 2026-10-18, corrected on its re-review): the eval record above overstates its evidence in three places, corrected here rather than in place so the original reading stays visible. (1) The before arm passed 6 of 10, not 5: of its four failures, two lost the outcome (misfiled: sent nothing; multi-repo: never joined) and two chose the other mechanism with the message arriving — peer-same-project called ListAgents first, and redirect used the harness's SendMessage, whose frame parser's inbox recorded twice while the engine reported "Failed to send to parser". The cause of that report lies in the world's fixture but is not established (the engine's 2.1.302 client half-closes after 150 ms on macOS and checks the peer's pid and process start, which the fake engine record lacks); the inbox now acknowledges each frame as it arrives, untested against the engine. (2) The guide's lines are not each ablation-proved: `join` is (both join scenarios fail without it); `charge`'s ablation changed behavior (no in-charge line) but moved no graded check, the multi-repo scenario having none for it; `find`'s ablation was void; the identity, `list` and `say` lines were never ablated, kept on reasoning (with 8 of 10 after runs never loading the skill, the guide is where such a session learns the tag syntax and its own project's origin). (3) No after run exercised the member half of the new SKILL.md body (#83's driving section included), and no arm ran the new body without the guide — the only guidance on an unenrolled machine. These open items will be carried in Outcomes & Retrospective; the redirect scenario is retitled to delivery through sminos, without re-running under the slot freeze.
   Evidence: the M7 task review (opus; the task-reviewer's sol pin was at its usage limit); `evals/fixtures/sminos-world/world.sh`, `evals/scenarios/sminos-multi-repo/checks.sh`.
 
+- Observation (#98, 2026-10-19): the eval record re-run on 7.188.2 (doperpowers 999bd3ee), after the slot freeze: 155 runs of a real interactive Claude Code 2.1.303 session (Opus 5.5) through `fixtures/sminos-world/run-local.sh`, in 12 arms that `arms.py` builds from that commit with one edit each to the guide — `after` (7.188.2 as it is), `noguide` (the hook prints nothing: the body alone), `abl-<line>` (one line removed), `abl-list-find`, `join-v2` (the join line reworded), `v2-abl-identity`, and `final` (`join-v2` without `find`: the guide 7.188.5 ships). Two runs were void and run again (a prompt typed and never submitted; a run stopped when its arm was superseded), so 153 are graded. The harness changed first, and every run is graded by the changed checks: the transcript checks missed a CLI called through a shell variable (`S=…/sminos; $S steer …`, the form most sessions write), so redirect's sminos check failed on it and the multi-repo and own-subagents checks passed without seeing it — `transcript.py` now reads such a variable as the CLI; multi-repo counted `join --help` as a move, and now counts `join <project>` and `join --cwd` only; the driver presses Enter up to three more times and ends a prompt never submitted as indeterminate. Three scenarios were added: `who-commit` (reach the session a commit's `Sminos-Session` line names, after it went on as a new session; the line names ci-kit's `docs`, while `gate-keeper`'s in-charge line names the runner image the commit touched), `machine-view` (this machine's sessions, ListAgents denied), and `cross-repo-ci-gate-large` (the CI-gate scenario among 37 sessions).
+  Evidence: SSFSKIM/superpowers-evals `sminos-org-directory` 3d8df79d (`fixtures/sminos-world/arms.py`, `regrade.sh`, the three scenarios); the runs under `/tmp/org98/runs/<arm>/<scenario>-<n>/` (pane, transcript, inboxes, checks), which /tmp's purge takes.
+- Observation (#98): the arms across the scenarios, passes over runs, with the route where it differs (skill: the sminos skill loaded; LA: ListAgents called; SM: the harness's SendMessage to a peer):
+
+  | scenario | 7.188.2 guide | no guide (the body alone) | 7.188.5 guide |
+  | --- | --- | --- | --- |
+  | peer in the same project | 3/3 | 1/1, skill | 1/1 |
+  | stray on another machine, LA denied | 3/3 | 1/1, skill | 1/1 |
+  | own subagents, LA denied | 1/1, SendMessage to its own | 1/1, same | 1/1, same |
+  | CI gate in another repository | 3/3 | 1/1, skill, LA | 3/3 |
+  | the same among 37 sessions (new) | 3/3 | — | 1/1 |
+  | misfiled scratch copy joins MAWS | **7/12** | 5/5, skill in each | 6/6 |
+  | multi-repository session joins once | 3/3 | **0/3**, no sminos call | 3/3 |
+  | enroll a machine (no guide in any arm: the machine is not enrolled yet) | 1/1, skill, `setup.md` | 1/1, same | 1/1, same |
+  | what is parser doing now | 3/3, one tool | 1/1, skill, LA, `watch` | 1/1 |
+  | redirect a busy member | 1/1, `say` | **0/1**: LA, SM twice, then the skill and `steer` | 1/1, `steer` |
+  | a read-only machine's undelivered message | 3/3, skill, `daemon policy`, nothing changed | 1/1, same | 1/1, same |
+  | reach a commit's session (new) | 3/3, `who` then `say` | 1/1, skill, LA, `who` | 1/1 |
+  | this machine's sessions, LA denied (new) | 3/3, `list --here`, one tool | — | 1/1 |
+
+  On M7's ten scenarios, 7.188.2's guide passes every one but misfiled (7/12 there), the body alone passes 8 (M7's before arm, the 7,541-token body without a guide, passed 6), and 7.188.5's guide passes all ten. No guided run called ListAgents; the guide-less arm called it in 4 of its 11 scenarios.
+- Observation (#98): each line's ablation, against the 7.188.2 guide, on the scenarios the line serves:
+
+  | line removed | scenario | with the line | without it |
+  | --- | --- | --- | --- |
+  | identity (`you are … in project … on machine …: <why>. A cd does not change your project.`) | misfiled, 7.188.2's join line | 7/12, skill in 2 | 2/6; both passes loaded the skill |
+  | | misfiled, the reworded join line | 12/12, skill in 2 | 6/6, skill in 4 |
+  | | multi-repo | 3/3 | 3/3 |
+  | `list` | this machine's sessions | 3/3, one tool (`list --here`) | 3/3, three tools on average: `--help` read, the skill once |
+  | | same project; what parser is doing | 6/6 | 6/6, `find` in its place |
+  | `find` | CI gate; misfiled; CI gate among 37 | 3/3; 7/12; 3/3 | 3/3; 3/3; 3/3, `list --org` in its place, the tool count unchanged |
+  | `list` and `find` together | CI gate; same project; parser now | 9/9, skill in none | 9/9, skill in 7 |
+  | `who` | reach a commit's session | 3/3, 2.3 tools | 2/3, 5.3 tools: one read the trailer, found no live session by its short, and asked nobody |
+  | `say` | same project; stray, LA denied; CI gate | 9/9; no SM, no LA, 2 tools | 8/9; SM in 7, LA in 3, 4.9 tools; the failure is its LA call |
+  | `charge` | multi-repo | an in-charge line set in 10 of 12 runs (four arms with the line) | 0/3: the list shows the session's title in its place |
+
+  `find` moves nothing because a guided session runs `find <words>; list --org` as one command: among 37 sessions its output was 5.7k characters with the line and 5.6–7.5k without it.
+- Observation (#98): under 7.188.2's join line ("when your standing work belongs to another project"), the misfiled session joined in 7 of 12 runs; four of the five misses offered the human the join instead of running it ("If you want, I can join MAWS"), and the fifth did not raise it. The skill body says what the line left out: `join` is for a session whose directory files it in the wrong project, a scratch copy its first example, and the guide-less sessions, which read the body, joined 5/5. Reworded to say it — `join <project>  when your directory files you in the wrong project (a scratch copy) or your standing work belongs to another; once, not per repository you visit` — the line joined 12/12 (Fisher's exact test against 7/12, p ≈ 0.04), the skill loaded twice, and the multi-repo session still joined once and never hopped (3/3).
+- Observation (#98): the skill body. At 7.188.2 `SKILL.md` is 3,497 tokens and `references/setup.md` 2,534 (`count_tokens`, `claude-opus-5-5`, counted as M7 counted the 7,541, which the same count reproduces), inside §9's 3,000–3,500 target. No body line was ablated alone; the guide-less arm is its test. A session loads it whenever its task names another session, and then passes every scenario but redirect, where the harness's SendMessage was tried before the skill was loaded. The multi-repo session, whose task names no other session, never loads it and never joins (0/3): that case is the guide's alone. The read-only scenario, whose rule now lives in `references/setup.md` behind one pointer in the body, passes 5/5 across three arms (7.188.2 three times, the guide-less arm, 7.188.5): each run read `daemon policy` and changed nothing, and one of the five read `setup.md`.
+- Observation (#98): the guide as a session reads it, with the installed plugin's path repeated on each verb line: 611 tokens at 7.188.2, 553 at 7.188.5 (the `find` line out, the `join` line longer). M7's 424 was a shorter path, before the `who` line.
+- Observation (#98): still not established — the harness's SendMessage to `parser`, the world's peer on the same machine, delivers its frame to the peer's inbox twice while the engine reports "Failed to send" (the guide-less redirect run and two `say`-ablation runs); to a peer on the other machine it answers "No agent named … is reachable", as it should.
+
 ## Decision Log
 
 - Decision: the verification this spec gets. One independent design review by a general-purpose subagent at model fable; the `doperpowers:adversarial-reviewer` buildability review of the execution section, dispatched in the same round; at the end, the branch review at doperpowers:review-code's xhigh panel, since the change is cross-repo (doperpowers, MAWS, ci-kit) and large.
@@ -586,6 +629,17 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-19, the plan-executor.
 - Decision (whole-branch review, 2026-10-19): the xhigh panel on e24c3fd4..363f6348 (opus deriver and finders, fable verifier; sol and astra at their usage limits) verified six findings, all fixed in 28340ded with a test that fails before each (ci-gate 39199569301): (1) a session entering a project carries the furthest export position it holds in any project here (`position_carry`, called where `join_on_sight` writes a `joined`), rather than seeking to the transcript's end, which would drop a mid-turn `.smns` move's `<message>`; this also removes the first move's re-export of the previous turn; (2) a `--bg` successor's own `joined` carries its predecessor's alias from the start (`handed_to`) — the closing review confirmed the alias already survived through the hand-off lineage and `publish_renames`, the panel's "never retried" not holding; (3) `list --here` matches this machine exactly; (4) the record hook's cheap look also admits a session holding a join override; (5) a tag `@<project>/<alias>` into a project `org.json` retires is refused; (6) an "elsewhere" label names a project by name only when the name resolves to it, else by id. A closing opus review of the fix commit found it correct; its one P3 (`find_target`'s verb route still reaches a retired project) and two accepted edges are in `docs/doperpowers/TECH-DEBT.md`.
   Date/Author: 2026-10-19, the plan-executor.
+- Decision (#98): the guide keeps a line only on its ablation (Surprises & Discoveries, #98):
+  - The identity line is kept. Without it, the misfiled session joined 2/6 against 7/12. Under the reworded join line, it loaded the skill 4 times in 6 runs against 2 in 12, to learn the project the line states. It is also the only place a session reads its own alias and short before its engine record exists.
+  - The frame line ("Other Claude sessions work in this org … use sminos (not on PATH)") is kept with no ablation of its own. It carries the two facts every verb line rests on: peers run on every machine and in every repository, and the CLI is off PATH. Removing the whole guide is its test: without any guide, the multi-repo session never called sminos (0/3).
+  - `list` is kept. Without it, this machine's sessions took three tools (`--help`, once the skill) where `list --here` takes one. With `find` also gone, 7 of 9 runs loaded the skill.
+  - `find` is cut. Removing it changed no outcome and no tool count in 9 runs across three scenarios, at 7 and at 37 sessions, because a guided session pairs it with `list --org` in one command. It stays in the body.
+  - `who` is kept. Without it, one session in three asked nobody, and the other two found `who` on their own in 6 and 7 tools, where the line's sessions took 2 or 3.
+  - `say` is kept. Without it, 7 of 9 runs tried the harness's SendMessage and 3 called ListAgents.
+  - `join` is reworded to name the misfiled directory (a scratch copy) beside standing work elsewhere: 12/12 against 7/12.
+  - `charge` is kept. Without it, no session set an in-charge line (0/3, against 10 of 12 with it), and other sessions find a session by that line.
+  The body is unchanged: no body line was ablated alone, and the guide-less arm shows it carrying what it is loaded for. 7.188.5 ships this guide; the `final` arm is its full pass (all thirteen scenarios, misfiled 6/6, multi-repo 3/3).
+  Date/Author: 2026-10-19, the #98 eval lane.
 
 ## Outcomes & Retrospective
 
@@ -614,15 +668,8 @@ The task reviews earned their keep. Every milestone but one needed at least one 
 - M7: help text, and an overstated eval record.
 
 **Still open, carried for whoever closes this initiative:**
-- **Evals.**
-  - One sample per arm.
-  - The `find` line's ablation was void.
-  - The identity, `list` and `say` lines were never ablated.
-  - No arm ran the new skill body without the guide, which is the only guidance on an unenrolled machine.
-  - The read-only scenario has not been re-run with the guard restored to the body.
-  - The cause of the before arm's SendMessage "Failed to send" in the fixture is not established.
-  - All of this was held under the 2026-10-19 06:30Z slot freeze. Re-run after it: a guide-less arm against the old body, ablations of identity, `list`, `say` and `find`, and 3 or more samples of the misfiled and multi-repo scenarios.
-- **The evals' home** (settled 2026-10-19): the owner chose a public fork; the scenarios and their runner are on `SSFSKIM/superpowers-evals`, branch `sminos-org-directory` at 9ddb82ab. Their follow-ups are board #98; the live `/clear`, fork and compaction check of the guide is #99.
+- **Evals** (board #98, run 2026-10-19 after the freeze; Surprises & Discoveries and Decision Log, #98). The guide-less arm, the identity, `list`, `say` and `find` ablations (with `who`, `charge`, and `list` and `find` together), 3 to 12 samples of the misfiled and multi-repo scenarios, and the read-only re-run are done. On that evidence 7.188.5 cuts the guide's `find` line and rewords its `join` line, and the skill body stands. Still open: the cause of the harness SendMessage's "Failed to send" in the fixture.
+- **The evals' home** (settled 2026-10-19): the owner chose a public fork. The scenarios and their runner are on `SSFSKIM/superpowers-evals`, branch `sminos-org-directory`: M7's at 9ddb82ab, #98's round at 3d8df79d. The live `/clear`, fork and compaction check of the guide is #99.
 - **`/clear` and fork.** Whether the guide reaches a `/clear` or a fork (a new session id, possibly before its engine record exists) is bounded by a short wait but not observed live.
 - **The real two-machine run of acceptance 1–9.** This is the orchestrating session's, after the merge, the ci-kit merge and the roll. Its transcript lands here. (Run 2026-10-19 for 1–8, with a re-run of 3–6 after the fix; below.)
 - **The owner's `permissions.deny` entry for `ListAgents`,** with its CLAUDE.md note, is the owner's step once the evals hold.
@@ -675,7 +722,7 @@ Defects and their fixes:
 
 What is left:
 - **Step 9 live.** No run looked at the desk's org view on the real desk. M6's browser tests prove it against the stand-in.
-- **Step 10.** It waits on the owner's `ListAgents` deny and on the eval follow-ups (board #98 and #99), as listed above.
+- **Step 10.** In the harness it holds: every scenario passes on 7.188.5's guide, the three with ListAgents denied among them (#98). Live, it waits on the owner's `ListAgents` deny and on #99.
 - **Step 2's two-machine clause.** The mini's doperpowers checkout is still at dd970773, which predates the `.smns`. A pull there, then a session in it, would show it.
 - **ci-kit in the directory.** Its `.smns` is merged (SSFSKIM/ci-kit#56) and is in both Macs' checkouts. But a project registers only when a session or verb first resolves it, and none has. `find ci-kit` and step 3's ci-kit row wait on that.
 - **F4.** Running step 6 in a real repository needs the owner to accept the engine's trust prompt once.
