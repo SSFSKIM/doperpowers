@@ -489,6 +489,9 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   `startup` the alias is usually present (the engine writes the record first), at a fresh session's first hook
   not always.
 
+- Observation (M7 task review, 2026-10-18): the eval record above overstates its evidence in three places, corrected here rather than in place so the original reading stays visible. (1) The redirect scenario's "before" failure is partly the fixture's: the world's fake inbox read until the connection closed before acknowledging, which `send_frame` does (it half-closes) and the engine's SendMessage does not, so the engine reported "Failed to send to parser" while parser's inbox recorded the frame twice (`/tmp/m7-eval/runs/before-1/sminos-redirect-midturn/`). The before arm still went through the harness rather than sminos, so that row and the peer-same-project row (ListAgents first) are mechanism-only differences, not lost messages: of the five before failures, three lost the outcome (misfiled, multi-repo, and the redirect only by the fixture) and two chose the other mechanism. (2) The guide's lines are not each ablation-proved: `join` is (both join scenarios fail without it); `charge`'s ablation changed behavior (no in-charge line) but moved no graded check, the multi-repo scenario having none for it; `find`'s ablation was void; the identity, `list` and `say` lines were never ablated, kept on reasoning (with 8 of 10 after runs never loading the skill, the guide is where such a session learns the tag syntax and its own project's origin). (3) No after run exercised the member half of the new SKILL.md body (#83's driving section included): the two runs that loaded the skill read setup material, and no arm ran the new body without the guide — the only guidance on an unenrolled machine. These are carried open in Outcomes & Retrospective; the fixture is fixed (an inbox acknowledges each frame) and the redirect scenario re-specified, without re-running under the slot freeze.
+  Evidence: the M7 task review (opus; the task-reviewer's sol pin was at its usage limit); `evals/fixtures/sminos-world/world.sh`, `evals/scenarios/sminos-multi-repo/checks.sh`.
+
 ## Decision Log
 
 - Decision: the verification this spec gets. One independent design review by a general-purpose subagent at model fable; the `doperpowers:adversarial-reviewer` buildability review of the execution section, dispatched in the same round; at the end, the branch review at doperpowers:review-code's xhigh panel, since the change is cross-repo (doperpowers, MAWS, ci-kit) and large.
@@ -568,7 +571,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   in the set (looking at a member now, redirecting a busy one, enrolling and putting a project on the hub,
   a read-only machine's undelivered message). #83 closes with this branch's merge.
   Date/Author: 2026-10-18, the orchestrator; written by the M7 executor.
-- Decision (M7): the guide carries the lines its ablations moved — who the session is and where its project
+- Decision (M7; "its ablations moved" overstates the evidence for every line but `join` — see Surprises & Discoveries, the M7 task review): the guide carries the lines its ablations moved — who the session is and where its project
   comes from, `list`/`--here`/`--org`, `find`, `say "@<short>"`/`"@<project>/<alias>"`, `join` (once), `charge`
   — and not "SendMessage is for your own subagents", whose removal changed neither scenario it targets. The
   CLI's absolute path is on every line. `sminos guide` never migrates. The evals run on a host runner
