@@ -275,8 +275,9 @@ reaches the tailnet's services before step 6, because only the profile (step 5) 
 9. **Apply.** Run the config repository's `sync/apply.py` (plugins, marketplaces, MCP servers,
    `~/.claude.json` seeding, the `devenv` link) as the user.
 10. **Managed settings and environment.** Write `/etc/claude-code/managed-settings.json` from the
-    profile (with an empty `prependPlugins` unless the profile sets one) and `/etc/devcloud/env`
-    from boot step 1, the profile, and `secrets.toml`'s `env` targets (Design §6).
+    profile (with an empty `prependPlugins` unless the profile sets one or is empty) and
+    `/etc/devcloud/env` from boot step 1, the profile, and `secrets.toml`'s `env` targets
+    (Design §6).
 11. **Services.** Install or start: the config pull job, the secrets refresh job, and the session
     store shipper (`session-mirror ship`); on an enrolled persistent host, the sminos daemon
     (Design §8). A service whose unit or environment changed is restarted.
@@ -320,13 +321,15 @@ shell rc reaches some of them and not others. Each setting goes where every read
   turns routing on and removes them when it turns routing off, so a commit taken while routing was
   off carries none; and empty values for Mac-only settings the synced file carries (a
   browser-extension token, `CLAUDE_CODE_PLUGIN_DIRS` pointing at an untracked directory).
-  Boot adds one more key unless the profile sets it: `"prependPlugins": []`. Managed settings of
-  any kind seat the engine's security default (`cc-plugin-sec-default@builtin`) outermost unless
-  managed `prependPlugins` is set and leaves it out, and the seated default passes the plugins a
-  person installs over on `classic.*`, the prompt's sections, context and attachments, and
-  `session.compact`: under it the guard (§9) scrubbed neither the system prompt, the context, the
-  attachments nor a compaction, and doperpowers' bridge never saw a permission prompt (Decision
-  Log, 2026-10-19). Managed `prependPlugins` also replaces the synced file's, so on a host the
+  Boot adds one more key unless the profile sets it or sets none: `"prependPlugins": []`. Managed
+  settings with any key seat the engine's security default (`cc-plugin-sec-default@builtin`)
+  outermost unless managed `prependPlugins` is set and leaves it out, and the seated default
+  passes the plugins a person installs over on classic hooks, the prompt's parts, compactions,
+  and the rows the transcript keeps from attachments, hook context and compactions: under it the
+  guard (§9) scrubbed neither what those carried to the gateway nor those rows, and doperpowers'
+  bridge never saw a permission prompt (Decision Log, 2026-10-19). An empty file is left as it
+  is: the engine counts no managed settings then, seats nothing, and honors the synced
+  `prependPlugins`. Managed `prependPlugins` also replaces the synced file's, so on a host the
   plugins the Macs seat in the prepend tier (to-human, doperpowers) load in the user tier, the
   bridge inside the guard rather than outside it; seating them as the Macs do is deferred
   (Decision Log). None of these keys can move to the process environment, where no managed file
@@ -891,7 +894,8 @@ otherwise `devcloud-services` runs the first three.
 
 **I8 — Profile** `~/.claude/devcloud/` (private): `managed-settings.json` (written to
 `/etc/claude-code/managed-settings.json`, with `"prependPlugins": []` added unless it sets
-`prependPlugins`; its `env.ANTHROPIC_BASE_URL` is the gateway step 6 checks), `profile.env` (`KEY=value` lines appended to `/etc/devcloud/env`; `TZ` also sets the
+`prependPlugins` or is empty; its `env.ANTHROPIC_BASE_URL` is the gateway step 6 checks),
+`profile.env` (`KEY=value` lines appended to `/etc/devcloud/env`; `TZ` also sets the
 system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_UID`,
 `DEVCLOUD_HOME`, read where the image is built), `home/` (files copied into the user's home at
 boot step 8 and every reconcile; secret-free).
@@ -958,9 +962,10 @@ clears a plugin's state when it unloads is unverified).
   be refused in auto mode, and a refused action is reported, never rerun for a different verdict
   (a rerun that passed was voided).
 - (2026-10-19) A host's managed settings, env keys only, seated the engine's security default
-  outermost, which passed the guard's prompt and compaction hooks over: the system prompt, the
-  context, attachments and a compaction reached the gateway unscrubbed (container probe of
-  2.1.303; Decision Log, 2026-10-19).
+  outermost, which passed the guard's prompt, compaction and transcript-row hooks over: the system
+  prompt, the context, attachments and a compaction reached the gateway unscrubbed, and the rows
+  the transcript keeps from attachments, hook context and compactions reached it, and the session
+  store, without the guard's scrub (container probe of 2.1.303; Decision Log, 2026-10-19).
 
 ## Decision Log
 
@@ -1265,7 +1270,8 @@ clears a plugin's state when it unloads is unverified).
 - Decision: A host's managed settings seat no security default. Boot step 10 and every reconcile
   write the profile's `managed-settings.json` with `"prependPlugins": []` added, unless the
   profile sets `prependPlugins` itself, which then stands (a profile can still seat the default
-  by listing it, or order plugins).
+  by listing it, or order plugins), or the file is empty, which the engine counts as no managed
+  settings (it seats nothing and honors the synced `prependPlugins`), so it is written as it is.
   Findings: a Linux container ran Claude Code 2.1.303 with the person's synced settings and
   plugins (secrets as stand-ins), a stand-in gateway, one made-up token in the project's
   `CLAUDE.md`, and one debug line added to each probed hook handler. Each run had a headless turn,
@@ -1275,14 +1281,17 @@ clears a plugin's state when it unloads is unverified).
   - The env-only file hosts had (B): the default "seated outermost: this machine has managed
     settings", the synced `prependPlugins` ignored (managed settings own both tier keys), and
     every plugin in the user tier. The default alone settled `classic.SessionStart`,
-    `classic.PermissionRequest`, `prompt.compose`, `prompt.context`, `prompt.attachment` and
-    `session.compact`; none of to-human's, doperpowers', devcloud's or cua's hooks on those events
-    ran, the bridge's permission raise among them. `prompt.submit`, `prompt.edit` and most
-    `session.append` rows still reached them. At the gateway the guard's system-prompt line was
-    absent and the made-up token arrived raw in every request, twice in the compaction's (the
-    context and the `/compact` instructions). In the engine bundles on hand the default passes
-    `classic.*` over from 2.1.270, the prompt events from 2.1.287 and `session.compact` by 2.1.300,
-    so every host so far has run this way.
+    `classic.PermissionRequest`, `prompt.compose`, `prompt.context`, `prompt.attachment`,
+    `session.compact`, and `session.append` on the attachment, hook-context and compaction doors
+    (43 of the probe's 52 rows); none of to-human's, doperpowers', devcloud's or cua's hooks on
+    those ran, the bridge's permission raise among them, so those rows reached the transcript, and
+    on a host the session store, without the guard's scrub (whether any held a value was not
+    checked). `prompt.submit` and `prompt.edit` still reached the plugins. The bundle's lists also
+    name `prompt.section`, `skill.prompt`, `attribution.text` and `settings.read`. At the gateway
+    the guard's system-prompt line was absent and the made-up token arrived raw in every request,
+    twice in the compaction's (the context and the `/compact` instructions). In the engine
+    bundles on hand the default passes `classic.*` over from 2.1.270, the prompt events from
+    2.1.287 and `session.compact` by 2.1.300, so every host so far has run this way.
   - The env plus `prependPlugins` and `enabledPlugins` copied from the synced list (C): the
     default not seated and every probed hook ran, but the engine refuses the prepend tier to a
     policy-enabled plugin loaded from the plugin cache ("not read in place from a local folder its
