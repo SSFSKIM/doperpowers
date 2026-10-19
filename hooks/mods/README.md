@@ -578,8 +578,10 @@ rows read from the transcript, and the export to the host).
 - **Requests from outside.** A permission prompt or a question the engine
   puts to its dialog is raised, and its `PermissionRequest` hook long-polls
   the child for a decision while the terminal's dialog stays up; an async
-  question of the ask mod is raised as it opens and answered through the ask
-  mod's external path (`answerAsync`). Each ends with one `settled` naming
+  question of the ask mod is raised as it opens, or as the bridge starts when
+  it was open before (a resumed session's, which the ask mod reads back while
+  the session is still starting; a reloaded module's), and answered through
+  the ask mod's external path (`answerAsync`). Each ends with one `settled` naming
   the side whose answer the engine used, read from the engine's
   `tool_decision` record of the call (raised to the mod through
   `telemetry.log`), else the transcript's mark of a hook's decision.

@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { ASK_TOOL, deliveryText, registerAsk, resetAsk } from '../../hooks/mods/ask'
+import { ASK_TOOL, ASYNC_RESULT, deliveryText, registerAsk, resetAsk } from '../../hooks/mods/ask'
 import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
@@ -3108,18 +3108,59 @@ describe('requests from outside: questions', () => {
     expect(h.ofType('settled').map((e) => e.request)).not.toContain('toolu_a3')
   })
 
-  test("an async question open before the bridge started (a reloaded module's, taken up from the last) is pending in its first resync", async () => {
+  /** The ask mod's hooks, registered apart from the harness's, its state cleared. */
+  const askHooks = () => {
     resetAsk()
-    const askHooks: { event: string; matcher?: Record<string, unknown>; handler: (...args: unknown[]) => Promise<unknown> }[] = []
+    const hooks: { event: string; matcher?: Record<string, unknown>; handler: (...args: unknown[]) => Promise<unknown> }[] = []
     registerAsk(((event: string, ...rest: unknown[]) => {
-      askHooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Record<string, unknown>) : undefined, handler: rest.at(-1) as (typeof askHooks)[number]['handler'] })
+      hooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Record<string, unknown>) : undefined, handler: rest.at(-1) as (typeof hooks)[number]['handler'] })
       return { catch: () => {} }
     }) as unknown as On)
-    const asked = askHooks.find((x) => x.event === 'tool.call' && x.matcher?.tool === ASK_TOOL)
+    return hooks
+  }
+
+  test("an async question open before the bridge started (a reloaded module's, taken up from the last) is pending in its first resync", async () => {
+    const asked = askHooks().find((x) => x.event === 'tool.call' && x.matcher?.tool === ASK_TOOL)
     await asked?.handler({ ui: { invalidate: () => {} } }, { tool: ASK_TOOL, tool_use_id: 'toolu_r1', questions: [FRUIT], async: true }, async () => ({}))
     const h = harness()
     await h.ready()
     expect(h.ofType('resync')[0]).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_r1', tool: ASK_TOOL, input: { questions: [FRUIT] }, async: true })] })
+    resetAsk()
+  })
+
+  test("a resumed session's open async asks, read back from its transcript before the bridge started, are pending in its first resync, once; an answered one is not", async () => {
+    const rebuild = askHooks().find((x) => x.event === 'classic.SessionStart')
+    const call = (uuid: string, parentUuid: string | null, id: string) => ({
+      type: 'assistant',
+      uuid,
+      parentUuid,
+      message: { id: `msg_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name: ASK_TOOL, input: { questions: [FRUIT], async: true } }] },
+    })
+    const result = (uuid: string, parentUuid: string, id: string) => ({ type: 'user', uuid, parentUuid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: ASYNC_RESULT }] } })
+    const transcript = [
+      call('a1', null, 'toolu_done'),
+      result('u1', 'a1', 'toolu_done'),
+      { type: 'user', uuid: 'u2', parentUuid: 'u1', message: { role: 'user', content: `The doperpowers plugin sent a message:\n${deliveryText('toolu_done', answered('Apple'))}` } },
+      call('a2', 'u2', 'toolu_open'),
+      result('u3', 'a2', 'toolu_open'),
+    ]
+      .map((row) => JSON.stringify(row))
+      .join('\n')
+    const h = harness({ messages: [{}] })
+    // The engine runs the SessionStart hooks, where the ask mod reads the asks
+    // back, while the plugin's session.start still waits on its tool
+    // registrations (live, 2.1.303): its notes come before the bridge started.
+    await rebuild?.handler(
+      { fs: { read: async () => transcript }, ui: { invalidate: () => {} } },
+      { hook_event_name: 'SessionStart', source: 'resume', session_id: SID, transcript_path: '/p/resumed.jsonl', cwd: '/w' },
+      async () => ({}),
+    )
+    await h.ready()
+    expect(h.ofType('resync')[0]?.pending).toEqual([expect.objectContaining({ request: 'toolu_open', tool: ASK_TOOL, input: { questions: [FRUIT] }, agentId: null, async: true })])
+    // A note that comes after the start (a rebuild slower than it) raises nothing twice.
+    onAskNote({ kind: 'open', id: 'toolu_open', questions: [FRUIT] })
+    await h.settle()
+    expect(h.ofType('raised')).toEqual([])
     resetAsk()
   })
 

@@ -242,6 +242,7 @@ function answeredThrough(id: string, dialog: { outcome: string; by: string }) {
  * that ended with no record of who decided it is withdrawn.
  */
 export function onAskNote(note: AskNote) {
+  // No bridge, or none yet: bridgeStart raises the asks still open as it starts.
   if (state.post === undefined) {
     return
   }
