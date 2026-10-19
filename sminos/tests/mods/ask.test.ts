@@ -197,6 +197,8 @@ function harness(
     kept?: Map<string, unknown>
     /** The conversation the engine holds, as `$.session.messages()` answers it in each form; one that throws rejects. */
     history?: { rows: SessionMessage[]; api: { role: string; content: unknown }[] } | (() => never)
+    /** What `$.session.id()` answers; `s` by default. */
+    sessionId?: string
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -280,6 +282,7 @@ function harness(
     },
     turn: { abort: async (args: unknown) => void calls.push({ op: 'turn.abort', args }) },
     session: {
+      id: async () => options.sessionId ?? 's',
       messages: async (opts?: { as?: string }) => {
         const history = typeof options.history === 'function' ? options.history() : options.history
         return (opts?.as === 'api' ? history?.api : history?.rows) ?? []
@@ -1757,6 +1760,22 @@ describe('a reload of the module', () => {
     await reload(r)
     expect(asyncAsks().map((a) => a.id)).toEqual(['t-moved', asyncAsks()[1]?.id])
     expect(asyncAsks().length).toBe(2)
+  })
+
+  test("doperpowers' shape-1 value is taken up only for the session it was kept for: a /clear before the move leaves it behind", async () => {
+    const open = { id: 't-before-clear', questions: [BACKEND], status: 'open' }
+    const before = { shape: 1, asks: [open], undelivered: [], isTurnRunning: false, store: { slug: '-repo', sessionId: 's-old' } }
+    const cleared = harness({ kept: new Map<string, unknown>([['doperpowers.ask', before]]), sessionId: 's-new' })
+    await cleared.start()
+    expect(asyncAsks()).toEqual([])
+    const same = harness({ kept: new Map<string, unknown>([['doperpowers.ask', before]]), sessionId: 's-old' })
+    await same.start()
+    expect(asyncAsks()).toEqual([open])
+    // Kept with no session named, it cannot be told apart: left behind too.
+    const { store: _, ...unnamed } = before
+    const anonymous = harness({ kept: new Map<string, unknown>([['doperpowers.ask', unnamed]]), sessionId: 's-old' })
+    await anonymous.start()
+    expect(asyncAsks()).toEqual([])
   })
 
   test('a value of another shape under either key is not taken up', async () => {

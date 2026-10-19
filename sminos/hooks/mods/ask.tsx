@@ -998,14 +998,23 @@ function restore(snapshot: { asks: OpenAsk[]; undelivered: Delivery[]; isTurnRun
   store = snapshot.store
 }
 
-/** The snapshot a module before this one kept: this plugin's own (shape 2), else, for the release that moved the ask, doperpowers' (shape 1). */
+/**
+ * The snapshot a module before this one kept: this plugin's own (shape 2),
+ * else, for the release that moved the ask, doperpowers' (shape 1), if it was
+ * kept for this session. Once doperpowers' ask is gone nothing forgets that
+ * value at a /clear, so one kept before a /clear names the conversation the
+ * /clear ended.
+ */
 async function keptBefore($: EngineInterface): Promise<Parameters<typeof restore>[0] | undefined> {
   const { value } = await $.state.get(KEPT)
   if (value !== undefined) {
     return isRecord(value) && value.shape === 2 ? (value as AskSnapshot) : undefined
   }
   const before = (await $.state.get(KEPT_BEFORE)).value as unknown
-  return isRecord(before) && before.shape === 1 ? (before as unknown as Parameters<typeof restore>[0]) : undefined
+  if (!isRecord(before) || before.shape !== 1 || !isRecord(before.store) || before.store.sessionId !== (await $.session.id())) {
+    return undefined
+  }
+  return before as unknown as Parameters<typeof restore>[0]
 }
 
 function forgetAsyncAsks() {
