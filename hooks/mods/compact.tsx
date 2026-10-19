@@ -24,20 +24,21 @@ export function thresholdOf(window: number): number {
 /**
  * The offer's gate: a turn's end is offered a compaction from `floor`
  * tokens on, once the context has grown `step` since the last offer. The
- * floor sits below where the tool's own guidance turns to "any reasonable
- * checkpoint" (`EARLY_BELOW`), so a clean checkpoint before it is not
- * missed; the step keeps a conversation that adds a few k a turn from
- * being asked every turn, while a working turn (tens of k) is asked each
- * time. `DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (tokens) override
+ * floor is where the tool's own guidance turns to "any reasonable
+ * checkpoint" (`EARLY_BELOW`); below it the model compacts unasked once
+ * the work at hand is done, and is not spent a step on an offer. The step
+ * keeps a conversation that adds a few k a turn from being asked every
+ * turn, while a working turn (tens of k) is asked each time. `DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (tokens) override
  * them for a launch; 0 and 0 is an offer at every turn's end.
  */
 export type OfferGate = { floor: number; step: number }
-export const OFFER_GATE: OfferGate = { floor: 220_000, step: 75_000 }
+export const OFFER_GATE: OfferGate = { floor: 300_000, step: 70_000 }
 
 /**
  * Below this, an offer says compacting is not necessarily recommended: the
  * description's "under about 300k" band, where only a clean checkpoint is
- * worth it.
+ * worth it. The default floor is this figure, so only a launch that lowers
+ * the floor is offered below it.
  */
 export const EARLY_BELOW = 300_000
 
