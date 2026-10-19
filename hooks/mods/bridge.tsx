@@ -1244,6 +1244,34 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
 
 const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta'])
 
+/**
+ * A result's text as the desk draws it. Core sets `text` (the record as the
+ * model reads it); a hook's own `{ result }` has none, and the record it
+ * returns is the only form the bridge may post. That covers any hook's own
+ * answer: the secrets guard's scrubbed record (with doperpowers seated
+ * outside devcloud, core's text, which holds the values, never comes up) and
+ * this plugin's own tools (ask, compact, appeal). The record is drawn as it
+ * is: a string whole, an array of content blocks as its text blocks joined
+ * (an image's data is not text), any other record as JSON.
+ */
+function shownText(result: { result?: unknown; text?: unknown }): string | undefined {
+  if (typeof result.text === 'string') {
+    return result.text
+  }
+  if (typeof result.result === 'string') {
+    return result.result
+  }
+  const record = result.result
+  if (Array.isArray(record) && record.every((b) => typeof b === 'object' && b !== null && typeof (b as { type?: unknown }).type === 'string')) {
+    return record.flatMap((b: { type: string; text?: unknown }) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
+  }
+  try {
+    return JSON.stringify(record, null, 2)
+  } catch {
+    return undefined
+  }
+}
+
 /** A tool call's own arguments, every string in them held to TEXT_CAP. */
 function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean } {
   return capped(Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k))))
@@ -1439,7 +1467,8 @@ export function registerBridge(on: On) {
         await Promise.race([interrupted.recorded, new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
         held?.cancel()
       }
-      const text = capped(result.text)
+      const shown = result.deny === undefined ? shownText(result) : undefined
+      const text = capped(shown)
       const denied = capped(result.deny)
       if (isDialog) {
         return result
@@ -1450,7 +1479,7 @@ export function registerBridge(on: On) {
         ...base,
         isError: result.isError === true,
         ...(result.deny !== undefined && { denied: denied.value }),
-        ...(typeof result.text === 'string' && { text: text.value }),
+        ...(shown !== undefined && { text: text.value }),
         ...((text.cut || denied.cut) && { truncated: true }),
       })
       return result
