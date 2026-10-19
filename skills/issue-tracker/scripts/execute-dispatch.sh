@@ -50,7 +50,9 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SMINOS_CLI="${SMINOS_CLI:-$(cd "$SKILL_DIR/../sminos/scripts" && pwd)/sminos}"
+# shellcheck source=_sminos_cli.sh
+. "$SCRIPT_DIR/_sminos_cli.sh"
+sminos_cli
 # ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME, then $DAEMON_HOME,
 # then the default. Both names are exported at the same value below, so the
 # CLI, the board scripts and every child resolve one root — a pipeline that
@@ -404,7 +406,7 @@ PY
   # pointed at from here.
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$C_TICKET" \
     P_ISSUE_URL="$BOARD_API_URL/tickets/$C_TICKET" \
-    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_SMINOS_CLI="$SMINOS_CLI" \
     P_ENV_TRACKER_ISSUE=none P_TECH_DEBT_ISSUE=none \
     P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_PROTOCOL_FILE="$protocol_file" P_DECOMPOSE_DOC="$decompose" \
@@ -946,7 +948,7 @@ PY
   # (optional — "none" when the board has no open issue labeled tech-debt).
   td="$(gh issue list -R "$BOARD_REPO" --label tech-debt --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)"
   prompt="$(P_ROLE="$role" P_ISSUE_NUMBER="$n" P_ISSUE_URL="$T_URL" \
-    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" \
+    P_REPO="$BOARD_REPO" P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_SMINOS_CLI="$SMINOS_CLI" \
     P_ENV_TRACKER_ISSUE="${et:-none}" P_TECH_DEBT_ISSUE="${td:-none}" \
     P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" P_REVIEW_LEVEL="$REVIEW_LEVEL" \
     P_PROTOCOL_FILE="$protocol_file" \

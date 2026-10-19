@@ -55,7 +55,11 @@ export SMINOS_HOME DAEMON_HOME
 # needed it to write (and deadlocks against a caller already holding it).
 # Once per process, and fail closed: "the migration broke" and "the fleet is
 # idle" are indistinguishable downstream.
-SMINOS_CLI="${SMINOS_CLI:-$BOARD_SCRIPTS/../../sminos/scripts/sminos}"
+# The CLI itself is resolved where it is needed — here only when a cutover is
+# pending; a verb that drives the CLI calls sminos_cli itself — so a verb that
+# never touches sminos does not depend on finding it.
+# shellcheck source=_sminos_cli.sh
+. "$BOARD_SCRIPTS/_sminos_cli.sh"
 _sminos_cutover_pending() {
   [ -z "${SMINOS_MIGRATED:-}" ] || return 1
   # A former root still a real directory: the daemon substrate's, or sminos's
@@ -74,11 +78,12 @@ _sminos_cutover_pending() {
   [ -e "$1" ]
 }
 if _sminos_cutover_pending; then
+  sminos_cli
   "$SMINOS_CLI" migrate --quiet \
     || die "sminos migrate failed — refusing to read a possibly half-migrated registry"
 fi
 SMINOS_MIGRATED=1
-export SMINOS_CLI SMINOS_MIGRATED
+export SMINOS_MIGRATED
 
 # shellcheck source=_binding.sh
 . "$BOARD_SCRIPTS/_binding.sh"

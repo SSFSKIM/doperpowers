@@ -298,6 +298,11 @@ export function registerSecrets(on: On) {
   on('session.start', { isInteractive: false }, secretsStart)
   on('state.get', { plugin: 'devcloud', key: 'secrets-guard' }, () => MARKER_READ).catch(() => MARKER_READ)
 
+  // Unmatched, so this module is a link of every call's chain. sminos's
+  // bridge relies on that: it reads `next.trace` after each call, and with
+  // the marker live and no `devcloud` link beneath it, it takes itself to be
+  // inside this guard and turns off. A matcher here would turn every placed
+  // machine's bridge off on the calls it leaves out.
   on('tool.call', async ($, e, next) => {
     let input = e
     const notes: string[] = []
@@ -341,6 +346,9 @@ export function registerSecrets(on: On) {
 
   // Every row the conversation keeps, whatever door it came in by. An engine
   // row cannot be refused: one the guard failed on is kept as it came.
+  // Unmatched for sminos's bridge too, which judges its place from each row's
+  // `next.trace` as from each call's (tool.call above): a matcher here would
+  // turn a placed machine's bridge off on the rows it leaves out.
   on('session.append', async ($, e, next) => {
     await refresh($, false)
     let isChanged = false

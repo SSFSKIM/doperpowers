@@ -267,6 +267,8 @@ resume|send)
 esac
 EOF
 chmod +x "$DS/sminos"
+# The phase-4 review dispatcher sources lib.sh from beside the CLI it resolved.
+ln -s "$REPO_ROOT/sminos/skills/sminos/scripts/lib.sh" "$DS/lib.sh"
 
 SW() {  # one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" \

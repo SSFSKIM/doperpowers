@@ -94,7 +94,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$SCRIPT_DIR}"
-SMINOS_CLI="${SMINOS_CLI:-$(cd "$SKILL_DIR/../sminos/scripts" && pwd)/sminos}"
+# shellcheck source=_sminos_cli.sh
+. "$SCRIPT_DIR/_sminos_cli.sh"
+sminos_cli
 # ONE registry-root rule, the sminos CLI's own: $SMINOS_HOME, then $DAEMON_HOME,
 # then the default. Both names are exported at the same value below, so the
 # CLI, the board scripts and every child resolve one root — a pipeline that

@@ -13,14 +13,19 @@ import {
   createFetcher,
   createReloader,
   heldText,
+  isAskDialogUp,
+  isMainTurnRunning,
   outputText,
   parseInstalled,
   registerReload,
   reloadRow,
+  resetReload,
   runningRecord,
   type InstallRecord,
   type Place,
 } from '../../hooks/mods/reload'
+import { resetCompact } from '../../hooks/mods/compact'
+import { register } from '../../hooks/mods/register'
 
 tier('user')
 
@@ -803,6 +808,112 @@ describe('reloadRow', () => {
   test('the output text drops its tag, an error\'s too', async () => {
     expect(outputText(OUTPUT.content)).toBe('Reloaded: 10 plugins · 24 skills')
     expect(outputText([{ type: 'text', text: '<local-command-stderr>Failed to reload: boom</local-command-stderr>' }])).toBe('Failed to reload: boom')
+  })
+})
+
+describe("what the reload waits for, read without the ask's module: sminos's ask snapshot and the engine's turns", () => {
+  /** The module's hooks on a fake `on`, and a session start whose engine has sminos's snapshot as `ask`. */
+  function startHarness() {
+    const hooks: { event: string; matcher: Record<string, unknown> | undefined; handler: (...args: unknown[]) => unknown }[] = []
+    resetReload()
+    registerReload(((event: string, ...rest: unknown[]) => {
+      hooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Record<string, unknown>) : undefined, handler: rest[rest.length - 1] as (...args: unknown[]) => unknown })
+      return { catch: () => undefined }
+    }) as unknown as On)
+    const hook = (event: string, e: Record<string, unknown>) => {
+      const found = hooks.filter((h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v)))
+      expect(found.length).toBe(1)
+      return found[0]!.handler
+    }
+    const engine = (ask: unknown) => ({
+      plugin: { name: 'doperpowers', root: '/src/doperpowers' },
+      env: { get: async (name: string) => (name === 'HOME' ? '/h' : undefined) },
+      settings: { read: async () => ({ enabledPlugins: {} }) },
+      fs: { stat: async () => Promise.reject(new Error('ENOENT')), read: async () => Promise.reject(new Error('ENOENT')), exists: async () => false },
+      clock: { every: () => ({ cancel: () => undefined }) },
+      ui: { log: () => undefined, toast: () => undefined },
+      state: { get: async (ref: { plugin: string; key: string }) => (ref.plugin === 'sminos' && ref.key === 'ask' && ask !== undefined ? { value: ask, version: 3 } : { value: undefined, version: 0 }) },
+    })
+    const start = (ask?: unknown) => hook('session.start', { isInteractive: true })(engine(ask), { cwd: '/w', isInteractive: true }, async () => ({}))
+    const write = (value: unknown) =>
+      hook('state.set', { plugin: 'sminos', key: 'ask' })(engine(value), { plugin: 'sminos', key: 'ask', value }, async () => ({ isSet: true, version: 4 }))
+    const turn = (event: 'turn.start' | 'turn.complete', agentId?: string) =>
+      hook(event, { turnId: 't1' })(engine(undefined), { turnId: 't1', ...(agentId !== undefined && { agentId }) }, async () => ({}))
+    return { start, write, turn }
+  }
+  const SNAPSHOT = { shape: 2, asks: [], undelivered: [], isTurnRunning: false, answered: 0 }
+
+  test('a dialog already up when the module starts (a reload of doperpowers alone) is read at the session start', async () => {
+    const h = startHarness()
+    await h.start({ ...SNAPSHOT, isDialogUp: true })
+    expect(isAskDialogUp()).toBe(true)
+  })
+
+  test("then each write of the snapshot keeps it: the dialog's close lets the reload run", async () => {
+    const h = startHarness()
+    await h.start({ ...SNAPSHOT, isDialogUp: false })
+    expect(isAskDialogUp()).toBe(false)
+    expect(await h.write({ ...SNAPSHOT, isDialogUp: true })).toEqual({ isSet: true, version: 4 })
+    expect(isAskDialogUp()).toBe(true)
+    await h.write({ ...SNAPSHOT, isDialogUp: false })
+    expect(isAskDialogUp()).toBe(false)
+  })
+
+  test('with sminos absent no value is ever written, which reads as no dialog', async () => {
+    const h = startHarness()
+    await h.start()
+    expect(isAskDialogUp()).toBe(false)
+    await h.write(undefined)
+    expect(isAskDialogUp()).toBe(false)
+  })
+
+  test("the main turn is the engine's: running from its start to its end; a subagent's turns are not it", async () => {
+    const h = startHarness()
+    await h.start()
+    await h.turn('turn.start', 'a1')
+    expect(isMainTurnRunning()).toBe(false)
+    await h.turn('turn.start')
+    expect(isMainTurnRunning()).toBe(true)
+    await h.turn('turn.complete', 'a1')
+    expect(isMainTurnRunning()).toBe(true)
+    await h.turn('turn.complete')
+    expect(isMainTurnRunning()).toBe(false)
+  })
+})
+
+describe("the main turn the reload waits on, through the plugin's hooks in their registered order", () => {
+  test("it runs until the compaction the compact tool asked for at the turn's end has run", async () => {
+    resetReload()
+    resetCompact()
+    const hooks: { event: string; matcher: Record<string, unknown> | undefined; handler: (...args: unknown[]) => unknown }[] = []
+    register(((event: string, ...rest: unknown[]) => {
+      hooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Record<string, unknown>) : undefined, handler: rest[rest.length - 1] as (...args: unknown[]) => unknown })
+      return { catch: () => undefined }
+    }) as unknown as On)
+    let isRunningWhileCompacting: boolean | undefined
+    const $ = {
+      session: {
+        compact: async () => {
+          isRunningWhileCompacting = isMainTurnRunning()
+          return { messages: [] }
+        },
+      },
+      prompt: { submit: async () => ({}) },
+      ui: { log: () => undefined, toast: () => undefined },
+    }
+    /** `e` down every hook of `event` that matches it, the first registered outermost, as the engine nests one module's hooks. */
+    const dispatch = (event: string, e: Record<string, unknown>) => {
+      const chain = hooks.filter((h) => h.event === event && Object.entries(h.matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v)))
+      const at = (i: number, input: Record<string, unknown>): unknown =>
+        i === chain.length ? {} : chain[i]!.handler($, input, async (inner: Record<string, unknown>) => at(i + 1, inner))
+      return at(0, e)
+    }
+    await dispatch('turn.start', { turnId: 't1', text: '' })
+    const tool = hooks.find((h) => h.event === 'tool.call' && h.matcher?.tool === 'mcp__doperpowers__compact')!
+    await tool.handler($, { tool: 'mcp__doperpowers__compact', resume: 'go on' }, async () => ({}))
+    await dispatch('turn.complete', { turnId: 't1', reason: 'answer' })
+    expect(isRunningWhileCompacting).toBe(true)
+    expect(isMainTurnRunning()).toBe(false)
   })
 })
 

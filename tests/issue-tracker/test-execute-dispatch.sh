@@ -997,7 +997,7 @@ s["issues"]["31"] = {"number": 31, "id": "ID_31", "title": "Contract the seat",
 s["next"] = 32
 json.dump(s, open(os.environ["MOCK_GH_STATE"], "w"))
 PY
-REAL_SMINOS="$REPO_ROOT/skills/sminos/scripts/sminos"
+REAL_SMINOS="$REPO_ROOT/sminos/skills/sminos/scripts/sminos"
 rc=0; out="$(env -u CLAUDE_CODE_SESSION_ID CT_HARNESS="$CT/harness" SMINOS_CLI="$REAL_SMINOS" DAEMON_HOME="$CT/registry" SMINOS_HOME="$CT/registry" \
   PATH="$CT_BIN:$PATH" "$DISPATCH" 31 2>&1)" || rc=$?
 assert_contains "$out" "dispatched #31" "the dispatch through the real CLI succeeds"

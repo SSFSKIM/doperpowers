@@ -35,11 +35,19 @@ Work deferred out of a session lands as a ticket on the board (`issue-tracker`, 
 
 ### Claude Code
 
-doperpowers ships as a Claude Code plugin from a self-hosted marketplace in this repo. It installs side by side with anything else you have.
+doperpowers ships as a Claude Code plugin from a self-hosted marketplace in this repo. It installs side by side with anything else you have. The marketplace carries four plugins: `doperpowers` (the skills and agents), `sminos` (the project family: sessions that see and message each other and you, across machines; its CLI, the bridge and the async question tool), `to-human` (the report view of a session under the `to-human` output style; it installs `sminos` with it) and `devcloud` (opt-in, the cloud dev host and its secrets guard).
 
 ```text
 /plugin marketplace add SSFSKIM/doperpowers
 /plugin install doperpowers@doperpowers
+/plugin install sminos@doperpowers
+/plugin install to-human@doperpowers
+```
+
+Their hooks run in the order your settings give them. Put this in `~/.claude/settings.json` so the report view sees every row first and sminos's bridge sits outside every other plugin's hooks (a secrets guard's among them):
+
+```json
+"prependPlugins": ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"]
 ```
 
 > Add it with the `owner/repo` form above, not a raw URL to `marketplace.json`. The plugin's source is the repo root, so Claude clones the whole repository for that path to resolve.
@@ -86,7 +94,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 
 **Track it and coordinate**
 - `issue-tracker` — the board as a backlog, in GitHub issues or on an Arkho board service: register, search, take a named ticket, close it out (its automatic dispatch is dormant)
-- `sminos` — the project family: every session in a project is a member that can message the others and its human, spawn and retire background sessions, and span machines
+- `sminos` — the project family, shipped as the `sminos` plugin: every session in a project is a member that can message the others and its human, spawn and retire background sessions, and span machines
 
 **Deployed alongside, not a skill**
 - `application-agents/triaging-feedback/` — the feedback→triage poller: turns product feedback into grounded board tickets
@@ -95,7 +103,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 - `writing-skills` — create and test new skills that shape agent behavior
 
 **Output style**
-- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent sends messages in `<message>` (carrying a `★ Insight` block on its implementation choices when it implemented something, opening with a `⚠ Critical` block when work was lost, degraded, blocked, or significantly slowed, which ends on how far that is handled and whether it needs the human, and for what, and naming every bottleneck or friction on quality or throughput with how it would resolve or mitigate it) and asks for input through `mcp__doperpowers__AskUserQuestion` (the native AskUserQuestion plus `async`, which the style names over the native tool) — with `async: true` when it can work on while the human decides; a reader shows only those messages and the questions, with old `<to-human>`, `<essential>`, `<need-input>` and `<insight>` marks read as aliases of `<message>`. Select per launch with `"outputStyle": "to-human"`.
+- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent sends messages in `<message>` (carrying a `★ Insight` block on its implementation choices when it implemented something, opening with a `⚠ Critical` block when work was lost, degraded, blocked, or significantly slowed, which ends on how far that is handled and whether it needs the human, and for what, and naming every bottleneck or friction on quality or throughput with how it would resolve or mitigate it) and asks for input through `mcp__sminos__AskUserQuestion` (the sminos plugin's: the native AskUserQuestion plus `async`, which the style names over the native tool) — with `async: true` when it can work on while the human decides; a reader shows only those messages and the questions, with old `<to-human>`, `<essential>`, `<need-input>` and `<insight>` marks read as aliases of `<message>` (that reader is the `to-human` plugin). Select per launch with `"outputStyle": "to-human"`.
 
 ---
 

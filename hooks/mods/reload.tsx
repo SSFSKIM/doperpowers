@@ -1,7 +1,5 @@
 import type { On } from 'claude-code'
 
-import { isAskDialogUp, isMainTurnRunning } from './ask'
-
 /**
  * Plugin updates reach a running session on their own. The engine reads
  * installed_plugins.json once per process and tells no other session when one
@@ -753,12 +751,64 @@ export function outputText(content: readonly unknown[]): string {
 }
 
 /**
+ * The sminos plugin's ask snapshot (its types/sminos.d.ts), whose
+ * `isDialogUp` the reload waits on: the module that raised an ask's dialog
+ * takes its answer. Never written where sminos is not loaded.
+ */
+const ASK = { plugin: 'sminos', key: 'ask' } as const
+
+/** What the reloader's idle check reads, kept current by hooks (the check is synchronous). */
+let isDialogUp = false
+let isTurnRunning = false
+
+/** Whether an ask's dialog is up, as sminos's snapshot last said. */
+export const isAskDialogUp = () => isDialogUp
+/** Whether a main-conversation turn is running: a slash command run now waits for its end. */
+export const isMainTurnRunning = () => isTurnRunning
+
+/** Forgets what the hooks read; for tests, which share this module. */
+export function resetReload() {
+  isDialogUp = false
+  isTurnRunning = false
+}
+
+const dialogUpIn = (value: unknown) => isRecord(value) && value.isDialogUp === true
+
+/**
  * Registers the watch and the fetch, in interactive sessions only: headless
  * runs refuse a plugin's `/reload-plugins`. `DOPERPOWERS_AUTORELOAD=off` (or
  * 0, false) leaves a launch on the versions it loaded and fetches nothing.
  * And the hook that keeps a reload's rows from the model, wherever one runs.
  */
 export function registerReload(on: On) {
+  // The ask's dialog, mirrored from each write of sminos's snapshot; seeded
+  // at the session start below, so a reload of this plugin alone does not
+  // miss a dialog already up.
+  on('state.set', { plugin: 'sminos', key: 'ask' }, (_, e, next) => {
+    isDialogUp = dialogUpIn(e.value)
+    return next(e)
+  })
+  // The main turn, the engine's own (compact.tsx and agents.tsx hold the
+  // module's unmatched registrations; a turn's id is never empty). A
+  // subagent's run raises its own, with its agentId. Registered ahead of
+  // compact (register.tsx), so its end comes after the compaction compact
+  // runs at the turn's end.
+  on('turn.start', { turnId: /./ }, (_, e, next) => {
+    if (e.agentId === undefined) {
+      isTurnRunning = true
+    }
+    return next(e)
+  })
+  on('turn.complete', { turnId: /./ }, async (_, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      if (e.agentId === undefined) {
+        isTurnRunning = false
+      }
+    }
+  })
+
   // The reload's rows, emptied: none can be refused, and each is kept and
   // sent as `(no content)`, which the screen does not draw. The output's
   // text goes to the person as this plugin's transcript line, a notice no
@@ -781,6 +831,11 @@ export function registerReload(on: On) {
 
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const result = await next(e)
+    try {
+      isDialogUp = dialogUpIn((await $.state.get(ASK)).value)
+    } catch (error) {
+      $.ui.log(`reload: the ask's dialog could not be read: ${message(error)}`, { to: 'debug' })
+    }
     const off = await $.env.get('DOPERPOWERS_AUTORELOAD')
     if (off === 'off' || off === '0' || off === 'false') {
       return result

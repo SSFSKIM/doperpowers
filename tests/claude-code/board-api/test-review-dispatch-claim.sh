@@ -94,6 +94,8 @@ PY
 echo "seat spawned: $name  [${uuid%%-*} / $uuid]  group=test  status=working  (reply: sminos reply ${uuid%%-*})"
 EOF
 chmod +x "$DS/sminos"
+# review-dispatch sources lib.sh from beside the CLI it resolved: the real one.
+ln -s "$REPO_ROOT/sminos/skills/sminos/scripts/lib.sh" "$DS/lib.sh"
 
 apirepo() {  # apirepo <port> — a fresh checkout bound to the mock on <port>
   local d; d="$(mkrepo)"; mkdir -p "$d/.doperpowers"

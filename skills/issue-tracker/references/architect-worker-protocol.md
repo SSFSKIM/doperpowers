@@ -175,7 +175,7 @@ PLAN-EXECUTION from that pin: the same plan, one lane over.
 
 Before dispatching, set your own status line once, so the fleet view says
 what this seat is doing:
-`{{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias>
+`{{SMINOS_CLI}} status <your alias>
 "building: <plan path>"` (the CLI is not on PATH; your seat is named
 `<n>-<slug>` and `sminos list` shows it). Progress itself lives in the SDE
 ledger or the spec's `Progress` section, and `sminos attach` shows the
@@ -228,7 +228,7 @@ handoff. You stay bound to the ticket through it, and your scope ends at
 together:
 
     {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <PR URL> --branch <branch>
-    {{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"
+    {{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"
 
 (the sminos CLI is not on PATH; `sminos list` shows your seat's name.)
 Your turn ends while the agent works, so the fleet view shows this seat
@@ -521,7 +521,7 @@ lineage.
    in in-review permanently. Then Closing Artifact's act 1 — two writes,
    together:
    {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<summary>" --pr <package URL> --branch <integration ref>
-   {{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing (scale): <package URL>"
+   {{SMINOS_CLI}} status <your alias> "reviewing (scale): <package URL>"
    Add `--branch` when the composition HAS an integration ref — that is
    the branch the reviewer checks out and reviews against the default
    branch; omit it when the children landed on the default branch

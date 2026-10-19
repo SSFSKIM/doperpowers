@@ -312,6 +312,8 @@ PYX
 exit 0
 EOF
 chmod +x "$DS/sminos"
+# The phase-4 review dispatcher sources lib.sh from beside the CLI it resolved.
+ln -s "$REPO_ROOT/sminos/skills/sminos/scripts/lib.sh" "$DS/lib.sh"
 
 # The sweep's tick lock is keyed by BINDING, so a drill that plants or removes
 # one has to name the same digest _sweep_api.sh computes:

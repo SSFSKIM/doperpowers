@@ -61,7 +61,9 @@ SMINOS_HOME="$DAEMON_HOME"
 # _lib.sh, so it carries its own preflight — same stat-cheap gate, for the
 # same reason: the migration takes the registry lock, and paying that on
 # every run would serialise gc against every writer.
-SMINOS_CLI="${SMINOS_CLI:-$(cd "$(dirname "$0")/../../sminos/scripts" && pwd)/sminos}"
+# The CLI comes from the board's one resolver, called only when it is needed.
+# shellcheck source=_sminos_cli.sh
+. "$(cd "$(dirname "$0")" && pwd)/_sminos_cli.sh"
 _sminos_cutover_pending() {
   [ -z "${SMINOS_MIGRATED:-}" ] || return 1
   # A former root still a real directory: the daemon substrate's, or sminos's
@@ -80,6 +82,7 @@ _sminos_cutover_pending() {
   [ -e "$1" ]
 }
 if _sminos_cutover_pending; then
+  sminos_cli
   "$SMINOS_CLI" migrate --quiet \
     || { echo "error: sminos migrate failed — refusing to gc against a possibly half-migrated registry" >&2; exit 1; }
 fi

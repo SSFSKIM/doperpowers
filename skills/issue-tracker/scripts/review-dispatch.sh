@@ -130,13 +130,16 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SMINOS_CLI="${SMINOS_CLI:-$(cd "$SKILL_DIR/../sminos/scripts" && pwd)/sminos}"
-# lib.sh applies the one registry-root rule ($SMINOS_HOME, then $DAEMON_HOME,
-# then ~/.claude/sminos) and leaves both names holding it, so the root is
-# already settled here. Exported at the same value as the other entrypoints:
-# the CLI, the board scripts and every spawned child read one registry.
-# shellcheck source=../../sminos/scripts/lib.sh
-. "$SKILL_DIR/../sminos/scripts/lib.sh"
+# shellcheck source=_sminos_cli.sh
+. "$SCRIPT_DIR/_sminos_cli.sh"
+sminos_cli
+# lib.sh (the one beside the resolved CLI) applies the one registry-root rule
+# ($SMINOS_HOME, then $DAEMON_HOME, then ~/.claude/sminos) and leaves both
+# names holding it, so the root is already settled here. Exported at the same
+# value as the other entrypoints: the CLI, the board scripts and every spawned
+# child read one registry.
+# shellcheck source=../../../sminos/skills/sminos/scripts/lib.sh
+. "$(sminos_lib)"
 export SMINOS_HOME DAEMON_HOME
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 BOARD_SCRIPTS="${BOARD_SCRIPTS:-$(cd "$SKILL_DIR/../issue-tracker/scripts" && pwd)}"
@@ -787,7 +790,7 @@ PY
     P_ISSUE_LIST="${LINKED_ISSUES:-none}" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
-    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
+    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_SMINOS_CLI="$SMINOS_CLI" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_PROTOCOL_FILE="$PROTOCOL_FILE" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
@@ -915,7 +918,7 @@ _dispatch_epic_locked() {
     P_ISSUE_URL="https://github.com/$BOARD_REPO/issues/$etid" \
     P_TECH_DEBT_ISSUE="${td:-none}" \
     P_ENV_TRACKER_ISSUE="${et:-none}" \
-    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
+    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_SMINOS_CLI="$SMINOS_CLI" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_PROTOCOL_FILE="$PROTOCOL_FILE" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \
@@ -1703,7 +1706,7 @@ PY
     P_ISSUE_URL=none \
     P_TICKET_BODY_FILE="$body_file" \
     P_TECH_DEBT_ISSUE=none P_ENV_TRACKER_ISSUE=none \
-    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
+    P_BOARD_SCRIPTS="$BOARD_SCRIPTS" P_SMINOS_CLI="$SMINOS_CLI" P_AUTO_MERGE="$AUTO_MERGE_DISPLAY" \
     P_PROTOCOL_FILE="$PROTOCOL_FILE" \
     P_IMPLEMENT_PROTOCOL_FILE="$IMPLEMENT_PROTOCOL_FILE" \
     P_REVIEW_LEVEL="$REVIEW_LEVEL" \

@@ -283,6 +283,8 @@ send)
 esac
 EOF
 chmod +x "$DS/sminos"
+# The phase-4 review dispatcher sources lib.sh from beside the CLI it resolved.
+ln -s "$REPO_ROOT/sminos/skills/sminos/scripts/lib.sh" "$DS/lib.sh"
 
 SW() {  # one _sweep_api.sh invocation against this fixture world
   ( cd "$r" && env HOME="$TESTHOME" DAEMON_HOME="$DH" SMINOS_CLI="$DS/sminos" \
@@ -692,9 +694,9 @@ t  "and no nudge interrupts the wait"    "0"                             wakes_f
 # The openings this phase keys on are sminos's renderings, not its own, so a
 # rewording there would silently reopen the case above. Pinned at the source.
 t  "sminos still renders the AskUserQuestion marker this phase reads" "found" \
-   sh -c "grep -rqF '[pending AskUserQuestion — ' '$REPO_ROOT/skills/sminos/scripts' && echo found"
+   sh -c "grep -rqF '[pending AskUserQuestion — ' '$REPO_ROOT/sminos/skills/sminos/scripts' && echo found"
 t  "and the harness-prompt one"          "found" \
-   sh -c "grep -rqF '[blocked on a harness prompt — ' '$REPO_ROOT/skills/sminos/scripts' && echo found"
+   sh -c "grep -rqF '[blocked on a harness prompt — ' '$REPO_ROOT/sminos/skills/sminos/scripts' && echo found"
 
 # =========================================================================
 # THE IDLE READING IS RE-TAKEN UNDER THE LOCK. The candidate gate reads

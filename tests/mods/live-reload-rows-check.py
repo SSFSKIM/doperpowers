@@ -25,8 +25,9 @@ the request carries all of it. `--variant after|before` runs one of the two.
 
 Unlike the other live checks the plugin is installed, not loaded with
 --plugin-dir (the reload mod watches only the plugin cache): a git
-marketplace, as doperpowers' own is, carries a copy of the worktree's plugin
-and a skill-only probe plugin, both installed at user scope. (A directory
+marketplace, as doperpowers' own is, carries copies of the worktree's
+doperpowers and sminos plugins (sminos for the bridge the check reads the
+session through) and a skill-only probe plugin, all installed at user scope. (A directory
 marketplace will not do: a reload re-reads its plugins from the folder,
 outside the cache, and the mod stops watching doperpowers.) The marketplace
 is a local repository reached through an https URL the temporary HOME's
@@ -39,7 +40,7 @@ after its update.
 
 It spends model calls (haiku, three short prompts per variant), so no suite
 runs it: run it by hand with the model gateway's keys in the environment.
-Isolation is live-bridge-check.py's (whose class it extends): a temporary
+Isolation is sminos/tests/mods/live-bridge-check.py's (whose class it extends): a temporary
 HOME whose .claude is the session's config dir, a temporary SMINOS_HOME, a
 tmux server of its own, the gateway keys in a 0600 env file removed at the
 end. With --keep the temporary directory stays, holding each reload's rows
@@ -66,7 +67,10 @@ import time
 import urllib.parse
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-_spec = importlib.util.spec_from_file_location("live_bridge_check", os.path.join(HERE, "live-bridge-check.py"))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+DOPERPOWERS_PARTS = (".claude-plugin", "hooks", "skills", "agents", "output-styles")
+_spec = importlib.util.spec_from_file_location("live_bridge_check", os.path.join(REPO, "sminos", "tests", "mods",
+                                                                                 "live-bridge-check.py"))
 LB = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(LB)
 wait_for = LB.wait_for
@@ -247,7 +251,8 @@ class ReloadRows(LB.Live):
         self.work = os.path.join(self.root, "work")
         self.envfile = os.path.join(self.root, "env")
         self.market = os.path.join(self.root, "market")
-        self.plugin = os.path.join(self.market, "doperpowers")
+        self.plugin = os.path.join(self.market, "sminos")  # where LB.Live.setup stages sminos
+        self.doperpowers = os.path.join(self.market, "doperpowers")
         self.debug = os.path.join(self.root, "debug.log")
         self.proxy = None
         self.versions = {}
@@ -268,13 +273,14 @@ class ReloadRows(LB.Live):
             if k not in os.environ:
                 sys.exit("live-reload-rows-check: the gateway keys are not in the environment: %s" % k)
         self.proxy = Proxy(os.environ["ANTHROPIC_BASE_URL"], os.path.join(self.root, "requests.jsonl"))
-        super().setup()  # copies the worktree's plugin into the marketplace, as self.plugin
-        shutil.copytree(os.path.join(LB.REPO, "types"), os.path.join(self.plugin, "types"))
-        os.unlink(os.path.join(self.plugin, ".claude-plugin", "marketplace.json"))
+        super().setup()  # copies the worktree's sminos plugin into the marketplace, as self.plugin
+        LB.stage(REPO, self.doperpowers, DOPERPOWERS_PARTS)
+        os.unlink(os.path.join(self.doperpowers, ".claude-plugin", "marketplace.json"))
         if self.variant == "before":
-            strip_rows_hook(os.path.join(self.plugin, "hooks", "mods", "reload.tsx"))
-        with open(os.path.join(self.plugin, ".claude-plugin", "plugin.json")) as f:
-            self.versions["doperpowers"] = json.load(f)["version"]
+            strip_rows_hook(os.path.join(self.doperpowers, "hooks", "mods", "reload.tsx"))
+        for name, root in (("doperpowers", self.doperpowers), ("sminos", self.plugin)):
+            with open(os.path.join(root, ".claude-plugin", "plugin.json")) as f:
+                self.versions[name] = json.load(f)["version"]
         probe = os.path.join(self.market, PROBE)
         os.makedirs(os.path.join(probe, ".claude-plugin"))
         os.makedirs(os.path.join(probe, "skills", PROBE))
@@ -301,12 +307,12 @@ class ReloadRows(LB.Live):
         self.git("-C", self.market, "commit", "-qm", "the marketplace")
         self.git("clone", "-q", "--bare", self.market, self.market + ".git")
         self.cli("plugin", "marketplace", "add", MARKET_URL)
-        for name in ("doperpowers", PROBE):
+        for name in ("doperpowers", "sminos", PROBE):
             self.cli("plugin", "install", "%s@%s" % (name, MARKET), "--scope", "user")
         records = self.installed()
         with open(os.path.join(self.cfg, "settings.json")) as f:
             enabled = json.load(f).get("enabledPlugins", {})
-        for name in ("doperpowers", PROBE):
+        for name in ("doperpowers", "sminos", PROBE):
             key = "%s@%s" % (name, MARKET)
             if not records.get(key) or enabled.get(key) is not True:
                 raise RuntimeError("%s is not installed and enabled: %s, %s" % (key, records.get(key), enabled))

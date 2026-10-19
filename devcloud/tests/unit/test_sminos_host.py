@@ -59,9 +59,12 @@ class SminosHostTest(unittest.TestCase):
         daemon.mkdir(parents=True, exist_ok=True)
         (daemon / "hub.json").write_text('{"machine": "devbox-a"}\n')
 
-    def marketplace(self):
+    def marketplace(self, layout="sminos/skills/sminos/scripts/sminos.py"):
+        """The doperpowers marketplace clone with the sminos CLI where `layout`
+        puts it: the sminos plugin's folder (from the move of sminos into a
+        plugin of its own), or, before it, doperpowers' own skill."""
         clone = self.home / ".claude/plugins/marketplaces/doperpowers"
-        cli = clone / "skills/sminos/scripts/sminos.py"
+        cli = clone / layout
         cli.parent.mkdir(parents=True)
         cli.write_text("# sminos\n")
         (self.home / ".claude/plugins/known_marketplaces.json").write_text(json.dumps(
@@ -145,6 +148,16 @@ class SminosHostTest(unittest.TestCase):
             self.assertEqual(call["env"]["XDG_RUNTIME_DIR"], f"/run/user/{uid}")
         self.assertIn("EnvironmentFile=/etc/devcloud/env\n", self.dropin.read_text())
         self.assertIn("sminos daemon", detail)
+
+    def test_the_cli_is_the_sminos_plugins_in_the_clone_then_the_retired_path(self):
+        # From the move of sminos into a plugin of its own, the clone holds the
+        # CLI in its sminos/ folder; a clone not yet moved holds it at the old
+        # path (doperpowers' shim there forwards, through the roll), found second.
+        self.assertIsNone(sminos_host.cli(self.user))
+        old = self.marketplace(layout="skills/sminos/scripts/sminos.py")
+        self.assertEqual(sminos_host.cli(self.user), old)
+        new = self.marketplace(layout="sminos/skills/sminos/scripts/sminos.py")
+        self.assertEqual(sminos_host.cli(self.user), new)
 
     def test_an_unchanged_unit_is_started_and_a_changed_one_or_environment_restarted(self):
         self.enroll()

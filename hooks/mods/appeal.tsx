@@ -4,6 +4,7 @@ import {
   APPEAL_DESCRIPTION,
   APPEAL_SCHEMA,
   JUDGE_SYSTEM,
+  NO_PASS,
   REPORT_DAYS,
   RESERVED,
   SUGGEST_SYSTEM,
@@ -20,6 +21,7 @@ import {
   blockReason,
   bumpEpoch,
   canRelay,
+  carriesHandle,
   isAppealable,
   judgePrompt,
   logLine,
@@ -35,13 +37,26 @@ import {
   suggestPrompt,
   takePass,
 } from './appeal-judge'
-import { asyncAsks, observeAsks } from './ask'
+import type { AskSnapshot } from '../../sminos/types/sminos'
 
 /**
  * The tool as the model names it, `mcp__<plugin>__<name>` with the plugin's
  * manifest name; written out so the engine's scan reads the matchers.
  */
 export const APPEAL = 'mcp__doperpowers__appeal'
+
+/**
+ * The sminos plugin's ask snapshot (its types/sminos.d.ts): the session's
+ * async asks, and how many times the human answered. Read for the judge's
+ * evidence, and observed as it is written, since an answer reaches the model
+ * through no prompt. Undefined where sminos is not loaded: no asks, no answers.
+ */
+const ASK = { plugin: 'sminos', key: 'ask' } as const
+
+/** The snapshot's answered count, 0 for a value of no shape this reads (none written). */
+const answeredOf = (value: unknown) => (isSnapshot(value) ? value.answered : 0)
+const isSnapshot = (value: unknown): value is AskSnapshot =>
+  value !== null && typeof value === 'object' && (value as { shape?: unknown }).shape === 2 && typeof (value as { answered?: unknown }).answered === 'number'
 
 /**
  * A tool call's own arguments, as the engine reconstructs them: the envelope
@@ -66,11 +81,14 @@ const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...desc
  */
 let ledger: Ledger = newLedger()
 let log: { path: string; lines: string[]; writing: Promise<void> } | undefined
+/** The ask snapshot's answered count when last read: a write that grows it ends the passes. */
+let answered = 0
 
-/** Forgets both; for tests, which share this module. */
+/** Forgets them all; for tests, which share this module. */
 export function resetAppeal() {
   ledger = newLedger()
   log = undefined
+  answered = 0
 }
 
 async function record($: EngineInterface, event: LogEvent) {
@@ -105,6 +123,13 @@ export async function appealStart($: EngineInterface) {
       $.ui.log(`appeal: the log could not be read: ${message(error)}`)
     }
     log = { path, lines, writing: Promise.resolve() }
+  }
+  // Growth is measured from here: a module started into a session the human
+  // already answered in (a reload) ends no pass for what came before it.
+  try {
+    answered = answeredOf((await $.state.get(ASK)).value)
+  } catch (error) {
+    $.ui.log(`appeal: the asks could not be read: ${message(error)}`)
   }
   await $.tool.register({ name: 'appeal', description: APPEAL_DESCRIPTION, inputSchema: APPEAL_SCHEMA })
   await $.command.register({ name: 'appeals', description: 'The auto-mode blocks appealed in the last 30 days, and the autoMode entries the grants suggest.' })
@@ -187,7 +212,15 @@ async function instructions($: EngineInterface): Promise<{ name: string; text: s
 
 /** The evidence the judge reads for this block, gathered from the engine. */
 async function evidence($: EngineInterface, block: Block, argument: string): Promise<EvidenceParts> {
-  const answers = asyncAsks()
+  // sminos's value, read as another plugin's: whatever the engine does with
+  // the read, the appeal goes on, with no answers if none can be read.
+  let value: unknown
+  try {
+    value = (await $.state.get(ASK)).value
+  } catch (error) {
+    $.ui.log(`appeal: the asks could not be read: ${message(error)}`)
+  }
+  const answers = (isSnapshot(value) ? value.asks : [])
     .filter((ask) => ask.status === 'answered' && ask.answer !== undefined)
     .map((ask) => ({ questions: ask.questions.map((q) => q.question), answer: ask.answer ?? '' }))
   const main = await $.session.messages()
@@ -245,6 +278,9 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
     usage: reply.usage,
   })
   $.ui.toast(`appeal ${block.id} ${ruling.verdict === 'grant' ? 'granted' : 'upheld'}: ${block.tool}`)
+  if (ruling.verdict === 'grant' && !canRelay(block) && carriesHandle(block.input)) {
+    await record($, { event: 'no-pass', block: block.id, reason: NO_PASS })
+  }
   if (ruling.verdict !== 'grant' || !canRelay(block)) {
     return { result: rulingText(block, ruling.verdict, ruling.response) }
   }
@@ -302,17 +338,22 @@ export function registerAppeal(on: On) {
       startBash(ledger, e.agentId, input)
     }
     const result = await next(e)
-    if (result.isError !== true || typeof result.text !== 'string') {
+    // A classifier block comes back as an error result; with a secrets guard
+    // beneath (devcloud's, once doperpowers is placed outside it), as the
+    // guard's deny when it scrubbed or noted something on the refusal.
+    const text = result.deny ?? (result.isError === true ? result.text : undefined)
+    if (typeof text !== 'string') {
       return result
     }
-    const reason = blockReason(result.text)
+    const reason = blockReason(text)
     if (reason === undefined || !isAppealable(reason)) {
       return result
     }
     const cwd = await $.session.cwd()
     const block = recordBlock(ledger, { agentId: e.agentId, tool: e.tool, input, reason, cwd }, await $.clock.now())
     await record($, { event: 'block', block: block.id, agentId: e.agentId ?? null, tool: e.tool, input: block.input, reason, cwd })
-    return { ...result, context: [...(result.context ?? []), blockNotice(block.id)] }
+    // A deny carries no context: the notice goes on its text.
+    return result.deny !== undefined ? { deny: `${result.deny}\n\n${blockNotice(block.id)}` } : { ...result, context: [...(result.context ?? []), blockNotice(block.id)] }
   }).catch((_, e, next) => next(e))
 
   on('tool.call', { tool: 'mcp__doperpowers__appeal' }, ($, e) => appeal($, e as { agentId?: string; block?: unknown; argument?: unknown }))
@@ -352,12 +393,14 @@ export function registerAppeal(on: On) {
 
   // So does an answer to a question: an async one, which reaches the model
   // beside a tool result, and a blocking one, whose dialog's outcome is the
-  // ask's own result — neither through a prompt. The bridge observes the
-  // asks too: chained, not replaced.
-  const previous = observeAsks((note) => {
-    previous?.(note)
-    if (note.kind === 'answered' || note.kind === 'dialog') {
+  // ask's own result — neither through a prompt. The ask (sminos's) counts
+  // them in its snapshot, written as each comes.
+  on('state.set', { plugin: 'sminos', key: 'ask' }, (_, e, next) => {
+    const now = answeredOf(e.value)
+    if (now > answered) {
       bumpEpoch(ledger)
     }
+    answered = now
+    return next(e)
   })
 }

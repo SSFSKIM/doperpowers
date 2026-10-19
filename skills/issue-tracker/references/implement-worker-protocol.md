@@ -306,7 +306,7 @@ handoff. You stay bound to the ticket through it, and your scope ends at
 together:
 
     {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <URL> --branch <branch>
-    {{BOARD_SCRIPTS}}/../../sminos/scripts/sminos status <your alias> "reviewing: <PR URL>"
+    {{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"
 
 (the sminos CLI is not on PATH; `sminos list` shows your seat's name.)
 Your turn ends while the agent works, so the fleet view shows this seat

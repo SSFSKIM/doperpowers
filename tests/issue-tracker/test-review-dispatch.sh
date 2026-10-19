@@ -257,6 +257,8 @@ json.dump(m, open(os.environ["M"], "w"))
 esac
 STUB
 chmod +x "$STUB_SMINOS/sminos"
+# The dispatcher sources lib.sh from beside the CLI it resolved: the real one.
+ln -s "$REPO_ROOT/sminos/skills/sminos/scripts/lib.sh" "$STUB_SMINOS/lib.sh"
 export SMINOS_CLI="$STUB_SMINOS/sminos"
 
 # Minimal board-bind stand-in: this suite tests dispatch ownership mechanics,
@@ -540,12 +542,12 @@ assert_contains "$(cat "$PROMPT_DIR/review-pr-11.prompt")" \
 # downstream assertion can tell "empty by design" from "erased". Driven through
 # a copy of the dispatcher's own skill dir whose template carries one
 # placeholder nothing fills (the template path is derived from the script's
-# own dir, so the copy IS the lever); the sibling skill the dispatcher
-# sources (sminos) is symlinked back.
+# own dir, so the copy IS the lever); the CLI resolver it sources rides along
+# (SMINOS_CLI is set, so the copy's location never decides the CLI).
 echo "unrendered placeholder fails closed:"
 ALT_SKILLS="$TEST_ROOT/alt-skills"
 mkdir -p "$ALT_SKILLS/issue-tracker/scripts" "$ALT_SKILLS/issue-tracker/references"
-ln -s "$REPO_ROOT/skills/sminos" "$ALT_SKILLS/sminos"
+cp "$REPO_ROOT/skills/issue-tracker/scripts/_sminos_cli.sh" "$ALT_SKILLS/issue-tracker/scripts/_sminos_cli.sh"
 cp "$REPO_ROOT/skills/issue-tracker/scripts/review-dispatch.sh" "$ALT_SKILLS/issue-tracker/scripts/review-dispatch.sh"
 cp "$REPO_ROOT/skills/issue-tracker/references/review-standin-bootstrap.md" \
     "$ALT_SKILLS/issue-tracker/references/review-standin-bootstrap.md"
@@ -2705,7 +2707,7 @@ reset_state
 CT="$TEST_ROOT/contract"; mkdir -p "$CT/harness" "$CT/registry"
 # The stub harness shared with the other dispatch suite.
 CT_BIN="$REPO_ROOT/tests/issue-tracker/stub-harness"
-REAL_SMINOS="$REPO_ROOT/skills/sminos/scripts/sminos"
+REAL_SMINOS="$REPO_ROOT/sminos/skills/sminos/scripts/sminos"
 out="$(env -u CLAUDE_CODE_SESSION_ID CT_HARNESS="$CT/harness" SMINOS_CLI="$REAL_SMINOS" DAEMON_HOME="$CT/registry" SMINOS_HOME="$CT/registry" \
   PATH="$CT_BIN:$PATH" "$DISPATCH" 5 2>&1)" || true
 ct_uuid="$(printf '%s\n' "$out" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p' | head -1)"
