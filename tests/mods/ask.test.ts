@@ -1,5 +1,5 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import type { EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On, SessionMessage } from 'claude-code'
 
 import type { AskNote, AskQuestion } from '../../hooks/mods/ask'
 import {
@@ -193,6 +193,8 @@ function harness(
     sizes?: Record<string, number>
     /** The host's `$.state` for the session, which outlives a reload of the module: pass one harness's to the next. */
     kept?: Map<string, unknown>
+    /** The conversation the engine holds, as `$.session.messages()` answers it in each form; one that throws rejects. */
+    history?: { rows: SessionMessage[]; api: { role: string; content: unknown }[] } | (() => never)
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -275,6 +277,12 @@ function harness(
       invalidate: (event: string) => calls.push({ op: 'ui.invalidate', args: event }),
     },
     turn: { abort: async (args: unknown) => void calls.push({ op: 'turn.abort', args }) },
+    session: {
+      messages: async (opts?: { as?: string }) => {
+        const history = typeof options.history === 'function' ? options.history() : options.history
+        return (opts?.as === 'api' ? history?.api : history?.rows) ?? []
+      },
+    },
     // The host keeps a value as JSON, so a later change of the object written is not in it.
     state: {
       get: async (ref: { plugin: string; key: string }) => ({ value: kept.get(`${ref.plugin}.${ref.key}`), version: 0 }),
@@ -1295,6 +1303,64 @@ describe('a resumed session', () => {
       ['t-done', 'answered'],
     ])
     expect(h.calls.some((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toBe(true)
+  })
+
+  test("a copy's asks are read from the conversation it copied, its transcript not written yet", async () => {
+    const ask = (id: string, input: unknown, text?: string, isError?: boolean) => ({ tool_use_id: id, tool: ASK_TOOL, input, ...(text !== undefined && { text }), ...(isError && { isError }) })
+    const answer = (id: string) => deliveryText(id, `Your questions have been answered: "Which backend?"="${id}". You can now continue with these answers in mind.`)
+    const context = (text: string) => `<system-reminder>\ntool.call hook additional context: ${text}\n</system-reminder>`
+    const rows: SessionMessage[] = [
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [
+          ask('t-open', { questions: [BACKEND], async: true }, ASYNC_RESULT),
+          ask('t-context', { questions: [BACKEND], async: true }, ASYNC_RESULT),
+          ask('t-prompt', { questions: [BACKEND], async: true }, ASYNC_RESULT),
+          ask('t-api-prompt', { questions: [BACKEND], async: true }, ASYNC_RESULT),
+          ask('t-bad', single, `<tool_use_error>${validateQuestions(single)}</tool_use_error>`, true),
+          ask('t-blocking', { questions: [BACKEND] }, ANSWER),
+          ask('t-running', { questions: [BACKEND], async: true }),
+        ],
+      },
+      { role: 'user', text: `The doperpowers plugin sent a message:\n${answer('t-prompt')}`, toolUses: [] },
+      // The human quoting one is no delivery.
+      { role: 'user', text: answer('t-open'), toolUses: [] },
+    ]
+    const api = [
+      { role: 'assistant', content: [{ type: 'text', text: context(answer('t-open')) }] },
+      {
+        role: 'user',
+        content: [
+          // A context answer rides inside the result of the call it came with.
+          { type: 'tool_result', tool_use_id: 'x', content: [{ type: 'text', text: 'output' }, { type: 'text', text: `\n\n${context(`another hook's\n${answer('t-context')}`)}` }] },
+          { type: 'text', text: `<system-reminder>\nThe user sent a new message while you were working:\n${answer('t-open')}\n</system-reminder>` },
+          { type: 'text', text: `The doperpowers plugin sent a message:\n${answer('t-api-prompt')}` },
+        ],
+      },
+    ]
+    const h = harness({ history: { rows, api } })
+    await h.start()
+    await h.classicStart('/p/-repo/copy.jsonl', 'copy', 'fork')
+    expect(asyncAsks().map((a) => [a.id, a.status])).toEqual([
+      ['t-open', 'open'],
+      ['t-context', 'answered'],
+      ['t-prompt', 'answered'],
+      ['t-api-prompt', 'answered'],
+    ])
+    expect(asyncAsks()[1]?.answer).toBe('Your questions have been answered: "Which backend?"="t-context". You can now continue with these answers in mind.')
+    expect(h.calls.some((c) => c.op === 'fs.read' || c.op === 'process.run')).toBe(false)
+    expect(h.calls.some((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toBe(true)
+
+    const failing = harness({
+      history: () => {
+        throw new Error('no conversation')
+      },
+    })
+    await failing.start()
+    await failing.classicStart('/p/-repo/copy.jsonl', 'copy', 'fork')
+    expect(asyncAsks()).toEqual([])
+    expect(failing.calls.some((c) => c.op === 'ui.log' && String(c.args).includes('no async ask is rebuilt'))).toBe(true)
   })
 
   test('a transcript too large to read whole is searched for the lines that can matter', async () => {
