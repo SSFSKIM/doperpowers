@@ -925,6 +925,11 @@ export function asyncAsks(): readonly OpenAsk[] {
   return asks
 }
 
+/** What a reload of the module would lose: the open async asks, and the answers that have not reached the model. */
+export function asksInFlight(): number {
+  return asks.filter((ask) => ask.status === 'open').length + undelivered.size
+}
+
 /** Takes every held answer, in one synchronous step, so no other route takes them too. */
 const takeHeld = () => held.splice(0)
 

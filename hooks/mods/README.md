@@ -731,6 +731,51 @@ but refuses only a plugin's own append, and `session.receive`, which can
 take a delivery without a trace, sees deliveries from outside the process,
 never an agent's notification.
 
+## reload (`reload.tsx`)
+
+A plugin update reaches a running session without the person typing
+`/reload-plugins` in it. The engine (2.1.302) parses
+`installed_plugins.json` once per process, and nothing tells session B that
+session A installed a new version: `claude plugin update`, a merging
+session's roll, or a new session's marketplace auto-update (once per
+process, 0–10 minutes after its first prompt) all leave every other session
+on the version it loaded. `/reload-plugins` re-reads the file and loads each
+plugin from its record's install path, so it is the one step missing.
+
+In an interactive session the module reads, at start, what the session runs
+of each installed plugin the settings enable: the record the engine loads
+it from (the first that applies whose directory exists; a user or managed
+record applies everywhere, a project or local one at its path or under its
+git root), and for doperpowers itself the directory it runs from, which is
+exact where the file has moved on. Every 15 s it stats the file; once the
+file has been quiet one period after a change (a roll of several plugins
+reloads once), it reads it again, and when a plugin the session runs has
+another install path there it toasts what changed (`doperpowers 7.186.0 →
+7.187.0: reloading plugins once the session is idle`) and calls
+`$.command.run({ command: 'reload-plugins' })`, which the engine queues
+until the session is idle and runs as a typed command: the person and the
+model read its output row (`Reloaded: N plugins · …`), and no model turn
+runs. A reload touches no running work: subagents, background shells,
+Monitors and the MCP servers of unchanged plugins carry on, and the old
+version's cache directory stays marked in use until the process exits.
+
+One reload per state of the file: a plugin whose new version does not load
+is not reloaded again until the file changes. Only a change after the
+module loaded is acted on, so the module a reload starts never reloads on
+its own. A reload the engine refuses (after an Esc, with no input since; a
+stop that dropped it) is tried again a minute later. A reload that would add
+or remove a plugin MCP or LSP server is aborted by the engine, since the next
+message would re-read the whole conversation; the module never passes
+`--force`, and says so in the transcript instead. An open async question,
+or an answer not yet delivered to the model, holds the reload until it is
+delivered: the ask mod keeps its asks in module memory, and a reload of this
+plugin would forget them. An uninstall is not acted on, nor a newly
+installed plugin; a copy run from outside the plugin cache (`--plugin-dir`)
+is not watched, since the engine watches that folder itself.
+`DOPERPOWERS_AUTORELOAD=off` (or `0`, `false`) leaves a launch on the
+versions it loaded. Headless runs (`-p`, the SDK, MAWS) are left out: the
+engine refuses a plugin's `/reload-plugins` there.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
