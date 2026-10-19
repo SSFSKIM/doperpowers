@@ -194,7 +194,18 @@ session kept as a member would hold its alias ambiguous forever. Resuming
 it re-joins it on sight. Only a harness session whose record's `kind` is
 `interactive` or `bg`, and whose `entrypoint` does not start with `sdk`,
 joins on sight, so another tool's headless run in the directory is not a
-member. A `retire` of a seat-less session holds for the life of the
+member — unless the host that launched it marks it one: `SMNS_MEMBER` in
+the engine's environment, naming the pid that spawned the engine (MAWS
+sets its own on every engine it launches). The record carries no
+environment, so the mark is read only inside the session's own process
+tree, and holds only while the pid it names is the engine's parent: a run
+started from inside a marked session inherits the variable but not that
+parent, and stays out. Its hook (§4) and its bridge's child join it, and
+so does a verb its tools run (reconciliation there admits the session
+`CLAUDE_CODE_SESSION_ID` names, never another SDK run it sees);
+reconciliation anywhere else leaves it to them, and retires it `ended`
+like any member once its process is gone. An internal fork (§5) stays out
+whatever it inherits. A `retire` of a seat-less session holds for the life of the
 process that was running when it was recorded. Nobody can stop the
 terminal session the human opened, so reconciliation re-joins it only as
 a different process (another pid, or a later start). A resume re-joins,
@@ -693,10 +704,14 @@ Not here: the chief-of-staff agent (a reader of the log on the human's
 behalf; whether a resident session or a per-event routine is decided when
 the log is in use), inbound Slack or mail, a human seat, remote control of
 a session's process, any change to the board loop or to `decomposing`,
-and the async questions of a MAWS session. Under `MAWS_NATIVE_TO_HUMAN`,
-the plugin's ask tool is not registered, and `mcp__maws__ask` (blocking
-false), whose answer shape this repository does not own, carries them.
-They reach neither the log nor `chat --host` (residue).
+and the sessions MAWS launches. Under `MAWS_NATIVE_TO_HUMAN`, the plugin's
+ask tool is not registered, and `mcp__maws__ask` (blocking false) carries
+a session's async questions; the readers know its shape, read from MAWS's
+transcripts (board #76: `question` at the acceptance, `answered` at the
+`[MAWS ask <id>]` steer, `src` the call id). MAWS launches with an
+`sdk-ts` entrypoint and marks its sessions members (`SMNS_MEMBER`, §2), so
+such a session joins the project it works in and its messages and asks
+record as a terminal session's do.
 
 ## Acceptance
 
@@ -1840,6 +1855,56 @@ Dispatch scripts: one `--brief` each.
   retired and the job as a member of its own, which is what it reads now.
   The desk folding the two is MAWS's follow-up.
   Date/Author: 2026-10-17, the hand-off change.
+
+- Decision: a session its host marks as a member joins as a terminal
+  session does, though its entrypoint is `sdk-*` (§2). The mark is
+  `SMNS_MEMBER` in the engine's environment, naming the pid that spawned
+  the engine (MAWS sets its own on every engine it launches), and it holds
+  only while that pid is the engine's parent (`ps -o ppid=` of the record's
+  pid). It is read only inside the session's own process tree: the hook
+  and the bridge's child admit the session they run for, and a verb the
+  session's tools run admits the one `CLAUDE_CODE_SESSION_ID` names. The
+  owner chose the shape on 2026-10-18 (MAWS marks the sessions it launches,
+  sminos admits a session carrying the mark, its own forks stay out): MAWS
+  launches every engine with `CLAUDE_CODE_ENTRYPOINT=sdk-ts`, so nothing
+  its sessions sent their human reached the log or the desk, and the
+  reading of MAWS's ask (board #76) had no effect.
+  Why the environment, and why the daemon never reads it: the harness
+  record holds no environment, and the record fields a launcher could set
+  through it are the engine's own (`entrypoint` is MAWS's probe identity,
+  every one of its fixtures recorded under it). So the session joins
+  itself, at its SessionStart hook (a `-p` engine's record is written by
+  then) or at its bridge's first export, and reconciliation elsewhere only
+  retires it `ended` once its process is gone, as it does any member; a
+  resume re-joins it at its next SessionStart.
+  Why the launcher's pid: a plain flag leaked. A run started from inside a
+  marked session (a tool's `claude -p`, an agent SDK fan-out) inherits the
+  variable, and the engine's child-session marker does not stop it
+  registering a record, so its own hook joined it (e2e, below). The
+  launch's session id was ruled out because MAWS clears a session inside
+  its running engine (`/clear`, its `session-clear.ts`), which goes on
+  under a new id. The spawner's pid binds the mark to the engine process
+  itself: a `/clear` keeps the process and its parent, and an inherited
+  copy names a process that is not the nested engine's parent. A launcher
+  that wraps the engine's spawn (a shell, a process wrapper) would have to
+  name the wrapper.
+  Evidence (2026-10-18, harness 2.1.302, Agent SDK 0.3.259, the working
+  copy installed as the temp HOME's plugin and loaded through MAWS's setting
+  sources, under a temp HOME and SMINOS_HOME): the marked
+  session (the mark the driver's pid, the engine's parent) was listed by
+  `sminos list` from outside it after its first turn; its writer file
+  holds `joined`, its `message`, the `question` of its `mcp__maws__ask`
+  (blocking false) and the `answered` of the `[MAWS ask <id>]` steer, both
+  under the call id, then `retired` `ended` once it exited. `sminos derive`
+  run with its mark and session id inherited answered, and its internal
+  fork wrote nothing. An unmarked sdk-ts session, one with `SMNS_INTERNAL`,
+  and one standing for a nested run (the mark naming another pid, with
+  `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION` set: it registered a record,
+  `kind` interactive, `entrypoint` sdk-ts) wrote no writer file and were
+  never listed; with the plain flag, that nested run had joined. The
+  bridge's socket answered in every session but the internal fork's, with
+  or without `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` in the settings' env.
+  Date/Author: 2026-10-18, the MAWS-member change.
 
 ## Outcomes & Retrospective
 

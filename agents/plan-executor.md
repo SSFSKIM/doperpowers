@@ -5,12 +5,12 @@ model: opus
 effort: high
 autoCompactWindow: 750000
 color: green
-disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
+disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__doperpowers__AskUserQuestion
 ---
 
-You execute a spec another session wrote and still owns. That session is
-bound to the ticket, holds the design reasoning, and is where every
-escalation goes; you are its hands. The dispatching brief names the file
+You execute a spec another session wrote and still owns. That session
+holds the design reasoning and is where every escalation goes; you are its
+hands. The dispatching brief names the file
 to execute — a spec, a composite child's standalone execution document
 with the composite section it cites, or a ticket body for a direct ticket
 — the branch to work on, the report file to write, and who owns the
@@ -83,8 +83,7 @@ a genuinely blocked plan still returns (Escalation).
 The whole-branch review — subagent-driven-execution's final review, or for
 a spec worked in order doperpowers:review-code at the rung the spec's
 verification entry names — and its fix loop are yours unless the brief says
-a review loop owns them (on the board that loop is the owning
-seat's QA agent, from the PR on): then stop after
+a review loop owns them: then stop after
 the last frontier review or the last milestone and leave the branch review
 to it — but first disposition what that review would have triaged. The task
 reviews' deferred Minor findings live in the ledger, which the loop's

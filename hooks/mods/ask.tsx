@@ -568,7 +568,7 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
 export const ASYNC_RESULT =
   'Your questions are waiting for the human; this call does not wait for them. Their answer will reach you in a later message that quotes each question. Go on with work that does not depend on it.'
 
-const DELIVERY_HEAD = 'The human responded to your async AskUserQuestion'
+export const DELIVERY_HEAD = 'The human responded to your async AskUserQuestion'
 /** How the engine frames a prompt this plugin submitted, in the user row it stores. */
 const PLUGIN_PROMPT = 'The doperpowers plugin sent a message:\n'
 const DELIVERY = /The human responded to your async AskUserQuestion \(call ([^)\s]+)\): /g

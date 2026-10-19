@@ -37,9 +37,11 @@ export type Call = {
  * given in before its row is appended.
  * `isAppended`: the row is in; `isRead`: a main-loop request began after it;
  * `ended`: how its turn ended, while some append of that turn is still pending;
- * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread.
+ * `isDelivery`: a delivery's row, which an interrupted turn does not leave unread;
+ * `text`: a delivery's text, by which its row is found in the conversation;
+ * `frame`: a delivery's frame line, which a wake names (bridge.tsx, wakeText).
  */
-export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean }
+export type Steer = { turnId: string; isAppended: boolean; isRead: boolean; ended?: string; isDelivery?: boolean; text?: string; frame?: string }
 /**
  * The wake a turn owes for delivered rows it answered before reading, until
  * its prompt settles: `isRead`, a main-loop request began since that carries
@@ -100,7 +102,9 @@ export type Request = {
   toolUseId?: string
 }
 /** A row as the session's transcript keeps it, in the shape the Stop hook's export reads (`sminos record`). */
-export type TranscriptRecord = { type: 'assistant' | 'user'; uuid: string; message: { content: Record<string, unknown>[] } }
+export type TranscriptRecord =
+  | { type: 'assistant' | 'user'; uuid: string; origin?: unknown; message: { content: Record<string, unknown>[] } }
+  | { type: 'attachment'; uuid: string; attachment: Record<string, unknown> }
 /** A call the engine's check put to the dialog. */
 export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown }
 /** One agent of the session as `$.agent.list()` gives it (the fields the bridge reads). */
@@ -111,9 +115,10 @@ export type DeliveryKey = { project?: string; writer: string; seq: number }
 export type Submission = { key: DeliveryKey; text: string }
 /**
  * A delivery the bridge put in the conversation as a row, until the
- * conversation is known to keep it: `turnId`, the main turn it was appended in.
+ * conversation is known to keep it: `turnId`, the main turn it was appended
+ * in, none for a row given while no turn ran (a stop refused its prompt).
  */
-export type DeliveredRow = { key: DeliveryKey; text: string; turnId: string }
+export type DeliveredRow = { key: DeliveryKey; text: string; turnId?: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
 export type Refusal = { key: DeliveryKey; reason: string }
 
@@ -251,6 +256,11 @@ export type BridgeState = {
   agentReads: { asked: number; applied: number }
   /** Moves at each /clear: a read begun in an earlier conversation is not this one's. */
   conversation: number
+  /**
+   * Moves at each compaction of the main conversation: a check of delivered
+   * rows begun before it holds rows the summary now carries (bridge.tsx).
+   */
+  compactions: number
   /** After a /clear, the answers that set the old conversation's agents aside; every later read waits for them. */
   clearing?: Promise<void>
   /** The reads of the list not answered yet: a /clear waits for each of them. */
@@ -289,6 +299,7 @@ const fresh = (): BridgeState => ({
   isAgentsWatched: false,
   agentReads: { asked: 0, applied: 0 },
   conversation: 0,
+  compactions: 0,
   agentListsInFlight: new Set(),
   submissions: [],
   deliveredRows: [],

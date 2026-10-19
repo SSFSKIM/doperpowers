@@ -207,9 +207,6 @@ TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
 [ -f "$TRACKER" ] || { echo "missing $TRACKER"; exit 1; }
 tracker="$(cat "$TRACKER")"
 assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
-assert_contains "$tracker" "DAEMON_CLAUDE_SETTINGS" "ritual: the spawn's gateway env is cleared by assignment"
-assert_contains "$tracker" "sminos spawn" "ritual: one spawn command"
-assert_contains "$tracker" "Claude-harness seat" "ritual: one route — a seat and a model name"
 assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
 assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
 assert_contains "$tracker" "implement-worker-protocol.md" "ritual: names the implement protocol file it pins"
@@ -243,7 +240,6 @@ assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait 
 assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
 assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
 daemons="$(cat "$REPO_ROOT/skills/sminos/SKILL.md")"
-assert_contains "$daemons" "discriminant in doperpowers:issue-tracker" "sminos (seats): discriminant pointer targets the schema owner"
 assert_not_contains "$daemons" "discriminant in doperpowers:executing" "sminos (seats): no stale pointer at the old vendored copy"
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
 assert_not_contains "$manual" "Knowledge work anyone could do" "manual: discriminant not re-vendored (routes to issue-tracker)"
@@ -256,7 +252,7 @@ assert_contains "$proto" "you dispatch no review over one" "proto: worker knows 
 assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
 assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
 assert_contains "$tracker" "execute-dispatch.sh" "tracker: ritual names its mechanical executable"
-assert_contains "$tracker" "Running the ritual by hand stays valid" "tracker: manual dispatch stays a first-class path"
+assert_contains "$tracker" "Taking a ticket is not a dispatch" "tracker: dispatch is dormant; a named ticket is taken by the session"
 sweepdoc="$(cat "$REPO_ROOT/skills/issue-tracker/references/sweep-setup.md")"
 assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the macOS path"
 assert_contains "$sweepdoc" "TCC" "sweep-setup: the cron-context TCC hazard is named"
@@ -561,16 +557,9 @@ assert_contains "$tracker" 'RETURNS to `ready-for-architect`' \
 assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
 assert_contains "$tracker" "convergence counter" \
     "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
-assert_contains "$tracker" '`in-design` from the architect queue' \
+assert_contains "$tracker" '`in-design` from `ready-for-architect`' \
     "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"
-# The command table said board-answer always returns a ticket to in-progress.
-# The lane-aware return shipped rounds ago: an Architect sent to in-progress
-# lands in a state its own protocol has no legal exit from.
-assert_contains "$tracker" "returns the ticket to the state it parked FROM" \
-    "board-answer's row describes the lane-aware return, not a hardcoded in-progress"
-assert_contains "$tracker" '`in-design` for an ARCHITECT' \
-    "...and names the architect-lane fallback the role meta drives"
-assert_contains "$tracker" "The other three parks are never pulled" \
+assert_contains "$tracker" "The other parks are never pulled" \
     "board doctrine: only the needs-info release is pulled; the parks that own a session or the human are not"
 assert_not_contains "$tracker" "are never dispatched" \
     "board doctrine: the epics-are-never-dispatched claim is retired (E2: dispatchable in ready-for-architect)"
@@ -628,7 +617,7 @@ assert_contains "$pexec" "Keep building" "...without stopping for the answer"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
 assert_contains "$pexec" "repo-facts.md" "...and carries the repo-facts contract the IMPLEMENT worker has"
 assert_contains "$pexec" "One milestone: work it" "...and its non-SDE mode is a one-milestone Plan of Work, worked in order"
-assert_contains "$pexec" "QA agent" "...and the whole-branch review is the brief's to assign (on the board, the owning seat's QA agent)"
+assert_contains "$pexec" "a review loop owns them" "...and the whole-branch review is the brief's to assign"
 assert_contains "$pexec" "Outcomes & Retrospective" "...and it writes the spec's retrospective before the PR"
 assert_not_contains "$pexec" "final review is clean" "...closing no longer presumes a final review the sequential mode never defined"
 # Review input and follow-up work are different channels: Residue is the list

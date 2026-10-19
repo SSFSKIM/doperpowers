@@ -44,6 +44,7 @@
 | 30 | T3 | The status mirror is stale beside `live`: `list` prints a seat's last self-reported `status`, so a host that never ran `sminos status` reads `working` while `live=idle`; `sync` refreshes it, `list` does not. Seen in the family-chat live proof (spec Surprises, 2026-09-27); pre-existing | Next `list`/`sync` touch, or an operator misled by it |
 | 31 | T2 | A usage-limit stop on a seat is handled as an ordinary errored turn: the harness job reads `failed`, `status_for_state` maps it to `error`, and `board-sweep.sh`'s `pass_recover` resumes it with a nudge at each tick until `SWEEP_RECOVERY_CAP` (3) is spent — against a limit that lifts in hours every attempt fails and the ticket parks `needs-human` with its recovery cap gone (T3 comparison §4.1, 2026-10-08). The sweep never reads the error text; a gateway limit's text carries its reset time (`… at its usage limit until Oct 9, 14:13 PDT`), Anthropic's own shape in a `--bg` transcript is unobserved. Fix, in order: CAPTURE the next limit stop on a seat (the transcript's last records and the harness row) before any code; then stamp `limited_until` on the seat and have the sweep skip recovery until it passes without spending the cap; `list`'s now column reads it as `waiting` reads `waitingFor` | The next usage-limit stop on a seat — capture first |
 | 32 | T3 | The appeal mod's pass is bound to the loop, the tool, the whole input, the epoch, the loop's directory and (Bash) the loop's Bash generation, but not to a shell's recovery from a deleted directory: when another process deletes the shell's current subdirectory after a grant, Bash may recover to the project root during execution, after `tool.check`, and run a relative command there with no Bash start between (review round four, 2026-10-17). Needs another process racing the agent's own directory. ~~Separately, the live check's grant scenario found no classifier block to appeal in four candidates, so the pass path is proven by unit tests and engine facts, not live~~ **CONFIRMED LIVE 2026-10-17 evening**: the human's own sessions logged a grant re-run on a pass (`used`, an Edit blocked `[Self-Modification]`) and a grant run by the appeal itself (`relayed`, a Bash call), and an uphold where the user had not named the action (`docs/doperpowers/specs/2026-10-17-auto-mode-appeal-design.md`) | A deleted-directory recovery seen in a log |
+| 33 | T3 | Two board readers disagree about a seat whose recorded status is `awaiting-human`. `_sweep_api.sh`'s `_liveness` reads every status outside working/blocked/idle/error as dead (PR #158, dp#60), so such a bound seat's lease is withheld and the relay refuses it, while `board-answer.sh` still accepts it as a seat waiting for answers. When #158 merged this took the lease from any worker that had parked itself with `sminos mark` (the #60 review, 2026-10-18). `mark` and its judgment statuses left in 7.125.0 (#185) and nothing writes `awaiting-human` now, so only a pre-7.125.0 record can carry it, and any such run was reclaimed long ago. Drop the status from `board-answer.sh`, or read it as live in `_liveness`, so the two agree | The next edit to either reader, or a record found carrying `awaiting-human` |
 
 ## T1 — structural: the unattended-dispatch phase must answer these
 
@@ -310,10 +311,59 @@ the spec's Decision Log entry "the branch review round"
   or `compact` claimed before a stop is still answered `interrupted`,
   though the child would keep its answer under the nonce if the daemon
   sent it. Worth it once a stop mid-RPC is seen in practice.
-- **Backlog, not debt — MAWS async questions never reach the log** (§9 of
-  the spec). Under `MAWS_NATIVE_TO_HUMAN` asks go through `mcp__maws__ask`,
-  whose answer shape MAWS owns. Deserves its own ticket; MAWS sessions are
-  the ones most affected.
+- ~~**Open — a session MAWS launched is no project member, so nothing of it
+  reaches the log**~~ **Resolved in 7.184.0**: the owner ruled MAWS
+  sessions members (2026-10-18); MAWS sets `SMNS_MEMBER` to its own pid on
+  every engine it spawns, and the hook, the bridge's child and a verb the
+  session's tools run admit an SDK run whose engine that pid spawned
+  (`member_mark`, the spec's Decision Log).
+  Was: (board #76's finding). The readers know MAWS's ask now
+  (`mcp__maws__ask` with `blocking` false and its `[MAWS ask <id>]` steer,
+  `extract_asks`, and the bridge's export), but MAWS launches every session
+  with `CLAUDE_CODE_ENTRYPOINT=sdk-ts`, and an `sdk*` entrypoint never joins
+  on sight (the M3 ruling that keeps headless runs out, `joinable`). So a
+  MAWS session records no `joined`, no message, no question, and the desk
+  has no presence or transcript for it. Admitting it is a membership
+  decision (presence, deliveries and `@all` reach it too), and MAWS sets no
+  marker of its own on every launch to tell its sessions from another
+  TypeScript SDK tool's. Trigger: the owner's call on whether MAWS sessions
+  are members.
+- ~~**T3 — an answer reaches the log only at the session's next Stop.** The
+  bridge exports an async question as its call and acceptance are written,
+  but no answer row (the plugin's delivery, MAWS's steer): an answer taken
+  into a long running turn shows on the desk, and in `chat --host`, as open
+  until that turn ends. Fix: export the delivery and steer rows in
+  `exportRow` too (the `prompt` row, and the attachment rows as the
+  bridge's doors present them). Trigger: an answered question seen open on
+  the desk for long.~~ **Resolved in 7.185.0**: the owner ruled an open
+  async question counts on the desk until it is answered (2026-10-18), so
+  `exportRow` now hands the child every main-loop row that may answer one,
+  as it is kept: the `prompt` row (the plugin's delivery submitted while
+  idle, MAWS's steer as the human's prompt) as kept, and the
+  `hook_additional_context` (door `hook-context`) and `queued_command`
+  (door `delivery`) attachments, their payload read back from their
+  renderings, the only form the hook is handed (`answerRecord`): the
+  engine's exact framing stripped, the queued prompt whole, so a message
+  that quotes a steer is read as written and answers nothing. The child's
+  `host_events` decides, under the Stop hook's `(kind, src)`, so the Stop
+  appends nothing more (`tests/sminos/test-bridge-export.sh`). What still
+  waits for the Stop: an answer past 65,536 characters; a prompt row the
+  transcript keeps with no origin (the hook reads it as `unclassified`,
+  which sminos does not take for the human); an attachment whose rendering
+  is not in that framing, or holds `&lt;` (the engine's escape of a
+  system-reminder tag, which a literal one typed by the human reads the
+  same as). Residual: a context attachment's entries
+  reach the hook joined a line apart, so a line another hook appended after
+  a delivery in the same attachment would ride in that answer's `text` (its
+  `src` is right); none of the 66 delivery attachments in this machine's
+  transcripts (2.1.300–2.1.302) held one. This plugin can write one: in
+  auto mode, when the call that carries a held answer is blocked, the
+  appeal mod (outer to the ask's `tool.call`) appends its block notice
+  after the answer, and the live `answered` text then ends with that notice
+  and wins the `(answered, src)` key over the Stop hook's clean reading.
+  Fix: the ask mod records the exact entries it attached and the bridge
+  exports those, or skips the live export when anything follows them.
+  Trigger: an `answered` seen in the log ending with an appeal notice.
 
 ## to-human style (2026-10-15, 7.158.0)
 
@@ -432,13 +482,72 @@ the spec's Decision Log entry "the branch review round"
 
 ## sminos bridge: a delivery wakes a stopped session (2026-10-17, e269230e)
 
-- **A late stop drop can be lost with no refusal when its post fails.** A
-  delivery the engine drops for a stop after the mod answered `submitted` goes
-  to the child as a keyed `inbox` event. If the post carrying it fails before
-  the child takes it in, the poster replaces the batch with a gap and a resync
-  (bridge-stream.tsx), and neither carries inbox work. The message is then
-  lost, its mark stays, and the daemon is never told it `failed`. Two things
-  must happen together: a prompt queued in the instant the session turned
-  busy, then an Esc; and a failed post to the child's local socket. Trigger:
-  a delivery reported lost with no refusal, or the poster's resync gaining
+- ~~**A late stop drop can be lost with no refusal when its post fails.**~~
+  **Gone 2026-10-18** (smns-esc-owner): a delivery the engine drops for a
+  stop no longer travels as an `inbox` event; its words go in as a row
+  (`$.session.append`), so no post carries them. What a failed post can still
+  lose is the wake (next item).
+- **A wake is lost when the post carrying it fails.** The bridge's `inbox`
+  event (the wake after a stop) is not retained work: a failed post to the
+  child's local socket replaces the batch with a gap and a resync
+  (bridge-stream.tsx), which carries no wake. The delivered row is in the
+  conversation, so nothing is lost, but the session is not woken and reads it
+  only at its next turn. T3. Trigger: a stopped session found holding an
+  unread delivered row with no wake sent, or the poster's resync gaining
   retained work for another reason.
+- **A delivered text with no sminos frame line gets a wake with no
+  `Unread:` line.** A wake names the rows it points at by their frame lines, so no two
+  wakes are one text (the engine drops a peer message identical to its
+  sender's last within 30 s). sminos frames every event it pushes, so only a
+  `deliver` command sent by hand with a bare text (the live probe's direct
+  path did, until it framed its texts) can produce two identical wakes in that
+  window, the second dropped. T3. Trigger: a sender of `deliver` that does
+  not frame its text.
+
+## sminos plane: the live chain (2026-10-18, PR #239)
+
+- **A row whose parent never comes stays unmarked, and so does all that
+  follows it.** The chain places a row only once its parent is placed (the
+  engine writes a child a few ms ahead of its parent around a session's
+  start). A transcript whose first row names a parent outside the file — 1 of
+  1,500 on this machine, a resumed subagent — leaves every row unplaced: the
+  desk draws them all, as before the chain. The engine's loader treats such a
+  row as a root. Trigger: a transcript the desk draws with a dead branch whose
+  rows the plane left unplaced; then place a parent that has not come after a
+  bound (rows read) as a root.
+- **An Esc's retraction lands with the branch's first row, not at the Esc.**
+  The interactive engine writes nothing when an Esc hands a prompt back; the
+  rows it left behind go off when the next row is written (the prompt sent
+  again, a delivery, a system notice). Until then the desk draws them as
+  live. Its SDK rewind writes a `last-prompt {rewound: true}` anchor, which
+  has no uuid and is no row here. Trigger: the owner reading a handed-back
+  prompt as sent, or a desk-side rewind control (whose anchor the plane would
+  then read).
+- **An Esc that empties the conversation leaves no branch.** When the Esc
+  hands back a session's first prompt (nothing before it), the engine writes
+  its next row (a re-appended delivery, the wake) under the file's stale
+  leaf, the abandoned turn's last row. The file's chain then runs through the
+  prompt the live conversation no longer holds, and the engine's own resume
+  would rebuild it too. The only trace is a `last-prompt {leafUuid:
+  "00000000-…", explicit: true}` written after the next turn's first rows
+  (2.1.300 class `ydt`): it says a rewind happened, not where. Seen in
+  #238's evidence (run 7, `restore`). The desk keeps #42's frame-line fold
+  for the delivery; the prompt draws as read. Trigger: the engine writing
+  a null parent there, or a rewind trace that names the cut.
+
+## api tick: the successor's rescue (2026-10-18, PR #242, re-landing PR #153's review)
+
+- **A predecessor record naming a sibling worktree of the same repository
+  passes both guards.** The rescue checks that the worktree belongs to the
+  governed repository and that its branch is the dispatcher-created one, but
+  a stale record pointing at another ticket's worktree of the same repository
+  satisfies both, so the tick would publish that ticket's branch under this
+  one's recovery. Deferred by PR #153's review and still open after #242. T2.
+  Trigger: a recovery tick whose predecessor record's worktree carries a
+  ticket number other than its own; then bind the worktree to the ticket's
+  seat name before pushing.
+- **`remote.origin.pushurl` can redirect the rescue's push.** W1-6 pinned the
+  recovery's reset to the commit the tick verified, but the push itself still
+  follows whatever `pushurl` the worktree's config names. T3. Trigger: a
+  worktree whose `remote.origin.pushurl` differs from `remote.origin.url`;
+  then push to the resolved `url` explicitly.

@@ -91,6 +91,9 @@ class Browser:
         self.step_ends = []   # (turnId, agentId, step), in order
         self.dropped = {}     # a block a step-end dropped (no block-row came): its partial text
         self.kinds = []
+        self.stamps = []      # each `chunk`'s `t`, the bridge's stamp, in order
+        self.off = set()      # the rows marked off the live chain, as the marks stand in message order
+        self.marked = {}      # a `row` that carried marks: its uuid → (offChain, onChain)
 
     def take(self, env):
         n, kind, body = env["n"], env["kind"], env["body"]
@@ -104,6 +107,7 @@ class Browser:
             self.snapshot = body
             for row in reversed(body["rows"]):
                 self.add_row(row)
+            self.mark(body["rows"], body["offChain"])
             for e in body["streaming"]:
                 key = (e["turnId"], e["agentId"], e["step"])
                 self.upto[key] = e["upTo"]
@@ -112,6 +116,7 @@ class Browser:
             self.subagents = body["subagents"]
             self.body = {k: body[k] for k in ("subagents", "jobs", "mcp")}
         elif kind == "chunk":
+            self.stamps.append(body.get("t"))
             key = (body["turnId"], body["agentId"], body["step"])
             if body["chunkIndex"] <= self.upto.get(key, -1):
                 self.errors.append("chunk %s %d at or below its watermark" % (key, body["chunkIndex"]))
@@ -127,6 +132,13 @@ class Browser:
                 self.other[body["uuid"]] = self.blocks.pop(bk, None)
         elif kind == "row":
             self.add_row(body["row"])
+            for key in ("offChain", "onChain"):
+                if key in body and not body[key]:
+                    self.errors.append("a row's %s present and empty" % key)
+            self.off |= set(body.get("offChain", ()))
+            self.off -= set(body.get("onChain", ()))
+            if "offChain" in body or "onChain" in body:
+                self.marked[body["row"]["uuid"]] = (body.get("offChain", []), body.get("onChain", []))
         elif kind == "step-end":
             key = (body["turnId"], body["agentId"], body["step"])
             self.step_ends.append(key)
@@ -145,8 +157,20 @@ class Browser:
             self.usage.append(body)
         elif kind == "rows":
             self.pages.append(body)
+            self.mark(body["rows"], body["offChain"])
         elif kind == "diff":
             self.diff = body
+
+    def mark(self, rows, off):
+        """A snapshot's or a page's marks: each of its rows on or off."""
+        held = {r["uuid"] for r in rows}
+        if not set(off) <= held:
+            self.errors.append("offChain names rows the message does not carry: %s" % sorted(set(off) - held))
+        self.off = (self.off - held) | set(off)
+
+    def drawn(self):
+        """The rows held on the chain, in order: what the desk draws as read."""
+        return [u for u in self.uuids() if u not in self.off]
 
     def scope_agent(self):
         return self.agent
@@ -226,6 +250,48 @@ class Rows:
     def mcp(self, added=(), removed=()):
         return self.row(type="attachment", attachment={"type": "mcp_instructions_delta", "addedNames": list(added),
                                                        "removedNames": list(removed)})
+
+
+class Thread(Rows):
+    """Rows chained as the engine writes them (2.1.300): each names the last
+    one written as its parent, a tool result its issuing assistant (the
+    engine's sourceToolAssistantUUID), unless the test names another — an
+    Esc's or a /rewind's branch point."""
+
+    def __init__(self, sidechain=False):
+        super().__init__()
+        self.leaf = None
+        self.sidechain = sidechain
+
+    def chained(self, row, parent=Ellipsis):
+        row.update(parentUuid=self.leaf if parent is Ellipsis else parent, isSidechain=self.sidechain)
+        self.leaf = row["uuid"]
+        return row
+
+    def prompt(self, text, parent=Ellipsis):
+        return self.chained(self.row(type="user", message={"role": "user", "content": text}), parent)
+
+    def attachment(self, kind="output_style", parent=Ellipsis):
+        return self.chained(self.row(type="attachment", attachment={"type": kind}), parent)
+
+    def answer(self, text, mid, parent=Ellipsis):
+        return self.chained(self.row(type="assistant", message={"id": mid, "role": "assistant", "content": [
+            {"type": "text", "text": text}]}), parent)
+
+    def tool_call(self, tid, mid, parent=Ellipsis):
+        return self.chained(self.row(type="assistant", message={"id": mid, "role": "assistant", "content": [
+            {"type": "tool_use", "id": tid, "name": "Bash", "input": {}}]}), parent)
+
+    def tool_result(self, tid, call):
+        return self.chained(self.row(type="user", sourceToolAssistantUUID=call["uuid"], message={
+            "role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": "ok"}]}), call["uuid"])
+
+    def steer(self, text, parent=Ellipsis):
+        """A row the bridge appended mid-turn (`$.session.append`): kept isMeta with the plugin's origin."""
+        return self.chained(self.plugin_note(text), parent)
+
+    def turn_end(self, parent=Ellipsis):
+        return self.chained(self.row(type="system", subtype="turn_duration", durationMs=1000), parent)
 
 
 def by_agent(body):
@@ -361,9 +427,10 @@ class Engine(Session):
         page = self.page(sub, b, ids[1], 50)
         self.assertEqual([r["uuid"] for r in page["rows"]], [ids[0]])
         self.assertFalse(page["more"])
-        self.assertEqual(self.page(sub, b, ids[0], 50), {"rows": [], "before": ids[0], "more": False},
+        self.assertEqual(self.page(sub, b, ids[0], 50), {"rows": [], "before": ids[0], "more": False, "offChain": []},
                          "nothing before the first row")
-        self.assertEqual(self.page(sub, b, "no-such-row", 50), {"rows": [], "before": "no-such-row", "more": False})
+        self.assertEqual(self.page(sub, b, "no-such-row", 50), {"rows": [], "before": "no-such-row", "more": False,
+                                                                "offChain": []})
         self.assertEqual(b.errors, [])
 
     def test_pages_reach_the_first_row_on_a_live_session(self):
@@ -496,6 +563,8 @@ class Engine(Session):
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 4 and b.usage))
         self.assertClean(b)
         self.assertLess(b.kinds.index("block-row"), b.kinds.index("row"), "a block-row before its row")
+        # Each live chunk carries the bridge's stamp through, for the web's chunk-to-drawn latency.
+        self.assertEqual(b.stamps, [1760000000000 + i for i in (1, 2, 3)], "the bridge's stamps, passed through")
         self.assertEqual(b.usage, [{"context": {"tokens": 1234, "window": 200000, "percent": 0.617},
                                     "cost": {"usd": 0.01}}])
 
@@ -932,6 +1001,123 @@ class Engine(Session):
         self.assertEqual(b2.uuids(), first_rows + between + [later])
         for b in (b1, b2):
             self.assertEqual(b.errors, [])
+
+
+class OffChain(Session):
+    """The live chain on a subscription: the snapshot and its pages mark the
+    rows off it, and a row that starts a branch takes off, live, the rows the
+    desk already drew — a prompt sent again after an Esc, a steer under an
+    undone turn — while the rows of a parallel call stay on."""
+
+    def write(self, rows, agent=None, seen=False):
+        for r in rows:
+            self.fake.write_row(agent, r)
+            if seen:
+                self.fake.seen(r["uuid"], agent)
+        return rows
+
+    def undone_turn(self, t):
+        """A turn the session ran — a parallel call, a steer appended while
+        it ran — and its end; the branch point an Esc goes back to first."""
+        rows = [t.prompt("hello"), t.answer("hi", "m0"), t.turn_end()]
+        end = rows[-1]
+        prompt = t.prompt("check both files")
+        a, b = t.tool_call("toolu_a", "m1"), t.tool_call("toolu_b", "m1")
+        steer = t.steer("and the third one")
+        ra, rb = t.tool_result("toolu_a", a), t.tool_result("toolu_b", b)
+        turn = [prompt, a, b, steer, ra, rb, t.answer("both fine", "m2")]
+        return rows, end, turn, steer
+
+    def test_a_snapshot_and_its_pages_mark_the_rows_off_the_chain(self):
+        t = Thread()
+        before, end, turn, steer = self.undone_turn(t)
+        pad = "x" * 200000
+        again = t.prompt("check both files " + pad, parent=end["uuid"])   # sent again: a branch
+        later = [t.answer("checking", "m3")] + [t.prompt("next %d %s" % (i, pad)) for i in range(3)]
+        self.write(before + turn + [again] + later)
+        sub, b = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertTrue(b.snapshot["more"], "older rows left to page: the undone turn is among them")
+        self.assertEqual(b.snapshot["offChain"], [], "the newest rows are all on the chain")
+        older = self.page_to_first(sub, b)
+        off = [u for p in b.pages for u in p["offChain"]]
+        self.assertEqual(sorted(off), sorted(r["uuid"] for r in turn), "the undone turn, steer and all, marked off")
+        self.assertTrue(steer["uuid"] in b.off)
+        self.assertEqual(len(older) + len(b.rows), len(before + turn + [again] + later), "every row still sent")
+        self.assertEqual(b.errors, [])
+
+    def test_a_snapshot_marks_a_rewound_prompt_and_keeps_parallel_results_on(self):
+        t = Thread()
+        before, end, turn, steer = self.undone_turn(t)
+        live = [t.turn_end()]
+        first = t.prompt("fix it")
+        hook = t.attachment()
+        again = t.prompt("fix it", parent=live[-1]["uuid"])   # Esc before the answer; sent again
+        self.write(before + turn + live + [first, hook, again, t.answer("fixed", "m4")])
+        sub, b = self.subscribe(bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertFalse(b.snapshot["more"])
+        self.assertEqual(sorted(b.snapshot["offChain"]), sorted([first["uuid"], hook["uuid"]]),
+                         "the first copy and what it held; the parallel results and the steer stay on")
+        self.assertEqual(b.drawn(), [r["uuid"] for r in before + turn + live + [again]] + [b.uuids()[-1]])
+        self.assertEqual(b.errors, [])
+
+    def test_a_live_rewind_takes_off_what_the_desk_drew(self):
+        """Through the bridge's release order, each row released by its own
+        notice: the turn goes out row by row with nothing off, the parallel
+        results included; the prompt sent again carries the retraction."""
+        t = Thread()
+        before, end, turn, steer = self.undone_turn(t)
+        self.write(before)
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.write(turn, seen=True)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == len(before + turn)))
+        self.assertEqual((b.off, b.marked), (set(), {}), "a live turn, its parallel results and its steer: nothing off")
+        self.assertEqual(b.drawn(), [r["uuid"] for r in before + turn])
+        again = t.prompt("check both files", parent=end["uuid"])
+        self.write([again], seen=True)
+        self.assertTrue(self.pump(sub, b, lambda: again["uuid"] in b.uuids()))
+        self.assertEqual(b.marked, {again["uuid"]: ([r["uuid"] for r in turn], [])},
+                         "the row that starts the branch carries what it took off, oldest first")
+        self.assertIn(steer["uuid"], b.off, "the steer under the undone turn among it")
+        self.assertEqual(b.drawn(), [r["uuid"] for r in before] + [again["uuid"]])
+        self.settle(sub, b)
+        self.assertClean(b)
+        self.assertIsNone(b.end)
+
+    def test_rows_past_the_cut_carry_their_own_marks(self):
+        """The build reads past the cut: a row it found off the chain goes out
+        marked off, the branch that took it off with nothing to say again."""
+        t = Thread()
+        before, end, turn, steer = self.undone_turn(t)
+        self.write(before)
+        self.fake.start_bridge()                 # its seed, the cut: the last row of `before`
+        again = t.prompt("check both files", parent=end["uuid"])
+        self.write(turn + [again])               # on disk past the cut, noticed after the snapshot
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        for r in turn + [again]:
+            self.fake.seen(r["uuid"])
+        self.assertTrue(self.pump(sub, b, lambda: again["uuid"] in b.uuids()))
+        self.assertEqual(b.marked, {r["uuid"]: ([r["uuid"]], []) for r in turn}, "each marks itself off")
+        self.assertEqual(b.drawn(), [r["uuid"] for r in before] + [again["uuid"]])
+        self.assertEqual(b.errors, [])
+
+    def test_an_agents_transcript_has_its_own_chain(self):
+        t = Thread(sidechain=True)
+        rows = [t.prompt("the brief"), t.tool_call("toolu_1", "m1")]
+        result = t.tool_result("toolu_1", rows[-1])
+        dropped = t.answer("handing back", "m2")
+        note = t.chained(t.row(type="user", isMeta=True, isSidechain=True,
+                               message={"role": "user", "content": "a message reached the turn"}), result["uuid"])
+        self.write(rows + [result, dropped, note], agent="a1")
+        self.fake.meta("a1", {"agentType": "worker"})
+        sub, b = self.subscribe(agent="a1", bridge=False)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual(b.snapshot["offChain"], [dropped["uuid"]], "the response the engine dropped")
+        self.assertEqual(b.errors, [])
 
 
 class Held:
@@ -1634,6 +1820,212 @@ class FixtureOutput(unittest.TestCase):
                 if want["result"] == "refused":
                     self.assertTrue(str(got.pop("reason", "")).strip(), "a refusal gives its reason")
                 self.assertEqual(got, want)
+
+
+class ChainRules(unittest.TestCase):
+    """The live chain (Chain) row by row, on the shapes the engine writes:
+    what each row takes off the chain and puts back on."""
+
+    def feed(self, chain, rows):
+        """(off, on) per row, by uuid."""
+        return {r["uuid"]: chain.add(r) for r in rows}
+
+    def first_turn(self, t, mid="m0"):
+        """A prompt answered, its turn ended: the branch point an Esc goes back to."""
+        return [t.prompt("hello"), t.attachment(), t.answer("hi", mid), t.turn_end()]
+
+    def test_a_prompt_sent_again_after_an_esc_leaves_the_first_copy_off(self):
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        end = before[-1]["uuid"]
+        sent = [t.prompt("fix the bug"), t.attachment()]
+        again = t.prompt("fix the bug", parent=end)   # the Esc handed it back; sent again from the turn's end
+        after = [t.attachment(), t.answer("on it", "m1")]
+        got = self.feed(c, before + sent + [again] + after)
+        self.assertEqual(got[again["uuid"]], ([r["uuid"] for r in sent], []),
+                         "the copy sent again takes the first one off, and the rows it held")
+        self.assertTrue(all(got[r["uuid"]] == ([], []) for r in before + sent + after), "nothing else moves")
+        self.assertEqual({u for u in c.offs}, {r["uuid"] for r in sent})
+        self.assertFalse(any(c.off(r["uuid"]) for r in before + [again] + after))
+
+    def test_a_steer_stays_on_through_its_turn_and_goes_off_with_it(self):
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        end = before[-1]["uuid"]
+        prompt = t.prompt("run the suite")
+        call = t.tool_call("toolu_1", "m1")
+        steer = t.steer("also run the linter")   # appended while the call runs
+        result = t.tool_result("toolu_1", call)  # names its call, not the steer: the leaf's ancestry skips it
+        more = [t.answer("running the linter too", "m2")]
+        got = self.feed(c, before + [prompt, call, steer, result] + more)
+        self.assertTrue(all(off == [] for off, _ in got.values()), "a live turn takes nothing off")
+        self.assertFalse(c.off(steer["uuid"]), "the steer the turn read is on the chain")
+        undone = [prompt, call, steer, result] + more
+        again = t.prompt("run the suite", parent=end)   # a /rewind undid the turn
+        off, on = c.add(again)
+        self.assertEqual((off, on), ([r["uuid"] for r in undone], []))
+        self.assertTrue(c.off(steer["uuid"]), "the steer went off with the turn it was read in")
+
+    def test_parallel_tool_results_stay_on(self):
+        """One response, two calls: split into two assistant rows, each result
+        hanging off its own call; what the leaf's ancestry skips stays on."""
+        t, c = Thread(), plane.Chain()
+        self.feed(c, self.first_turn(t))
+        end = t.leaf
+        rows = [t.prompt("check both")]
+        a = t.tool_call("toolu_a", "m1")
+        b = t.tool_call("toolu_b", "m1")
+        ra = t.tool_result("toolu_a", a)
+        hook = t.attachment("hook_success")      # on the first result: the second's ancestry skips it
+        rb = t.tool_result("toolu_b", b)
+        rows += [a, b, ra, hook, rb, t.attachment(), t.answer("both pass", "m2"), t.turn_end()]
+        got = self.feed(c, rows)
+        self.assertTrue(all(v == ([], []) for v in got.values()), "no row takes another off")
+        self.assertEqual(c.offs, set())
+        self.assertLessEqual({r["uuid"] for r in rows}, set(c.pos), "every row on the chain")
+        again = t.prompt("check both", parent=end)   # undo the whole turn
+        off, _ = c.add(again)
+        self.assertEqual(off, [r["uuid"] for r in rows], "and a rewind past the turn takes all of it off")
+
+    def test_a_response_the_engine_dropped_goes_off(self):
+        """A message reaching the turn while a response streams: the engine
+        drops the response and asks again, the message parented on the row
+        before it."""
+        t, c = Thread(), plane.Chain()
+        rows = [t.prompt("go")]
+        call = t.tool_call("toolu_1", "m1")
+        result = t.tool_result("toolu_1", call)
+        dropped = [t.answer("thinking it over", "m2"), t.answer("done, I think", "m2")]
+        note = t.chained(t.row(type="user", isMeta=True, message={"role": "user", "content": "a message"}),
+                         result["uuid"])
+        got = self.feed(c, rows + [call, result] + dropped + [note])
+        self.assertEqual(got[note["uuid"]], ([r["uuid"] for r in dropped], []))
+
+    def test_rows_written_ahead_of_their_parent_wait_for_it(self):
+        """Around a session's start the engine writes a child a few ms ahead
+        of its parent: it waits, unplaced and unmarked, and joins with it."""
+        t, c = Thread(), plane.Chain()
+        hook = t.attachment("hook_success", parent=None)
+        prompt = t.prompt("start")
+        env = t.attachment("environment")
+        model = t.attachment("model")
+        order = [env, hook, prompt, model]       # env on disk before its parent
+        got = self.feed(c, order)
+        self.assertTrue(all(v == ([], []) for v in got.values()), "nothing taken off")
+        self.assertEqual(c.line, [hook["uuid"], prompt["uuid"], env["uuid"], model["uuid"]],
+                         "the chain in the order of its parents, not of the file")
+        orphan = t.prompt("a fork's first row", parent=str(uuidlib.uuid4()))
+        self.assertEqual(c.add(orphan), ([], []))
+        self.assertFalse(c.off(orphan["uuid"]), "a row whose parent never comes stays unmarked")
+
+    def test_a_compaction_keeps_the_history_and_a_null_parent_continues(self):
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        boundary = t.chained(t.row(type="system", subtype="compact_boundary", logicalParentUuid=t.leaf), None)
+        after = [t.prompt("This session is being continued", parent=boundary["uuid"]), t.answer("ok", "m9")]
+        got = self.feed(c, before + [boundary] + after)
+        self.assertTrue(all(v == ([], []) for v in got.values()))
+        self.assertEqual(c.offs, set(), "the history before a compaction stays on")
+
+    def test_a_result_of_a_call_off_the_chain_is_off_and_moves_nothing(self):
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        end = before[-1]["uuid"]
+        prompt = t.prompt("slow one")
+        call = t.tool_call("toolu_1", "m1")
+        again = t.prompt("never mind", parent=end)
+        reply = t.answer("ok", "m2")
+        late = t.tool_result("toolu_1", call)    # the undone call's result, written late
+        got = self.feed(c, before + [prompt, call, again, reply, late])
+        self.assertEqual(got[late["uuid"]], ([late["uuid"]], []))
+        self.assertEqual(c.line[-2:], [again["uuid"], reply["uuid"]], "the chain did not move")
+
+    def test_a_branch_back_onto_rows_taken_off_puts_them_back(self):
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        end = before[-1]["uuid"]
+        first = [t.prompt("one"), t.answer("1", "m1")]
+        other = t.prompt("two", parent=end)
+        back = t.prompt("continue one", parent=first[-1]["uuid"])
+        got = self.feed(c, before + first + [other, back])
+        self.assertEqual(got[other["uuid"]], ([r["uuid"] for r in first], []))
+        self.assertEqual(got[back["uuid"]], ([other["uuid"]], [r["uuid"] for r in first]))
+        self.assertEqual(c.offs, {other["uuid"]})
+
+    def test_a_branch_back_into_a_parallel_response_brings_all_of_it_back(self):
+        """The loader recovers a response's other calls and their results with
+        any one of them: so does a branch that runs back through one."""
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        prompt = t.prompt("check both")
+        a, b = t.tool_call("toolu_a", "m1"), t.tool_call("toolu_b", "m1")
+        ra, rb = t.tool_result("toolu_a", a), t.tool_result("toolu_b", b)
+        other = t.prompt("never mind", parent=prompt["uuid"])
+        back = t.answer("a passed", "m2", parent=ra["uuid"])
+        got = self.feed(c, before + [prompt, a, b, ra, rb, other, back])
+        self.assertEqual(got[other["uuid"]], ([a["uuid"], b["uuid"], ra["uuid"], rb["uuid"]], []))
+        off, on = got[back["uuid"]]
+        self.assertEqual(off, [other["uuid"]])
+        self.assertEqual(sorted(on), sorted(r["uuid"] for r in (a, b, ra, rb)), "the whole response, both results")
+        self.assertEqual(c.offs, {other["uuid"]})
+
+    def test_rows_brought_back_stand_in_the_order_they_were_written(self):
+        """A later branch cuts by where rows stand on the chain, so a result
+        brought back with its response stands before the turn that followed."""
+        t, c = Thread(), plane.Chain()
+        before = self.first_turn(t)
+        prompt = t.prompt("check both")
+        a, b = t.tool_call("toolu_a", "m1"), t.tool_call("toolu_b", "m1")
+        ra, rb = t.tool_result("toolu_a", a), t.tool_result("toolu_b", b)
+        answer = t.answer("both pass", "m2")     # after rb: the branch back runs through rb, not ra
+        other = t.prompt("never mind", parent=prompt["uuid"])
+        back = t.prompt("go on", parent=answer["uuid"])
+        fork = t.prompt("redo a", parent=ra["uuid"])
+        got = self.feed(c, before + [prompt, a, b, ra, rb, answer, other, back, fork])
+        self.assertEqual(got[fork["uuid"]], ([answer["uuid"], back["uuid"]], []),
+                         "the turn after the response goes; the response's rows stay")
+        self.assertEqual(c.offs, {other["uuid"], answer["uuid"], back["uuid"]})
+
+    def test_a_cascade_reports_each_rows_net_move(self):
+        """Waiting rows placed in one cascade can move a row more than once;
+        what the row reports is where each ended up."""
+        c = plane.Chain()
+        x, cc, d, e, f = (str(uuidlib.uuid4()) for _ in range(5))
+        rows = [{"uuid": e, "parentUuid": cc}, {"uuid": f, "parentUuid": d}, {"uuid": cc, "parentUuid": x},
+                {"uuid": d, "parentUuid": x}, {"uuid": x, "parentUuid": None}]
+        got = self.feed(c, [dict(r, type="user") for r in rows])
+        off, on = got[x]
+        self.assertEqual(set(off), c.offs, "every row reported off is off, and every off row reported")
+        self.assertEqual(len(off), len(set(off)), "once each")
+        self.assertEqual(on, [], "nothing was off before the row came")
+
+    def test_progress_and_sidechain_rows_are_never_marked(self):
+        t, c = Thread(), plane.Chain()
+        prompt = t.prompt("x")
+        progress = t.chained(t.row(type="progress", data={}))
+        reply = t.answer("y", "m1")              # parented on the progress row: passed through to the prompt
+        side = t.chained(t.row(type="user", message={"role": "user", "content": "old subagent row"}), prompt["uuid"])
+        side["isSidechain"] = True
+        got = self.feed(c, [prompt, progress, reply, side])
+        self.assertTrue(all(v == ([], []) for v in got.values()))
+        self.assertEqual(c.line, [prompt["uuid"], reply["uuid"]])
+        agent = plane.Chain(main=False)          # an agent's transcript: every row is a sidechain row
+        t2 = Thread(sidechain=True)
+        rows = [t2.prompt("task"), t2.answer("a", "m1")]
+        again = t2.prompt("task", parent=None)
+        self.feed(agent, rows)
+        self.assertEqual(agent.add(again), ([], []), "a null parent continues")
+
+    def test_copy_is_independent(self):
+        t, c = Thread(), plane.Chain()
+        first = self.first_turn(t)
+        second = self.first_turn(t, mid="m1")   # another response: a response's rows share its message id
+        self.feed(c, first + second)
+        d = c.copy()
+        again = t.prompt("hello", parent=first[-1]["uuid"])
+        self.assertEqual(d.add(again)[0], [r["uuid"] for r in second])
+        self.assertEqual(c.offs, set(), "the original did not see it")
+        self.assertEqual(c.add(again)[0], [r["uuid"] for r in second])
 
 
 class TranscriptIndex(unittest.TestCase):

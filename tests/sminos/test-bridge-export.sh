@@ -150,11 +150,68 @@ def ask(uuid, call, is_async):
 def result(uuid, call, t=ASYNC_RESULT):
     return {"type": "user", "uuid": uuid, "message": {"content": [{"type": "tool_result", "tool_use_id": call, "content": t}]}}
 
+PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
+PLUGIN_FRAMING = ("\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn "
+                  "in the user's place. Address the message above.")
+
+def delivery(call):
+    return 'The human responded to your async AskUserQuestion (call %s): The user answered: "Which backend?"="Postgres".' % call
+
+def steer(call):
+    answered = {"status": "answered", "askId": call, "answers": [{"id": "q1", "question": "Proceed?", "status": "answered", "value": ["Yes"]}]}
+    return "[MAWS ask %s] The user answered the questions you asked:\n1. Proceed? — Yes\n```json\n%s\n```" % (call, json.dumps(answered, indent=2))
+
+QUOTED = "Is this what MAWS sent?\n%s\nIt looks wrong to me." % steer("toolu_ex_quoted")
+TAGGED = 'The human responded to your async AskUserQuestion (call toolu_ex_tag): The user answered: "How?"="wrap it in <system-reminder> tags".'
 MARKS = "Reading.\n<message>first to the host</message>\nAnd `<message>not this</message>` is literal.\n<message>second</message>"
 ROWS = {
     "marks": [text("e1", MARKS)],
     "ask": [ask("e2", "toolu_ex_async", True), result("e3", "toolu_ex_async")],
     "blocking": [ask("e4", "toolu_ex_block", False), result("e5", "toolu_ex_block", "Your questions have been answered.")],
+    # Answer rows as the mod hands them over (bridge-rows.tsx, answerRecord):
+    # the plugin's answer as its prompt row and as a context attachment,
+    # MAWS's steer as the human's prompt and as the command the engine took
+    # into a running turn, each attachment rebuilt from its rendering.
+    "answers": [
+        {"type": "user", "uuid": "a1", "origin": {"kind": "plugin", "name": "doperpowers"},
+         "message": {"content": [{"type": "text", "text": PLUGIN_PROMPT + delivery("toolu_ex_async") + PLUGIN_FRAMING}]}},
+        {"type": "attachment", "uuid": "a2", "attachment": {"type": "hook_additional_context", "content": [delivery("toolu_ex_ctx")]}},
+        {"type": "user", "uuid": "a3", "origin": {"kind": "human"}, "message": {"content": [{"type": "text", "text": steer("toolu_ex_maws")}]}},
+        {"type": "attachment", "uuid": "a4", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": steer("toolu_ex_mid"),
+                                                            "origin": {"kind": "human"}}},
+    ],
+    # The human's mid-turn message quoting a steer, which the mod hands over whole.
+    "quoted": [
+        {"type": "attachment", "uuid": "a5", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": QUOTED,
+                                                            "origin": {"kind": "human"}}},
+    ],
+}
+# The same answer rows as the transcript keeps them, where the Stop hook reads
+# them: a prompt's content a string, an attachment's payload whole, beside its
+# rendering.
+KEPT = {
+    "answers": [
+        {"type": "user", "uuid": "a1", "origin": {"kind": "plugin", "name": "doperpowers"}, "promptSource": "system",
+         "message": {"role": "user", "content": PLUGIN_PROMPT + delivery("toolu_ex_async") + PLUGIN_FRAMING}},
+        {"type": "attachment", "uuid": "a2",
+         "attachment": {"type": "hook_additional_context", "content": [delivery("toolu_ex_ctx")], "hookName": "tool.call", "hookEvent": "PostToolUse"},
+         "rendered": [{"content": "<system-reminder>\ntool.call hook additional context: %s\n</system-reminder>" % delivery("toolu_ex_ctx")}]},
+        {"type": "user", "uuid": "a3", "origin": {"kind": "human"}, "promptSource": "sdk", "message": {"role": "user", "content": steer("toolu_ex_maws")}},
+        {"type": "attachment", "uuid": "a4", "attachment": {"type": "queued_command", "prompt": steer("toolu_ex_mid"), "source_uuid": "s-a4",
+                                                            "commandMode": "prompt", "origin": {"kind": "human"}, "humanTurn": True}},
+    ],
+    "quoted": [
+        {"type": "attachment", "uuid": "a5", "attachment": {"type": "queued_command", "prompt": QUOTED, "source_uuid": "s-a5",
+                                                            "commandMode": "prompt", "origin": {"kind": "human"}, "humanTurn": True}},
+    ],
+    # An answer holding a system-reminder tag, which the engine's rendering
+    # escapes: the mod does not export it, and the Stop hook reads the payload.
+    "tagged": [
+        {"type": "attachment", "uuid": "a6",
+         "attachment": {"type": "hook_additional_context", "content": [TAGGED], "hookName": "tool.call", "hookEvent": "PostToolUse"},
+         "rendered": [{"content": "<system-reminder>\ntool.call hook additional context: %s\n</system-reminder>"
+                                  % TAGGED.replace("<system-reminder>", "&lt;system-reminder>")}]},
+    ],
 }
 op = sys.argv[1]
 def rows(name):
@@ -162,11 +219,13 @@ def rows(name):
 
 if op == "export":          # name: the export event the mod posts for these rows
     print(json.dumps([{"type": "export", "records": rows(sys.argv[2]), "t": 1}]))
+elif op == "exports":       # name: one export event per row, as the mod posts an answer row's
+    print(json.dumps([{"type": "export", "records": [r], "t": 1} for r in rows(sys.argv[2])]))
 elif op == "transcript":    # path name...: the rows as the transcript keeps them, appended
     with open(sys.argv[2], "a") as f:
         for name in sys.argv[3:]:
             for r in ([{"type": "user", "uuid": "p-" + name, "isSidechain": False, "message": {"role": "user", "content": "go"}}]
-                      if name == "prompt" else rows(name)):
+                      if name == "prompt" else KEPT.get(name) or rows(name)):
                 f.write(json.dumps({"isSidechain": False, **r}) + "\n")
 PY
 rows() { python3 "$T/rows.py" "$@"; }
@@ -194,6 +253,13 @@ hook() { # event session transcript
     "$2" "$REPO" "$3" "$1" | "$SMINOS" record
 }
 has() { [[ " $(events_of "$1") " == *" $2 "* ]]; }
+text_of() { # session kind src → that event's text, from the session's own writer file
+  python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    e = json.loads(l)
+    if e["kind"] == sys.argv[2] and e.get("src") == sys.argv[3]:
+        print(e["text"])' "$LOG/testhost.$1.jsonl" "$2" "$3"
+}
 
 echo "the bridge's live export to the host:"
 SA=5b000001-0000-4000-8000-0000000000e1
@@ -228,16 +294,49 @@ assert_equals "$(events_of "$SA")" "joined message:e1#0 message:e1#1 question:to
   "a row exported twice (a redelivered batch) appends nothing more"
 assert_not_contains "$(cat "$T/stream")" '"export"' "the export is the child's to act on: it is not handed to subscribers"
 
+# An answer reaches the log as its row is kept, not at the turn's end. The
+# quoting message goes first: once the last answer is in, it was read too.
+ctl post "$SOCK" "$(rows exports quoted)" >/dev/null
+ctl post "$SOCK" "$(rows exports answers)" >/dev/null
+until_true 100 has "$SA" "answered:toolu_ex_mid" || true
+LIVE="joined message:e1#0 message:e1#1 question:toolu_ex_async message:es#0 answered:toolu_ex_async answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid"
+assert_equals "$(events_of "$SA")" "$LIVE" \
+  "each exported answer row appends answered under its ask's id: the plugin's delivery as a prompt and as context, MAWS's steer as a prompt and taken mid-turn"
+assert_not_contains "$(events_of "$SA")" "toolu_ex_quoted" \
+  "a mid-turn message that quotes a steer, exported whole, answers nothing: it neither opens with the tag nor ends with the fence"
+assert_equals "$(text_of "$SA" answered toolu_ex_async)" 'The user answered: "Which backend?"="Postgres".' \
+  "a delivery's answered carries the engine's result text, without the plugin prompt's framing"
+assert_equals "$(text_of "$SA" answered toolu_ex_mid)" "1. Proceed? — Yes" \
+  "a steer's carries its answer lines, without MAWS's header or the result's fence"
+
 # The Stop hook's export over the same rows: what the bridge already put in
-# the log is there; only what it never saw (row e9) is appended.
+# the log is there; only what it never saw (the tagged answer, row e9) is
+# appended.
 hook SessionStart "$SA" "$TA"
-rows transcript "$TA" prompt marks ask e9
+rows transcript "$TA" prompt marks ask answers quoted tagged e9
 hook Stop "$SA" "$TA"
-assert_equals "$(events_of "$SA")" "joined message:e1#0 message:e1#1 question:toolu_ex_async message:es#0 message:e9#0" \
-  "the Stop hook's export finds the bridge's events already there and appends only what the bridge did not export"
+assert_equals "$(events_of "$SA")" "$LIVE answered:toolu_ex_tag message:e9#0" \
+  "the Stop hook's export finds the bridge's events, answers included, already there and appends only what the bridge did not export"
+assert_equals "$(text_of "$SA" answered toolu_ex_tag)" 'The user answered: "How?"="wrap it in <system-reminder> tags".' \
+  "an answer holding a system-reminder tag, left by the bridge, lands at the Stop as the human wrote it, not as the engine's escaped rendering"
 hook Stop "$SA" "$TA"
-assert_equals "$(events_of "$SA")" "joined message:e1#0 message:e1#1 question:toolu_ex_async message:es#0 message:e9#0" \
+assert_equals "$(events_of "$SA")" "$LIVE answered:toolu_ex_tag message:e9#0" \
   "and a Stop replayed appends nothing"
+# The same answer rows in a session no bridge exported: the Stop hook alone
+# reads each as the bridge's export did, under the same src with the same text.
+SF=5b000001-0000-4000-8000-0000000000e8
+TF="$HOME/.claude/projects/x/$SF.jsonl"
+peer "$SF" exstop interactive cli
+hook SessionStart "$SF" "$TF"
+rows transcript "$TF" prompt answers quoted
+hook Stop "$SF" "$TF"
+assert_equals "$(events_of "$SF")" "joined answered:toolu_ex_async answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid" \
+  "without the bridge, the Stop hook reads the same answer rows as the same answered events, and the quoting message as none"
+same_texts=yes
+for src in toolu_ex_async toolu_ex_ctx toolu_ex_maws toolu_ex_mid; do
+  [[ "$(text_of "$SA" answered "$src")" == "$(text_of "$SF" answered "$src")" ]] || same_texts="no: $src"
+done
+assert_equals "$same_texts" yes "and with the texts the bridge's export logged"
 "$SMINOS" chat exdemo --host > "$T/host" 2>&1 || true
 assert_contains "$(cat "$T/host")" "exa: first to the host" "chat --host prints what the bridge exported"
 
@@ -273,6 +372,14 @@ ctl post "$SMINOS_HOME/bridge/$SB.sock" "$(rows export marks)" >/dev/null
 ctl post "$SMINOS_HOME/bridge/$SB.sock" '[{"type":"heartbeat","state":{},"t":2}]' >/dev/null
 sleep 0.5
 assert_equals "$(events_of "$SB")" "" "a session that is no member (a headless SDK run) exports nothing"
+SM=5b000001-0000-4000-8000-0000000000e7
+peer "$SM" exmaws interactive sdk-ts
+SMNS_MEMBER="$(ps -o ppid= -p $$ | tr -d ' ')" start_child "$SM"
+ctl post "$SMINOS_HOME/bridge/$SM.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SM\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SM.sock" "$(rows export marks)" >/dev/null
+until_true 100 has "$SM" "message:e1#1" || true
+assert_equals "$(events_of "$SM")" "joined message:e1#0 message:e1#1" \
+  "an SDK run its host marked as a member (MAWS's SMNS_MEMBER, naming the engine's parent, which the bridge's child inherits) joins and exports as a terminal session does"
 
 SC=5b000001-0000-4000-8000-0000000000e3
 peer "$SC" exout interactive cli

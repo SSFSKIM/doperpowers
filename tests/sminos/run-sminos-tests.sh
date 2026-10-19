@@ -4563,6 +4563,13 @@ hp_peer() { # name session nameSource kind — a running harness session in the 
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"%s","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
     "$SOCK_PID" "$2" "$1" "$3" "$4" "$R3" "$TEST_ROOT/in-$1.sock" > "$HOME/.claude/sessions/hp-$1.json"
 }
+sdk_peer() { # name session — a running sdk-ts session in the project
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","entrypoint":"sdk-ts","status":"busy","cwd":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$R3" > "$HOME/.claude/sessions/hp-$1.json"
+}
+# The member mark its launcher sets: the pid that spawned the engine, here the
+# parent of the process the sdk_peer records stand for.
+sdk_mark() { ps -o ppid= -p "$SOCK_PID" | tr -d ' '; }
 hp_events() { # session → "kind[:src]" words from its own writer file
   python3 -c 'import json, sys
 for l in open(sys.argv[1]):
@@ -4673,6 +4680,113 @@ hook_run Stop "$HA" "$R3" "$TA"
 assert_contains "$(grep '"src": "toolu_async2"' "$HPLOG/testhost.$HA.jsonl" | grep answered)" '=\"Postgres\". You can now continue with these answers in mind."' \
   "a plugin-submitted delivery records its answer without the engine's framing"
 assert_equals "$(grep -c 'This is how Claude Code' "$HPLOG/testhost.$HA.jsonl" || true)" "0" "the framing is not part of it"
+
+# A session under MAWS asks through MAWS's own tool (mcp__maws__ask, blocking
+# false), whose shape MAWS owns: maws-ask-async.jsonl is a live transcript of
+# one, answered by MAWS's steer while the session was idle, and
+# maws-ask-async-midturn.jsonl the same steer as the engine writes a prompt it
+# took into a running turn (both built from MAWS's recorded fixtures). Its
+# question records once its acceptance is on disk and its answer once the
+# steer is, both under the call's id, and chat --host shows them as it shows
+# the plugin's. MAWS registers its sessions with an sdk-ts entrypoint and
+# marks them members (SMNS_MEMBER, its own pid, in the environment of each
+# engine it spawns, which the engine's hooks inherit).
+MAWS_CALL=toolu_016zBCDTWVXbAqbGdLyd1Zzj
+HM=5d000001-0000-4000-8000-00000000005d
+TM="$TXD/$HM.jsonl"
+sdk_peer hm "$HM"
+SMNS_MEMBER="$(sdk_mark)" hook_run SessionStart "$HM" "$R3" "$TM" startup
+head -n 5 "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TM"
+SMNS_MEMBER="$(sdk_mark)" hook_run Stop "$HM" "$R3" "$TM"
+assert_equals "$(hp_events "$HM")" "joined question:$MAWS_CALL " "a MAWS async ask records a question at the Stop after its acceptance, src its call id"
+assert_contains "$(grep "$MAWS_CALL" "$HPLOG/testhost.$HM.jsonl")" '"text": ["Proceed?"], "choices": ["Yes", "No"]' \
+  "carrying its question and its option labels, as the plugin's does"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "hm asks (open): Proceed?" "chat --host shows the MAWS question, open"
+assert_contains "$OUT" "    choices: Yes · No" "with its labels"
+tail -n +6 "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TM"
+SMNS_MEMBER="$(sdk_mark)" hook_run Stop "$HM" "$R3" "$TM"
+assert_equals "$(hp_events "$HM")" "joined question:$MAWS_CALL answered:$MAWS_CALL " "its steer records answered under the same src"
+assert_contains "$(grep '"kind": "answered"' "$HPLOG/testhost.$HM.jsonl")" '"from": "hm", "src": "'"$MAWS_CALL"'", "text": "1. Proceed? — Yes"' \
+  "carrying the steer's answer lines, without its tag, header or result block"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "hm asks: Proceed?" "the answered MAWS question is no longer open"
+assert_contains "$OUT" "    answered: 1. Proceed? — Yes" "and its answer stands under it"
+SMNS_MEMBER="$(sdk_mark)" hook_run Stop "$HM" "$R3" "$TM"
+assert_equals "$(hp_events "$HM")" "joined question:$MAWS_CALL answered:$MAWS_CALL " "a replayed Stop appends nothing"
+# The steer taken into a running turn: one turn, one Stop, both events.
+HN=5e000001-0000-4000-8000-00000000005e
+TN="$TXD/$HN.jsonl"
+MAWS_MID=toolu_01MidTurnMawsAskStandIn00
+hp_peer hn "$HN" user interactive
+hook_run SessionStart "$HN" "$R3" "$TN" startup
+python3 - "$SCRIPT_DIR/maws-ask-async-midturn.jsonl" "$MAWS_CALL" "$MAWS_MID" >> "$TN" <<'PY_MID'
+import sys
+sys.stdout.write(open(sys.argv[1]).read().replace(sys.argv[2], sys.argv[3]))   # its own call id, so chat --host tells the two apart
+PY_MID
+hook_run Stop "$HN" "$R3" "$TN"
+assert_equals "$(hp_events "$HN")" "joined question:$MAWS_MID answered:$MAWS_MID " "a steer the engine queued into the running turn records the answer too"
+run "$SMINOS" chat hostdemo --host
+assert_contains "$OUT" "hn asks: Proceed?" "chat --host shows that question answered"
+# What is no async MAWS ask, or no answer to one: a blocking call (answered in
+# its own result), a call made async whose result answered it anyway (MAWS
+# holds a subagent's ask as blocking), a refused call, and steers that are not
+# the human's (a peer quoting one) or whose result names another ask. Among
+# them, an ask whose call reached MAWS without the engine's tool-use id, so
+# MAWS accepted and steered it under its request id: it records under that id.
+HO=5f000001-0000-4000-8000-00000000005f
+TO="$TXD/$HO.jsonl"
+hp_peer ho "$HO" user interactive
+hook_run SessionStart "$HO" "$R3" "$TO" startup
+python3 - "$SCRIPT_DIR/maws-ask-async.jsonl" "$MAWS_CALL" >> "$TO" <<'PY_NOT'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+call = sys.argv[2]
+use, accepted, steer = rows[2], rows[3], rows[5]
+answered = steer["message"]["content"].split("```json\n")[1].rsplit("\n```", 1)[0]
+
+def ask(new, blocking, result, is_error=False):
+    u = json.loads(json.dumps(use).replace(call, new))
+    u["message"]["content"][0]["input"]["blocking"] = blocking
+    r = json.loads(json.dumps(accepted).replace(call, new))
+    r["message"]["content"][0]["content"] = [{"type": "text", "text": result.replace(call, new)}]
+    if is_error:
+        r["message"]["content"][0]["is_error"] = True
+    return [u, r]
+
+def steer_as(new, text_call=None, origin=None):
+    s = json.loads(json.dumps(steer).replace(call, new))
+    if text_call:
+        s["message"]["content"] = s["message"]["content"].replace('"askId": "%s"' % new, '"askId": "%s"' % text_call)
+    if origin:
+        s["origin"] = origin
+    return [s]
+
+out = ask("toolu_maws_blocking", True, answered) + ask("toolu_maws_held", False, answered) \
+    + ask("toolu_maws_refused", False, "the session ended before the user answered", True) \
+    + ask("toolu_maws_unnamed", False, json.dumps({"status": "asked", "askId": "req_maws_unnamed"}, indent=2)) \
+    + steer_as("req_maws_unnamed") \
+    + steer_as("toolu_maws_quoted", origin={"kind": "peer", "name": "other"}) \
+    + steer_as("toolu_maws_mismatch", text_call="toolu_maws_else")
+for r in out:
+    print(json.dumps(r, ensure_ascii=False))
+PY_NOT
+hook_run Stop "$HO" "$R3" "$TO"
+assert_equals "$(hp_events "$HO")" "joined question:req_maws_unnamed answered:req_maws_unnamed " \
+  "an ask MAWS accepted under its request id records its question and answer under that id; a blocking, a held or a refused MAWS ask, a peer's quote and a mismatched steer record nothing"
+# A Stop that reads the MAWS call before its acceptance reaches the transcript
+# holds the export position before the call, so the next Stop still pairs the
+# two and records the question.
+HW=60000001-0000-4000-8000-000000000060
+TW="$TXD/$HW.jsonl"
+hp_peer hw "$HW" user interactive
+hook_run SessionStart "$HW" "$R3" "$TW" startup
+head -n 3 "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TW"
+hook_run Stop "$HW" "$R3" "$TW"
+assert_equals "$(hp_events "$HW")" "joined " "a MAWS ask whose acceptance is not on disk yet records no question"
+sed -n 4,5p "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TW"
+hook_run Stop "$HW" "$R3" "$TW"
+assert_equals "$(hp_events "$HW")" "joined question:$MAWS_CALL " "the next Stop, its acceptance on disk, records the question under the call id"
 
 # An export that died after the first of two spans in one record: the retry
 # appends only the second.
@@ -5131,6 +5245,87 @@ for ep in cli:6c000009 claude-vscode:6d00000a; do
   run "$SMINOS" list --json
   assert_contains "$OUT" "${ep#*:}-0000" "an interactive session from entrypoint ${ep%%:*} still joins"
 done
+# An SDK run its host marked as a member (SMNS_MEMBER, the pid that spawned
+# its engine, which MAWS sets on the sessions it launches) joins as a terminal
+# session does. The harness record carries no environment, so only what runs
+# inside the session reads the mark: its hook, and a verb its tools run, for
+# that session alone; and only while the pid it names is the engine's parent.
+MARK="$(sdk_mark)"
+HK=6e00000b-0000-4000-8000-00000000006e
+sdk_peer mawsk "$HK"
+tx "$TXD/$HK.jsonl" asst k1000001 '<message>from a MAWS session</message>'
+run "$SMINOS" list --all
+assert_not_contains "$OUT" "mawsk" "reconciliation does not join an sdk-ts run: it cannot see the mark"
+SMNS_MEMBER="$PPID" hook_run SessionStart "$HK" "$R3" "$TXD/$HK.jsonl" startup
+assert_file_absent "$HPLOG/testhost.$HK.jsonl" "a mark naming a process other than the engine's parent (one a nested run inherited) admits nothing"
+SMNS_MEMBER="$MARK" hook_run SessionStart "$HK" "$R3" "$TXD/$HK.jsonl" startup
+assert_equals "$(hp_events "$HK")" "joined " "the marked run's SessionStart hook joins it"
+tx "$TXD/$HK.jsonl" asst k1000002 '<message>a turn later</message>'
+SMNS_MEMBER="$MARK" hook_run Stop "$HK" "$R3" "$TXD/$HK.jsonl"
+assert_equals "$(hp_events "$HK")" "joined message:k1000002#0 " "and its Stop exports what it sent its human since"
+run "$SMINOS" list --all
+assert_contains "$OUT" "mawsk" "it is listed, and reconciliation leaves the running member be"
+HL=6e00000c-0000-4000-8000-00000000006e
+HSX=6e00000d-0000-4000-8000-00000000006e
+sdk_peer mawsl "$HL"
+sdk_peer other "$HSX"
+SMNS_MEMBER="$MARK" CLAUDE_CODE_SESSION_ID="$HL" run "$SMINOS" list --all
+assert_contains "$OUT" "mawsl" "a verb the marked session's tools run joins that session"
+assert_not_contains "$OUT" "other" "and no other SDK run the reconciliation sees"
+assert_file_absent "$HPLOG/testhost.$HSX.jsonl" "which stays out of the log"
+tx "$TXD/$HSX.jsonl" asst n1000001 '<message>an unmarked SDK run</message>'
+hook_run SessionStart "$HSX" "$R3" "$TXD/$HSX.jsonl" startup
+hook_run Stop "$HSX" "$R3" "$TXD/$HSX.jsonl"
+assert_file_absent "$HPLOG/testhost.$HSX.jsonl" "an unmarked SDK run's own hook joins and exports nothing"
+SMNS_MEMBER="$MARK" SMNS_INTERNAL=1 hook_run SessionStart "$HSX" "$R3" "$TXD/$HSX.jsonl" fork
+SMNS_MEMBER="$MARK" SMNS_INTERNAL=1 hook_run Stop "$HSX" "$R3" "$TXD/$HSX.jsonl"
+assert_file_absent "$HPLOG/testhost.$HSX.jsonl" "an internal fork that inherited the mark records nothing"
+sed -i.bak "s/\"pid\":$SOCK_PID,/\"pid\":$$,/" "$HOME/.claude/sessions/hp-other.json"
+mkdir -p "$SMINOS_HOME/internal"; : > "$SMINOS_HOME/internal/$$"
+SMNS_MEMBER="$PPID" hook_run Stop "$HSX" "$R3" "$TXD/$HSX.jsonl"
+SMNS_MEMBER="$PPID" CLAUDE_CODE_SESSION_ID="$HSX" run "$SMINOS" list --all
+rm -f "$SMINOS_HOME/internal/$$" "$HOME/.claude/sessions/hp-other.json.bak"
+assert_file_absent "$HPLOG/testhost.$HSX.jsonl" "nor does a marked session whose pid derive marked internal, by hook or by verb"
+HI=6e00000e-0000-4000-8000-00000000006e
+sdk_peer mawsi "$HI"
+SMNS_MEMBER="$MARK" SMNS_INTERNAL=1 CLAUDE_CODE_SESSION_ID="$HI" run "$SMINOS" list --all
+assert_not_contains "$OUT" "mawsi" "a verb an internal fork runs, with the mark and its session id inherited, joins nothing"
+assert_file_absent "$HPLOG/testhost.$HI.jsonl" "and writes nothing for it"
+# MAWS resumed a marked session whose engine crashed: the dead engine's record
+# lingers beside the running one's, and the hook reads the running one. The
+# registry lists records in the filesystem's order, so the dead one is written
+# under new names (and the running one again, for an order by creation) until
+# it is listed first.
+HR=6e00000f-0000-4000-8000-00000000006e
+( exit 0 ) & GONE_PID=$!
+wait "$GONE_PID" || true
+first_pid() { # session → the pid of the first record peer_records reads for it
+  python3 -c 'import glob, json, os, sys
+for p in glob.glob(os.path.join(os.environ["HOME"], ".claude", "sessions", "*.json")):
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    if isinstance(d, dict) and d.get("sessionId") == sys.argv[1]:
+        print(d.get("pid"))
+        break' "$1"
+}
+sdk_peer mawsr "$HR"
+for i in $(seq 1 32); do
+  printf '{"pid":%s,"sessionId":"%s","name":"mawsr","nameSource":"user","kind":"interactive","entrypoint":"sdk-ts","status":"busy","cwd":"%s"}\n' \
+    "$GONE_PID" "$HR" "$R3" > "$HOME/.claude/sessions/hp-crashed$i.json"
+  [ "$(first_pid "$HR")" = "$GONE_PID" ] && break
+  rm -f "$HOME/.claude/sessions/hp-mawsr.json"; sdk_peer mawsr "$HR"
+  [ "$(first_pid "$HR")" = "$GONE_PID" ] && break
+  rm -f "$HOME/.claude/sessions/hp-crashed$i.json"
+done
+assert_equals "$(first_pid "$HR")" "$GONE_PID" "(the dead engine's record is the one the registry lists first)"
+tx "$TXD/$HR.jsonl" asst r1000001 '<message>before the crash</message>'
+SMNS_MEMBER="$MARK" hook_run SessionStart "$HR" "$R3" "$TXD/$HR.jsonl" resume
+assert_equals "$(hp_events "$HR")" "joined " "a resumed marked session whose dead engine's record lingers joins at its SessionStart"
+tx "$TXD/$HR.jsonl" asst r1000002 '<message>after the resume</message>'
+SMNS_MEMBER="$MARK" hook_run Stop "$HR" "$R3" "$TXD/$HR.jsonl"
+assert_equals "$(hp_events "$HR")" "joined message:r1000002#0 " "and its Stop exports what it sent its human since"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/hp-"*.json
 

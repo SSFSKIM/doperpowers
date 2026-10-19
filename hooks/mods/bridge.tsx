@@ -44,19 +44,19 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * turned away stops for good.
  *
  * Control (DC2 M2): `steer` appends a user row the loop reads at its next
- * request; `interrupt` aborts the main turn and stops each Bash call the abort
- * moved to the background, and before the turn ends appends Esc's marker and
- * a note saying so;
+ * request, the owner's words under STEER_LINE; `interrupt` aborts the main
+ * turn and stops each Bash call the abort moved to the background, and before
+ * the turn ends appends Esc's marker and a note saying so;
  * `model` rewrites the main loop's requests;
  * `compact` runs between turns; `deliver` gives the owner's log event as the
  * human's words, once per key: into the running turn as a row, as a steer,
  * else as a prompt of its own (a peer's goes to the session's inbox, and the
  * bridge refuses one written by a session). A message to the session wakes
  * it, though the engine refuses a plugin's prompt after an Esc: such a
- * delivery is answered not-ok, so sminos sends it as an inbox frame, and a
- * delivered row a stopped turn left unread wakes the session through its
- * inbox (the child's `inbox` event). A row an Esc rewound past is given
- * again. What must outlive a module reload (the model chosen, the keys
+ * delivery goes in as a row, and a delivered row the session has not read
+ * while stopped wakes it through its inbox (the child's `inbox` event), which
+ * carries only the wake, never the human's words. A row an Esc rewound past
+ * is given again. What must outlive a module reload (the model chosen, the keys
  * delivered) the child keeps on disk: its hello hands it back.
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
@@ -85,25 +85,63 @@ const CLEAR_POLL_TRIES = 50
 /** How many polls the old session's last events may take to reach its child before it is stopped. */
 const DRAIN_TRIES = 10
 /**
- * The prompt that wakes a session whose turn answered before any model request
- * read a steer: the steer's row is already in the conversation, so this names
- * it rather than repeating it. Its first line names who sends it, as
- * DELIVERY_WAKE's does, so a reader of the transcript tells it from the
- * human's own prompt.
+ * The first line of every wake the bridge sends, naming who sends it, so a
+ * reader of the transcript (the desk among them) tells a wake from the
+ * human's own prompt or a peer's message.
  */
-export const STEER_WAKE = '[sminos bridge]\nA note was added to the conversation while you were finishing your answer. Read it and act on it.'
+export const WAKE_LINE = '[sminos bridge]'
+/** A line sminos opens every event it pushes with, naming the event (sminos.py, compose_chat_frame and compose_frame). */
+const FRAME_LINE = /^\[sminos [^\n]*\]$/
+
+/** A delivered text's frame line, when it opens with one that text follows; never a line of the human's words. */
+function frameOf(text: string): string | undefined {
+  const at = text.indexOf('\n')
+  const first = at === -1 ? undefined : text.slice(0, at)
+  return first !== undefined && FRAME_LINE.test(first) ? first : undefined
+}
+
+/** When the rows a wake points at went in: as the turn answered, in a turn then stopped, or after a stop. */
+export type WakeWhen = 'answer' | 'aborted' | 'stopped'
+
 /**
- * The wake for a delivered row a stopped turn left unread, sent as an inbox
- * frame (the engine refuses a plugin's prompt after an Esc, not a message to
- * the session); its first line names who sends it, as an inbox frame's does.
+ * A wake's text. The row it points at is already in the conversation, so the
+ * wake names it rather than repeating it: what is unread (the human's
+ * messages, the notes steered in, or both, each named as what it is, so the
+ * model does not take the wake itself for the note and find it empty), when
+ * it went in, and what it looks like where it sits: a user message, and, for
+ * a turn that answered past it, one just before that answer, which came too
+ * late for it. A steer given during the final answer sits there, before the
+ * answer's text, so the model takes it for a request it saw and missed, and,
+ * told of an unread "note" somewhere above the wake, found none (live,
+ * `steer-wake`). Then, for each message whose text opens with a sminos frame
+ * line, that line (`Unread:`). The engine drops a peer message identical to
+ * its sender's previous one within 30 s (2.1.300 peer guard,
+ * `dedupWindowMs`, live: "identical to the previous message from this
+ * sender"), and every inbox wake is the child's: the frame lines keep two
+ * wakes in that window apart.
  */
-export const DELIVERY_WAKE = '[sminos bridge]\nA message for you was added to the conversation while your turn was stopped, before you read it. Read it and act on it.'
-/**
- * How long an idle delivery waits on its prompt for the engine's refusal
- * after a stop, which `$.prompt.submit` answers at once (2.1.300 `k_e`); a
- * prompt it takes resolves only when its turn starts.
- */
-export const STOP_DROP_WAIT_MS = 200
+export function wakeText(when: WakeWhen, rows: readonly { isDelivery?: boolean; frame?: string }[]): string {
+  const messages = rows.filter((r) => r.isDelivery === true).length
+  const notes = rows.length - messages
+  const named = [
+    ...(messages === 0 ? [] : [messages === 1 ? 'a message for you' : `${messages} messages for you`]),
+    ...(notes === 0 ? [] : [notes === 1 ? 'a note' : `${notes} notes`]),
+  ].join(' and ')
+  const isOne = rows.length === 1
+  const it = isOne ? 'it' : 'them'
+  const added = `${named.charAt(0).toUpperCase()}${named.slice(1)} ${isOne ? 'was' : 'were'} added to the conversation`
+  const at =
+    when === 'answer'
+      ? `while you were finishing your answer, too late for that answer to take ${it} in`
+      : when === 'aborted'
+        ? `during your turn, which was stopped before you read ${it}`
+        : 'after your turn was stopped'
+  const frames = rows.flatMap((r) => (r.frame === undefined ? [] : [r.frame]))
+  const unread = frames.length === 0 ? '' : `\nUnread: ${frames.join(' ')}`
+  const what = isOne ? 'It is the user message' : 'They are the user messages'
+  const where = when === 'answer' ? 'just before your last answer' : 'before this message'
+  return `${WAKE_LINE}\n${added} ${at}. ${what} ${where}: read ${it} and act on ${it} now.${unread}`
+}
 /** Deliveries whose prompt row is awaited, at most (the oldest is let go). */
 const SUBMISSIONS_KEPT = 100
 /** After an abort, how long the Bash calls it ended have to report where they went. */
@@ -233,22 +271,27 @@ function commandAnswer($: EngineInterface, command: Command): Answer | Promise<A
 }
 
 /**
+ * The first line of a steer's row, the owner's words after it. The engine
+ * keeps every row this plugin appends alike (a user row, isMeta, the plugin's
+ * origin) and takes nothing from `$.session.append` but text blocks, so the
+ * row's own text is the only place a reader of the transcript (the desk among
+ * them) can tell a steer from the bridge's other rows. The line is the one
+ * `sminos steer` opens its inbox fallback with (sminos_control.py), and no
+ * delivery's: the model reads the owner's words framed as a delivery's are.
+ */
+export const STEER_LINE = '[sminos steer from human]'
+
+/**
  * A user row in the running turn, read at the loop's next model request; the
- * running tool goes on. The terminal does not draw an appended row, so a
- * transcript line mirrors it. Idle, there is no next request to read it: a
- * send is how an idle session is reached.
+ * running tool goes on. The row is the owner's words under STEER_LINE, so no
+ * text, the interrupt's marker or a note quoted whole included, reads as
+ * another of the bridge's rows. The terminal does not draw an appended row,
+ * so a transcript line mirrors the words. Idle, there is no next request to
+ * read it: a send is how an idle session is reached.
  */
 async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   if (typeof text !== 'string' || text.trim() === '') {
     return { ok: false, error: 'steer needs text' }
-  }
-  // Kept as the interrupt's marker row is (isMeta, from this plugin), it would be one.
-  if (isInterruptText(text)) {
-    return { ok: false, error: 'that text is the interrupt marker, which would read as an interrupt: interrupt the session instead' }
-  }
-  // Kept so too, it would read as the bridge's note that a task was stopped.
-  if (isNoteText(text)) {
-    return { ok: false, error: "that text is the bridge's note of a stop or an interrupt, which would read as one: stop the task or interrupt the session instead" }
   }
   if (state.mainTurn === undefined) {
     return { ok: false, error: 'no turn is running to steer: send it instead' }
@@ -258,7 +301,7 @@ async function steer($: EngineInterface, text: unknown): Promise<Answer> {
   state.steers.push(pending)
   let stored: Awaited<ReturnType<EngineInterface['session']['append']>>
   try {
-    stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: `${STEER_LINE}\n${text}` }] } })
   } catch (error) {
     state.steers = state.steers.filter((s) => s !== pending)
     settleSteers($, pending.turnId)
@@ -293,26 +336,80 @@ function settleSteers($: EngineInterface, turnId: string) {
   const unread = mine.filter((s) => !s.isRead)
   const isDeliveryUnread = unread.some((s) => s.isDelivery === true)
   if (ended === 'answer' && unread.length > 0) {
-    wakeForSteer($, isDeliveryUnread)
+    wakeForSteer($, unread)
   } else if (ended === 'aborted' && isDeliveryUnread) {
     // A stopped turn: the engine would refuse the prompt, not the inbox frame.
-    emit({ type: 'inbox', text: DELIVERY_WAKE })
+    void wakeAfterStop($, turnId, unread)
   }
 }
 
 /**
- * Wakes the session for a steer its turn answered before reading: the row is
- * already in the conversation, so the prompt points to it rather than
- * repeating it, and the next request reads both. When a delivery's row is
+ * The wake for a stopped turn that left a delivered row unread. An Esc before
+ * the model answered rewinds the conversation past the turn's prompt, and the
+ * rows given after it with it, as the turn ends (2.1.300 restoreMessageSync):
+ * a wake then points at a row the conversation no longer holds, and its turn
+ * finds nothing (live, `restore`: "no such message appears in my context").
+ * So the turn's delivered rows are checked first, as the next turn's start
+ * checks them (recheckDeliveries): each the conversation lacks goes in again
+ * now, woken as a row given after a stop is (appendDelivery); those it holds
+ * stay for that check, and the unread among them are named in one wake, with
+ * the turn's unread steers (which wake nothing of their own). An unreadable
+ * conversation leaves every row for that check, and the wake names them all.
+ */
+async function wakeAfterStop($: EngineInterface, turnId: string, unread: readonly Steer[]) {
+  const conversationAt = state.conversation
+  const compactionsAt = state.compactions
+  // Taken out of the next turn's check while this one runs, so no row is given twice.
+  const rows = state.deliveredRows.filter((r) => r.turnId === turnId)
+  state.deliveredRows = state.deliveredRows.filter((r) => r.turnId !== turnId)
+  let conversation: unknown
+  try {
+    conversation = await $.session.messages({ as: 'api' })
+  } catch (error) {
+    conversation = message(error)
+  }
+  if (conversationAt !== state.conversation) {
+    return
+  }
+  // Compacted meanwhile: the rows are in its summary, and none is given again.
+  if (compactionsAt !== state.compactions) {
+    emit({ type: 'inbox', text: wakeText('aborted', unread) })
+    return
+  }
+  const texts = Array.isArray(conversation) ? userTexts(conversation) : undefined
+  if (texts === undefined) {
+    $.ui.log(`bridge: the conversation was not read to check a stopped turn's delivered rows: ${JSON.stringify(conversation)}`, { to: 'debug' })
+  }
+  const missing = texts === undefined ? [] : rows.filter((r) => !texts.some((t) => t.includes(r.text)))
+  state.deliveredRows.push(...rows.filter((r) => !missing.includes(r)))
+  const named = unread.filter((s) => s.isDelivery !== true || !missing.some((r) => r.text === s.text))
+  if (named.some((s) => s.isDelivery === true)) {
+    emit({ type: 'inbox', text: wakeText('aborted', named) })
+  }
+  for (const r of missing) {
+    if (conversationAt !== state.conversation || compactionsAt !== state.compactions) {
+      return
+    }
+    $.ui.log(`bridge: the delivery ${r.key.writer}:${r.key.seq} is not in the conversation after the stop (an Esc rewound past it): delivered again`, { to: 'debug' })
+    await appendDelivery($, r.key, r.text, state.mainTurn)
+  }
+}
+
+/**
+ * Wakes the session for the rows its turn answered before reading (steers,
+ * delivered messages): they are already in the conversation, so the prompt
+ * names them rather than repeating them (wakeText), and the next request
+ * reads them. When a delivery's row is
  * among them and the engine refuses the prompt because the human stopped the
  * session, the wake goes as an inbox frame instead, decided as the drop
  * settles: not when a request has read the rows since (a human's prompt the
  * wake queued behind, then an Esc that emptied the queue), nor after a /clear
  * (forgetLive lets the wake go).
  */
-function wakeForSteer($: EngineInterface, isDelivery: boolean) {
+function wakeForSteer($: EngineInterface, unread: readonly Steer[]) {
+  const text = wakeText('answer', unread)
   // Marked read by the main loop's requests meanwhile (turn.step).
-  const wake: Wake | undefined = isDelivery ? { isRead: false, ...(state.mainTurn !== undefined && { turnAt: state.mainTurn }) } : undefined
+  const wake: Wake | undefined = unread.some((s) => s.isDelivery === true) ? { isRead: false, ...(state.mainTurn !== undefined && { turnAt: state.mainTurn }) } : undefined
   if (wake !== undefined) {
     state.wakes.push(wake)
   }
@@ -321,7 +418,7 @@ function wakeForSteer($: EngineInterface, isDelivery: boolean) {
     state.wakes = state.wakes.filter((w) => w !== wake)
     return owed
   }
-  void $.prompt.submit({ text: STEER_WAKE, asUser: true }).then(
+  void $.prompt.submit({ text, asUser: true }).then(
     (entered) => {
       const owed = isOwed()
       if (entered.drop === undefined) {
@@ -329,7 +426,7 @@ function wakeForSteer($: EngineInterface, isDelivery: boolean) {
       }
       $.ui.log(`bridge: the wake for an unread steer was dropped: ${entered.drop}`, { to: 'debug' })
       if (owed && STOPPED_DROPS.has(entered.drop)) {
-        emit({ type: 'inbox', text: STEER_WAKE })
+        emit({ type: 'inbox', text })
       }
     },
     (error: unknown) => {
@@ -453,19 +550,6 @@ export function stopNote(taskId: string, from: unknown): string {
   return `Task ${taskId}, a background task, was stopped from ${from === 'desk' ? 'the desk' : 'outside the terminal'}: it is not running.`
 }
 
-const STOP_NOTE = /^Task [A-Za-z0-9_-]{1,64}, a background task, was stopped from (?:the desk|outside the terminal): it is not running\.$/
-
-/**
- * A text DX4 would read as one of the bridge's notes, were it appended as a
- * steer is (isMeta, from the plugin): a stop's note whole, or a text opening
- * on an interrupt note's first line.
- */
-function isNoteText(text: string): boolean {
-  const t = text.trim()
-  const first = t.split('\n')[0]
-  return STOP_NOTE.test(t) || first === interruptOrigin('desk') || first === interruptOrigin('cli')
-}
-
 /** The stop's note, kept as the interrupt's is (isMeta, from the plugin) and mirrored in the transcript. */
 async function recordStop($: EngineInterface, taskId: string, from: unknown) {
   const text = stopNote(taskId, from)
@@ -484,16 +568,6 @@ async function recordStop($: EngineInterface, taskId: string, from: unknown) {
 
 /** Esc's own marker, whole: the one text a transcript's reader knows a turn's interrupt by. */
 const INTERRUPT_MARKER = '[Request interrupted by user]'
-
-/**
- * A text a transcript's reader takes for an interrupt: either of the engine's
- * markers whole (Esc's, and its tool-use form), or the bridge's earlier
- * record, `[Request interrupted by user from …]`.
- */
-function isInterruptText(text: string): boolean {
-  const t = text.trim()
-  return t === INTERRUPT_MARKER || t === '[Request interrupted by user for tool use]' || t.startsWith('[Request interrupted by user from ')
-}
 
 /**
  * What an interrupt tells the model beyond Esc's marker: where it came from,
@@ -622,8 +696,6 @@ const SESSION_WRITER = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  * other drop is a hook's or the engine's own decision.
  */
 const STOPPED_DROPS = new Set(['the prompt was removed from the queue before it ran', 'the session was stopped and nobody has sent input since'])
-/** How a delivery's not-ok answer begins when the engine refused its prompt for a stop (sminos_control.deliver reads it). */
-export const STOPPED_ERROR = 'the session was stopped, so its prompt was refused'
 
 /**
  * The owner's log event for this session, as the human's words (sminos sends
@@ -636,12 +708,12 @@ export const STOPPED_ERROR = 'the session was stopped, so its prompt was refused
  * follows `submitted` when nothing could be.
  *
  * A message to the session is meant to wake it, and after an Esc the engine
- * refuses a plugin's prompt until the human sends input, at once. Such a
- * delivery is answered not-ok, its mark put back and nothing emitted, so
- * sminos sends it the way it did before the bridge, as an inbox frame, which
- * starts a turn. One the engine drops for a stop after the answer (an Esc
- * emptied the queue it waited in) goes to the child as an `inbox` event,
- * which sends the same frame.
+ * refuses a plugin's prompt until the human sends input (at once, or, for a
+ * prompt queued behind a turn, as the Esc empties the queue). Such a delivery
+ * goes in as the running turn's row would (appendDelivery): the human's words
+ * as a user row, and, with no turn running, only a wake through the inbox,
+ * which the engine takes after a stop. The inbox delivers what it carries as
+ * another session's message, so the human's words never go through it.
  *
  * Delivery is at least once and goes in seq order per writer within a
  * project, so a key at or below its mark (the last submitted for that writer
@@ -672,8 +744,8 @@ async function deliver($: EngineInterface, key: unknown, text: unknown): Promise
     return { ok: true, result: { duplicate: true } }
   }
   state.delivered.set(mark, delivery.seq)
+  emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
   if (state.mainTurn !== undefined) {
-    emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
     void appendDelivery($, delivery, text, state.mainTurn)
     return { ok: true, result: { submitted: true } }
   }
@@ -684,64 +756,27 @@ async function deliver($: EngineInterface, key: unknown, text: unknown): Promise
     state.submissions.shift()
   }
   const forget = () => (state.submissions = state.submissions.filter((s) => s !== submission))
-  // Decided once: a stop's refusal, or (undefined) taken, `submitted` said
-  // then, so a `refused` after it follows it. True when this call decided.
-  let decide: (drop: string | undefined) => boolean = () => false
-  const decided = new Promise<string | undefined>((resolve) => {
-    let isDecided = false
-    decide = (drop) => {
-      if (isDecided) {
-        return false
-      }
-      isDecided = true
-      if (drop === undefined) {
-        emit({ type: 'delivered', key: delivery, outcome: 'submitted' })
-      }
-      resolve(drop)
-      return true
-    }
-  })
-  const timer = $.clock.after(STOP_DROP_WAIT_MS, () => decide(undefined))
   // A prompt taken resolves when its turn starts, after any running turn.
   void $.prompt.submit({ text, asUser: true }).then(
     (entered) => {
       if (entered.drop === undefined) {
-        decide(undefined)
         return
       }
       forget()
       if (!STOPPED_DROPS.has(entered.drop)) {
-        decide(undefined)
         refuseDelivery($, delivery, entered.drop)
         return
       }
-      if (decide(entered.drop)) {
-        return
-      }
-      $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} was dropped after it was taken (${entered.drop}): it goes as an inbox frame`, { to: 'debug' })
-      emit({ type: 'inbox', text, key: delivery })
+      $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} was refused as a prompt (${entered.drop}): it goes in as a row`, { to: 'debug' })
+      // Bound to a main turn running by now (one the Esc is still ending), whose end wakes the session if it is unread.
+      void appendDelivery($, delivery, text, state.mainTurn)
     },
     (error: unknown) => {
-      decide(undefined)
       forget()
       refuseDelivery($, delivery, message(error))
     },
   )
-  const stopped = await decided
-  timer.cancel()
-  if (stopped === undefined) {
-    return { ok: true, result: { submitted: true } }
-  }
-  // Nothing entered: the key is free for the inbox frame, or a later try.
-  if (state.delivered.get(mark) === delivery.seq) {
-    if (before === undefined) {
-      state.delivered.delete(mark)
-    } else {
-      state.delivered.set(mark, before)
-    }
-  }
-  $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} was refused as a prompt (${stopped}): sminos sends it as an inbox frame`, { to: 'debug' })
-  return { ok: false, error: `${STOPPED_ERROR}: ${stopped}` }
+  return { ok: true, result: { submitted: true } }
 }
 
 /** A delivery that could not enter: `refused`, after its `submitted`, with the engine's reason. */
@@ -756,16 +791,27 @@ function refuseDelivery($: EngineInterface, delivery: DeliveryKey, reason: strin
  * request, and named `entered` once it is in. The terminal does not draw an
  * appended row, so a transcript line mirrors it. It is bound to the running
  * main turn (`turnId`) as a steer is (settleSteers): a turn that ends before
- * any request read it wakes the session once. It is held until the
+ * any request read it wakes the session once. With no turn running (a stop
+ * refused its prompt), the session is woken through its inbox once the row is
+ * in, unless a main turn started while the append was pending: the row is
+ * then that turn's, as a busy delivery's is. It is held until the
  * conversation is known to keep it (recheckDeliveries). `bound`: the steer a
  * re-check bound before its first await, so its turn's end already counts it.
  */
-async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, turnId: string, bound?: Steer) {
-  const pending = bound ?? bindSteer(turnId)
+async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: string, given: string | undefined, bound?: Steer) {
+  let turnId = given
+  let pending = bound ?? (turnId === undefined ? undefined : bindSteer(turnId, text))
   // A /clear while the append is pending (state.conversation moves): the row
   // is the old conversation's, so the new one's check never holds it.
   const conversationAt = state.conversation
   const settled = (isIn: boolean) => {
+    if (pending === undefined) {
+      // A row of the old conversation wakes nothing in the new one.
+      if (isIn && conversationAt === state.conversation) {
+        emit({ type: 'inbox', text: wakeText('stopped', [{ isDelivery: true, frame: frameOf(text) }]) })
+      }
+      return
+    }
     if (isIn) {
       pending.isAppended = true
     } else {
@@ -786,8 +832,14 @@ async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: s
     refuseDelivery($, delivery, stored.deny)
     return
   }
+  // Given idle, in while a main turn runs (one started meanwhile): that turn
+  // reads it from its next request, and its end wakes the session if none did.
+  if (pending === undefined && state.mainTurn !== undefined && conversationAt === state.conversation) {
+    turnId = state.mainTurn
+    pending = bindSteer(turnId, text)
+  }
   if (conversationAt === state.conversation) {
-    state.deliveredRows.push({ key: delivery, text, turnId })
+    state.deliveredRows.push({ key: delivery, text, ...(turnId !== undefined && { turnId }) })
   }
   // The hook does not see the plugin's own append: named once it is in.
   noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
@@ -798,19 +850,20 @@ async function appendDelivery($: EngineInterface, delivery: DeliveryKey, text: s
 }
 
 /** A delivery's row bound to its main turn as a steer is, its append still to come. */
-function bindSteer(turnId: string): Steer {
-  const pending: Steer = { turnId, isAppended: false, isRead: false, isDelivery: true }
+function bindSteer(turnId: string, text: string): Steer {
+  const frame = frameOf(text)
+  const pending: Steer = { turnId, isAppended: false, isRead: false, isDelivery: true, text, ...(frame !== undefined && { frame }) }
   state.steers.push(pending)
   return pending
 }
 
 /**
- * The delivered rows that a main turn which did not answer left behind,
- * checked as the next main turn starts against the conversation its requests
- * read. An Esc before the model answered hands the
- * human's prompt back to the input box, and the prompt sent next goes in
- * where that one stood: a row given after it is left on a branch no request
- * reads. One the conversation lacks is appended again, in this turn (read
+ * The delivered rows that a main turn which did not answer left behind, and
+ * those given with no turn running, checked as the next main turn starts
+ * against the conversation its requests read. An Esc before the model
+ * answered hands the human's prompt back to the input box, and the prompt
+ * sent next goes in where that one stood: a row given after it is left on a
+ * branch no request reads. One the conversation lacks is appended again, in this turn (read
  * from its second request, or by the wake when it answers in one); one it
  * holds is let go. A row of a turn that answered is in the conversation for
  * good, so its turn's end lets it go (mainTurnEnded), as a compaction lets
@@ -829,18 +882,27 @@ async function recheckDeliveries($: EngineInterface, turnId: string) {
     return
   }
   const conversationAt = state.conversation
-  const steers = due.map(() => bindSteer(turnId))
+  const compactionsAt = state.compactions
+  const steers = due.map((r) => bindSteer(turnId, r.text))
+  // Taken out while the check runs, so another (a stopped turn's, wakeAfterStop) never gives them too.
+  state.deliveredRows = state.deliveredRows.filter((r) => !due.includes(r))
   const release = (released: readonly Steer[]) => {
     state.steers = state.steers.filter((s) => !released.includes(s))
     settleSteers($, turnId)
   }
-  // The old conversation's turn wakes nothing in the new one: its steers go unsettled.
+  // The old conversation's turn wakes nothing in the new one: its steers go
+  // unsettled. After a compaction the rows are in its summary: none is given
+  // again, and the steers are let go.
   const isGone = () => {
-    if (conversationAt === state.conversation) {
-      return false
+    if (conversationAt !== state.conversation) {
+      state.steers = state.steers.filter((s) => s.turnId !== turnId)
+      return true
     }
-    state.steers = state.steers.filter((s) => s.turnId !== turnId)
-    return true
+    if (compactionsAt !== state.compactions) {
+      release(steers)
+      return true
+    }
+    return false
   }
   let conversation: unknown
   try {
@@ -854,11 +916,11 @@ async function recheckDeliveries($: EngineInterface, turnId: string) {
   // Unread, the rows wait for the next turn's check.
   if (!Array.isArray(conversation)) {
     $.ui.log(`bridge: the conversation was not read to check ${due.length} delivered rows: ${JSON.stringify(conversation)}`, { to: 'debug' })
+    state.deliveredRows.push(...due)
     release(steers)
     return
   }
   const texts = userTexts(conversation)
-  state.deliveredRows = state.deliveredRows.filter((r) => !due.includes(r))
   const isHeld = due.map((r) => texts.some((t) => t.includes(r.text)))
   release(steers.filter((_, i) => isHeld[i]))
   for (const [i, r] of due.entries()) {
@@ -1465,8 +1527,8 @@ export function registerBridge(on: On) {
   // Every row the session keeps, once it is written: named (row order: the
   // engine's appends may resolve in another order than they began, and the
   // file holds them in the order they resolve), then a call's result, a
-  // main-loop row that may hold a message to the host. A row refused beneath
-  // is never written, and never named.
+  // main-loop row that may hold a message to the host or an answer to its
+  // question. A row refused beneath is never written, and never named.
   on('session.append', { door: /^/ }, async (_, e, next) => {
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null

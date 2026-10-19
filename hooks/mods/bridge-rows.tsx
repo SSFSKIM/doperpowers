@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 
-import { ASK_TOOL, PLUGIN } from './ask'
+import { ASK_TOOL, DELIVERY_HEAD, PLUGIN } from './ask'
 import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
 import type { BridgeEvent, TranscriptRecord } from './bridge-state'
 import { emit, hold, isHold, releaseStepEnd } from './bridge-stream'
@@ -34,10 +34,11 @@ import { callEnded } from './bridge-requests'
  * transcript, and their `row-seen`s (door `compaction`) take its place.
  *
  * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
- * text row with a mark and an async ask with its result, go to the child as
- * they are kept (`export`), and the child appends them to the project's log
- * through the Stop hook's own writer and keys, so they reach the log as they
- * complete and the Stop hook's export finds them already there.
+ * text row with a mark, an async ask with its result, and a row that may
+ * answer an ask, go to the child as they are kept (`export`), and the child
+ * appends them to the project's log through the Stop hook's own writer and
+ * keys, so they reach the log as they complete and the Stop hook's export
+ * finds them already there.
  *
  * A delivery's row (DC8.G6): the prompt row a delivery submitted becomes is
  * named once it is kept (`delivered` `entered`, enteredRow).
@@ -53,6 +54,53 @@ const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', r
 const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
 /** Async asks whose other row (the call, or its result) has not been kept yet. */
 const ASKS_KEPT = 50
+/** MAWS's ask tool, which a session under MAWS asks through instead of the plugin's (sminos.MAWS_ASK_TOOL). */
+const MAWS_ASK_TOOL = 'mcp__maws__ask'
+/** A call of an ask tool that does not wait for its answer: the plugin's with `async` true, MAWS's with `blocking` false. */
+const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
+  (name === ASK_TOOL && input.async === true) || (name === MAWS_ASK_TOOL && input.blocking === false)
+/** The tag a MAWS steer opens with (sminos.MAWS_STEER_RE). */
+const MAWS_STEER = '[MAWS ask '
+/** A text that may answer an async ask: the ask mod's delivery, or a MAWS steer. The child's parser decides. */
+const mayAnswer = (text: string) => text.includes(DELIVERY_HEAD) || text.includes(MAWS_STEER)
+/**
+ * The engine's framing of an attachment's rendering, which session.append
+ * hands in place of its payload (2.1.302): a hook's context is
+ * `<system-reminder>\n<hook> hook additional context: <entries, a line
+ * apart>\n</system-reminder>` (its `ROe`); the human's prompt taken into a
+ * running turn is the prompt between MID_TURN_OPEN and MID_TURN_CLOSE (its
+ * `oJe`, `D4n` and `Al`; every rendered one in this machine's transcripts,
+ * 2.1.259–2.1.302, was).
+ */
+const CONTEXT_OPEN = '<system-reminder>\n'
+const CONTEXT_LABEL = ' hook additional context: '
+const CONTEXT_CLOSE = '\n</system-reminder>'
+const MID_TURN_OPEN = '<system-reminder>\nThe user sent a new message while you were working:\n'
+const MID_TURN_CLOSE =
+  '\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>'
+/**
+ * What the engine's renderings write for a `<` they escape (a system-reminder
+ * tag in a hook's context, in another sender's prompt, in an id'd reminder):
+ * a rendering holding it is not read back, since a literal one the human
+ * typed reads the same.
+ */
+const ESCAPED = '&lt;'
+/**
+ * A row's origin as the transcript names it, where sminos reads whether a
+ * steer is the human's: the event's `composer` and `bridge` are the
+ * transcript's `human`; every other kind is named alike in both. A row the
+ * transcript keeps with no origin reaches the hook as `unclassified`, which
+ * sminos reads as not the human's: such a row waits for the Stop hook's
+ * export, which reads the transcript's own.
+ */
+const transcriptOrigin = (origin: unknown) => (isRecord(origin) && (origin.kind === 'composer' || origin.kind === 'bridge') ? { kind: 'human' } : origin)
+/** A row's text blocks; a string content is one. */
+function textBlocks(content: unknown): { type: 'text'; text: string }[] {
+  if (typeof content === 'string') {
+    return [{ type: 'text', text: content }]
+  }
+  return Array.isArray(content) ? content.filter((b): b is { type: 'text'; text: string } => isRecord(b) && b.type === 'text' && typeof b.text === 'string') : []
+}
 /** How many of each loop's latest notices' rows are remembered, to tell the rows past its cut no notice named. */
 const NAMED_KEPT = 200
 /**
@@ -108,6 +156,7 @@ export function compacted(agentId: string | null, messages: readonly SessionMess
   // compaction is the accepted loss.
   if (agentId === null) {
     state.deliveredRows = []
+    state.compactions++
   }
   const after = state.cut.get(loop)
   const summary = messages?.[0]?.handle
@@ -223,37 +272,98 @@ export function observeRow(door: string, message: { name?: string; content?: unk
 }
 
 /**
- * The main loop's rows that may hold a message to the host, handed to the
- * child as the transcript keeps them, so `sminos record`'s own reading of
- * them (sminos.host_events) decides what is logged: a text row that may hold
- * a mark, and an async ask once both its call and its result are kept, in
- * whichever order. A text past TEXT_CAP is left to the Stop hook's export,
+ * The main loop's rows that may hold a message to the host, or an answer to
+ * its question, handed to the child in the shape the transcript keeps them,
+ * so `sminos record`'s own reading of them (sminos.host_events) decides what
+ * is logged: a text row that may hold a mark; an async ask once both its call
+ * and its result are kept, in whichever order; a row that may answer one
+ * (answerRecord). A text past TEXT_CAP is left to the Stop hook's export,
  * which reads the transcript whole and appends it under the same keys.
  */
-export function exportRow(door: string, message: { content?: unknown }, uuid: string, origin: unknown) {
+export function exportRow(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
   if (door === 'response') {
-    const texts = content.filter((b) => b.type === 'text' && typeof b.text === 'string')
-    if (texts.some((b) => MAY_MARK.test(b.text as string))) {
-      if (texts.some((b) => (b.text as string).length > TEXT_CAP)) {
-        state.log?.(`bridge: row ${uuid}: a text past ${TEXT_CAP} characters; the Stop hook exports it`)
-      } else {
-        emit({ type: 'export', records: [{ type: 'assistant', uuid, message: { content: texts } }] })
-      }
+    const texts = textBlocks(content)
+    if (texts.some((b) => MAY_MARK.test(b.text))) {
+      exportRecord(uuid, texts, { type: 'assistant', uuid, message: { content: texts } })
     }
     for (const b of content) {
-      if (b.type === 'tool_use' && b.name === ASK_TOOL && typeof b.id === 'string' && isRecord(b.input) && b.input.async === true) {
+      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && isAsyncAsk(b.name, b.input)) {
         keepAsk(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
       }
     }
   } else if (door === 'tool-result') {
-    const isAsk = isRecord(origin) && origin.kind === 'tool' && origin.tool === ASK_TOOL
+    const isAsk = isRecord(origin) && origin.kind === 'tool' && (origin.tool === ASK_TOOL || origin.tool === MAWS_ASK_TOOL)
     for (const b of content) {
       if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isAsk || state.asks.has(b.tool_use_id))) {
         keepAsk(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })
       }
     }
+  } else {
+    const answer = answerRecord(door, message, uuid, origin)
+    if (answer !== undefined) {
+      exportRecord(uuid, answer.texts, answer.record)
+    }
   }
+}
+
+/** One row's export, unless a text of it is past TEXT_CAP: that row is the Stop hook's, said in the debug log. */
+function exportRecord(uuid: string, texts: { text: string }[], record: TranscriptRecord) {
+  if (texts.some((b) => b.text.length > TEXT_CAP)) {
+    state.log?.(`bridge: row ${uuid}: a text past ${TEXT_CAP} characters; the Stop hook exports it`)
+    return
+  }
+  emit({ type: 'export', records: [record] })
+}
+
+/**
+ * A main-loop row that may answer an async ask, as the transcript keeps it,
+ * with the texts it is judged by (sminos._delivery_texts, _maws_steer_texts):
+ * a prompt row whole, the ask mod's answer (submitted while the session was
+ * idle) or the human's MAWS steer; the attachment of an answer the ask mod
+ * gave as context (`hook_additional_context`, door `hook-context`), or of a
+ * steer the engine took into a running turn (`queued_command`, door
+ * `delivery`), its payload read back from its rendering, which is all the
+ * hook is handed of it. None for any other row, and none for an attachment
+ * whose rendering does not give its payload back exactly (not in the
+ * engine's framing, or holding an escape), said in the debug log: the Stop
+ * hook reads that row's payload itself.
+ */
+function answerRecord(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown): { texts: { text: string }[]; record: TranscriptRecord } | undefined {
+  const texts = textBlocks(message.content)
+  if (door === 'prompt') {
+    return texts.some((b) => mayAnswer(b.text)) ? { texts, record: { type: 'user', uuid, origin: transcriptOrigin(origin), message: { content: texts } } } : undefined
+  }
+  const isContext = door === 'hook-context' && message.name === 'hook_additional_context'
+  const isQueued = door === 'delivery' && message.name === 'queued_command'
+  const rendered = isContext || isQueued ? texts.find((b) => mayAnswer(b.text))?.text : undefined
+  if (rendered === undefined) {
+    return undefined
+  }
+  // The entries, joined a line apart (each delivery is read up to the next),
+  // or the queued prompt whole, so the child's start and end checks decide.
+  const payload = isContext ? unframed(rendered, CONTEXT_OPEN, CONTEXT_CLOSE, CONTEXT_LABEL) : unframed(rendered, MID_TURN_OPEN, MID_TURN_CLOSE)
+  if (payload === undefined || payload.includes(ESCAPED)) {
+    state.log?.(`bridge: row ${uuid}: its rendering does not give its ${message.name} back exactly; the Stop hook exports it`)
+    return undefined
+  }
+  const attachment = isContext
+    ? { type: 'hook_additional_context', content: [payload] }
+    : { type: 'queued_command', commandMode: 'prompt', prompt: payload, origin: transcriptOrigin(origin) }
+  return { texts: [{ text: payload }], record: { type: 'attachment', uuid, attachment } }
+}
+
+/** The text between a rendering's exact framing (after `label`'s first occurrence, if given), or undefined when it is not framed so. */
+function unframed(rendered: string, open: string, close: string, label?: string): string | undefined {
+  if (!rendered.startsWith(open) || !rendered.endsWith(close) || rendered.length < open.length + close.length) {
+    return undefined
+  }
+  const inner = rendered.slice(open.length, rendered.length - close.length)
+  if (label === undefined) {
+    return inner
+  }
+  const at = inner.indexOf(label)
+  return at === -1 ? undefined : inner.slice(at + label.length)
 }
 
 /**

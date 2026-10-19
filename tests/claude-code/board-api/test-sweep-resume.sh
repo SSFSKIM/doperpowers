@@ -1469,10 +1469,10 @@ gitx() {  # gitx <dir> <args…> — git with the identity a throwaway repo lack
 # repo: an origin, a `main`, and a LINKED worktree under
 # .claude/worktrees/<name> on branch worktree-<name> — the harness's own layout,
 # so the path derivation and the common-dir check are exercised, not assumed.
-predsetup() {  # predsetup <worktree name> <commits ahead> — prints the worktree path
-  local wt i=0
-  git init -q --bare "$TDIR/origin-$1.git"
-  gitx "$RREPO" remote add origin "$TDIR/origin-$1.git"
+predsetup() {  # predsetup <worktree name> <commits ahead> [origin name] — prints the worktree path
+  local wt i=0 origin="$TDIR/origin-${3:-$1}.git"
+  git init -q --bare "$origin"
+  gitx "$RREPO" remote add origin "$origin"
   echo base > "$RREPO/f"; gitx "$RREPO" add -A; gitx "$RREPO" commit -qm base
   gitx "$RREPO" branch -M main
   gitx "$RREPO" push -q origin main
@@ -1517,13 +1517,24 @@ JSON
 # correctly. So these pull that exact line from the captured prompt and execute
 # it, which is also the only assertion that would notice a path with a space.
 emitted_fetch() {  # emitted_fetch <spawn log> — the `git fetch …` line, verbatim
-  sed -n 's/^ *\(git fetch .*\) && git reset --hard FETCH_HEAD$/\1/p' "$1" | head -1
+  sed -n 's/^ *\(git fetch .*\) && git reset --hard .*$/\1/p' "$1" | head -1
 }
 run_emitted_fetch() {  # run_emitted_fetch <spawn log> <repo to run it in>
   local line; line="$(emitted_fetch "$1")"
   [ -n "$line" ] || { echo "NO-FETCH-LINE-EMITTED"; return 0; }
   ( cd "$2" && eval "$line" >/dev/null 2>&1 ) || true
   git -C "$2" rev-parse --short FETCH_HEAD 2>&1
+}
+# …AND THE SAME LINE WITH ITS DESTRUCTIVE TAIL LEFT ON. run_emitted_fetch strips
+# the `&& git reset --hard …` before executing, which is right for the drills
+# that only care where the fetch lands — and means the half of the emitted
+# command that can DESTROY a tree had never been run in a fixture at all.
+run_emitted_whole() {  # run_emitted_whole <spawn log> <repo to run it in>
+  local line
+  line="$(sed -n 's/^ *\(git fetch .* && git reset --hard .*\)$/\1/p' "$1" | head -1)"
+  [ -n "$line" ] || { echo "NO-COMMAND-EMITTED"; return 0; }
+  ( cd "$2" && eval "$line" >/dev/null 2>&1 ) || true
+  echo "ran: $line"
 }
 
 # ---- ahead of the base, with a dirty tree beside the commits --------------
@@ -1532,15 +1543,40 @@ rboard "$PAFIX"
 PA_WT="$(predsetup 12-ahead 2)"; PA_ROOT="$RREPO"
 echo scratch > "$PA_WT/half-done"
 PA_HEAD="$(git -C "$PA_WT" rev-parse --short HEAD)"
+# THE TICK READS THAT TREE; IT MUST NOT WRITE IT. A plain `git status` refreshes
+# and rewrites the index of the worktree it reads, and this one belongs to a
+# process the tick does not own and may still be running. Touching a TRACKED
+# file without changing its content is what makes the stat cache stale, so a
+# refreshing read has no choice but to write; the index mtime is then backdated
+# so a rewrite cannot hide inside the same one-second stamp. The reading is
+# taken the instant the tick returns, because this suite's own `dirty_still`
+# assertion below runs an ordinary `git status` on that tree and would write the
+# index the tick left alone.
+mtime() { python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
+touch "$PA_WT/f"
+PA_IDX="$(git -C "$PA_WT" rev-parse --path-format=absolute --git-path index)"
+python3 -c 'import os, sys; os.utime(sys.argv[1], (946684800, 946684800))' "$PA_IDX"
 PADH="$TDIR/dh-pred-ahead"; predreg "$PADH" "$PA_ROOT" 12-ahead
+# AN EXPLICIT REFSPEC IS NOT BY ITSELF A BOUND ON WHAT A PUSH PUBLISHES. With
+# `push.followTags` set — in the repo, or in the operator's global config,
+# which every tick on this host inherits — git carries annotated tags reachable
+# from the branch along with it. Those tags never passed the "the dispatcher
+# created this branch" guard the rest of this code takes such care over. Set
+# and unset around this one tick so the later drills push under plain config.
+gitx "$RREPO" config push.followTags true
+gitx "$PA_WT" tag -a v9.9.9-pred -m "a tag the dispatcher never vetted"
 : > "$SPAWN_LOG"
 OUTPA="$TDIR/pred-ahead.out"
 RSW "$PADH" > "$OUTPA" 2>&1 || true
+PA_IDX_MTIME="$(mtime "$PA_IDX")"
+gitx "$RREPO" config --unset push.followTags
 
 t  "the tick pushes the predecessor's branch to origin" "worktree-12-ahead" \
    git -C "$TDIR/origin-12-ahead.git" branch --list
 t  "at the head the predecessor committed" "$PA_HEAD" \
    git -C "$TDIR/origin-12-ahead.git" rev-parse --short worktree-12-ahead
+nt "and publishes nothing else — no tag rides along on push.followTags" \
+   "v9.9.9-pred"   git -C "$TDIR/origin-12-ahead.git" tag --list
 t  "the successor bootstrap names that branch" "worktree-12-ahead"  cat "$SPAWN_LOG"
 t  "and its head"                            "$PA_HEAD"             cat "$SPAWN_LOG"
 t  "and says not to redo it"                 "do NOT redo"          cat "$SPAWN_LOG"
@@ -1548,7 +1584,7 @@ t  "and says not to redo it"                 "do NOT redo"          cat "$SPAWN_
 # so a bootstrap that told the successor to check it out would hand it an error
 # instead of the work.
 t  "the successor is told how to take the commits onto its own branch" \
-   "git reset --hard FETCH_HEAD"                                    cat "$SPAWN_LOG"
+   "git reset --hard $(git -C "$PA_WT" rev-parse HEAD)"             cat "$SPAWN_LOG"
 # The successor's own worktree is a worktree of this same repo, which is where
 # the emitted `git fetch origin …` has to work.
 PA_SUCC="$RREPO/.claude/worktrees/12-successor-check"
@@ -1561,6 +1597,8 @@ t  "uncommitted changes are named"           "UNCOMMITTED"          cat "$SPAWN_
 dirty_still() { git -C "$PA_WT" status --porcelain; }
 t  "and left uncommitted — the tick commits nothing for a worker" \
    "half-done"                                                      dirty_still
+t  "and the predecessor's index is never written by the tick's read" \
+   "946684800"                                                      echo "$PA_IDX_MTIME"
 
 # ---- level with the base AND clean: nothing to rescue, nothing to say -----
 PLFIX="$TDIR/fix-pred-level.json"; predfix "$PLFIX" 71
@@ -1599,6 +1637,267 @@ nt "but nothing is pushed for it"  "worktree-12-uncommitted" \
 nt "and no fetch is suggested — there is nothing to fetch" "FETCH_HEAD" \
    cat "$SPAWN_LOG"
 
+# ---- the emitted recovery lands on the commit the TICK verified ----------
+# `git reset --hard FETCH_HEAD` lands on whatever the source's branch points at
+# when the successor runs the line, which is not what the tick measured and
+# published. Anything can move that branch in between, and `origin` resolves
+# through the FETCH url while the push went through the PUSH url — a divergent
+# remote.origin.pushurl makes them different repositories outright. A stale
+# branch then resets the successor onto the wrong tree in silence.
+PVFIX="$TDIR/fix-pred-pinned.json"; predfix "$PVFIX" 82
+rboard "$PVFIX"
+PV_WT="$(predsetup 12-pinned 2)"; PV_ROOT="$RREPO"
+PV_HEAD="$(git -C "$PV_WT" rev-parse --short HEAD)"
+PV_FULL="$(git -C "$PV_WT" rev-parse HEAD)"
+PVDH="$TDIR/dh-pred-pinned"; predreg "$PVDH" "$PV_ROOT" 12-pinned
+: > "$SPAWN_LOG"
+OUTPV="$TDIR/pred-pinned.out"
+RSW "$PVDH" > "$OUTPV" 2>&1 || true
+
+t  "the block pins the full sha, not the short form" "$PV_FULL"     cat "$SPAWN_LOG"
+# DRIFT, after the tick has spoken: the branch moves on origin before the
+# successor ever gets to run the line it was handed.
+echo drift > "$PV_WT/drifted"; gitx "$PV_WT" add drifted
+gitx "$PV_WT" commit -qm "a commit this tick never saw"
+gitx "$PV_WT" push -q origin worktree-12-pinned
+PV_DRIFT="$(git -C "$PV_WT" rev-parse --short HEAD)"
+PV_SUCC="$RREPO/.claude/worktrees/12-pinned-successor-check"
+gitx "$RREPO" worktree add -q -b pinned-successor-check "$PV_SUCC" main
+run_emitted_whole "$SPAWN_LOG" "$PV_SUCC" > /dev/null
+
+t  "and the emitted recovery lands on the commit the tick verified" "$PV_HEAD" \
+   git -C "$PV_SUCC" rev-parse --short HEAD
+nt "not on whatever the fetch happened to bring"  "$PV_DRIFT" \
+   git -C "$PV_SUCC" rev-parse --short HEAD
+
+# ---- a repo with NO BASE REF the tick can resolve -------------------------
+# An adopter on `trunk` that publishes no origin/HEAD resolves none of
+# _base_ref's candidates. Leaving `ahead` at 0 for that case sent a CLEAN
+# worktree full of real commits down the silent path: the rescue was lost
+# outright, and the successor redid the ticket. No yardstick is UNKNOWN, and
+# unknown still deserves a handover.
+PNFIX="$TDIR/fix-pred-nobase.json"; predfix "$PNFIX" 80
+rboard "$PNFIX"
+git init -q --bare "$TDIR/origin-12-nobase.git"
+gitx "$RREPO" remote add origin "$TDIR/origin-12-nobase.git"
+echo base > "$RREPO/f"; gitx "$RREPO" add -A; gitx "$RREPO" commit -qm base
+gitx "$RREPO" branch -M trunk
+gitx "$RREPO" push -q origin trunk
+PN_ROOT="$RREPO"; PN_WT="$RREPO/.claude/worktrees/12-nobase"
+gitx "$RREPO" worktree add -q -b worktree-12-nobase "$PN_WT" trunk
+echo m1 > "$PN_WT/m1"; gitx "$PN_WT" add m1
+gitx "$PN_WT" commit -qm "a real milestone nothing here can measure"
+PN_HEAD="$(git -C "$PN_WT" rev-parse --short HEAD)"
+PNDH="$TDIR/dh-pred-nobase"; predreg "$PNDH" "$PN_ROOT" 12-nobase
+: > "$SPAWN_LOG"
+OUTPN="$TDIR/pred-nobase.out"
+RSW "$PNDH" > "$OUTPN" 2>&1 || true
+
+t  "a clean worktree the tick cannot measure is still handed over" \
+   "UNMEASURED"                                                     cat "$SPAWN_LOG"
+t  "with the commit it stands at"    "$PN_HEAD"                     cat "$SPAWN_LOG"
+t  "and the branch it is on"         "worktree-12-nobase"           cat "$SPAWN_LOG"
+t  "and the tick says why in its own log" "no base ref this tick could resolve" \
+   cat "$OUTPN"
+# "ahead" has no meaning without a base, and a tick that cannot say what would
+# be published does not publish.
+nt "but nothing it could not measure is published" "worktree-12-nobase" \
+   git -C "$TDIR/origin-12-nobase.git" branch --list
+
+# ---- a DETACHED HEAD: no branch to publish, but plenty to discover -------
+# Publication eligibility and discovery are different questions, and returning
+# on a detached HEAD answered the second with the first: a worker reclaimed
+# mid-rebase, or one that committed with HEAD detached, had its commits, its
+# worktree path and its in-progress state all go unnamed — the same gap the
+# dirty read was moved above the ahead-gate to close.
+PDFIX="$TDIR/fix-pred-detached.json"; predfix "$PDFIX" 79
+rboard "$PDFIX"
+PD_WT="$(predsetup 12-detached 2)"; PD_ROOT="$RREPO"
+gitx "$PD_WT" checkout -q --detach
+echo m3 > "$PD_WT/m3"; gitx "$PD_WT" add m3
+gitx "$PD_WT" commit -qm "a milestone committed with HEAD detached"
+echo scratch > "$PD_WT/half-done"
+PD_HEAD="$(git -C "$PD_WT" rev-parse --short HEAD)"
+PDDH="$TDIR/dh-pred-detached"; predreg "$PDDH" "$PD_ROOT" 12-detached
+: > "$SPAWN_LOG"
+OUTPD="$TDIR/pred-detached.out"
+RSW "$PDDH" > "$OUTPD" 2>&1 || true
+
+t  "a detached HEAD is still named for the successor"  "HEAD DETACHED"  cat "$SPAWN_LOG"
+t  "with the commit it stopped at"       "$PD_HEAD"                    cat "$SPAWN_LOG"
+t  "and the worktree holding them"       "$PD_WT"                      cat "$SPAWN_LOG"
+t  "and its uncommitted changes"         "UNCOMMITTED"                 cat "$SPAWN_LOG"
+t  "and the tick says so in its own log" "has a DETACHED HEAD at $PD_HEAD" \
+   cat "$OUTPD"
+# Nothing to publish: there is no ref there for the tick to push.
+nt "but nothing reaches origin"          "worktree-12-detached" \
+   git -C "$TDIR/origin-12-detached.git" branch --list
+nt "and no fetch is suggested — the objects are already shared" "FETCH_HEAD" \
+   cat "$SPAWN_LOG"
+
+# ---- a RE-FILLED predecessor seat: worktree:"" with cwd already the tree ---
+# `sminos fill` re-fills a seat in place and passes an EMPTY worktree argument
+# on purpose — the seat's cwd is by then the worktree path, so the fresh session
+# needs no --worktree to land there. The record that leaves behind carries
+# worktree:"" while sitting in a perfectly ordinary ticket worktree, and a guard
+# that read the FIELD's presence as the answer skipped it entirely. It is also
+# the shape a recovery tick meets most often: by the time a seat is being
+# reclaimed it has usually been re-filled at least once.
+PRFIX="$TDIR/fix-pred-refill.json"; predfix "$PRFIX" 77
+rboard "$PRFIX"
+PR_WT="$(predsetup 12-refill 2)"
+echo scratch > "$PR_WT/half-done"
+PR_HEAD="$(git -C "$PR_WT" rev-parse --short HEAD)"
+PRDH="$TDIR/dh-pred-refill"; predreg "$PRDH" "$PR_WT" ""
+: > "$SPAWN_LOG"
+OUTPR="$TDIR/pred-refill.out"
+RSW "$PRDH" > "$OUTPR" 2>&1 || true
+
+t  "a re-filled seat's branch is rescued from its cwd alone" "worktree-12-refill" \
+   git -C "$TDIR/origin-12-refill.git" branch --list
+t  "at the head it committed"      "$PR_HEAD" \
+   git -C "$TDIR/origin-12-refill.git" rev-parse --short worktree-12-refill
+t  "and the bootstrap names it"    "$PR_HEAD"            cat "$SPAWN_LOG"
+t  "and names its uncommitted changes too" "UNCOMMITTED" cat "$SPAWN_LOG"
+
+# ---- …while a seat that really did run in a SHARED checkout rescues nothing
+# The old guard's other job, and it is a real one: whatever the main checkout
+# sits on belongs to everyone who works in it, and its uncommitted changes may
+# be the operator's own. Deciding that from the path rather than from the field
+# is what keeps it true once worktree:"" stops meaning "no worktree".
+PSFIX="$TDIR/fix-pred-shared.json"; predfix "$PSFIX" 78
+rboard "$PSFIX"
+predsetup 12-shared 0 > /dev/null; PS_ROOT="$RREPO"
+echo shared > "$PS_ROOT/m-shared"; gitx "$PS_ROOT" add m-shared
+gitx "$PS_ROOT" commit -qm "a commit on the checkout everyone shares"
+echo operator > "$PS_ROOT/operators-own-wip"
+PSDH="$TDIR/dh-pred-shared"; predreg "$PSDH" "$PS_ROOT" ""
+: > "$SPAWN_LOG"
+OUTPS="$TDIR/pred-shared.out"
+RSW "$PSDH" > "$OUTPS" 2>&1 || true
+
+t  "a fresh worker is still spawned"  "SPAWN name=12-successor"      cat "$SPAWN_LOG"
+t  "the tick refuses the repo's main checkout" \
+   "main checkout and not a worktree of its own"                     cat "$OUTPS"
+nt "and names none of it in the bootstrap" "---- your predecessor's" cat "$SPAWN_LOG"
+
+# ---- a SECOND reclaim: the predecessor's worktree IS the successor's ------
+# The successor seat name is deterministic ($tid-successor-$lane), `sminos
+# retire` never removes a worktree or a branch, and the harness REUSES an
+# existing .claude/worktrees/<name> rather than refusing it. So the second time
+# one ticket is reclaimed, the tree the tick is describing is the tree the
+# reader is standing in — and a block that says "you were spawned into a FRESH
+# worktree", "that branch is checked out elsewhere" and "git reset --hard" is
+# wrong on all three counts, the last one destructively.
+PCFIX="$TDIR/fix-pred-samewt.json"; predfix "$PCFIX" 81
+rboard "$PCFIX"
+PC_WT="$(predsetup 12-successor-implementer 2)"; PC_ROOT="$RREPO"
+# A TRACKED file modified in place: `reset --hard` reverts this, where it would
+# leave an untracked file alone — so this is what proves the destruction.
+echo "half a milestone, uncommitted" > "$PC_WT/m1"
+PC_HEAD="$(git -C "$PC_WT" rev-parse --short HEAD)"
+PCDH="$TDIR/dh-pred-samewt"; predreg "$PCDH" "$PC_ROOT" 12-successor-implementer
+: > "$SPAWN_LOG"
+OUTPC="$TDIR/pred-samewt.out"
+RSW "$PCDH" > "$OUTPC" 2>&1 || true
+
+t  "the tick sees that the successor lands in that very worktree" \
+   "lands in the predecessor's own worktree"                        cat "$OUTPC"
+t  "and the bootstrap says the work is already in the reader's tree" \
+   "ALREADY IN YOUR TREE"                                           cat "$SPAWN_LOG"
+t  "the commits are still named"     "$PC_HEAD"                     cat "$SPAWN_LOG"
+t  "and the uncommitted changes too" "UNCOMMITTED"                  cat "$SPAWN_LOG"
+# Durability off this host is still worth the round trip, whichever tree the
+# successor lands in.
+t  "and the branch still reaches origin" "worktree-12-successor-implementer" \
+   git -C "$TDIR/origin-12-successor-implementer.git" branch --list
+nt "but the reader is never told its tree is fresh" "FRESH worktree"  cat "$SPAWN_LOG"
+t  "and nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
+   run_emitted_whole "$SPAWN_LOG" "$PC_WT"
+t  "so the predecessor's uncommitted edits survive the bootstrap"  "m1" \
+   git -C "$PC_WT" diff --name-only
+
+# ---- …and the same second reclaim, from a tick launched OUTSIDE the root ----
+# board-sweep.sh defaults LOCAL_REPO to $PWD and the spawn passes it as --cwd,
+# but the harness does not append .claude/worktrees/<name> to that cwd: it takes
+# the cwd's git toplevel, and for a LINKED worktree the main checkout's root.
+# Two halves, so two launch points, each guarding one. A subdirectory of the
+# MAIN checkout needs the toplevel step and nothing else. A subdirectory of the
+# operator's own linked worktree needs the mapping — and the mapping replaces
+# whatever the toplevel step produced, so that case cannot catch the toplevel
+# step going missing; only the first one can.
+samewt_from() {  # samewt_from <main|linked> <successor run id>
+  local fix="$TDIR/fix-pred-samewt-$1.json" wt launch dh out
+  predfix "$fix" "$2"
+  rboard "$fix"
+  wt="$(predsetup 12-successor-implementer 2 "12-samewt-$1")"
+  echo "half a milestone, uncommitted" > "$wt/m1"
+  launch="$RREPO"
+  if [ "$1" = linked ]; then
+    launch="$TDIR/operator-worktree"
+    gitx "$RREPO" worktree add -q -b operator "$launch" main
+  fi
+  mkdir -p "$launch/sub"
+  dh="$TDIR/dh-pred-samewt-$1"; predreg "$dh" "$RREPO" 12-successor-implementer
+  : > "$SPAWN_LOG"
+  out="$TDIR/pred-samewt-$1.out"
+  LOCAL_REPO="$launch/sub" RSW "$dh" > "$out" 2>&1 || true
+
+  t  "[$1 subdir] the spawn is handed the launch point as its cwd" "cwd=$launch/sub" \
+     cat "$SPAWN_LOG"
+  t  "[$1 subdir] and the tick still sees the successor lands in the predecessor's worktree" \
+     "lands in the predecessor's own worktree"                      cat "$out"
+  t  "[$1 subdir] so nothing is emitted to run against it"  "NO-COMMAND-EMITTED" \
+     run_emitted_whole "$SPAWN_LOG" "$wt"
+  t  "[$1 subdir] and the predecessor's uncommitted edits survive the bootstrap"  "m1" \
+     git -C "$wt" diff --name-only
+}
+samewt_from main 84     # the toplevel step
+samewt_from linked 83   # the linked-worktree mapping
+
+# ---- a push that HANGS: the deadline has to reach what git spawned --------
+# git is rarely the process actually holding the connection. An ssh push spawns
+# `ssh`, an https push may spawn a credential helper, a pre-push hook spawns
+# whatever it likes — and killing the direct child leaves every one of them
+# running past the deadline, still talking to the sick remote, while the tick
+# has already reported the push dead and moved on. The hook here stands in for
+# all three: it backgrounds a grandchild, then sleeps well past the bound.
+PHFIX="$TDIR/fix-pred-hang.json"; predfix "$PHFIX" 76
+rboard "$PHFIX"
+PH_WT="$(predsetup 12-hang 2)"; PH_ROOT="$RREPO"
+# Installed AFTER predsetup: its own `push origin main` would hang on it too.
+cat > "$PH_ROOT/.git/hooks/pre-push" <<HOOK
+#!/bin/sh
+( while : ; do sleep 1; done ) &
+echo \$! > "$TDIR/hang-grandchild.pid"
+echo \$\$ > "$TDIR/hang-hook.pid"
+sleep 120
+HOOK
+chmod +x "$PH_ROOT/.git/hooks/pre-push"
+PHDH="$TDIR/dh-pred-hang"; predreg "$PHDH" "$PH_ROOT" 12-hang
+: > "$SPAWN_LOG"
+OUTPH="$TDIR/pred-hang.out"
+# 5s is the floor _sweep_api.sh clamps this to, so this is as cheap as a real
+# deadline drill gets.
+export BOARD_PUSH_TIMEOUT=5
+RSW "$PHDH" > "$OUTPH" 2>&1 || true
+unset BOARD_PUSH_TIMEOUT
+alive() { kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null && echo alive || echo gone; }
+
+t  "a hanging push is killed on the tick's deadline"  "process group was killed" \
+   cat "$OUTPH"
+t  "and the hook git spawned dies with it"            "gone" \
+   alive "$TDIR/hang-hook.pid"
+t  "and so does the grandchild that hook left behind" "gone" \
+   alive "$TDIR/hang-grandchild.pid"
+# A remote that TAKES the update and then stalls is killed here too, and from
+# this side reports exactly like one that refused it. The tick may not tell the
+# successor where those commits are; it only has to get it to them.
+nt "and the tick claims nothing about what origin holds" "exist only on this host" \
+   cat "$SPAWN_LOG"
+t  "while still handing over the commits"             "$(git -C "$PH_WT" rev-parse --short HEAD)" \
+   cat "$SPAWN_LOG"
+
 # ---- the push cannot reach its remote, from a path with a SPACE in it -----
 # The successor runs on the SAME HOST, so an unreachable origin costs the
 # convenience of a fetch from origin, not the work: the local worktree is still
@@ -1616,7 +1915,8 @@ RSW "$PFDH" > "$OUTPF" 2>&1 || true
 
 t  "a failed push still names the predecessor's branch" "worktree-12-nopush" \
    cat "$SPAWN_LOG"
-t  "and says the push did not land"   "push to origin FAILED"        cat "$SPAWN_LOG"
+t  "and says the push did not confirm" "push to origin did NOT CONFIRM" \
+   cat "$SPAWN_LOG"
 t  "and points at the local worktree instead" "$PF_WT"               cat "$SPAWN_LOG"
 t  "the tick reports the failure in its own log" "could not push"     cat "$OUTPF"
 # The path has a space, so an unquoted emission fetches the wrong thing (or

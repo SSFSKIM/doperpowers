@@ -183,18 +183,12 @@ so the button reads `off` there, as the shell hooks do.
 
 ## compact (`compact.tsx`)
 
-Two tools the model can call, registered at `session.start` under the
-plugin's name: `mcp__doperpowers__context_usage` and
-`mcp__doperpowers__compact`. The first answers the input tokens of the
-last response over the window the engine compacts against (the `summary`
-breakdown's `rawMaxTokens`: the compaction window where client data, a
-setting or an experiment set one, as `/context` shows it under
-"Auto-compact window", else the model's; estimated locally, no request
-sent) and where the engine compacts on its own (that window less the 20k
-output reserve and 13k headroom: 867k on the 900k window a 1M model gets
-here, 167k on a 200k one), so the model asks only when it is deciding. The
-second is the model compacting its own context at a checkpoint of its
-choosing.
+One tool the model can call, registered at `session.start` under the
+plugin's name, `mcp__doperpowers__compact`: the model compacting its own
+context at a checkpoint of its choosing. And its offer: at the end of each
+main-conversation turn from 300k tokens on, once the context has grown 50k
+since the last offer, the model is told its size and offered the
+compaction, through the Stop hook.
 
 The engine compacts only between turns (`$.session.compact` is refused while
 a turn runs), so the tool defers: its handler keeps the request
@@ -215,33 +209,79 @@ compacted behind them. Nothing is aborted: background shells, monitors, MCP
 servers and subagents run on through a compaction, and their notifications
 arrive in the turn after. The tool's description carries the guidance
 (the work's checkpoints decide, size only sets how small a checkpoint will
-do, why a checkpoint is worth compacting at, the token bands, call it last
-and alone, end the turn).
+do, why a checkpoint is worth compacting at, the token bands, when the
+size is told, call it last and alone, end the turn).
+
+The offer is a `classic.Stop` hook (matched on `hook_event_name: "Stop"`;
+the settings hooks beneath, `smns-record.sh`, run first and their answer
+stands beside it). It reads the figures — `$.session.usage` with the
+`summary` breakdown: the last response's input tokens over the window the
+engine compacts against (the compaction window where client data, a
+setting or an experiment set one, as `/context` shows it under
+"Auto-compact window", else the model's; estimated locally, no request
+sent), and where the engine compacts on its own (that window less the 20k
+output reserve and 13k headroom: 867k on the 900k window a 1M model gets
+here, 167k on a 200k one) — and, where an offer is due, answers them and
+the offer as the Stop's `additionalContext`. The engine's Stop runner
+folds every output into a continuation (a block's reason, and an
+additional context too, so nothing a Stop hook tells the model is free):
+the offer reaches the model as a `<system-reminder>` opening `Stop hook
+additional context:` (an attachment row in the transcript,
+`hook_additional_context` on `Stop`), and one more step of the same turn
+runs. A context rather than a block because of what the person sees under
+"Ran 1 stop hook": a context draws as `Stop hook feedback: …` in gold, a
+block as `Stop hook error: …` in red (live, 2.1.302; both reach the model
+and continue alike). The model calls `compact` (the request pends, and the
+turn's end compacts as above) or replies "Not compacting." (a line, asked
+for because an answer with no text costs the engine's "no visible output"
+nudge, a step more); the Stop after that step carries `stop_hook_active`
+and passes, so an offer is one step and no loop (the engine caps
+consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 300k, where the tool's
+guidance turns to "any reasonable checkpoint", and step 50k, so a
+conversation adding a few k a turn is not asked every turn while a working
+turn, tens of k, is asked each time. The offer's baseline resets when a
+main-conversation `session.compact` stands (not a skip or a `precompute`,
+which replaces no conversation), and when this mod's own compaction stands.
+As a backstop for an engine path that compacts without the event, a figure
+below the last offer's at any Stop resets it too, even below the floor.
+`DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (whole tokens) override a
+launch's; 0 and 0 is an offer at every turn's end. No
+offer when a hook beneath sets `preventContinuation` (its answer passes
+through unchanged, without spending an offer), while a request pends, on a
+subagent's Stop (`SubagentStop` is another event, and a subagent cannot
+compact), in a session without the
+tool (headless), or when the figures cannot be read (logged). The free
+`context_usage` tool the model used to ask the figures with was retired
+with the offer (7.184.0): the offer carries them, and the tool's
+description says when they come — until the first offer the model is under
+the floor, and it may compact unasked at any checkpoint.
 
 A subagent's call to `compact` is refused (its turn ends are not the main
-conversation's), and so is one to `context_usage` (`$.session.usage` reads
-the main conversation, so it would answer the parent's figures). A
-headless (`-p` / SDK) session gets neither tool: the engine has no
-compactor a plugin can call there yet. The session and turn events are
-taken with a matcher (`isInteractive: true`, `reason: "answer"`) because
-kairos and agents register them too, and the engine admits one unmatched
-registration of an event per module.
+conversation's). A headless (`-p` / SDK) session gets no tool: the engine
+has no compactor a plugin can call there yet. The shared session and turn
+events are taken with matchers (`isInteractive: true`, `trigger: /^/`,
+`reason: "answer"`) because kairos, agents and bridge register them too,
+and the engine admits one
+unmatched registration of an event per module.
 
-The tools are MCP tools to the engine, which tool search defers (the
-model sees the name alone until it loads the tool with `ToolSearch`), so
-the guidance in `compact`'s description would reach the model only once it
-had already thought of compacting. A `tool.describe` hook on each tool
-answers `isDeferred: false`, which the engine takes over its own placement
-(SPEC 14.4.2, since 2.1.287), so both ship inline in every request:
-`/context` then reads "MCP tools · 1.1k tokens" where it read "0 tokens",
-the two definitions together (`compact`'s is about 2.1k characters), in the
-prompt-cache prefix. Each answer is a line.
+The tool is an MCP tool to the engine, which tool search defers (the model
+sees the name alone until it loads the tool with `ToolSearch`), so the
+guidance in its description would reach the model only once it had already
+thought of compacting. A `tool.describe` hook answers `isDeferred: false`,
+which the engine takes over its own placement (SPEC 14.4.2, since 2.1.287),
+so it ships inline in every request: the definition (about 2.1k
+characters) in the prompt-cache prefix, where `/context` counts it under
+"MCP tools". Its answer is a line.
 
 Known limits: the threshold is read once, at session start, so a window
 changed by `/autocompact` mid-session is not followed; a model that keeps
 working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
-plugin-submitted prompt does.
+plugin-submitted prompt does; an offer's step is a model call over the
+whole context (a prompt-cache read, mostly), the price of a decision at the
+turn's end, and in a session the person watches the decline line shows
+under the answer. Live check: `tests/mods/live-compact-offer-check.py`
+(spends model calls; run by hand).
 
 ## appeal (`appeal.tsx`, `appeal-judge.tsx`)
 
@@ -517,9 +557,11 @@ rows read from the transcript, and the export to the host).
   dispatch (an Esc, an interrupt). Each carries the nonce the child's hello
   named: a reload's old module, still posting to the session's path, is
   turned away (409) and stops.
-- **Control.** `steer` appends a user row the loop reads at its next request
-  (the running tool goes on; a turn that answers before reading it is woken
-  once); `interrupt` aborts the turn and stops each Bash call the abort moved
+- **Control.** `steer` appends a user row the loop reads at its next request,
+  the owner's words under the line `[sminos steer from human]`, by which a
+  reader of the transcript tells it from the bridge's other rows (the running
+  tool goes on; a turn that answers before reading it is woken once);
+  `interrupt` aborts the turn and stops each Bash call the abort moved
   to the background, then appends a user row telling the model so (a
   plugin's abort leaves no marker of its own, and the moved call's result
   says it runs on), holding the turn's Bash calls until the row is in, since
@@ -537,11 +579,16 @@ rows read from the transcript, and the export to the host).
   `tool_decision` record of the call (raised to the mod through
   `telemetry.log`), else the transcript's mark of a hook's decision.
 - **Messages to the host.** The main loop's rows that may carry one — a text
-  row with a mark, an async ask with its result — go to the child as the
-  transcript keeps them, and the child appends their `message` and
-  `question` events to the project's log through `sminos record`'s own
-  writer and `(kind, src)` keys, so they reach the log as they are written
-  and the Stop hook's export finds them there.
+  row with a mark, an async ask with its result, a row that may answer one
+  (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
+  steer, as the human's prompt or taken into a running turn) — go to the
+  child in the shape the transcript keeps them (an attachment's payload read
+  back from its rendering, all the hook is handed of it, by stripping the
+  engine's exact framing; one not so framed, or holding the engine's `&lt;`
+  escape, is left to the Stop hook), and the child appends their
+  `message`, `question` and `answered` events to the project's log through
+  `sminos record`'s own writer and `(kind, src)` keys, so they reach the log
+  as they are written and the Stop hook's export finds them there.
 
 From another terminal: `sminos watch|steer|interrupt|model|compact|decide|answer
 <member>`. Live checks under `tests/mods/live-*-check.py` run real sessions
@@ -558,7 +605,7 @@ does not know whether a turn runs, and those three verbs are refused with
 "turn state unknown since the bridge reloaded; retry after the next model
 request" (exit 1), never answered as idle; calls begun before the reload are
 not the new module's (an interrupt's abort stops them, but none the abort
-moved to the background is stopped after it); a text row past 65,536 characters is left to the Stop hook's export;
+moved to the background is stopped after it); a text row or an answer past 65,536 characters is left to the Stop hook's export;
 a `--bg` job starts in permission mode `auto`, where most calls raise no
 request; the plugin's own append passes no hook of the plugin's, so the
 steer's row is named from the append's answer, after it is written; a

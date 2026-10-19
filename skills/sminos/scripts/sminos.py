@@ -543,6 +543,15 @@ JOINABLE_KINDS = ("interactive", "bg")
 # `interactive` too (harness 2.1.299: `kind: "interactive", entrypoint:
 # "sdk-cli"`); its entrypoint is what tells it apart, and it is no member.
 HEADLESS_ENTRYPOINT = "sdk"
+# Unless the host that launched it marks it as one: an app whose sessions are
+# its human's work (MAWS) sets this in the environment of each engine it
+# spawns, to its own pid. The harness record carries no environment, so the
+# mark is read only inside the session's own process tree (its hooks, its
+# bridge's child, a verb its tools run), and it holds only for an engine the
+# process it names spawned itself: a run started from inside a marked
+# session inherits the variable, not that parent (member_mark). Internal
+# forks still never join: SMNS_INTERNAL and the pid marker are read first.
+MEMBER_MARK = "SMNS_MEMBER"
 # The name sources the harness makes up itself (harness 2.1.300): `derived`,
 # the directory's name and one random byte drawn again by every process;
 # `auto`, a title it wrote; `collision`, a given name it suffixed because
@@ -1835,6 +1844,10 @@ def _reconcile(project, events, local, by_session):
                     and not any(s["current"] == sid for s in seats()))
 
         out += lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
+    # A verb a marked session's tools run speaks for that session alone; an
+    # internal fork's, for none.
+    own = (os.environ.get("CLAUDE_CODE_SESSION_ID")
+           if os.environ.get(MEMBER_MARK) and not os.environ.get("SMNS_INTERNAL") else None)
     for sid, ev in local.items():
         seat, peer = by_session.get(sid), ev.get("peer")
         if (latest.get(sid) == "joined") if peer else (sid in latest):
@@ -1842,7 +1855,8 @@ def _reconcile(project, events, local, by_session):
                 out += refresh_joined(project, sid, joined[sid])
             continue
         out += join_on_sight(project, sid, seat, peer, bool(peer),
-                             recheck=None if seat or not peer else lambda peer=peer: record_project(peer))
+                             recheck=None if seat or not peer else lambda peer=peer: record_project(peer),
+                             marked=sid == own and member_mark(peer))
     for sid, ev in local.items():
         seat = ev.get("seat")
         if seat and "peer" not in ev and seat["status"] != "retired" and (successor := continued_in(sid)):
@@ -1911,16 +1925,38 @@ def moved_here(project, sid):
     return False
 
 
-def joinable(seat, peer):
+def joinable(seat, peer, marked=False):
     """Whether a session of this machine is a member on sight: a seat whose
     record is not retired, or a seat-less session the harness records as
     `interactive` or `bg` whose entrypoint is no headless or SDK run (`sdk-*`:
-    another tool's `claude -p` is no member, whatever its kind)."""
+    another tool's `claude -p` is no member, whatever its kind) unless its
+    host marked it (`marked`, member_mark)."""
     if seat:
         return seat["status"] != "retired"
     peer = peer or {}
     return (str(peer.get("kind") or "") in JOINABLE_KINDS
-            and not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT))
+            and (marked or not str(peer.get("entrypoint") or "").startswith(HEADLESS_ENTRYPOINT)))
+
+
+def member_mark(peer):
+    """Whether the session `peer` records, the one this process runs for (the
+    hook's, the bridge child's, or the one a verb's caller is), was launched
+    by a host that marked it a member: MEMBER_MARK names the pid that spawned
+    its engine. A run started from inside a marked session inherits the
+    variable but has another parent, so it is no member; a /clear keeps the
+    engine, and the mark holds for the session it goes on as."""
+    mark = os.environ.get(MEMBER_MARK, "")
+    return mark.isdigit() and int(mark) > 1 and parent_pid((peer or {}).get("pid")) == int(mark)
+
+
+def parent_pid(pid):
+    """A live process's parent pid, or None when ps cannot tell."""
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+    except (TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return None
+    return int(out) if out.isdigit() else None
 
 
 def _ts_epoch(ts):
@@ -1968,7 +2004,7 @@ def retirement_holds(events, peer):
     return started is None or retired is None or started <= retired
 
 
-def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None):
+def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, marked=False):
     """joined for a session seen on this machine, when it is joinable and
     the log does not already hold it as a member: a running session whose
     latest membership is absent or retired (a live process is evidence of
@@ -1985,8 +2021,9 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None):
     needs; `by` is `move` when it comes from another project here
     (moved_here), unless the caller names it (`join`). `recheck`, when
     given, resolves the session's project again under the lock, and the
-    join is written only if it is still this one (retire_moved)."""
-    if not joinable(seat, peer):
+    join is written only if it is still this one (retire_moved). `marked`:
+    its host marked it (member_mark)."""
+    if not joinable(seat, peer, marked):
         return []
 
     def guard(evs):
@@ -3123,6 +3160,17 @@ DELIVERY_RE = re.compile(r"The human responded to your async AskUserQuestion \(c
 PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
 # The engine's framing after the text of a prompt a plugin submitted.
 PLUGIN_FRAMING = "\n\nThis is how Claude Code surfaces a prompt a plugin submits"
+# MAWS's ask tool, which a session under MAWS asks through instead (MAWS owns
+# the shape, in its src/shared/maws/ask.ts; tests/sminos/maws-ask-*.jsonl are
+# transcripts of it): called with `blocking` false, it answers at once with
+# {"status": "asked", "askId": ...} as JSON, the askId being the call id, or
+# MAWS's request id when the engine named no call, and the answers come later
+# as the human's prompt, a steer, which opens with `[MAWS ask <askId>] ` and
+# ends with the answered result in a json fence.
+MAWS_ASK_TOOL = "mcp__maws__ask"
+MAWS_STEER_RE = re.compile(r"\[MAWS ask ([^\]\s]+)\] ")
+MAWS_STEER_HEADER = "The user answered the questions you asked:"
+MAWS_FENCE_OPEN, MAWS_FENCE_CLOSE = "\n```json\n", "\n```"
 
 
 def extract_marks(text):
@@ -3179,38 +3227,105 @@ def _deliveries(text):
     return out
 
 
+def _is_human(record):
+    """Whether a row or attachment is the human's: its origin says so, or it names none."""
+    origin = record.get("origin")
+    return not isinstance(origin, dict) or origin.get("kind", "human") == "human"
+
+
+def _maws_steer_texts(record):
+    """The texts of a record that can be a MAWS steer: the human's prompt, as
+    a user row, or as the queued_command attachment the engine writes for a
+    prompt it took into a running turn. Never a text of another origin (a
+    peer's, a plugin's), which could only quote a steer."""
+    if record.get("type") == "attachment":
+        att = record.get("attachment")
+        if not (isinstance(att, dict) and att.get("type") == "queued_command" and att.get("commandMode") == "prompt" and _is_human(att)):
+            return []
+        prompt = att.get("prompt")
+        return [prompt if isinstance(prompt, str) else _result_text(prompt)]
+    return [b["text"] for b in _blocks(record, "text") if isinstance(b.get("text"), str)] \
+        if record.get("type") == "user" and _is_human(record) else []
+
+
+def _maws_answer(text):
+    """(askId, answer) of a MAWS steer, read as MAWS's parseAskSteer reads
+    one: its tag names the ask, and its last json fence, which ends the text,
+    holds the answered result of the same ask. The answer is the steer's own
+    lines between the two, one per question, without MAWS's header line. None
+    for any other text."""
+    tag = MAWS_STEER_RE.match(text)
+    if tag is None or not text.endswith(MAWS_FENCE_CLOSE):
+        return None
+    end = len(text) - len(MAWS_FENCE_CLOSE)
+    start = text.rfind(MAWS_FENCE_OPEN, tag.end() - 1, end)
+    try:
+        result = json.loads(text[start + len(MAWS_FENCE_OPEN):end]) if start >= 0 else None
+    except ValueError:
+        return None
+    if not isinstance(result, dict) or result.get("status") != "answered" or result.get("askId") != tag.group(1):
+        return None
+    body = text[tag.end():start]
+    return tag.group(1), (body[len(MAWS_STEER_HEADER):] if body.startswith(MAWS_STEER_HEADER) else body).strip("\n")
+
+
+def _maws_asked(text):
+    """The askId a MAWS ask's result names when it is its acceptance as an
+    async ask (the call id, or MAWS's request id when the engine named no
+    call), else None."""
+    try:
+        result = json.loads(text)
+    except ValueError:
+        return None
+    ask = result.get("askId") if isinstance(result, dict) and result.get("status") == "asked" else None
+    return ask if isinstance(ask, str) and ask else None
+
+
 def _ask_events(records):
     """(record index, event) for the async asks the records hold, in record
-    order: a `question` for each tool_use of the tool with `async` true whose
-    paired tool_result is the tool's accepted result, and an `answered` for
-    each delivery. A blocking ask — the plugin's without async, or the native
-    AskUserQuestion — is no event: the session waits, and the human goes to it."""
+    order: a `question` for each tool_use of an ask tool called async (the
+    plugin's with `async` true, MAWS's with `blocking` false) whose paired
+    tool_result is that tool's acceptance, and an `answered` for each delivery
+    (the plugin's) or steer (MAWS's) of an answer. Each src is the call id;
+    for MAWS's, the askId its acceptance and steer name, which is the call id
+    unless the engine named no call to MAWS (then MAWS's request id). A
+    blocking ask — the plugin's without async, MAWS's by default or in a
+    subagent, or the native AskUserQuestion — is no event: the session waits,
+    and the human goes to it."""
     calls, results, out = [], {}, []
     for i, r in enumerate(records):
         for b in _blocks(r, "tool_use"):
-            inp = b.get("input")
-            if b.get("name") == ASK_TOOL and isinstance(inp, dict) and inp.get("async") is True and b.get("id"):
-                calls.append((i, str(b["id"]), inp))
+            inp, name = b.get("input"), b.get("name")
+            if isinstance(inp, dict) and b.get("id") and (
+                    (name == ASK_TOOL and inp.get("async") is True) or (name == MAWS_ASK_TOOL and inp.get("blocking") is False)):
+                calls.append((i, str(b["id"]), name, inp))
         for b in _blocks(r, "tool_result"):
             results[str(b.get("tool_use_id") or "")] = b
         for text in _delivery_texts(r):
             out += [(i, {"kind": "answered", "src": call, "text": answer}) for call, answer in _deliveries(text)]
-    for i, call, inp in calls:
+        for call, answer in filter(None, map(_maws_answer, _maws_steer_texts(r))):
+            out.append((i, {"kind": "answered", "src": call, "text": answer}))
+    for i, call, name, inp in calls:
         res = results.get(call)
-        if res is None or res.get("is_error") is True or _result_text(res.get("content")) != ASYNC_RESULT:
+        text = _result_text(res.get("content")) if res is not None and res.get("is_error") is not True else None
+        if text is None:
+            continue
+        src = _maws_asked(text) if name == MAWS_ASK_TOOL else (call if text == ASYNC_RESULT else None)
+        if src is None:
             continue
         questions = [q for q in inp.get("questions") or [] if isinstance(q, dict)]
         out.append((i, {"kind": "question", "text": [str(q.get("question") or "") for q in questions],
                         "choices": [str(o.get("label") or "") for q in questions
-                                    for o in q.get("options") or [] if isinstance(o, dict)], "src": call}))
+                                    for o in q.get("options") or [] if isinstance(o, dict)], "src": src}))
     out.sort(key=lambda x: x[0])
     return out
 
 
 def extract_asks(records):
     """The async asks and their answers the transcript records hold, in order:
-    {"kind": "question", "src": call id, "text": [questions], "choices": [labels]}
-    and {"kind": "answered", "src": call id, "text": the engine's result text}."""
+    {"kind": "question", "src": the ask's id, "text": [questions], "choices": [labels]}
+    and {"kind": "answered", "src": the ask's id, "text": the engine's result text},
+    the ask's id being its call id, or MAWS's askId."""
     return [e for _, e in _ask_events(records)]
 
 
@@ -3218,7 +3333,8 @@ def host_events(records, alias):
     """The events a run of transcript records holds for the host, in record
     order, ready for log_append_batch: each marked span of an assistant record
     as a `message` (src `<record uuid>#<span index>`), each accepted async ask
-    as a `question`, each delivery of an answer as `answered` (src the call id)."""
+    as a `question`, each delivery of an answer as `answered` (src the call id,
+    or MAWS's askId)."""
     out = []
     for i, r in enumerate(records):
         if r.get("type") != "assistant" or not isinstance(r.get("uuid"), str) or not r["uuid"]:
@@ -3488,7 +3604,7 @@ def await_flush(tpath, last_message, until):
 def export_host(project, session, tpath, alias):
     """Append what the transcript holds for the host past the session's export
     position, as one batch, then advance the position to the last assistant
-    record read whose async asks all have their results (so a question is
+    record read whose ask calls all have their results (so a question is
     never split from the result that accepts it). With no position, the
     trailing run of assistant records is exported (§4). Exports of a session
     are serialised by its export lock, taken before the log's locks."""
@@ -3503,7 +3619,7 @@ def export_host(project, session, tpath, alias):
         new, pending = None, set()
         for at, r in records:
             for b in _blocks(r, "tool_use"):
-                if b.get("name") == ASK_TOOL and b.get("id"):
+                if b.get("name") in (ASK_TOOL, MAWS_ASK_TOOL) and b.get("id"):
                     pending.add(str(b["id"]))
             for b in _blocks(r, "tool_result"):
                 pending.discard(str(b.get("tool_use_id") or ""))
@@ -3543,8 +3659,9 @@ def _own_events(project, session):
 def record_session(project, session, tpath, event, last_message=""):
     """The hook's work for one session (§4). Membership on sight, as
     reconciliation decides it: a seat whose record is not retired, or a
-    session the harness records as `interactive` or `bg`, and never an
-    internal fork. SessionStart sets a member's export position, then joins
+    session the harness records as `interactive` or `bg` (an SDK run only
+    when its host marked it, member_mark), and never an internal fork.
+    SessionStart sets a member's export position, then joins
     it: the position first, so a join cut short by the hook's bound (a lock
     held elsewhere) still leaves the first Stop a position rather than the
     trailing-run fallback. Stop joins it if it is not yet (its harness record
@@ -3561,11 +3678,12 @@ def record_session(project, session, tpath, event, last_message=""):
         if event == "SessionStart":
             position_init(project, session, tpath)
         return
-    if not joinable(seat, peer):
+    marked = member_mark(peer)
+    if not joinable(seat, peer, marked):
         return
     if event == "SessionStart":
         position_init(project, session, tpath)
-    alias = _member_alias(project, session, seat, peer)
+    alias = _member_alias(project, session, seat, peer, marked)
     if event != "Stop" or alias is None:
         return
     until = time.time() + FLUSH_WAIT
@@ -3578,22 +3696,26 @@ def record_session(project, session, tpath, event, last_message=""):
 def _on_sight(project, session):
     """(seat, peer): the seat that binds a session of this machine in the
     project, and the harness's record of it, either None when there is none;
-    None for derive's internal fork, which is never a member."""
+    None for derive's internal fork, which is never a member. The record is
+    the running one when there is one: an engine that crashed leaves its
+    record beside the one its resume writes, and the mark, a retirement and
+    the name are the running process's."""
     seat = seats_by_session(project, [s for s in seats() if s["current"] == session]).get(session)
-    peer = next((r for r in peer_records() if r.get("sessionId") == session), None)
+    recs = [r for r in peer_records() if r.get("sessionId") == session]
+    peer = next((r for r in recs if peer_running(r)), recs[0] if recs else None)
     if peer is not None and str(peer.get("pid")) in internal_pids():
         return None
     return seat, peer
 
 
-def _member_alias(project, session, seat, peer):
+def _member_alias(project, session, seat, peer, marked=False):
     """Joins a joinable session the log does not hold as a member yet (a live
     process is evidence of activation), and returns the alias its messages to
     the host carry: its seat's, else the one it goes by (held_alias over the
     last name the log gave it). None when it is no member."""
     own = _own_events(project, session)
     if latest_membership(own) != "joined":
-        join_on_sight(project, session, seat, peer, True)
+        join_on_sight(project, session, seat, peer, True, marked=marked)
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
@@ -3622,9 +3744,10 @@ def export_live(cwd, session, records):
     if project is None:
         return []
     seen = _on_sight(project, session)
-    if seen is None or not joinable(*seen):
+    marked = seen is not None and member_mark(seen[1])
+    if seen is None or not joinable(*seen, marked):
         return []
-    alias = _member_alias(project, session, *seen)
+    alias = _member_alias(project, session, *seen, marked)
     events = host_events(records, alias) if alias is not None else []
     return log_append_batch(project, writer_id(session), events) if events else []
 
@@ -7441,10 +7564,10 @@ def guide_text(session, launch):
     this enrolled machine: who it is and where its project comes from, then
     the verbs that find and reach the org's other sessions. Only for a
     session that is a member on sight, as the record hook decides it
-    (joinable: a headless or SDK run, or one the engine has not recorded, is
-    told nothing it is not), and no `join` for a seat, which cannot. Only
-    facts the model cannot derive, and only lines the evals showed move
-    behavior."""
+    (joinable: a headless or SDK run its host did not mark, or one the
+    engine has not recorded, is told nothing it is not), and no `join` for a
+    seat, which cannot. Only facts the model cannot derive, and only lines
+    the evals showed move behavior."""
     global _PEERS
     project = session_project(session, launch)
     seen = _on_sight(project, session) if project is not None else None
@@ -7456,7 +7579,7 @@ def guide_text(session, launch):
         time.sleep(0.1)
         _PEERS = None
         seen = _on_sight(project, session)
-    if seen is None or not joinable(*seen):
+    if seen is None or not joinable(*seen, member_mark(seen[1])):
         return ""
     seat, peer = seen
     home = resolve_project(launch)

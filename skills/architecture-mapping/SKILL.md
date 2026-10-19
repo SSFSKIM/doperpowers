@@ -61,8 +61,8 @@ that isn't written down doesn't exist as a rule.
 ## Invariants are the enforcement
 
 Number the architectural invariants (AI-1, AI-2, …), each with one
-sentence of why. The enforcement medium here is review: qa-loops
-reviewers and independent review passes cite violations by number, which
+sentence of why. The enforcement medium here is review: reviewers cite
+violations by number, which
 only works when the rule has a number and a reason a zero-context
 reviewer can apply. An invariant living as folklore is invisible to every
 reviewer.

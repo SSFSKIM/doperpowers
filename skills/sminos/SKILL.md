@@ -59,8 +59,8 @@ text is text.
 | `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed |
 | `@all …` | addressed to the members live now | every one of them starts a turn or reads it; no stopped one is resumed |
 
-A bare `@alias` resolves only in your project — the board spawns the same
-seat names in every repository — and its refusal lists the matching
+A bare `@alias` resolves only in your project — the same seat names
+recur in every repository — and its refusal lists the matching
 members elsewhere. `@short` (a session's first eight hex digits) and
 `@alias#short` reach a session anywhere in the org; another project's
 member is also `@<project>/<alias>`, and a session no `.smns` claims is
@@ -150,10 +150,11 @@ on after, and `reply` reads its live transcript.
 responsibility — one that outlives the task that revealed it, held by
 whoever is in charge of it, not by whoever started it. A bounded task,
 however large, is not a session: the session that takes it on runs it,
-with subagents for its depth. Ticket-shaped work goes to the board
-(doperpowers:issue-tracker), whose dispatch spawns its own seats. A
-spawned session idles between messages: nothing wakes it unless a
-member, the human, or a schedule sends it something.
+with subagents for its depth. Work for later goes on the board's
+backlog (doperpowers:issue-tracker), and nothing spawns a session from
+there: whoever takes a ticket runs it. A spawned session idles between
+messages: nothing wakes it unless a member, the human, or a schedule
+sends it something.
 
 **Permissions.** Seats run `--permission-mode auto`. Never add
 `--dangerously-skip-permissions` to dodge overnight prompts — a gated
@@ -170,15 +171,6 @@ other in a shared directory: give a seat that writes code `--worktree
 NAME` (`<repo>/.claude/worktrees/NAME`, branch `worktree-NAME`). Its work
 is a committed branch, not merged; `retire` never deletes a worktree or
 branch.
-
-## Seats and the board pipeline
-
-Pipeline workers are seats whose in-charge line names their ticket or PR.
-Do not hand-drive one: it escalates by parking its ticket (the
-who-unparks discriminant in doperpowers:issue-tracker), the human
-answers there, and `board-answer.sh` relays the answer with `sminos
-resume` — an answer that bypasses the ticket leaves the board unaware
-of it.
 
 ## Setup
 

@@ -1,11 +1,11 @@
 ---
 name: qa-loop
-description: The board's review loop for one pull request, dispatched by the seat that owns its ticket — runs the review engine, audits the work against its contract, drives fix waves, and merges.
+description: Dormant with the board's automatic dispatch (2026-10-18): the review loop a board seat ran on its own ticket's pull request — review engine, contract audit, fix waves, merge. Attended work reviews through doperpowers:review-code.
 model: opus
 effort: high
 autoCompactWindow: 750000
 color: yellow
-disallowedTools: Skill, mcp__doperpowers__compact, mcp__doperpowers__context_usage, mcp__doperpowers__AskUserQuestion
+disallowedTools: Skill, mcp__doperpowers__compact, mcp__doperpowers__AskUserQuestion
 ---
 
 ## Role

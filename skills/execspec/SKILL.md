@@ -22,7 +22,7 @@ Write the design to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` in the
 
 Name the verification and record it as the Decision Log's one entry at authoring, so whoever executes, reviews, or recovers the work reads the same council. It follows from the stakes, not the size: the default is one independent spec review (step 3); an execution section of more than one milestone also gets the `doperpowers:adversarial-reviewer` agent's buildability review; and name the rung doperpowers:review-code will run on the branch at the end. A critique debate on the design belongs to brainstorming's presentation and has already happened when the design was novel or the cost of being wrong high.
 
-The execution section is written after the design is approved, never before: in an interactive session, now, with the rest of the spec; on the board, after the approval park when the ticket carries one (the Architect protocol). Writing it is the first hostile read of the design.
+The execution section is written after the design is approved, never before: now, with the rest of the spec. Writing it is the first hostile read of the design.
 
 ## 2. Self-review
 
@@ -32,7 +32,7 @@ Reread the spec with fresh eyes: placeholders, sections that contradict each oth
 
 Report the committed spec path, then dispatch an independent spec review, routed by the same center-of-gravity rule as peer review: a design-heavy or still-open spec goes to a general-purpose subagent (model=fable) — 1–2 sentences of context and the spec path are enough; a technical-heavy spec goes to the `doperpowers:adversarial-reviewer` agent (gpt-6-astra through the gateway) with the spec path and its purpose in the brief. When the execution section has more than one milestone, dispatch the `doperpowers:adversarial-reviewer` agent on it in the same round: *Review the execution section of the spec at [SPEC PATH] against its design. Verify the milestones are complete, aligned with the design, well-decomposed, and buildable by an engineer with zero context beyond this document and the code.* Evaluate the findings rather than accepting them wholesale, make the changes that survive, re-run the self-review, and stop when a round yields nothing worth changing. What returns to your human partner is exceptions — a design-level fork the design doesn't cover, a finding that conflicts with the design itself, a blocker you can't resolve; everything resolvable within the design is fixed where it stands, with the Decision Log's dated line.
 
-In this session the review may run while you execute — you are the executor and can absorb its findings as they land; a spec handed to a zero-context executor (the board's build edge) is reviewed before it is handed over.
+In this session the review may run while you execute — you are the executor and can absorb its findings as they land; a spec handed to a zero-context executor is reviewed before it is handed over.
 
 ## 4. Execute
 
