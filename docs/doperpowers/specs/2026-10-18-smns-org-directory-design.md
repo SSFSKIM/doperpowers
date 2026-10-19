@@ -13,8 +13,8 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 - [x] (2026-10-18 19:51Z) M3 — Every enrolled machine follows every org project; machine projects; the org-only `.smns`; doperpowers' and ci-kit's `.smns` (715537cd, fix a607fccc; ci-kit 91492fd on `smns-org-directory`; review clean)
 - [x] (2026-10-18 21:26Z) M4 — `sminos join`, `session_project`, moves when a resolved project changes, the launch directory (§1c) (1197ad58, fix 8696668f; review clean)
 - [x] (2026-10-18 22:26Z) M5 — Addressing across the org and the copy in the sender's log (96eea875, fix 6e571b59; review clean)
-- [x] (2026-10-18 22:36Z) M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid (MAWS `desk-org-view` 0cda0fc39, fix 68336eb53; review clean; PR SSFSKIM/MAWS#63, gates 39171506250 and e2e 39171512550; no storage change)
-- [ ] M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release
+- [x] (2026-10-18 22:36Z) M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid (MAWS `desk-org-view` 0cda0fc39, fix 68336eb53; review clean; master merged e4a5b082a and the reader's 15 s grace 859d0118f, gates 39173583543 and e2e 39173583740; PR SSFSKIM/MAWS#63 merged and deployed as hub@8aa45e3b web@master.8aa45e3b; no storage change)
+- [x] (2026-10-19 02:07Z) M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release (11384118, 27758957; fixes 208d8ce1, e3585955; origin/main merged aa1e7155; 7.186.0; ci-gate 39187486753)
 
 ## Terms
 
@@ -578,7 +578,51 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-18, M7 executor.
 - Decision (M7 review intake, the orchestrator): the evals commit (836fef1f on `sminos-org-directory` in the `evals/` clone) stays local: its origin, prime-radiant-inc/superpowers-evals, refused the push (403), SSFSKIM has no fork, and where fork-local evals live is the owner's call, asked. One sample per arm, the void `find` ablation and the skill body at 3,706 tokens (about 200 over the 3,500 target) are recorded as open rather than re-run under the 2026-10-19 06:30Z slot freeze. The evals deny `ListAgents` by `--disallowedTools`; the owner's `permissions.deny` entry is their step.
   Date/Author: 2026-10-18, the orchestrator; folded by the plan-executor.
+- Decision (M7 close, the plan-executor): M7's last fix round (e3585955: the read-only guard restored to the body, the guide's bounded wait for the engine record, two wording fixes) answered the second task review's findings, which were text and Minor; it goes to the whole-branch review rather than a third task-review round, since that panel reads the whole branch next and the task reviewer's sol pin is at its usage limit. The merge of origin/main (aa1e7155) keeps 7.186.0 and both sides' behavior: `join_on_sight`/`joinable` take main's `marked` beside this branch's `recheck`, the guide honours `SMNS_MEMBER` as `record` does, SKILL.md takes main's dormant-board text.
+  Date/Author: 2026-10-19, the plan-executor.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-10-19, at the end of the build (the plan-executor).** All seven milestones are built, and each passed its task review: M1–M5 and M7 on doperpowers `smns-org-directory`, M2 and M6 in MAWS.
+- M2 merged as SSFSKIM/MAWS#54, deployed as hub@e1653e58.
+- M6 merged as SSFSKIM/MAWS#63, deployed as hub@8aa45e3b web@master.8aa45e3b.
+- ci-kit's org-only `.smns` is commit 91492fd on its `smns-org-directory` branch.
+- The doperpowers branch is at 7.186.0, with origin/main merged in, and ci-gate is green on its head (MERGE_GATE).
+
+What the build shows against the purpose:
+- Every session on an enrolled machine is in a project the hub syncs.
+- `list` reads the engine's own records, so board:646's `idle`-as-`stopped` is gone, and no path resumes a running process.
+- A session is filed by its launch directory (§1c, added mid-build from the owner's incident), and a `cd` no longer splits its exports.
+- Any session reaches any other by `@short` or `@<project>/<alias>`, recorded in both logs.
+- The desk shows the whole org on one screen.
+- In the two-home simulation, acceptance 1–8 hold as written; the M7 executor's transcript is excerpted in its task report and summarized here: `list --here` lists every live cli session with `[short]`, kind and the record's word, never `stopped`; one `doperpowers` heading with members on both homes; `projects`/`machines` with kinds and online state, a stopped daemon reading `last seen`; a stray on the mini a member of `mini` with its `<message>` on the other home; a bare `@mini-7c` refused naming `@mini/mini-7c#<short>`, `@mini/…` and `@<short>` delivered with the copy in the sender's log and the reply back; a scratch repository's live session moved to its new project within one interval with `retired (moved to scratch)`, its older linked worktree resolving there too; `join MAWS` and `join --cwd` moving it, a seat refused; the org-only `.smns` with the not-enrolled hint once and no git sync on an unenrolled home.
+- With the session-start guide, the eval set went from 6/10 to 10/10, and no session called `ListAgents`.
+
+The task reviews earned their keep. Every milestone but one needed at least one fix round, and the findings were real defects, not taste:
+- M1: three more paths into resuming a running seat.
+- M2: a swallowed snapshot failure, and an online-state fence that was destructive and broke on case-only re-enrollment.
+- M3: a stale open log, and a register-if-absent race.
+- M4: a long first transcript row, relocated seats, and a stale `joined.cwd` within one project.
+- M5: name-tier precedence, and `alias#short` resolving local-first.
+- M6: an org view that claimed completeness it had not verified, and later the reader's 15 s grace.
+- M7: help text, and an overstated eval record.
+
+**Still open, carried for whoever closes this initiative:**
+- **Evals.**
+  - One sample per arm.
+  - The `find` line's ablation was void.
+  - The identity, `list` and `say` lines were never ablated.
+  - No arm ran the new skill body without the guide, which is the only guidance on an unenrolled machine.
+  - The read-only scenario has not been re-run with the guard restored to the body.
+  - The cause of the before arm's SendMessage "Failed to send" in the fixture is not established.
+  - All of this was held under the 2026-10-19 06:30Z slot freeze. Re-run after it: a guide-less arm against the old body, ablations of identity, `list`, `say` and `find`, and 3 or more samples of the misfiled and multi-repo scenarios.
+- **The evals' home.** The scenarios (836fef1f, c361a68b and later, on `sminos-org-directory` in the `evals/` clone) are unpushed: prime-radiant-inc/superpowers-evals refused the push and SSFSKIM has no fork. Where fork-local evals live is the owner's call.
+- **`/clear` and fork.** Whether the guide reaches a `/clear` or a fork (a new session id, possibly before its engine record exists) is bounded by a short wait but not observed live.
+- **The real two-machine run of acceptance 1–9.** This is the orchestrating session's, after the merge, the ci-kit merge and the roll. Its transcript lands here.
+- **The owner's `permissions.deny` entry for `ListAgents`,** with its CLAUDE.md note, is the owner's step once the evals hold.
+
+Lessons:
+- **A spec's suspected cause was wrong.** Board:646 was neither path the spec named, and reproducing it first found the record's `cwd` filter.
+- **A late spec amendment held.** §1c arrived mid-build and was absorbed into M4 without reopening M1–M3, because `session_project` was already the one resolver.
+- **Building parallel to a shape, not to code, held.** Building M6 beside M5 against the Interfaces table cost nothing.
+- **Shared-machine scheduling was the main friction, not the code.** The slot, the freeze, and the reviewer model's usage limit all needed working around.
