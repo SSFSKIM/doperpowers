@@ -333,6 +333,26 @@ describe('transcript order', () => {
     expect(reorder(view)).toBe(false)
   })
 
+  test("the hooks beneath a resumed session's start run while its transcript is searched", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    let release = () => {}
+    const searched = new Promise<void>((resolve) => (release = resolve))
+    on('process.run', async () => {
+      await searched
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    let isReached = false
+    on('classic.SessionStart', () => ((isReached = true), {}))
+    const started = $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    for (let i = 0; i < 100 && !isReached; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    expect(isReached).toBe(true)
+    release()
+    await started
+  })
+
   test('a resumed transcript drawn newest first opens each run at its first row', async ($, on) => {
     mock.env(on, {})
     mock.store(on)

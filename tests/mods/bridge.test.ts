@@ -3151,7 +3151,7 @@ describe('requests from outside: questions', () => {
     // back, while the plugin's session.start still waits on its tool
     // registrations (live, 2.1.303): its notes come before the bridge started.
     await rebuild?.handler(
-      { fs: { read: async () => transcript }, ui: { invalidate: () => {} } },
+      { fs: { stat: async () => ({ size: transcript.length }), read: async () => transcript }, ui: { invalidate: () => {} } },
       { hook_event_name: 'SessionStart', source: 'resume', session_id: SID, transcript_path: '/p/resumed.jsonl', cwd: '/w' },
       async () => ({}),
     )

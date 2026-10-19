@@ -46,7 +46,7 @@
     {
       "name": "to-human",
       "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind [ working record ] buttons",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",
