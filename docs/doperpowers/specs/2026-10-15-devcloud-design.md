@@ -70,6 +70,11 @@ descriptor and the seed credential, `claude -p "reply ok"` answers through the g
   answered about mac-lane windows; the light acceptance traffic ran anyway, per the design session.
 - [x] (2026-10-19) Hosts seat no security default: boot step 10 adds `"prependPlugins": []` to the
   managed settings unless the profile sets it (Decision Log, 2026-10-19).
+- [x] (2026-10-19) Board #101: the guard marker is the loaded module's answer, never stored (I9; devcloud
+  0.5.0), and `cua`'s copy stands down only on that answer (its resync, cua#172). With devcloud
+  disabled mid-session and the plugins reloaded, a made-up token in a tool result reached the model
+  and the transcript raw before, in both install orders, and as a handle after (Decision Log,
+  2026-10-19).
 
 ## Terms
 
@@ -427,10 +432,11 @@ refuses any command for touching the store.
 
 devcloud's `devcloud/hooks/mods/secrets.tsx` is the guard: it reads the same store (Interfaces
 I1), registers no `/secret` command, and adds one system-prompt line saying what its handles mean
-and that they restore on write. When a session starts it sets the guard marker (Interfaces I9,
-in the session's `$.state`; checked by `cua`'s mod at hook time, so load order does not matter),
-and `cua`'s scrubbing stands down, so one guard decides every handle: two scrubbers in
-sequence would lose the encoding a handle names.
+and that they restore on write. While its module is loaded it answers the guard marker
+(Interfaces I9: a read of devcloud's `$.state` key that its own `state.get` hook answers, never a
+stored value; checked by `cua`'s mod at hook time, so load order does not matter), and `cua`'s
+scrubbing stands down, so one guard decides every handle: two scrubbers in sequence would lose
+the encoding a handle names. Once devcloud's module is gone the marker is too, and `cua`'s acts.
 
 The guard differs from `cua`'s in four ways:
 
@@ -544,8 +550,9 @@ The guard differs from `cua`'s in four ways:
    is not parsed by a shell. A handle-like text that does not parse (a space inside it) is named
    as not restored too.
    The tool call as the transcript records it keeps the handle. A handle that cannot be restored —
-   a pattern handle another process issued (another session's, or this session's from before a
-   resume), a `[superseded:…]` handle, a key no longer stored — is left as written and the tool's
+   a pattern handle another module instance issued (another session's, this session's from before
+   a resume or a reload of the guard's plugin, or the other guard's before devcloud was enabled or
+   disabled mid-session), a `[superseded:…]` handle, a key no longer stored — is left as written and the tool's
    result carries one line naming it as not restored, so the model sees a literal write
    rather than learning of it later.
 4. **Linux.** Nothing in the mod assumes macOS; the store and the credential-file list resolve
@@ -615,7 +622,7 @@ stop accidents, which arrive as plain text or a common encoding.
 - `cua` vendors devcloud's guard (`devcloud/hooks/mods/secrets*.tsx` and their tests). A change to
   those files that should reach `cua` files a `cua` resync ticket naming the doperpowers commit; a
   change to I9 reaches `cua` as a ticket before it ships. `cua`'s copy reads the I9 marker and never
-  writes it.
+  writes nor answers it.
 
 ### Plan of Work
 
@@ -900,20 +907,30 @@ system time zone), `secrets.toml` (I3), `build.env` (`DEVCLOUD_USER`, `DEVCLOUD_
 `DEVCLOUD_HOME`, read where the image is built), `home/` (files copied into the user's home at
 boot step 8 and every reconcile; secret-free).
 
-**I9 — Guard marker** (devcloud sets it; `cua` reads it): from each session's start, the
-session's `$.state` holds `{ owner: "devcloud", version: 1 }` under
-`{ plugin: "devcloud", key: "secrets-guard" }`, typed in devcloud's contract
-(`devcloud/types/devcloud.d.ts`, named as `types` in its `plugin.json`). Every plugin reads it
-(`await $.state.get({ plugin: "devcloud", key: "secrets-guard" })`, at hook time); only devcloud
-writes it; a `claude` started from a tool call has a session of its own and decides for itself.
-Not a `globalThis` symbol, as first drafted: M1's check (2026-10-17, 2.1.302) found that the
-engine evaluates each plugin's module in a realm of its own — a symbol devcloud's module set
-read `undefined` from another plugin's module at hook time, while `$.state` read the value — so
-`$.state` is the narrowest shared channel that stays out of child processes, and the ticket names
-it. Limit: a session in which devcloud is disabled mid-way may keep the value (whether the engine
-clears a plugin's state when it unloads is unverified).
-`cua` stands down only on an exact match with `{ owner: "devcloud", version: 1 }` (its #154, cua
-0.14.0), so a change to this value's shape or version reaches `cua` as a ticket before it ships.
+**I9 — Guard marker** (devcloud answers it; `cua` reads it): while devcloud's hooks module is
+loaded, a read of `{ plugin: "devcloud", key: "secrets-guard" }` resolves to
+`{ value: { owner: "devcloud", version: 1 }, version: 0 }`, answered by the module's own
+`state.get` hook (with that matcher); devcloud never stores the value, so once the module is gone
+(devcloud disabled and the plugins reloaded, or never loaded) the read falls through to the host,
+which answers `undefined`. Typed in devcloud's contract (`devcloud/types/devcloud.d.ts`, named as
+`types` in its `plugin.json`). Every plugin reads it (`await $.state.get({ plugin: "devcloud",
+key: "secrets-guard" })`, at hook time, on every event it would act on); nobody writes it; a
+`claude` started from a tool call has a session of its own and decides for itself. A reader that
+stands down on it — `cua` — stands down only on the marker at version 0, where the host holds
+nothing: a marker at any other version is one a devcloud before 0.5.0 stored at its session's
+start, which outlives its module. The engine runs a `$` call through every hook on its op event
+but the one that made the call, outermost first, the calling plugin's other hooks included. So
+the read reaches devcloud's hook whichever of the two plugins sits outside the other (their order
+is their install order, and both occur), and a module that answered the marker would read its own
+answer: a guard that reads the marker to stand down must never answer it. Not a `globalThis`
+symbol, as first drafted: M1's check (2026-10-17, 2.1.302) found that the engine evaluates each
+plugin's module in a realm of its own, so `$.state` is the narrowest shared channel that stays out
+of child processes. Not a value devcloud stores, as 0.1.0 through 0.4.x had it: the host keeps
+it for the session after devcloud's module unloads, so `cua` stood down with no guard left
+(board #101). Not `next.trace` alone: it names only the links beneath a hook, and only once `next` has
+settled, while a guard rewrites a row and restores a call's input before `next` runs.
+`cua` stands down only on that exact answer (cua#172), so a change to this value, its version
+or how it is answered reaches `cua` as a ticket before it ships.
 
 ## Surprises & Discoveries
 
@@ -966,6 +983,20 @@ clears a plugin's state when it unloads is unverified).
   prompt, the context, attachments and a compaction reached the gateway unscrubbed, and the rows
   the transcript keeps from attachments, hook context and compactions reached it, and the session
   store, without the guard's scrub (container probe of 2.1.303; Decision Log, 2026-10-19).
+- (2026-10-19) The engine keeps a plugin's `$.state` values for the session after its hooks
+  module unloads: with devcloud disabled mid-session and the plugins reloaded (`hooks modules
+  unloaded: devcloud@doperpowers`; `cua` "kept as loaded"), `cua` read the marker devcloud 0.4.3
+  had stored and stood down, and a made-up `ghp_` token printed by a Bash call reached the model
+  and the transcript raw (its `tool_result` and `toolUseResult`), with devcloud installed before
+  `cua` and after it alike (board #101; the sminos split's M3a spike found it first). The pane drew a
+  handle either way.
+- (2026-10-19) A plugin's `$` call runs through every hook on that op event but the calling hook
+  alone, in either order, the calling plugin's own other hooks included: a `state.get` hook of
+  devcloud's answered `cua`'s read with devcloud outside `cua` and inside it (kit tests across
+  tiers, and the board #101 sessions after the fix), its answer's `version` passed through as given,
+  and a plugin's `tool.call` hook that read the marker got its own `state.get` hook's answer (kit
+  probe). `next.trace` lists only the links beneath the hook that
+  reads it: a link in a tier outside the reader never appears there (kit probe, 2.1.303).
 
 ## Decision Log
 
@@ -1319,6 +1350,31 @@ clears a plugin's state when it unloads is unverified).
   none is; the engine's warning says a plugin delivered from a remote source gains the tier in a
   later release. Revisit when a host must enroll or that release lands, whichever comes first.
   Date/Author: 2026-10-19, the design session on a container probe's findings.
+
+- Decision: The guard marker (I9) is devcloud's loaded module answering the read, through a
+  `state.get` hook, at version 0, and never a stored value; `cua`'s copy stands down only on the
+  marker at version 0 (board #101, resynced with the Google token rules for cua#172). Rationale: the
+  stand-down needs evidence that devcloud's guard is in the chain now, and the module's own answer
+  exists exactly while the module is loaded, on every event, before `next` runs, in either order
+  of the two plugins (Surprises, 2026-10-19). Version 0 tells it from a value the host stores, so
+  a marker a devcloud before 0.5.0 left in a session cannot make `cua` stand down; an older `cua`,
+  which reads the value alone, gets the live answer from devcloud 0.5.0 too and acts once the
+  module is gone in any session that devcloud started. With devcloud before 0.5.0 and `cua` after
+  this change both scrub (the safe side) until devcloud updates, so devcloud releases first.
+  Rejected: `next.trace` as the evidence (a hook sees only the links beneath it, so `cua` outside
+  devcloud would see it and `cua` inside would not, and only after `next` settles, too late for a
+  row's rewrite and a call's restore, which come before it; a verdict carried from an earlier
+  event is the stale state again, for at least one event); a marker naming a module instance, or
+  a heartbeat (a reader still needs a live check, and a heartbeat leaves a window); clearing the
+  marker when the module unloads (the engine gives a module no unload event, and a crash skips
+  it); the enabled plugins in the settings (enabled is not loaded until a reload); a noun added
+  through `engine.create` (it re-runs every plugin's `session.start` at each reload); a second
+  `$.state` key (the version separates the two answers under the one key the deployed `cua` and
+  the sminos split already read). Kept as a limit: a pattern handle is restored only by the module
+  instance that issued it, as across a reload of devcloud's own module, so after a switch between
+  the guards its earlier pattern handles are named as not restored; store and credential-file
+  handles restore across it, both guards deriving them from the same sources.
+  Date/Author: 2026-10-19, the devcloud session (board #101).
 
 ## Outcomes & Retrospective
 
