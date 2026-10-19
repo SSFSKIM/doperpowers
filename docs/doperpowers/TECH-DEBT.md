@@ -622,7 +622,7 @@ Residue of board #99's fix (the guide on `/branch` and an in-session `/resume`; 
 
 - **An in-session `/resume` can be guided under a name its record does not take.** (From the review of #269.) When no record names the session yet, `_hook_engine` names it by the payload's `session_title`, else by the process's current name. That matches `/branch`, which renames the process to the branch's title as the user's. After an in-session `/resume` the engine instead renames the process from the resumed transcript's agent name (as the user's when the transcript has a custom title, else `auto`), and keeps the process's name when there is none. So a session renamed by custom title alone, one whose title and agent name differ, or a former `--bg` job (agent name `auto`) reads an alias in its guide other than the one the log joins it under; its short, project and machine are right. T3. Trigger: a resumed session found addressing itself by the wrong alias. Then, for `source == "resume"`, take the name from the transcript's last `agent-name` as the engine does.
 
-## the bridge's raise and the secrets guard (2026-10-19, 7.189.2)
+## the bridge's raise and the secrets guard (2026-10-19, 7.189.3)
 
 Residue of raising a permission with its call as the bridge's `tool.call` hook was handed it (bridge.tsx), so a handle the devcloud guard restores beneath the bridge never reaches the desk.
 

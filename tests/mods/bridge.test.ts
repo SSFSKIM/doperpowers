@@ -3130,7 +3130,7 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     // The guard beneath scrubbed the result: the bridge's return is its `{ result }`, no text.
     expect(await ran).toEqual({ result: { stdout: `ran: ${MODEL.command}` } })
     expect(answers).toEqual([{ decision: { behavior: 'allow' } }])
-    // The call event carries the handle. Its result event's text is not asserted: a result the guard scrubbed has none (tech debt, 7.189.2).
+    // The call event carries the handle. Its result event's text is not asserted: a result the guard scrubbed has none (TECH-DEBT.md: the bridge's raise and the secrets guard).
     expect(h.ofType('tool').flatMap((e) => (e.input === undefined ? [] : [e.input]))).toEqual([MODEL])
     expect(posted(h)).toContain(HANDLE)
     expect(posted(h)).not.toContain(VALUE)
