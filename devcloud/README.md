@@ -275,10 +275,15 @@ plane); nothing reaches the tailnet's services before the profile names them.
 **The profile** is `~/.claude/devcloud/` in the configuration repository.
 Only `managed-settings.json` is required.
 
-- `managed-settings.json` — copied to `/etc/claude-code/managed-settings.json`,
+- `managed-settings.json` — written to `/etc/claude-code/managed-settings.json`,
   which every session reads however it started; it holds only what a host
   must change (the synced `settings.json` supplies the rest, merged key by
-  key), and its `env.ANTHROPIC_BASE_URL` is the gateway step 6 checks.
+  key), and its `env.ANTHROPIC_BASE_URL` is the gateway step 6 checks. Boot
+  adds `"prependPlugins": []` unless the file sets `prependPlugins` or is
+  empty: managed settings with any key otherwise seat the engine's security
+  default, which passes the plugins a person installs (this guard among them)
+  over on classic hooks, the prompt's parts, compactions, and the rows the
+  transcript keeps from attachments, hook context and compactions.
 - `profile.env` — `KEY=value` lines for `/etc/devcloud/env` (blank lines and
   `#` comments skipped; `$NAME` and `${NAME}` expand from earlier lines, then
   the user's login environment — `HOME`, `USER`, `PATH` — and the host's

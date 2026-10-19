@@ -326,12 +326,12 @@ def home_files():
     check(project == "devcloud-test-project", f"gcloud project {project!r}")
 
 
-@case("apply.py ran as the user; managed settings copied")
+@case("apply.py ran as the user; managed settings are the profile's, seating no security default")
 def apply_and_settings():
     check(out(HOST, f"cut -d' ' -f1 {STATE}/apply.log").split() == [UID], "apply.py ran once, as the user")
     managed = json.loads(out(HOST, "cat /etc/claude-code/managed-settings.json"))
     fixture = json.loads((HERE / "fixtures/config/devcloud/managed-settings.json").read_text())
-    check(managed == fixture, "managed settings are the profile's")
+    check(managed == {**fixture, "prependPlugins": []}, f"managed settings {managed!r}")
 
 
 @case("services run under devcloud-services as PID 1, with the host environment")
@@ -345,13 +345,16 @@ def services_running():
           "a sandbox carries $SMINOS_HOME/daemon/ (acceptance 7)")
 
 
-@case("claude -p answers through the gateway; managed env merges key by key")
+@case("claude -p answers through the gateway, no security default seated; managed env merges key by key")
 def claude_through_gateway():
     sh(FX, ": > /srv/fakes/gateway.jsonl")
-    result = sh(HOST, f"cd {HOME} && claude -p 'reply ok' --allowedTools Bash", user=USER, check_rc=False,
-                timeout=180)
+    result = sh(HOST, f"cd {HOME} && claude -p 'reply ok' --allowedTools Bash --debug-file {STATE}/claude-debug.log",
+                user=USER, check_rc=False, timeout=180)
     check(result.returncode == 0 and result.stdout.strip() == "ok",
           f"claude -p printed {result.stdout.strip()[-300:]!r} (exit {result.returncode}) {result.stderr[-600:]!r}")
+    seat = [line for line in out(HOST, f"cat {STATE}/claude-debug.log").splitlines() if "sec-default@builtin" in line]
+    check(any("cc-plugin-sec-default@builtin not seated" in line for line in seat),
+          f"the engine's security default is seated on a host (Design §6): {seat[:3]!r}")
     log = [json.loads(line) for line in out(FX, "cat /srv/fakes/gateway.jsonl").splitlines()]
     results = [r for entry in log for r in entry["tool_results"]]
     check("synced-1|managed-1|http://fixtures:8084" in results,
