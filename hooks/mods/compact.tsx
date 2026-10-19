@@ -24,14 +24,22 @@ export function thresholdOf(window: number): number {
 /**
  * The offer's gate: a turn's end is offered a compaction from `floor`
  * tokens on, once the context has grown `step` since the last offer. The
- * floor is where the tool's own guidance turns to "any reasonable
- * checkpoint"; the step keeps a conversation that adds a few k a turn from
+ * floor sits below where the tool's own guidance turns to "any reasonable
+ * checkpoint" (`EARLY_BELOW`), so a clean checkpoint before it is not
+ * missed; the step keeps a conversation that adds a few k a turn from
  * being asked every turn, while a working turn (tens of k) is asked each
  * time. `DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (tokens) override
  * them for a launch; 0 and 0 is an offer at every turn's end.
  */
 export type OfferGate = { floor: number; step: number }
-export const OFFER_GATE: OfferGate = { floor: 300_000, step: 50_000 }
+export const OFFER_GATE: OfferGate = { floor: 220_000, step: 50_000 }
+
+/**
+ * Below this, an offer says compacting is not necessarily recommended: the
+ * description's "under about 300k" band, where only a clean checkpoint is
+ * worth it.
+ */
+export const EARLY_BELOW = 300_000
 
 /**
  * Whether a turn ending at `tokens` is offered a compaction. `last` is the
@@ -142,11 +150,21 @@ export function usageText(context: ContextFigures, threshold: number): string {
  * stop hook" as Stop hook feedback; a block's reason would run the same
  * step but draw as a Stop hook error). The decline is a line, not silence:
  * an answer with no text costs the engine's "no visible output" nudge, one
- * more step.
+ * more step. Below `EARLY_BELOW` it says compacting is not necessarily
+ * recommended.
  */
 export function offerText(context: ContextFigures, threshold: number): string {
+  const early =
+    context.tokens !== undefined && context.tokens < EARLY_BELOW
+      ? [
+          `Below ${n(EARLY_BELOW)} tokens, compacting is not necessarily recommended unless this is a`,
+          'clean checkpoint: no key execution, decision, design or architecting pending that',
+          "needs the prior context's information and nuance as a whole.",
+        ]
+      : []
   return [
     usageText(context, threshold),
+    ...early,
     'If you truly think this is the right time to compact, you can compact now with',
     'mcp__doperpowers__compact (alone, then end your turn; its description says when a',
     "checkpoint is worth it). Otherwise reply \"Not compacting.\" (one line, a reason",
