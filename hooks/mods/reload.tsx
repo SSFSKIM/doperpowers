@@ -11,7 +11,8 @@ import { isAskDialogUp, isMainTurnRunning } from './ask'
  * runs has a new install there, runs `/reload-plugins` itself while the
  * session is idle; and one session per machine at a
  * time fetches the `autoUpdate` marketplaces' new versions, which the engine
- * does only at a session's start.
+ * does only at a session's start. The rows such a reload leaves are kept
+ * out of what the model reads (see `reloadRow`).
  */
 
 /** One install record of installed_plugins.json, as the engine writes it. */
@@ -473,12 +474,71 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
 /** How often a session looks whether the machine's fetch is due. */
 export const FETCH_LOOK_MS = 60_000
 
+/** A row's text blocks, joined. */
+const textOf = (content: readonly unknown[]) =>
+  content.map((b) => (isRecord(b) && b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('')
+
+/**
+ * Which row of a `/reload-plugins` this plugin ran a `command`-door row is.
+ * The engine keeps and sends a local command's three rows (2.1.302): the
+ * caveat and the command line, from the origin of the plugin that ran it,
+ * then the output, a `local_command` notice from the engine's, so known by
+ * following the command line (`isOutputDue`). A caveat from this plugin is
+ * this command's: its other run, /kairos, asks the model and gets none.
+ */
+export function reloadRow(
+  message: { type: string; name?: string; content: readonly unknown[] },
+  origin: unknown,
+  self: string,
+  isOutputDue: boolean,
+): 'caveat' | 'command' | 'output' | undefined {
+  if (message.type === 'system') {
+    return isOutputDue && message.name === 'local_command' ? 'output' : undefined
+  }
+  if (!isRecord(origin) || origin.kind !== 'plugin' || origin.name !== self) {
+    return undefined
+  }
+  const line = textOf(message.content)
+  if (line.startsWith('<local-command-caveat>')) {
+    return 'caveat'
+  }
+  return line.startsWith('<command-name>/reload-plugins</command-name>') ? 'command' : undefined
+}
+
+/** The output row's text without its tag: `Reloaded: N plugins · …`, or the error. */
+export function outputText(content: readonly unknown[]): string {
+  return textOf(content)
+    .replace(/^<local-command-(?:stdout|stderr)>([\s\S]*)<\/local-command-(?:stdout|stderr)>$/, '$1')
+    .trim()
+}
+
 /**
  * Registers the watch and the fetch, in interactive sessions only: headless
  * runs refuse a plugin's `/reload-plugins`. `DOPERPOWERS_AUTORELOAD=off` (or
  * 0, false) leaves a launch on the versions it loaded and fetches nothing.
+ * And the hook that keeps a reload's rows from the model, wherever one runs.
  */
 export function registerReload(on: On) {
+  // The reload's rows, emptied: none can be refused, and each is kept and
+  // sent as `(no content)`, which the screen does not draw. The output's
+  // text goes to the person as this plugin's transcript line, a notice no
+  // request carries: a system row `$.session.append` makes is drawn only in
+  // the transcript view (its level is `info`), a `$.ui.log` line on the
+  // main screen too (live, 2.1.303).
+  let isOutputDue = false
+  on('session.append', { door: 'command' }, async ($, e, next) => {
+    const row = reloadRow(e.message, e.origin, $.plugin.name, isOutputDue)
+    isOutputDue = row === 'command'
+    if (row === undefined) {
+      return next(e)
+    }
+    const stored = await next({ ...e, message: { ...e.message, content: [] } })
+    if (row === 'output') {
+      $.ui.log(`/reload-plugins: ${outputText(e.message.content)}`)
+    }
+    return stored
+  })
+
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const result = await next(e)
     const off = await $.env.get('DOPERPOWERS_AUTORELOAD')

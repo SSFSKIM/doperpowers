@@ -827,9 +827,31 @@ reloads once), it reads it again, and when a plugin the session runs has
 another install path there it toasts what changed (`doperpowers 7.186.0 →
 7.187.0: reloading plugins once the session is idle`) and calls
 `$.command.run({ command: 'reload-plugins' })`, which the engine queues
-until the session is idle and runs as a typed command: the person and the
-model read its output row (`Reloaded: N plugins · …`), and no model turn
-runs. A reload stops no running work: subagents, background shells,
+until the session is idle and runs as a typed command, with no model turn.
+
+The engine keeps such a run's three rows and sends them with the next
+request (2.1.302/303): a caveat (`isMeta`) and the command line, both from
+the plugin's origin, and the output, a `local_command` notice. With a reload
+every time an update lands, that is a caveat, a command line and an output
+folded into the person's next prompt each time. No hook can refuse a row the
+engine appends (`session.append` refuses only a plugin's own), and the run
+raises no `prompt.submit` to drop, so the module's `session.append` hook on
+door `command` empties the three instead: the caveat and the command line
+known by this plugin's origin, the output as the `local_command` row after
+that command line. An emptied row is kept and sent as `(no content)`, which
+no screen draws, so the model reads three `(no content)` lines per reload in
+place of the run. The output's text reaches the person as this plugin's
+transcript line (`$.ui.log`: `doperpowers: /reload-plugins: Reloaded: N
+plugins · …`), a notice no request carries; a system row through
+`$.session.append` would be drawn only in the transcript view, its level
+being `info`. This holds when the reload replaces doperpowers itself: the
+engine writes the rows once the new module is loaded, and its hook knows
+them by origin. A `/reload-plugins` the person types passes whole.
+`tests/mods/live-reload-rows-check.py` pins all of it against a real
+session (rows, screen, the request the gateway receives), with and without
+the hook.
+
+A reload stops no running work: subagents, background shells,
 Monitors and the MCP servers of unchanged plugins carry on, and the old
 version's cache directory stays marked in use until the process exits. It
 does cost the bridge a restart: a reload into a new doperpowers starts its
