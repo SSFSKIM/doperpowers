@@ -174,7 +174,9 @@ SMINOS_HOME unless it names another machine or the real HOME.
   is in, and the line is absent; (c) with `prependPlugins`, after `claude plugin update
   sminos@doperpowers` (a version bump in the marketplace) and `/reload-plugins`, the new module
   reaches the same verdict on its first tool call and the socket is served; (d) the same after
-  updating both devcloud and sminos; (e) as (a) after updating both: still off. If M3a discarded the
+  updating both devcloud and sminos; (e) as (a) after updating both: still off; (f) off recovers: in
+  (a)'s HOME, with `prependPlugins` then set and `/reload-plugins` run, the next dispatch reads safe,
+  a toast says the bridge is back, and the socket is served again. If M3a discarded the
   probe, A5 is: the rehearsal's debug log shows the order of A1 and no verdict line exists.
 - **A6 — appeal and reload read the asks through the channel.** `tests/mods/appeal.test.ts` passes
   with the judge's evidence carrying an answered ask read from `{ plugin: 'sminos', key: 'ask' }`,
@@ -422,17 +424,23 @@ among the enabled plugins (cua's copy acts then; read from the user settings thr
 every loaded guard has an entry beneath it, **off** when a loaded guard has none (it is outside the
 bridge). Until the first verdict the bridge's post queue holds a barrier at its first `tool` event:
 nothing past it is posted (a payload stripped and posted later would need a second event, a change to
-DX5), and no permission request other than a question or an async ask is raised (those go to the
+DX5), and no permission request is raised except a question or an async ask (the others go to the
 terminal unraised); a `safe` verdict posts the waiting events whole and in order, an `off` verdict
 drops them, says why — a toast
 and a debug line, `sminos: the bridge is off — sminos must load outside devcloud and cua; set
 prependPlugins in ~/.claude/settings.json to ["to-human@doperpowers", "sminos@doperpowers",
-"doperpowers@doperpowers"]` — and ends the child, so the session is unreachable from the desk for
-the life of that module instance. The rule is evaluated on **every** settled `tool.call` and
-`session.append`, not once per instance (M3a: `/reload-plugins` re-instantiates only the modules that
-changed, so a guard enabled mid-session can load outside a bridge instance that lives on): `off` is
-terminal for the instance; the hold-and-release applies to the first verdict only, and after it each
-event posts under the verdict standing at that moment. No kept state, nothing to carry across a
+"doperpowers@doperpowers"]` — and ends the child, so the session is unreachable from the desk while
+the verdict stands. The rule is evaluated on **every** settled `tool.call` and `session.append`, not
+once per instance (M3a: `/reload-plugins` re-instantiates only the modules that changed, so a guard
+enabled mid-session can load outside a bridge instance that lives on). **`off` is recoverable**
+(Decision Log, M3.2 review): while off nothing is posted, what waits is dropped, the barrier is
+re-armed and no permission input is raised, and a `/clear`'s restart refuses; the bridge comes back
+only through a dispatch that began after the transition to off and reads `safe`, by the same path as
+a reload (a new child and a new hello nonce, so the old instance is refused); each transition, off and
+back on, is toasted once and logged. A bridge inside a loaded guard reads `off` on every dispatch,
+since the guard is never beneath it, so it does not flap. The hold-and-release applies to the first
+verdict, and to each return from off; otherwise each event posts under the verdict standing at that
+moment. No kept state, nothing to carry across a
 reload, nothing that a reload's filtered `session.start` could mislead (rule 6), and it covers cua's
 guard, which writes no marker. **The residual window, accepted:** a guard newly loaded outside a
 living bridge instance, followed by a tool call whose `call` phase (its `input`, posted before the
@@ -607,6 +615,13 @@ each devcloud host once one is enrolled.
    rehearsal confirms both halves (§10).
 
 **M4 — at the roll, per machine:**
+
+0. Precondition, checked rather than assumed: the roll moves devcloud to 0.6.0 and sminos to 1.0.0
+   together (the author's roll script updates doperpowers, to-human, devcloud and sminos in one
+   pass), so no machine runs sminos 1.0.0 beside a devcloud 0.4.x or older, whose stored marker the
+   probe reads as no live marker (§4) — `safe` even inside that guard when cua is not enabled. Check
+   `installed_plugins.json` on the machine after the roll: `devcloud@doperpowers` at 0.6.0 or later
+   wherever `sminos@doperpowers` is at 1.0.0.
 
 3. `~/.claude/agents/astra.md` and `sol-xhigh.md`: `disallowedTools` names `mcp__sminos__AskUserQuestion`
    (and keeps `mcp__doperpowers__compact`).
@@ -1389,6 +1404,13 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   skill, so the shim-only `skills/sminos` counts as the fifteenth.
   Evidence: M3.1's report, Discoveries.
 
+- Observation (M3.2): no gate typechecks the mods; `tsc` against `.claude/types/claude-code.d.ts`
+  shows errors that predate this work (`sminos/hooks/mods/ask.tsx` ~1007, 1689, 1732;
+  `ask.test.ts` ~1397–1403; `bridge.test.ts` ~2137). The engine's re-entry rule (a plugin's own raise
+  skips its own hooks) is described two ways in the types and the docs; the probe's origin rule (a
+  dispatch raised by a guard's own plugin gives no verdict for that guard) relies on it.
+  Evidence: M3.2's report, Concerns and Decisions.
+
 ## Decision Log
 
 - Decision: verification — one independent spec review by the `doperpowers:adversarial-reviewer`
@@ -1506,7 +1528,8 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   review costs the most, so M3 alone keeps the panel.
   Date/Author: 2026-10-19, the plan's executor, on the author's ruling.
 - Decision (M3a): promote the bridge's probe, amended: the rule is evaluated on every settled
-  `tool.call` and `session.append`, `off` terminal for the instance, the hold-and-release on the first
+  `tool.call` and `session.append`, `off` terminal for the instance (made recoverable by the M3.2
+  review's decision), the hold-and-release on the first
   verdict only; the residual window (§4) is accepted and documented with its bound.
   Rationale: the spike's four observations held; a module that is not reloaded keeps its instance
   while the chain changes around it (Surprises, M3a), so a once-per-instance verdict errs in the
@@ -1616,7 +1639,8 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   for that guard (cua's `/secret` note reaches the bridge without passing cua's hooks). When the
   trace names both `devcloud` and `cua`, no host read is made (the placed Macs' case). A failed read
   gives no verdict and a debug line. `off` retires the bridge before it toasts, so no later
-  `session.start` revives it. devcloud's contract is read through `import type`, appeal's form.
+  `session.start` revives it (superseded by the M3.2 review's decision: `off` is recoverable through
+  a later safe dispatch only). devcloud's contract is read through `import type`, appeal's form.
   Rationale: M3.2's report; the barrier keeps DX5 unchanged, and since `session.append` fires
   before the first `tool.call` (M3a), the barrier normally lasts until the session's first row.
   Unobserved, for M3.3: the barrier's length after a reload made by the reload mod's
@@ -1628,6 +1652,25 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   `SMINOS_CLI` override must point into a directory that also holds `lib.sh`, so the tests that stub
   the CLI link the real `lib.sh` beside the stub.
   Date/Author: 2026-10-19, M3.1's executor, folded by the plan's executor.
+
+- Decision (M3.2 review, revises §4's "`off` is terminal for the module instance"): `off` is
+  recoverable. While off: nothing posted, what waits dropped, the barrier re-armed, no permission
+  input raised, a `/clear`'s `state.restart` refused. Back on only through a dispatch that began after
+  the transition to off and reads `safe`, by a reload's path (a new child, a new hello nonce); each
+  transition toasted once and logged. In the same wave: the row is announced before it is judged
+  (DX5's write order; a guard's `session.append` scrubs before its `next` either way); a persistent
+  read failure is toasted once per module instance; `isLiveMarker` requires exactly devcloud's two
+  keys, as cua 0.16.0's `isDevcloudMarker` does; devcloud's two hooks carry a comment that the probe
+  relies on them staying unmatched.
+  Rationale: the task review found two ways a safe bridge turns itself off for good: the cua leg
+  reads the settings' intent (`enabledPlugins['cua@cua']` is written before cua's module loads, so
+  an install or enable reads cua loaded and not beneath, deterministically), and the trace and the
+  reads are taken at different moments (a guard loaded while a call is in flight). Safety comes from
+  never posting while off; terminality adds none, and the re-evaluation reads with the first
+  verdict's rules, so it opens no new false safe. Rejected: confirm-before-terminal (off terminal
+  only once a later dispatch also reads off) — it heals the second case but not the first, which
+  reads off on every dispatch until a reload; a marker of cua's own (out of scope).
+  Date/Author: 2026-10-19, the plan's executor, on the spec's author's ruling.
 
 ## Outcomes & Retrospective
 
