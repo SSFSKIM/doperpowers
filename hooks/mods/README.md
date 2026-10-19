@@ -731,6 +731,35 @@ but refuses only a plugin's own append, and `session.receive`, which can
 take a delivery without a trace, sees deliveries from outside the process,
 never an agent's notification.
 
+## address (`address.tsx`)
+
+Every commit and pull request a session writes carries its sminos address, so
+whoever reads the artifact later — the owner, another session — reaches the
+session that made it in one step: `sminos who <commit|PR>` reads the line back
+and says who that session is now and how to reach or resume it. The engine
+composes the attribution text the model is told to end a commit message and a
+PR body with (the settings' `attribution`, and its own `Claude-Session:`
+trailer for a remote or bridged session) and passes each through
+`attribution.text`; the mod adds `Sminos-Session: <alias>#<short> (<project>
+on <machine>)` — to a commit as a git trailer (in the trailer block when the
+text ends in one, a paragraph of its own otherwise), to a PR body as its last
+line. With the settings' attribution empty the line stands alone, and the
+engine still tells the model to write it: the reminder is built whenever the
+composed text is non-empty (checked live on 2.1.303, in an interactive
+session, a `--bg` job and `claude -p`, the main loop and a subagent alike).
+
+The line is the CLI's, `sminos who --session <id>`, which composes it where
+the identity lives (the alias the session's own `say` signs with, its project,
+the machine's enrolled name) and prints nothing for a session in no project,
+an internal fork (`SMNS_INTERNAL`), or one that is no member (a headless run
+its host did not mark). The engine asks before every model request of every
+loop, twice (commit, then pr): the mod keeps the line and asks the CLI again
+only for a new session id (a session sent to the background goes on as a new
+one) or once the kept line is a minute old (an alias renamed mid-session); a
+CLI that cannot run keeps the line it had. A subagent's request reads the
+parent's session id, so a subagent's commits carry the session someone can
+reach. The engine re-sends its reminder only when the text changes.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on

@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 
+import { registerAddress } from './address'
 import { registerAgents } from './agents'
 import { registerAppeal } from './appeal'
 import { registerAsk, registerAskBand } from './ask'
@@ -27,6 +28,7 @@ export function register(on: On) {
   registerAgents(on)
   registerKairos(on)
   registerCompact(on)
+  registerAddress(on)
   // Inside the ask's prompt.submit hook, which puts back what it attached
   // to a prompt dropped beneath it.
   registerInterim(on)
