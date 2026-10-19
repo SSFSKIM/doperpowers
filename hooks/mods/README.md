@@ -768,6 +768,100 @@ CLI that cannot run keeps the line it had. A subagent's request reads the
 parent's session id, so a subagent's commits carry the session someone can
 reach. The engine re-sends its reminder only when the text changes.
 
+## reload (`reload.tsx`)
+
+A plugin update reaches a running session without the person typing
+`/reload-plugins` in it. The engine (2.1.302) parses
+`installed_plugins.json` once per process, and nothing tells session B that
+session A installed a new version: `claude plugin update`, a merging
+session's roll, or a new session's marketplace auto-update (once per
+process, 0–10 minutes after its first prompt) all leave every other session
+on the version it loaded. `/reload-plugins` loads the plugins again, so it is
+the one step missing. It does not load them from their records: a plugin its
+marketplace carries by path (doperpowers' `./`, eli5's `./eli5`) loads at the
+version its manifest in the marketplace clone names, from that version's
+cache directory, made from the clone where it is missing (2.1.302:
+`NMe({ cacheOnly: false })` → `Yzn`; a record's install path is read only by
+the cache-only load at startup), and a record pointed at a copied directory
+still loaded `…/eli5/1.0.0`. The record is the signal that a new version
+landed: `claude plugin update` and the auto-update both write it, and in the
+normal flow it names the version the clone carries. A reload moves every
+path-sourced plugin to its clone's version, including one whose record
+nobody updated.
+
+In an interactive session the module reads, at start, what the session runs
+of each installed plugin the settings enable: the record the engine loads
+it from (the first that applies whose directory exists; a user or managed
+record applies everywhere, a project or local one at its path or under its
+git root), and for doperpowers itself the directory it runs from, which is
+exact where the file has moved on. Every 15 s it stats the file; once the
+file has been quiet one period after a change (a roll of several plugins
+reloads once), it reads it again, and when a plugin the session runs has
+another install path there it toasts what changed (`doperpowers 7.186.0 →
+7.187.0: reloading plugins once the session is idle`) and calls
+`$.command.run({ command: 'reload-plugins' })`, which the engine queues
+until the session is idle and runs as a typed command: the person and the
+model read its output row (`Reloaded: N plugins · …`), and no model turn
+runs. A reload stops no running work: subagents, background shells,
+Monitors and the MCP servers of unchanged plugins carry on, and the old
+version's cache directory stays marked in use until the process exits. It
+does cost the bridge a restart: a reload into a new doperpowers starts its
+modules again, which kills the bridge's child and spawns the next, ending
+every subscription to the session with `discontinuity`, and the plane's
+subscriber subscribes again. Every idle session on the machine reloads
+within half a minute of one install, so each `sminos watch` and desk view of
+them resubscribes once, briefly.
+
+One reload per state of the file: a plugin whose new version does not load
+is not reloaded again until the file changes. Only a change after the
+module loaded is acted on, so the module a reload starts never reloads on
+its own. A reload the engine refuses (after an Esc, with no input since; a
+stop that dropped it) is tried again a minute later; the toast comes once
+per state of the file, so a person reading after an Esc sees it once, and
+each retry goes to the debug log. A reload that would add or remove a
+plugin MCP or LSP server is aborted by the engine, since the next message
+would re-read the whole conversation; the module never passes
+`--force`, and says so in the transcript instead. An open async question,
+or an answer not yet delivered to the model, holds the reload until it is
+delivered: the ask mod keeps its asks in module memory, and a reload of this
+plugin would forget them. An uninstall is not acted on, nor a newly
+installed plugin; a copy run from outside the plugin cache (`--plugin-dir`)
+is not watched, since the engine watches that folder itself.
+
+The module also fetches what the engine fetches only at a session's start.
+For each marketplace `known_marketplaces.json` marks `autoUpdate` (from
+GitHub or a git URL; this machine's are doperpowers, cua, designer and
+ptc-tool), one session per machine at a time, at most every 5 minutes,
+reads the remote's head with `git ls-remote` (an entry whose URL or ref
+begins with `-` is skipped) and compares it with the marketplace clone's.
+Where it moved, it runs `claude plugin marketplace update <name>` and then
+`claude plugin update <key> --scope user` for each enabled plugin installed
+from it at user scope; the watch then reloads every session on the machine.
+Each session looks once a minute whether the machine's fetch is due:
+`~/.claude/autoreload/fetch.stamp` is older than 5 minutes, and the lock
+directory beside it (`fetch.lock`, made with `mkdir`) is free. The lock
+serializes this module's sessions only, and the engine takes none: it saves
+`installed_plugins.json` and `known_marketplaces.json` by read-modify-write,
+and refreshes a marketplace by cloning beside its clone and renaming the new
+one in (2.1.283 on; earlier engines pulled into the clone). The fetch is due
+exactly when the remote has just moved, which is when the person or the
+merging session runs its own update, or a new session's auto-update runs.
+So the session holding the lock first looks whether either file, a clone's
+parent directory or its `.git/FETCH_HEAD` changed within the last minute; if
+one did, another actor is rolling, and the round is skipped without a
+stamp, for a later look to try again. That narrows the race without closing
+it: an actor that starts after the look still runs beside the fetch. The
+stamp is written before the fetch, so a fetch that fails waits out the
+period rather than being retried by every session, and a lock left by a
+session that died is cleared after 30 minutes. A machine with nothing
+new costs one `ls-remote` per marketplace every 5 minutes, about half a
+second each. It never passes `-y`, so a marketplace whose install command
+changed waits for a person.
+
+`DOPERPOWERS_AUTORELOAD=off` (or `0`, `false`) leaves a launch on the
+versions it loaded and fetches nothing. Headless runs (`-p`, the SDK, MAWS)
+are left out: the engine refuses a plugin's `/reload-plugins` there.
+
 ## secrets
 
 `/secret KEY` moved to the `cua` plugin (SSFSKIM/cua, `hooks/mods/`) on
