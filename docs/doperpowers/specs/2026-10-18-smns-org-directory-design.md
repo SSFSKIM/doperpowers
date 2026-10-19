@@ -15,6 +15,10 @@ To see it working: on an enrolled machine, in any directory, `sminos list --here
 - [x] (2026-10-18 22:26Z) M5 — Addressing across the org and the copy in the sender's log (96eea875, fix 6e571b59; review clean)
 - [x] (2026-10-18 22:36Z) M6 — Desk (MAWS): the org view, outbound copies in both timelines, machine projects on the grid (MAWS `desk-org-view` 0cda0fc39, fix 68336eb53; review clean; master merged e4a5b082a and the reader's 15 s grace 859d0118f, gates 39173583543 and e2e 39173583740; PR SSFSKIM/MAWS#63 merged and deployed as hub@8aa45e3b web@master.8aa45e3b; no storage change)
 - [x] (2026-10-19 02:07Z) M7 — Guidance at session start, the skill split by its reader, their evals, documentation, release (11384118, 27758957; fixes 208d8ce1, e3585955; origin/main merged aa1e7155; 7.186.0; ci-gate 39187486753)
+- [x] (2026-10-19 06:27Z) Acceptance 1–8 live on both Macs at 7.186.0: 1, 7 and 8 pass, 4 passes slowly, 2, 5 and 6 are partial, 3 fails; findings F1–F6 (Outcomes & Retrospective)
+- [x] (2026-10-19 08:53Z) F1 and F3 fixed, and the uplink takes the org's directory ahead of its queued frames (doperpowers #257, merged 6be7bc4d, 7.188.1; the hub's push proven by MAWS #66); rolled to both Macs
+- [x] (2026-10-19 09:08Z) Acceptance 3–6 re-run live at 7.188.1: all four pass
+- [ ] Acceptance 9 and 10 live, 2's two-machine clause, ci-kit's registration (Outcomes & Retrospective, the live run's "What is left")
 
 ## Terms
 
@@ -620,7 +624,7 @@ The task reviews earned their keep. Every milestone but one needed at least one 
   - All of this was held under the 2026-10-19 06:30Z slot freeze. Re-run after it: a guide-less arm against the old body, ablations of identity, `list`, `say` and `find`, and 3 or more samples of the misfiled and multi-repo scenarios.
 - **The evals' home** (settled 2026-10-19): the owner chose a public fork; the scenarios and their runner are on `SSFSKIM/superpowers-evals`, branch `sminos-org-directory` at 9ddb82ab. Their follow-ups are board #98; the live `/clear`, fork and compaction check of the guide is #99.
 - **`/clear` and fork.** Whether the guide reaches a `/clear` or a fork (a new session id, possibly before its engine record exists) is bounded by a short wait but not observed live.
-- **The real two-machine run of acceptance 1–9.** This is the orchestrating session's, after the merge, the ci-kit merge and the roll. Its transcript lands here.
+- **The real two-machine run of acceptance 1–9.** This is the orchestrating session's, after the merge, the ci-kit merge and the roll. Its transcript lands here. (Run 2026-10-19 for 1–8, with a re-run of 3–6 after the fix; below.)
 - **The owner's `permissions.deny` entry for `ListAgents`,** with its CLAUDE.md note, is the owner's step once the evals hold.
 
 Lessons:
@@ -628,3 +632,60 @@ Lessons:
 - **A late spec amendment held.** §1c arrived mid-build and was absorbed into M4 without reopening M1–M3, because `session_project` was already the one resolver.
 - **Building parallel to a shape, not to code, held.** Building M6 beside M5 against the Interfaces table cost nothing.
 - **Shared-machine scheduling was the main friction, not the code.** The slot, the freeze, and the reviewer model's usage limit all needed working around.
+
+**2026-10-19, the live acceptance run (the orchestrating session).** Acceptance 1–8 ran on both Macs, the MacBook (`macbook`) and the Mac mini (`mini`), against the deployed hub, with the installed CLI and throwaway haiku sessions, every one retired at the end. The first run (04:56–06:27Z) was on 7.186.0, and its transcript is the source of findings F1–F6 below. The steps whose verdict turned on F1 or F3 ran again on 7.188.1 once the fix had rolled to both Macs (~08:53Z): step 3 at 08:56Z, steps 4–6 at 09:01–09:08Z. Neither run covered step 9 (the desk) or step 10 (the evals with `ListAgents` denied).
+
+| Step | First run, 7.186.0 | Re-run, 7.188.1 |
+|---|---|---|
+| 1 | Pass. All 26 live engine sessions are in `list --here`, each with `[short]`, the engine's kind and an agreeing state; no `idle` session reads `stopped`. | Not re-run: nothing in it is latency-bound. |
+| 2 | Partial. One heading, flat `--org`, the filters and the subagent tree hold. No mini session is in doperpowers, so "members on both machines" is unshown, and `find ci-kit` is vacuous (ci-kit unregistered). | Not re-run. |
+| 3 | Fail. `projects` and `machines` print as specified, but the MacBook read the mini `online` through its whole 2 m 42 s outage: no `org` frame reached it (F2). ci-kit is absent. | Pass. The mini's daemon stopped at 08:56:11Z. The MacBook read `last seen 5s ago` 21 s later, and `online` 17 s after the restart. |
+| 4 | Pass, slowly. The stray's `done` reached `chat --host mini` on the MacBook 8½ minutes after the mini wrote it (F1). | Pass. The `message` reached the MacBook about 1.4 s after the mini wrote it, its `joined` in under a second. `derive --all` covers the stray. Its first published word was `busy`, so F5 did not recur. |
+| 5 | Partial. Every clause held, but each MacBook → mini message took 47–48 minutes (F1). The reply came back in 31 s. | Pass. `@mini/<alias>` arrived about 1.1 s after `say` returned, and `@<short>` about 0.6 s after. The replies took 9.9 s and 0.7 s. The bare-name refusal, the copy and the delivering event in the two logs, and the `@all` refusal all hold. |
+| 6 | Partial. The move, its chat line, the listing, the worktree rule, the `moved to` refusal and `@short` hold. But the move took 80 s, and a stale tick re-joined both sessions to `macbook` for ~20 s (F1, F3). The sessions ran in a plain directory beside the repository (F4). | Pass on its latency clauses. Both sessions were retired `moved` and joined the new project 1.1 s after the `.smns` landed, within one 5 s interval; the test ran no sminos verb in that window. No re-join came in the next 90 s, and `chat macbook` shows one `retired (moved to …)` line per session. The `moved to` refusal holds. |
+| 7 | Pass. | Not re-run. |
+| 8 | Pass. | Not re-run. |
+
+- **Verb times.** On 7.188.1 `say` returns in 0.7–1.0 s; on 7.186.0 it took about 40 s. `projects` takes 0.45 s, against 37.6 s. `machines`, `list` and `chat` each take under 0.7 s. The daemon and the uplink use 1–2.4 CPU-seconds a minute each, where they used 35–58.
+- **How the times were taken.** A cross-machine time compares the mini's clock with the MacBook's; three ssh-bracketed reads put them within about 0.3 s of each other. Arrival on a machine is a one-second poll of that machine's copy of the log. Delivery is the receiving transcript row's own timestamp.
+- **Where the re-run departs from the steps.**
+  - As in the first run, `mini-7c` is played by a sminos seat in the mini's `/Users/new`.
+  - Step 6's sessions ran in a fresh plain directory, with the first run's `acceptance-scratch` `.smns` copied in at the start. So they moved into a project already registered here. The first run covered a project's first registration.
+
+Defects and their fixes:
+- **F1: the daemon and its uplink were CPU-bound.** Ticks took minutes, verbs 30–80 s, and cross-machine traffic arrived 8 to 48 minutes late.
+  - The cause, from a profile: `transcript_path` globbed `~/.claude/projects` (about 1,500 directories) for this machine's own seats whose transcripts the engine had cleaned up, 31 of 51 seats on the MacBook. The result was a miss that was never cached. It was asked for each seat in three passes, for each project of each reconciliation, and following every org project multiplied the projects.
+  - The run's hypothesis had named the right function but the wrong members: a remote member is never looked up.
+  - Fixed in doperpowers #257 (merged 6be7bc4d, 7.188.1): an index of the projects directory, caches kept for one generation, one log read per project for delivery, and an uplink that no longer looks over every project on each frame. `tests/sminos/test_scale.py` pins it, and `bench_scale.py` measures it.
+- **F2: no `org` frame reached the MacBook when the mini went down or came back.**
+  - Not a hub defect. MAWS #66 adds the hub test proving that the `Registry` pushes the frame to another machine's open stream.
+  - The frames sat in the CPU-bound uplink's queue, behind its backlog. Since #257 the uplink takes the org's directory as it reads each frame, ahead of the queue. Step 3's re-run passes.
+- **F3: a stale tick re-joined moved sessions to their old project.** Since #257, a reconciliation writes a join or a `moved` retirement only if the session's project, resolved afresh under the session file's lock, still says so. `test_scale.py` pins this, and the re-run saw no re-join.
+- **F4: the engine refuses `claude --bg` in a git root nobody has trusted.** This is setup, not sminos. Because of it, step 6 ran in a plain directory, and a fresh doperpowers clone on the mini could not host a step-2 session. Accepting the engine's trust prompt once is the owner's step. Open.
+- **F5: a freshly spawned seat published `stopped` while alive.** A tick's engine records predated its later projects' log reads, and F1 stretched that window to about ten minutes. Since #257 the window is one tick (~50 ms). The residue is in TECH-DEBT, and the re-run did not see it.
+- **F6: each Mac holds the other's machine project.**
+  - Seat records with the same session ids exist on both Macs, and the uplink's `holds()` counts the plane's local members. So each machine leases the other's machine project as a holder.
+  - At 09:09Z on the MacBook, 8 of `mini`'s 92 members read `@macbook`, all `gone`.
+  - This is legacy data. It is in TECH-DEBT.
+- **Smaller notes from the first run, unchanged.**
+  - A finished subagent's type reads `?` under `list --all`.
+  - `--org` lists six test-residue members of `phone walk` with kind and state `?`.
+  - Once, `projects` counted one live member fewer in `macbook` than `list --here` did.
+- **A re-run observation, with one sample each.** The mini stray's first reply into doperpowers, a project the mini follows rather than holds, took 9.9 s to reach the MacBook; its second took 0.7 s. The cause is not established.
+
+What is left:
+- **Step 9 live.** No run looked at the desk's org view on the real desk. M6's browser tests prove it against the stand-in.
+- **Step 10.** It waits on the owner's `ListAgents` deny and on the eval follow-ups (board #98 and #99), as listed above.
+- **Step 2's two-machine clause.** The mini's doperpowers checkout is still at dd970773, which predates the `.smns`. A pull there, then a session in it, would show it.
+- **ci-kit in the directory.** Its `.smns` is merged (SSFSKIM/ci-kit#56) and is in both Macs' checkouts. But a project registers only when a session or verb first resolves it, and none has. `find ci-kit` and step 3's ci-kit row wait on that.
+- **F4.** Running step 6 in a real repository needs the owner to accept the engine's trust prompt once.
+- **F6 and the residue** in `docs/doperpowers/TECH-DEBT.md`, under "sminos org directory" and "sminos daemon CPU".
+- **What the runs leave.**
+  - The hub project `acceptance-scratch` (`9d246133-9266-4af2-9fe7-2ddd4552f562`), registered in org `ssfskim`.
+  - The seat records of the retired throwaways (`acc-mini` and `acc-mini2` on the mini, `acc-scratch-seat` and `acc-scratch2-seat` on the MacBook).
+  - Scratch directories under `/tmp` on both Macs.
+
+Lessons:
+- **Real machines found what the two-home simulation could not: scale.** The simulation had a handful of seats. The Macs have about 1,500 transcript directories and hundreds of seats, and every machine now follows every project. `bench_scale.py` carries the Macs' scale into the suite.
+- **A suspected cause was wrong in its detail again.** As with board:646, the profile, not the hypothesis, found the defect.
+- **A frame that "never arrived" was waiting in the receiver's queue.** An end-to-end symptom across two codebases needed a test on the hub's side (MAWS #66) before the blame could land on the uplink.
