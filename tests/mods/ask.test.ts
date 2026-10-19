@@ -1245,6 +1245,8 @@ describe('a resumed session', () => {
   const lines = [
     use('t-open', { questions: [BACKEND], async: true }),
     result('t-open', ASYNC_RESULT),
+    // The engine's wire copy of a request's message repeats a call: not a second ask.
+    line({ type: 'api-request-blob', sessionId: 's', hash: 'h1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't-open', name: ASK_TOOL, input: { questions: [BACKEND], async: true } }] } }),
     use('t-done', { questions: [FEATURES], async: true }),
     result('t-done', [{ type: 'text', text: ASYNC_RESULT }]),
     use('t-bad', single),

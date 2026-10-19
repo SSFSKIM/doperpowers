@@ -848,7 +848,8 @@ export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { 
   for (const row of isWholeFile && isRewound ? conversationOf(parsed) : parsed) {
     const message = isRecord(row.message) ? row.message : {}
     for (const block of Array.isArray(message.content) ? message.content : []) {
-      if (isRecord(block) && block.type === 'tool_use' && block.name === ASK_TOOL && isRecord(block.input) && block.input.async === true) {
+      // A call from the model's own row: the engine's wire copy of a request's message (`api-request-blob`) repeats it.
+      if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && block.name === ASK_TOOL && isRecord(block.input) && block.input.async === true) {
         calls.push({ id: String(block.id), input: block.input })
       } else if (isRecord(block) && block.type === 'tool_result') {
         results.set(String(block.tool_use_id), block as { content: unknown; is_error?: boolean })
