@@ -189,7 +189,7 @@ context at a checkpoint of its choosing. And its offer: at the end of each
 main-conversation turn from 220k tokens on, once the context has grown 50k
 since the last offer, the model is told its size and offered the
 compaction, through the Stop hook. Below 300k the offer adds that
-compacting is not necessarily recommended unless this is a clean
+compacting is not necessary unless this is a clean
 checkpoint, with no execution, decision or design pending that needs the
 prior context whole.
 

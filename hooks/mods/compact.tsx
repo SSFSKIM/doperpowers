@@ -35,9 +35,8 @@ export type OfferGate = { floor: number; step: number }
 export const OFFER_GATE: OfferGate = { floor: 220_000, step: 50_000 }
 
 /**
- * Below this, an offer says compacting is not necessarily recommended: the
- * description's "under about 300k" band, where only a clean checkpoint is
- * worth it.
+ * Below this, an offer says compacting is not necessary: the description's
+ * "under about 300k" band, where only a clean checkpoint is worth it.
  */
 export const EARLY_BELOW = 300_000
 
@@ -150,14 +149,13 @@ export function usageText(context: ContextFigures, threshold: number): string {
  * stop hook" as Stop hook feedback; a block's reason would run the same
  * step but draw as a Stop hook error). The decline is a line, not silence:
  * an answer with no text costs the engine's "no visible output" nudge, one
- * more step. Below `EARLY_BELOW` it says compacting is not necessarily
- * recommended.
+ * more step. Below `EARLY_BELOW` it says compacting is not necessary.
  */
 export function offerText(context: ContextFigures, threshold: number): string {
   const early =
     context.tokens !== undefined && context.tokens < EARLY_BELOW
       ? [
-          `Below ${n(EARLY_BELOW)} tokens, compacting is not necessarily recommended unless this is a`,
+          `Below ${n(EARLY_BELOW)} tokens, compacting is not necessary unless this is a`,
           'clean checkpoint: no key execution, decision, design or architecting pending that',
           "needs the prior context's information and nuance as a whole.",
         ]
