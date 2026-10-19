@@ -12,6 +12,7 @@ import {
   changesOf,
   createFetcher,
   createReloader,
+  heldText,
   outputText,
   parseInstalled,
   registerReload,
@@ -280,7 +281,7 @@ describe('createReloader', () => {
     h.install('sminos@dp', '1.0.0')
     await h.ticks(2)
     expect(h.reloads()).toBe(1)
-    expect(h.calls.find((c) => c.op === 'toast')?.text).toBe('to-human 0.1.0 → 0.2.0: reloading plugins once the session is idle')
+    expect(h.calls.filter((c) => c.op === 'toast').at(-1)?.text).toBe('to-human 0.1.0 → 0.2.0: reloading plugins once the session is idle')
   })
 
   test('a dependency with a managed record counts as installed', async () => {
@@ -325,6 +326,34 @@ describe('createReloader', () => {
     standing.install('doperpowers@dp', '7.2.0')
     await standing.ticks(2)
     expect(standing.reloads()).toBe(1)
+  })
+
+  test('the hold is read again on the tick that would fire: a clone that moved under a pending reload, with no record written, holds it', async () => {
+    const clone = cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.1.0' } })
+    const h = harness({ clone })
+    await h.reloader.start()
+    h.state.isTurnRunning = true
+    h.install('doperpowers@dp', '7.1.1')
+    await h.ticks(4)
+    expect(h.reloads()).toBe(0)
+    // A marketplace update moves the clone and writes no record.
+    Object.assign(clone, cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0', dependencies: ['sminos'] } }))
+    h.state.isTurnRunning = false
+    await h.ticks(2)
+    expect(h.reloads()).toBe(0)
+  })
+
+  test('a held reload is told in the transcript once, naming the plugin, the missing dependency and how to install it', async () => {
+    const h = harness()
+    await h.reloader.start()
+    h.install('to-human@dp', '0.2.0', { dependencies: ['sminos'] })
+    await h.ticks(6)
+    expect(h.reloads()).toBe(0)
+    const text = heldText('to-human@dp', 'sminos@dp')
+    expect(text).toContain('/plugin install sminos@dp')
+    expect(h.calls.filter((c) => c.op === 'log:transcript').map((c) => c.text)).toEqual([text])
+    expect(h.calls.filter((c) => c.op === 'toast').map((c) => c.text)).toEqual([text])
+    expect(h.calls.some((c) => c.op === 'log:debug' && c.text?.includes('would load without sminos@dp'))).toBe(true)
   })
 
   test('a reload that needs --force is told to the person and not run again for that install', async () => {
@@ -423,6 +452,10 @@ function fetchHarness(
     clone?: Record<string, unknown>
     /** Install records beside the default ones. */
     records?: Record<string, InstallRecord[]>
+    /** How long each git and claude command takes, on the fetch's clock. */
+    slowMs?: number
+    /** A second autoUpdate marketplace, `else`, fetched after `dp`; its clone holds no manifest. */
+    withElse?: boolean
   } = {},
 ) {
   const PLUGINS = '/h/.claude/plugins'
@@ -436,7 +469,12 @@ function fetchHarness(
   /** Each install and update, with whether the fetch's mark that it applies a batch was up as it ran. */
   const applied: { line: string; isMarked: boolean }[] = []
   const writes: string[] = []
-  const known = { dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true } }
+  /** The mark's age as each git and claude command starts, while it is up. */
+  const markAges: number[] = []
+  const known = {
+    dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true },
+    ...(options.withElse && { else: { source: { source: 'github', repo: 'o/else' }, installLocation: `${PLUGINS}/marketplaces/else`, autoUpdate: true } }),
+  }
   const installed = {
     version: 2,
     plugins: {
@@ -472,51 +510,14 @@ function fetchHarness(
         files.set(path, state.clock)
       },
       run: async (argv) => {
-        const line = argv.join(' ')
-        runs.push(line)
-        if (state.failing !== '' && line.startsWith(state.failing)) {
-          return { exitCode: 1, stdout: '', stderr: 'failed' }
+        const isSlow = argv[0] === 'git' || argv[0] === 'claude'
+        const markedAt = files.get(APPLYING)
+        if (isSlow && markedAt !== undefined) {
+          markAges.push(state.clock - markedAt)
         }
-        const [command, first] = argv
-        if (command === 'mkdir' && first !== '-p') {
-          if (files.has(first as string)) {
-            return { exitCode: 1, stdout: '', stderr: 'File exists' }
-          }
-          files.set(first as string, state.clock)
-        }
-        if (command === 'rmdir') {
-          files.delete(first as string)
-        }
-        if (command === 'rm') {
-          files.delete(argv.at(-1) as string)
-        }
-        if (line.startsWith('claude plugin install ') || line.startsWith('claude plugin update ')) {
-          applied.push({ line, isMarked: files.has(APPLYING) })
-        }
-        if (first === 'ls-remote') {
-          return ok(`${state.remote}\tHEAD\n`)
-        }
-        if (argv[3] === 'rev-parse') {
-          return ok(`${state.local}\n`)
-        }
-        // The marketplace's update brings the clone to the remote's head; an install records the plugin.
-        if (line.startsWith('claude plugin marketplace update')) {
-          state.local = state.remote
-        }
-        if (line.startsWith('claude plugin install ')) {
-          const key = argv[3] as string
-          installed.plugins[key] = [user(key.split('@')[0] as string, 'new')]
-        }
-        // An update records the version the clone's manifest names.
-        if (line.startsWith('claude plugin update ')) {
-          const key = argv[3] as string
-          const name = key.split('@')[0] as string
-          const manifest = options.clone?.[`${name === 'doperpowers' ? '' : `${name}/`}.claude-plugin/plugin.json`] as { version?: string } | undefined
-          if (manifest?.version !== undefined) {
-            installed.plugins[key] = [user(name, manifest.version)]
-          }
-        }
-        return ok()
+        const result = respond(argv)
+        state.clock += isSlow ? (options.slowMs ?? 0) : 0
+        return result
       },
       enabled: async () => new Set(options.enabled ?? ['doperpowers@dp', 'to-human@dp', 'old@dp', 'other@else', ...Object.keys(options.records ?? {})]),
       now: () => state.clock,
@@ -524,8 +525,55 @@ function fetchHarness(
     },
     { plugins: PLUGINS, state: STATE },
   )
+  function respond(argv: readonly string[]): { exitCode: number; stdout: string; stderr: string } {
+    const line = argv.join(' ')
+    runs.push(line)
+    if (state.failing !== '' && line.startsWith(state.failing)) {
+      return { exitCode: 1, stdout: '', stderr: 'failed' }
+    }
+    const [command, first] = argv
+    if (command === 'mkdir' && first !== '-p') {
+      if (files.has(first as string)) {
+        return { exitCode: 1, stdout: '', stderr: 'File exists' }
+      }
+      files.set(first as string, state.clock)
+    }
+    if (command === 'rmdir') {
+      files.delete(first as string)
+    }
+    if (command === 'rm') {
+      files.delete(argv.at(-1) as string)
+    }
+    if (line.startsWith('claude plugin install ') || line.startsWith('claude plugin update ')) {
+      applied.push({ line, isMarked: files.has(APPLYING) })
+    }
+    if (first === 'ls-remote') {
+      return ok(`${state.remote}\tHEAD\n`)
+    }
+    if (argv[3] === 'rev-parse') {
+      return ok(`${state.local}\n`)
+    }
+    // The marketplace's update brings the clone to the remote's head; an install records the plugin.
+    if (line.startsWith('claude plugin marketplace update')) {
+      state.local = state.remote
+    }
+    if (line.startsWith('claude plugin install ')) {
+      const key = argv[3] as string
+      installed.plugins[key] = [user(key.split('@')[0] as string, 'new')]
+    }
+    // An update records the version the clone's manifest names.
+    if (line.startsWith('claude plugin update ')) {
+      const key = argv[3] as string
+      const name = key.split('@')[0] as string
+      const manifest = options.clone?.[`${name === 'doperpowers' ? '' : `${name}/`}.claude-plugin/plugin.json`] as { version?: string } | undefined
+      if (manifest?.version !== undefined) {
+        installed.plugins[key] = [user(name, manifest.version)]
+      }
+    }
+    return ok()
+  }
   const claude = () => runs.filter((r) => r.startsWith('claude '))
-  return { fetcher, state, files, runs, logs, claude, applied, writes, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp`, applying: APPLYING }
+  return { fetcher, state, files, runs, logs, claude, applied, writes, markAges, plugins: PLUGINS, lock: `${STATE}/fetch.lock`, stamp: `${STATE}/fetch.stamp`, applying: APPLYING }
 }
 
 /**
@@ -632,6 +680,16 @@ describe('createFetcher: the plugins behind their clone', () => {
     const idle = fetchHarness({ remote: IN_PLACE, clone: cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.1.0' } }) })
     await idle.fetcher.tick()
     expect(idle.writes).not.toContain(idle.applying)
+  })
+
+  test("on a slow network the mark stays fresh through the whole batch, its marketplace's refresh and the next marketplace's look included", async () => {
+    const h = fetchHarness({ withElse: true, slowMs: 100_000, clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0' } }) })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin marketplace update dp', 'claude plugin update doperpowers@dp --scope user', 'claude plugin update to-human@dp --scope user'])
+    expect(h.runs.filter((r) => r.includes('ls-remote'))).toHaveLength(2)
+    expect(h.markAges.length).toBeGreaterThan(3)
+    expect(Math.max(...h.markAges)).toBeLessThan(APPLY_STALE_MS)
+    expect(h.files.has(h.applying)).toBe(false)
   })
 
   test("a dependency in another marketplace is installed under that marketplace's name", async () => {

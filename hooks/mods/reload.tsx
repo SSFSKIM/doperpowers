@@ -200,6 +200,10 @@ export const RETRY_MS = 60_000
 export const FORCE_TEXT =
   'A plugin update is not applied: this reload would add or remove a plugin MCP or LSP server, so the next message re-reads the whole conversation. /reload-plugins --force applies it.'
 
+/** A reload held for a missing dependency: one plugin at a new clone version holds every reload on the machine, so the person is told, as a transcript line no request carries. */
+export const heldText = (key: string, missing: string) =>
+  `A plugin update is not applied: ${key} would load without ${missing}, which is not installed. /plugin install ${missing} installs it, and the reload follows.`
+
 /** What the reloader reaches the engine through; the session start makes it from `$`. */
 export type ReloadIo = {
   stat: (path: string) => Promise<{ mtimeMs: number }>
@@ -240,8 +244,10 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
   let seen: number | undefined
   /** The mtime whose records `due` was read from. */
   let read: number | undefined
-  /** The changes the file holds against `loaded`, the snapshot they lead to, and what holds them when a plugin would load over a missing dependency. */
-  let due: { changes: Change[]; next: Snapshot; held?: { key: string; missing: string } } | undefined
+  /** The changes the file holds against `loaded`, the snapshot they lead to, and the records they were read from. */
+  let due: { changes: Change[]; next: Snapshot; records: Installed } | undefined
+  /** The hold the person was told of, so each is told once. */
+  let toldHeld: string | undefined
   /** The mtime a reload was run for: one run per state of the file, so a plugin that will not load is not reloaded again and again. */
   let firedFor: number | undefined
   /** The mtime the person was told of: a reload the engine refused is tried again without telling them again. */
@@ -355,24 +361,31 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
       if (records !== undefined) {
         const next = await snapshotOf(records, loaded.keys(), place)
         const changes = changesOf(loaded, next)
-        // Held until the file changes again: the dependency's install
-        // writes it, and its changes are read afresh and fired.
-        const held = changes.length > 0 ? await heldBy(records, changes) : undefined
-        due = changes.length > 0 ? { changes, next, ...(held !== undefined && { held }) } : undefined
-        if (held !== undefined) {
-          io.log(`reload: ${changeText(changes)} waits: ${held.key} would load without ${held.missing}, which is not installed`, 'debug')
-        }
+        due = changes.length > 0 ? { changes, next, records } : undefined
       }
     }
     // Only while the session is idle, where the reload runs at once: queued
     // during a turn, it would run at the turn's end, ahead of a compaction
     // the model asked for at that end, which then fails. The ask mod keeps
-    // its open questions across the reload, but not a dialog it has up. Not
-    // while the machine's fetch is mid-batch, so a roll reloads once. And
-    // not into a plugin whose dependency is missing.
-    if (due === undefined || due.held !== undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning() || (await isApplying())) {
+    // its open questions across the reload, but not a dialog it has up. And
+    // not while the machine's fetch is mid-batch, so a roll reloads once.
+    if (due === undefined || firedFor === mtimeMs || io.now() < retryAt || io.isAskDialogUp() || io.isTurnRunning() || (await isApplying())) {
       return
     }
+    // Nor into a plugin whose dependency is missing, read on the tick that
+    // fires: a marketplace update moves the clone, which the reload loads,
+    // and writes no record. The dependency's install writes one.
+    const held = await heldBy(due.records, due.changes)
+    if (held !== undefined) {
+      if (toldHeld !== `${held.key} ${held.missing}`) {
+        toldHeld = `${held.key} ${held.missing}`
+        io.log(`reload: ${changeText(due.changes)} waits: ${held.key} would load without ${held.missing}, which is not installed`, 'debug')
+        io.toast(heldText(held.key, held.missing))
+        io.log(heldText(held.key, held.missing), 'transcript')
+      }
+      return
+    }
+    toldHeld = undefined
     fire(mtimeMs, due.changes, due.next)
   }
 
@@ -431,9 +444,9 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
 export const FETCH_MS = 5 * 60_000
 /** A lock older than this was left by a session that died holding it. */
 export const LOCK_STALE_MS = 30 * 60_000
-/** How long one install or update may run. */
+/** How long one plugin or marketplace command may run. */
 const PLUGIN_COMMAND_MS = 120_000
-/** The fetch marks that it applies a batch afresh before each install and update, so a mark older than one command's run and a margin was left by a session that died applying. */
+/** The fetch marks that it applies a batch afresh before each of its commands once one is under way, so a mark older than one command's run and a margin was left by a session that died applying. */
 export const APPLY_STALE_MS = PLUGIN_COMMAND_MS + 60_000
 /** A write to the engine's plugin state this recent is another actor rolling it, which the fetch waits out. */
 export const ROLLING_MS = 60_000
@@ -551,7 +564,11 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     return false
   }
 
-  /** Before each install and update, so the mark's age stays under one command's run while the batch goes on. */
+  /**
+   * Before a marketplace's update and each install and update, and afresh
+   * before the next marketplace's look once a batch is under way, so the
+   * mark's age stays under one command's run until the batch ends.
+   */
   async function mark() {
     await io.write(applying, new Date(io.now()).toISOString())
     isMarked = true
@@ -566,6 +583,9 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
    * plugins it held back are behind still.
    */
   async function fetchOne(m: Marketplace, installed: Installed, enabled: ReadonlySet<string>) {
+    if (isMarked) {
+      await mark()
+    }
     const remote = await io.run(['git', 'ls-remote', '--', m.url, m.ref], 30_000)
     const head = remote.exitCode === 0 ? firstLine(remote.stdout).split(/\s/)[0] : undefined
     if (head === undefined || head === '') {
@@ -575,7 +595,9 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     const local = await io.run(['git', '-C', m.clone, 'rev-parse', 'HEAD'], 10_000)
     const isMoved = local.exitCode !== 0 || local.stdout.trim() !== head
     if (isMoved) {
-      const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], 120_000)
+      // The new clone is what a reload loads its path-sourced plugins from.
+      await mark()
+      const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], PLUGIN_COMMAND_MS)
       if (refreshed.exitCode !== 0) {
         io.log(`reload: ${m.name}: the marketplace did not update (${firstLine(refreshed.stderr) || firstLine(refreshed.stdout)})`)
         return

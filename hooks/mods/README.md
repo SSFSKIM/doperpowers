@@ -881,16 +881,22 @@ is not watched, since the engine watches that folder itself.
 Nor does the module reload into a plugin whose dependency is missing,
 whoever wrote the records (its own fetch, a new session's auto-update, a
 person's `claude plugin update`, none of which need install a dependency a
-new version names). When a reload is due it reads what the reload would
-load: a plugin its marketplace carries by path at its clone's manifest
-(found through `known_marketplaces.json`), which changes when that version
-is not the one the session runs, whether or not its record moved; any other
-plugin at the manifest of its record's install. If a changing plugin's
-dependency chain reaches a plugin with no user or managed record, the
-reload waits, with a debug line, and the install that brings the dependency
-writes the file, which fires it. A plugin whose loaded version already
-lacked a dependency holds nothing: the reload leaves it as it was. A reload
-is one act, so one such plugin holds every change with it.
+new version names). On the tick a due reload would fire (a marketplace
+update moves the clone and writes no record, so it is read then, not when
+the file changed), it reads what the reload would load: a plugin its
+marketplace carries by path at its clone's manifest (found through
+`known_marketplaces.json`), which changes when that version is not the one
+the session runs, whether or not its record moved; any other plugin at the
+manifest of its record's install. If a changing plugin's dependency chain
+reaches a plugin with no user or managed record, the reload waits, and the
+install that brings the dependency writes the file, which fires it. A
+plugin whose loaded version already lacked a dependency holds nothing: the
+reload leaves it as it was. A reload is one act, so one such plugin holds
+every change with it, cua's and ptc's too, which is why the hold is told
+once per hold as a toast and a transcript line (`A plugin update is not
+applied: to-human@doperpowers would load without sminos@doperpowers, which
+is not installed. /plugin install sminos@doperpowers installs it, and the
+reload follows.`), as well as in the debug log.
 
 The module also fetches what the engine fetches only at a session's start.
 For each marketplace `known_marketplaces.json` marks `autoUpdate` (from
@@ -912,10 +918,12 @@ moved), except one whose dependency chain reaches a dependency that did not
 install: that one is held back, with a debug line, and the rest go on, so a
 dependency that will not install on this machine stops only the plugins
 that need it. Each fetch tries the install again. The watch then reloads
-every session on the machine, once: before each install and update the
-fetch marks that it applies a batch (`fetch.applying`, beside its lock),
-and clears the mark at its end, and a reload waits while the mark is
-younger than 3 minutes (one command's 2-minute limit and a margin), so a
+every session on the machine, once: before a marketplace's update and each
+install and update the fetch marks that it applies a batch
+(`fetch.applying`, beside its lock), afresh before the next marketplace's
+look once a batch is under way, and clears the mark at its end; a reload
+waits while the mark is younger than 3 minutes (one command's 2-minute
+limit and a margin), so a
 batch whose writes land more than a period apart is not reloaded at each,
 and a session that dies applying holds the machine's reloads no longer
 than that. A release that moves mods into a new plugin that another comes
