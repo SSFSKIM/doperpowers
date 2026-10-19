@@ -97,8 +97,11 @@ is mode 0600 (the gateway route in it in plain text). The service runs
 the Python the install ran on, pinned; once that Python is removed,
 install again. From an installed plugin it points the service at the
 marketplace clone, a stable path, not the versioned cache, and refuses
-when no clone is known; `run` exits after a tick once its own code
-changes, so `KeepAlive` or `Restart=always` restarts it on the new code.
+when no clone is known. Once its own code changes and holds still, `run`
+stops its uplink and executes itself again in the same process on the
+new code, so the service manager sees no exit and its restart throttle
+does not hold the machine off the hub; `KeepAlive` or `Restart=always`
+restarts it only after a crash, code that does not import included.
 Two machines with the same host name would write the same files: the
 second one's daemon refuses, naming the claim, until one sets
 `DAEMON_HOST` or the stale claim is removed.
