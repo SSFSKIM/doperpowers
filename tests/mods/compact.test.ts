@@ -41,8 +41,8 @@ describe('offerDue', () => {
   })
 
   test('after an offer, the next waits for a step of growth', async () => {
-    expect(offerDue(340_000, 312_400, OFFER_GATE)).toBe(false)
-    expect(offerDue(362_400, 312_400, OFFER_GATE)).toBe(true)
+    expect(offerDue(387_000, 312_400, OFFER_GATE)).toBe(false)
+    expect(offerDue(387_400, 312_400, OFFER_GATE)).toBe(true)
   })
 
   test('a gate of zeros offers at every turn', async () => {
@@ -77,7 +77,7 @@ describe('texts', () => {
 
   test('the compact description tells the model when it is told its size, by the gate', async () => {
     const gated = describeCompact(967_000)
-    expect(gated).toContain("at the end of each turn from 220,000 tokens on, once it has grown 50,000 since the last time (a Stop hook's additional context")
+    expect(gated).toContain("at the end of each turn from 220,000 tokens on, once it has grown 75,000 since the last time (a Stop hook's additional context")
     expect(gated).toContain('Until the first time, you are under 220,000.')
     expect(gated).toContain('compact unasked at any checkpoint, mid-turn included')
     expect(gated).not.toContain('context_usage')
@@ -226,10 +226,10 @@ describe('registerCompact', () => {
     expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
     h.state.tokens = 312_400
     expect((await h.stop(stopAt())).additionalContext?.[0]).toContain('Context: 312,400 tokens')
-    h.state.tokens = 340_000
+    h.state.tokens = 380_000
     expect((await h.stop(stopAt())).additionalContext).toBeUndefined()
-    h.state.tokens = 365_000
-    expect((await h.stop(stopAt())).additionalContext?.[0]).toContain('Context: 365,000 tokens')
+    h.state.tokens = 390_000
+    expect((await h.stop(stopAt())).additionalContext?.[0]).toContain('Context: 390,000 tokens')
   })
 
   test('the Stop after the offered step passes, so the offer is one step', async () => {

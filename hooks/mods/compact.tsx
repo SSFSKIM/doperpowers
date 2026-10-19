@@ -32,7 +32,7 @@ export function thresholdOf(window: number): number {
  * them for a launch; 0 and 0 is an offer at every turn's end.
  */
 export type OfferGate = { floor: number; step: number }
-export const OFFER_GATE: OfferGate = { floor: 220_000, step: 50_000 }
+export const OFFER_GATE: OfferGate = { floor: 220_000, step: 75_000 }
 
 /**
  * Below this, an offer says compacting is not necessarily recommended: the

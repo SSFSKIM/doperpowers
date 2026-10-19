@@ -186,7 +186,7 @@ so the button reads `off` there, as the shell hooks do.
 One tool the model can call, registered at `session.start` under the
 plugin's name, `mcp__doperpowers__compact`: the model compacting its own
 context at a checkpoint of its choosing. And its offer: at the end of each
-main-conversation turn from 220k tokens on, once the context has grown 50k
+main-conversation turn from 220k tokens on, once the context has grown 75k
 since the last offer, the model is told its size and offered the
 compaction, through the Stop hook. Below 300k the offer adds that
 compacting is not necessarily recommended unless this is a clean
@@ -242,7 +242,7 @@ and passes, so an offer is one step and no loop (the engine caps
 consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 220k, below the 300k
 where the tool's guidance turns to "any reasonable checkpoint"
 (`EARLY_BELOW`, under which the offer carries that caveat), so a clean
-checkpoint before it is not missed, and step 50k, so a
+checkpoint before it is not missed, and step 75k, so a
 conversation adding a few k a turn is not asked every turn while a working
 turn, tens of k, is asked each time. The offer's baseline resets when a
 main-conversation `session.compact` stands (not a skip or a `precompute`,

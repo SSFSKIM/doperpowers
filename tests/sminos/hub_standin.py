@@ -770,9 +770,11 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if frames is None:
                     break
-                for frame in frames:
-                    self.wfile.write(sse(frame))
-                self.wfile.flush()
+                # Half-open: the hub's write completes, and nothing arrives.
+                if not mine.muted:
+                    for frame in frames:
+                        self.wfile.write(sse(frame))
+                    self.wfile.flush()
                 if done is not None:
                     done.at = time.time()
                     done.set()

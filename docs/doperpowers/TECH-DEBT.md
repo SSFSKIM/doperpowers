@@ -567,7 +567,7 @@ Residue from the whole-branch review of `docs/doperpowers/specs/2026-10-18-smns-
   - At 2026-10-19 09:09Z on the MacBook, 8 of `mini`'s 92 members read `@macbook`, all `gone`.
   - This is legacy data: cleaning the duplicated seat records ends it.
   - T3. Trigger: a machine project's machine count on the desk misleads someone, or the next cleanup of seat records.
-- **`test-sync.sh`'s "alpha reconnects once its stream is silent" can overrun its 6 s bound.**
+- ~~**`test-sync.sh`'s "alpha reconnects once its stream is silent" can overrun its 6 s bound.**~~ **FIXED 2026-10-19**: a muted stream now writes no frame (`hub_standin.py`'s stream loop); the trigger fired as four red runs in thirty minutes on CI, one at 7 s.
   - The stand-in's `mute` stops a stream's heartbeat but still writes the frames queued for it.
   - Alpha's own lease lapsing flips its online state, so the stand-in sends an `org` frame down every open stream, the muted one included.
   - That frame restarts the uplink reader's silence timer, which is a socket timeout per read, so the reconnect can come late.
